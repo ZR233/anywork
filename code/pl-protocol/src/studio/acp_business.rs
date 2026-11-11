@@ -123,7 +123,7 @@ pub struct AcpCompletedRun {
 pub enum AcpSessionEvent {
     Initialized {
         #[schema(value_type = Object)]
-        capabilities: AgentCapabilities,
+        capabilities: Box<AgentCapabilities>,
     },
     Update {
         #[schema(value_type = Object)]
@@ -296,7 +296,9 @@ mod tests {
             .session_capabilities(SessionCapabilities::new().list(SessionListCapabilities::new()));
         let official = serde_json::to_value(&capabilities).unwrap();
         let frame = serde_json::to_value(AcpSessionFrame::Event {
-            event: Box::new(AcpSessionEvent::Initialized { capabilities }),
+            event: Box::new(AcpSessionEvent::Initialized {
+                capabilities: Box::new(capabilities),
+            }),
         })
         .unwrap();
         assert_eq!(frame["event"]["kind"], "initialized");

@@ -113,6 +113,7 @@ final class AcpConversationSession {
   bool _disposing = false;
   bool _released = false;
   bool _canMergeMessage = false;
+  AcpConversationMessageItem? _pendingUserEcho;
   int _sendGeneration = 0;
   Object? _configOperation;
   bool _configFutureDone = false;
@@ -224,6 +225,7 @@ final class AcpConversationSession {
   }
 
   void _loseObservation() {
+    _pendingUserEcho = null;
     _disconnected = true;
     _history = AcpConversationHistory.incomplete;
     // The protocol owner cancels responders whose observation is lost.
@@ -241,6 +243,7 @@ final class AcpConversationSession {
         _configOptions = response.configOptions;
         _modes = response.modes;
       case AcpFailedEventView(:final error):
+        _pendingUserEcho = null;
         _ready = false;
         _error = error;
       case AcpConfiguredEventView(:final response):
@@ -256,6 +259,7 @@ final class AcpConversationSession {
       case AcpCompletedEventView(:final completed):
         _lastCompleted = completed;
         if (_activeRun == null || _activeRun == completed.run) {
+          _pendingUserEcho = null;
           _activeRun = null;
           _sendPending = false;
           _permissions = const [];
@@ -286,12 +290,25 @@ final class AcpConversationSession {
     }
     switch (update) {
       case AcpUserMessageChunkView(:final chunk):
+        final provisional = _pendingUserEcho;
+        if (provisional != null) {
+          // Formal user content replaces this prompt's temporary display, not
+          // another turn or load replay. Do not deduplicate by text.
+          _pendingUserEcho = null;
+          _content = List.unmodifiable(
+            _content.where((item) => !identical(item, provisional)),
+          );
+          _canMergeMessage = false;
+        }
         _message(AcpConversationMessageKind.user, chunk);
       case AcpAgentMessageChunkView(:final chunk):
+        _pendingUserEcho = null;
         _message(AcpConversationMessageKind.assistant, chunk);
       case AcpAgentThoughtChunkView(:final chunk):
+        _pendingUserEcho = null;
         _message(AcpConversationMessageKind.thought, chunk);
       case AcpToolCallSessionUpdateView(:final toolCall):
+        _pendingUserEcho = null;
         _tool(
           toolCall.toolCallId,
           AcpToolCallUpdateFieldsView(
@@ -308,6 +325,7 @@ final class AcpConversationSession {
           replace: true,
         );
       case AcpToolCallChangedView(:final toolCall):
+        _pendingUserEcho = null;
         _tool(toolCall.toolCallId, toolCall.fields, toolCall.meta);
       case AcpPlanView():
         _plan = update;
@@ -426,15 +444,15 @@ final class AcpConversationSession {
     final generation = ++_sendGeneration;
     _sendPending = true;
     _canMergeMessage = false;
+    _pendingUserEcho = null;
     // A new submitted message cannot merge with a previous run's user message.
     if (content.isNotEmpty) {
-      _content = List.unmodifiable([
-        ..._content,
-        AcpConversationMessageItem._(
-          AcpConversationMessageKind.user,
-          content.map((block) => AcpContentChunkView(content: block)),
-        ),
-      ]);
+      final provisional = AcpConversationMessageItem._(
+        AcpConversationMessageKind.user,
+        content.map((block) => AcpContentChunkView(content: block)),
+      );
+      _pendingUserEcho = provisional;
+      _content = List.unmodifiable([..._content, provisional]);
     }
     _publish();
     try {
@@ -449,6 +467,7 @@ final class AcpConversationSession {
       return run;
     } catch (error) {
       if (!_disposing && generation == _sendGeneration) {
+        _pendingUserEcho = null;
         _sendPending = false;
         _error = error;
         _publish();

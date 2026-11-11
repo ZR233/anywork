@@ -716,7 +716,7 @@ impl Driver {
                                 owner.fail_open(Error::ServerVersionMismatch);
                             } else if !owner.closing {
                                 let capabilities = owner.capabilities.clone();
-                                owner.emit(Event::Initialized(capabilities), size);
+                                owner.emit(Event::Initialized(Box::new(capabilities)), size);
                                 self.open(&connection, &mut owner);
                             } else {
                                 owner.close_done = true;

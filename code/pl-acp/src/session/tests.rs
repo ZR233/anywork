@@ -436,7 +436,7 @@ async fn official_new_load_resume_and_realtime_load_replay() {
         let Event::Initialized(capabilities) = harness.event().await else {
             panic!("initialize must precede every setup or replay event");
         };
-        assert_eq!(capabilities, Scenario::default().capabilities);
+        assert_eq!(*capabilities, Scenario::default().capabilities);
         if matches!(intent, Open::Load(_)) {
             assert!(matches!(
                 harness.event().await,

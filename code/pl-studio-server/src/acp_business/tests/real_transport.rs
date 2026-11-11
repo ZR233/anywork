@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use futures::{FutureExt, StreamExt};
 use pl_protocol::studio::*;
-use pl_studio_runtime as studio_runtime;
 use reqwest::{Client, Response};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::time::{sleep, timeout};

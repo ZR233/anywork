@@ -34,13 +34,16 @@ class AcpConfigurationConnector extends ConsumerWidget {
         ),
       ],
     );
-    return LayoutBuilder(
-      builder: (context, constraints) => ExpansionTile(
-        key: PageStorageKey(('acp-settings', threadId)),
-        tilePadding: EdgeInsets.zero,
-        initiallyExpanded: constraints.maxWidth >= 640,
-        title: Text(constraints.maxWidth < 640 ? '更多设置' : '会话配置'),
-        children: [panel],
+    return Material(
+      type: MaterialType.transparency,
+      child: LayoutBuilder(
+        builder: (context, constraints) => ExpansionTile(
+          key: PageStorageKey(('acp-settings', threadId)),
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: constraints.maxWidth >= 640,
+          title: Text(constraints.maxWidth < 640 ? '更多设置' : '会话配置'),
+          children: [panel],
+        ),
       ),
     );
   }

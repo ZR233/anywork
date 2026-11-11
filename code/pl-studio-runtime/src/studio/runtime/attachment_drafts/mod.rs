@@ -92,7 +92,7 @@ impl StudioRuntime {
                     ))?
             }
         };
-        Ok(InputPolicy::Native(route.model))
+        Ok(InputPolicy::Native(Box::new(route.model)))
     }
 
     pub async fn remove_attachment_draft(&self, draft_id: String) -> Result<bool> {

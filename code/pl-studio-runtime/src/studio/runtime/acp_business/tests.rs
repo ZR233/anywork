@@ -7,11 +7,7 @@ use anyhow::{Context, Result};
 use pl_protocol::studio::*;
 use tokio::time::timeout;
 
-use crate as studio_runtime;
-
-#[path = "../../../../tests/support/acp_transport_fixture.rs"]
-mod acp_transport_fixture;
-use acp_transport_fixture::AcpTransportFixture as Fixture;
+use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 
 #[tokio::test]
 async fn public_launch_failures_distinguish_install_required_from_missing_executable() -> Result<()>

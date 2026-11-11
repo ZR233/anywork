@@ -9,12 +9,6 @@ use super::AttachmentDraftRuntime;
 use super::source::MAX_GENERIC_SOURCE_BYTES;
 use super::validate::{InputPolicy, preflight_sources};
 
-#[cfg(target_os = "linux")]
-use crate as studio_runtime;
-#[cfg(target_os = "linux")]
-#[path = "../../../../tests/support/acp_transport_fixture.rs"]
-mod acp_transport_fixture;
-
 fn local(path: &Path) -> StudioAttachmentDraftSource {
     StudioAttachmentDraftSource::LocalFile {
         path: path.to_string_lossy().into_owned(),
@@ -130,7 +124,13 @@ async fn acp_batch_failure_cleans_new_staging_and_preserves_existing_drafts() ->
         );
         assert_eq!(std::fs::read_dir(&root)?.count(), 1);
         assert_eq!(runtime.read(existing_id).await?, b"context");
-        assert_eq!(runtime.resolve(&[existing_id.clone()]).await?.len(), 1);
+        assert_eq!(
+            runtime
+                .resolve(std::slice::from_ref(existing_id))
+                .await?
+                .len(),
+            1
+        );
     }
     runtime.remove(existing_id).await?;
     Ok(())
@@ -143,8 +143,8 @@ mod public_api {
         AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError,
     };
 
-    use super::acp_transport_fixture::AcpTransportFixture as Fixture;
     use super::local;
+    use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 
     #[tokio::test]
     async fn acp_thread_admission_reads_ready_session_capabilities_without_opening_another_session()

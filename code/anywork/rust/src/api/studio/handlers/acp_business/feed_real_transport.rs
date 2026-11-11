@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::studio::*;
-use pl_studio_runtime as studio_runtime;
 use tokio::time::{sleep, timeout};
 
 use super::*;

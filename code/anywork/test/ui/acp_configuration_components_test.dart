@@ -138,7 +138,12 @@ void main() {
             harness.port.configureResult = command;
           }
           await tester.pumpWidget(
-            harness.scope(const AcpConfigurationConnector(threadId: 'thread')),
+            harness.scope(
+              const DecoratedBox(
+                decoration: BoxDecoration(color: Colors.white),
+                child: AcpConfigurationConnector(threadId: 'thread'),
+              ),
+            ),
           );
           await tester.pumpAndSettle();
           final dropdown = legacy

@@ -31,6 +31,9 @@ void main() {
       graph.timeline.updateReadDemand(chatDemand);
       await (graph..setConversationPageVisible(true)).client.directoryCommands
           .selectThread('thread-main');
+      await graph.client.conversations.visibleThreadId
+          .waitFor((value) => value == 'thread-main')
+          .timeout(const Duration(seconds: 10));
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
@@ -171,6 +174,9 @@ void main() {
     graph.timeline.updateReadDemand(chatDemand);
     await (graph..setConversationPageVisible(true)).client.directoryCommands
         .selectThread('thread-main');
+    await graph.client.conversations.visibleThreadId
+        .waitFor((value) => value == 'thread-main')
+        .timeout(const Duration(seconds: 10));
     final session = graph.client.conversations.existingSession('thread-main')!;
     await session.content.ready;
     await transport.firstSetAcknowledged.future;

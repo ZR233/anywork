@@ -21,7 +21,9 @@ fn initialized_capabilities_map_actual_optional_session_support() {
                 s::SessionCapabilities::new()
             });
         let mapped = frame(p::AcpSessionFrame::Event {
-            event: Box::new(p::AcpSessionEvent::Initialized { capabilities }),
+            event: Box::new(p::AcpSessionEvent::Initialized {
+                capabilities: Box::new(capabilities),
+            }),
         })
         .unwrap();
         let BridgeAcpSessionFrame::Event { event } = mapped else {

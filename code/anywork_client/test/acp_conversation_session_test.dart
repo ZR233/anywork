@@ -124,6 +124,122 @@ Future<AcpConversationSession> _open(AcpSessionClient client) async {
 }
 
 void main() {
+  test('formal user echo replaces only the current provisional input and keeps replay and repeated turns', () async {
+    final replay = const AcpContentChunkView(
+      content: AcpTextContentView(text: 'question'),
+      messageId: AcpMessageId('replayed'),
+    );
+    final source = ControlledAcpObservation([
+      _accepted,
+      _update(AcpUserMessageChunkView(replay)),
+      _ready(),
+      _settled,
+    ]);
+    final port = _port(source)..promptResult = Completer<AcpRunIdView>();
+    final client = AcpSessionClient(port: port);
+    addTearDown(client.dispose);
+    final owner = await _open(client);
+    final sending = owner.send(_input);
+    expect(
+      owner.state.content.whereType<AcpConversationMessageItem>(),
+      hasLength(2),
+    );
+    _push(source, _update(AcpAvailableCommandsUpdateView(commands: const [])));
+    await owner.source.waitFor(
+      (state) => state.content.last is AcpConversationUpdateItem,
+    );
+    final first = AcpContentChunkView(
+      content: const AcpTextContentView(text: 'ques'),
+      messageId: const AcpMessageId('official'),
+      meta: AcpJsonObject({'original': const AcpJsonString('metadata')}),
+    );
+    const second = AcpContentChunkView(
+      content: AcpTextContentView(text: 'tion'),
+      messageId: AcpMessageId('official'),
+    );
+    _push(source, _update(AcpUserMessageChunkView(first)));
+    _push(source, _update(const AcpUserMessageChunkView(second)));
+    await owner.source.waitFor((state) {
+      final last = state.content.last;
+      return last is AcpConversationMessageItem && last.chunks.length == 2;
+    });
+    final users = owner.state.content
+        .whereType<AcpConversationMessageItem>()
+        .toList();
+    expect(users, hasLength(2));
+    expect(users.first.chunks.single, same(replay));
+    expect(users.last.chunks, [same(first), same(second)]);
+    port.promptResult!.complete(_run);
+    expect(await sending, _run);
+    _push(source, _text('answer'));
+    _push(source, _event(AcpCompletedEventView(_completion(_run))));
+    await owner.source.waitFor((state) => state.lastCompleted != null);
+    port
+      ..promptResult = null
+      ..run = _nextRun;
+    await owner.send(_input);
+    _push(source, _text('answer again without echo'));
+    await owner.source.waitFor(
+      (state) =>
+          state.content.last is AcpConversationMessageItem &&
+          (state.content.last as AcpConversationMessageItem).kind ==
+              AcpConversationMessageKind.assistant,
+    );
+    final repeated = owner.state.content
+        .whereType<AcpConversationMessageItem>()
+        .where((item) => item.kind == AcpConversationMessageKind.user)
+        .toList();
+    expect(repeated, hasLength(3));
+    expect(repeated.last.chunks.single.content, same(_input.single));
+  });
+
+  for (final boundary in ['response', 'completion', 'failure']) {
+    test(
+      'later user updates cannot retire a local input after $boundary',
+      () async {
+        final source = ControlledAcpObservation([
+          _accepted,
+          _ready(),
+          _settled,
+        ]);
+        final port = _port(source);
+        final client = AcpSessionClient(port: port);
+        addTearDown(client.dispose);
+        final owner = await _open(client);
+        if (boundary == 'failure') {
+          port.commandError = StateError('rejected prompt');
+          await expectLater(owner.send(_input), throwsStateError);
+        } else {
+          await owner.send(_input);
+          if (boundary == 'response') {
+            _push(source, _text('response'));
+            await owner.source.waitFor((state) => state.content.length == 2);
+          } else {
+            _push(source, _event(AcpCompletedEventView(_completion(_run))));
+            await owner.source.waitFor((state) => state.lastCompleted != null);
+          }
+        }
+        const later = AcpContentChunkView(
+          content: AcpTextContentView(text: 'another user message'),
+          messageId: AcpMessageId('later'),
+        );
+        _push(source, _update(const AcpUserMessageChunkView(later)));
+        await owner.source.waitFor((state) {
+          final last = state.content.last;
+          return last is AcpConversationMessageItem &&
+              identical(last.chunks.last, later);
+        });
+        final users = owner.state.content
+            .whereType<AcpConversationMessageItem>()
+            .where((item) => item.kind == AcpConversationMessageKind.user)
+            .toList();
+        expect(users, hasLength(2));
+        expect(users.first.chunks.single.content, same(_input.single));
+        expect(users.last.chunks.single, same(later));
+      },
+    );
+  }
+
   test(
     'one owner and shared admission return before replay and Settled',
     () async {

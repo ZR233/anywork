@@ -17,7 +17,7 @@ use super::normalize::{NormalizedSource, sanitize_filename};
 use super::source::{MAX_GENERIC_SOURCE_BYTES, MAX_IMAGE_SOURCE_BYTES, validate_remote_url};
 
 pub(super) enum InputPolicy {
-    Native(ModelInfo),
+    Native(Box<ModelInfo>),
     Acp(PromptCapabilities),
 }
 
