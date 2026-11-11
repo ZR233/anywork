@@ -31,6 +31,7 @@ impl MigratorTraitSelf for Published12 {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .filter(|step| {

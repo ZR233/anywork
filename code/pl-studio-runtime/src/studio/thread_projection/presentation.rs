@@ -260,15 +260,24 @@ pub(in crate::studio) fn lightweight(mut atom: ChatAtom, database: &str) -> Chat
     atom
 }
 
-fn work(atom: &ChatAtom) -> bool {
-    matches!(
-        atom.kind,
-        ChatAtomKind::Reasoning
-            | ChatAtomKind::ToolCall
-            | ChatAtomKind::FileChange
-            | ChatAtomKind::Skill
-    ) && matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
-        && atom.delivery != ChatDeliveryKind::Independent
+pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
+    // Background provenance is independent delivery, not an independent output contract.
+    // Its original producer identity survives that delivery override. Do not inspect labels.
+    let background_tool = atom.kind == ChatAtomKind::ToolCall
+        && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+        && atom
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.name != pl_tool::file_display::TOOL_SHOW_FILES);
+    background_tool
+        || (matches!(
+            atom.kind,
+            ChatAtomKind::Reasoning
+                | ChatAtomKind::ToolCall
+                | ChatAtomKind::FileChange
+                | ChatAtomKind::Skill
+        ) && matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
+            && atom.delivery != ChatDeliveryKind::Independent)
 }
 
 fn hidden(atom: &ChatAtom) -> bool {

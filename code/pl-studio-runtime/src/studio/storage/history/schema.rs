@@ -21,6 +21,7 @@ mod sqlite_metadata;
 mod timeline_background_tail;
 mod timeline_items;
 mod timeline_thinking_summary;
+mod tool_work;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
     migrate_unconsumed_input_bindings,
@@ -137,6 +138,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(immutable_completion_runs::ImmutableCompletionRuns),
             Box::new(display_snapshots::DisplaySnapshots),
             Box::new(display_observations::DisplayObservations),
+            Box::new(tool_work::ToolWork),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -190,6 +192,7 @@ const COMPLETION_BOUNDARY: &str = "m20261109_000001_history_completion_boundary"
 const IMMUTABLE_COMPLETION_RUNS: &str = "m20261110_000001_history_immutable_completion_runs";
 const DISPLAY_SNAPSHOTS: &str = "m20261109_000001_display_snapshots";
 const DISPLAY_OBSERVATIONS: &str = "m20261111_000001_display_observations";
+const TOOL_WORK: &str = "m20261112_000001_history_tool_work";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 #[cfg(test)]
@@ -477,6 +480,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                             | IMMUTABLE_COMPLETION_RUNS
                             | DISPLAY_SNAPSHOTS
                             | DISPLAY_OBSERVATIONS
+                            | TOOL_WORK
                     ) || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
@@ -491,10 +495,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 19 => {
                     display_snapshots::validate(db).await?;
                     ensure!(
-                        pending
-                            .iter()
-                            .all(|step| step.name() == DISPLAY_OBSERVATIONS
-                                || is_lifecycle_migration(step.name())),
+                        pending.iter().all(|step| matches!(
+                            step.name(),
+                            DISPLAY_OBSERVATIONS | TOOL_WORK
+                        ) || is_lifecycle_migration(step.name())),
                         "schema 19 has pending earlier content migrations; existing data preserved"
                     );
                 }
@@ -503,7 +507,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     ensure!(
                         pending.iter().all(|step| matches!(
                             step.name(),
-                            DISPLAY_SNAPSHOTS | DISPLAY_OBSERVATIONS
+                            DISPLAY_SNAPSHOTS | DISPLAY_OBSERVATIONS | TOOL_WORK
                         ) || is_lifecycle_migration(step.name())),
                         "schema 18 has pending earlier content migrations; existing data preserved"
                     );
@@ -522,6 +526,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
+                                    | TOOL_WORK
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
@@ -547,6 +552,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
+                                    | TOOL_WORK
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
@@ -573,6 +579,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
+                                    | TOOL_WORK
                                     | TIMELINE_THINKING_SUMMARY
                                     | TIMELINE_BACKGROUND_TAIL
                             ) || is_lifecycle_migration(step.name())
@@ -601,6 +608,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
+                                    | TOOL_WORK
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
@@ -627,6 +635,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | IMMUTABLE_COMPLETION_RUNS
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
+                                    | TOOL_WORK
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 16 has pending earlier content migrations; existing data preserved"
@@ -653,6 +662,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 | IMMUTABLE_COMPLETION_RUNS
                                 | DISPLAY_SNAPSHOTS
                                 | DISPLAY_OBSERVATIONS
+                                | TOOL_WORK
                         ) || is_lifecycle_migration(step.name())),
                         "schema 17 has pending earlier content migrations; existing data preserved"
                     );
@@ -1345,6 +1355,7 @@ impl MigrationTrait for CombinedContent {
                             | IMMUTABLE_COMPLETION_RUNS
                             | DISPLAY_SNAPSHOTS
                             | DISPLAY_OBSERVATIONS
+                            | TOOL_WORK
                             | TIMELINE_THINKING_SUMMARY
                             | TIMELINE_BACKGROUND_TAIL
                     ) && !is_lifecycle_migration(step.name())

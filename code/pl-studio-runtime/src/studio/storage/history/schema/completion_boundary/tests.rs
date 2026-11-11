@@ -34,6 +34,7 @@ impl MigratorTraitSelf for Published16 {
                     | IMMUTABLE_COMPLETION_RUNS
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
+                    | TOOL_WORK
             )
         })
         .collect()

@@ -423,7 +423,7 @@ void main() {
             blocks: [
               work,
               LiveDisplayBlock(
-                id: 'newer-failed-work',
+                id: 'newer-cancelled-work',
                 blockOrder: 2,
                 state: DisplayBlockState.open,
                 source: source,
@@ -433,14 +433,14 @@ void main() {
                     terminal: 1,
                     running: 0,
                     waiting: 0,
-                    failed: 1,
-                    cancelled: 0,
+                    failed: 0,
+                    cancelled: 1,
                     transferred: 0,
                     unavailable: 0,
                   ),
                   members: const DisplayBlockRef(
                     databaseId: 'db',
-                    blockId: 'newer-failed-work',
+                    blockId: 'newer-cancelled-work',
                   ),
                 ),
               ),
@@ -479,13 +479,14 @@ void main() {
         ('clean idle (group-idle)', 0, 0, 0, 0, 0, 0, true),
         ('running', 1, 0, 0, 0, 0, 0, true),
         ('waiting', 0, 1, 0, 0, 0, 0, true),
-        ('failed terminal', 0, 0, 1, 0, 0, 0, false),
+        ('failed call while thinking', 0, 0, 1, 0, 0, 0, true),
+        ('failed call while running', 1, 0, 1, 0, 0, 0, true),
         ('cancelled terminal', 0, 0, 0, 1, 0, 0, false),
         ('transferred terminal', 0, 0, 0, 0, 1, 0, false),
         ('unavailable running', 1, 0, 0, 0, 0, 1, false),
         ('unavailable waiting', 0, 1, 0, 0, 0, 1, false),
       ]) {
-    test('normal notice requires complete non-abnormal open Work: $label', () {
+    test('normal notice requires complete continuing open Work: $label', () {
       final live = LiveDisplayWindow(
         revision: 4,
         historyThrough: 0,

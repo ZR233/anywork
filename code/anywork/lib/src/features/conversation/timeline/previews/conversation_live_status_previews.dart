@@ -4,10 +4,12 @@ import 'package:flutter/widget_previews.dart';
 
 import '../../../../app/theme/material3_theme.dart';
 import '../../../../l10n/app_localizations.dart';
+import '../state/timeline_display_unit.dart';
 import '../state/tool_presentation.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/chat_item_view.dart';
+import '../widgets/timeline_display_unit_view.dart';
 import 'timeline_preview_fixtures.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
@@ -348,6 +350,45 @@ Widget conversationLiveStatusCompactingPreview() => liveStatusPreviewHost(
 @Preview(name: '工作组 · 进行中', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
   ConversationActivityBar(children: [liveStatusGroupPreview()]),
+);
+
+@Preview(name: '工作组 · 调用失败后继续思考（折叠单行）', group: '实时状态栏', size: Size(1067, 110))
+Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
+  ConversationActivityBar(
+    children: [
+      _ActivityPreview(
+        activity: const ConversationActivityView(
+          identity: 'preview-failed-call-thinking',
+          kind: ConversationActivityKind.thinking,
+        ),
+        summary: const WorkSummary(
+          unavailable: 0,
+          total: 2,
+          terminal: 2,
+          running: 0,
+          waiting: 0,
+          failed: 1,
+          cancelled: 0,
+          transferred: 0,
+          createdAt: 154,
+          elapsedMs: 71000,
+        ),
+        childBuilder: (_) => const TimelineToolDetails(
+          item: TimelineToolPresentation(
+            id: 'preview-failed-call',
+            toolCallId: 'preview-failed-call',
+            name: 'exec',
+            presentationContract: 'builtin.exec@2',
+            statusString: 'failed',
+            arguments: '{"command":"cargo flutter analyze"}',
+            output: '命令退出码 1；调用失败后继续思考，不代表会话执行失败。',
+            error: '命令退出码 1',
+            exitCode: 1,
+          ),
+        ),
+      ),
+    ],
+  ),
 );
 
 @Preview(name: '工作组 · 成员完成待交接', group: '实时状态栏', size: Size(760, 300))
@@ -691,5 +732,123 @@ class _ActivityPreview extends StatelessWidget {
     // A fixed synthetic observation cut, not a reconstructed production clock.
     now: () => DateTime.fromMillisecondsSinceEpoch(225000),
     childBuilder: childBuilder,
+  );
+}
+
+@Preview(name: '已封存工作组 / 折叠', group: 'Timeline · 原子工作组', size: Size(1067, 420))
+Widget sealedToolWorkGroupCollapsedPreview() =>
+    liveStatusPreviewHost(const _SealedToolWorkGroupPreview());
+
+@Preview(name: '已封存工作组 / 展开', group: 'Timeline · 原子工作组', size: Size(1067, 420))
+Widget sealedToolWorkGroupExpandedPreview() =>
+    liveStatusPreviewHost(const _SealedToolWorkGroupPreview(expanded: true));
+
+/// Static chronological fixtures mounted through production disclosure and
+/// item widgets. No grouping reducer or app graph is reconstructed here.
+class _SealedToolWorkGroupPreview extends StatefulWidget {
+  const _SealedToolWorkGroupPreview({this.expanded = false});
+
+  final bool expanded;
+
+  @override
+  State<_SealedToolWorkGroupPreview> createState() =>
+      _SealedToolWorkGroupPreviewState();
+}
+
+class _SealedToolWorkGroupPreviewState
+    extends State<_SealedToolWorkGroupPreview> {
+  late final group = TimelineDisplayUnit(
+    block: DisplayBlock(
+      id: 'sealed-tool-preview-group',
+      historyPos: 2,
+      body: WorkDisplayBlock(
+        summary: const WorkSummary(
+          unavailable: 0,
+          total: 2,
+          terminal: 2,
+          running: 0,
+          waiting: 0,
+          failed: 1,
+          cancelled: 0,
+          transferred: 0,
+          createdAt: 1735689600,
+          elapsedMs: 125000,
+        ),
+        members: const DisplayBlockRef(
+          databaseId: 'preview',
+          blockId: 'sealed-tool-preview-group',
+        ),
+      ),
+    ),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    group.expansion.expanded = widget.expanded;
+  }
+
+  @override
+  void dispose() {
+    group.expansion.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ChatItemView(item: TimelinePreviewFixtures.assistant),
+        TimelineDisplayUnitView(
+          key: const ValueKey('sealed-tool-preview-group'),
+          unit: group,
+          childBuilder: (_) => const Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TimelineToolDetails(
+                item: TimelineToolPresentation(
+                  id: 'sealed-tool-preview-exec',
+                  toolCallId: 'sealed-tool-preview-exec-call',
+                  name: 'exec',
+                  presentationContract: 'builtin.exec@2',
+                  statusString: 'succeeded',
+                  arguments: '{"command":"cargo flutter test test/ui"}',
+                  output: 'exec 执行完成：测试命令成功退出。',
+                ),
+                initiallyExpanded: true,
+              ),
+              TimelineToolDetails(
+                item: TimelineToolPresentation(
+                  id: 'sealed-tool-preview-search',
+                  toolCallId: 'sealed-tool-preview-search-call',
+                  name: 'web_search',
+                  presentationContract: 'builtin.web_search@1',
+                  statusString: 'failed',
+                  arguments: '{"search_query":[{"q":"时间线工作组"}]}',
+                  output: '',
+                  error: '搜索服务暂时不可用',
+                ),
+                initiallyExpanded: true,
+              ),
+            ],
+          ),
+        ),
+        ChatItemView(
+          item: TimelinePreviewFixtures.item(
+            'sealed-tool-preview-answer',
+            'text',
+            const {'channel': 'final', 'attachments': []},
+            sealedAt: 1735689602,
+            bodies: [
+              TimelinePreviewFixtures.body(
+                'part.text.0',
+                '搜索未成功，但已封存工作组仍保留在两段正文之间。',
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
   );
 }
