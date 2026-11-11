@@ -130,8 +130,10 @@ abstract interface class AccountUsageRepository {
   >
   get state;
 
-  /// Visibility starts only unattempted current query identities. Release stops
-  /// new automatic work; already admitted requests retain application ownership.
-  AccountDemand observeVisible();
+  /// Retains shared summary and usage observations for the displayed [identity].
+  ///
+  /// Does not start a query or local classification; callers invoke [refresh].
+  /// Release affects only this demand, not other displays or admitted queries.
+  AccountDemand observeAccount(NativeAccountIdentity identity);
   Future<void> refresh(NativeAccountIdentity identity);
 }

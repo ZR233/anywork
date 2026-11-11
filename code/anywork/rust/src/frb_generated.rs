@@ -10493,11 +10493,15 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
             <Option<crate::api::studio::types::acp::BridgeAcpUsageObservation>>::sse_decode(
                 deserializer,
             );
+        let mut var_activeOperation = <Option<
+            crate::api::studio::types::acp::BridgeAcpAuthActiveOperation,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::acp::BridgeAcpAuthAccount {
             account_id: var_accountId,
             connection_revision: var_connectionRevision,
             state: var_state,
             usage: var_usage,
+            active_operation: var_activeOperation,
         };
     }
 }
@@ -10510,6 +10514,21 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAction {
             0 => crate::api::studio::types::acp::BridgeAcpAuthAction::Check,
             1 => crate::api::studio::types::acp::BridgeAcpAuthAction::QueryUsage,
             _ => unreachable!("Invalid variant for BridgeAcpAuthAction: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthActiveOperation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_operationId = <String>::sse_decode(deserializer);
+        let mut var_connectionRevision = <u64>::sse_decode(deserializer);
+        let mut var_action =
+            <crate::api::studio::types::acp::BridgeAcpAuthAction>::sse_decode(deserializer);
+        return crate::api::studio::types::acp::BridgeAcpAuthActiveOperation {
+            operation_id: var_operationId,
+            connection_revision: var_connectionRevision,
+            action: var_action,
         };
     }
 }
@@ -25488,6 +25507,21 @@ impl SseDecode for Option<crate::api::studio::types::acp_business::content::Brid
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::acp::BridgeAcpAuthActiveOperation> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::acp::BridgeAcpAuthActiveOperation>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::acp::BridgeAcpAuthFailure> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -29334,6 +29368,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcp
             self.connection_revision.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.usage.into_into_dart().into_dart(),
+            self.active_operation.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -29367,6 +29402,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcp
     for crate::api::studio::types::acp::BridgeAcpAuthAction
 {
     fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpAuthAction {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::acp::BridgeAcpAuthActiveOperation
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.operation_id.into_into_dart().into_dart(),
+            self.connection_revision.into_into_dart().into_dart(),
+            self.action.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpAuthActiveOperation
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpAuthActiveOperation>
+    for crate::api::studio::types::acp::BridgeAcpAuthActiveOperation
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpAuthActiveOperation {
         self
     }
 }
@@ -47240,6 +47299,10 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
         <Option<crate::api::studio::types::acp::BridgeAcpUsageObservation>>::sse_encode(
             self.usage, serializer,
         );
+        <Option<crate::api::studio::types::acp::BridgeAcpAuthActiveOperation>>::sse_encode(
+            self.active_operation,
+            serializer,
+        );
     }
 }
 
@@ -47256,6 +47319,15 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthAction {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthActiveOperation {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.operation_id, serializer);
+        <u64>::sse_encode(self.connection_revision, serializer);
+        <crate::api::studio::types::acp::BridgeAcpAuthAction>::sse_encode(self.action, serializer);
     }
 }
 
@@ -58801,6 +58873,18 @@ impl SseEncode for Option<crate::api::studio::types::acp_business::content::Brid
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::acp_business::content::BridgeAcpAnnotations>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::acp::BridgeAcpAuthActiveOperation> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::acp::BridgeAcpAuthActiveOperation>::sse_encode(
                 value, serializer,
             );
         }

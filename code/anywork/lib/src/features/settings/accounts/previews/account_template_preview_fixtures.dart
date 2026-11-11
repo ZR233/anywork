@@ -1,5 +1,6 @@
 import '../accounts_views.dart';
 import 'account_preview_fixtures.dart';
+import 'account_list_preview_data.dart';
 
 /// Real template identities/endpoints with explicitly synthetic account state.
 /// No providers, credentials or runtime are initialized by these fixtures.
@@ -202,7 +203,7 @@ abstract final class AccountTemplatePreviewFixtures {
     );
   }
 
-  static AccountsListPresentation get allTemplates => AccountsListPresentation(
+  static AccountListPreviewData get allTemplates => AccountListPreviewData(
     canRefresh: true,
     rows: [
       for (final value in AccountPreviewFixtures.templates) row(value.key.id),

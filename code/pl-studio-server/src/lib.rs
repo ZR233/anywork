@@ -1,5 +1,8 @@
 //! Loopback HTTP/OpenAPI/SSE adapter for [`pl_studio_runtime::StudioRuntime`].
 
+// Axum's handler Send proof traverses the runtime's storage migration futures.
+#![recursion_limit = "256"]
+
 mod acp_business;
 mod bots;
 mod conversation;

@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAcpAccountCatalog {
   final List<BridgeAcpAccountTemplate> templates;
@@ -187,11 +187,15 @@ class BridgeAcpAuthAccount {
   final BridgeAcpAuthState state;
   final BridgeAcpUsageObservation? usage;
 
+  /// 当前操作槽位上的进行中操作；由 owner 与 state 同一提交边界投影。
+  final BridgeAcpAuthActiveOperation? activeOperation;
+
   const BridgeAcpAuthAccount({
     required this.accountId,
     required this.connectionRevision,
     required this.state,
     this.usage,
+    this.activeOperation,
   });
 
   @override
@@ -199,7 +203,8 @@ class BridgeAcpAuthAccount {
       accountId.hashCode ^
       connectionRevision.hashCode ^
       state.hashCode ^
-      usage.hashCode;
+      usage.hashCode ^
+      activeOperation.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -209,11 +214,40 @@ class BridgeAcpAuthAccount {
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
           state == other.state &&
-          usage == other.usage;
+          usage == other.usage &&
+          activeOperation == other.activeOperation;
 }
 
 /// 认证命令输入动作。
 enum BridgeAcpAuthAction { check, queryUsage }
+
+/// 进行中认证操作在 FRB 镜像中的身份：ID、启动时冻结的连接修订与真实动作。
+///
+/// 连接已替换但旧操作仍在收束时，这里的修订可以小于账号当前修订。
+class BridgeAcpAuthActiveOperation {
+  final String operationId;
+  final BigInt connectionRevision;
+  final BridgeAcpAuthAction action;
+
+  const BridgeAcpAuthActiveOperation({
+    required this.operationId,
+    required this.connectionRevision,
+    required this.action,
+  });
+
+  @override
+  int get hashCode =>
+      operationId.hashCode ^ connectionRevision.hashCode ^ action.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpAuthActiveOperation &&
+          runtimeType == other.runtimeType &&
+          operationId == other.operationId &&
+          connectionRevision == other.connectionRevision &&
+          action == other.action;
+}
 
 /// 认证命令的受理回执与受理时快照。
 class BridgeAcpAuthCommandReply {

@@ -164,6 +164,12 @@ final class _AcpTransport extends AccountsTestTransport {
       accountId: accountId,
       connectionRevision: expectedConnectionRevision,
       state: AcpCheckingState(operationId: operationId.value),
+      // 与真实 owner 同一契约：busy 状态与活动操作投影来自同一受理身份。
+      activeOperation: AcpAuthActiveOperationView(
+        operationId: operationId.value,
+        connectionRevision: expectedConnectionRevision,
+        action: action,
+      ),
     );
     final reply = AcpAuthCommandReply(
       receipt: StudioCommandReceipt(
@@ -899,6 +905,92 @@ void main() {
       );
     },
   );
+
+  test('active operation projection follows the slot per account and clears on terminal', () async {
+    final transport = _AcpTransport();
+    final client = _client(transport);
+    await client.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
+
+    AcpAuthAccountView? accountOf(String id, int revision) =>
+        (client.domains.acp.auth.value.value ??
+                const AcpAuthSnapshotView.empty())
+            .account(id, connectionRevision: revision);
+
+    // saveAndConnect 触发的检查：busy 状态的 operationId 与活动操作投影一致。
+    final checking = accountOf('acp-1', 7);
+    expect(checking?.state, isA<AcpCheckingState>());
+    expect(
+      checking?.activeOperation?.operationId,
+      (checking!.state as AcpCheckingState).operationId,
+    );
+    expect(checking.activeOperation?.connectionRevision, 7);
+    expect(checking.activeOperation?.action, isA<AcpCheckActionView>());
+
+    // 终态快照清空活动操作投影。
+    _apply(
+      client,
+      const AcpAuthSnapshotView(
+        revision: 2,
+        updatedAt: 2,
+        accounts: [
+          AcpAuthAccountView(
+            accountId: 'acp-1',
+            connectionRevision: 7,
+            state: AcpVerifiedState(checkedAt: 2, server: null),
+          ),
+        ],
+      ),
+    );
+    expect(accountOf('acp-1', 7)?.activeOperation, isNull);
+
+    // 额度刷新：投影动作是受理的 queryUsage，而不是检查。
+    transport.startRevision = 3;
+    await client.domains.acp.queryUsage(const AcpAccountIdentity('acp-1'));
+    final refreshing = accountOf('acp-1', 7);
+    expect(refreshing?.activeOperation?.action, isA<AcpQueryUsageActionView>());
+    expect(
+      refreshing?.activeOperation?.operationId,
+      (refreshing!.state as AcpCheckingState).operationId,
+    );
+
+    // 跨账号观察：旧连接仍在收束时保留旧修订与旧动作，空闲账号不受牵连。
+    _apply(
+      client,
+      const AcpAuthSnapshotView(
+        revision: 4,
+        updatedAt: 4,
+        accounts: [
+          AcpAuthAccountView(
+            accountId: 'acp-1',
+            connectionRevision: 7,
+            state: AcpVerifiedState(checkedAt: 4, server: null),
+          ),
+          AcpAuthAccountView(
+            accountId: 'acp-2',
+            connectionRevision: 9,
+            state: AcpClosingState(operationId: 'op-old', failure: null),
+            activeOperation: AcpAuthActiveOperationView(
+              operationId: 'op-old',
+              connectionRevision: 8,
+              action: AcpQueryUsageActionView(),
+            ),
+          ),
+        ],
+      ),
+    );
+    expect(accountOf('acp-1', 7)?.activeOperation, isNull);
+    final settling = accountOf('acp-2', 9);
+    expect(settling?.connectionRevision, 9);
+    expect(settling?.activeOperation?.connectionRevision, 8);
+    expect(settling?.activeOperation?.action, isA<AcpQueryUsageActionView>());
+    expect(
+      (settling!.state as AcpClosingState).operationId,
+      settling.activeOperation?.operationId,
+    );
+  });
 
   test(
     'login sends the chosen method and cancel hits the current operation',

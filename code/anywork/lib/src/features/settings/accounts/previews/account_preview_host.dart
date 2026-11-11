@@ -4,6 +4,7 @@ import '../../../../app/theme/material3_theme.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../accounts_views.dart';
 import 'account_preview_fixtures.dart';
+import 'account_list_preview_data.dart';
 
 Widget accountPreviewHost(
   Widget Function(ValueChanged<String> record) builder, {
@@ -17,7 +18,7 @@ Widget accountPreviewHost(
   locale: locale,
 );
 Widget accountListPreview(
-  AccountsListPresentation value, {
+  AccountListPreviewData value, {
   double textScale = 1,
   Locale locale = const Locale('zh'),
 }) => accountPreviewHost(
@@ -157,7 +158,7 @@ class _PreviewHostState extends State<_PreviewHost> {
 
 class _ListScenario extends StatefulWidget {
   const _ListScenario({required this.initial, required this.record});
-  final AccountsListPresentation initial;
+  final AccountListPreviewData initial;
   final ValueChanged<String> record;
   @override
   State<_ListScenario> createState() => _ListScenarioState();
@@ -180,9 +181,9 @@ class _ListScenarioState extends State<_ListScenario> {
         .where((row) => row.name.toLowerCase().contains(_search.toLowerCase()))
         .toList();
     return AccountsListView(
-      value: widget.initial.copyWith(
+      value: widget.initial.presentation.copyWith(
         search: _search,
-        rows: rows,
+        members: [for (final row in rows) row.key],
         searchHasNoResults: _search.isNotEmpty && rows.isEmpty,
       ),
       onSearchChanged: (raw) => setState(() => _search = raw),
@@ -192,6 +193,12 @@ class _ListScenarioState extends State<_ListScenario> {
       onRowAction: (key, action) =>
           widget.record('${key.kind.name}/${key.id}: ${action.name}'),
       onRetry: () => widget.record('retry list'),
+      cardBuilder: (context, key, layout, onOpen, onAction) => AccountListItem(
+        value: rows.singleWhere((row) => row.key == key),
+        layout: layout,
+        onOpen: onOpen,
+        onAction: onAction,
+      ),
     );
   }
 }

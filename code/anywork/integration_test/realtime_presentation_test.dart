@@ -294,7 +294,7 @@ void main() {
       report['parallelObserver'] = parallelObserver.evidence;
       await scene.untilLaidOutCurrentTools(
         minimum: 2,
-        runningExecCallIds: const {
+        handedOffExecCallIds: const {
           'realtime-parallel-call-a',
           'realtime-parallel-call-b',
         },
@@ -310,11 +310,11 @@ void main() {
       expect(
         find.text('realtime parallel tools complete'),
         findsNothing,
-        reason: 'Both exact exec calls must be running before the final answer',
+        reason: 'Both exact exec calls must hand off before the final answer',
       );
       await scene.captureEvidence(
-        'realtime-parallel-running.png',
-        '$_parallelObserverStage released; exact two exec calls running',
+        'realtime-parallel-handoff.png',
+        '$_parallelObserverStage released; both exec tasks accepted',
         'Real expanded members in the original parallel Work window.',
       );
       await fixtureGate(tester, provider, _backgroundResultObserverStage);
@@ -392,14 +392,14 @@ void main() {
         hostObserver.evidence['gateReleased'] = true;
         await scene.untilLaidOutCurrentTools(
           minimum: 1,
-          runningExecCallIds: const {'realtime-host-cwd-call'},
+          handedOffExecCallIds: const {'realtime-host-cwd-call'},
           settleDisclosure: false,
           preparedObserver: hostObserver,
         );
         final hostCwdTurnId = hostObserver.turnId;
         await scene.captureEvidence(
-          'realtime-host-cwd-running.png',
-          '$_hostCwdObserverStage released; exact host exec running',
+          'realtime-host-cwd-handoff.png',
+          '$_hostCwdObserverStage released; host exec task accepted',
           'Real host-cwd exec member in its original Work window.',
         );
         await scene.completed(answer: 'realtime host cwd complete');
@@ -1354,7 +1354,7 @@ final class _RealtimeScene {
 
   Map<String, Object?> _preparedToolObserverSnapshot(
     _PreparedToolObserver prepared, {
-    Iterable<ChatAtom> running = const [],
+    Iterable<ChatAtom> handedOff = const [],
   }) {
     final display = lease.groupDisplays.singleWhere(
       (display) => display.unitId == prepared.display.unitId,
@@ -1408,10 +1408,10 @@ final class _RealtimeScene {
                   'error': window.error?.toString(),
                 },
             ],
-      'runningTools': loading
+      'handedOffTools': loading
           ? null
           : [
-              for (final atom in running)
+              for (final atom in handedOff)
                 {
                   'id': atom.id,
                   'callId': atom.tool?.callId,
@@ -1420,6 +1420,10 @@ final class _RealtimeScene {
                       .widget<TimelineToolDetails>(currentToolCard(atom))
                       .item
                       .statusString,
+                  'taskId': tester
+                      .widget<TimelineToolDetails>(currentToolCard(atom))
+                      .item
+                      .taskId,
                   'laidOut': _laidOut(currentToolCard(atom)),
                   'finder': _toolFinderObservation(atom),
                 },
@@ -2628,7 +2632,29 @@ final class _RealtimeScene {
               (jsonDecode(utf8.decode(arguments.bytes)) as Map)['cwd']
                   as String;
           expect(cwd, isNotEmpty);
-          expect(tool.output, contains('realtime-host-cwd-actual:$cwd'));
+          // The background result prefixes its JSON with the task completion
+          // notice. Decode stdout before comparing physical directory identity;
+          // Windows shells and the harness can use different path spellings.
+          expect(
+            tool.output,
+            startsWith('Task ${tool.taskId} for tool exec finished:'),
+          );
+          final resultStart = tool.output.indexOf('{');
+          expect(resultStart, greaterThanOrEqualTo(0));
+          final result = jsonDecode(tool.output.substring(resultStart)) as Map;
+          expect(result['taskId'], tool.taskId);
+          final stdout = (result['stdout'] as Map)['content'] as String;
+          const cwdPrefix = 'realtime-host-cwd-actual:';
+          final cwdLine = const LineSplitter()
+              .convert(stdout)
+              .singleWhere((line) => line.startsWith(cwdPrefix));
+          expect(
+            FileSystemEntity.identicalSync(
+              cwd,
+              cwdLine.substring(cwdPrefix.length),
+            ),
+            isTrue,
+          );
         }
         expect(observed.unit(block.id), same(block));
         if (head == null) {
@@ -2821,12 +2847,31 @@ final class _RealtimeScene {
   Future<void> submit(String prompt) async {
     final input = find.byKey(const ValueKey('composer-input'));
     final composerView = find.byType(PromptComposerView);
+    String? previousReadiness;
     await until(() {
       final selection = graph.client.selection.state;
       final project = graph.client.project.state.projects?.values
           .where((candidate) => candidate.id == selection.selectedProjectId)
           .firstOrNull;
-      if (project?.path != projectPath ||
+      final readiness = jsonEncode({
+        'projectId': selection.selectedProjectId,
+        'threadId': selection.selectedThreadId,
+        'projectPath': project?.path,
+        'expectedProjectPath': projectPath,
+        'needsOpen': selection.needsOpen,
+        'inputCount': input.evaluate().length,
+        'composerCount': composerView.evaluate().length,
+        if (composerView.evaluate().length == 1)
+          'composerEnabled': tester
+              .widget<PromptComposerView>(composerView)
+              .enabled,
+      });
+      if (readiness != previousReadiness) {
+        debugPrintSynchronously('Realtime composer readiness: $readiness');
+        previousReadiness = readiness;
+      }
+      if (project == null ||
+          !FileSystemEntity.identicalSync(project.path, projectPath) ||
           selection.needsOpen ||
           input.evaluate().length != 1 ||
           composerView.evaluate().length != 1) {
@@ -3462,7 +3507,7 @@ final class _RealtimeScene {
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> toolCallIds = const {},
-    Set<String> runningExecCallIds = const {},
+    Set<String> handedOffExecCallIds = const {},
     bool settleDisclosure = true,
     _PreparedToolObserver? preparedObserver,
     Future<({Future<void> completed})> Function(
@@ -3505,7 +3550,7 @@ final class _RealtimeScene {
         'error': memberController.error?.toString(),
         'members': [
           for (final head in page?.entries ?? const <DisplayMemberHead>[])
-            if (runningExecCallIds.contains(head.record.atom.tool?.callId))
+            if (handedOffExecCallIds.contains(head.record.atom.tool?.callId))
               {
                 'callId': head.record.atom.tool?.callId,
                 'memberKey': head.memberKey,
@@ -3626,14 +3671,18 @@ final class _RealtimeScene {
                         atom.kind == ChatAtomKind.toolCall,
                   )
                   .toList();
-        final running = tools
+        final handedOff = tools
             ?.where(
               (atom) =>
-                  atom.tool?.name == 'exec' && atom.lifecycle is ActiveChatAtom,
+                  atom.tool?.name == 'exec' &&
+                  atom.delivery == ChatDeliveryKind.backgroundHandoff &&
+                  atom.lifecycle is TerminalChatAtom &&
+                  (atom.lifecycle as TerminalChatAtom).outcome ==
+                      ChatTerminalOutcome.transferred,
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
-        final expectedCallIds = {...toolCallIds, ...runningExecCallIds};
+        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         final required = tools == null
             ? null
             : expectedCallIds.isEmpty
@@ -3649,10 +3698,10 @@ final class _RealtimeScene {
           'revision': memberController?.page?.revision,
           'membersAvailable': observerReady,
           'members': [
-            for (final callId in runningExecCallIds)
+            for (final callId in handedOffExecCallIds)
               {
                 'callId': callId,
-                'active': running?.contains(callId) ?? false,
+                'handedOff': handedOff?.contains(callId) ?? false,
                 'laidOut':
                     required?.any(
                       (atom) =>
@@ -3693,7 +3742,7 @@ final class _RealtimeScene {
         if (observerReady &&
             tools != null &&
             required != null &&
-            running != null &&
+            handedOff != null &&
             tools.length >= minimum &&
             required.isNotEmpty &&
             required
@@ -3701,7 +3750,7 @@ final class _RealtimeScene {
                 .toSet()
                 .containsAll(expectedCallIds) &&
             laidOut == required.length &&
-            running.containsAll(runningExecCallIds)) {
+            handedOff.containsAll(handedOffExecCallIds)) {
           if (!settled) {
             await pumpObservedFrame(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
@@ -3731,14 +3780,22 @@ final class _RealtimeScene {
             expect(_laidOut(label), isTrue);
             expect(label.hitTestable(), findsOneWidget);
           }
-          for (final call in runningExecCallIds) {
+          // Dispatch waits for each exec's foreground window in order. Both
+          // processes overlap after handoff; their foreground atoms cannot
+          // both be Active. Independent final receipts are checked separately.
+          final taskIds = <String>{};
+          for (final call in handedOffExecCallIds) {
             final atom = required.singleWhere(
               (atom) => atom.tool?.callId == call,
             );
             final widget = tester.widget<TimelineToolDetails>(
               currentToolCard(atom),
             );
-            expect(widget.item.statusString, 'running');
+            expect(widget.item.statusString, 'backgroundStarted');
+            expect(widget.item.taskId, isNotNull);
+            expect(widget.item.taskId, isNotEmpty);
+            expect(taskIds.add(widget.item.taskId!), isTrue);
+            expect(widget.item.exitCode, isNull);
           }
           for (var index = 1; index < required.length; index++) {
             expect(
@@ -3750,21 +3807,21 @@ final class _RealtimeScene {
             );
           }
           debugPrintSynchronously(
-            'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactRunningExecIds': running.toList(), 'laidOut': laidOut, 'contentWindows': liveWindows.length})}',
+            'Realtime current tools: ${jsonEncode({'minimum': minimum, 'atomIds': tools.map((atom) => atom.id).toList(), 'callIds': tools.map((atom) => atom.tool?.callId).toList(), 'exactHandedOffExecIds': handedOff.toList(), 'laidOut': laidOut, 'contentWindows': liveWindows.length})}',
           );
           if (preparedObserver != null) {
             expect(_expectPreparedToolObserver(preparedObserver), isTrue);
-            preparedObserver.evidence['running'] =
+            preparedObserver.evidence['handoff'] =
                 _preparedToolObserverSnapshot(
                   preparedObserver,
-                  running: required.where(
-                    (atom) => runningExecCallIds.contains(atom.tool?.callId),
+                  handedOff: required.where(
+                    (atom) => handedOffExecCallIds.contains(atom.tool?.callId),
                   ),
                 );
           }
           // Freeze the successful frame before any asynchronous provenance
-          // query. A later background handoff cannot invalidate this witness.
-          final runningFrameJson =
+          // query. A later background result cannot invalidate this witness.
+          final handoffFrameJson =
               '${const JsonEncoder.withIndent('  ').convert({
                 'turnId': _submittedTurnId,
                 'expectedCallIds': expectedCallIds.toList(),
@@ -3772,8 +3829,8 @@ final class _RealtimeScene {
                 'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
               })}\n';
           if (preparedObserver != null) {
-            preparedObserver.evidence['runningFrame'] = jsonDecode(
-              runningFrameJson,
+            preparedObserver.evidence['handoffFrame'] = jsonDecode(
+              handoffFrameJson,
             );
             final sourceWork = await observed.workForSource(
               ForegroundTurnChatSource(turnId: preparedObserver.turnId),
@@ -3784,7 +3841,7 @@ final class _RealtimeScene {
               sourceWork.single.memberReference,
               preparedObserver.reference,
             );
-            preparedObserver.evidence['sourceRecheckAfterRunningCut'] = {
+            preparedObserver.evidence['sourceRecheckAfterHandoffCut'] = {
               'unitId': sourceWork.single.id,
               'databaseId': sourceWork.single.memberReference!.databaseId,
               'blockId': sourceWork.single.memberReference!.blockId,
@@ -3795,7 +3852,7 @@ final class _RealtimeScene {
             Directory(output).uri.resolve(
               'realtime-tool-observation-${++_toolObservationSequence}.json',
             ),
-          ).writeAsString(runningFrameJson);
+          ).writeAsString(handoffFrameJson);
           return;
         }
         if (clock.elapsed >= const Duration(minutes: 3)) {
@@ -3812,8 +3869,8 @@ final class _RealtimeScene {
       ).writeAsString(
         '${const JsonEncoder.withIndent('  ').convert({
           'turnId': _submittedTurnId,
-          'expectedCallIds': {...toolCallIds, ...runningExecCallIds}.toList(),
-          'runningExecCallIds': runningExecCallIds.toList(),
+          'expectedCallIds': {...toolCallIds, ...handedOffExecCallIds}.toList(),
+          'handedOffExecCallIds': handedOffExecCallIds.toList(),
           'observations': observations,
         })}\n',
       );
@@ -3851,7 +3908,7 @@ final class _RealtimeScene {
             Directory(output).uri
                 .resolve('realtime-parallel-release-frames.json'),
           ).writeAsString(
-            '${const JsonEncoder.withIndent('  ').convert({'turnId': _submittedTurnId, 'expectedCallIds': runningExecCallIds.toList(), 'phasesMillis': phases, 'admissions': admissions, 'admissionsTruncated': admissionsTruncated, 'frames': frames, 'framesTruncated': framesTruncated, 'observationFailure': observationFailure, 'releaseFailure': releaseFailure?.error.toString(), 'releaseFailureStack': releaseFailure?.stack.toString()})}\n',
+            '${const JsonEncoder.withIndent('  ').convert({'turnId': _submittedTurnId, 'expectedCallIds': handedOffExecCallIds.toList(), 'phasesMillis': phases, 'admissions': admissions, 'admissionsTruncated': admissionsTruncated, 'frames': frames, 'framesTruncated': framesTruncated, 'observationFailure': observationFailure, 'releaseFailure': releaseFailure?.error.toString(), 'releaseFailureStack': releaseFailure?.stack.toString()})}\n',
           );
         }
       }

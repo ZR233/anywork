@@ -5,10 +5,11 @@
 
 use crate::api::studio::types::{
     BridgeAcpAccountCatalog, BridgeAcpAccountSettings, BridgeAcpAccountTemplate,
-    BridgeAcpAccountUpdate, BridgeAcpAuthAccount, BridgeAcpAuthAction, BridgeAcpAuthFailure,
-    BridgeAcpAuthFailureCode, BridgeAcpAuthMethod, BridgeAcpAuthMethodKind, BridgeAcpAuthSnapshot,
-    BridgeAcpAuthStage, BridgeAcpAuthState, BridgeAcpProvider, BridgeAcpQuotaGroup,
-    BridgeAcpQuotaLimit, BridgeAcpQuotaRemaining, BridgeAcpServerInfo, BridgeAcpUsageFailureCode,
+    BridgeAcpAccountUpdate, BridgeAcpAuthAccount, BridgeAcpAuthAction,
+    BridgeAcpAuthActiveOperation, BridgeAcpAuthFailure, BridgeAcpAuthFailureCode,
+    BridgeAcpAuthMethod, BridgeAcpAuthMethodKind, BridgeAcpAuthSnapshot, BridgeAcpAuthStage,
+    BridgeAcpAuthState, BridgeAcpProvider, BridgeAcpQuotaGroup, BridgeAcpQuotaLimit,
+    BridgeAcpQuotaRemaining, BridgeAcpServerInfo, BridgeAcpUsageFailureCode,
     BridgeAcpUsageObservation, BridgeAcpUsageState,
 };
 
@@ -110,8 +111,28 @@ pub(crate) fn bridge_acp_auth_snapshot(
                 connection_revision: account.connection_revision,
                 state: bridge_acp_auth_state(account.state),
                 usage: account.usage.map(bridge_acp_usage),
+                active_operation: account
+                    .active_operation
+                    .map(bridge_acp_auth_active_operation),
             })
             .collect(),
+    }
+}
+
+fn bridge_acp_auth_active_operation(
+    operation: pl_protocol::studio::AcpAuthActiveOperation,
+) -> BridgeAcpAuthActiveOperation {
+    BridgeAcpAuthActiveOperation {
+        operation_id: operation.operation_id,
+        connection_revision: operation.connection_revision,
+        action: bridge_auth_action(operation.action),
+    }
+}
+
+fn bridge_auth_action(action: pl_protocol::studio::AcpAuthAction) -> BridgeAcpAuthAction {
+    match action {
+        pl_protocol::studio::AcpAuthAction::Check => BridgeAcpAuthAction::Check,
+        pl_protocol::studio::AcpAuthAction::QueryUsage => BridgeAcpAuthAction::QueryUsage,
     }
 }
 

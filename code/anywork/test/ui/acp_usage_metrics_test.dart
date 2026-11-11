@@ -122,7 +122,7 @@ void main() {
   });
 
   testWidgets(
-    'AcpAccountEditorView renders 3-step creation guidance and preparation state',
+    'managed ACP editor renders preparation state and save-and-connect action',
     (tester) async {
       AcpAccountAction? triggeredAction;
       await tester.pumpWidget(
@@ -151,6 +151,7 @@ void main() {
                 editorId: 'editor-1',
                 templateName: 'Google Antigravity',
                 name: AccountTextPresentation(raw: 'Google Antigravity'),
+                source: AcpAccountSource.managed,
                 prepared: true,
                 dirty: true,
                 canSave: true,
@@ -181,10 +182,9 @@ void main() {
       final l10n = AppLocalizations.of(
         tester.element(find.byType(AcpAccountEditorView)),
       );
-      expect(find.text(l10n.acpEditorStepBasicTitle), findsOneWidget);
-      expect(find.text(l10n.acpEditorStepPrepareTitle), findsOneWidget);
-      expect(find.text(l10n.acpEditorStepConnectTitle), findsOneWidget);
-      expect(find.text(l10n.acpInstallReadyConfirmedHint), findsOneWidget);
+      expect(find.text('受管服务器已准备'), findsOneWidget);
+      expect(find.text('/managed/antigravity'), findsOneWidget);
+      expect(find.text(l10n.acpAccountSaveAndConnect), findsOneWidget);
       expect(
         find.byKey(
           ValueKey<String>(

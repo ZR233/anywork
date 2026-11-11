@@ -2641,6 +2641,27 @@ fn proc_alive(_pid: u32, _start_ticks: Option<u64>) -> bool {
     false
 }
 
+/// A zombie has exited, although its parent still owns the wait/reap duty.
+/// Only the root's exit clock uses this distinction; subtree reclamation keeps
+/// using proc_alive so an unreaped descendant cannot count as cleaned up.
+fn proc_running(pid: u32, start_ticks: Option<u64>) -> bool {
+    if !proc_alive(pid, start_ticks) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let state = stat
+            .rfind(')')
+            .and_then(|end| stat[end + 1..].split_whitespace().next());
+        !matches!(state, Some("Z" | "X"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
 /// Reads the launcher's structured native exit report within [timeout].
 fn read_native_report(path: &Path, timeout: Duration) -> Result<serde_json::Value> {
     let deadline = Instant::now() + timeout;
@@ -2681,7 +2702,7 @@ fn wait_native_exit(
     snapshot_launch(working, gui, Some((pid, start_ticks)))?;
     let deadline = Instant::now() + timeout;
     loop {
-        if !proc_alive(pid, start_ticks) {
+        if !proc_running(pid, start_ticks) {
             break;
         }
         ensure!(interrupt.try_recv().is_err(), "shutdown {label} cancelled");
@@ -3146,6 +3167,36 @@ mod tests {
     };
     use anyhow::Result;
     use std::fs;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn root_exit_is_observed_before_reaping_without_hiding_subtree_obligations() -> Result<()> {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).spawn()?;
+        let pid = child.id();
+        let ticks = super::proc_start_ticks(pid);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while super::proc_running(pid, ticks) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let running = super::proc_running(pid, ticks);
+        let unreaped = super::proc_alive(pid, ticks);
+        // Always reap before assertions, including a failed observation.
+        let status = child.wait()?;
+        assert!(status.success());
+        assert!(
+            !running,
+            "an exited root must not wait for its parent's reap"
+        );
+        assert!(
+            unreaped,
+            "subtree checks must still see the unreaped process"
+        );
+        assert!(!super::proc_alive(pid, ticks));
+        Ok(())
+    }
 
     #[test]
     fn launch_identity_filenames_round_trip_as_utf8_json_strings() -> Result<()> {

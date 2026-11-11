@@ -3486,7 +3486,7 @@ $AccountRowContentCopyWith<$Res> get content {
 /// @nodoc
 mixin _$AccountsListPresentation {
 
- AccountListPhase get phase; List<AccountRowPresentation> get rows; String get search; bool get searchHasNoResults; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error;
+ AccountListPhase get phase; List<AccountDisplayKey> get members; String get search; bool get searchHasNoResults; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error;
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3498,20 +3498,20 @@ $AccountsListPresentationCopyWith<AccountsListPresentation> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountsListPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.rows, _this.rows)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.members, _this.members)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountsListPresentation;
-  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.rows),_this.search,_this.searchHasNoResults,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error);
+  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.members),_this.search,_this.searchHasNoResults,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error);
 }
 
 @override
 String toString() {
   final _this = this as AccountsListPresentation;
-  return 'AccountsListPresentation(phase: ${_this.phase}, rows: ${_this.rows}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error})';
+  return 'AccountsListPresentation(phase: ${_this.phase}, members: ${_this.members}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error})';
 }
 
 
@@ -3522,7 +3522,7 @@ abstract mixin class $AccountsListPresentationCopyWith<$Res>  {
   factory $AccountsListPresentationCopyWith(AccountsListPresentation value, $Res Function(AccountsListPresentation) _then) = _$AccountsListPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
+ AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
@@ -3539,11 +3539,11 @@ class _$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
-as AccountListPhase,rows: null == rows ? _self.rows : rows // ignore: cast_nullable_to_non_nullable
-as List<AccountRowPresentation>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
+as AccountListPhase,members: null == members ? _self.members : members // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayKey>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
 as String,searchHasNoResults: null == searchHasNoResults ? _self.searchHasNoResults : searchHasNoResults // ignore: cast_nullable_to_non_nullable
 as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable
@@ -3634,10 +3634,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return orElse();
 
 }
@@ -3655,10 +3655,10 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation():
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3675,10 +3675,10 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountRowPresentation> rows,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return null;
 
 }
@@ -3690,15 +3690,15 @@ return $default(_that.phase,_that.rows,_that.search,_that.searchHasNoResults,_th
 
 
 class _AccountsListPresentation implements AccountsListPresentation {
-  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountRowPresentation> rows = const <AccountRowPresentation>[], this.search = '', this.searchHasNoResults = false, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error}): _rows = rows;
+  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountDisplayKey> members = const <AccountDisplayKey>[], this.search = '', this.searchHasNoResults = false, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error}): _members = members;
 
 
 @override@JsonKey() final  AccountListPhase phase;
- final  List<AccountRowPresentation> _rows;
-@override@JsonKey() List<AccountRowPresentation> get rows {
-  if (_rows is EqualUnmodifiableListView) return _rows;
+ final  List<AccountDisplayKey> _members;
+@override@JsonKey() List<AccountDisplayKey> get members {
+  if (_members is EqualUnmodifiableListView) return _members;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_rows);
+  return EqualUnmodifiableListView(_members);
 }
 
 @override@JsonKey() final  String search;
@@ -3718,18 +3718,18 @@ _$AccountsListPresentationCopyWith<_AccountsListPresentation> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.rows, _rows)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.members, _members)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_rows),search,searchHasNoResults,refreshing,canAdd,canRefresh,error);
+    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_members),search,searchHasNoResults,refreshing,canAdd,canRefresh,error);
 }
 
 @override
 String toString() {
-    return 'AccountsListPresentation(phase: $phase, rows: $rows, search: $search, searchHasNoResults: $searchHasNoResults, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error)';
+    return 'AccountsListPresentation(phase: $phase, members: $members, search: $search, searchHasNoResults: $searchHasNoResults, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error)';
 }
 
 
@@ -3740,7 +3740,7 @@ abstract mixin class _$AccountsListPresentationCopyWith<$Res> implements $Accoun
   factory _$AccountsListPresentationCopyWith(_AccountsListPresentation value, $Res Function(_AccountsListPresentation) _then) = __$AccountsListPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountListPhase phase, List<AccountRowPresentation> rows, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
+ AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
@@ -3757,11 +3757,11 @@ class __$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? rows = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(_AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
-as AccountListPhase,rows: null == rows ? _self._rows : rows // ignore: cast_nullable_to_non_nullable
-as List<AccountRowPresentation>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
+as AccountListPhase,members: null == members ? _self._members : members // ignore: cast_nullable_to_non_nullable
+as List<AccountDisplayKey>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
 as String,searchHasNoResults: null == searchHasNoResults ? _self.searchHasNoResults : searchHasNoResults // ignore: cast_nullable_to_non_nullable
 as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable

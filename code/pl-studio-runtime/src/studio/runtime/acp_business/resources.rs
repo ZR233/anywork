@@ -27,6 +27,8 @@ struct Owned {
     join: Option<JoinHandle<Exit>>,
     exit: Option<Exit>,
     worker: Option<AcpWorker>,
+    reclaim: Option<JoinHandle<(AcpWorker, Reclaim)>>,
+    reclaim_failed: bool,
     usage: Option<WorkspaceUsageLease>,
     worker_error: Option<String>,
     driver_error: Option<String>,
@@ -79,6 +81,8 @@ impl AcpResources {
                 join: None,
                 exit: None,
                 worker: None,
+                reclaim: None,
+                reclaim_failed: false,
                 usage: None,
                 worker_error: None,
                 driver_error: None,
@@ -228,18 +232,36 @@ impl AcpResources {
                 owned.join = None;
             }
         }
-        if let Some(worker) = owned.worker.as_mut() {
-            match tokio::time::timeout_at(self.cleanup.deadline(), worker.reclaim()).await {
-                Ok(Reclaim::Stopped) => {
-                    owned.worker = None;
+        // Reclamation must keep progressing after the shared deadline or a caller's
+        // cancellation. Retrying an expired timeout around a newly created future
+        // can repeatedly cancel the supervisor's wait before it drains its exit.
+        if owned.reclaim.is_none()
+            && let Some(mut worker) = owned.worker.take()
+        {
+            owned.reclaim = Some(tokio::spawn(async move {
+                let result = worker.reclaim().await;
+                (worker, result)
+            }));
+        }
+        if let Some(reclaim) = owned.reclaim.as_mut() {
+            match tokio::time::timeout_at(self.cleanup.deadline(), reclaim).await {
+                Ok(Ok((_, Reclaim::Stopped))) => {
+                    owned.reclaim = None;
                     owned.worker_error = None;
                 }
-                Ok(Reclaim::Settled(error)) => {
+                Ok(Ok((_, Reclaim::Settled(error)))) => {
+                    owned.reclaim = None;
                     owned.worker_error = Some(error);
-                    owned.worker = None;
                 }
-                Ok(Reclaim::Pending(error)) => {
+                Ok(Ok((worker, Reclaim::Pending(error)))) => {
+                    owned.reclaim = None;
+                    owned.worker = Some(worker);
                     owned.worker_error = Some(error);
+                }
+                Ok(Err(error)) => {
+                    owned.reclaim = None;
+                    owned.reclaim_failed = true;
+                    owned.worker_error = Some(error.to_string());
                 }
                 Err(_) => {
                     owned.worker_error = Some("ACP process reclamation is pending".into());
@@ -254,8 +276,11 @@ impl AcpResources {
             }
             owned.join = None;
         }
-        let local_complete =
-            owned.worker.is_none() && owned.join.is_none() && owned.association.is_none();
+        let local_complete = owned.worker.is_none()
+            && owned.reclaim.is_none()
+            && !owned.reclaim_failed
+            && owned.join.is_none()
+            && owned.association.is_none();
         if local_complete {
             owned.usage = None;
             self.obligations.store(false, Ordering::Release);
@@ -275,6 +300,9 @@ impl Drop for AcpResources {
         // Final cancellation fence only. Normal close always joins in place above.
         if let Some(join) = &self.owned.get_mut().join {
             join.abort();
+        }
+        if let Some(reclaim) = &self.owned.get_mut().reclaim {
+            reclaim.abort();
         }
     }
 }

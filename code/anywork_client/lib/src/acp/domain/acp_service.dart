@@ -8,6 +8,33 @@ import '../../models/acp_install_models.dart';
 import '../../models/acp_local_detection_models.dart';
 import '../../observation/latest_value.dart';
 
+/// ACP 账号卡片额度刷新的本地协调结算。
+enum AcpUsageRefreshDisposition {
+  /// 本次意图成为一次新受理的真实额度查询操作。
+  started,
+
+  /// 已共享或观察既有额度查询（本进程其他等待者或外部来源），不新发命令。
+  joined,
+
+  /// 意图在发出前被撤销：cancelPending，或连接/所有者身份已替换。
+  cancelled,
+}
+
+/// 一次按账号与冻结连接修订登记、可撤销未发出意图的额度刷新请求。
+abstract interface class AcpUsageRefreshRequest {
+  /// 已准入或已决定观察既有额度操作时的本地结算；不是用量终态。
+  ///
+  /// 真实额度结果仍只来自 `acpAuth` 认证观察。已发出的尝试失败、结果未知
+  /// 或同步失败时以原错误完成；不以新的操作身份自动重发。
+  Future<AcpUsageRefreshDisposition> get result;
+
+  /// 撤销尚未发出的意图并结算 [AcpUsageRefreshDisposition.cancelled]。
+  ///
+  /// 不影响已准入的业务操作或其他等待者；最后一个等待者离开后不保留
+  /// 无界等待。
+  void cancelPending();
+}
+
 abstract interface class AcpService {
   ValueObservation<AcpAccountCatalogView> get templates;
   ValueObservation<AccountResource<AcpAuthSnapshotView>> get auth;
@@ -44,6 +71,17 @@ abstract interface class AcpService {
   });
   Future<AcpAuthSnapshotView> check(AcpAccountIdentity identity);
   Future<AcpAuthSnapshotView> queryUsage(AcpAccountIdentity identity);
+
+  /// 为账号卡片登记一次额度刷新意图，按冻结的 [connectionRevision] 限定资格。
+  ///
+  /// 同账号同连接已有额度查询时共享原查询；其他认证操作在途时等待其结算，
+  /// 仅在来源、账号与连接仍匹配时至多准入一次。失败、需要准备或需要登录
+  /// 不伪造成功，也不自动安装或登录。
+  AcpUsageRefreshRequest requestUsageRefresh(
+    AcpAccountIdentity identity, {
+    required int connectionRevision,
+  });
+
   Future<AcpAuthSnapshotView> login(
     AcpAccountIdentity identity, {
     required String methodId,

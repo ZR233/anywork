@@ -1,4 +1,5 @@
 import '../accounts_views.dart';
+import 'account_list_preview_data.dart';
 
 /// Entirely synthetic fixtures. These are not demo providers or SDK snapshots.
 abstract final class AccountPreviewFixtures {
@@ -305,7 +306,7 @@ abstract final class AccountPreviewFixtures {
       AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.5 · linux-x64'),
     ],
   );
-  static final list = AccountsListPresentation(
+  static final list = AccountListPreviewData(
     canRefresh: true,
     rows: [
       const AccountRowPresentation(
