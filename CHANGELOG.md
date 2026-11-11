@@ -13,6 +13,70 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.38.0](https://github.com/ZR233/anywork/compare/v6.37.0...v6.38.0) (2026-11-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **remote:** 远端协议升级为 13，移除资源预算 API、Configure/Capacity 消息与配额诊断字段，客户端与辅助程序必须同步升级。
+* **studio:** AccountUsageRepository.observeVisible 已移除，调用方需按账号使用 observeAccount 和 refresh；ACP 认证快照增加必填 activeOperation 字段（无操作时为 null）。
+* **studio:** ACP 账户定义迁至用户级 acp/<id>.toml，移除旧内嵌 provider 配置；公共会话目录命令返回 SessionDirectoryRow，Native mode 仅根成员有值，Dart ACP 文档修订使用 BigInt。受支持旧配置通过迁移保留。
+* **studio:** MCP 服务默认作为可选依赖后台准备；需要首轮工具就绪的服务须显式设置 required = true。Rust 内置配置构造接口同步接收 required 参数。
+* **studio:** ThreadDirectoryFrame.rows 替换为有序 threadIds；条目内容需通过 observeThread(threadId) 取得。HTTP 一次性目录分页继续返回完整行。
+* **tools:** GitPolicy 返回独立 GitError；GitCredentialProvider 错误需实现标准 Error + Send + Sync，Git 绑定需能将后端错误保留为标准 source。宿主原始 GitError 通过 GitHostError::original 受信访问，不再沿公开错误链展开。
+* **studio:** show_image 已整合到 show_files；旧会话记录保留只读展示。
+* **studio:** HTTP /events 仅交付内容，状态改由 /state/events 交付；Rust 与 Dart 消费者需迁移独立状态 feed，不保留旧接口回退。
+
+### Features
+
+* **studio:** 修复实时状态栏防抖布局并升级四态动态图标与状态机组件 ([#347](https://github.com/ZR233/anywork/issues/347)) ([9385bb8](https://github.com/ZR233/anywork/commit/9385bb80eb4e26a8430d1067a6c04023f5c6a577))
+* **studio:** 内置 Rust Dart 开发与独立 LSP 导航技能 ([#353](https://github.com/ZR233/anywork/issues/353)) ([c889e22](https://github.com/ZR233/anywork/commit/c889e22e47260e830aeff20260c94fe6b361f234))
+* **studio:** 实时状态栏现工作组优先展示单行 Markdown 思考摘要 ([#352](https://github.com/ZR233/anywork/issues/352)) ([beba8c0](https://github.com/ZR233/anywork/commit/beba8c0c124ec8f079a3db2b2af92ff0f7cc1508))
+* **studio:** 将猫尾活动图标替换为趴卧摇尾猫 ([#330](https://github.com/ZR233/anywork/issues/330)) ([2a38d59](https://github.com/ZR233/anywork/commit/2a38d59d1e915ccf762ca8eb03903230b9dfc1ae))
+* **studio:** 按执行工作区配置并异步初始化 LSP ([#328](https://github.com/ZR233/anywork/issues/328)) ([ba83ba7](https://github.com/ZR233/anywork/commit/ba83ba7f83bca67d2458830da2a4ce2263909431))
+* **studio:** 接入 ACP 会话界面与动态配置 ([#350](https://github.com/ZR233/anywork/issues/350)) ([5364e4d](https://github.com/ZR233/anywork/commit/5364e4df49ed5e10b6cd9d3c4e54bd02c3f5b3f4))
+* **studio:** 接入通用 ACP 业务会话与本机账户配置 ([#342](https://github.com/ZR233/anywork/issues/342)) ([b679a85](https://github.com/ZR233/anywork/commit/b679a85c36514b24301205d92076defdf25a0aa3))
+* **studio:** 支持 MCP 配置与工具动态刷新 ([#344](https://github.com/ZR233/anywork/issues/344)) ([3c8019e](https://github.com/ZR233/anywork/commit/3c8019e1c24c43305ba84cec22c3d996fa744374))
+* **studio:** 渲染时间线补丁修改片段 ([#338](https://github.com/ZR233/anywork/issues/338)) ([04624ac](https://github.com/ZR233/anywork/commit/04624aceaf1624ed3cf25e701049b5c3431256b9))
+* **studio:** 统一文件展示与跨渠道交付 ([#322](https://github.com/ZR233/anywork/issues/322)) ([a75bec2](https://github.com/ZR233/anywork/commit/a75bec295624f3343309c3353d25ea2604489607))
+* **studio:** 美化时间线 LSP 系列工具展开展示 ([#357](https://github.com/ZR233/anywork/issues/357)) ([f4cf1cd](https://github.com/ZR233/anywork/commit/f4cf1cd88402fc2eaa475152df0b8832fa5f6a2c))
+* **studio:** 重构已启动项并展示实时 LSP 状态 ([#359](https://github.com/ZR233/anywork/issues/359)) ([fedba20](https://github.com/ZR233/anywork/commit/fedba209e0a6a60e26ab4cc10773f71d94877117))
+
+
+### Bug Fixes
+
+* **agent-runtime:** 工具错误按调用交回模型并继续会话 ([#349](https://github.com/ZR233/anywork/issues/349)) ([c661fc8](https://github.com/ZR233/anywork/commit/c661fc8e2902679fa25e6890dca06f917db1b149))
+* **ci:** 修复原生呈现与退出并整理测试门禁 ([#354](https://github.com/ZR233/anywork/issues/354)) ([0e36fa8](https://github.com/ZR233/anywork/commit/0e36fa82734f0cea9bb9787a992767ab5a77cb0c))
+* **model:** 修复 Responses 工具输出格式 ([0330773](https://github.com/ZR233/anywork/commit/033077353ec1bc6f2acfb8ecdc98018e6f19699b))
+* **model:** 修复降容切模首轮上下文压缩 ([#346](https://github.com/ZR233/anywork/issues/346)) ([da01605](https://github.com/ZR233/anywork/commit/da016054fac04b9c0ccd018c0f62c03cdab0793f))
+* **remote:** 删除自建资源配额并恢复 SSH 资源回收 ([#360](https://github.com/ZR233/anywork/issues/360)) ([b64dcc1](https://github.com/ZR233/anywork/commit/b64dcc15506a4126ba73bd065148227e8d8a73e3))
+* **studio:** 优化计划确认并收拢组件状态 ([#355](https://github.com/ZR233/anywork/issues/355)) ([3fe20a6](https://github.com/ZR233/anywork/commit/3fe20a60a93a74a7044190de5725cdf24f65da7f))
+* **studio:** 使用默认侧栏悬停与焦点交互 ([#341](https://github.com/ZR233/anywork/issues/341)) ([4a8f46e](https://github.com/ZR233/anywork/commit/4a8f46eef67f62a603928e20b706223661d50238))
+* **studio:** 修复模型等待与交接后的重复状态行 ([#361](https://github.com/ZR233/anywork/issues/361)) ([354806c](https://github.com/ZR233/anywork/commit/354806c2d071c1b0c9b72c4e45d187e25cf57279))
+* **studio:** 删除私有准备会话时跳过故障补偿写入 ([3c48995](https://github.com/ZR233/anywork/commit/3c489956faf9e9e825dfe8034824d6ed271dcddd))
+* **studio:** 删除私有准备会话时跳过故障补偿写入 ([7848f36](https://github.com/ZR233/anywork/commit/7848f360e0733b8344de1d1f7f9b09edb2ead1ed))
+* **studio:** 发送消息即时回显并明确接收状态 ([#318](https://github.com/ZR233/anywork/issues/318)) ([b93a294](https://github.com/ZR233/anywork/commit/b93a294c74398fbab450b5417dc1d759c4df28b4))
+* **studio:** 在正文边界冻结工作记录并分离实时输出 ([#317](https://github.com/ZR233/anywork/issues/317)) ([50cfd1b](https://github.com/ZR233/anywork/commit/50cfd1b981af31332e12dd87a41cbe4f0bf7b8ca))
+* **studio:** 完善永久删除容错与可分析诊断 ([#327](https://github.com/ZR233/anywork/issues/327)) ([39bafc8](https://github.com/ZR233/anywork/commit/39bafc8d053f2402385a111acf61c74b74b01368))
+* **studio:** 按会话隔离侧栏数据与事件更新 ([#336](https://github.com/ZR233/anywork/issues/336)) ([b401b5e](https://github.com/ZR233/anywork/commit/b401b5e26298a9cd96d6e8c6227e80f522ff8f14))
+* **studio:** 收拢 Composer 并修复默认交互 ([#351](https://github.com/ZR233/anywork/issues/351)) ([7224caa](https://github.com/ZR233/anywork/commit/7224caa40f437235b39744b341e3ae7220de2bc5))
+* **studio:** 收拢单行实时状态栏与工具工作组 ([#356](https://github.com/ZR233/anywork/issues/356)) ([7772d23](https://github.com/ZR233/anywork/commit/7772d23f4a282ea489a9a9ee06eb2c6caf26bb1a))
+* **studio:** 精简计划确认界面并修复重开后的决定入口 ([#331](https://github.com/ZR233/anywork/issues/331)) ([fd1601e](https://github.com/ZR233/anywork/commit/fd1601ed5997b07cb921ae2960d5112f2d915280))
+* **studio:** 统一用户长输入回显与正文展示 ([#323](https://github.com/ZR233/anywork/issues/323)) ([66d32aa](https://github.com/ZR233/anywork/commit/66d32aad7d68f73e1d3c6ce42c3fae4f9fafcb95))
+* **studio:** 解耦会话状态与正文事件交付 ([#320](https://github.com/ZR233/anywork/issues/320)) ([1a9ec93](https://github.com/ZR233/anywork/commit/1a9ec93ce706c77ecf91a0238cba5b8d72482ef3))
+* **studio:** 避免可选 MCP 阻塞新会话准备 ([#345](https://github.com/ZR233/anywork/issues/345)) ([10c9dce](https://github.com/ZR233/anywork/commit/10c9dce4b7564e471eeb686b0a18c90196c64bd1))
+* **studio:** 长文本正文直接展示并复用 Markdown 渲染 ([#321](https://github.com/ZR233/anywork/issues/321)) ([a58de0b](https://github.com/ZR233/anywork/commit/a58de0bf047b53d4b7a401d440138bc2754bb7c5))
+
+
+### Refactoring
+
+* **protocol:** 收敛类型归属并消除搜索重复定义 ([#340](https://github.com/ZR233/anywork/issues/340)) ([f5cdda6](https://github.com/ZR233/anywork/commit/f5cdda6b92510c557a249ef18e41ad73582d184f))
+* **studio:** 复用会话输入卡并重构新会话环境栏 ([#329](https://github.com/ZR233/anywork/issues/329)) ([e74ea33](https://github.com/ZR233/anywork/commit/e74ea3399c87e0255093ec6b187db32649affc5b))
+* **studio:** 建立会话级资源所有权与 Native 生命周期边界 ([#325](https://github.com/ZR233/anywork/issues/325)) ([d8ac2af](https://github.com/ZR233/anywork/commit/d8ac2afd6917fff955f187b1110cd203f8430730))
+* **studio:** 按账号隔离卡片数据流 ([#343](https://github.com/ZR233/anywork/issues/343)) ([d00b79c](https://github.com/ZR233/anywork/commit/d00b79cbde5d412b8eec160ed070d81eae0237b5))
+* **studio:** 解耦协作端口并统一产品成员判定 ([#335](https://github.com/ZR233/anywork/issues/335)) ([e89ac1d](https://github.com/ZR233/anywork/commit/e89ac1dfc60afbd5156ea50d4c022b82ce415e27))
+* **tools:** 按家族拆分独立工具并适配主线资源所有权 ([#326](https://github.com/ZR233/anywork/issues/326)) ([5f238e9](https://github.com/ZR233/anywork/commit/5f238e9a0b56a73ef409dc1a300bd87a39b398ae))
+
 ## [6.37.0](https://github.com/ZR233/anywork/compare/v6.36.0...v6.37.0) (2026-11-08)
 
 
