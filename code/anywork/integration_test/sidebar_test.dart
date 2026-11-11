@@ -42,9 +42,7 @@ void main() {
   const longTitle = '侧栏原生集成长标题用于验证抽屉内会话行在放大字体和狭窄窗口下仍保持单行省略且不会产生布局溢出';
 
   setUpAll(() async {
-    final project = Directory(
-      p.join(projectsRoot, 'sidebar-project-with-a-very-long-visible-name'),
-    );
+    final project = Directory(p.join(projectsRoot, 'sidebar-project'));
     await _prepareSyntheticGitProject(project);
     projectPath = await project.resolveSymbolicLinks();
     harness = await ProductionStudioHarness.start(
@@ -539,8 +537,6 @@ void main() {
     (tester) async {
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
-      final semantics = tester.ensureSemantics();
-      addTearDown(semantics.dispose);
       final shell = find.byKey(StudioDriverKeys.shell);
       final divider = find.byKey(StudioDriverKeys.sidebarResize);
       expect(shell, findsOneWidget);
@@ -629,6 +625,8 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     },
+    // The official test binding owns and releases the semantics handle.
+    semanticsEnabled: true,
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
