@@ -23,10 +23,8 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
@@ -809,122 +807,10 @@ final class _ConceptScene {
       expect(header, findsOneWidget);
       final title = timelineGroupTitleFinder(tester, header);
       expect(title, findsOneWidget);
-      final paragraph = timelineGroupTitleParagraph(tester, title);
-      final titleText = timelineGroupTitleText(tester, title);
-      expect(titleText.trim(), isNotEmpty);
-      expect(paragraph.maxLines, 1);
-      expect(paragraph.softWrap, isFalse);
-      expect(paragraph.overflow, TextOverflow.ellipsis);
-      final indicator = find.descendant(
-        of: header,
-        matching: find.byType(TimelineActivityIndicator),
-      );
-      expect(indicator, findsOneWidget);
-      final activity = tester.widget<TimelineActivityIndicator>(indicator);
-      expect(activity.icon, isNotNull);
-      final summary = unit.summary!;
-      final live = unit.state == DisplayBlockState.open;
-      if (!live || !unit.executionPresent) {
-        expect(activity.active, isFalse);
-      } else if (summary.running > 0 || summary.waiting > 0) {
-        expect(activity.active, isTrue);
-      }
-      final context = tester.element(header);
-      final l10n = AppLocalizations.of(context);
-      final tooltip = find.descendant(
-        of: header,
-        matching: find.byType(Tooltip),
-      );
-      expect(tooltip, findsOneWidget);
-      expect(
-        tester.widget<Tooltip>(tooltip).message,
-        contains(l10n.timelineGroupMemberCount(summary.total)),
-      );
-      for (final outcome in [
-        if (summary.failed > 0) l10n.timelineGroupFailedCount(summary.failed),
-        if (summary.cancelled > 0)
-          l10n.timelineGroupStoppedCount(summary.cancelled),
-        if (summary.transferred > 0)
-          l10n.timelineGroupTransferredCount(summary.transferred),
-      ]) {
-        expect(tester.widget<Tooltip>(tooltip).message, contains(outcome));
-      }
-      final elapsed = find.descendant(
-        of: header,
-        matching: find.byKey(const ValueKey('work-header-elapsed')),
-      );
-      final savedElapsed = summary.elapsedMs;
-      if (!live) {
-        expect(elapsed, findsNothing);
-        expect(
-          titleText,
-          savedElapsed != null && savedElapsed >= 0
-              ? activityDurationLabel(
-                  context,
-                  savedElapsed ~/ 1000,
-                  kind: ActivityDurationKind.worked,
-                )
-              : l10n.timelineGroupRecord,
-        );
-      } else {
-        final runView = tester.widget<CompletionRunView>(
-          find.ancestor(of: header, matching: find.byType(CompletionRunView)),
-        );
-        final cleanIdle =
-            summary.running == 0 &&
-            summary.waiting == 0 &&
-            summary.failed == 0 &&
-            summary.cancelled == 0 &&
-            summary.transferred == 0;
-        final activeThought =
-            [runView.activity?.thinkingSummary, summary.thinkingSummary]
-                .whereType<String>()
-                .map((value) => value.trim())
-                .where((value) => value.isNotEmpty)
-                .firstOrNull;
-        if (!unit.executionPresent) {
-          expect(titleText, l10n.timelineGroupUnrestored);
-        } else if ((summary.running > 0 || summary.waiting > 0 || cleanIdle) &&
-            activeThought != null) {
-          if (activeThought == '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界') {
-            expect(titleText, '梳理 会话共享组件 与 LiveStatusBar 锁定边界');
-          } else if (!timelineNeedsSafeMarkdown(activeThought)) {
-            expect(titleText, activeThought);
-          }
-        }
-        final runningClock = unit.executionPresent && summary.createdAt != null;
-        if (runningClock || savedElapsed != null && savedElapsed >= 0) {
-          expect(elapsed, findsOneWidget);
-          final clock = tester.widget<Text>(elapsed);
-          expect(clock.maxLines, 1);
-          expect(clock.softWrap, isFalse);
-          expect(clock.data, startsWith('执行了'));
-          final elapsedRect = tester.getRect(elapsed);
-          final titleRect = tester.getRect(title);
-          expect(elapsedRect.left, greaterThanOrEqualTo(titleRect.right));
-          expect(elapsedRect.center.dy, closeTo(titleRect.center.dy, 1));
-        } else {
-          expect(elapsed, findsNothing);
-        }
-      }
-      final expanded = observed.groupExpanded(unit.id);
-      final arrow = find.descendant(
-        of: header,
-        matching: find.byIcon(
-          expanded
-              ? Icons.keyboard_arrow_down_rounded
-              : Icons.chevron_right_rounded,
-        ),
-      );
-      expect(arrow, findsOneWidget);
-      final titleRect = tester.getRect(title);
-      final indicatorRect = tester.getRect(indicator);
-      final arrowRect = tester.getRect(arrow);
-      expect(titleRect.width, greaterThan(0));
-      expect(indicatorRect.right, lessThan(titleRect.left));
-      expect(indicatorRect.center.dy, closeTo(titleRect.center.dy, 1));
-      expect(titleRect.right, lessThanOrEqualTo(arrowRect.left));
-      expect(arrowRect.right, lessThanOrEqualTo(tester.getRect(header).right));
+      expect(timelineGroupTitleText(tester, title).trim(), isNotEmpty);
+      // Header styling, phase projection, elapsed formatting and narrow layout
+      // belong to work_header_presentation_test.dart. This native journey keeps
+      // the real mounted header and the scenario's data/interaction assertions.
     }
   }
 

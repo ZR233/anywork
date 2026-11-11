@@ -189,6 +189,9 @@ class AppGraph {
     final target = _conversationTarget;
     final conversations = client.conversations;
     if (_backendThreadId != target) {
+      // Backend discovery is part of visible-selection latency. Capture the
+      // intent before its asynchronous directory demand, including a cache miss.
+      timeline.noteVisibleSelection(target);
       _releaseBackendDemand();
       if (target != null) {
         _backendThreadId = target;
@@ -202,14 +205,13 @@ class AppGraph {
     final backend = _backendDemand?.state.value.frame?.row?.backend;
     if (target != null && backend is! NativeAgentBackendView) {
       conversations.setVisibleThread(null);
-      timeline.noteVisibleSelection(null);
+      if (backend != null) timeline.noteVisibleSelection(null);
       timeline.select(null);
       // ACP display demand belongs to its component ViewModel; the Client's
       // resident protocol owner continues independently when this page hides.
       if (backend is AcpAgentBackendView) client.drafts.composer(target);
       return;
     }
-    timeline.noteVisibleSelection(target);
     if (target != conversations.visibleThreadId.value) {
       conversations.setVisibleThread(null);
     }

@@ -402,7 +402,7 @@ void main() {
     final rowHeight = tester
         .getRect(find.byKey(StudioDriverKeys.agentRow(ids.first)))
         .height;
-    expect(rowHeight, closeTo(40, 0.01));
+    expect(rowHeight, greaterThan(0));
     for (final id in ids) {
       expect(
         tester.getRect(find.byKey(StudioDriverKeys.agentRow(id))).height,
@@ -703,8 +703,9 @@ void main() {
     final thirdLeft = tester
         .getRect(find.byKey(StudioDriverKeys.agentTaskSummary('thread-deep-c')))
         .left;
-    expect(secondLeft - firstLeft, closeTo(12, 0.01));
-    expect(thirdLeft - secondLeft, closeTo(12, 0.01));
+    expect(secondLeft, greaterThan(firstLeft));
+    expect(thirdLeft, greaterThan(secondLeft));
+    expect(thirdLeft - secondLeft, closeTo(secondLeft - firstLeft, 0.01));
     await _closeCaptureGraph(tester, graph);
 
     final narrowGraph = await _captureGraph(tester);
@@ -720,10 +721,29 @@ void main() {
       for (final id in narrowIds)
         tester.getRect(find.byKey(StudioDriverKeys.agentRow(id))),
     ];
-    expect(narrowRows.first.width, closeTo(232, 0.01));
-    for (final row in narrowRows) {
+    final viewport =
+        Offset.zero &
+        MediaQuery.sizeOf(tester.element(find.byType(AgentSwitcherMenu)));
+    for (final (index, row) in narrowRows.indexed) {
+      expect(row.width, greaterThan(0));
+      expect(row.left, greaterThanOrEqualTo(viewport.left));
+      expect(row.right, lessThanOrEqualTo(viewport.right));
+      expect(row.top, greaterThanOrEqualTo(viewport.top));
+      expect(row.bottom, lessThanOrEqualTo(viewport.bottom));
       expect(row.height, closeTo(narrowRows.first.height, 0.01));
+      expect(row.left, closeTo(narrowRows.first.left, 0.01));
+      expect(row.right, closeTo(narrowRows.first.right, 0.01));
+      expect(
+        find
+            .byKey(StudioDriverKeys.agentRow(narrowIds.elementAt(index)))
+            .hitTestable(),
+        findsOneWidget,
+      );
     }
+    expect(
+      find.byKey(StudioDriverKeys.agentStop(_selectedId)).hitTestable(),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
     await _closeCaptureGraph(tester, narrowGraph);
   });

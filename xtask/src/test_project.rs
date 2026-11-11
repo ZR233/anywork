@@ -613,72 +613,58 @@ mod tests {
     }
 
     #[test]
-    fn shards_sort_input_and_partition_every_selected_case_once() -> anyhow::Result<()> {
+    fn filtered_cases_are_stably_partitioned_across_shards() -> anyhow::Result<()> {
         let discovered = vec![
+            desktop_case("chatgpt_auth"),
+            desktop_case("chatgpt_real_login"),
             desktop_case("delta"),
+            desktop_case("wait_events"),
             desktop_case("alpha"),
+            desktop_case("acp_real_login"),
             desktop_case("charlie"),
             desktop_case("bravo"),
         ];
-        let selected = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Full, None)?;
-        let expected = case_ids(&selected)
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut assigned = std::collections::BTreeSet::new();
-        for index in 0..3 {
-            let shard = shard_cases(selected.clone(), Some(index), Some(3))?;
-            assert!(shard.windows(2).all(|pair| pair[0].id <= pair[1].id));
-            for id in case_ids(&shard).into_iter().map(str::to_owned) {
-                assert!(
-                    assigned.insert(id.clone()),
-                    "case `{id}` was assigned more than once"
-                );
-            }
-        }
-        assert_eq!(assigned, expected);
-        let ordered = shard_cases(
-            vec![
-                desktop_case("charlie"),
-                desktop_case("alpha"),
-                desktop_case("bravo"),
-            ],
-            None,
-            None,
-        )?;
-        assert_eq!(case_ids(&ordered), ["alpha", "bravo", "charlie"]);
-        Ok(())
-    }
-
-    #[test]
-    fn suite_filtering_precedes_sharding() -> anyhow::Result<()> {
-        let discovered = vec![
-            desktop_case("chatgpt_auth"),
-            desktop_case("wait_events"),
-            desktop_case("conversation_read_work"),
-            desktop_case("acp_real_login"),
-        ];
         for set in [ProjectSet::Smoke, ProjectSet::Full] {
             let selected = select_cases(&discovered, ProjectSuite::Desktop, set, None)?;
+            let selected_ids = case_ids(&selected);
+            assert_eq!(
+                selected_ids.contains(&"acp_real_login"),
+                set == ProjectSet::Full && super::desktop_env_ready("acp_real_login")
+            );
+            assert_eq!(
+                selected_ids.contains(&"chatgpt_real_login"),
+                set == ProjectSet::Full && super::desktop_env_ready("chatgpt_real_login")
+            );
             let expected = case_ids(&selected)
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<std::collections::BTreeSet<_>>();
+            let ordered = shard_cases(selected.clone(), None, None)?;
+            assert!(ordered.windows(2).all(|pair| pair[0].id <= pair[1].id));
+            let mut reversed = selected.clone();
+            reversed.reverse();
+            assert_eq!(
+                case_ids(&ordered),
+                case_ids(&shard_cases(reversed, None, None)?)
+            );
             let mut assigned = std::collections::BTreeSet::new();
             for index in 0..2 {
                 let shard = shard_cases(selected.clone(), Some(index), Some(2))?;
+                assert!(shard.windows(2).all(|pair| pair[0].id <= pair[1].id));
                 for id in case_ids(&shard).into_iter().map(str::to_owned) {
                     assert!(
                         assigned.insert(id.clone()),
                         "case `{id}` was assigned more than once"
                     );
                 }
+                let mut reversed = selected.clone();
+                reversed.reverse();
+                assert_eq!(
+                    case_ids(&shard),
+                    case_ids(&shard_cases(reversed, Some(index), Some(2))?)
+                );
             }
             assert_eq!(assigned, expected);
-            assert!(!assigned.contains("conversation_read_work") || set == ProjectSet::Full);
-            assert!(
-                !assigned.contains("acp_real_login") || super::desktop_env_ready("acp_real_login")
-            );
         }
         Ok(())
     }

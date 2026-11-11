@@ -21,6 +21,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 for package, suite in [
     ("code/anywork_client", "test"),
+    ("code/anywork", "test/unit"),
     ("code/anywork", "test/ui"),
 ]:
     directory = root / package
@@ -74,4 +75,5 @@ run dart --packages=.dart_tool/package_config.json \
   ../../xtask/dart/client_boundary_check.dart "$root"
 run dart --packages=.dart_tool/package_config.json \
   ../../xtask/dart/client_boundary_check.dart --ui-closure "$root"
+run flutter test --no-pub test/unit
 run flutter test --no-pub test/ui

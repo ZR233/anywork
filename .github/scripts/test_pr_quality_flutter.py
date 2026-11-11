@@ -23,6 +23,7 @@ class FlutterEntryPointTest(unittest.TestCase):
         self.script = script
         for package, suite in [
             ("anywork_client", "test"),
+            ("anywork", "test/unit"),
             ("anywork", "test/ui"),
         ]:
             directory = self.root / "code" / package
@@ -104,6 +105,14 @@ if args == ["pub", "deps", "--json"]:
         )
         self.assertEqual(calls[-1][0:2],
                          ["flutter", ["test", "--no-pub", "test/ui"]])
+        unit_call = ["flutter", ["test", "--no-pub", "test/unit"]]
+        self.assertIn(unit_call, [[tool, args] for tool, args, _ in calls])
+        self.assertLess(
+            [call[:2] for call in calls].index(unit_call),
+            [call[:2] for call in calls].index(
+                ["flutter", ["test", "--no-pub", "test/ui"]]
+            ),
+        )
         boundary_calls = [args for _, args, _ in calls
                           if args[0].startswith("--packages=")]
         self.assertEqual(len(boundary_calls), 2)
@@ -141,6 +150,7 @@ if args == ["pub", "deps", "--json"]:
     def test_missing_locks_directories_and_empty_suites_fail_before_sdk(self):
         for package, suite in [
             ("anywork_client", "test"),
+            ("anywork", "test/unit"),
             ("anywork", "test/ui"),
         ]:
             directory = self.root / "code" / package
@@ -167,6 +177,18 @@ if args == ["pub", "deps", "--json"]:
         self.assertEqual(result.returncode, 23)
         self.assertEqual(self.sdk_calls()[-1][1], ["analyze", "--fatal-infos"])
         self.assertTrue(all(tool == "dart" for tool, _, _ in self.sdk_calls()))
+
+    def test_unit_failure_propagates_to_wrapper(self):
+        self.environment["FAIL_COMMAND"] = "flutter test --no-pub test/unit"
+        result = self.run_entry()
+        self.assertEqual(result.returncode, 23)
+        calls = self.sdk_calls()
+        self.assertEqual(calls[-1][0:2],
+                         ["flutter", ["test", "--no-pub", "test/unit"]])
+        self.assertNotIn(
+            ["flutter", ["test", "--no-pub", "test/ui"]],
+            [[tool, args] for tool, args, _ in calls],
+        )
 
     def test_dependency_command_failure_cannot_pass_the_pipeline(self):
         self.environment["FAIL_COMMAND"] = "dart pub deps --json"

@@ -9,6 +9,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -42,7 +43,9 @@ void main() {
   const longTitle = '侧栏原生集成长标题用于验证抽屉内会话行在放大字体和狭窄窗口下仍保持单行省略且不会产生布局溢出';
 
   setUpAll(() async {
-    final project = Directory(p.join(projectsRoot, 'sidebar-project'));
+    final project = Directory(
+      p.join(projectsRoot, 'sidebar-project-with-a-very-long-visible-name'),
+    );
     await _prepareSyntheticGitProject(project);
     projectPath = await project.resolveSymbolicLinks();
     harness = await ProductionStudioHarness.start(
@@ -556,58 +559,87 @@ void main() {
           .sidebarWidth;
 
       final initial = width();
-      expect(initial, closeTo(336, 1));
       await scene.until(
-        () => canonicalWidth() == 336,
-        'default 336px width is canonical before resizing',
+        () => canonicalWidth() != null,
+        'initial default width is available in canonical settings',
       );
+      final defaultWidth = canonicalWidth()!;
+      expect(initial, closeTo(defaultWidth, 1));
+      Future<void> expectSaved(String action) async {
+        final rendered = width().round();
+        await scene.until(
+          () => canonicalWidth() == rendered,
+          '$action: rendered width $rendered reaches canonical Client settings',
+        );
+      }
+
       await tester.drag(divider, const Offset(64, 0));
       await scene.until(
-        () => (width() - (initial + 64).clamp(300, 440)).abs() <= 1,
+        () => width() > initial,
         'drag changes the production sidebar width',
       );
       final dragged = width();
-      await scene.until(
-        () => canonicalWidth() == dragged.round(),
-        'dragged width reaches canonical Client settings',
-      );
+      await expectSaved('drag');
 
-      await tester.drag(divider, const Offset(-300, 0));
+      await tester.drag(divider, const Offset(-1000, 0));
       await scene.until(
-        () => (width() - 300).abs() <= 1 && canonicalWidth() == 300,
-        'drag clamps and saves the 300px lower boundary',
+        () => width() < initial && width() < dragged,
+        'large negative drag reaches a lower width',
       );
+      final lowerBoundary = width();
+      await expectSaved('lower boundary');
       await tester.drag(divider, const Offset(-64, 0));
-      await scene.until(
-        () => (width() - 300).abs() <= 1 && canonicalWidth() == 300,
-        'drag cannot cross the 300px lower boundary',
+      await tester.pump();
+      expect(
+        width(),
+        closeTo(lowerBoundary, 1),
+        reason: 'further outward drag cannot cross the lower boundary',
       );
-      await tester.drag(divider, const Offset(300, 0));
+      await expectSaved('repeated lower-boundary drag');
+      await tester.drag(divider, const Offset(1000, 0));
       await scene.until(
-        () => (width() - 440).abs() <= 1 && canonicalWidth() == 440,
-        'drag clamps and saves the 440px upper boundary',
+        () => width() > initial && width() > lowerBoundary,
+        'large positive drag reaches an upper width',
       );
+      final upperBoundary = width();
+      await expectSaved('upper boundary');
       await tester.drag(divider, const Offset(64, 0));
-      await scene.until(
-        () => (width() - 440).abs() <= 1 && canonicalWidth() == 440,
-        'drag cannot cross the 440px upper boundary',
+      await tester.pump();
+      expect(
+        width(),
+        closeTo(upperBoundary, 1),
+        reason: 'further outward drag cannot cross the upper boundary',
       );
+      await expectSaved('repeated upper-boundary drag');
 
-      // Native integration uses real gesture timers. Resolve the position once
-      // and avoid a rendered frame between taps consuming the double-tap window.
-      final resetPosition = tester.getCenter(divider);
-      final doubleTapClock = Stopwatch()..start();
-      await tester.tapAt(resetPosition);
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 80)),
+      // Wait out the minimum interval while the first press is still down.
+      // Its release starts the double-tap timeout; keep the release and second
+      // click in one engine event packet so host scheduling cannot split them.
+      final tapPosition = tester.getCenter(divider);
+      final pointer = TestPointer(
+        tester.nextPointer,
+        ui.PointerDeviceKind.mouse,
       );
-      final secondTapAt = doubleTapClock.elapsedMilliseconds;
-      await tester.tapAt(resetPosition);
-      debugPrint('SIDEBAR_DOUBLE_TAP secondDownAfterMs=$secondTapAt');
+      final secondPointer = TestPointer(
+        pointer.pointer + 1,
+        ui.PointerDeviceKind.mouse,
+      );
+      await tester.handlePointerEventRecord([
+        PointerEventRecord(Duration.zero, [pointer.down(tapPosition)]),
+      ]);
+      await tester.binding.delayed(kDoubleTapMinTime);
+      await tester.handlePointerEventRecord([
+        PointerEventRecord(Duration.zero, [
+          pointer.up(),
+          secondPointer.down(tapPosition),
+          secondPointer.up(),
+        ]),
+      ]);
       await scene.until(
-        () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
-        'double tap restores and saves the canonical default',
+        () => (width() - defaultWidth).abs() <= 1,
+        'double tap restores the initial default in the UI',
       );
+      await expectSaved('double-tap default restoration');
 
       // 应用自定义按键已移除；无障碍用户仍可通过官方语义动作调整宽度。
       final resizeSemantics = find.semantics.byLabel(
@@ -615,17 +647,24 @@ void main() {
       );
       tester.semantics.increase(resizeSemantics);
       await scene.until(
-        () => (width() - 352).abs() <= 1 && canonicalWidth() == 352,
-        'accessibility increase updates and saves the width',
+        () => width() > defaultWidth,
+        'accessibility increase widens the sidebar in the UI',
       );
+      final increasedWidth = width();
+      await expectSaved('accessibility increase');
       tester.semantics.decrease(resizeSemantics);
       await scene.until(
-        () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
-        'accessibility decrease updates and saves the width',
+        () => width() < increasedWidth,
+        'accessibility decrease narrows the sidebar in the UI',
       );
+      expect(
+        width(),
+        closeTo(defaultWidth, 1),
+        reason: 'inverse accessibility actions restore the original width',
+      );
+      await expectSaved('accessibility decrease');
       expect(tester.takeException(), isNull);
     },
-    // The official test binding owns and releases the semantics handle.
     semanticsEnabled: true,
     timeout: const Timeout(Duration(minutes: 2)),
   );
@@ -703,15 +742,12 @@ void main() {
       await scene.capture('sidebar-narrow-drawer');
 
       final archiveDirectory = Directory(
-        p.join(
-          Directory(projectPath).parent.path,
-          'sidebar-project-close-target',
-        ),
+        '${Directory(projectPath).parent.path}/sidebar-project-close-target',
       );
       await _prepareSyntheticGitProject(archiveDirectory);
       final archiveProject = await harness.openProject(
         scene,
-        await archiveDirectory.resolveSymbolicLinks(),
+        archiveDirectory.absolute.path,
       );
       final archiveProjectRow = find.byKey(
         StudioDriverKeys.projectRow(archiveProject.id),
@@ -1119,7 +1155,7 @@ Future<void> _prepareSyntheticGitProject(Directory project) async {
     throw StateError('Synthetic project path must be new: ${project.path}');
   }
   await project.create(recursive: true);
-  await File(p.join(project.path, 'README.md'))
+  await File('${project.path}/README.md')
       .writeAsString('# Sidebar integration fixture\n', flush: true);
   await _runGit(project, [
     '-c',

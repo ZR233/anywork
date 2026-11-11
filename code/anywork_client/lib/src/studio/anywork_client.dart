@@ -458,6 +458,7 @@ class AnyworkClient {
   BridgeTopicLeaseBundle? _selectionTopics;
   String? _selectionTopicKey;
   Future<void>? _bootstrapping;
+  Future<void>? _bootstrapJoin;
   Future<CloseReport>? _closing;
   bool _closed = false;
 
@@ -769,6 +770,13 @@ class AnyworkClient {
       },
     );
     _bootstrapping = task;
+    // Register the lifecycle join in the producer's error zone. A Future error
+    // cannot cross into the native exit callback's different error zone; only
+    // its settled value may cross. Bootstrap callers still receive task's error.
+    _bootstrapJoin = task.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
     return task;
   }
 
@@ -943,18 +951,8 @@ class AnyworkClient {
       _joinReport('conversations', conversationWork, deadline),
       _joinReport('topics', channels.dispose(deadline: deadline), deadline),
       _joinReport('updates', updates.close(deadline: deadline), deadline),
-      if (_bootstrapping case final boot?)
-        _joinOwner(
-          'bootstrap',
-          boot.then<void>(
-            (_) {},
-            onError: (Object _, StackTrace _) {
-              // A failed query has terminated. Its resource handles belong to the
-              // transport/topic owners, which are joined separately below.
-            },
-          ),
-          deadline,
-        ),
+      if (_bootstrapJoin case final boot?)
+        _joinOwner('bootstrap', boot, deadline),
     ];
     await Future.wait(work);
     for (final observation in _canonicalObservations) {

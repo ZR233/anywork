@@ -7,7 +7,7 @@
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
 | 独立工具接口与作者特性 | 分别编译/运行无默认特性、typed、typed+macros 及宏诊断，独立下游验证纯消费方与重命名依赖；workspace 特性合并不证明独立性。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
-| Flutter 静态、Client 和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行无设备、无 Rust bridge 的 `test/ui`；纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
+| Flutter 静态、Client、应用单元和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行 SDK-only Client、应用 `test/unit` 和 `test/ui`；应用测试无设备、无 Rust bridge，纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 构建输入 | 工程工具与双架构 helper 在同一准备作业复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
@@ -23,6 +23,8 @@ Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 clippy �
 
 Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，避免构建缓存恢复的旧目录阻止新测试启动。报告与日志从同一本次输出归档，旧目录不作为通过证据，也不通过删除共享缓存解决路径冲突。
 
+桌面失败证据包含测试报告、脱敏后的模拟对端请求与消费状态，以及时间线连续性诊断；不得因主日志只有外层退出码而丢弃已生成的内部失败证据。
+
 一次 desktop 套件运行在执行场景前准备一次原生环境、锁定的 Flutter 依赖、debug bridge 与 helper；仅复用不可变构建输入，不复用场景 home、fixture、报告或进程。跨 harness 子命令的准备回执位于 `target/test-project-preparation/` 下的本次临时目录，由父运行持有独占文件锁并在退出时释放和清理。子命令须核对活跃租约、规范工作区、Git 源码状态、宿主/构建配置及构件摘要；缺失、过期或不匹配直接失败，不静默重建。回执仅通过本次子进程环境传递，不是持久依赖缓存、全局“已准备”开关或跨运行复用入口。单独运行场景仍自行完成准备；native 套件的不同入口和构建模式不消费 desktop 回执。
 
 Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。
@@ -30,6 +32,10 @@ Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只�
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；先完成编译缓存恢复，再校验和恢复本次工具。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 
 原生关闭与第二实例行为由同一个 `shutdown` 自动旅程证明：第二实例必须重定向并激活原实例、在创建第二个 Flutter engine 前退出，原实例继续工作并在重新打开后恢复持久化结果。原先单列的 `single-instance` 入口没有独立自动断言、实际进入人工交互，已从自动套件与预置入口中移除；清理重复入口不删除上述真实第二实例断言。
+
+轮次终态与时间线接纳独立推进。保存内容的库存读取须先等当前 Main 接纳该轮受理的输入，再固定原读取窗口；固定后仍严格核对窗口、轮次、输入、完成记录与正文身份，不能在读取失败后改用另一窗口或旧轮次内容。
+
+启动与原生退出回调可能属于不同的 Dart 错误隔离区。启动 owner 须在原隔离区登记覆盖成功与失败的收束通知，关闭方只等待这项真实完成事实；启动调用方仍接收原始失败，未完成的初始化仍须在退出期限内如实报告为未收束。
 
 无显示的 Flutter widget 测试仍执行依赖的官方 native-assets hooks。Linux 前端作业消费
 同次解析并校验的项目 Docker 镜像；`cnativeapi` 所需 C++、pkg-config、GTK 3 / X11 / Xi
@@ -58,7 +64,11 @@ Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只�
 
 纯 Client 和应用适配测试可以证明受控输入下的状态与所有权关系；它们不加载或不能完整覆盖真实 Rust 动态库、原生窗口、输入法与操作系统进程。Flutter 内容捕获、截图和原生退出回执分别提供这些边界的观察信息，不能彼此替代，也不是要求每次修改都执行的五层流程。
 
-`verify-client` 当前组合依赖与导入边界检查、格式和静态分析、纯 Dart 测试以及应用侧 Client 套件。其组成由工程工具维护，本节不复制执行清单。
+`verify-client` 负责 SDK-only Client 的依赖与导入边界、格式、静态分析和纯 Dart 测试；应用适配逻辑与组件由前端应用测试证明，不将纯 Client 检查外推为应用侧通过。
+
+应用测试按实际依赖而非用例名称选择层级：领域规则、适配、生产 owner 与受控传输的查询交错进入无设备单元或组件测试；原生桌面集成保留真实 AppGraph、FRB、持久化与窗口交互增加的独特信号。不需要原生边界的用例不因使用 `WidgetTester` 而启动完整桌面程序。各入口必须实际发现并执行测试，缺失套件或内部失败不得报告通过。
+
+GUI 判定优先表达可观察关系：内容受父布局约束、同列对齐、层级递进、控件可操作，以及窄窗和大字号下不溢出；交互则核对操作前后变化、边界钳制、恢复默认和界面与保存状态一致。视口、字号与合成内容可以是具体输入，但不重复锁定无业务意义的像素快照。真实协议、无障碍要求和产品行为边界仍需严格验证；删除或下移测试不得撤销其独特的失败信号。
 
 ### 24.1.2 Waiting 的分层集成证据
 
@@ -81,6 +91,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
+普通功能集成验证操作后的可观察结果，不给宿主调度增加性能门槛。双击等有输入时序要求的手势使用官方 [`PointerEventRecord`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/handlePointerEventRecord.html) 发送有效事件：首次按下满足最小间隔后，将首次释放与第二次点击放在同一事件包内，再核对真实界面与持久化结果，不要求 CI 两次异步调度之间的墙钟时间小于双击窗口。重新解码的不可变事实按完整业务字段比较；局部作用域、订阅等资源所有权仍按真实身份核对。测试层级遵循 Flutter 的[测试分层建议](https://docs.flutter.dev/testing/overview)，已有单元或组件测试能完整证明的规则不重复提升到原生桌面测试。
+
 ### 24.1.3 时间线呈现与官方集成测试
 
 日常设计对照按证据需要选择入口：纯布局使用官方 Widget Previewer（项目入口为
@@ -102,6 +114,8 @@ Linux 的合成用户 home 同时提供独立的标准 XDG Documents 配置，�
 时间线普通功能旅程使用 Flutter 官方 `integration_test`：以 `WidgetTester` 操作生产路由、列表、过程折叠、问答/Plan 回执、媒体与实时状态栏，保留真实 AppGraph、FRB、SDK 和隔离 SQLite，不通过 Driver 的 `requestData` 协议或宿主脚本判定功能。组件布局、敏感遮蔽、展开和字体缩放在真实生产组件上提供更小的证明；官方 Widget Previewer 直接复用这些组件，用于可发现性、Web 编译、主题和局部交互观察，不能代替原生集成。
 
 迁移保留既有行为信号，不保留仅为旧旅程服务的观察镜像、串行阶段状态机或辅助实现自测。隔离配置、模拟 provider、请求校验、日志归档与进程树管理继续复用现有验收 harness；各场景独立发现、报告断言及异步错误，并经生产资源所有者关闭。冷读/分页、20k 大历史、原生指针位移和帧耗时属于各自的读取或性能证据，不塞入普通展示旅程，也不因本节替换而删除独立的人工诊断入口。
+
+工作组标题的阶段映射、失败成员不改变组状态、时长文案、图标、单行省略和窄窗布局由 `work_header_presentation_test.dart` 在受控生产组件上证明。`timeline-concept` 的原生检查点只核对实际工作组标题已挂载且非空，保留各场景的完整数据、正文读取、展开、保存与重开断言，不在每个检查点重算标题投影或重复逐像素比较。
 
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
@@ -187,6 +201,8 @@ Profile 播种的每批 `TurnCompleted` 只证明原轮次完成，不代替保�
 `run-gui --native-launch --profile --inspect --capture` 仅为显式非发布观察装配官方 Flutter Driver extension，普通发布入口不包含它；debug 的 MCP 组件树能力不外推到 profile。操作沿官方 Driver 的查找、点击与滚动，不恢复 `test_driver/`、`requestData`、自定义控制消息或第二套 UI。仅在非 release 且启用 `ANYWORK_CAPTURE` 时注册只读 `ext.anywork.timelineLayout`：同步借用当前可见、已挂载且未退役的原展示 lease，返回会话/选择/展示代次与已有首内容布局时间戳；未布局为 pending、无有效窗口为 unavailable，不触发读取、分页、执行或布局，也不以零值代替未测。
 
 每个样本保留原 `selectionStartedMicros`、`layoutCompletedMicros`、selectionId、generation 和 itemId，严格在同一 owner 时钟内计算 elapsed。采集端观察到结果的时间不是布局完成时间；旧选择或旧代次不得成为新样本。两类样本独立报告样本数、失败/未执行数、p50、nearest-rank p95 和最大值，完整有效样本的 p95 目标保持 500 ms；缺失、模式错误或超时使采样失败，不丢弃失败样本或补零。关闭请求受理、Driver 连接释放、原生进程真实退出和所属后代收束分别确认，原有 20k 库存人工入口的 notMeasured 结果不因此自动升级为性能通过。
+
+可见会话选择被接纳时即登记首内容计时起点，早于异步目录中的后端识别；后端查询的等待时间不能被排除。后端尚未识别时不创建 Native 会话或正文读取，确定为 ACP 后清除 Native 布局计时资格。单元测试等待实际可见会话发布后再借用既有资源，目录选择命令完成不等于后端查询和会话装配已经完成。
 
 FRB credit 沿官方原生集成直接观察真实 transport feed，不恢复旧 Driver 命令或 `requestData` 协议。
 按 [07](./07-streaming.md) 的单未确认普通批次契约持有首帧，在不 ACK 时用原 reader 查询已真实完成、

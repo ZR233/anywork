@@ -1,8 +1,11 @@
+import 'dart:ui' as ui;
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -33,6 +36,7 @@ void main() {
           ),
           child: Scaffold(
             body: SizedBox(
+              key: const ValueKey('markdown-parent'),
               width: size.width,
               child: SelectionArea(
                 child: TimelineMarkdown(
@@ -59,8 +63,13 @@ void main() {
     await pumpMarkdown(tester, text: 'See `$url` and $url');
     expect(tester.takeException(), isNull);
     final markdown = tester.getRect(find.byType(TimelineMarkdown));
-    expect(markdown.width, lessThanOrEqualTo(240.5));
-    expect(markdown.height, greaterThan(24));
+    _expectWithinParent(tester, markdown);
+    final paragraphs = _paragraphs(tester);
+    expect(
+      paragraphs.any((paragraph) => _lineCount(paragraph) > 1),
+      isTrue,
+      reason: 'the long inline content must actually wrap onto multiple lines',
+    );
   });
 
   testWidgets('代码块在有限宽度下换行，缩放后仍不溢出', (tester) async {
@@ -74,8 +83,16 @@ void main() {
     );
     expect(tester.takeException(), isNull);
     final markdown = tester.getRect(find.byType(TimelineMarkdown));
-    expect(markdown.width, lessThanOrEqualTo(220.5));
+    _expectWithinParent(tester, markdown);
     expect(find.textContaining('very_long_identifier'), findsOneWidget);
+    final codeParagraph = _paragraphs(
+      tester,
+    ).singleWhere((paragraph) => paragraph.text.toPlainText().contains(code));
+    expect(
+      _lineCount(codeParagraph),
+      greaterThan(1),
+      reason: 'the long code line wraps instead of scrolling or clipping',
+    );
   });
 
   testWidgets('摘要路径保持单行省略，不展开全文', (tester) async {
@@ -90,7 +107,17 @@ void main() {
     );
     expect(tester.takeException(), isNull);
     final markdown = tester.getRect(find.byType(TimelineMarkdown));
-    expect(markdown.height, lessThan(40));
+    _expectWithinParent(tester, markdown);
+    final summary = _paragraphs(tester).singleWhere(
+      (paragraph) => paragraph.text.toPlainText().contains('summary'),
+    );
+    expect(summary.maxLines, 1);
+    expect(summary.overflow, TextOverflow.ellipsis);
+    expect(
+      summary.didExceedMaxLines,
+      isTrue,
+      reason: 'the long summary is truncated, not expanded to its full height',
+    );
   });
 
   testWidgets('外层正文选择包含代码块并保留代码缩进和内部换行', (tester) async {
@@ -165,4 +192,39 @@ void main() {
     expect(copied, text);
     expect(tester.takeException(), isNull);
   });
+}
+
+Iterable<RenderParagraph> _paragraphs(WidgetTester tester) =>
+    tester.renderObjectList<RenderParagraph>(
+      find.descendant(
+        of: find.byType(TimelineMarkdown),
+        matching: find.bySubtype<RichText>(),
+      ),
+    );
+
+int _lineCount(RenderParagraph paragraph) => paragraph
+    .getBoxesForSelection(
+      TextSelection(
+        baseOffset: 0,
+        extentOffset: paragraph.text.toPlainText().length,
+      ),
+      boxHeightStyle: ui.BoxHeightStyle.max,
+    )
+    .map((box) => box.top)
+    .toSet()
+    .length;
+
+void _expectWithinParent(WidgetTester tester, Rect markdown) {
+  final parent = tester.getRect(find.byKey(const ValueKey('markdown-parent')));
+  expect(markdown.width, greaterThan(0));
+  expect(markdown.height, greaterThan(0));
+  expect(markdown.left, greaterThanOrEqualTo(parent.left));
+  expect(markdown.right, lessThanOrEqualTo(parent.right));
+  expect(markdown.top, greaterThanOrEqualTo(parent.top));
+  expect(markdown.bottom, lessThanOrEqualTo(parent.bottom));
+  for (final paragraph in _paragraphs(tester)) {
+    final rect = paragraph.localToGlobal(Offset.zero) & paragraph.size;
+    expect(rect.left, greaterThanOrEqualTo(markdown.left));
+    expect(rect.right, lessThanOrEqualTo(markdown.right));
+  }
 }
