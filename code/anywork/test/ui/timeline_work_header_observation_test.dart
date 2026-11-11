@@ -2,8 +2,9 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,7 +24,10 @@ const _summary = WorkSummary(
   durationMs: 2000,
 );
 
-Widget _host(WorkDisplayLocation location) => MaterialApp(
+Widget _host(
+  WorkDisplayLocation location, {
+  ConversationActivityView? activity,
+}) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('zh'),
   localizationsDelegates: [
@@ -36,6 +40,7 @@ Widget _host(WorkDisplayLocation location) => MaterialApp(
       id: 'observed-work',
       summary: _summary,
       location: location,
+      activity: activity,
       executionPresent: location == WorkDisplayLocation.live,
       initiallyExpanded: false,
       now: () => DateTime.fromMillisecondsSinceEpoch(1002000, isUtc: true),
@@ -48,7 +53,15 @@ void main() {
   testWidgets(
     'Work observer reads real Expansible and clicks original header',
     (tester) async {
-      await tester.pumpWidget(_host(WorkDisplayLocation.live));
+      await tester.pumpWidget(
+        _host(
+          WorkDisplayLocation.live,
+          activity: const ConversationActivityView(
+            identity: 'observed-model-wait',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      );
       final header = find.byKey(
         const ValueKey('completion-run-header:observed-work'),
       );
@@ -70,10 +83,12 @@ void main() {
       );
       expect(elapsed, findsOneWidget);
       expect(tester.element(label), isNot(same(tester.element(elapsed))));
+      expect(tester.widget<Text>(label).data, '思考中');
+      expect(find.byType(TimelineRestingCat), findsOneWidget);
       expect(tester.widget<Text>(label).maxLines, 1);
       expect(tester.widget<Text>(elapsed).data, startsWith('执行了'));
       await tester.tap(header);
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 300));
       expect(
         timelineWorkHeaderExpanded(tester, header, 'observed-work'),
         isTrue,
@@ -81,7 +96,7 @@ void main() {
       expect(controller.isExpanded, isTrue);
       expect(find.text('exact Work body'), findsOneWidget);
       await tester.tap(header);
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 300));
       expect(
         timelineWorkHeaderExpanded(tester, header, 'observed-work'),
         isFalse,
@@ -92,35 +107,41 @@ void main() {
     },
   );
 
-  testWidgets(
-    'history Work observer reads worked label without elapsed column',
-    (tester) async {
-      await tester.pumpWidget(_host(WorkDisplayLocation.history));
-      final header = find.byKey(
-        const ValueKey('completion-run-header:observed-work'),
-      );
-      final label = timelineGroupTitleFinder(tester, header);
-      expect(label, findsOneWidget);
-      expect(
-        tester.widget<Text>(label).data,
-        activityDurationLabel(
-          tester.element(header),
-          2,
-          kind: ActivityDurationKind.worked,
-        ),
-      );
-      expect(
-        find.descendant(
-          of: header,
-          matching: find.byKey(const ValueKey('work-header-elapsed')),
-        ),
-        findsNothing,
-      );
-      expect(
-        timelineWorkHeaderExpanded(tester, header, 'observed-work'),
-        isFalse,
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+  for (final location in WorkDisplayLocation.values) {
+    testWidgets(
+      'Work observer reads static duration without duplicate elapsed column: $location',
+      (tester) async {
+        await tester.pumpWidget(_host(location));
+        final header = find.byKey(
+          const ValueKey('completion-run-header:observed-work'),
+        );
+        final label = timelineGroupTitleFinder(tester, header);
+        expect(label, findsOneWidget);
+        expect(
+          tester.widget<Text>(label).data,
+          activityDurationLabel(
+            tester.element(header),
+            2,
+            kind: location == WorkDisplayLocation.history
+                ? ActivityDurationKind.worked
+                : ActivityDurationKind.executing,
+          ),
+        );
+        expect(find.byType(TimelineRestingCat), findsNothing);
+        expect(find.text('思考中'), findsNothing);
+        expect(
+          find.descendant(
+            of: header,
+            matching: find.byKey(const ValueKey('work-header-elapsed')),
+          ),
+          findsNothing,
+        );
+        expect(
+          timelineWorkHeaderExpanded(tester, header, 'observed-work'),
+          isFalse,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 }
