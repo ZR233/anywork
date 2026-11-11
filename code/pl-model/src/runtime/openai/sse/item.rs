@@ -4,11 +4,11 @@ use crate::completion::{
 };
 use serde_json::Value;
 
+use crate::completion::stream::event::WebSearchAction;
 use crate::completion::stream::event::{
     ModelStreamEvent, ToolInputDeltaPayload, ToolInputPayloadKind,
 };
 use crate::runtime::openai::identity::responses_tool_identity;
-use pl_protocol::search::WebSearchAction;
 use pl_protocol::trace::TraceTextChannel;
 use pl_protocol::{ResponsesContextItem, ToolCallCaller};
 

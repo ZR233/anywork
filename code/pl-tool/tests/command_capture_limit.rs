@@ -1919,10 +1919,12 @@ async fn worker_bootstrap_cancellation() -> anyhow::Result<()> {
     for configure in [false, true] {
         let root = tempfile::tempdir()?;
         let script = root.path().join("held-worker.py");
-        let frame =
-            serde_json::to_string(&pl_protocol::process_worker::ProcessWorkerEvent::Ready {
-                protocol_version: pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION,
-            })? + "\n";
+        let frame = serde_json::to_string(
+            &pl_remote_helper::process_worker_protocol::ProcessWorkerEvent::Ready {
+                protocol_version:
+                    pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION,
+            },
+        )? + "\n";
         let announce = if configure {
             format!(
                 "wire.sendall({}.encode())\nwire.recv(4, socket.MSG_WAITALL)\n",

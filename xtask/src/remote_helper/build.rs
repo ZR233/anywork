@@ -191,7 +191,8 @@ fn build_target(workspace_root: &Path, target: &str, builder: CargoBuilder) -> R
         output.with_extension("metadata.json"),
         serde_json::to_vec_pretty(&super::HelperMetadata {
             target: target.into(),
-            worker_protocol_version: pl_protocol::process_worker::PROCESS_WORKER_PROTOCOL_VERSION,
+            worker_protocol_version:
+                pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION,
             remote_protocol_version: pl_protocol::remote::REMOTE_PROTOCOL_VERSION,
             sha256: digest,
         })?,

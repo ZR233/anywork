@@ -1,8 +1,32 @@
 use crate::completion::CompletionPresentationItem;
 use pl_protocol::UsageReport;
-use pl_protocol::search::WebSearchAction;
 use pl_protocol::trace::TraceTextChannel;
 use pl_protocol::{ResponsesContextItem, ToolCallCaller};
+use serde::{Deserialize, Serialize};
+
+/// Provider-neutral Web Search 活动。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum WebSearchAction {
+    Search {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        queries: Vec<String>,
+    },
+    OpenPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    FindInPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+    },
+    #[default]
+    Other,
+}
 
 /// Provider 无关的模型流式事件。
 ///

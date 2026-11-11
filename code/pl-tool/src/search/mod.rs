@@ -2,6 +2,7 @@ mod binding;
 mod client;
 mod hosted_options;
 mod plan;
+mod standalone;
 mod thread;
 
 pub use binding::{SearchBindingError, ThreadSearchBinding};
@@ -11,6 +12,7 @@ pub use plan::{
     WebSearchPlan, WebSearchPlans, WebSearchResolution, WebSearchService, WebSearchServices,
     plan_deepseek_web_search, plan_openai_web_search, plan_web_search_services, plan_web_searches,
 };
+pub use standalone::SearchSettings;
 pub use thread::{
     ThreadDeepSeekWebFetchTool, ThreadDeepSeekWebSearchTool, ThreadSearchOptions,
     ThreadWebSearchTool,

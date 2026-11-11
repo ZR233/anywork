@@ -3,7 +3,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Stdio;
 
-use pl_protocol::process_worker::ProcessWorkerEvent;
+use crate::process_worker_protocol::ProcessWorkerEvent;
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::OwnedReadHalf;
 use tokio::process::{Child, Command};

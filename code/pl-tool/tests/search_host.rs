@@ -104,7 +104,7 @@ async fn standalone_search_host_preserves_frozen_options_commands_and_payload() 
     .unwrap();
     let options = ThreadSearchOptions {
         model: "search-model".into(),
-        settings: pl_protocol::search::SearchSettings::from_config(&Default::default()),
+        settings: pl_tool::search::SearchSettings::from_config(&Default::default()),
         max_output_tokens: Some(512),
     };
     let tool = prepare_native_tool()
