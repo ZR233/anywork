@@ -8,13 +8,15 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
+import 'package:anywork/src/features/conversation/interactions/views/plan_confirmation_view.dart';
+import 'package:anywork/src/features/conversation/interactions/view_models/plan_confirmation_view_model.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/studio_client.dart' hide PlanConfirmationView;
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -89,6 +91,7 @@ void main() {
     var plan = interaction.planConfirmation!;
     var split = true;
     var planOpen = true;
+    var feedbackMounted = true;
     late StateSetter rebuild;
     await tester.pumpWidget(
       ProviderScope(
@@ -112,11 +115,13 @@ void main() {
                     readingArea: planOpen
                         ? _planReadingArea(threadId: threadId, split: split)
                         : const SizedBox.shrink(),
-                    footer: PlanConfirmationConnector(
-                      threadId: threadId,
-                      plan: plan,
-                      enabled: true,
-                    ),
+                    footer: feedbackMounted
+                        ? PlanConfirmationConnector(
+                            threadId: threadId,
+                            plan: plan,
+                            enabled: true,
+                          )
+                        : const SizedBox.shrink(),
                   );
                 },
               ),
@@ -136,7 +141,9 @@ void main() {
       reason: '计划正文必须经 State 业务引用和原 reader 到达阅读区',
     );
 
-    final dock = tester.state<State>(find.byType(PlanConfirmationConnector));
+    final dock = tester.state<State<PlanConfirmationView>>(
+      find.byType(PlanConfirmationView),
+    );
 
     // 共享 footer 的动作组必须沿输入框右缘，且主/次操作同高同基线、组内间距 8px。
     final inputRect = tester.getRect(
@@ -180,7 +187,9 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(
-        tester.state<State>(find.byType(PlanConfirmationConnector)),
+        tester.state<State<PlanConfirmationView>>(
+          find.byType(PlanConfirmationView),
+        ),
         same(dock),
         reason: '阅读布局变化不得重建反馈栏 State',
       );
@@ -275,6 +284,27 @@ void main() {
       reason: '旧交互的失败不得写进新交互的错误',
     );
     expect(approveButton().onPressed, isNotNull, reason: '旧交互的在途锁不得扣住新交互');
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(PlanConfirmationConnector)),
+    );
+    expect(
+      container.read(planConfirmationViewModelProvider(threadId).exists),
+      isTrue,
+    );
+    final clientSession = graph.client.conversations.existingSession(threadId);
+    rebuild(() => feedbackMounted = false);
+    await tester.pumpAndSettle();
+    expect(
+      container.read(planConfirmationViewModelProvider(threadId).exists),
+      isFalse,
+      reason: '反馈组件卸载后释放专属展示观察，不保留无消费者的会话投影',
+    );
+    expect(
+      graph.client.conversations.existingSession(threadId),
+      same(clientSession),
+      reason: '释放展示观察不关闭 Client 持有的会话资源',
+    );
 
     // testWidgets 在测试体结束前检查未完成定时器：成功路径在这里关闭 owner。
     await tester.pumpWidget(const SizedBox.shrink());

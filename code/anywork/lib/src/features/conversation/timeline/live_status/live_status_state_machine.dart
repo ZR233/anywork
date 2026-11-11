@@ -509,14 +509,26 @@ abstract final class LiveStatusStateMachine {
         .firstOrNull
         ?.view;
 
+    // A pending plan decision owns the dock regardless of concurrent live content
+    // or notifications. The observation and timeline work slice remain untouched.
+    if (confirmingPlan && interaction != null) {
+      return _finalize(
+        previous: previous,
+        observation: observation,
+        barState: LiveStatusDockMasked(
+          interactionId: interaction.id,
+          showInteractionDetails: false,
+        ),
+        timelineWork: timelineSlice,
+        outputPaging: outputPaging,
+        timelineWorkPaging: timelineWorkPaging,
+        primaryActivity: primaryActivity,
+      );
+    }
+
     final surface = projected.surface;
     if (surface == null) {
-      final barState = confirmingPlan && interaction != null
-          ? LiveStatusDockMasked(
-              interactionId: interaction.id,
-              showInteractionDetails: false,
-            )
-          : showInteractionDetails
+      final barState = showInteractionDetails
           ? LiveStatusDockMasked(
               interactionId: interaction?.id ?? 'details',
               showInteractionDetails: true,
