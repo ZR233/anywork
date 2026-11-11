@@ -13,6 +13,69 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
+  for (final width in [320.0, 800.0]) {
+    testWidgets('宽度 $width 的输入区仅整体外框反馈焦点', (tester) async {
+      tester.view.physicalSize = Size(width, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(_host(GlobalKey<_EditorHostState>()));
+      final input = find.byKey(StudioDriverKeys.composerInput);
+      final decorators = find.descendant(
+        of: find.byType(PromptComposerView),
+        matching: find.byType(InputDecorator),
+      );
+      final frame = decorators.evaluate().singleWhere(
+        (element) =>
+            (element.widget as InputDecorator).decoration.border
+                is OutlineInputBorder,
+      );
+      final frameFinder = find.byElementPredicate(
+        (element) => identical(element, frame),
+      );
+      final inner = find.descendant(
+        of: input,
+        matching: find.byType(InputDecorator),
+      );
+      void expectSingleFrame({required bool focused}) {
+        expect(
+          tester
+              .widgetList<InputDecorator>(decorators)
+              .where((view) => view.decoration.border is OutlineInputBorder),
+          hasLength(1),
+        );
+        expect(tester.widget<InputDecorator>(frameFinder).isFocused, focused);
+        final decoration = tester.widget<InputDecorator>(inner).decoration;
+        expect(decoration.isCollapsed, isTrue);
+        expect(decoration.enabledBorder, InputBorder.none);
+        expect(decoration.focusedBorder, InputBorder.none);
+        expect(decoration.disabledBorder, InputBorder.none);
+        expect(
+          tester.getRect(frameFinder).contains(tester.getCenter(input)),
+          isTrue,
+        );
+        expect(
+          find.descendant(
+            of: frameFinder,
+            matching: find.byKey(const ValueKey('composer-submit-disabled')),
+          ),
+          findsOneWidget,
+          reason: '唯一外框同时包住编辑区与底部操作栏',
+        );
+        expect(tester.takeException(), isNull);
+      }
+
+      expectSingleFrame(focused: false);
+      await tester.showKeyboard(input);
+      await tester.pumpAndSettle();
+      expectSingleFrame(focused: true);
+      tester.widget<TextField>(input).focusNode!.unfocus();
+      await tester.pumpAndSettle();
+      expectSingleFrame(focused: false);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   testWidgets('Shift Enter 由官方编辑动作替换选区、通知变更并可撤销', (tester) async {
     final key = GlobalKey<_EditorHostState>();
     await tester.pumpWidget(_host(key));
