@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../../composer/composer.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
@@ -228,6 +229,13 @@ class _TimelineConnectorBodyState
                 child: SingleChildScrollView(
                   child: ComposerSubmissionList(
                     submissions: _submissions,
+                    submissionControlsBuilder: (submission) =>
+                        ComposerSubmissionControls(
+                          target: ComposerTarget.thread(
+                            threadId: widget.threadId,
+                          ),
+                          submission: submission,
+                        ),
                     bodyBuilder: (id, text) => TimelineMarkdown(
                       id: id,
                       text: text,
@@ -280,6 +288,10 @@ class _TimelineConnectorBodyState
       threadId: threadId,
       view: view,
       submissions: _submissions,
+      submissionControlsBuilder: (submission) => ComposerSubmissionControls(
+        target: ComposerTarget.thread(threadId: widget.threadId),
+        submission: submission,
+      ),
       controls: lease,
       currentWork: Consumer(
         builder: (_, ref, _) {

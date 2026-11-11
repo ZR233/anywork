@@ -1,421 +1,465 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-import '../../../../presentation/providers/account_domains.dart';
-import '../../../../presentation/providers/attachment_drafts.dart';
+import '../../../../domain/models/composer_primary_action.dart';
+import '../../../../platform/clipboard_image_reader.dart';
+import '../../../../platform/dropped_file.dart';
+import '../../../../platform/external_url_launcher.dart';
+import '../../../../platform/file_picking.dart';
 import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/composer_draft_controller.dart';
 import '../../../../presentation/providers/mode_catalog_store.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/project_store.dart';
-import '../../../../presentation/providers/recovery_store.dart';
-import '../../../../presentation/providers/selection_store.dart';
 import '../../../../presentation/providers/settings_store.dart';
-import '../../../../presentation/providers/start_session_controller.dart';
-import '../../../../presentation/providers/thread_directory_store.dart';
-import '../../../../presentation/providers/thread_session_store.dart';
-import '../../interactions/state/interaction_payload.dart';
+import '../../timeline/view_models/timeline_view_model.dart';
+import '../state/composer_input_state.dart';
 import '../state/composer_view_state.dart';
+import 'composer_actions.dart';
+import 'composer_attachment_intents.dart';
+import 'composer_projections.dart';
 
 part 'composer_view_model.g.dart';
 
+/// One target-bound presentation owner, not a second draft or submission owner.
 @riverpod
-class StartPageComposerViewModel extends _$StartPageComposerViewModel {
-  @override
-  FutureOr<StartPageComposerViewState> build() {
-    final sessionDraft = ref.watch(startSessionControllerProvider);
-    final selection = ref.watch(selectionStoreProvider);
-    final settings = ref.watch(settingsStoreProvider);
-    final accounts = ref.watch(modelSelectionAccountsProvider);
-    final projects =
-        ref.watch(projectStoreProvider).projects?.values ?? const [];
-    final project = projects
-        .where((candidate) => candidate.id == selection.selectedProjectId)
-        .firstOrNull;
-    final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final workspaceId = project?.id;
-    // 新建目标没有 thread 身份：只按 Application 与目标 project 的 issue 判定。
-    // 访问受阻连编辑入口都撤掉；执行阻塞保留编辑、只禁提交。
-    final recoveryIssue = workspaceId == null
-        ? null
-        : recoveryIssueBlockingExecution(recovery, workspaceId: workspaceId);
-    final accessIssue = workspaceId == null
-        ? null
-        : recoveryIssueBlockingAccess(recovery, workspaceId: workspaceId);
-    final canEdit =
-        project != null &&
-        selection.selectedThreadId == null &&
-        accessIssue == null;
-    final canonical = settings.canonical;
-    final catalog = ref.watch(modeCatalogStoreProvider).value;
-    final attachments = ref.watch(attachmentDraftsProvider);
-    return StartPageComposerViewState(
-      project: project,
-      accounts: accounts,
-      modeModelRoutes: canonical?.modeModelRoutes ?? const [],
-      settingsLoaded: settings.configLoaded,
-      canEdit: canEdit,
-      canSubmit: canEdit && recoveryIssue == null,
-      recoveryIssue: recoveryIssue,
-      commands: settings.commands,
-      diagnostics: attachments.forProject(workspaceId),
-      modeCatalog: catalog,
-      sessionDraft: sessionDraft,
-      composer: workspaceId == null
-          ? const ComposerThreadState.idle()
-          : attachments.newThread(workspaceId),
-      targetDiagnostic: workspaceId == null
-          ? null
-          : attachments.diagnostics[attachmentTargetKey(workspaceId, null)],
-    );
-  }
-
-  void updateDraft(String workspaceId, String text) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .updateDraft(workspaceId, text);
-
-  void setMode(String workspaceId, ThreadModeId mode) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .setMode(workspaceId, mode);
-
-  void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .setWorkspaceMode(workspaceId, mode);
-
-  void setDelegationMode(String workspaceId, DelegationMode? mode) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .setDelegationModeOverride(workspaceId, mode);
-
-  void setDelegationPreference(
-    String workspaceId,
-    DelegationPreference? preference,
-  ) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .setDelegationPreferenceOverride(workspaceId, preference);
-
-  void setModelIntent(ThreadModeId mode, String accountId, String modelId) =>
-      ref
-          .read(anyworkClientProvider)
-          .drafts
-          .startDraft
-          .setModelIntent(mode, accountId, modelId);
-
-  void setEffortIntent(ThreadModeId mode, String effort) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .startDraft
-      .setEffortIntent(mode, effort);
-
-  Future<bool> submitStart(String workspaceId) =>
-      ref.read(anyworkClientProvider).drafts.startDraft.submit(workspaceId);
-
-  Future<void> admitAttachments({
-    required String workspaceId,
-    required ThreadModeId mode,
-    required List<AttachmentDraftSource> sources,
-  }) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .attachments
-      .admitNewThread(workspaceId: workspaceId, mode: mode, sources: sources);
-
-  Future<void> pasteImage(
-    String workspaceId,
-    ThreadModeId mode,
-    Uint8List bytes,
-  ) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .attachments
-      .addNewThreadClipboard(
-        workspaceId: workspaceId,
-        mode: mode,
-        pngBytes: bytes,
-      );
-
-  Future<void> addRemoteAttachment(
-    String workspaceId,
-    ThreadModeId mode,
-    String url,
-  ) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .attachments
-      .addNewThreadRemote(workspaceId: workspaceId, mode: mode, url: url);
-
-  Future<void> removeAttachment(String workspaceId, String draftId) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .attachments
-      .removeNewThreadDraft(workspaceId, draftId);
-
-  void reportAttachmentFailure(String workspaceId, Object error) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .attachments
-      .reportNewThreadFailure(workspaceId, error);
-}
-
-@riverpod
-class ComposerDockViewModel extends _$ComposerDockViewModel {
+class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
   int? _queuedStopStartedAtMs;
-  Object? _lifecycle;
+  int? _expiredStopStartedAtMs;
+  final _submissionOperations = <String>{};
+  final _submissionFailures = <String, Object>{};
+  Object? _actionFailure;
+
+  AnyworkClient get _client => ref.read(anyworkClientProvider);
 
   @override
-  FutureOr<ComposerDockViewState> build(String threadId) {
-    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
-    final row = metadata.frame?.row;
-    final backend = switch (row?.backend) {
-      NativeAgentBackendView native => native,
-      AcpAgentBackendView() => throw StateError(
-        'Native prompt composer cannot consume an ACP session',
-      ),
-      null => null,
-    };
-    final session = ref.watch(threadSessionStoreProvider(threadId));
-    final draft = ref.watch(composerDraftControllerProvider(threadId));
-    final settings = ref.watch(settingsStoreProvider);
-    final accounts = ref.watch(modelSelectionAccountsProvider);
-    final attachments = ref.watch(attachmentDraftsProvider);
-    final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
-    final workspaceId = row?.workspaceId;
-    // 已有线程只使用自己的项目身份，不借用主工作区选择。
-    final recoveryBlocker = recoveryIssueBlockingExecution(
-      recovery,
-      workspaceId: workspaceId,
-      threadId: threadId,
-    );
-    final routeCommand = settings.commands['thread-route:$threadId'];
-    final canonicalRoute = session.modelRoute;
-    final client = ref.read(anyworkClientProvider);
-    final lifecycle = Object();
-    _lifecycle = lifecycle;
-    ref.onDispose(() {
-      if (identical(_lifecycle, lifecycle)) {
-        _lifecycle = null;
-      }
-    });
-    final commandBoardState = _observe(lifecycle, client.threadCommands.source);
-    // 根可见子任务待决交互按宿主借用已安装的领域镜像；镜像由 Client 的主题
-    // 需求创建，非宿主或未准备页面不观察、不产生第二事实源。
-    final childStore = (row?.isRootRow ?? false)
-        ? client.existingChildInteractions(threadId)
-        : null;
-    final childInteractions = childStore == null
-        ? null
-        : _observe(lifecycle, childStore.source);
-    final stopKey = 'stop:$threadId';
-    final commandBoard = commandBoardState.commands;
-    final stopCommand = commandBoard[stopKey];
-    final continueCommand = commandBoard['continue:$threadId'];
-    final agents =
-        ref.watch(projectStoreProvider).agents?.values ??
-        const <StudioAgentView>[];
-    final rootSessionId = switch (row) {
-      final value? when value.isRootRow => value.sessionId,
-      _ => null,
-    };
-    final children = AgentDirectoryQueries.forSession(
-      sessionId: rootSessionId,
-      agents: agents,
-    );
-    final storage = session.storage;
-    return ComposerDockViewState(
-      row: row,
-      hasSnapshot: session.hasSnapshot,
-      revision: session.revision,
-      composer: draft,
-      activeInteraction: activePendingInteraction(session.interactions),
-      turn: session.activeTurn,
-      execution: session.runtime?.execution,
-      continuation: session.runtime?.continuation,
-      stopCommand: stopCommand,
-      continueCommand: continueCommand,
-      queuedStopStartedAtMs: stopCommand?.startedAtMs == _queuedStopStartedAtMs
-          ? _queuedStopStartedAtMs
-          : null,
-      saveBlocked:
-          storage != null && (storage.hasFault || storage.resumeRequired),
-      recoveryIssue: recoveryBlocker,
-      // 永久关闭由当前目录身份判定；会话快照属于另一版本域，
-      // 不能用其旧的 Core 资源关闭状态否决目录中仍可执行的会话。
-      executionClosed: backend?.status.blocksNewExecution ?? false,
-      // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
-      // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
-      // 仍由在途操作持有的观察可借当前 canonical 作为本地基线。
-      childInteractions:
-          childInteractions != null &&
-              childInteractions.hasCurrentBaseline &&
-              childInteractions.canonical.loaded &&
-              childInteractions.canonical.value?.hostThreadId == threadId &&
-              childInteractions.canonical.value?.state.value != null
-          ? childInteractions.canonical.value!.state.value!.items
-          : const [],
-      childInteractionSync: childInteractions?.canonical.sync,
-      childInteractionSources: {
-        for (final agent in children)
-          agent.threadId: _childSourceLabel(
-            agent,
-            ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.row,
+  FutureOr<ComposerViewState> build(ComposerTarget target) {
+    final projections = ComposerProjections(ref, _queuedStopStartedAtMs);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    ComposerViewState result;
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final thread = projections.thread(threadId);
+        final route = thread.displayRoute;
+        final model = route == null
+            ? null
+            : ModelRouteQueries.model(
+                thread.accounts,
+                route.accountId,
+                route.modelId,
+              );
+        final owner = _client.drafts.existingComposer(threadId);
+        final submissions = owner == null
+            ? const <ComposerSubmission>[]
+            : observeClient(
+                ref,
+                owner.submissions,
+                (_) => ref.invalidateSelf(),
+              );
+        result = ComposerViewState(
+          thread: thread,
+          submissions: submissions,
+          input: ComposerInputState(
+            composer: thread.composer,
+            enabled:
+                owner != null &&
+                !thread.executionClosed &&
+                thread.row?.isRootRow == true &&
+                thread.activeInteraction == null,
+            execution: thread.execution,
+            continuation: thread.continuation,
+            continuationAccepted: thread.continuationAccepted,
+            continuationPending: thread.continuationPending,
+            blocker: thread.canonicalBlocker,
+            failure: thread.operationFailure,
+            stopCommand: thread.stopCommand,
+            queuedStopStartedAtMs: thread.queuedStopStartedAtMs,
+            targetDiagnostic: thread.targetDiagnostic,
+            inputCapabilities: model?.inputCapabilities ?? const [],
+            nowMs:
+                _expiredStopStartedAtMs == thread.stopCommand?.startedAtMs &&
+                    _expiredStopStartedAtMs != null
+                ? _expiredStopStartedAtMs! +
+                      ComposerInputState.stopUnconfirmedAfter.inMilliseconds
+                : now,
           ),
-      },
-      modelRoute: canonicalRoute,
-      routeDisplay: ModelRouteQueries.threadRoute(
-        canonical: canonicalRoute,
-        command: routeCommand,
-        accounts: accounts,
-      ),
-      routePending: routeCommand?.isPending ?? false,
-      routeFailure: routeCommand?.phase == CommandPhase.failed
-          ? routeCommand?.error?.message
-          : null,
-      workflow: session.workflow,
-      accounts: accounts,
-      settingsLoaded: settings.configLoaded,
-      targetDiagnostic: workspaceId == null
-          ? null
-          : attachments.diagnostics[attachmentTargetKey(workspaceId, threadId)],
-      additionalDiagnostics: attachments.forProject(workspaceId),
+        );
+      case StartComposerTarget(:final workspaceId):
+        final start = projections.start(workspaceId);
+        final route = start.displayRoute(start.mode);
+        final model = route == null
+            ? null
+            : ModelRouteQueries.model(
+                start.accounts,
+                route.accountId,
+                route.modelId,
+              );
+        final submissions =
+            observeClient(
+              ref,
+              _client.drafts.startDraft.submissions,
+              (_) => ref.invalidateSelf(),
+            )[workspaceId] ??
+            const <ComposerSubmission>[];
+        final directory = observeClient(
+          ref,
+          _client.directoryCommands.source,
+          (_) => ref.invalidateSelf(),
+        );
+        result = ComposerViewState(
+          start: start,
+          submissions: submissions,
+          projects:
+              ref.watch(projectStoreProvider).projects?.values.toList() ??
+              const [],
+          delegation: ref.watch(settingsStoreProvider).canonical?.delegation,
+          standalonePreparing: directory.standalonePreparationInProgress,
+          input: ComposerInputState(
+            composer: start.composer,
+            draftText: start.draftText,
+            enabled: start.canEdit,
+            submissionLocked: start.submitting,
+            targetDiagnostic: start.targetDiagnostic,
+            additionalDiagnostics: [
+              for (final item in start.diagnostics)
+                if (item != start.targetDiagnostic) item,
+            ],
+            blocker: start.recoveryIssue == null
+                ? null
+                : ComposerRecoveryBlocker(start.recoveryIssue!),
+            inputCapabilities: model?.inputCapabilities ?? const [],
+            nowMs: now,
+          ),
+        );
+    }
+    final input = result.input;
+    if (input.stopAwaitingReceipt && !input.stopUnconfirmed) {
+      final started = input.stopCommand?.startedAtMs ?? 0;
+      final remaining =
+          started +
+          ComposerInputState.stopUnconfirmedAfter.inMilliseconds -
+          now;
+      if (started != 0 && remaining > 0) {
+        final timer = Timer(Duration(milliseconds: remaining), () {
+          _expiredStopStartedAtMs = started;
+          ref.invalidateSelf();
+        });
+        ref.onDispose(timer.cancel);
+      }
+    }
+    return result.copyWith(
+      modeCatalog:
+          ref.watch(modeCatalogStoreProvider).value ??
+          const ThreadModeCatalogView(),
+      submissionOperations: Set.unmodifiable(_submissionOperations),
+      submissionFailures: Map.unmodifiable(_submissionFailures),
+      actionFailure: _actionFailure,
     );
   }
 
-  T _observe<T>(Object lifecycle, ValueObservation<T> source) {
-    return observeClient(ref, source, (_) {
-      if (ref.mounted && identical(_lifecycle, lifecycle)) {
+  ComposerViewState? get _current => ref.mounted ? state.value : null;
+
+  Future<void> _run(
+    Future<void> Function() action, {
+    // Stop/continue failures are already owned and rendered by the command
+    // board. Only boundary/platform failures need the local action error row.
+    bool ownerReportsFailure = false,
+  }) {
+    if (!ref.mounted) return Future<void>.value();
+    _actionFailure = null;
+    // Call synchronously: Client must freeze/clear before the first await.
+    try {
+      final work = action();
+      return work.catchError((Object error) {
+        if (!ref.mounted) return;
+        if (!ownerReportsFailure) {
+          _actionFailure = error;
+          ref.invalidateSelf();
+        }
+      });
+    } catch (error) {
+      if (!ownerReportsFailure) {
+        _actionFailure = error;
         ref.invalidateSelf();
       }
-    });
+      return Future<void>.value();
+    }
   }
 
-  Future<void> submit(
-    String threadId, {
-    Future<void> Function()? beforeSubmit,
-  }) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .submit(beforeSubmit: beforeSubmit);
-
-  void updateDraft(String threadId, String text) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .updateDraft(text);
-
-  void refreshSession(String threadId) =>
-      ref.read(anyworkClientProvider).conversations.session(threadId).refresh();
-
-  Future<ThreadStopOutcome> stop(
-    String threadId, {
-    required String expectedExecutionId,
-  }) async {
-    final lifecycle = _lifecycle;
-    if (lifecycle == null || !ref.mounted) {
-      throw StateError('Composer view model is no longer active');
+  @override
+  void updateText(String text) {
+    if (_current?.input.enabled != true) return;
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        _client.drafts.existingComposer(threadId)?.updateDraft(text);
+      case StartComposerTarget(:final workspaceId):
+        _client.drafts.startDraft.updateDraft(workspaceId, text);
     }
-    final previousStartedAt = state.value?.stopCommand?.startedAtMs;
-    final outcome = await ref
-        .read(anyworkClientProvider)
-        .threadCommands
-        .stop(threadId, expectedExecutionId: expectedExecutionId);
-    if (!ref.mounted || !identical(_lifecycle, lifecycle)) return outcome;
-    switch (outcome) {
-      case StopQueued():
-        _queuedStopStartedAtMs = previousStartedAt;
-      case StopRequested():
-        _queuedStopStartedAtMs = null;
-      case StopNoExecution():
-        _queuedStopStartedAtMs = null;
-      case StopNotQualified():
-        _queuedStopStartedAtMs = null;
+  }
+
+  @override
+  void submit() {
+    final current = _current;
+    if (current == null ||
+        !current.input.enabled ||
+        !current.input.action.enterSubmits) {
+      return;
     }
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final timeline = ref.read(timelineSessionOwnerProvider);
+        final lease = timeline.lease(threadId);
+        final owner = _client.drafts.existingComposer(threadId);
+        if (owner == null) return;
+        _run(
+          () => owner.submit(
+            beforeSubmit: () async {
+              // Observation may disappear without cancelling the submitted input.
+              if (lease == null ||
+                  !lease.isMounted ||
+                  lease.isRetired ||
+                  timeline.lease(threadId) != lease) {
+                return;
+              }
+              await timeline.prepareComposerSubmissionDisplay(
+                threadId,
+                lease: lease,
+              );
+            },
+          ),
+        );
+      case StartComposerTarget(:final workspaceId):
+        final owner = _client.drafts.startDraft;
+        _run(() async {
+          await owner.submit(workspaceId);
+        });
+    }
+  }
+
+  @override
+  void stop(String expectedExecutionId) {
+    final current = _current?.thread;
+    if (target case ThreadComposerTarget(:final threadId)) {
+      final commands = _client.threadCommands;
+      final previous = current?.stopCommand?.startedAtMs;
+      _run(() async {
+        final outcome = await commands.stop(
+          threadId,
+          expectedExecutionId: expectedExecutionId,
+        );
+        if (!ref.mounted) return;
+        _queuedStopStartedAtMs = outcome is StopQueued ? previous : null;
+        ref.invalidateSelf();
+      }, ownerReportsFailure: true);
+    }
+  }
+
+  @override
+  void continueConversation() {
+    final thread = _current?.thread;
+    if (target case ThreadComposerTarget(:final threadId)) {
+      final continuation = thread?.continuation;
+      final revision = thread?.modelRoute?.revision;
+      if (continuation == null || revision == null) return;
+      final commands = _client.threadCommands;
+      _run(() async {
+        await commands.continueThread(
+          threadId,
+          continuation,
+          expectedModelRouteRevision: revision,
+        );
+      }, ownerReportsFailure: true);
+    }
+  }
+
+  void setMode(ThreadModeId mode) {
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final commands = _client.threadCommands;
+        _run(() => commands.setThreadMode(mode, threadId: threadId));
+      case StartComposerTarget(:final workspaceId):
+        _client.drafts.startDraft.setMode(workspaceId, mode);
+    }
+  }
+
+  void setModel(String accountId, String modelId) {
+    final current = _current;
+    if (current == null) return;
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final thread = current.thread!;
+        final effort = ModelRouteQueries.effortAfterModelSelection(
+          ModelRouteQueries.model(thread.accounts, accountId, modelId),
+          thread.displayRoute?.effort,
+        );
+        final commands = _client.threadCommands;
+        _run(
+          () => commands.setThreadModelRoute(
+            threadId: threadId,
+            accountId: accountId,
+            modelId: modelId,
+            effort: effort,
+          ),
+        );
+      case StartComposerTarget():
+        _client.drafts.startDraft.setModelIntent(
+          current.start!.mode,
+          accountId,
+          modelId,
+        );
+    }
+  }
+
+  void setEffort(String effort) {
+    final current = _current;
+    if (current == null) return;
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final route = current.thread?.displayRoute;
+        if (route == null) return;
+        final commands = _client.threadCommands;
+        _run(
+          () => commands.setThreadModelRoute(
+            threadId: threadId,
+            accountId: route.accountId,
+            modelId: route.modelId,
+            effort: effort,
+          ),
+        );
+      case StartComposerTarget():
+        _client.drafts.startDraft.setEffortIntent(current.start!.mode, effort);
+    }
+  }
+
+  void setWorkspaceMode(ThreadWorkspaceMode mode) {
+    if (target case StartComposerTarget(:final workspaceId)) {
+      _client.drafts.startDraft.setWorkspaceMode(workspaceId, mode);
+    }
+  }
+
+  bool isSafeExternalLink(String raw) => safeExternalWebUrl(raw) != null;
+
+  void openExternalLink(String raw) {
+    if (!ref.mounted) return;
+    final url = safeExternalWebUrl(raw);
+    if (url == null) return;
+    final launch = ref.read(externalUrlLauncherProvider);
+    _run(() => launch(url));
+  }
+
+  void setDelegationMode(DelegationMode? mode) {
+    if (target case StartComposerTarget(:final workspaceId)) {
+      _client.drafts.startDraft.setDelegationModeOverride(workspaceId, mode);
+    }
+  }
+
+  void setDelegationPreference(DelegationPreference? preference) {
+    if (target case StartComposerTarget(:final workspaceId)) {
+      _client.drafts.startDraft.setDelegationPreferenceOverride(
+        workspaceId,
+        preference,
+      );
+    }
+  }
+
+  void selectProject(StudioProject? project) {
+    final commands = _client.directoryCommands;
+    _run(
+      () => project == null || project.isStandalone
+          ? commands.beginStandaloneThread()
+          : commands.beginNewThread(workspaceId: project.id),
+    );
+  }
+
+  void refresh() {
+    if (target case ThreadComposerTarget(:final threadId)) {
+      _client.conversations.session(threadId).refresh();
+    }
+  }
+
+  ComposerAttachmentIntents get _attachments => ComposerAttachmentIntents(
+    target: target,
+    client: _client,
+    clipboard: ref.read(clipboardImageReaderProvider),
+    pickPaths: ref.read(attachmentPathPickerProvider),
+    input: () => _current?.input,
+    mode: _current?.start?.mode,
+  );
+  @override
+  void removeAttachment(String draftId) =>
+      _run(() => _attachments.remove(draftId));
+  @override
+  void addUrl(String url) => _run(() => _attachments.addUrl(url));
+  @override
+  void pickAttachments(
+    List<ModelInputCapabilityView> capabilities,
+    bool Function() isCurrent,
+  ) {
+    final intents = _attachments;
+    _run(() => intents.pick(capabilities, isCurrent));
+  }
+
+  @override
+  Future<void> dropAttachments(
+    List<DroppedFileTransfer> files,
+    bool Function() isCurrent,
+  ) {
+    final intents = _attachments;
+    return _run(() => intents.drop(files, isCurrent));
+  }
+
+  @override
+  void paste(ComposerTextPaste textPaste) {
+    final intents = _attachments;
+    _run(() => intents.paste(textPaste));
+  }
+
+  void retrySubmission(String inputId) =>
+      _submissionAction(inputId, retry: true);
+  void removeSubmission(String inputId) =>
+      _submissionAction(inputId, retry: false);
+
+  void _submissionAction(String inputId, {required bool retry}) {
+    if (!ref.mounted || !_submissionOperations.add(inputId)) return;
+    final client = _client;
+    _submissionFailures.remove(inputId);
+    Future<void> perform() async {
+      try {
+        switch (target) {
+          case ThreadComposerTarget(:final threadId):
+            final owner = client.drafts.existingComposer(threadId);
+            if (owner == null) {
+              throw StateError('Composer draft is unavailable');
+            }
+            if (retry) {
+              await owner.retrySubmission(inputId);
+            } else {
+              await owner.removeSubmission(inputId);
+            }
+          case StartComposerTarget(:final workspaceId):
+            if (retry) {
+              await client.drafts.startDraft.retrySubmission(
+                workspaceId,
+                inputId,
+              );
+            } else {
+              await client.drafts.startDraft.removeSubmission(
+                workspaceId,
+                inputId,
+              );
+            }
+        }
+      } catch (error) {
+        if (ref.mounted) _submissionFailures[inputId] = error;
+      } finally {
+        _submissionOperations.remove(inputId);
+        if (ref.mounted) ref.invalidateSelf();
+      }
+    }
+
+    // Register UI operation before notifying any synchronous observer.
+    unawaited(perform());
     ref.invalidateSelf();
-    return outcome;
   }
-
-  Future<ContinueThreadCommandReply> continueExecution(
-    String threadId,
-    ContinuationView continuation, {
-    required int expectedModelRouteRevision,
-  }) => ref
-      .read(anyworkClientProvider)
-      .threadCommands
-      .continueThread(
-        threadId,
-        continuation,
-        expectedModelRouteRevision: expectedModelRouteRevision,
-      );
-
-  Future<void> setThreadRoute({
-    required String threadId,
-    required String accountId,
-    required String modelId,
-    required String? effort,
-  }) => ref
-      .read(anyworkClientProvider)
-      .threadCommands
-      .setThreadModelRoute(
-        threadId: threadId,
-        accountId: accountId,
-        modelId: modelId,
-        effort: effort,
-      );
-
-  Future<void> setThreadMode(ThreadModeId mode, {required String threadId}) =>
-      ref
-          .read(anyworkClientProvider)
-          .threadCommands
-          .setThreadMode(mode, threadId: threadId);
-
-  Future<void> addLocalAttachments(String threadId, List<String> paths) async {
-    final client = ref.read(anyworkClientProvider);
-    final owner = client.drafts.composer(threadId);
-    await owner.addLocalAttachments(paths);
-  }
-
-  void reportDraftFailure(String threadId, Object error) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .reportFailure(error);
-
-  Future<void> pasteImage(String threadId, Uint8List bytes) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .addClipboardImage(bytes);
-
-  Future<void> addRemoteAttachment(String threadId, String url) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .addRemoteAttachment(url);
-
-  Future<void> removeAttachment(String threadId, String draftId) => ref
-      .read(anyworkClientProvider)
-      .drafts
-      .composer(threadId)
-      .removeAttachment(draftId);
-}
-
-String _childSourceLabel(StudioAgentView agent, SessionDirectoryRow? row) {
-  final title = row?.title.trim() ?? '';
-  if (title.isNotEmpty) return title;
-  final task = agent.task.trim();
-  if (task.isNotEmpty) return task;
-  final role = agent.role.trim();
-  return role.isNotEmpty ? role : agent.threadId;
 }

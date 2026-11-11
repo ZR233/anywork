@@ -27,6 +27,9 @@ final class _DraftTransport extends AccountsTestTransport
       StreamController<ThreadStreamFrame>.broadcast();
   final Completer<StudioPromptInput> promptEntered = Completer();
   final Completer<SubmitPromptReceipt> promptReply = Completer();
+  final Completer<StudioPromptInput> secondPromptEntered = Completer();
+  Completer<SubmitPromptReceipt>? secondPromptReply;
+  final List<StudioPromptInput> promptInputs = [];
   final Completer<void> compactEntered = Completer<void>();
   Completer<void>? compactGate;
   Completer<void> standalonePrepareEntered = Completer<void>();
@@ -83,6 +86,9 @@ final class _DraftTransport extends AccountsTestTransport
   Object? admissionFailure;
   int settingsWrites = 0;
   bool removeSucceeds = true;
+  Completer<void>? removeAttachmentEntered;
+  Completer<void>? removeAttachmentGate;
+  Object? removeAttachmentFailure;
   late _DraftConnection window;
   @override
   Future<ConversationFeed> openConversationFeed(
@@ -228,6 +234,7 @@ final class _DraftTransport extends AccountsTestTransport
     required int expectedModelRouteRevision,
   }) {
     promptCalls += 1;
+    promptInputs.add(input);
     promptRouteRevision = expectedModelRouteRevision;
     submittedRouteRevisions.add(expectedModelRouteRevision);
     if (promptFailure case final failure?) return Future.error(failure);
@@ -242,7 +249,13 @@ final class _DraftTransport extends AccountsTestTransport
         ),
       );
     }
-    if (!promptEntered.isCompleted) promptEntered.complete(input);
+    if (!promptEntered.isCompleted)
+      promptEntered.complete(input);
+    else if (!secondPromptEntered.isCompleted)
+      secondPromptEntered.complete(input);
+    if (promptCalls == 2 && secondPromptReply != null) {
+      return secondPromptReply!.future;
+    }
     return promptReply.future;
   }
 
@@ -305,6 +318,11 @@ final class _DraftTransport extends AccountsTestTransport
 
   @override
   Future<bool> removeAttachmentDraft(String draftId) async {
+    if (removeAttachmentEntered case final entered?) {
+      if (!entered.isCompleted) entered.complete();
+    }
+    await removeAttachmentGate?.future;
+    if (removeAttachmentFailure case final failure?) throw failure;
     if (removeSucceeds) removed.add(draftId);
     return removeSucceeds;
   }
@@ -783,8 +801,9 @@ void main() {
     expect(state.observed, isFalse);
     expect(state.effective, isFalse);
     expect(state.durable, isFalse);
+    expect(owner.state.forProject(_project.id).text, isEmpty);
     expect(
-      owner.state.forProject(_project.id).text,
+      owner.submissions.value[_project.id]!.single.text,
       'preserve conflicted new-thread draft',
     );
     await _close(client, transport);
@@ -828,7 +847,8 @@ void main() {
     expect(operation.phase, OperationPhase.syncFailed);
     expect(operation.receipt, isNotNull);
     expect(operation.durable, isFalse);
-    expect(owner.state.draft, 'keep conflicting submission');
+    expect(owner.state.draft, isEmpty);
+    expect(owner.submissions.value.single.text, 'keep conflicting submission');
     await _close(client, transport);
   });
 
@@ -845,7 +865,12 @@ void main() {
     );
     expect(transport.promptCalls, 0);
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
-    expect(owner.state.draft, 'prepare failure');
+    expect(owner.state.draft, isEmpty);
+    expect(
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.failed,
+    );
+    expect(owner.submissions.value.single.error, isA<StateError>());
     await _close(client, transport);
   });
 
@@ -856,14 +881,15 @@ void main() {
     final owner = client.drafts.composer('thread')..updateDraft('reentrant');
     Future<void>? nested;
     Future<void>? closing;
-    final watch = owner.source.watch((state) {
-      if (state.isSubmissionPending && nested == null) {
+    final watch = owner.submissions.watch((submissions) {
+      if (submissions.isNotEmpty && nested == null) {
         nested = owner.submit();
         closing = owner.close();
       }
     });
     final submission = owner.submit();
-    expect(identical(nested, submission), isTrue);
+    expect(nested, isNotNull);
+    expect(identical(nested, submission), isFalse);
     await submission;
     await closing;
     expect(transport.promptCalls, 0);
@@ -891,7 +917,8 @@ void main() {
     });
     final submission = owner.submit();
     final input = await transport.promptEntered.future;
-    expect(identical(nested, submission), isTrue);
+    expect(nested, isNotNull);
+    expect(identical(nested, submission), isFalse);
     expect(transport.promptCalls, 1);
     expect(closed, isFalse);
     transport.promptReply.complete(
@@ -938,8 +965,9 @@ void main() {
     expect(closed, isTrue);
     expect(transport.startCalls, 0);
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
+    expect(owner.state.forProject(_project.id).text, isEmpty);
     expect(
-      owner.state.forProject(_project.id).text,
+      owner.submissions.value[_project.id]!.single.text,
       'one new-thread preparation',
     );
     watch.cancel();
@@ -1193,16 +1221,11 @@ void main() {
     expect(transport.promptRouteRevision, 1);
     expect(input.attachmentDraftIds, ['attachment-1-0']);
     expect(owner.state.draft, 'new text typed during submission');
-    expect(owner.state.attachments.map((item) => item.id), [
-      'attachment-1-0',
-      'attachment-2-0',
-    ]);
+    expect(owner.state.attachments.map((item) => item.id), ['attachment-2-0']);
     expect(owner.state.isSubmissionPending, isFalse);
-    expect(
-      transport.removed,
-      isEmpty,
-      reason: 'The logical revision 9 draft still owns both staging IDs',
-    );
+    expect(transport.removed, [
+      'attachment-1-0',
+    ], reason: 'Only the submitted attachment leaves staging after acceptance');
     final operation = client.mutations.operations.single;
     expect(operation.observed, isTrue);
     expect(
@@ -1246,10 +1269,12 @@ void main() {
       ..updateDraft('frozen before wait');
     await owner.addLocalAttachments(['/frozen.bin']);
     final preparation = Completer<void>();
+    final preparationStarted = Completer<void>();
     var prepared = false;
     final submission = owner.submit(
       beforeSubmit: () async {
         prepared = true;
+        preparationStarted.complete();
         await preparation.future;
       },
     );
@@ -1258,6 +1283,8 @@ void main() {
     expect(sending.phase, ComposerSubmissionPhase.sending);
     expect(sending.text, 'frozen before wait');
     expect(sending.attachments.single.id, 'attachment-1-0');
+    expect(prepared, isFalse);
+    await preparationStarted.future;
     expect(prepared, isTrue);
 
     owner
@@ -1347,8 +1374,9 @@ void main() {
     final owner = client.drafts.composer('thread')..updateDraft('frozen text');
     await owner.addLocalAttachments(['/frozen.bin']);
     final preparation = Completer<void>();
-    final reentrant = owner.source.watch((state) {
-      if (state.isSubmissionPending && owner.state.draft == 'frozen text') {
+    final reentrant = owner.submissions.watch((submissions) {
+      if (submissions.isNotEmpty &&
+          submissions.single.phase == ComposerSubmissionPhase.sending) {
         owner.updateDraft('synchronous reentrant edit');
       }
     });
@@ -1406,6 +1434,501 @@ void main() {
     expect(preview, [1, 2, 3]);
     expect(() => preview[0] = 7, throwsUnsupportedError);
   });
+
+  test('failed composer echo owns its attachment and retry does not overwrite a new draft', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('frozen request');
+    await owner.addLocalAttachments(['/retry-owned.bin']);
+    final gate = Completer<void>();
+    final first = owner.submit(beforeSubmit: () => gate.future);
+    expect(owner.state.draft, isEmpty);
+    expect(owner.state.attachments, isEmpty);
+    final sending = owner.submissions.value.single;
+    expect(sending.text, 'frozen request');
+    expect(sending.attachments.single.id, 'attachment-1-0');
+    owner.updateDraft('new editor text');
+    gate.completeError(StateError('display not ready'));
+    await first;
+    final failed = owner.submissions.value.single;
+    expect(failed.phase, ComposerSubmissionPhase.failed);
+    expect(failed.error, isA<StateError>());
+    expect(owner.state.draft, 'new editor text');
+
+    final retry = owner.retrySubmission(failed.inputId);
+    final input = await transport.promptEntered.future;
+    expect(input.inputId, isNot(failed.inputId));
+    expect(input.text, 'frozen request');
+    expect(input.attachmentDraftIds, ['attachment-1-0']);
+    expect(owner.state.draft, 'new editor text');
+    expect(owner.submissions.value.single.inputId, input.inputId);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 13,
+      ),
+    );
+    await retry;
+    expect(owner.state.draft, 'new editor text');
+    expect(
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.accepted,
+    );
+    await _close(client, transport);
+  });
+
+  test('closing immediately after attachment retry releases both owners once without dispatch', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('retry then close');
+    await owner.addLocalAttachments(['/retry-close.bin']);
+    await owner.submit(
+      beforeSubmit: () =>
+          Future.error(StateError('known pre-dispatch failure')),
+    );
+    final failed = owner.submissions.value.single;
+    final retry = owner.retrySubmission(failed.inputId);
+    final closing = owner.close();
+    await expectLater(retry, completes);
+    await closing;
+    expect(transport.promptCalls, 0);
+    expect(transport.removed, ['attachment-1-0']);
+  });
+
+  test(
+    'removing a failed echo releases only its frozen attachment owner',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('failed payload');
+      await owner.addLocalAttachments(['/same-path.bin']);
+      await owner.submit(
+        beforeSubmit: () =>
+            Future.error(StateError('known pre-dispatch failure')),
+      );
+      final failed = owner.submissions.value.single;
+      owner.updateDraft('new payload');
+      await owner.addLocalAttachments(['/same-path.bin']);
+      await owner.removeSubmission(failed.inputId);
+      expect(owner.submissions.value, isEmpty);
+      expect(owner.state.draft, 'new payload');
+      expect(owner.state.attachments.map((item) => item.id), [
+        'attachment-2-0',
+      ]);
+      expect(transport.removed, ['attachment-1-0']);
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'composer close joins a removal before the echo-removal callback',
+    () async {
+      final transport = _DraftTransport()
+        ..removeAttachmentEntered = Completer<void>()
+        ..removeAttachmentGate = Completer<void>()
+        ..removeAttachmentFailure = StateError('remove transport failed');
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('known failed payload');
+      await owner.addLocalAttachments(['/remove-close.bin']);
+      await owner.submit(
+        beforeSubmit: () => Future.error(StateError('known dispatch failure')),
+      );
+      final inputId = owner.submissions.value.single.inputId;
+      Future<void>? closing;
+      var closeFinished = false;
+      final watch = owner.submissions.watch((items) {
+        if (items.isEmpty && closing == null) {
+          closing = owner.close().then((_) {
+            closeFinished = true;
+          });
+        }
+      });
+      final removal = owner.removeSubmission(inputId);
+      await transport.removeAttachmentEntered!.future;
+      expect(closing, isNotNull);
+      expect(closeFinished, isFalse);
+      transport.removeAttachmentGate!.complete();
+      await expectLater(removal, throwsA(isA<AttachmentCleanupUnresolved>()));
+      await expectLater(closing!, throwsA(isA<AttachmentCleanupUnresolved>()));
+      watch.cancel();
+      transport
+        ..removeAttachmentFailure = null
+        ..removeSucceeds = true;
+      await client.drafts.attachments.retryCleanup();
+    },
+  );
+
+  test('StartDraft close joins a removal registered before synchronous publication', () async {
+    final transport = _DraftTransport()
+      ..removeAttachmentEntered = Completer<void>()
+      ..removeAttachmentGate = Completer<void>();
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'failed new-thread payload');
+    await client.drafts.attachments.admitNewThread(
+      workspaceId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [
+        const AttachmentDraftSource.localFile('/start-remove-close.bin'),
+      ],
+    );
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    transport.startEvents.add(
+      const NewThreadStartFailed(
+        StudioFailure(
+          code: StudioFailureCode.internal,
+          message: 'known creation failure',
+          retryable: false,
+          correlationId: 'start-remove-close',
+        ),
+      ),
+    );
+    expect(await submitted, isFalse);
+    Future<void>? closing;
+    var closeFinished = false;
+    final watch = owner.submissions.watch((values) {
+      if (values.isEmpty && closing == null) {
+        closing = owner.close().then((_) {
+          closeFinished = true;
+        });
+      }
+    });
+    final inputId = owner.submissions.value[_project.id]!.single.inputId;
+    final removal = owner.removeSubmission(_project.id, inputId);
+    await transport.removeAttachmentEntered!.future;
+    expect(closing, isNotNull);
+    expect(closeFinished, isFalse);
+    transport.removeAttachmentGate!.complete();
+    await removal;
+    await closing;
+    expect(closeFinished, isTrue);
+    watch.cancel();
+    await _close(client, transport);
+    expect(request.input.text, 'failed new-thread payload');
+  });
+
+  test('composer close joins a removal started before synchronous echo notification', () async {
+    final transport = _DraftTransport()
+      ..removeAttachmentEntered = Completer<void>()
+      ..removeAttachmentGate = Completer<void>()
+      ..removeAttachmentFailure = StateError('delete failed');
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('removable failed input');
+    await owner.addLocalAttachments(['/remove-close.bin']);
+    await owner.submit(
+      beforeSubmit: () => Future.error(StateError('known send failure')),
+    );
+    final inputId = owner.submissions.value.single.inputId;
+    Future<void>? closing;
+    var closeFinished = false;
+    final watch = owner.submissions.watch((items) {
+      if (items.isEmpty && closing == null) {
+        closing = owner.close().then((_) {
+          closeFinished = true;
+        });
+      }
+    });
+    final removal = owner.removeSubmission(inputId);
+    await transport.removeAttachmentEntered!.future;
+    expect(closing, isNotNull);
+    expect(closeFinished, isFalse);
+    transport.removeAttachmentGate!.complete();
+    await expectLater(removal, throwsA(isA<AttachmentCleanupUnresolved>()));
+    await expectLater(closing!, throwsA(isA<AttachmentCleanupUnresolved>()));
+    expect(closeFinished, isFalse);
+    watch.cancel();
+    transport
+      ..removeAttachmentFailure = null
+      ..removeSucceeds = true;
+    await client.drafts.attachments.retryCleanup();
+    await expectLater(
+      _close(client, transport),
+      throwsA(isA<AttachmentCleanupUnresolved>()),
+    );
+  });
+
+  test(
+    'start close joins a failed echo removal registered before publication',
+    () async {
+      final transport = _DraftTransport()
+        ..removeAttachmentEntered = Completer<void>()
+        ..removeAttachmentGate = Completer<void>();
+      final client = await _client(transport);
+      final owner = client.drafts.startDraft;
+      owner.updateDraft(_project.id, 'new thread failed input');
+      await client.drafts.attachments.admitNewThread(
+        workspaceId: _project.id,
+        mode: ThreadModeId.simple,
+        sources: [const AttachmentDraftSource.localFile('/start-remove.bin')],
+      );
+      final submission = owner.submit(_project.id);
+      final request = await transport.startEntered.future;
+      transport.startEvents.add(
+        const NewThreadStartFailed(
+          StudioFailure(
+            code: StudioFailureCode.internal,
+            message: 'known creation failure',
+            retryable: false,
+            correlationId: 'start-remove-failure',
+          ),
+        ),
+      );
+      expect(await submission, isFalse);
+      Future<void>? closing;
+      var closeFinished = false;
+      final watch = owner.submissions.watch((values) {
+        if (values.isEmpty && closing == null) {
+          closing = owner.close().then((_) {
+            closeFinished = true;
+          });
+        }
+      });
+      final inputId = owner.submissions.value[_project.id]!.single.inputId;
+      final removal = owner.removeSubmission(_project.id, inputId);
+      await transport.removeAttachmentEntered!.future;
+      expect(closing, isNotNull);
+      expect(closeFinished, isFalse);
+      transport.removeAttachmentGate!.complete();
+      await removal;
+      await closing;
+      expect(closeFinished, isTrue);
+      watch.cancel();
+      await _close(client, transport);
+      expect(request.input.text, 'new thread failed input');
+    },
+  );
+
+  test(
+    'independent composer drafts submit through the existing lane in order',
+    () async {
+      final transport = _DraftTransport()
+        ..secondPromptReply = Completer<SubmitPromptReceipt>();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('first payload');
+      await owner.addLocalAttachments(['/first-lane.bin']);
+      final first = owner.submit();
+      final firstInput = await transport.promptEntered.future;
+
+      owner.updateDraft('second payload');
+      await owner.addLocalAttachments(['/second-lane.bin']);
+      final second = owner.submit();
+      expect(owner.state.draft, isEmpty);
+      expect(transport.promptCalls, 1);
+      expect(owner.submissions.value.map((item) => item.text), [
+        'first payload',
+        'second payload',
+      ]);
+
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: firstInput.inputId,
+          cursor: 20,
+        ),
+      );
+      await first;
+      final secondInput = await transport.secondPromptEntered.future;
+      expect(transport.promptInputs.map((item) => item.text), [
+        'first payload',
+        'second payload',
+      ]);
+      expect(secondInput.inputId, isNot(firstInput.inputId));
+      expect(secondInput.attachmentDraftIds, ['attachment-2-0']);
+      expect(owner.state.draft, isEmpty);
+
+      transport.secondPromptReply!.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: secondInput.inputId,
+          cursor: 21,
+        ),
+      );
+      await second;
+      expect(
+        owner.submissions.value.map((item) => item.phase),
+        everyElement(ComposerSubmissionPhase.accepted),
+      );
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'a later submission waits behind an earlier hook in beforeDispatch',
+    () async {
+      final transport = _DraftTransport()
+        ..secondPromptReply = Completer<SubmitPromptReceipt>();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('A with display hook');
+      final hook = Completer<void>();
+      final aFuture = owner.submit(beforeSubmit: () => hook.future);
+      owner.updateDraft('B without display hook');
+      final bFuture = owner.submit();
+      expect(transport.promptCalls, 0);
+
+      hook.complete();
+      final a = await transport.promptEntered.future;
+      expect(a.text, 'A with display hook');
+      transport.promptReply.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 30),
+      );
+      await aFuture;
+      final b = await transport.secondPromptEntered.future;
+      expect(b.text, 'B without display hook');
+      expect(transport.promptInputs.map((input) => input.text), [
+        'A with display hook',
+        'B without display hook',
+      ]);
+      transport.secondPromptReply!.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 31),
+      );
+      await bFuture;
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'retry reserves the lane before a subsequent independent composer submit',
+    () async {
+      final transport = _DraftTransport()
+        ..secondPromptReply = Completer<SubmitPromptReceipt>();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')..updateDraft('retry A');
+      await owner.addLocalAttachments(['/retry-lane.bin']);
+      await owner.submit(
+        beforeSubmit: () =>
+            Future.error(StateError('known failure before send')),
+      );
+      final failed = owner.submissions.value.single;
+      final retry = owner.retrySubmission(failed.inputId);
+      owner.updateDraft('independent B');
+      final bFuture = owner.submit();
+      expect(transport.promptCalls, 0);
+
+      final a = await transport.promptEntered.future;
+      expect(a.text, 'retry A');
+      transport.promptReply.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 32),
+      );
+      await retry;
+      final b = await transport.secondPromptEntered.future;
+      expect(b.text, 'independent B');
+      expect(transport.promptInputs.map((input) => input.text), [
+        'retry A',
+        'independent B',
+      ]);
+      transport.secondPromptReply!.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 33),
+      );
+      await bFuture;
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'a later draft cannot pass an earlier draft blocked in beforeDispatch',
+    () async {
+      final transport = _DraftTransport()
+        ..secondPromptReply = Completer<SubmitPromptReceipt>();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')
+        ..updateDraft('A with display hook');
+      final hook = Completer<void>();
+      final first = owner.submit(beforeSubmit: () => hook.future);
+      owner.updateDraft('B without display hook');
+      final second = owner.submit();
+      expect(transport.promptCalls, 0);
+
+      hook.complete();
+      final a = await transport.promptEntered.future;
+      expect(a.text, 'A with display hook');
+      expect(transport.promptInputs, [a]);
+      transport.promptReply.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 30),
+      );
+      await first;
+      final b = await transport.secondPromptEntered.future;
+      expect(b.text, 'B without display hook');
+      expect(transport.promptInputs.map((input) => input.text), [
+        'A with display hook',
+        'B without display hook',
+      ]);
+      transport.secondPromptReply!.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 31),
+      );
+      await second;
+      await _close(client, transport);
+    },
+  );
+
+  test(
+    'a retry reserves its lane position before a later draft submission',
+    () async {
+      final transport = _DraftTransport()
+        ..secondPromptReply = Completer<SubmitPromptReceipt>();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread')..updateDraft('retry A');
+      await owner.addLocalAttachments(['/retry-lane.bin']);
+      await owner.submit(
+        beforeSubmit: () =>
+            Future.error(StateError('known failure before send')),
+      );
+      final failed = owner.submissions.value.single;
+      final retry = owner.retrySubmission(failed.inputId);
+      owner.updateDraft('independent B');
+      final second = owner.submit();
+      expect(transport.promptCalls, 0);
+      final a = await transport.promptEntered.future;
+      expect(a.text, 'retry A');
+      transport.promptReply.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 32),
+      );
+      await retry;
+      final b = await transport.secondPromptEntered.future;
+      expect(b.text, 'independent B');
+      expect(transport.promptInputs.map((input) => input.text), [
+        'retry A',
+        'independent B',
+      ]);
+      transport.secondPromptReply!.complete(
+        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 33),
+      );
+      await second;
+      await _close(client, transport);
+    },
+  );
 
   test('actual start owner freezes complete route without settings writes and preserves later edits', () async {
     final transport = _DraftTransport();
@@ -1556,13 +2079,162 @@ void main() {
           .newThread(_project.id)
           .attachments
           .map((item) => item.id),
-      ['attachment-1-0', 'attachment-2-0'],
+      ['attachment-2-0'],
     );
-    expect(transport.removed, isEmpty);
+    expect(transport.removed, ['attachment-1-0']);
     await owner.discardProject(_project.id);
     expect(
       transport.removed,
       unorderedEquals(['attachment-1-0', 'attachment-2-0']),
+    );
+    await _close(client, transport);
+  });
+
+  test('StartDraft clear and creation failure preserve mode workspace and delegation context', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final canonical = client.settings.state.canonical!;
+    client.settings.merge(
+      SettingsStateSnapshot(
+        revision: canonical.revision + 1,
+        modelCatalogRevision: canonical.modelCatalogRevision,
+        modeModelRoutes: [
+          ...canonical.modeModelRoutes,
+          const ModeModelRouteView(
+            modeId: ThreadModeId.task,
+            accountId: 'account',
+            modelId: 'alpha',
+            effort: 'medium',
+          ),
+        ],
+        delegation: canonical.delegation,
+      ),
+    );
+    final owner = client.drafts.startDraft;
+    owner
+      ..updateDraft(_project.id, 'worktree task request')
+      ..setMode(_project.id, ThreadModeId.task)
+      ..setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree)
+      ..setDelegationModeOverride(_project.id, DelegationMode.profile)
+      ..setDelegationPreferenceOverride(
+        _project.id,
+        DelegationPreference.economy,
+      );
+
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    final duringPreparation = owner.state.forProject(_project.id);
+    expect(duringPreparation.text, isEmpty);
+    expect(duringPreparation.mode, ThreadModeId.task);
+    expect(duringPreparation.workspaceMode, ThreadWorkspaceMode.worktree);
+    expect(duringPreparation.delegationModeOverride, DelegationMode.profile);
+    expect(
+      duringPreparation.delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+    expect(request.mode, ThreadModeId.task);
+    expect(request.workspaceMode, ThreadWorkspaceMode.worktree.id);
+    transport.startEvents.add(
+      const NewThreadStartFailed(
+        StudioFailure(
+          code: StudioFailureCode.internal,
+          message: 'creation failed after local draft handoff',
+          retryable: false,
+          correlationId: 'start-context-survives',
+        ),
+      ),
+    );
+    expect(await submitted, isFalse);
+    final afterFailure = owner.state.forProject(_project.id);
+    expect(afterFailure.text, isEmpty);
+    expect(afterFailure.mode, ThreadModeId.task);
+    expect(afterFailure.workspaceMode, ThreadWorkspaceMode.worktree);
+    expect(afterFailure.delegationModeOverride, DelegationMode.profile);
+    expect(
+      afterFailure.delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+    expect(
+      owner.submissions.value[_project.id]!.single.text,
+      'worktree task request',
+    );
+    await owner.removeSubmission(
+      _project.id,
+      owner.submissions.value[_project.id]!.single.inputId,
+    );
+    await _close(client, transport);
+  });
+
+  test('StartDraft text clearing and failed creation preserve non-default selections', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final canonical = client.settings.state.canonical!;
+    client.settings.merge(
+      SettingsStateSnapshot(
+        revision: canonical.revision + 1,
+        modelCatalogRevision: canonical.modelCatalogRevision,
+        modeModelRoutes: [
+          ...canonical.modeModelRoutes,
+          const ModeModelRouteView(
+            modeId: ThreadModeId.task,
+            accountId: 'account',
+            modelId: 'alpha',
+            effort: 'medium',
+          ),
+        ],
+        delegation: canonical.delegation,
+      ),
+    );
+    final owner = client.drafts.startDraft;
+    owner
+      ..updateDraft(_project.id, 'preserve selected context')
+      ..setMode(_project.id, ThreadModeId.task)
+      ..setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree)
+      ..setDelegationModeOverride(_project.id, DelegationMode.profile)
+      ..setDelegationPreferenceOverride(
+        _project.id,
+        DelegationPreference.economy,
+      );
+
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+    final duringPreparation = owner.state.forProject(_project.id);
+    expect(duringPreparation.text, isEmpty);
+    expect(duringPreparation.mode, ThreadModeId.task);
+    expect(duringPreparation.workspaceMode, ThreadWorkspaceMode.worktree);
+    expect(duringPreparation.delegationModeOverride, DelegationMode.profile);
+    expect(
+      duringPreparation.delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+    transport.startEvents.add(
+      const NewThreadStartFailed(
+        StudioFailure(
+          code: StudioFailureCode.internal,
+          message: 'creation failed after handing off the draft',
+          retryable: false,
+          correlationId: 'preserve-start-context',
+        ),
+      ),
+    );
+    expect(await submitted, isFalse);
+    final afterFailure = owner.state.forProject(_project.id);
+    expect(afterFailure.text, isEmpty);
+    expect(afterFailure.mode, ThreadModeId.task);
+    expect(afterFailure.workspaceMode, ThreadWorkspaceMode.worktree);
+    expect(afterFailure.delegationModeOverride, DelegationMode.profile);
+    expect(
+      afterFailure.delegationPreferenceOverride,
+      DelegationPreference.economy,
+    );
+    expect(
+      owner.submissions.value[_project.id]!.single.text,
+      'preserve selected context',
+    );
+    expect(request.mode, ThreadModeId.task);
+    await owner.removeSubmission(
+      _project.id,
+      owner.submissions.value[_project.id]!.single.inputId,
     );
     await _close(client, transport);
   });
@@ -2019,11 +2691,7 @@ void main() {
     expect(preparation.failure, same(failure));
     expect(owner.state.forProject(_project.id).text, 'newer request');
     expect(
-      client.drafts.attachments.state
-          .newThread(_project.id)
-          .attachments
-          .single
-          .id,
+      owner.submissions.value[_project.id]!.single.attachments.single.id,
       'attachment-1-0',
     );
     expect(
@@ -2045,10 +2713,14 @@ void main() {
       same(preparation),
       reason: 'late progress cannot revive a terminal operation',
     );
+    await owner.removeSubmission(
+      _project.id,
+      owner.submissions.value[_project.id]!.single.inputId,
+    );
     await owner.discardProject(_project.id);
     expect(transport.removed, [
       'attachment-1-0',
-    ], reason: 'definite rejection released the frozen attachment owner');
+    ], reason: 'removing the failed echo releases its frozen attachment owner');
     await _close(client, transport);
   });
 
@@ -2071,10 +2743,42 @@ void main() {
     );
     expect(await owner.submit(_project.id), isFalse);
     expect(transport.startCalls, 1);
+    expect(owner.state.forProject(_project.id).text, isEmpty);
     expect(
-      owner.state.forProject(_project.id).text,
-      'do not duplicate this request',
+      owner.submissions.value[_project.id]!.single.phase,
+      ComposerSubmissionPhase.unknownOutcome,
     );
+    await _close(client, transport);
+  });
+
+  test('StartDraft input presentation before creation receipt does not cancel the real receipt', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'presented before create result');
+    final submitted = owner.submit(_project.id);
+    final request = await transport.startEntered.future;
+
+    owner.markInputsPresented([request.input.inputId]);
+    expect(owner.submissions.value, isEmpty);
+    final thread = _thread('presented-start');
+    transport.startReply.complete(
+      StartNewThreadResult(
+        thread: thread,
+        receipt: SubmitPromptReceipt(
+          threadId: thread.id,
+          inputId: request.input.inputId,
+          cursor: 10,
+        ),
+      ),
+    );
+    expect(await submitted, isTrue);
+    final operation = client.mutations.lookup(
+      OperationId(request.input.inputId),
+    )!;
+    expect(operation.state.value.phase, OperationPhase.awaitingObservation);
+    expect(operation.state.value.phase, isNot(OperationPhase.syncFailed));
+    expect(owner.submissions.value, isEmpty);
     await _close(client, transport);
   });
 
@@ -2107,8 +2811,9 @@ void main() {
       );
       expect(await owner.submit(_project.id), isFalse);
       expect(transport.startCalls, 1);
+      expect(owner.state.forProject(_project.id).text, isEmpty);
       expect(
-        owner.state.forProject(_project.id).text,
+        owner.submissions.value[_project.id]!.single.text,
         'keep an uncertain request',
       );
       await transport.startEvents.close();
@@ -2166,6 +2871,20 @@ void main() {
       owner.updateDraft('durable input');
       final submission = owner.submit();
       final input = await transport.promptEntered.future;
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: input.inputId,
+          cursor: 7,
+        ),
+      );
+      await submission;
+      final operation = client.mutations.lookup(OperationId(input.inputId))!;
+      expect(operation.state.value.observed, isFalse);
+      expect(operation.state.value.effective, isFalse);
+      expect(operation.state.value.durable, isFalse);
+      owner.markInputsPresented([input.inputId]);
+      expect(owner.submissions.value, isEmpty);
       await session.deliverWorkspace(
         _workspace(
           revision: 2,
@@ -2182,15 +2901,6 @@ void main() {
           ),
         ),
       );
-      transport.promptReply.complete(
-        SubmitPromptReceipt(
-          threadId: 'thread',
-          inputId: input.inputId,
-          cursor: 7,
-        ),
-      );
-      await submission;
-      final operation = client.mutations.lookup(OperationId(input.inputId))!;
       expect(operation.state.value.observed, isTrue);
       expect(operation.state.value.effective, isTrue);
       expect(operation.state.value.durable, isFalse);
@@ -2304,8 +3014,12 @@ void main() {
       1,
     ], reason: 'The command lane must not substitute a later mirror route');
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
-    expect(owner.state.draft, 'draft frozen on route one');
-    expect(owner.state.attachments.single.id, 'attachment-1-0');
+    expect(owner.state.draft, isEmpty);
+    expect(owner.submissions.value.single.text, 'draft frozen on route one');
+    expect(
+      owner.submissions.value.single.attachments.single.id,
+      'attachment-1-0',
+    );
     expect(transport.removed, isEmpty);
     await owner.discard();
     await _close(client, transport);
@@ -2331,7 +3045,11 @@ void main() {
           // 冻结目标与冻结附件在钩子运行前已经成立，后端此刻还没有收到提交。
           frozenTarget = client.mutations.operations.single.target;
           expect(transport.promptCalls, 0);
-          expect(owner.state, isA<SubmittingComposerThreadState>());
+          expect(owner.state.draft, isEmpty);
+          expect(
+            owner.submissions.value.single.phase,
+            ComposerSubmissionPhase.sending,
+          );
         },
       );
       final input = await transport.promptEntered.future;
@@ -2371,12 +3089,24 @@ void main() {
       client.mutations.operations.single.phase,
       isNot(OperationPhase.unknownOutcome),
     );
-    expect(owner.state, isA<FailedComposerThreadState>());
-    expect(owner.state.draft, 'send after display preparation');
-    expect(owner.state.attachments.single.id, 'attachment-1-0');
+    expect(owner.state, isA<IdleComposerThreadState>());
+    expect(owner.state.draft, isEmpty);
+    final failedInputId = owner.submissions.value.single.inputId;
+    expect(
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.failed,
+    );
+    expect(
+      owner.submissions.value.single.text,
+      'send after display preparation',
+    );
+    expect(
+      owner.submissions.value.single.attachments.single.id,
+      'attachment-1-0',
+    );
 
     // 草稿没有被永久封住：再次提交可以真正进入后端。
-    final submission = owner.submit();
+    final submission = owner.retrySubmission(failedInputId);
     final input = await transport.promptEntered.future;
     expect(transport.promptCalls, 1);
     expect(input.attachmentDraftIds, ['attachment-1-0']);
@@ -2868,11 +3598,10 @@ void main() {
           sources: [const AttachmentDraftSource.localFile('/retry.bin')],
         );
         final submit = owner.submit(_project.id);
-        final attachedId = client.drafts.attachments.state
-            .newThread(_project.id)
-            .attachments
-            .single
-            .id;
+        final attachedId =
+            owner.submissions.value[_project.id]!.single.attachments.single.id;
+        final failedInputId =
+            owner.submissions.value[_project.id]!.single.inputId;
 
         client.recovery.apply(
           RecoveryStateSnapshot(
@@ -2907,21 +3636,18 @@ void main() {
           client.mutations.latest('start:${_project.id}')?.state.value.phase,
           OperationPhase.rejected,
         );
+        expect(owner.state.forProject(_project.id).text, isEmpty);
         expect(
-          owner.state.forProject(_project.id).text,
+          owner.submissions.value[_project.id]!.single.text,
           'retry after queued recovery rejection',
         );
         expect(
-          client.drafts.attachments.state
-              .newThread(_project.id)
-              .attachments
-              .single
-              .id,
+          owner.submissions.value[_project.id]!.single.attachments.single.id,
           attachedId,
         );
 
         client.recovery.apply(RecoveryStateSnapshot(revision: 2, values: []));
-        final retry = owner.submit(_project.id);
+        final retry = owner.retrySubmission(_project.id, failedInputId);
         final request = await transport.startEntered.future;
         expect(transport.startCalls, 1);
         expect(request.input.text, 'retry after queued recovery rejection');
@@ -3333,8 +4059,12 @@ void main() {
             .toList();
         await owner.submit();
         expect(transport.promptCalls, 0);
-        expect(owner.state.draft, 'keep the closed Thread draft');
-        expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+        expect(owner.state.draft, isEmpty);
+        expect(owner.state.attachments, isEmpty);
+        expect(
+          owner.submissions.value.single.attachments.map((item) => item.id),
+          attachmentIds,
+        );
         await expectLater(
           client.threadCommands.submitComposer(
             'thread',
@@ -3474,12 +4204,12 @@ void main() {
     await queuedLaneCommand;
     await submit;
     expect(transport.promptCalls, 0);
-    expect(owner.state.draft, 'retry after storage resumes');
-    expect(owner.state.attachments.single.id, frozenAttachmentId);
-    expect(
-      owner.state.error,
-      contains('writer failed while composer command was queued'),
-    );
+    expect(owner.state.draft, isEmpty);
+    final failed = owner.submissions.value.single;
+    expect(failed.text, 'retry after storage resumes');
+    expect(failed.attachments.single.id, frozenAttachmentId);
+    expect(failed.phase, ComposerSubmissionPhase.failed);
+    expect(failed.error, isA<StudioFailure>());
     expect(
       client.mutations.operations.single.phase,
       OperationPhase.rejected,
@@ -3487,7 +4217,7 @@ void main() {
     );
 
     await session.deliverWorkspace(_workspace(revision: 3));
-    final retry = owner.submit();
+    final retry = owner.retrySubmission(failed.inputId);
     final input = await transport.promptEntered.future;
     expect(input.text, 'retry after storage resumes');
     expect(input.attachmentDraftIds, [frozenAttachmentId]);
@@ -3533,7 +4263,15 @@ void main() {
 
     await owner.submit();
     expect(transport.promptCalls, 1);
-    expect(owner.state.draft, 'do not duplicate a possibly accepted request');
+    expect(owner.state.draft, isEmpty);
+    expect(
+      owner.submissions.value.single.text,
+      'do not duplicate a possibly accepted request',
+    );
+    expect(
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.unknownOutcome,
+    );
     expect(
       client.mutations.operations.single.phase,
       OperationPhase.unknownOutcome,
@@ -3541,6 +4279,63 @@ void main() {
     await owner.submit();
     expect(transport.promptCalls, 1);
     await owner.discard();
+    await _close(client, transport);
+  });
+
+  test('a canonical input presentation retires an unknown composer echo without replacing new text', () async {
+    final transport = _DraftTransport()
+      ..promptFailure = const StudioFailure(
+        code: StudioFailureCode.storage,
+        message: 'transport outcome unknown',
+        retryable: false,
+        correlationId: 'presented-unknown-composer',
+      );
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread')
+      ..updateDraft('unknown frozen text');
+    await owner.addLocalAttachments(['/unknown-presented.bin']);
+    await owner.submit();
+    final unknown = owner.submissions.value.single;
+    expect(unknown.phase, ComposerSubmissionPhase.unknownOutcome);
+
+    owner.updateDraft('new local text');
+    owner.markInputsPresented([unknown.inputId]);
+    await owner.close();
+    expect(owner.submissions.value, isEmpty);
+    expect(owner.state.draft, 'new local text');
+    expect(owner.state.attachments, isEmpty);
+    expect(transport.removed, ['attachment-1-0']);
+    await _close(client, transport);
+  });
+
+  test('a canonical input presentation retires an unknown StartDraft echo and attachment', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    final owner = client.drafts.startDraft;
+    owner.updateDraft(_project.id, 'unknown StartDraft payload');
+    await client.drafts.attachments.admitNewThread(
+      workspaceId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/start-unknown.bin')],
+    );
+    final submitted = owner.submit(_project.id);
+    await transport.startEntered.future;
+    await transport.startEvents.close();
+    expect(await submitted, isFalse);
+    final unknown = owner.submissions.value[_project.id]!.single;
+    expect(unknown.phase, ComposerSubmissionPhase.unknownOutcome);
+
+    owner.updateDraft(_project.id, 'new StartDraft text');
+    owner.markInputsPresented([unknown.inputId]);
+    await owner.close();
+    expect(owner.submissions.value, isEmpty);
+    expect(owner.state.forProject(_project.id).text, 'new StartDraft text');
+    expect(
+      client.drafts.attachments.state.newThread(_project.id).attachments,
+      isEmpty,
+    );
+    expect(transport.removed, ['attachment-1-0']);
     await _close(client, transport);
   });
 
@@ -3564,15 +4359,19 @@ void main() {
     await owner.submit();
 
     expect(transport.promptCalls, 1);
-    expect(owner.submissions.value, isEmpty);
     expect(
-      owner.state.draft,
-      '继续这个子任务',
-      reason: 'A typed rejection never clears the user draft',
+      owner.submissions.value.single.phase,
+      ComposerSubmissionPhase.failed,
     );
-    expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+    expect(owner.submissions.value.single.text, '继续这个子任务');
+    expect(
+      owner.submissions.value.single.attachments.map((item) => item.id),
+      attachmentIds,
+    );
+    expect(owner.state.draft, isEmpty);
+    expect(owner.state.attachments, isEmpty);
     expect(owner.state.isSubmissionPending, isFalse);
-    expect(owner.state.error, isNotNull);
+    expect(owner.submissions.value.single.error, isNotNull);
     final operation = client.mutations.operations.single;
     expect(
       operation.failurePhase,

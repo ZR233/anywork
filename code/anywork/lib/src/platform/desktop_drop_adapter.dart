@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/widgets.dart';
 
@@ -31,7 +33,7 @@ class DesktopFileDropTarget extends StatelessWidget {
   final bool enabled;
   final VoidCallback onEnter;
   final VoidCallback onLeave;
-  final ValueChanged<List<DroppedFileTransfer>> onDrop;
+  final FutureOr<void> Function(List<DroppedFileTransfer>) onDrop;
   final Widget child;
 
   @override

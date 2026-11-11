@@ -2652,7 +2652,7 @@ details.cv-member > summary.cv-member-heading:hover {
   min-width: 0;
 }
 
-.cv-kbd-hint {
+.cv-composer-status {
   font-size: 11px;
   color: #96877a;
   padding-left: 2px;
@@ -3734,7 +3734,7 @@ details.cv-member > summary.cv-member-heading:hover {
   .cv-env-left {
     flex-wrap: wrap;
   }
-  .cv-kbd-hint,
+  .cv-composer-status,
   .cv-v-sep,
   .cv-frozen-bar {
     display: none;

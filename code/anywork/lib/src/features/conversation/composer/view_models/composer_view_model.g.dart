@@ -8,100 +8,43 @@ part of 'composer_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
+/// One target-bound presentation owner, not a second draft or submission owner.
 
-@ProviderFor(StartPageComposerViewModel)
-final startPageComposerViewModelProvider =
-    StartPageComposerViewModelProvider._();
+@ProviderFor(ComposerViewModel)
+final composerViewModelProvider = ComposerViewModelFamily._();
 
-final class StartPageComposerViewModelProvider
-    extends
-        $AsyncNotifierProvider<
-          StartPageComposerViewModel,
-          StartPageComposerViewState
-        > {
-  StartPageComposerViewModelProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'startPageComposerViewModelProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$startPageComposerViewModelHash();
-
-  @$internal
-  @override
-  StartPageComposerViewModel create() => StartPageComposerViewModel();
-}
-
-String _$startPageComposerViewModelHash() =>
-    r'4da4b842a209c227c7b5ed014ad7d74a6b8e6214';
-
-abstract class _$StartPageComposerViewModel
-    extends $AsyncNotifier<StartPageComposerViewState> {
-  FutureOr<StartPageComposerViewState> build();
-  @$mustCallSuper
-  @override
-  WhenComplete runBuild() {
-    final ref =
-        this.ref
-            as $Ref<
-              AsyncValue<StartPageComposerViewState>,
-              StartPageComposerViewState
-            >;
-    final element =
-        ref.element
-            as $ClassProviderElement<
-              AnyNotifier<
-                AsyncValue<StartPageComposerViewState>,
-                StartPageComposerViewState
-              >,
-              AsyncValue<StartPageComposerViewState>,
-              Object?,
-              Object?
-            >;
-    return element.handleCreate(ref, build);
-  }
-}
-
-@ProviderFor(ComposerDockViewModel)
-final composerDockViewModelProvider = ComposerDockViewModelFamily._();
-
-final class ComposerDockViewModelProvider
-    extends
-        $AsyncNotifierProvider<ComposerDockViewModel, ComposerDockViewState> {
-  ComposerDockViewModelProvider._({
-    required ComposerDockViewModelFamily super.from,
-    required String super.argument,
+/// One target-bound presentation owner, not a second draft or submission owner.
+final class ComposerViewModelProvider
+    extends $AsyncNotifierProvider<ComposerViewModel, ComposerViewState> {
+  /// One target-bound presentation owner, not a second draft or submission owner.
+  ComposerViewModelProvider._({
+    required ComposerViewModelFamily super.from,
+    required ComposerTarget super.argument,
   }) : super(
          retry: null,
-         name: r'composerDockViewModelProvider',
+         name: r'composerViewModelProvider',
          isAutoDispose: true,
          dependencies: null,
          $allTransitiveDependencies: null,
        );
 
   @override
-  String debugGetCreateSourceHash() => _$composerDockViewModelHash();
+  String debugGetCreateSourceHash() => _$composerViewModelHash();
 
   @override
   String toString() {
-    return r'composerDockViewModelProvider'
+    return r'composerViewModelProvider'
         ''
         '($argument)';
   }
 
   @$internal
   @override
-  ComposerDockViewModel create() => ComposerDockViewModel();
+  ComposerViewModel create() => ComposerViewModel();
 
   @override
   bool operator ==(Object other) {
-    return other is ComposerDockViewModelProvider && other.argument == argument;
+    return other is ComposerViewModelProvider && other.argument == argument;
   }
 
   @override
@@ -110,54 +53,54 @@ final class ComposerDockViewModelProvider
   }
 }
 
-String _$composerDockViewModelHash() =>
-    r'2f852d1132d92cbf2184c841c753f2cb39451963';
+String _$composerViewModelHash() => r'21f160230b6ec733e5d3e40ec7ffd2d600f951b0';
 
-final class ComposerDockViewModelFamily extends $Family
+/// One target-bound presentation owner, not a second draft or submission owner.
+
+final class ComposerViewModelFamily extends $Family
     with
         $ClassFamilyOverride<
-          ComposerDockViewModel,
-          AsyncValue<ComposerDockViewState>,
-          ComposerDockViewState,
-          FutureOr<ComposerDockViewState>,
-          String
+          ComposerViewModel,
+          AsyncValue<ComposerViewState>,
+          ComposerViewState,
+          FutureOr<ComposerViewState>,
+          ComposerTarget
         > {
-  ComposerDockViewModelFamily._()
+  ComposerViewModelFamily._()
     : super(
         retry: null,
-        name: r'composerDockViewModelProvider',
+        name: r'composerViewModelProvider',
         dependencies: null,
         $allTransitiveDependencies: null,
         isAutoDispose: true,
       );
 
-  ComposerDockViewModelProvider call(String threadId) =>
-      ComposerDockViewModelProvider._(argument: threadId, from: this);
+  /// One target-bound presentation owner, not a second draft or submission owner.
+
+  ComposerViewModelProvider call(ComposerTarget target) =>
+      ComposerViewModelProvider._(argument: target, from: this);
 
   @override
-  String toString() => r'composerDockViewModelProvider';
+  String toString() => r'composerViewModelProvider';
 }
 
-abstract class _$ComposerDockViewModel
-    extends $AsyncNotifier<ComposerDockViewState> {
-  late final _$args = ref.$arg as String;
-  String get threadId => _$args;
+/// One target-bound presentation owner, not a second draft or submission owner.
 
-  FutureOr<ComposerDockViewState> build(String threadId);
+abstract class _$ComposerViewModel extends $AsyncNotifier<ComposerViewState> {
+  late final _$args = ref.$arg as ComposerTarget;
+  ComposerTarget get target => _$args;
+
+  FutureOr<ComposerViewState> build(ComposerTarget target);
   @$mustCallSuper
   @override
   WhenComplete runBuild() {
     final ref =
-        this.ref
-            as $Ref<AsyncValue<ComposerDockViewState>, ComposerDockViewState>;
+        this.ref as $Ref<AsyncValue<ComposerViewState>, ComposerViewState>;
     final element =
         ref.element
             as $ClassProviderElement<
-              AnyNotifier<
-                AsyncValue<ComposerDockViewState>,
-                ComposerDockViewState
-              >,
-              AsyncValue<ComposerDockViewState>,
+              AnyNotifier<AsyncValue<ComposerViewState>, ComposerViewState>,
+              AsyncValue<ComposerViewState>,
               Object?,
               Object?
             >;

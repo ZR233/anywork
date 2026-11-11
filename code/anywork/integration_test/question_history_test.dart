@@ -7,7 +7,7 @@ import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/views/composer_dock_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
@@ -801,9 +801,13 @@ Future<void> _reportMissingQuestionControls({
       : container.read(threadSessionStoreProvider(diagnosticThreadId));
   final composer = diagnosticThreadId == null
       ? null
-      : container.read(composerDockViewModelProvider(diagnosticThreadId));
+      : container.read(
+          composerViewModelProvider(
+            ComposerTarget.thread(threadId: diagnosticThreadId),
+          ),
+        );
   final composerValue = switch (composer) {
-    AsyncData(:final value) => value,
+    AsyncData(:final value) => value.thread,
     _ => null,
   };
   final latestTurn = session?.workspace?.latestTurn;
@@ -876,10 +880,7 @@ Future<void> _reportMissingQuestionControls({
           },
     'widgets': <String, Object?>{
       'UserInputView': find.byType(UserInputView).evaluate().length,
-      'ComposerDockConnector': find
-          .byType(ComposerDockConnector)
-          .evaluate()
-          .length,
+      'Composer': find.byType(Composer).evaluate().length,
       'ComposerDockView': find.byType(ComposerDockView).evaluate().length,
     },
   };
@@ -1029,10 +1030,10 @@ Future<void> _submitPrompt(WidgetTester tester, String prompt) async {
       find.byType(PromptComposerView),
     );
     debugPrintSynchronously(
-      'Question submission failure: draft=${composer.composer.draft}, '
-      'pending=${composer.composer.isSubmissionPending}, '
-      'execution=${composer.execution?.id}/${composer.execution?.phase}, '
-      'blocker=${composer.blocker}, failure=${composer.failure}',
+      'Question submission failure: draft=${composer.state.composer.draft}, '
+      'pending=${composer.state.composer.isSubmissionPending}, '
+      'execution=${composer.state.execution?.id}/${composer.state.execution?.phase}, '
+      'blocker=${composer.state.blocker}, failure=${composer.state.failure}',
     );
     rethrow;
   }

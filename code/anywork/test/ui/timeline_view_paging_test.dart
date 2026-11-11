@@ -788,8 +788,16 @@ final class _DraftsRepository extends Fake implements DraftsRepository {
   _DraftsRepository(this.composerOwner);
   final _SubmissionOwner? composerOwner;
   @override
+  final StartSessionDraftOwner startDraft = _StartSubmissionOwner();
+  @override
   ComposerDraftOwner? existingComposer(String threadId) =>
       threadId == 'a' ? composerOwner : null;
+}
+
+final class _StartSubmissionOwner extends Fake
+    implements StartSessionDraftOwner {
+  @override
+  void markInputsPresented(Iterable<String> inputIds) {}
 }
 
 final class _SubmissionOwner extends Fake implements ComposerDraftOwner {

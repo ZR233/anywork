@@ -188,11 +188,11 @@ Map<String, Object?> timelineWaitFailureSnapshot({
     'composer': [
       for (final composer in composers)
         {
-          'enabled': composer.enabled,
-          'submissionLocked': composer.submissionLocked,
-          'blockerKind': composer.blocker?.runtimeType.toString(),
-          'failureKind': composer.failure?.runtimeType.toString(),
-          'failureReason': switch (composer.failure) {
+          'enabled': composer.state.enabled,
+          'submissionLocked': composer.state.submissionLocked,
+          'blockerKind': composer.state.blocker?.runtimeType.toString(),
+          'failureKind': composer.state.failure?.runtimeType.toString(),
+          'failureReason': switch (composer.state.failure) {
             ComposerFailureBlocker(:final reason) => reason?.name,
             _ => null,
           },

@@ -603,7 +603,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get preparationFailedTitle => '环境准备未完成';
 
   @override
-  String get preparationRetainedBody => '输入与附件已保留，可调整后重新发送。';
+  String get preparationRetainedBody => '输入与附件已作为独立提交保留。重试沿用本条原设置，不影响当前草稿。';
 
   @override
   String get preparationUnknownTitle => '尚未确认创建结果';
@@ -1290,6 +1290,24 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get composerStop => '停止';
+
+  @override
+  String get composerSubmissionSending => '正在发送';
+
+  @override
+  String get composerSubmissionAccepted => '已收到，等待同步';
+
+  @override
+  String get composerSubmissionFailed => '发送失败';
+
+  @override
+  String get composerSubmissionUnknown => '发送结果待确认';
+
+  @override
+  String get composerRetrySubmission => '重试';
+
+  @override
+  String get composerRemoveSubmission => '移除';
 
   @override
   String get compileModeSimple => '简洁';
@@ -2305,9 +2323,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get interactionPlanAdjustSubmit => '提交修改';
-
-  @override
-  String get interactionPlanFeedbackHint => 'Enter 提交修改 · Shift+Enter 换行';
 
   @override
   String get planExpandReading => '展开阅读';

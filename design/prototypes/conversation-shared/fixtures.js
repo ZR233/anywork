@@ -261,7 +261,7 @@
           <text x="1020" y="606" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="14" fill="#E1D4C5">已停止含未消费继续点 + 空草稿</text>
           <text x="1020" y="638" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="18" font-weight="600" fill="#FAF6EF">▶ 继续（空回车不误触恢复）</text>
 
-          <text x="132" y="732" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="15" fill="#66584E">提示：使用 Esc 关闭当前大图弹层，或使用键盘 ← / → 在当前草稿的多张粘贴图片间切换查看。</text>
+          <text x="132" y="732" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="15" fill="#66584E">提示：使用预览工具栏关闭大图，或切换查看当前草稿中的多张图片。</text>
         </svg>
       `)
     },
@@ -505,7 +505,7 @@
         queries: ['被锁定的选择器必须给出可见原因', '运行中发送并继续与草稿冻结'],
         results: [
           { title: 'design/19-studio-ui.md §19.2 动态工作模式与工作流状态', description: '被锁定的选择器必须给出可见原因，不得出现看似可点却静默吞掉点击的控件。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/Accessibility/ARIA' },
-          { title: 'design/19-studio-ui.md §19.11 运行中发送消息与剪贴板粘贴', description: '运行中无草稿显示停止，输入草稿后切换为发送并继续，Esc 停止并保留草稿。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/HTML/Element/dialog' }
+          { title: 'design/19-studio-ui.md §19.11 运行中发送消息与剪贴板粘贴', description: '运行中无草稿显示停止，输入草稿后切换为发送并继续，使用明确按钮请求停止。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/HTML/Element/dialog' }
         ] },
       { id: id + '-edit', kind: 'edit', title: '修改文件', target: 'conversation-shared/composer.js', status: 'completed', elapsed: 2,
         path: 'design/prototypes/conversation-shared/composer.js',
@@ -795,6 +795,15 @@
     },
 
     // Group 2: Runtime Session Composer & Locked Configuration Matrix
+    {
+      id: 'submission-failed',
+      group: 'composer',
+      stage: 'session',
+      empty: true,
+      label: '发送失败 · 原提交独立保留',
+      initialDraft: '这是正在编辑的下一条消息，不应被旧失败覆盖。',
+      hint: '上一条有效提交已交出并清空输入，失败内容仍留在原提交项；重试或移除只处理原提交，不影响下一条草稿。'
+    },
     {
       id: 'running-locked',
       group: 'composer',

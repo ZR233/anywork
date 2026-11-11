@@ -86,6 +86,45 @@ Widget _sidebar() => StudioSidebar(
 
 void main() {
   testWidgets(
+    'sidebar header keeps button and search actions without key hints',
+    (tester) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      var created = 0;
+      final searches = <String>[];
+      await tester.pumpWidget(
+        _host(
+          StatefulBuilder(
+            builder: (context, setState) => SidebarHeader(
+              searchController: controller,
+              filter: DirectoryFilter.all,
+              onSearchChanged: (value) => setState(() => searches.add(value)),
+              onClearSearch: () => setState(controller.clear),
+              onFilterChanged: (_) {},
+              onNewSession: () => created++,
+            ),
+          ),
+        ),
+      );
+      for (final hint in ['Ctrl+N', 'Ctrl+K', '⌘N', '⌘K']) {
+        expect(find.text(hint), findsNothing);
+      }
+      await tester.tap(find.byKey(StudioDriverKeys.newSession));
+      expect(created, 1);
+      await tester.enterText(
+        find.byKey(const ValueKey('sidebar-search')),
+        'query',
+      );
+      await tester.pump();
+      expect(searches, ['query']);
+      await tester.tap(find.byKey(const ValueKey('sidebar-search-clear')));
+      await tester.pump();
+      expect(controller.text, isEmpty);
+      expect(find.byKey(const ValueKey('sidebar-search-clear')), findsNothing);
+    },
+  );
+
+  testWidgets(
     'production per-ID content update leaves B, project, shell and local UI intact',
     (tester) async {
       final transport = _Transport();
@@ -364,7 +403,7 @@ void main() {
     },
   );
 
-  testWidgets('archived row hover keeps its available restore action', (
+  testWidgets('non-selectable archived row keeps its restore action visible', (
     tester,
   ) async {
     final actions = <SidebarThreadAction>[];
@@ -394,8 +433,10 @@ void main() {
             find.ancestor(of: restore, matching: find.byType(Visibility)).first,
           )
           .visible,
-      isFalse,
+      isTrue,
     );
+    await tester.tap(row);
+    expect(actions, isEmpty, reason: 'the archived row must not activate');
     await mouse.moveTo(tester.getCenter(row));
     await tester.pump(const Duration(milliseconds: 1));
     expect(

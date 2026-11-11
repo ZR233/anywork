@@ -3,15 +3,14 @@ import 'dart:async';
 import 'package:anywork_client/model_directory.dart';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork_client/studio_client.dart'
+    show ModelRouteQueries, ThreadModeCatalogView;
 
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
-import 'status_view.dart';
 
 /// One row of a [_QuietSelectorMenu].
 class _QuietMenuItem<T> {
@@ -181,8 +180,9 @@ void _explainSelection(
 }
 
 /// 根会话的模式选择器；起始页传新会话草稿，状态栏传当前 Thread 的 mode。
-class SessionModeSelector extends ConsumerWidget {
+class SessionModeSelector extends StatelessWidget {
   const SessionModeSelector({
+    required this.catalog,
     required this.mode,
     required this.onSelected,
     this.enabled = true,
@@ -194,6 +194,7 @@ class SessionModeSelector extends ConsumerWidget {
   });
 
   final ThreadModeId mode;
+  final ThreadModeCatalogView catalog;
   final ValueChanged<ThreadModeId> onSelected;
   final bool enabled;
   final String? snapshotDisplayName;
@@ -206,9 +207,8 @@ class SessionModeSelector extends ConsumerWidget {
   final ValueChanged<String>? onExplain;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // 只订阅 Mode catalog 本身；无关领域事件不重建该选择器。
-    final discovered = ref.watch(statusModeCatalogProvider);
+  Widget build(BuildContext context) {
+    final discovered = catalog.modes;
     final options = discovered.isEmpty
         ? ThreadModeId.values
         : discovered.map((descriptor) => descriptor.mode).toList();

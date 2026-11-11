@@ -45,68 +45,56 @@ class StatusBarItem extends StatefulWidget {
 }
 
 class _StatusBarItemState extends State<StatusBarItem> {
-  bool _hovering = false;
-
   @override
   Widget build(BuildContext context) {
     final foreground = context.colors.onSurfaceVariant;
-    final content = AnimatedContainer(
-      duration: const Duration(milliseconds: 120),
+    final content = SizedBox(
       height: 26,
-      padding: const EdgeInsets.symmetric(horizontal: 7),
-      decoration: BoxDecoration(
-        color: _hovering
-            ? context.colors.surface.withValues(alpha: 0.76)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(StudioRadii.xs),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (widget.icon != null) ...[
-            Icon(
-              widget.icon,
-              size: 13,
-              color: foreground.withValues(alpha: 0.76),
-            ),
-            const SizedBox(width: 7),
-          ],
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: widget.maxWidth),
-            child: Text(
-              widget.label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.labelSmall?.copyWith(
-                color: foreground,
-                height: 1,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.icon != null) ...[
+              Icon(
+                widget.icon,
+                size: 13,
+                color: foreground.withValues(alpha: 0.76),
+              ),
+              const SizedBox(width: 7),
+            ],
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: widget.maxWidth),
+              child: Text(
+                widget.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.text.labelSmall?.copyWith(
+                  color: foreground,
+                  height: 1,
+                ),
               ),
             ),
-          ),
-          if (widget.trailingIcon != null) ...[
-            const SizedBox(width: 3),
-            Icon(
-              widget.trailingIcon,
-              size: 14,
-              color: foreground.withValues(alpha: 0.56),
-            ),
+            if (widget.trailingIcon != null) ...[
+              const SizedBox(width: 3),
+              Icon(
+                widget.trailingIcon,
+                size: 14,
+                color: foreground.withValues(alpha: 0.56),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
-    );
-    final hoverable = MouseRegion(
-      onEnter: (_) => setState(() => _hovering = true),
-      onExit: (_) => setState(() => _hovering = false),
-      child: content,
     );
     final detailBuilder = widget.detailBuilder;
     final Widget readout = detailBuilder == null
-        ? hoverable
+        ? content
         : StudioHoverDetail(
             maxWidth: widget.detailWidth,
             semanticsLabel: widget.semanticsLabel ?? widget.label,
             detailBuilder: detailBuilder,
-            child: hoverable,
+            child: content,
           );
     final chip = Padding(
       padding: const EdgeInsets.only(right: 2),

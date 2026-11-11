@@ -635,14 +635,6 @@ class _PlanSplitViewState extends State<_PlanSplitView> {
     if (size != null) widget.onPlanWidthChanged(size);
   }
 
-  /// 方向键逐级调整：只给组件一个目标宽度，边界收敛仍由它的 min/max 完成。
-  void _adjustPlanWidth(double delta) {
-    final area = _planArea;
-    if (area == null) return;
-    final current = area.size ?? widget.defaultPlanWidth;
-    area.size = current + delta;
-  }
-
   void _resetPlanWidth() {
     final area = _planArea;
     if (area == null) return;
@@ -693,23 +685,17 @@ class _PlanSplitViewState extends State<_PlanSplitView> {
       thickness: themeData.dividerThickness,
       dragging: dragging,
       highlighted: highlighted,
-      onAdjust: _adjustPlanWidth,
-      onReset: _resetPlanWidth,
-      step: widget.resizeStep,
     );
   }
 }
 
-/// 计划分隔条：只承载键盘与语义，拖动与双击属于分栏组件。
-class _PlanDividerHandle extends StatefulWidget {
+/// 计划分隔条：承载语义，拖动与双击属于分栏组件。
+class _PlanDividerHandle extends StatelessWidget {
   const _PlanDividerHandle({
     required this.label,
     required this.thickness,
     required this.dragging,
     required this.highlighted,
-    required this.onAdjust,
-    required this.onReset,
-    required this.step,
     super.key,
   });
 
@@ -722,81 +708,24 @@ class _PlanDividerHandle extends StatefulWidget {
   final bool dragging;
   final bool highlighted;
 
-  /// 宽度增量，正值加宽计划、负值收窄。
-  final ValueChanged<double> onAdjust;
-
-  /// 恢复到默认宽度。
-  final VoidCallback onReset;
-
-  /// 方向键逐级调整的步长。
-  final double step;
-
-  @override
-  State<_PlanDividerHandle> createState() => _PlanDividerHandleState();
-}
-
-class _PlanDividerHandleState extends State<_PlanDividerHandle> {
-  bool _focused = false;
-
   @override
   Widget build(BuildContext context) {
-    final active = widget.dragging || widget.highlighted || _focused;
+    final active = dragging || highlighted;
     final color = active
         ? context.colors.primary.withValues(alpha: 0.65)
         : context.colors.outlineVariant.withValues(alpha: 0.7);
-    return FocusableActionDetector(
-      actions: {
-        _WidenPlanIntent: CallbackAction<_WidenPlanIntent>(
-          onInvoke: (_) {
-            widget.onAdjust(widget.step);
-            return null;
-          },
-        ),
-        _NarrowPlanIntent: CallbackAction<_NarrowPlanIntent>(
-          onInvoke: (_) {
-            widget.onAdjust(-widget.step);
-            return null;
-          },
-        ),
-        _ResetPlanWidthIntent: CallbackAction<_ResetPlanWidthIntent>(
-          onInvoke: (_) {
-            widget.onReset();
-            return null;
-          },
-        ),
-      },
-      shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.arrowLeft): _WidenPlanIntent(),
-        SingleActivator(LogicalKeyboardKey.arrowRight): _NarrowPlanIntent(),
-        SingleActivator(LogicalKeyboardKey.home): _ResetPlanWidthIntent(),
-      },
-      onShowFocusHighlight: (focused) => setState(() => _focused = focused),
-      mouseCursor: SystemMouseCursors.resizeColumn,
-      child: Semantics(
-        label: widget.label,
-        slider: true,
-        child: Tooltip(
-          message: widget.label,
-          child: ColoredBox(
-            color: color,
-            child: SizedBox(width: widget.thickness),
-          ),
+    return Semantics(
+      label: label,
+      slider: true,
+      child: Tooltip(
+        message: label,
+        child: ColoredBox(
+          color: color,
+          child: SizedBox(width: thickness),
         ),
       ),
     );
   }
-}
-
-class _WidenPlanIntent extends Intent {
-  const _WidenPlanIntent();
-}
-
-class _NarrowPlanIntent extends Intent {
-  const _NarrowPlanIntent();
-}
-
-class _ResetPlanWidthIntent extends Intent {
-  const _ResetPlanWidthIntent();
 }
 
 /// footer 预算低于该值时启用紧凑布局：让 composer 适度收起留白与输入行数（保留操作），
@@ -929,7 +858,15 @@ class _StudioStartPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(startPageComposerViewModelProvider);
+    final workspaceId = ref.watch(
+      selectionStoreProvider.select((selection) => selection.selectedProjectId),
+    );
+    final project = ref
+        .watch(projectStoreProvider)
+        .projects
+        ?.values
+        .where((project) => project.id == workspaceId)
+        .firstOrNull;
     final preparationState = ref.watch(_standalonePreparationStateProvider);
     void retryStandalonePreparation() {
       unawaited(
@@ -946,8 +883,7 @@ class _StudioStartPage extends ConsumerWidget {
       onRetry: retryStandalonePreparation,
     );
 
-    final projection = state.asData?.value;
-    if (projection == null) {
+    if (project == null) {
       return Scaffold(
         key: StudioDriverKeys.startPage,
         backgroundColor: context.colors.surface,
@@ -956,15 +892,7 @@ class _StudioStartPage extends ConsumerWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (state.hasError) ...[
-                  Text(state.error.toString()),
-                  TextButton(
-                    onPressed: () =>
-                        ref.invalidate(startPageComposerViewModelProvider),
-                    child: Text(context.l10n.sidebarRetry),
-                  ),
-                ] else
-                  const CircularProgressIndicator(),
+                const CircularProgressIndicator(),
                 if (preparationState.error case final error?)
                   failureView(error),
               ],
@@ -973,9 +901,7 @@ class _StudioStartPage extends ConsumerWidget {
         ),
       );
     }
-    final project = projection.project;
-    final standalone = project == null || project.isStandalone;
-    final preparation = projection.preparation;
+    final standalone = project.isStandalone;
     return Scaffold(
       key: StudioDriverKeys.startPage,
       backgroundColor: context.colors.surface,
@@ -997,29 +923,7 @@ class _StudioStartPage extends ConsumerWidget {
                       children: [
                         if (preparationState.error case final error?)
                           failureView(error),
-                        if (project != null && preparation != null)
-                          ThreadPreparationCard(
-                            key: ValueKey(preparation.inputId),
-                            project: project,
-                            preparation: preparation,
-                            onUseLocalDirectory:
-                                preparation.phase ==
-                                        NewThreadPreparationPhase.failed &&
-                                    preparation.workspaceMode ==
-                                        ThreadWorkspaceMode.worktree &&
-                                    projection.workspaceMode ==
-                                        ThreadWorkspaceMode.worktree
-                                ? () => ref
-                                      .read(anyworkClientProvider)
-                                      .drafts
-                                      .startDraft
-                                      .setWorkspaceMode(
-                                        project.id,
-                                        ThreadWorkspaceMode.local,
-                                      )
-                                : null,
-                          )
-                        else ...[
+                        ...[
                           Text(
                             context.l10n.startPageWelcome,
                             textAlign: TextAlign.center,
@@ -1042,7 +946,8 @@ class _StudioStartPage extends ConsumerWidget {
                           ),
                         ],
                         const SizedBox(height: 28),
-                        StartPageComposerDockConnector(
+                        Composer(
+                          target: ComposerTarget.start(workspaceId: project.id),
                           onAddProject: () =>
                               unawaited(showAddProjectDialog(context)),
                         ),

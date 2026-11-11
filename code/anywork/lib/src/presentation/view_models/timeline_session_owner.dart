@@ -756,6 +756,7 @@ final class TimelineSessionOwner {
     ];
     if (inputIds.isEmpty) return;
     client.drafts.existingComposer(threadId)?.markInputsPresented(inputIds);
+    client.drafts.startDraft.markInputsPresented(inputIds);
   }
 
   void _trackRetirement(TimelineDisplayLease lease) {

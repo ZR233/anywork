@@ -7,6 +7,7 @@ abstract interface class DraftSubmissionCommands {
     String threadId,
     StudioPromptInput input, {
     required int expectedModelRouteRevision,
+    Future<void> Function()? beforeDispatch,
   });
   Future<StartNewThreadResult?> submitNewThread({
     required String workspaceId,

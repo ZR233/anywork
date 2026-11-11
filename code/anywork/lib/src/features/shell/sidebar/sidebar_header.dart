@@ -1,14 +1,5 @@
 part of 'studio_sidebar.dart';
 
-/// 快捷键提示与设计契约一致：macOS 使用 Cmd，其余桌面使用 Ctrl。
-String sidebarShortcutLabel(BuildContext context, String key) {
-  final mac = switch (Theme.of(context).platform) {
-    TargetPlatform.macOS || TargetPlatform.iOS => true,
-    _ => false,
-  };
-  return mac ? '⌘$key' : 'Ctrl+$key';
-}
-
 class SidebarHeader extends StatelessWidget {
   const SidebarHeader({
     super.key,
@@ -75,12 +66,6 @@ class SidebarHeader extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Text(
-                  sidebarShortcutLabel(context, 'N'),
-                  style: context.text.labelSmall?.copyWith(
-                    color: context.colors.onSurfaceVariant,
-                  ),
-                ),
               ],
             ),
           ),
@@ -109,15 +94,7 @@ class SidebarHeader extends StatelessWidget {
                 minHeight: height,
               ),
               suffixIcon: searchController.text.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.only(right: 10),
-                      child: Text(
-                        sidebarShortcutLabel(context, 'K'),
-                        style: context.text.labelSmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      ),
-                    )
+                  ? null
                   : _tileIconButton(
                       key: const ValueKey('sidebar-search-clear'),
                       tooltip: context.l10n.settingsCancel,

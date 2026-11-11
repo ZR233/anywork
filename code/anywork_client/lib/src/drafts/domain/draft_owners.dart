@@ -17,6 +17,8 @@ abstract interface class ComposerDraftOwner {
   Future<void> addClipboardImage(Uint8List pngBytes);
   Future<void> removeAttachment(String draftId);
   Future<void> submit({Future<void> Function()? beforeSubmit});
+  Future<void> retrySubmission(String inputId);
+  Future<void> removeSubmission(String inputId);
   void markInputsPresented(Iterable<String> inputIds);
   Future<void> discard();
   Future<void> close();
@@ -25,6 +27,7 @@ abstract interface class ComposerDraftOwner {
 abstract interface class StartSessionDraftOwner {
   StartSessionDraft get state;
   ValueObservation<StartSessionDraft> get source;
+  ValueObservation<Map<String, List<ComposerSubmission>>> get submissions;
   void updateDraft(String workspaceId, String text);
   void setMode(String workspaceId, ThreadModeId mode);
   void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode);
@@ -36,6 +39,9 @@ abstract interface class StartSessionDraftOwner {
   void setModelIntent(ThreadModeId mode, String accountId, String modelId);
   void setEffortIntent(ThreadModeId mode, String effort);
   Future<bool> submit(String workspaceId);
+  Future<bool> retrySubmission(String workspaceId, String inputId);
+  Future<void> removeSubmission(String workspaceId, String inputId);
+  void markInputsPresented(Iterable<String> inputIds);
   ModeModelRouteView resolveRoute(ThreadModeId mode);
   Future<void> discardProject(String workspaceId);
   Future<void> close();
