@@ -35,6 +35,12 @@ platforms: ["windows", "linux", "macos"]
 
 System, user, and external skills are read-only. To customize one, create a project skill with the same name or create a project-specific companion skill.
 
+This restriction concerns installed skill sources and runtime self-learning.
+When explicitly developing anywork's bundled skills in its source repository,
+edit the canonical `code/pl-studio-runtime/assets/skills/` assets through the
+repository workflow, not the installed system cache or `skill_manage`. Preserve
+the distinction between product-wide guidance and project-specific experience.
+
 ## Supported Files
 
 Keep `SKILL.md` concise. Put additional context in:

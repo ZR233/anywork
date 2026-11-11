@@ -9,6 +9,8 @@ metadata:
 
 Use the current formats below to configure anywork. Read only the reference for
 the requested feature; do not copy another client's JSON configuration into anywork.
+This main document is an index: load the selected support file through the skill
+reader, not a guessed installation path.
 
 ## Find the correct location
 
