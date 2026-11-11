@@ -1,10 +1,7 @@
 //! Receipt loss is injected at the public HTTP/2 boundary, without production test hooks.
 use anyhow::{Context, ensure};
 use pl_protocol::remote::*;
-use pl_remote_helper::{
-    budget::{ResourceBudget, ResourcePolicy},
-    transport::{self, Bytes, Client},
-};
+use pl_remote_helper::transport::{self, Bytes, Client};
 use sha2::{Digest, Sha256};
 use std::{
     path::Path,
@@ -15,7 +12,6 @@ use std::{
 struct Attachment {
     child: tokio::process::Child,
     wire: Client,
-    budget: ResourceBudget,
     session: RemoteSession,
 }
 impl Attachment {
@@ -32,15 +28,10 @@ impl Attachment {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
-        let allocation = ResourcePolicy::default().allocation()?;
-        let budget = ResourceBudget::new(allocation)?;
-        let wire = Client::connect(
-            transport::Io {
-                reader: child.stdout.take().context("stdout")?,
-                writer: child.stdin.take().context("stdin")?,
-            },
-            allocation,
-        )
+        let wire = Client::connect(transport::Io {
+            reader: child.stdout.take().context("stdout")?,
+            writer: child.stdin.take().context("stdin")?,
+        })
         .await?;
         let request = session.map_or(
             RemoteRequest::Hello {
@@ -48,16 +39,13 @@ impl Attachment {
             },
             |session| RemoteRequest::Attach { session },
         );
-        let reply = wire
-            .request("handshake", 0, &request, Bytes::new(), &budget)
-            .await?;
+        let reply = wire.request("handshake", 0, &request, Bytes::new()).await?;
         let RemoteResponse::Hello(hello) = reply.response else {
             anyhow::bail!("expected hello");
         };
         Ok(Self {
             child,
             wire,
-            budget,
             session: hello.session,
         })
     }
@@ -74,7 +62,6 @@ impl Attachment {
                 self.session.epoch,
                 &request,
                 Bytes::copy_from_slice(body),
-                &self.budget,
             )
             .await?;
         match reply.response {
@@ -136,7 +123,6 @@ async fn reconnect(executable: &Path, current: &mut Attachment) -> anyhow::Resul
             session.epoch,
             &RemoteRequest::Heartbeat,
             Bytes::new(),
-            &current.budget,
         )
         .await?;
     ensure!(matches!(
@@ -344,7 +330,6 @@ async fn exercise(
                 max_bytes: 1,
             },
             Bytes::new(),
-            &attachment.budget,
         )
         .await?;
     ensure!(matches!(

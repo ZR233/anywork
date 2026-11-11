@@ -17,36 +17,7 @@ pub(super) async fn spawn(
     if client.is_closing() {
         return Err(RemoteClientError::Disconnected);
     }
-    let process_slot = tokio::select! {
-        biased;
-        _ = startup_stopped(start.as_ref()) => return Err(RemoteClientError::Cancelled),
-        slot = client.inner.process_slots.acquire(&client.inner.stopped) => slot?,
-    };
-    let quantum = client.fragment_bytes();
-    let framing = base64::encoded_len(quantum, true)
-        .unwrap_or(usize::MAX)
-        .saturating_add(std::mem::size_of::<RemoteOutputRecord>());
-    let (_, startup_cost, startup_reply) =
-        request_cost(&client.inner, &RemoteRequest::Spawn(request.clone()), 0)?;
-    let (_, input_cost, _) = request_cost(
-        &client.inner,
-        &RemoteRequest::WriteStdin {
-            process_id: request.process_id.clone(),
-            offset: u64::MAX,
-        },
-        quantum,
-    )?;
-    // IO, startup and the next input exchange are one reservation. No command can consume
-    // all host memory and then wait for a second reservation required to make progress.
-    let memory_cost = quantum
-        .saturating_mul(4)
-        .saturating_add(framing)
-        .saturating_add(startup_cost.max(input_cost));
-    let memory = Arc::new(tokio::select! {
-        biased;
-        _ = startup_stopped(start.as_ref()) => return Err(RemoteClientError::Cancelled),
-        memory = client.inner.budget.reserve(memory_cost, &client.inner.stopped) => memory?,
-    });
+    let quantum = REMOTE_IO_CHUNK_BYTES;
     let (stdin, input) = tokio::io::duplex(quantum);
     let (stdout, output) = tokio::io::duplex(quantum);
     let (stderr, errors) = tokio::io::duplex(quantum);
@@ -71,7 +42,6 @@ pub(super) async fn spawn(
         move |cancellation| {
             let owner = inner.clone();
             let task = inner.streams.spawn(async move {
-                let _process_slot = process_slot;
                 let _workspace = workspace;
                 supervise(
                     owner,
@@ -80,9 +50,7 @@ pub(super) async fn spawn(
                         input,
                         output,
                         errors,
-                        memory,
                         quantum,
-                        startup_reply,
                         progress,
                         start,
                     },
@@ -105,20 +73,11 @@ pub(super) async fn spawn(
     Ok(command)
 }
 
-async fn startup_stopped(start: Option<&crate::command::CommandStartControl>) {
-    match start {
-        Some(start) => start.stopped().await,
-        None => std::future::pending().await,
-    }
-}
-
 struct CommandStreams {
     input: DuplexStream,
     output: DuplexStream,
     errors: DuplexStream,
-    memory: Arc<pl_remote_helper::budget::ByteLease>,
     quantum: usize,
-    startup_reply: usize,
     progress: watch::Sender<crate::command::CommandInputProgress>,
     start: Option<crate::command::CommandStartControl>,
 }
@@ -134,9 +93,7 @@ async fn supervise(
         input,
         output,
         errors,
-        memory,
         quantum,
-        startup_reply,
         progress,
         start,
     } = streams;
@@ -146,19 +103,12 @@ async fn supervise(
     let result = if cancellation.is_cancelled() {
         Err(RemoteClientError::Cancelled)
     } else {
-        submit_reserved(
+        submit_request(
             &inner,
             RemoteRequest::Spawn(request),
             Bytes::new(),
             None,
-            ReplyMemory::Shared {
-                _lease: memory.clone(),
-            },
-            startup_reply,
-            SubmissionControl {
-                start,
-                ..Default::default()
-            },
+            start,
         )
         .await
         .unwrap_or(Err(RemoteClientError::Disconnected))
@@ -170,12 +120,7 @@ async fn supervise(
     if let Err(error) = result {
         let reason = error.to_string();
         let _ = started.send(Err(error));
-        let _ = request_inner(
-            &inner,
-            RemoteRequest::ReleaseProcess { process_id: id },
-            &[],
-        )
-        .await;
+        let _ = release_inner(&inner, RemoteRequest::ReleaseProcess { process_id: id }).await;
         return Err(reason);
     }
     let _ = started.send(Ok(()));
@@ -237,14 +182,12 @@ async fn supervise(
     let stdin_owner = inner.clone();
     let input_id = id.clone();
     let input_stop = stop_input.clone();
-    let input_memory = memory.clone();
     let mut input = inner.streams.spawn(async move {
         let result = forward_input(
             &stdin_owner,
             &input_id,
             input,
             &input_stop,
-            input_memory,
             quantum,
             &progress,
         )
@@ -314,12 +257,7 @@ async fn supervise(
             let settled = wait_process(&inner, id.clone()).await;
             let release = match settled {
                 Ok(_) => {
-                    request_inner(
-                        &inner,
-                        RemoteRequest::ReleaseProcess { process_id: id },
-                        &[],
-                    )
-                    .await
+                    release_inner(&inner, RemoteRequest::ReleaseProcess { process_id: id }).await
                 }
                 Err(error) => Err(error),
             };
@@ -329,12 +267,8 @@ async fn supervise(
             });
         }
     };
-    if let Err(error) = request_inner(
-        &inner,
-        RemoteRequest::ReleaseProcess { process_id: id },
-        &[],
-    )
-    .await
+    if let Err(error) =
+        release_inner(&inner, RemoteRequest::ReleaseProcess { process_id: id }).await
     {
         failure.get_or_insert_with(|| error.to_string());
     }
@@ -374,7 +308,6 @@ async fn forward_input(
     id: &str,
     mut input: DuplexStream,
     stop: &CancellationToken,
-    memory: Arc<pl_remote_helper::budget::ByteLease>,
     quantum: usize,
     progress: &watch::Sender<crate::command::CommandInputProgress>,
 ) -> Result<(), RemoteClientError> {
@@ -397,19 +330,8 @@ async fn forward_input(
                 offset,
             }
         };
-        let (_, _, reply_limit) = request_cost(inner, &request, count)?;
         bytes.truncate(count);
-        let response = submit_reserved(
-            inner,
-            request,
-            Bytes::from(bytes),
-            None,
-            ReplyMemory::Shared {
-                _lease: memory.clone(),
-            },
-            reply_limit,
-            SubmissionControl::default(),
-        );
+        let response = submit_request(inner, request, Bytes::from(bytes), None, None);
         let reply = tokio::select! {
             reply = response => reply.unwrap_or(Err(RemoteClientError::Disconnected))?,
             _ = stop.cancelled() => return Ok(()),
@@ -446,7 +368,7 @@ async fn forward_output(
     let stop = ack_stop.clone();
     let ack_inner = inner.clone();
     let ack_id = id.to_owned();
-    let acknowledgement = inner.streams.spawn(async move {
+    let mut acknowledgement = inner.streams.spawn(async move {
         loop {
             tokio::select! {
                 _ = stop.cancelled() => return Ok::<(), RemoteClientError>(()),
@@ -465,25 +387,53 @@ async fn forward_output(
         let mut reset_generation = None;
         loop {
             let (generation, wire) = ready(inner).await?;
-            let epoch = inner.hello.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map_or(0, |h| h.session.epoch);
+            let epoch = inner
+                .hello
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map_or(0, |h| h.session.epoch);
             let response = match wire.output(id, sequence, epoch).await {
                 Ok(response) => response,
                 Err(error) => {
-                    let disconnected = wire.is_closed() || error.get_ref().and_then(|source| source.downcast_ref::<h2::Error>())
-                        .is_some_and(|error| error.is_io() || error.is_go_away());
-                    if disconnected { mark_detached(inner, generation, format!("process output transport: {error}")); wire.close().await.ok(); continue; }
-                    if reset_generation != Some(generation) { reset_generation = Some(generation); continue; }
-                    return Err(RemoteClientError::Protocol(format!("process observer could not reopen: {error}")));
+                    let disconnected = wire.is_closed()
+                        || error
+                            .get_ref()
+                            .and_then(|source| source.downcast_ref::<h2::Error>())
+                            .is_some_and(|error| error.is_io() || error.is_go_away());
+                    if disconnected {
+                        mark_detached(
+                            inner,
+                            generation,
+                            format!("process output transport: {error}"),
+                        );
+                        wire.close().await.ok();
+                        continue;
+                    }
+                    if reset_generation != Some(generation) {
+                        reset_generation = Some(generation);
+                        continue;
+                    }
+                    return Err(RemoteClientError::Protocol(format!(
+                        "process observer could not reopen: {error}"
+                    )));
                 }
             };
-            if !response.headers().get("content-type").is_some_and(|v| v == transport::EVENT_CONTENT) {
-                let reply = transport::receive_reply(response, &inner.control, &inner.stopped).await?;
+            if !response
+                .headers()
+                .get("content-type")
+                .is_some_and(|v| v == transport::EVENT_CONTENT)
+            {
+                let reply = transport::receive_reply(response, &inner.stopped).await?;
                 return Err(response_error(reply.response));
             }
             let raw = futures::stream::unfold(response.into_body(), |mut body| async move {
                 match body.data().await {
                     Some(Ok(bytes)) => {
-                        let result = body.flow_control().release_capacity(bytes.len()).map(|_| bytes);
+                        let result = body
+                            .flow_control()
+                            .release_capacity(bytes.len())
+                            .map(|_| bytes);
                         Some((result, body))
                     }
                     Some(Err(error)) => Some((Err(error), body)),
@@ -499,27 +449,55 @@ async fn forward_output(
             } {
                 let event = match event {
                     Ok(event) => event,
-                    Err(eventsource_stream::EventStreamError::Transport(error)) if wire.is_closed() || error.is_io() || error.is_go_away() => {
-                        mark_detached(inner, generation, format!("process output transport: {error}"));
+                    Err(eventsource_stream::EventStreamError::Transport(error))
+                        if wire.is_closed() || error.is_io() || error.is_go_away() =>
+                    {
+                        mark_detached(
+                            inner,
+                            generation,
+                            format!("process output transport: {error}"),
+                        );
                         wire.close().await.ok();
                         break;
                     }
-                    Err(eventsource_stream::EventStreamError::Transport(error)) if error.is_reset() && reset_generation != Some(generation) => {
+                    Err(eventsource_stream::EventStreamError::Transport(error))
+                        if error.is_reset() && reset_generation != Some(generation) =>
+                    {
                         reset_generation = Some(generation);
                         reopen = true;
                         break;
                     }
-                    Err(error) => return Err(RemoteClientError::Protocol(format!("process output stream: {error}"))),
+                    Err(error) => {
+                        return Err(RemoteClientError::Protocol(format!(
+                            "process output stream: {error}"
+                        )));
+                    }
                 };
-                let record: RemoteOutputRecord = serde_json::from_str(&event.data).map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
-                if record.sequence <= sequence { continue; }
-                if record.sequence != sequence + 1 { return Err(RemoteClientError::Protocol("process output sequence gap".into())); }
+                let record: RemoteOutputRecord = serde_json::from_str(&event.data)
+                    .map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
+                if record.sequence <= sequence {
+                    continue;
+                }
+                if record.sequence != sequence + 1 {
+                    return Err(RemoteClientError::Protocol(
+                        "process output sequence gap".into(),
+                    ));
+                }
                 match record.event {
                     RemoteEvent::ProcessOutput(output) => {
-                        if output.process_id != id { return Err(RemoteClientError::Protocol("process output identity mismatch".into())); }
-                        let bytes = STANDARD.decode(record.bytes).map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
+                        if output.process_id != id {
+                            return Err(RemoteClientError::Protocol(
+                                "process output identity mismatch".into(),
+                            ));
+                        }
+                        let bytes = STANDARD
+                            .decode(record.bytes)
+                            .map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
                         if !cancellation.is_cancelled() {
-                            let write = match output.stream { RemoteOutputStream::Stdout => stdout.write_all(&bytes), RemoteOutputStream::Stderr => stderr.write_all(&bytes) };
+                            let write = match output.stream {
+                                RemoteOutputStream::Stdout => stdout.write_all(&bytes),
+                                RemoteOutputStream::Stderr => stderr.write_all(&bytes),
+                            };
                             tokio::select! {
                                 result = write => { if let Err(error) = result && error.kind() != io::ErrorKind::BrokenPipe { return Err(error.into()); } },
                                 _ = cancellation.cancelled() => {},
@@ -528,7 +506,11 @@ async fn forward_output(
                         }
                     }
                     RemoteEvent::ProcessExit(exit) => {
-                        if exit.process_id != id { return Err(RemoteClientError::Protocol("process exit identity mismatch".into())); }
+                        if exit.process_id != id {
+                            return Err(RemoteClientError::Protocol(
+                                "process exit identity mismatch".into(),
+                            ));
+                        }
                         consumed.send_replace(record.sequence);
                         tokio::select! {
                             _ = inner.stopped.cancelled() => return Err(RemoteClientError::Disconnected),
@@ -542,15 +524,26 @@ async fn forward_output(
             }
             // A single stream reset reopens only this observer from its consumed sequence.
             // Malformed output and repeated refusal remain local to the command owner.
-            if reopen { continue; }
+            if reopen {
+                continue;
+            }
             if !wire.is_closed() {
-                return Err(RemoteClientError::Protocol("process output ended without a terminal record".into()));
+                return Err(RemoteClientError::Protocol(
+                    "process output ended without a terminal record".into(),
+                ));
             }
         }
-    }.await;
+    };
+    tokio::pin!(result);
+    let (result, completed_ack) = tokio::select! {
+        result = &mut result => (result, None),
+        ack = &mut acknowledgement => (Err(RemoteClientError::Disconnected), Some(ack)),
+    };
     ack_stop.cancel();
-    let ack = acknowledgement
-        .await
-        .map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
-    result.and_then(|exit| ack.map(|()| exit))
+    let ack = match completed_ack {
+        Some(ack) => ack,
+        None => acknowledgement.await,
+    }
+    .map_err(|e| RemoteClientError::Protocol(e.to_string()))?;
+    ack.and(result)
 }

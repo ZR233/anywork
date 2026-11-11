@@ -297,11 +297,6 @@ pub struct CommandOutputSizes {
 pub trait CommandBackend: std::fmt::Debug + Send + Sync + 'static {
     type Error: std::fmt::Display + Send + 'static;
 
-    /// Current host allocation; None asks the manager to sample platform resources.
-    fn process_capacity(&self) -> Option<usize> {
-        None
-    }
-
     fn resolve_cwd(
         &self,
         cwd: Option<&Path>,

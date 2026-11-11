@@ -616,9 +616,9 @@ async fn handle_mcp_delete(State(state): State<MockMcpHttpState>, headers: Heade
 /// - T12: Remote Streamable HTTP MCP full round-trip (POST JSON, POST SSE, GET SSE, DELETE session,
 ///   401/403 WWW-Authenticate, 404 session expiration re-init, multi-value headers, no redirect,
 ///   mid-body disconnect propagating h2 RST_STREAM error).
-/// - T13: ResourceBudget release to zero and fatal oversized SSE event without retry loop.
+/// - T13: physical resource release to baseline and fatal oversized SSE event without retry loop.
 #[tokio::test]
-async fn t12_t13_remote_streamable_http_and_budget() -> anyhow::Result<()> {
+async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     let helper_instance = support::Helper::start(executable).await?;
     let remote_commands = helper_instance
@@ -928,11 +928,17 @@ async fn t12_t13_remote_streamable_http_and_budget() -> anyhow::Result<()> {
     assert_eq!(state.get_stream_requests.load(Ordering::SeqCst), 1);
 
     drop(sse_stream);
-    // T13: Verify helper ResourceBudget returns to baseline (zero active transfers/processes, single connection).
+    // T13: Verify helper resources return to baseline (zero active transfers/processes, single connection).
     let stats = support::heartbeat(&helper_instance.client).await?;
-    assert_eq!(stats.processes, 0);
-    assert_eq!(stats.transfers, 0);
-    assert_eq!(stats.reserved_bytes, baseline_stats.reserved_bytes);
+    assert_eq!(stats.processes, baseline_stats.processes);
+    assert_eq!(stats.transfers, baseline_stats.transfers);
+    assert_eq!(stats.cursors, baseline_stats.cursors);
+    assert_eq!(stats.workspaces, baseline_stats.workspaces);
+    assert_eq!(
+        stats.retained_operations,
+        baseline_stats.retained_operations
+    );
+    assert_eq!(stats.active_connections, baseline_stats.active_connections);
 
     server_task.abort();
     helper_instance.close().await?;

@@ -81,7 +81,6 @@ async fn handle_request(
         }
         RemoteRequest::Hello { .. }
         | RemoteRequest::Attach { .. }
-        | RemoteRequest::Configure { .. }
         | RemoteRequest::Heartbeat
         | RemoteRequest::RenewProcessLease { .. }
         | RemoteRequest::OutputConsumed { .. }

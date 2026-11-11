@@ -1,6 +1,5 @@
 //! Physical process and filesystem capabilities over a single resumable HTTP/2 connection.
 
-pub mod budget;
 pub mod process_worker_protocol;
 pub mod start_control;
 pub mod transport;

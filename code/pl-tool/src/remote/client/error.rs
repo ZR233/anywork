@@ -47,6 +47,8 @@ pub enum RemoteClientError {
     /// The host has sealed SSH connection admission for shutdown.
     #[error("SSH manager is closing")]
     ManagerClosing,
+    #[error("helper heartbeat response timed out after 15 seconds")]
+    HeartbeatTimeout,
     #[error("remoteDisconnected")]
     Disconnected,
     #[error("remote operation cancelled before admission")]

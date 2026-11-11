@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    budget::{ByteLease, ResourceBudget},
     path::remote_error,
     transport::{self, BINARY_CONTENT, Bytes},
 };
@@ -37,7 +36,6 @@ impl HttpProxy {
         exchange_id: &str,
         request: http::Request<h2::RecvStream>,
         mut sender: h2::server::SendResponse<Bytes>,
-        budget: &ResourceBudget,
         stop: CancellationToken,
     ) -> io::Result<()> {
         if exchange_id.is_empty() {
@@ -53,7 +51,7 @@ impl HttpProxy {
         }
 
         let mut recv = request.into_body();
-        let (head, initial_body) = match read_request_head(&mut recv, budget, &stop).await {
+        let (head, initial_body) = match read_request_head(&mut recv, &stop).await {
             Ok(value) => value,
             Err(error) => return respond_early_error(&mut sender, error, &stop).await,
         };
@@ -149,11 +147,9 @@ impl HttpProxy {
 
         let has_request_body = initial_body.is_some() || !recv.is_end_stream();
         let (body_tx, body_rx) = if has_request_body {
-            let (tx, rx) = mpsc::channel::<Result<(Bytes, ByteLease), io::Error>>(1);
+            let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(1);
             let stream = stream::unfold(rx, |mut rx| async move {
-                rx.recv()
-                    .await
-                    .map(|item| (item.map(|(bytes, _lease)| bytes), rx))
+                rx.recv().await.map(|item| (item, rx))
             });
             builder = builder.body(reqwest::Body::wrap_stream(stream));
             (Some(tx), None::<()>)
@@ -164,7 +160,7 @@ impl HttpProxy {
 
         let pump_body = async {
             if let Some(tx) = body_tx {
-                pump_request_body(&mut recv, initial_body, tx, budget, &stop).await
+                pump_request_body(&mut recv, initial_body, tx, &stop).await
             } else {
                 Ok(())
             }
@@ -182,8 +178,7 @@ impl HttpProxy {
                         RemoteErrorCode::Io,
                         format!("remote HTTP request failed: {error}"),
                     ));
-                    return send_exchange_start(&mut send_stream, &start, true, budget, &stop)
-                        .await;
+                    return send_exchange_start(&mut send_stream, &start, true, &stop).await;
                 }
             };
 
@@ -192,14 +187,12 @@ impl HttpProxy {
                 headers: extract_inbound_headers(upstream.headers()),
             };
             let start = RemoteHttpExchangeStart::Head(response_head);
-            if let Err(error) =
-                send_exchange_start(&mut send_stream, &start, false, budget, &stop).await
-            {
+            if let Err(error) = send_exchange_start(&mut send_stream, &start, false, &stop).await {
                 send_stream.send_reset(h2::Reason::CANCEL);
                 return Err(error);
             }
 
-            let fragment_limit = budget.allocation().fragment_bytes.max(1);
+            let fragment_limit = pl_protocol::remote::REMOTE_IO_CHUNK_BYTES;
             loop {
                 let next_chunk = tokio::select! {
                     _ = stop.cancelled() => {
@@ -213,13 +206,6 @@ impl HttpProxy {
                         while !chunk.is_empty() {
                             let piece_len = chunk.len().min(fragment_limit);
                             let piece = chunk.split_to(piece_len);
-                            let _lease = match budget.reserve(piece.len(), &stop).await {
-                                Ok(lease) => lease,
-                                Err(error) => {
-                                    send_stream.send_reset(h2::Reason::INTERNAL_ERROR);
-                                    return Err(error);
-                                }
-                            };
                             if let Err(error) =
                                 transport::send_bytes(&mut send_stream, piece, false, &stop).await
                             {
@@ -279,7 +265,6 @@ async fn send_exchange_start(
     send_stream: &mut h2::SendStream<Bytes>,
     start: &RemoteHttpExchangeStart,
     finish: bool,
-    budget: &ResourceBudget,
     stop: &CancellationToken,
 ) -> io::Result<()> {
     let encoded = match encode_exchange_start(start) {
@@ -289,12 +274,6 @@ async fn send_exchange_start(
             format!("HTTP response head exceeds {REMOTE_HTTP_HEAD_MAX_BYTES} bytes"),
         )))?,
     };
-    let _lease = budget
-        .reserve(
-            encoded.len().min(budget.allocation().fragment_bytes.max(1)),
-            stop,
-        )
-        .await?;
     if encoded.is_empty() && finish {
         send_stream
             .send_data(Bytes::new(), true)
@@ -322,9 +301,8 @@ fn encode_exchange_start(start: &RemoteHttpExchangeStart) -> io::Result<Bytes> {
 
 async fn read_request_head(
     recv: &mut h2::RecvStream,
-    budget: &ResourceBudget,
     stop: &CancellationToken,
-) -> Result<(RemoteHttpRequestHead, Option<(Bytes, ByteLease)>), RemoteError> {
+) -> Result<(RemoteHttpRequestHead, Option<Bytes>), RemoteError> {
     let mut prefix = [0_u8; 4];
     let mut prefix_filled = 0usize;
     let mut leftover = Bytes::new();
@@ -354,13 +332,6 @@ async fn read_request_head(
         ));
     }
 
-    let head_lease = budget
-        .reserve(
-            head_len.min(budget.allocation().fragment_bytes.max(1)),
-            stop,
-        )
-        .await
-        .map_err(|error| remote_error(RemoteErrorCode::ResourceExhausted, error.to_string()))?;
     let mut head_bytes = Vec::with_capacity(head_len);
 
     if !leftover.is_empty() {
@@ -385,22 +356,8 @@ async fn read_request_head(
 
     let head: RemoteHttpRequestHead = serde_json::from_slice(&head_bytes)
         .map_err(|error| remote_error(RemoteErrorCode::InvalidRequest, error.to_string()))?;
-    drop(head_lease);
 
-    let initial_body = if leftover.is_empty() {
-        None
-    } else {
-        let lease = budget
-            .reserve(
-                leftover
-                    .len()
-                    .min(budget.allocation().fragment_bytes.max(1)),
-                stop,
-            )
-            .await
-            .map_err(|error| remote_error(RemoteErrorCode::ResourceExhausted, error.to_string()))?;
-        Some((leftover, lease))
-    };
+    let initial_body = (!leftover.is_empty()).then_some(leftover);
 
     Ok((head, initial_body))
 }
@@ -445,9 +402,8 @@ async fn next_recv_chunk(
 
 async fn pump_request_body(
     recv: &mut h2::RecvStream,
-    initial_body: Option<(Bytes, ByteLease)>,
-    tx: mpsc::Sender<Result<(Bytes, ByteLease), io::Error>>,
-    budget: &ResourceBudget,
+    initial_body: Option<Bytes>,
+    tx: mpsc::Sender<Result<Bytes, io::Error>>,
     stop: &CancellationToken,
 ) -> io::Result<()> {
     if let Some(first) = initial_body
@@ -455,7 +411,7 @@ async fn pump_request_body(
     {
         return Ok(());
     }
-    let fragment_limit = budget.allocation().fragment_bytes.max(1);
+    let fragment_limit = pl_protocol::remote::REMOTE_IO_CHUNK_BYTES;
     loop {
         let piece = tokio::select! {
             _ = stop.cancelled() => return Ok(()),
@@ -484,14 +440,7 @@ async fn pump_request_body(
         while !piece.is_empty() {
             let chunk_len = piece.len().min(fragment_limit);
             let chunk = piece.split_to(chunk_len);
-            let lease = match budget.reserve(chunk.len(), stop).await {
-                Ok(lease) => lease,
-                Err(error) => {
-                    let _ = tx.send(Err(io::Error::other(error.to_string()))).await;
-                    return Err(error);
-                }
-            };
-            if tx.send(Ok((chunk, lease))).await.is_err() {
+            if tx.send(Ok(chunk)).await.is_err() {
                 return Ok(());
             }
         }

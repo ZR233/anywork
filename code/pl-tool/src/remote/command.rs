@@ -131,10 +131,6 @@ impl RemoteCommandBackend {
 impl CommandBackend for RemoteCommandBackend {
     type Error = PureError;
 
-    fn process_capacity(&self) -> Option<usize> {
-        Some(self.client.process_capacity())
-    }
-
     fn capture_ownership(&self) -> CommandCaptureOwnership {
         CommandCaptureOwnership::Producer
     }

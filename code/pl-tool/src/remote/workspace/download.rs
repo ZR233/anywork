@@ -1,6 +1,6 @@
 //! File transfer orchestration stays on the host; the helper owns only physical handles.
 use super::*;
-use futures::{StreamExt, stream::FuturesOrdered};
+use pl_protocol::remote::REMOTE_IO_CHUNK_BYTES;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -41,11 +41,13 @@ impl Drop for TransferLease {
 }
 impl TransferLease {
     async fn close(mut self) -> std::result::Result<(), RemoteClientError> {
-        let transfer_id = self.id.take().unwrap();
+        let transfer_id = self.id.as_ref().unwrap().clone();
         self.client
             .request(RemoteRequest::CloseTransfer { transfer_id }, &[])
             .await
-            .map(|_| ())
+            .and_then(super::super::client::expect_ack)?;
+        self.id = None;
+        Ok(())
     }
 }
 impl RemoteWorkspaceFileBackend {
@@ -113,26 +115,20 @@ impl RemoteWorkspaceFileBackend {
             return Err(RemoteDownloadError::TooLarge { total, limit });
         }
         let mut offset = 0;
-        let mut submitted = 0;
         let mut digest = Sha256::new();
-        let mut pending = FuturesOrdered::new();
-        let mut pipeline = 1;
         while offset < total {
-            while submitted < total
-                && pending.len() < pipeline.min(self.client.process_capacity().max(1))
-            {
-                let count = (total - submitted).min(self.client.fragment_bytes() as u64) as usize;
-                pending.push_back(self.download_range(
-                    opened.transfer_id.clone(),
-                    submitted,
-                    count,
-                ));
-                submitted += count as u64;
-            }
-            let (requested, count, reply) = pending
-                .next()
+            let count = (total - offset).min(REMOTE_IO_CHUNK_BYTES as u64) as usize;
+            let reply = self
+                .request(
+                    RemoteRequest::ReadFileChunk {
+                        transfer_id: opened.transfer_id.clone(),
+                        offset,
+                        max_bytes: count,
+                    },
+                    &[],
+                )
                 .await
-                .ok_or(RemoteDownloadError::Inconsistent { offset })??;
+                .map_err(|source| RemoteDownloadError::Read { offset, source })?;
             let RemoteResponse::ByteRange {
                 offset: actual,
                 total_len,
@@ -140,11 +136,7 @@ impl RemoteWorkspaceFileBackend {
             else {
                 return Err(RemoteDownloadError::Response("expected byte range".into()));
             };
-            if actual != offset
-                || actual != requested
-                || total_len != source_total
-                || reply.body.len() != count
-            {
+            if actual != offset || total_len != source_total || reply.body.len() != count {
                 return Err(RemoteDownloadError::Inconsistent { offset });
             }
             writer
@@ -153,7 +145,6 @@ impl RemoteWorkspaceFileBackend {
                 .map_err(|source| RemoteDownloadError::Write { offset, source })?;
             digest.update(&reply.body);
             offset += reply.body.len() as u64;
-            pipeline = next_pipeline(pipeline, reply.timing, self.client.process_capacity());
         }
         let final_state = self
             .request(
@@ -241,51 +232,30 @@ impl RemoteWorkspaceFileBackend {
             id: Some(opened.transfer_id.clone()),
         };
         let mut offset = 0;
-        let mut confirmed = 0;
         let mut digest = Sha256::new();
-        let mut pending = FuturesOrdered::new();
-        let mut pipeline = 1;
-        while confirmed < total_len {
-            while offset < total_len
-                && pending.len() < pipeline.min(self.client.process_capacity().max(1))
-            {
-                let count = (total_len - offset).min(self.client.fragment_bytes() as u64) as usize;
-                let Some(reservation) = self
-                    .client
-                    .reserve_upload(
-                        self.lease.clone(),
-                        opened.transfer_id.clone(),
+        while offset < total_len {
+            let count = (total_len - offset).min(REMOTE_IO_CHUNK_BYTES as u64) as usize;
+            let mut bytes = vec![0; count];
+            reader.read_exact(&mut bytes).await.map_err(|error| {
+                tool_error("write_file", format!("source read at {offset}: {error}"))
+            })?;
+            digest.update(&bytes);
+            let reply = self
+                .request(
+                    RemoteRequest::WriteChunk {
+                        transfer_id: opened.transfer_id.clone(),
                         offset,
-                        count,
-                        pending.is_empty(),
-                    )
-                    .await
-                    .map_err(remote_file_error)?
-                else {
-                    break;
-                };
-                let mut bytes = vec![0; count];
-                reader.read_exact(&mut bytes).await.map_err(|error| {
-                    tool_error("write_file", format!("source read at {offset}: {error}"))
-                })?;
-                digest.update(&bytes);
-                let requested = offset;
-                let reply = reservation.submit(bytes);
-                pending.push_back(async move { (requested, count, reply.await) });
-                offset += count as u64;
-            }
-            let (requested, count, reply) = pending
-                .next()
+                        sha256: hex::encode(Sha256::digest(&bytes)),
+                    },
+                    &bytes,
+                )
                 .await
-                .ok_or_else(|| tool_error("write_file", "transfer progress queue is empty"))?;
-            let reply = reply.map_err(remote_file_error)?;
-            if !matches!(reply.response, RemoteResponse::ChunkWritten { offset: actual, length, .. }
-                if actual == requested && length == count as u64)
+                .map_err(remote_file_error)?;
+            if !matches!(reply.response, RemoteResponse::ChunkWritten { offset: actual, length, .. } if actual == offset && length == count as u64)
             {
                 return Err(tool_error("write_file", "chunk receipt is inconsistent"));
             }
-            confirmed += count as u64;
-            pipeline = next_pipeline(pipeline, reply.timing, self.client.process_capacity());
+            offset += count as u64;
         }
         let result = self
             .request(
@@ -308,35 +278,4 @@ impl RemoteWorkspaceFileBackend {
         lease.close().await.map_err(remote_file_error)?;
         Ok(total_len)
     }
-    async fn download_range(
-        &self,
-        transfer_id: String,
-        offset: u64,
-        count: usize,
-    ) -> std::result::Result<(u64, usize, super::super::RemoteReply), RemoteDownloadError> {
-        let reply = self
-            .request(
-                RemoteRequest::ReadFileChunk {
-                    transfer_id,
-                    offset,
-                    max_bytes: count,
-                },
-                &[],
-            )
-            .await
-            .map_err(|source| RemoteDownloadError::Read { offset, source })?;
-        Ok((offset, count, reply))
-    }
-}
-
-fn next_pipeline(current: usize, timing: super::super::RemoteRequestTiming, limit: usize) -> usize {
-    // Start with one physical quantum. Only completed exchanges provide demand evidence;
-    // abundant host RAM alone must never queue an entire file. The remote phase includes
-    // per-handle IO serialization, so a backed-up disk naturally reduces future concurrency.
-    let service = timing.remote.filesystem_micros.max(1);
-    let overlap = timing.exchange_micros.div_ceil(service).max(1);
-    usize::try_from(overlap)
-        .unwrap_or(usize::MAX)
-        .min(current.saturating_add(1))
-        .min(limit.max(1))
 }

@@ -1413,9 +1413,6 @@ impl<B: std::fmt::Debug> std::fmt::Debug for LowBudgetBackend<B> {
 
 impl<B: CommandBackend> CommandBackend for LowBudgetBackend<B> {
     type Error = <B as CommandBackend>::Error;
-    fn process_capacity(&self) -> Option<usize> {
-        self.inner.process_capacity()
-    }
 
     fn capture_limit_bytes(&self) -> Option<u64> {
         Some(self.capture_limit_bytes)
@@ -1540,9 +1537,6 @@ impl ScriptedBackend {
 
 impl CommandBackend for ScriptedBackend {
     type Error = std::io::Error;
-    fn process_capacity(&self) -> Option<usize> {
-        Some(8)
-    }
 
     fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
         pl_tool::command::CommandCaptureOwnership::Manager

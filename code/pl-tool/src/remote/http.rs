@@ -89,10 +89,6 @@ impl RemoteClient {
         framed_head.extend_from_slice(&head_payload);
         let framed_head = Bytes::from(framed_head);
 
-        let _request_lease = self
-            .reserve_http_bytes(framed_head.len().saturating_add(body.len()))
-            .await?;
-
         let (exchange_id, generation, epoch, wire, stop) = self.open_http_wire().await?;
         let (mut send_stream, response_future) = match wire
             .open_http_exchange(&exchange_id, epoch)
@@ -114,7 +110,6 @@ impl RemoteClient {
             transport::send_bytes(&mut send_stream, framed_head, false, &send_stop).await?;
             transport::send_bytes(&mut send_stream, body, true, &send_stop).await?;
         }
-        drop(_request_lease);
 
         let response = tokio::select! {
             _ = stop.cancelled() => return Err(RemoteClientError::Disconnected),
@@ -261,7 +256,6 @@ async fn read_exchange_start(
         )));
     }
 
-    let _head_lease = client.reserve_http_bytes(start_len).await?;
     let mut start_bytes = Vec::with_capacity(start_len);
 
     if !leftover.is_empty() {

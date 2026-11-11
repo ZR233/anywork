@@ -207,6 +207,7 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
     let mut marker = [0; 8];
     blocked_output.read_exact(&mut marker).await?;
     ensure!(&marker == b"started\n");
+    helper.reconnect(executable, owner_pid).await?;
     let mut silent = helper.command("silent", "sleep 120").await?;
     let mut input_blocked = helper
         .command("blocked-input", "printf 'ready\\n'; sleep 120")
@@ -301,7 +302,7 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
                 RemoteRequest::ReadFileChunk {
                     transfer_id: file.transfer_id.clone(),
                     offset: offset as u64,
-                    max_bytes: helper.client.fragment_bytes(),
+                    max_bytes: REMOTE_IO_CHUNK_BYTES,
                 },
                 &[],
             )
@@ -326,47 +327,6 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
         serde_json::json!({"scenario":"binary-reattach", "bytes":offset, "seconds":transfer_started.elapsed().as_secs_f64(), "recoveryMs":recovery_ms, "sha256Match":true})
     );
     drop(payload);
-
-    // Same binary, different grants; no rebuilding or editing capacities between runs.
-    let before = support::heartbeat(&helper.client).await?.allocation;
-    let mut smaller = before;
-    smaller.resident_bytes /= 2;
-    smaller.ordinary_operations = (smaller.ordinary_operations / 2).max(1);
-    smaller.connection_window /= 2;
-    smaller.stream_window = smaller.stream_window.min(smaller.connection_window / 3);
-    helper
-        .client
-        .request(
-            RemoteRequest::Configure {
-                allocation: smaller,
-            },
-            &[],
-        )
-        .await?;
-    ensure!(
-        support::heartbeat(&helper.client)
-            .await?
-            .allocation
-            .resident_bytes
-            <= smaller.resident_bytes
-    );
-    let (output, _) =
-        support::drain(helper.command("under-pressure", "printf progress").await?).await?;
-    ensure!(output == b"progress");
-    println!(
-        "{}",
-        serde_json::json!({"scenario":"resource-shrink", "before":before,
-        "helper":support::heartbeat(&helper.client).await?, "resources":support::resources(owner_pid),
-        "host":support::resources(std::process::id())})
-    );
-    helper
-        .client
-        .request(RemoteRequest::Configure { allocation: before }, &[])
-        .await?;
-    println!(
-        "{}",
-        serde_json::json!({"scenario":"resource-restore", "helper":support::heartbeat(&helper.client).await?})
-    );
 
     for index in 0..1000 {
         let path = helper.root.path().join(format!("workspace-{index}"));

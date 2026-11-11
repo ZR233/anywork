@@ -95,9 +95,6 @@ pub(super) fn execution_cause(error: &RemoteExecutionError) -> String {
         RemoteExecutionError::UnexpectedCapture => {
             "remote output collection: unexpected capture receipt".into()
         }
-        RemoteExecutionError::Buffer { source } => {
-            format!("remote output buffer: {}", remote_code(source))
-        }
         RemoteExecutionError::Read { source } => format!(
             "remote output read: {:?}; os_code={:?}",
             source.kind(),
@@ -122,6 +119,7 @@ pub(super) fn remote_code(error: &RemoteClientError) -> String {
     match error {
         RemoteClientError::ManagerClosing => "SSH ManagerClosing".into(),
         RemoteClientError::Disconnected => "SSH Disconnected".into(),
+        RemoteClientError::HeartbeatTimeout => "SSH HeartbeatTimeout".into(),
         RemoteClientError::Cancelled => "SSH Cancelled before admission".into(),
         RemoteClientError::AuthenticationFailed(_) => "SSH AuthenticationFailed".into(),
         RemoteClientError::Protocol(_) => {
