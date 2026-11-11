@@ -289,14 +289,14 @@ void main() {
       tester.element(find.byType(PlanConfirmationConnector)),
     );
     expect(
-      container.exists(planConfirmationViewModelProvider(threadId)),
+      container.read(planConfirmationViewModelProvider(threadId).exists),
       isTrue,
     );
     final clientSession = graph.client.conversations.existingSession(threadId);
     rebuild(() => feedbackMounted = false);
     await tester.pumpAndSettle();
     expect(
-      container.exists(planConfirmationViewModelProvider(threadId)),
+      container.read(planConfirmationViewModelProvider(threadId).exists),
       isFalse,
       reason: '反馈组件卸载后释放专属展示观察，不保留无消费者的会话投影',
     );
