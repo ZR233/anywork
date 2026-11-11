@@ -17,7 +17,6 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
     final draft = (
       project: sessionDraft.forProject(workspaceId),
       submitting: sessionDraft.submitting,
-      failure: sessionDraft.preparations[workspaceId]?.failure,
     );
     final projectStore = ref.watch(projectStoreProvider);
     final isRemoteSsh =
@@ -26,10 +25,8 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
             .firstOrNull
             ?.sshAlias !=
         null;
-    final attachments = ref
-        .watch(attachmentDraftsProvider)
-        .newThread(workspaceId)
-        .attachments;
+    final composer = ref.watch(attachmentDraftsProvider).newThread(workspaceId);
+    final failure = composer.failure;
     final accountId = draft.project.acpAccountId;
     return AcpStartComposerViewState(
       workspaceId: workspaceId,
@@ -38,10 +35,8 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
       submitting: draft.submitting,
       isRemoteSsh: isRemoteSsh,
       serviceEnabled: accountId != null,
-      stagedAttachments: attachments,
-      failureMessage: draft.failure == null
-          ? null
-          : formatAcpError(draft.failure!),
+      stagedAttachments: composer.attachments,
+      failureMessage: failure == null ? null : formatAcpError(failure),
     );
   }
 

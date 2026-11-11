@@ -11,6 +11,7 @@ import '../../observation/read_model.dart';
 import '../../../models.dart';
 import 'drafts_dependencies.dart';
 import '../domain/draft_owners.dart';
+import '../domain/draft_errors.dart';
 import 'draft_attachment_operations.dart';
 import 'submission_observation.dart';
 
@@ -31,7 +32,12 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   int _revision = 0;
   int _generation = 0;
   bool _closed = false;
-  Future<void>? _pending;
+  final Map<DraftStamp, Future<void>> _pendingByStamp = {};
+  final Map<String, FrozenComposerSubmission> _frozenByInput = {};
+  final Map<String, Future<void>> _retryByInput = {};
+  final Map<String, Future<void>> _removeTasks = {};
+  final Map<String, Future<void>> _presentationTasks = {};
+  final Set<String> _presentedInputIds = {};
   Future<void>? _closing;
   DraftStamp? _unknownStamp;
   DirectoryObservation<ThreadMetadataFrame>? _metadata;
@@ -60,19 +66,66 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     _submissions.publish(List.unmodifiable(_submissionById.values));
   }
 
-  void _updateSubmissionPhase(String inputId, ComposerSubmissionPhase phase) {
+  void _updateSubmissionPhase(
+    String inputId,
+    ComposerSubmissionPhase phase, {
+    Object? error,
+  }) {
     final existing = _submissionById[inputId];
-    if (existing != null) _publishSubmission(existing.withPhase(phase));
+    if (existing != null) {
+      _publishSubmission(existing.withPhase(phase, error: error));
+    }
   }
 
   @override
   void markInputsPresented(Iterable<String> inputIds) {
     var changed = false;
     for (final inputId in inputIds) {
+      if (!_presentedInputIds.add(inputId)) continue;
+      final submission = _submissionById[inputId];
       changed = _submissionById.remove(inputId) != null || changed;
+      for (final observation in _observations.where(
+        (entry) =>
+            entry is InputSubmissionObservation && entry.inputId == inputId,
+      )) {
+        if (submission?.phase == ComposerSubmissionPhase.unknownOutcome) {
+          observation.cancel();
+        }
+      }
+      final frozen = _frozenByInput.remove(inputId);
+      if (frozen != null) {
+        _releasePresentedInput(inputId, frozen);
+      }
     }
     if (changed)
       _submissions.publish(List.unmodifiable(_submissionById.values));
+  }
+
+  void _releasePresentedInput(String inputId, FrozenComposerSubmission frozen) {
+    final completion = Completer<void>();
+    final task = completion.future;
+    _presentationTasks[inputId] = task;
+    unawaited(task.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+    unawaited(
+      _releaseFrozen(frozen)
+          .then(completion.complete, onError: completion.completeError),
+    );
+  }
+
+  Future<void> _releaseFrozen(FrozenComposerSubmission frozen) async {
+    await _dependencies.attachments.completeFrozen(
+      operationId: frozen.operation.id,
+      accepted: false,
+      clearCurrent: false,
+      workspaceId: frozen.workspaceId,
+      threadId: threadId,
+    );
+    final unresolved = _dependencies.attachments.unresolvedAttachmentIds
+        .toSet();
+    final failedIds = frozen.input.attachmentDraftIds
+        .where(unresolved.contains)
+        .toList();
+    if (failedIds.isNotEmpty) throw AttachmentCleanupUnresolved(failedIds);
   }
 
   DraftStamp get stamp =>
@@ -220,25 +273,21 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   /// 原 History，后端从未收到该提交。钩子不写 canonical 事实，也不替代提交回执、保存观察或
   /// 附件所有权（design/26 §26.8）。
   Future<void> submit({Future<void> Function()? beforeSubmit}) {
-    final current = _pending;
-    if (current != null) return current;
     if (_closed || (state.draft.trim().isEmpty && state.attachments.isEmpty))
       return Future<void>.value();
+    final submissionStamp = stamp;
+    final active = _pendingByStamp[submissionStamp];
+    if (active != null) return active;
     final completion = Completer<void>();
     late final Future<void> pending;
     pending = completion.future.whenComplete(() {
-      if (identical(_pending, pending)) _pending = null;
+      if (identical(_pendingByStamp[submissionStamp], pending)) {
+        final removed = _pendingByStamp.remove(submissionStamp);
+        if (removed == null) return;
+      }
     });
-    // Includes synchronous freeze/mutation notifications, not only RPC.
-    _pending = pending;
-    unawaited(
-      _prepareAndSubmit(beforeSubmit)
-          .then(completion.complete, onError: completion.completeError),
-    );
-    return pending;
-  }
-
-  Future<void> _prepareAndSubmit(Future<void> Function()? beforeSubmit) async {
+    // Register before begin() publishes its synchronous mutation notification.
+    _pendingByStamp[submissionStamp] = pending;
     _observeAcpMetadata();
     final metadata = _metadata?.state.value;
     if (_metadata != null &&
@@ -246,66 +295,43 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
             metadata.closed ||
             metadata.error != null)) {
       reportFailure(StateError('Thread directory metadata is unavailable'));
-      return;
+      completion.complete();
+      return pending;
     }
     final row =
         metadata?.frame?.row ??
         _dependencies.directory?.observedThread(threadId);
     if (row?.backend is AcpAgentBackendView) {
-      return _submitAcp(row!, beforeSubmit);
+      unawaited(
+        _submitAcp(
+          row!,
+          beforeSubmit,
+        ).then(completion.complete, onError: completion.completeError),
+      );
+      return pending;
     }
     if (_dependencies.directory != null && row == null) {
       reportFailure(
         StateError('Thread submission target is no longer available'),
       );
-      return;
+      completion.complete();
+      return pending;
     }
-    FrozenComposerSubmission? frozen;
-    InputSubmissionObservation? evidence;
+    late final FrozenComposerSubmission frozen;
     try {
       frozen = _freezeForSubmit();
-      evidence = registerSubmittedInput(
-        dependencies: _dependencies,
-        operation: frozen.operation,
-        inputId: frozen.input.inputId,
-        expectedThreadId: threadId,
-      );
-      _observations.removeWhere((entry) => entry.isCancelled);
-      _observations.add(evidence);
-      _submissionById[frozen.input.inputId] = ComposerSubmission(
-        inputId: frozen.input.inputId,
-        text: frozen.input.text,
-        attachments: frozen.attachments,
-        phase: ComposerSubmissionPhase.sending,
-      );
-      _submissions.publish(List.unmodifiable(_submissionById.values));
     } catch (error) {
-      evidence?.cancel();
-      if (frozen != null) {
-        frozen.operation.reject(error);
-        await _dependencies.attachments.completeFrozen(
-          operationId: frozen.operation.id,
-          accepted: false,
-          clearCurrent: false,
-          workspaceId: frozen.workspaceId,
-          threadId: threadId,
-        );
-      }
-      if (!_closed) reportFailure(error);
-      return;
+      reportFailure(error);
+      completion.complete();
+      return pending;
     }
-    if (!_closed)
-      apply(
-        SubmittingComposerThreadState(
-          draft: state.draft,
-          attachments: state.attachments,
-          submissionRevision: state.submissionRevision + 1,
-          attachmentGeneration: state.attachmentGeneration,
-          cleanupFailureDraftIds: state.cleanupFailureDraftIds,
-          inputId: frozen.input.inputId,
-        ),
-      );
-    await _submit(frozen, beforeSubmit, evidence);
+    unawaited(
+      _prepareAndSubmit(
+        frozen,
+        beforeSubmit,
+      ).then(completion.complete, onError: completion.completeError),
+    );
+    return pending;
   }
 
   void _requireAcpSend(
@@ -496,46 +522,99 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     return List.unmodifiable(content);
   }
 
-  Future<void> _submit(
+  Future<void> _prepareAndSubmit(
     FrozenComposerSubmission frozen,
     Future<void> Function()? beforeSubmit,
-    InputSubmissionObservation evidence,
   ) async {
-    if (!_closed && !_dependencies.isClosed && beforeSubmit != null) {
-      try {
-        await beforeSubmit();
-      } catch (error) {
-        // 展示准备失败：后端尚未收到提交，这是**已知未受理**，不是未知结果。
-        evidence.cancel();
-        _removeSubmission(frozen.input.inputId);
-        frozen.operation.reject(error);
+    InputSubmissionObservation? evidence;
+    Future<SubmitPromptReceipt>? dispatch;
+    Completer<void>? beforeDispatchReady;
+    Object? setupFailure;
+    try {
+      evidence = registerSubmittedInput(
+        dependencies: _dependencies,
+        operation: frozen.operation,
+        inputId: frozen.input.inputId,
+        expectedThreadId: threadId,
+      );
+      _observations.removeWhere((entry) => entry.isCancelled);
+      _observations.add(evidence);
+      _frozenByInput[frozen.input.inputId] = frozen;
+      final dispatchReady = Completer<void>();
+      beforeDispatchReady = dispatchReady;
+      dispatch = _dependencies.threadCommands.submitComposer(
+        threadId,
+        frozen.input,
+        expectedModelRouteRevision: frozen.route.revision,
+        beforeDispatch: () async {
+          await dispatchReady.future;
+          if (setupFailure != null) throw setupFailure;
+          if (_closed || _dependencies.isClosed) {
+            throw StateError('Submission cancelled before backend dispatch');
+          }
+          if (beforeSubmit != null) await beforeSubmit();
+          if (_closed || _dependencies.isClosed) {
+            throw StateError('Submission cancelled before backend dispatch');
+          }
+        },
+      );
+      if (!_presentedInputIds.contains(frozen.input.inputId)) {
+        _submissionById[frozen.input.inputId] = ComposerSubmission(
+          inputId: frozen.input.inputId,
+          text: frozen.input.text,
+          attachments: frozen.attachments,
+          phase: ComposerSubmissionPhase.sending,
+        );
+      } else {
+        _frozenByInput.remove(frozen.input.inputId);
+        _releasePresentedInput(frozen.input.inputId, frozen);
+      }
+      final attachmentGeneration = state.attachmentGeneration + 1;
+      _dependencies.attachments.detachFrozenDraft(frozen.operation.id);
+      apply(
+        ComposerThreadState.idle(
+          draft: '',
+          attachments: const [],
+          submissionRevision: state.submissionRevision + 1,
+          attachmentGeneration: attachmentGeneration,
+          cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+        ),
+      );
+      _submissions.publish(List.unmodifiable(_submissionById.values));
+      beforeDispatchReady.complete();
+      await _submit(frozen, evidence, dispatch);
+    } catch (error) {
+      if (evidence != null && !evidence.isCancelled) evidence.cancel();
+      if (dispatch != null) {
+        setupFailure = error;
+        if (beforeDispatchReady != null && !beforeDispatchReady.isCompleted) {
+          beforeDispatchReady.complete();
+        }
+        try {
+          await dispatch;
+        } catch (_) {
+          // The lane wraps a beforeDispatch failure as SubmissionNotSent.
+        }
+      }
+      if (_frozenByInput.containsKey(frozen.input.inputId)) {
+        final known = error is SubmissionNotSent ? error.error : error;
+        frozen.operation.reject(known);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
           accepted: false,
           clearCurrent: false,
           workspaceId: frozen.workspaceId,
           threadId: threadId,
+          retainForRetry: true,
         );
-        if (!_closed && stamp == frozen.stamp) {
-          apply(
-            ComposerThreadState.failure(
-              error: error,
-              draft: state.draft,
-              attachments: state.attachments,
-              submissionRevision: state.submissionRevision,
-              attachmentGeneration: state.attachmentGeneration,
-              cleanupFailureDraftIds: state.cleanupFailureDraftIds,
-              inputId: frozen.input.inputId,
-            ),
-          );
-        }
+        _updateSubmissionPhase(
+          frozen.input.inputId,
+          ComposerSubmissionPhase.failed,
+          error: known,
+        );
         return;
       }
-    }
-    if (_closed || _dependencies.isClosed) {
-      final error = StateError('Submission cancelled before backend dispatch');
-      evidence.cancel();
-      _removeSubmission(frozen.input.inputId);
+      evidence?.cancel();
       frozen.operation.reject(error);
       await _dependencies.attachments.completeFrozen(
         operationId: frozen.operation.id,
@@ -544,15 +623,19 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         workspaceId: frozen.workspaceId,
         threadId: threadId,
       );
+      if (!_closed) reportFailure(error);
       return;
     }
+  }
+
+  Future<void> _submit(
+    FrozenComposerSubmission frozen,
+    InputSubmissionObservation evidence,
+    Future<SubmitPromptReceipt> dispatch,
+  ) async {
     SubmitPromptReceipt? acceptedReceipt;
     try {
-      final receipt = await _dependencies.threadCommands.submitComposer(
-        threadId,
-        frozen.input,
-        expectedModelRouteRevision: frozen.route.revision,
-      );
+      final receipt = await dispatch;
       if (receipt.inputId != frozen.input.inputId ||
           receipt.threadId != threadId) {
         throw StateError('Input receipt did not match the submitted request');
@@ -563,25 +646,14 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         ComposerSubmissionPhase.accepted,
       );
       evidence.accept(receipt);
-      final clear = !_closed && stamp == frozen.stamp;
-      if (!_closed) {
-        apply(
-          ComposerThreadState.idle(
-            draft: clear ? '' : state.draft,
-            attachments: clear ? const [] : state.attachments,
-            submissionRevision: state.submissionRevision,
-            attachmentGeneration: state.attachmentGeneration,
-            cleanupFailureDraftIds: state.cleanupFailureDraftIds,
-          ),
-        );
-      }
       await _dependencies.attachments.completeFrozen(
         operationId: frozen.operation.id,
         accepted: true,
-        clearCurrent: clear,
+        clearCurrent: false,
         workspaceId: frozen.workspaceId,
         threadId: threadId,
       );
+      _frozenByInput.remove(frozen.input.inputId);
     } catch (error) {
       final failure = error is SubmissionNotSent ? error.error : error;
       if (acceptedReceipt != null) {
@@ -597,7 +669,6 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       } else if (error is SubmissionNotSent ||
           isKnownSubmissionRejection(failure)) {
         evidence.cancel();
-        _removeSubmission(frozen.input.inputId);
         frozen.operation.reject(failure);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
@@ -605,36 +676,24 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           clearCurrent: false,
           workspaceId: frozen.workspaceId,
           threadId: threadId,
+          retainForRetry: true,
+        );
+        _updateSubmissionPhase(
+          frozen.input.inputId,
+          ComposerSubmissionPhase.failed,
+          error: failure,
         );
       } else {
-        _unknownStamp = frozen.stamp;
+        if (!_presentedInputIds.contains(frozen.input.inputId)) {
+          _unknownStamp = frozen.stamp;
+        } else {
+          evidence.cancel();
+        }
         frozen.operation.unknownOutcome(failure);
         _updateSubmissionPhase(
           frozen.input.inputId,
           ComposerSubmissionPhase.unknownOutcome,
-        );
-      }
-      if (!_closed && stamp == frozen.stamp) {
-        apply(
-          ComposerThreadState.failure(
-            error: failure,
-            draft: state.draft,
-            attachments: state.attachments,
-            submissionRevision: state.submissionRevision,
-            attachmentGeneration: state.attachmentGeneration,
-            cleanupFailureDraftIds: state.cleanupFailureDraftIds,
-            inputId: frozen.input.inputId,
-          ),
-        );
-      } else if (!_closed) {
-        apply(
-          ComposerThreadState.idle(
-            draft: state.draft,
-            attachments: state.attachments,
-            submissionRevision: state.submissionRevision,
-            attachmentGeneration: state.attachmentGeneration,
-            cleanupFailureDraftIds: state.cleanupFailureDraftIds,
-          ),
+          error: failure,
         );
       }
     }
@@ -651,19 +710,186 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     );
   }
 
+  @override
+  Future<void> retrySubmission(String inputId) {
+    final running = _retryByInput[inputId];
+    if (running != null) return running;
+    final existing = _submissionById[inputId];
+    final frozen = _frozenByInput[inputId];
+    if (existing == null ||
+        existing.phase != ComposerSubmissionPhase.failed ||
+        frozen == null) {
+      return Future<void>.error(
+        StateError('Submission is missing or is not retryable'),
+      );
+    }
+    if (_closed || _dependencies.isClosed) {
+      return Future<void>.error(StateError('The composer is closed'));
+    }
+    final completion = Completer<void>();
+    late final Future<void> retry;
+    retry = completion.future.whenComplete(() {
+      if (identical(_retryByInput[inputId], retry)) {
+        final removed = _retryByInput.remove(inputId);
+        if (removed == null) return;
+      }
+    });
+    _retryByInput[inputId] = retry;
+    unawaited(
+      _retryFrozen(
+        inputId,
+        frozen,
+      ).then(completion.complete, onError: completion.completeError),
+    );
+    return retry;
+  }
+
+  Future<void> _retryFrozen(
+    String previousInputId,
+    FrozenComposerSubmission previous,
+  ) async {
+    final operation = _dependencies.mutations.begin(
+      target: 'submit:$threadId',
+      draft: previous.stamp,
+    );
+    final input = StudioPromptInput(
+      inputId: operation.id.value,
+      text: previous.input.text,
+      attachmentDraftIds: previous.input.attachmentDraftIds,
+    );
+    _dependencies.attachments.retainRetryFrozen(
+      operationId: operation.id,
+      draftId: previous.stamp.draftId,
+      attachmentIds: input.attachmentDraftIds,
+    );
+    InputSubmissionObservation? evidence;
+    try {
+      evidence = registerSubmittedInput(
+        dependencies: _dependencies,
+        operation: operation,
+        inputId: input.inputId,
+        expectedThreadId: threadId,
+      );
+      _observations.removeWhere((entry) => entry.isCancelled);
+      _observations.add(evidence);
+    } catch (error) {
+      operation.reject(error);
+      await _dependencies.attachments.completeFrozen(
+        operationId: operation.id,
+        accepted: false,
+        clearCurrent: false,
+        workspaceId: previous.workspaceId,
+        threadId: threadId,
+      );
+      rethrow;
+    }
+    final replacement = FrozenComposerSubmission(
+      stamp: previous.stamp,
+      operation: operation,
+      input: input,
+      attachments: previous.attachments,
+      workspaceId: previous.workspaceId,
+      mode: previous.mode,
+      route: previous.route,
+    );
+    Future<void>? previousHandoff;
+    Future<void> releasePreviousOwner() =>
+        previousHandoff ??= _releaseFrozen(previous);
+    final dispatch = _dependencies.threadCommands.submitComposer(
+      threadId,
+      input,
+      expectedModelRouteRevision: previous.route.revision,
+      beforeDispatch: () async {
+        // The retry already owns the frozen attachment IDs. Release the failed
+        // operation's owner even when close sealed further dispatch.
+        await releasePreviousOwner();
+        if (_closed || _dependencies.isClosed) {
+          throw StateError('Submission cancelled before backend dispatch');
+        }
+      },
+    );
+    _submissionById.remove(previousInputId);
+    _submissionById[input.inputId] = ComposerSubmission(
+      inputId: input.inputId,
+      text: input.text,
+      attachments: previous.attachments,
+      phase: ComposerSubmissionPhase.sending,
+    );
+    _frozenByInput.remove(previousInputId);
+    _frozenByInput[input.inputId] = replacement;
+    _submissions.publish(List.unmodifiable(_submissionById.values));
+    await _submit(replacement, evidence, dispatch);
+    // A sealed/rejected lane may fail before invoking beforeDispatch. Still
+    // complete the old-owner handoff before this retry task can satisfy close.
+    await releasePreviousOwner();
+  }
+
+  @override
+  Future<void> removeSubmission(String inputId) {
+    final existing = _submissionById[inputId];
+    if (existing == null) return Future<void>.value();
+    final active = _removeTasks[inputId];
+    if (active != null) return active;
+    if (_closed)
+      return Future<void>.error(StateError('The composer is closed'));
+    if (existing.phase != ComposerSubmissionPhase.failed) {
+      return Future<void>.error(
+        StateError('Only failed submissions can be removed'),
+      );
+    }
+    final completion = Completer<void>();
+    final task = completion.future;
+    _removeTasks[inputId] = task;
+    final frozen = _frozenByInput.remove(inputId);
+    _removeSubmission(inputId);
+    unawaited(
+      (frozen == null ? Future<void>.value() : _releaseFrozen(frozen)).then(
+        completion.complete,
+        onError: completion.completeError,
+      ),
+    );
+    return task;
+  }
+
   Future<void> close() => _closing ??= _close();
 
   Future<void> _close() async {
     _closed = true;
-    try {
-      await _pending;
-    } finally {
-      for (final observation in _observations) {
-        observation.cancel();
+    Object? failure;
+    StackTrace? failureStack;
+    Future<void> waitFor(Iterable<Future<void>> tasks) async {
+      try {
+        await Future.wait(tasks);
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureStack ??= stackTrace;
       }
-      _observations.clear();
-      await _metadata?.release();
     }
+
+    await waitFor(_pendingByStamp.values);
+    await waitFor(_retryByInput.values);
+    await waitFor(_removeTasks.values);
+    await waitFor(_presentationTasks.values);
+    for (final frozen in _frozenByInput.values.toList()) {
+      try {
+        await _releaseFrozen(frozen);
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureStack ??= stackTrace;
+      }
+    }
+    _frozenByInput.clear();
+    for (final observation in _observations) {
+      observation.cancel();
+    }
+    _observations.clear();
+    try {
+      await _metadata?.release();
+    } catch (error, stackTrace) {
+      failure ??= error;
+      failureStack ??= stackTrace;
+    }
+    if (failure != null) Error.throwWithStackTrace(failure!, failureStack!);
   }
 
   String? get _workspaceId => _dependencies.directory != null

@@ -10799,6 +10799,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAcpAuthActiveOperation
+  dco_decode_box_autoadd_bridge_acp_auth_active_operation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_acp_auth_active_operation(raw);
+  }
+
+  @protected
   BridgeAcpAuthFailure dco_decode_box_autoadd_bridge_acp_auth_failure(
     dynamic raw,
   ) {
@@ -13431,13 +13438,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAcpAuthAccount dco_decode_bridge_acp_auth_account(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return BridgeAcpAuthAccount(
       accountId: dco_decode_String(arr[0]),
       connectionRevision: dco_decode_u_64(arr[1]),
       state: dco_decode_bridge_acp_auth_state(arr[2]),
       usage: dco_decode_opt_box_autoadd_bridge_acp_usage_observation(arr[3]),
+      activeOperation:
+          dco_decode_opt_box_autoadd_bridge_acp_auth_active_operation(arr[4]),
     );
   }
 
@@ -13445,6 +13454,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAcpAuthAction dco_decode_bridge_acp_auth_action(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BridgeAcpAuthAction.values[raw as int];
+  }
+
+  @protected
+  BridgeAcpAuthActiveOperation dco_decode_bridge_acp_auth_active_operation(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return BridgeAcpAuthActiveOperation(
+      operationId: dco_decode_String(arr[0]),
+      connectionRevision: dco_decode_u_64(arr[1]),
+      action: dco_decode_bridge_acp_auth_action(arr[2]),
+    );
   }
 
   @protected
@@ -23422,6 +23446,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAcpAuthActiveOperation?
+  dco_decode_opt_box_autoadd_bridge_acp_auth_active_operation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_acp_auth_active_operation(raw);
+  }
+
+  @protected
   BridgeAcpAuthFailure? dco_decode_opt_box_autoadd_bridge_acp_auth_failure(
     dynamic raw,
   ) {
@@ -25639,6 +25672,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_acp_annotations(deserializer));
+  }
+
+  @protected
+  BridgeAcpAuthActiveOperation
+  sse_decode_box_autoadd_bridge_acp_auth_active_operation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_acp_auth_active_operation(deserializer));
   }
 
   @protected
@@ -28821,11 +28863,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_usage = sse_decode_opt_box_autoadd_bridge_acp_usage_observation(
       deserializer,
     );
+    var var_activeOperation =
+        sse_decode_opt_box_autoadd_bridge_acp_auth_active_operation(
+          deserializer,
+        );
     return BridgeAcpAuthAccount(
       accountId: var_accountId,
       connectionRevision: var_connectionRevision,
       state: var_state,
       usage: var_usage,
+      activeOperation: var_activeOperation,
     );
   }
 
@@ -28836,6 +28883,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return BridgeAcpAuthAction.values[inner];
+  }
+
+  @protected
+  BridgeAcpAuthActiveOperation sse_decode_bridge_acp_auth_active_operation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_operationId = sse_decode_String(deserializer);
+    var var_connectionRevision = sse_decode_u_64(deserializer);
+    var var_action = sse_decode_bridge_acp_auth_action(deserializer);
+    return BridgeAcpAuthActiveOperation(
+      operationId: var_operationId,
+      connectionRevision: var_connectionRevision,
+      action: var_action,
+    );
   }
 
   @protected
@@ -41905,6 +41967,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAcpAuthActiveOperation?
+  sse_decode_opt_box_autoadd_bridge_acp_auth_active_operation(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_acp_auth_active_operation(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgeAcpAuthFailure? sse_decode_opt_box_autoadd_bridge_acp_auth_failure(
     SseDeserializer deserializer,
   ) {
@@ -44792,6 +44870,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_acp_annotations(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_acp_auth_active_operation(self, serializer);
   }
 
   @protected
@@ -47934,6 +48021,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.usage,
       serializer,
     );
+    sse_encode_opt_box_autoadd_bridge_acp_auth_active_operation(
+      self.activeOperation,
+      serializer,
+    );
   }
 
   @protected
@@ -47943,6 +48034,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.operationId, serializer);
+    sse_encode_u_64(self.connectionRevision, serializer);
+    sse_encode_bridge_acp_auth_action(self.action, serializer);
   }
 
   @protected
@@ -58239,6 +58341,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_acp_annotations(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_auth_active_operation(
+    BridgeAcpAuthActiveOperation? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_acp_auth_active_operation(self, serializer);
     }
   }
 

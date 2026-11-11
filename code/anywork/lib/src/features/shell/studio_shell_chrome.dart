@@ -511,9 +511,12 @@ class _Footer extends StatelessWidget {
           // 高度，同时不隐藏任何操作按钮。
           Flexible(
             fit: FlexFit.loose,
-            child: ConversationActivityConnector(threadId: threadId),
+            child: LiveStatusBar(threadId: threadId),
           ),
-          ComposerDockConnector(threadId: threadId, compact: compact),
+          Composer(
+            target: ComposerTarget.thread(threadId: threadId),
+            compact: compact,
+          ),
           ThreadStatusConnector(
             threadId: threadId,
             showTodo: showTodo,

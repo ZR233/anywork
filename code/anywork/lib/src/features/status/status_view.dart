@@ -3,7 +3,6 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/lsp_store.dart';
-import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 import '../../presentation/providers/settings_store.dart';
@@ -24,13 +23,6 @@ const statusEmptyRuntime = ThreadRuntimeView(
   activeMcpServers: [],
   activeLspServers: [],
 );
-
-/// Mode 选择器只订阅目录本身。Shell 租约由 shell 持有；这里不另开 topic。
-@riverpod
-List<ThreadModeDescriptorView> statusModeCatalog(Ref ref) {
-  return ref.watch(modeCatalogStoreProvider).value?.modes ??
-      const <ThreadModeDescriptorView>[];
-}
 
 /// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
 @riverpod

@@ -1,62 +1,86 @@
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_menu_label.dart';
-import '../view_models/start_environment_view_model.dart';
-import '../views/start_environment_view.dart';
+import '../state/composer_view_state.dart';
+import '../view_models/composer_view_model.dart';
+import 'start_environment_view.dart';
 
-class StartEnvironmentConnector extends ConsumerWidget {
-  const StartEnvironmentConnector({
-    required this.workspaceId,
-    required this.enabled,
-    this.projectOnly = false,
+class StartEnvironmentBar extends StatelessWidget {
+  const StartEnvironmentBar({
+    required this.state,
+    required this.actions,
     this.onAddProject,
+    this.enabled = true,
+    this.projectOnly = false,
+    this.backendSelector,
     super.key,
   });
 
-  final String? workspaceId;
+  final ComposerViewState state;
+  final ComposerViewModel actions;
+  final VoidCallback? onAddProject;
   final bool enabled;
   final bool projectOnly;
-  final VoidCallback? onAddProject;
+  final Widget? backendSelector;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final model = ref.watch(startEnvironmentViewModelProvider(workspaceId));
-    final actions = ref.read(
-      startEnvironmentActionsProvider(workspaceId).notifier,
-    );
-    ref.listen(startEnvironmentActionsProvider(workspaceId), (_, error) {
-      if (error != null) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
-    });
-    final defaults = model.defaults;
-    final editable = enabled && model.editable;
+  Widget build(BuildContext context) {
+    final start = state.start!;
+    final workspace = start.project;
+    final editable = enabled && !start.submitting && !state.standalonePreparing;
     final selector = _ProjectTargetSelector(
-      projects: model.projects,
-      selected: model.workspace,
+      projects: state.projects,
+      selected: workspace,
       enabled: editable,
       onAddProject: onAddProject,
       onSelected: actions.selectProject,
     );
-    if (projectOnly || defaults == null || workspaceId == null) {
-      return Align(alignment: Alignment.centerLeft, child: selector);
+    final defaults = state.delegation;
+    if (projectOnly || defaults == null || workspace == null) {
+      return _withBackend(
+        Align(alignment: Alignment.centerLeft, child: selector),
+      );
     }
-    return StartEnvironmentView(
-      projectSelector: selector,
-      defaultMode: defaults.mode,
-      defaultPreference: defaults.preference,
-      modeOverride: model.modeOverride,
-      preferenceOverride: model.preferenceOverride,
-      workspaceMode: model.workspaceMode,
-      isStandalone: model.workspace?.isStandalone ?? false,
-      enabled: editable,
-      onModeChanged: actions.setMode,
-      onPreferenceChanged: actions.setPreference,
-      onWorkspaceModeChanged: actions.setWorkspaceMode,
+    final draft = start.sessionDraft.forProject(workspace.id);
+    return _withBackend(
+      StartEnvironmentView(
+        projectSelector: selector,
+        defaultMode: defaults.mode,
+        defaultPreference: defaults.preference,
+        modeOverride: draft.delegationModeOverride,
+        preferenceOverride: draft.delegationPreferenceOverride,
+        workspaceMode: draft.workspaceMode,
+        isStandalone: workspace.isStandalone,
+        enabled: editable,
+        onModeChanged: actions.setDelegationMode,
+        onPreferenceChanged: actions.setDelegationPreference,
+        onWorkspaceModeChanged: actions.setWorkspaceMode,
+      ),
+    );
+  }
+
+  Widget _withBackend(Widget leading) {
+    final backend = backendSelector;
+    if (backend == null) return leading;
+    return LayoutBuilder(
+      builder: (context, constraints) => constraints.maxWidth < 520
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                leading,
+                Align(alignment: Alignment.centerRight, child: backend),
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(child: leading),
+                const SizedBox(width: 8),
+                backend,
+              ],
+            ),
     );
   }
 }
@@ -72,7 +96,7 @@ class _ProjectTargetSelector extends StatefulWidget {
   final List<StudioProject> projects;
   final StudioProject? selected;
   final bool enabled;
-  final Future<void> Function(StudioProject?) onSelected;
+  final ValueChanged<StudioProject?> onSelected;
   final VoidCallback? onAddProject;
 
   @override

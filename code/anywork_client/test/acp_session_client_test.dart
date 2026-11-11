@@ -439,6 +439,7 @@ void main() {
         clientId: 'native',
       );
       expect(() => native.acpSessions, throwsUnsupportedError);
+      expect(native.hasAcpConversation('thread'), isFalse);
       expect((await native.close()).complete, isTrue);
     });
 

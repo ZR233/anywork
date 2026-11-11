@@ -30,14 +30,12 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
   int? _valueGeneration;
   final Map<(int, NativeAccountIdentity, int), Future<void>> _current = {};
   final Set<Future<void>> _pending = {};
-  final Set<(NativeAccountIdentity, int)> _attempted = {};
   final LatestValue<Map<NativeAccountIdentity, StudioFailure>> _queryFailures =
       LatestValue(const {});
   final Map<(int, NativeAccountIdentity, int), _UsageQueryFailure> _failures =
       {};
   final Map<(int, NativeAccountIdentity, int), _UnknownUsageQuery> _unknown =
       {};
-  int _visible = 0;
   bool _closed = false;
 
   @override
@@ -52,7 +50,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
   void Function() prepareOwnerChange(bool Function() isCurrent) {
     final current = _state.value;
     final queryFailures = _queryFailures.value;
-    _attempted.clear();
     final retiring = _unknown.values.toList();
     _unknown.clear();
     _failures.clear();
@@ -121,8 +118,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
       if (!accounts.value.loaded ||
           identities[account.identity] == account.queryRevision) {
         values[account.identity] = account;
-        if (account.phase != AccountUsagePhase.unchecked)
-          _attempted.add((account.identity, account.queryRevision));
       }
     }
     _valueGeneration = generation;
@@ -131,8 +126,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
     );
     if (generation != observations.generation) return;
     _settleUnknown();
-    if (generation != observations.generation) return;
-    _automaticallyQuery();
   }
 
   void fail(StudioFailure failure) {
@@ -161,9 +154,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
         if (identities[entry.key] == entry.value.queryRevision)
           entry.key: entry.value,
     };
-    _attempted.removeWhere(
-      (identity) => identities[identity.$1] != identity.$2,
-    );
     _state.publish(
       AccountResource(
         stamp: current.stamp,
@@ -174,8 +164,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
     );
     if (generation != observations.generation) return;
     _settleUnknown();
-    if (generation != observations.generation) return;
-    _automaticallyQuery();
   }
 
   void _settleUnknown() {
@@ -214,7 +202,7 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
   }
 
   @override
-  AccountDemand observeVisible() {
+  AccountDemand observeAccount(NativeAccountIdentity identity) {
     if (_closed) throw StateError('Account usage is closed');
     final summaries = observations.acquire(const AccountSummariesTarget());
     late final AccountDemand usage;
@@ -224,29 +212,9 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
       unawaited(summaries.release());
       rethrow;
     }
-    _visible++;
-    _automaticallyQuery();
     return _UsageDemand(() async {
-      _visible--;
       await Future.wait([summaries.release(), usage.release()]);
     });
-  }
-
-  void _automaticallyQuery() {
-    if (_closed || _visible == 0 || !accounts.value.loaded) return;
-    for (final account in accounts.value.accounts) {
-      if (account.identity case final NativeAccountIdentity identity) {
-        final revision = account.usageQueryRevision;
-        // Remote-query capability does not gate the owner's local
-        // Unsupported/MissingCredential classification for this query identity.
-        if (revision == null || _attempted.contains((identity, revision)))
-          continue;
-        unawaited(
-          refresh(identity)
-              .then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-        );
-      }
-    }
   }
 
   @override
@@ -265,7 +233,6 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
     final key = (generation, identity, revision);
     final existing = _current[key];
     if (existing != null) return existing;
-    _attempted.add((identity, revision));
     final demand = observations.acquire(const AccountUsageTarget());
     final beforeRevision = _valueGeneration == generation
         ? (_state.value.value?[identity]?.revision ?? -1)
@@ -349,5 +316,17 @@ final class _UsageDemand implements AccountDemand {
   final Future<void> Function() _release;
   Future<void>? _releasing;
   @override
-  Future<void> release() => _releasing ??= _release();
+  Future<void> release() {
+    final existing = _releasing;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    final result = _releasing = completion.future;
+    // Native close may synchronously release this same display demand again.
+    try {
+      completion.complete(_release());
+    } catch (error, stack) {
+      completion.completeError(error, stack);
+    }
+    return result;
+  }
 }

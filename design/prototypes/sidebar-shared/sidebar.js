@@ -429,10 +429,9 @@
             type="button"
             class="sb-new-session-btn"
             data-sb-action="standalone-start"
-            title="新建会话（进入新会话页，默认无项目，可在页内切换已有项目或新建项目 · Ctrl+N）">
+            title="新建会话（进入新会话页，默认无项目，可在页内切换已有项目或新建项目）">
             ${lucideIcon('square-pen')}
             <span>新建会话</span>
-            <span class="sb-kbd">Ctrl+N</span>
           </button>
 
           <div class="sb-search-wrap">
@@ -444,7 +443,6 @@
               aria-label="搜索项目与会话"
               autocomplete="off"
               spellcheck="false">
-            <span class="sb-search-hint">Ctrl+K</span>
             <button type="button" class="sb-search-clear" title="清除搜索" aria-label="清除搜索" hidden>
               ${lucideIcon('x')}
             </button>
@@ -468,7 +466,6 @@
 
       this.newSessionBtn = this.host.querySelector('.sb-new-session-btn');
       this.searchInput = this.host.querySelector('.sb-search-input');
-      this.searchHint = this.host.querySelector('.sb-search-hint');
       this.searchClearBtn = this.host.querySelector('.sb-search-clear');
       this.filterHost = this.host.querySelector('.sb-filter-host');
       this.scrollEl = this.host.querySelector('.sb-scroll');
@@ -625,7 +622,6 @@
       this.newSessionBtn.classList.toggle('is-active', Boolean(standaloneDraftActive));
 
       const hasQuery = Boolean(this.searchQuery);
-      this.searchHint.hidden = hasQuery;
       this.searchClearBtn.hidden = !hasQuery;
       if (this.searchInput.value !== this.searchQuery) {
         this.searchInput.value = this.searchQuery;
@@ -1670,18 +1666,8 @@
         this.hideHoverCard();
         this.searchQuery = this.searchInput.value;
         const hasQuery = Boolean(this.searchQuery);
-        this.searchHint.hidden = hasQuery;
         this.searchClearBtn.hidden = !hasQuery;
         this.renderTree();
-      }, { signal: sig });
-
-      this.searchInput.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && this.searchQuery) {
-          event.preventDefault();
-          event.stopPropagation();
-          this.searchQuery = '';
-          this.render();
-        }
       }, { signal: sig });
 
       this.searchClearBtn.addEventListener('click', () => {
@@ -1875,19 +1861,6 @@
         this.onToast('已恢复侧边栏默认宽度');
       }, { signal: sig });
 
-      this.resizerEl.addEventListener('keydown', event => {
-        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-          event.preventDefault();
-          const delta = event.key === 'ArrowRight' ? 16 : -16;
-          this.sidebarWidth = Math.max(236, Math.min(390, this.sidebarWidth + delta));
-          this.syncWidthToShell();
-        } else if (event.key === 'Home') {
-          event.preventDefault();
-          this.sidebarWidth = this.defaultWidth;
-          this.syncWidthToShell();
-        }
-      }, { signal: sig });
-
       // 6. Backdrop click closes mobile drawer
       this.backdropEl.addEventListener('click', () => this.closeDrawerIfNarrow(), { signal: sig });
 
@@ -1905,25 +1878,6 @@
           event.preventDefault();
           this.closeMenus();
           return;
-        }
-        const mod = event.ctrlKey || event.metaKey;
-        if (mod && event.key.toLowerCase() === 'k') {
-          event.preventDefault();
-          if (this.shellEl.classList.contains('is-sidebar-collapsed')) {
-            this.shellEl.classList.remove('is-sidebar-collapsed');
-          }
-          this.searchInput.focus();
-          this.searchInput.select();
-        } else if (mod && event.key.toLowerCase() === 'n' && !this.dialogEl.open) {
-          event.preventDefault();
-          const s = this.controller?.state;
-          if (s?.projectId && s.targetType !== 'standalone') {
-            this.expandedIds.add(s.projectId);
-            this.controller.selectProjectStart(s.projectId);
-          } else {
-            this.controller?.selectStandaloneStart();
-          }
-          this.render();
         }
       }, { signal: sig });
 

@@ -64,7 +64,7 @@ final class AcpStartComposerViewModelProvider
 }
 
 String _$acpStartComposerViewModelHash() =>
-    r'74c8ca6591ce6d21913de49078ce6743a603f2cf';
+    r'f06e71258c6a27271c0dbf5a6e82ea0192ec8316';
 
 final class AcpStartComposerViewModelFamily extends $Family
     with

@@ -491,18 +491,46 @@ void main() {
     },
   );
 
-  test('closing the draft releases ready wait without repeating or stopping the business owner', () async {
+  test('closing the draft releases all workspace ready waits without stopping business owners', () async {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
     final creating = start.submit('workspace');
     await h.source.enteredRead.future;
     await Future<void>.delayed(Duration.zero);
-    await start.close();
+    h.project.applyProjectDirectory(
+      ProjectDirectoryState(
+        values: const [
+          StudioProject(id: 'workspace', name: 'Project', path: '/project'),
+          StudioProject(id: 'other', name: 'Other', path: '/other'),
+        ],
+        revision: 2,
+      ),
+    );
+    h.selection.selectProject('other');
+    final otherSource = ControlledAcpObservation([
+      AcpAcceptedFrameView(
+        target: AcpSessionTargetView(
+          sessionId: 'other-session',
+          agentId: 'other-agent',
+          threadId: 'other-thread',
+          instance: BigInt.two,
+        ),
+        hasObservation: true,
+      ),
+    ]);
+    h.port.sources.add(otherSource);
+    start.setAcpService('other', 'account');
+    final otherCreating = start.submit('other');
+    await otherSource.enteredRead.future;
+    await Future<void>.delayed(Duration.zero);
+    await start.close().timeout(const Duration(seconds: 5));
     expect(await creating, isFalse);
-    expect(h.calls('open'), hasLength(1));
+    expect(await otherCreating, isFalse);
+    expect(h.calls('open'), hasLength(2));
     expect(h.calls('closeMember'), isEmpty);
     expect(h.source.closes, 0);
+    expect(otherSource.closes, 0);
   });
 
   test('metadata removal during preparation blocks the frozen target and keeps the draft', () async {

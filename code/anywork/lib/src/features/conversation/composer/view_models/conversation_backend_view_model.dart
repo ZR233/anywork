@@ -25,11 +25,7 @@ final conversationBackendViewModelProvider = Provider.autoDispose
         case null:
           break;
       }
-      final existingAcp = ref
-          .watch(anyworkClientProvider)
-          .acpSessions
-          .conversationForThread(threadId);
-      if (existingAcp != null) {
+      if (ref.watch(anyworkClientProvider).hasAcpConversation(threadId)) {
         return ConversationBackendKind.acp;
       }
       return metadata.isLoading && !metadata.hasFrame

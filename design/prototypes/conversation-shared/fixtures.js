@@ -261,7 +261,7 @@
           <text x="1020" y="606" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="14" fill="#E1D4C5">已停止含未消费继续点 + 空草稿</text>
           <text x="1020" y="638" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="18" font-weight="600" fill="#FAF6EF">▶ 继续（空回车不误触恢复）</text>
 
-          <text x="132" y="732" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="15" fill="#66584E">提示：使用 Esc 关闭当前大图弹层，或使用键盘 ← / → 在当前草稿的多张粘贴图片间切换查看。</text>
+          <text x="132" y="732" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="15" fill="#66584E">提示：使用预览工具栏关闭大图，或切换查看当前草稿中的多张图片。</text>
         </svg>
       `)
     },
@@ -493,7 +493,7 @@
   function members(id, terminal) {
     const status = terminal ? 'completed' : 'running';
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 3,
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界', status: 'completed', elapsed: 3,
         content: '已完成的成员**留在状态栏的当前工作组**；同时核对运行期 `SessionModeSelector` 与 `ModelRoleSelector` 的就地锁定提示。' },
       { id: id + '-read', kind: 'read', title: '读取文件', target: 'composer_dock_connector.dart', status: 'completed', elapsed: 1,
         path: 'code/anywork/lib/src/features/conversation/composer/connectors/composer_dock_connector.dart',
@@ -505,7 +505,7 @@
         queries: ['被锁定的选择器必须给出可见原因', '运行中发送并继续与草稿冻结'],
         results: [
           { title: 'design/19-studio-ui.md §19.2 动态工作模式与工作流状态', description: '被锁定的选择器必须给出可见原因，不得出现看似可点却静默吞掉点击的控件。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/Accessibility/ARIA' },
-          { title: 'design/19-studio-ui.md §19.11 运行中发送消息与剪贴板粘贴', description: '运行中无草稿显示停止，输入草稿后切换为发送并继续，Esc 停止并保留草稿。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/HTML/Element/dialog' }
+          { title: 'design/19-studio-ui.md §19.11 运行中发送消息与剪贴板粘贴', description: '运行中无草稿显示停止，输入草稿后切换为发送并继续，使用明确按钮请求停止。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/HTML/Element/dialog' }
         ] },
       { id: id + '-edit', kind: 'edit', title: '修改文件', target: 'conversation-shared/composer.js', status: 'completed', elapsed: 2,
         path: 'design/prototypes/conversation-shared/composer.js',
@@ -532,7 +532,7 @@
 
   function followUpMembers(id) {
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '确认收尾检查', status: 'running', elapsed: 0,
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '确认 **收尾检查** 与 `cargo flutter analyze`', status: 'running', elapsed: 0,
         content: '正文已经结束，这是新的工作组：先在状态栏插入成员，等下一段正文出现时再整组进入时间线。' },
       { id: id + '-command', kind: 'command', title: '执行命令', target: 'cargo flutter analyze', status: 'running', elapsed: 0,
         cwd: '~/work/anywork', exitCode: null, output: 'Analyzing anywork...' }
@@ -796,6 +796,15 @@
 
     // Group 2: Runtime Session Composer & Locked Configuration Matrix
     {
+      id: 'submission-failed',
+      group: 'composer',
+      stage: 'session',
+      empty: true,
+      label: '发送失败 · 原提交独立保留',
+      initialDraft: '这是正在编辑的下一条消息，不应被旧失败覆盖。',
+      hint: '上一条有效提交已交出并清空输入，失败内容仍留在原提交项；重试或移除只处理原提交，不影响下一条草稿。'
+    },
+    {
       id: 'running-locked',
       group: 'composer',
       stage: 'session',
@@ -875,7 +884,7 @@
       stage: 'session',
       at: 'workgroup',
       label: '状态栏 · 工作组进行中',
-      hint: '当前工作组位于状态栏：成员逐个插入，已完成的切换为对应语义图标留在组内，运行中的继续计时。时间线不出现半成品。'
+      hint: '当前工作组位于状态栏：本组已有思考摘要时，折叠单行持续以单行 Markdown 展示最新思考摘要（替换运行指令等阶段文案），左侧同步使用趴卧摇尾猫图标；仅在无思考摘要且运行命令时顶栏切换圆形进度。时间线中的已完成工作组保持「工作了 …」。'
     },
     {
       id: 'long-tool-output', group: 'timeline', stage: 'session', at: 'workgroup',
@@ -911,7 +920,7 @@
       stage: 'session',
       at: 'group-idle',
       label: '状态栏 · 工作组待交接',
-      hint: '成员已全部完成，工作组仍留在状态栏并显示「思考中」。下一条是工具则继续并入本组；是正文、提问或轮次结束则整组移入时间线。'
+      hint: '成员已全部完成，工作组仍留在状态栏并继续展示本组最新单行 Markdown 思考摘要（无思考摘要时回退显示「思考中」）。下一条是工具则继续并入本组；是正文、提问或轮次结束则整组移入时间线并显示「工作了 …」。'
     },
     {
       id: 'text',

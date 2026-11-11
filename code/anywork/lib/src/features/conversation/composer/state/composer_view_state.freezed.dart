@@ -13,6 +13,666 @@ part of 'composer_view_state.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$ComposerTarget {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ComposerTarget);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ComposerTarget()';
+}
+
+
+}
+
+/// @nodoc
+class $ComposerTargetCopyWith<$Res>  {
+$ComposerTargetCopyWith(ComposerTarget _, $Res Function(ComposerTarget) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ComposerTarget].
+extension ComposerTargetPatterns on ComposerTarget {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ThreadComposerTarget value)?  thread,TResult Function( StartComposerTarget value)?  start,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case ThreadComposerTarget() when thread != null:
+return thread(_that);case StartComposerTarget() when start != null:
+return start(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ThreadComposerTarget value)  thread,required TResult Function( StartComposerTarget value)  start,}){
+final _that = this;
+switch (_that) {
+case ThreadComposerTarget():
+return thread(_that);case StartComposerTarget():
+return start(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ThreadComposerTarget value)?  thread,TResult? Function( StartComposerTarget value)?  start,}){
+final _that = this;
+switch (_that) {
+case ThreadComposerTarget() when thread != null:
+return thread(_that);case StartComposerTarget() when start != null:
+return start(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String threadId)?  thread,TResult Function( String workspaceId)?  start,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case ThreadComposerTarget() when thread != null:
+return thread(_that.threadId);case StartComposerTarget() when start != null:
+return start(_that.workspaceId);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String threadId)  thread,required TResult Function( String workspaceId)  start,}) {final _that = this;
+switch (_that) {
+case ThreadComposerTarget():
+return thread(_that.threadId);case StartComposerTarget():
+return start(_that.workspaceId);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String threadId)?  thread,TResult? Function( String workspaceId)?  start,}) {final _that = this;
+switch (_that) {
+case ThreadComposerTarget() when thread != null:
+return thread(_that.threadId);case StartComposerTarget() when start != null:
+return start(_that.workspaceId);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class ThreadComposerTarget implements ComposerTarget {
+  const ThreadComposerTarget({required this.threadId});
+
+
+ final  String threadId;
+
+/// Create a copy of ComposerTarget
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ThreadComposerTargetCopyWith<ThreadComposerTarget> get copyWith => _$ThreadComposerTargetCopyWithImpl<ThreadComposerTarget>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ThreadComposerTarget&&(identical(other.threadId, threadId) || other.threadId == threadId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,threadId);
+}
+
+@override
+String toString() {
+    return 'ComposerTarget.thread(threadId: $threadId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ThreadComposerTargetCopyWith<$Res> implements $ComposerTargetCopyWith<$Res> {
+  factory $ThreadComposerTargetCopyWith(ThreadComposerTarget value, $Res Function(ThreadComposerTarget) _then) = _$ThreadComposerTargetCopyWithImpl;
+@useResult
+$Res call({
+ String threadId
+});
+
+
+
+
+}
+/// @nodoc
+class _$ThreadComposerTargetCopyWithImpl<$Res>
+    implements $ThreadComposerTargetCopyWith<$Res> {
+  _$ThreadComposerTargetCopyWithImpl(this._self, this._then);
+
+  final ThreadComposerTarget _self;
+  final $Res Function(ThreadComposerTarget) _then;
+
+/// Create a copy of ComposerTarget
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? threadId = null,}) {
+  return _then(ThreadComposerTarget(
+threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class StartComposerTarget implements ComposerTarget {
+  const StartComposerTarget({required this.workspaceId});
+
+
+ final  String workspaceId;
+
+/// Create a copy of ComposerTarget
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$StartComposerTargetCopyWith<StartComposerTarget> get copyWith => _$StartComposerTargetCopyWithImpl<StartComposerTarget>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is StartComposerTarget&&(identical(other.workspaceId, workspaceId) || other.workspaceId == workspaceId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,workspaceId);
+}
+
+@override
+String toString() {
+    return 'ComposerTarget.start(workspaceId: $workspaceId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $StartComposerTargetCopyWith<$Res> implements $ComposerTargetCopyWith<$Res> {
+  factory $StartComposerTargetCopyWith(StartComposerTarget value, $Res Function(StartComposerTarget) _then) = _$StartComposerTargetCopyWithImpl;
+@useResult
+$Res call({
+ String workspaceId
+});
+
+
+
+
+}
+/// @nodoc
+class _$StartComposerTargetCopyWithImpl<$Res>
+    implements $StartComposerTargetCopyWith<$Res> {
+  _$StartComposerTargetCopyWithImpl(this._self, this._then);
+
+  final StartComposerTarget _self;
+  final $Res Function(StartComposerTarget) _then;
+
+/// Create a copy of ComposerTarget
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? workspaceId = null,}) {
+  return _then(StartComposerTarget(
+workspaceId: null == workspaceId ? _self.workspaceId : workspaceId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$ComposerViewState {
+
+ ComposerInputState get input; ComposerDockViewState? get thread; StartPageComposerViewState? get start; List<ComposerSubmission> get submissions; Set<String> get submissionOperations; Map<String, Object> get submissionFailures; Object? get actionFailure; List<StudioProject> get projects; DelegationSettingsView? get delegation; ThreadModeCatalogView get modeCatalog; bool get standalonePreparing;
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ComposerViewStateCopyWith<ComposerViewState> get copyWith => _$ComposerViewStateCopyWithImpl<ComposerViewState>(this as ComposerViewState, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as ComposerViewState;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ComposerViewState&&(identical(other.input, _this.input) || other.input == _this.input)&&(identical(other.thread, _this.thread) || other.thread == _this.thread)&&(identical(other.start, _this.start) || other.start == _this.start)&&const DeepCollectionEquality().equals(other.submissions, _this.submissions)&&const DeepCollectionEquality().equals(other.submissionOperations, _this.submissionOperations)&&const DeepCollectionEquality().equals(other.submissionFailures, _this.submissionFailures)&&const DeepCollectionEquality().equals(other.actionFailure, _this.actionFailure)&&const DeepCollectionEquality().equals(other.projects, _this.projects)&&(identical(other.delegation, _this.delegation) || other.delegation == _this.delegation)&&(identical(other.modeCatalog, _this.modeCatalog) || other.modeCatalog == _this.modeCatalog)&&(identical(other.standalonePreparing, _this.standalonePreparing) || other.standalonePreparing == _this.standalonePreparing));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as ComposerViewState;
+  return Object.hash(runtimeType,_this.input,_this.thread,_this.start,const DeepCollectionEquality().hash(_this.submissions),const DeepCollectionEquality().hash(_this.submissionOperations),const DeepCollectionEquality().hash(_this.submissionFailures),const DeepCollectionEquality().hash(_this.actionFailure),const DeepCollectionEquality().hash(_this.projects),_this.delegation,_this.modeCatalog,_this.standalonePreparing);
+}
+
+@override
+String toString() {
+  final _this = this as ComposerViewState;
+  return 'ComposerViewState(input: ${_this.input}, thread: ${_this.thread}, start: ${_this.start}, submissions: ${_this.submissions}, submissionOperations: ${_this.submissionOperations}, submissionFailures: ${_this.submissionFailures}, actionFailure: ${_this.actionFailure}, projects: ${_this.projects}, delegation: ${_this.delegation}, modeCatalog: ${_this.modeCatalog}, standalonePreparing: ${_this.standalonePreparing})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ComposerViewStateCopyWith<$Res>  {
+  factory $ComposerViewStateCopyWith(ComposerViewState value, $Res Function(ComposerViewState) _then) = _$ComposerViewStateCopyWithImpl;
+@useResult
+$Res call({
+ ComposerInputState input, ComposerDockViewState? thread, StartPageComposerViewState? start, List<ComposerSubmission> submissions, Set<String> submissionOperations, Map<String, Object> submissionFailures, Object? actionFailure, List<StudioProject> projects, DelegationSettingsView? delegation, ThreadModeCatalogView modeCatalog, bool standalonePreparing
+});
+
+
+$ComposerDockViewStateCopyWith<$Res>? get thread;$StartPageComposerViewStateCopyWith<$Res>? get start;
+
+}
+/// @nodoc
+class _$ComposerViewStateCopyWithImpl<$Res>
+    implements $ComposerViewStateCopyWith<$Res> {
+  _$ComposerViewStateCopyWithImpl(this._self, this._then);
+
+  final ComposerViewState _self;
+  final $Res Function(ComposerViewState) _then;
+
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? input = null,Object? thread = freezed,Object? start = freezed,Object? submissions = null,Object? submissionOperations = null,Object? submissionFailures = null,Object? actionFailure = freezed,Object? projects = null,Object? delegation = freezed,Object? modeCatalog = null,Object? standalonePreparing = null,}) {
+  return _then(ComposerViewState(
+input: null == input ? _self.input : input // ignore: cast_nullable_to_non_nullable
+as ComposerInputState,thread: freezed == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
+as ComposerDockViewState?,start: freezed == start ? _self.start : start // ignore: cast_nullable_to_non_nullable
+as StartPageComposerViewState?,submissions: null == submissions ? _self.submissions : submissions // ignore: cast_nullable_to_non_nullable
+as List<ComposerSubmission>,submissionOperations: null == submissionOperations ? _self.submissionOperations : submissionOperations // ignore: cast_nullable_to_non_nullable
+as Set<String>,submissionFailures: null == submissionFailures ? _self.submissionFailures : submissionFailures // ignore: cast_nullable_to_non_nullable
+as Map<String, Object>,actionFailure: freezed == actionFailure ? _self.actionFailure : actionFailure ,projects: null == projects ? _self.projects : projects // ignore: cast_nullable_to_non_nullable
+as List<StudioProject>,delegation: freezed == delegation ? _self.delegation : delegation // ignore: cast_nullable_to_non_nullable
+as DelegationSettingsView?,modeCatalog: null == modeCatalog ? _self.modeCatalog : modeCatalog // ignore: cast_nullable_to_non_nullable
+as ThreadModeCatalogView,standalonePreparing: null == standalonePreparing ? _self.standalonePreparing : standalonePreparing // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ComposerDockViewStateCopyWith<$Res>? get thread {
+    if (_self.thread == null) {
+    return null;
+  }
+
+  return $ComposerDockViewStateCopyWith<$Res>(_self.thread!, (value) {
+    return _then(_self.copyWith(thread: value));
+  });
+}/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StartPageComposerViewStateCopyWith<$Res>? get start {
+    if (_self.start == null) {
+    return null;
+  }
+
+  return $StartPageComposerViewStateCopyWith<$Res>(_self.start!, (value) {
+    return _then(_self.copyWith(start: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [ComposerViewState].
+extension ComposerViewStatePatterns on ComposerViewState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _ComposerViewState value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _ComposerViewState() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _ComposerViewState value)  $default,){
+final _that = this;
+switch (_that) {
+case _ComposerViewState():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _ComposerViewState value)?  $default,){
+final _that = this;
+switch (_that) {
+case _ComposerViewState() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ComposerInputState input,  ComposerDockViewState? thread,  StartPageComposerViewState? start,  List<ComposerSubmission> submissions,  Set<String> submissionOperations,  Map<String, Object> submissionFailures,  Object? actionFailure,  List<StudioProject> projects,  DelegationSettingsView? delegation,  ThreadModeCatalogView modeCatalog,  bool standalonePreparing)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _ComposerViewState() when $default != null:
+return $default(_that.input,_that.thread,_that.start,_that.submissions,_that.submissionOperations,_that.submissionFailures,_that.actionFailure,_that.projects,_that.delegation,_that.modeCatalog,_that.standalonePreparing);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ComposerInputState input,  ComposerDockViewState? thread,  StartPageComposerViewState? start,  List<ComposerSubmission> submissions,  Set<String> submissionOperations,  Map<String, Object> submissionFailures,  Object? actionFailure,  List<StudioProject> projects,  DelegationSettingsView? delegation,  ThreadModeCatalogView modeCatalog,  bool standalonePreparing)  $default,) {final _that = this;
+switch (_that) {
+case _ComposerViewState():
+return $default(_that.input,_that.thread,_that.start,_that.submissions,_that.submissionOperations,_that.submissionFailures,_that.actionFailure,_that.projects,_that.delegation,_that.modeCatalog,_that.standalonePreparing);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ComposerInputState input,  ComposerDockViewState? thread,  StartPageComposerViewState? start,  List<ComposerSubmission> submissions,  Set<String> submissionOperations,  Map<String, Object> submissionFailures,  Object? actionFailure,  List<StudioProject> projects,  DelegationSettingsView? delegation,  ThreadModeCatalogView modeCatalog,  bool standalonePreparing)?  $default,) {final _that = this;
+switch (_that) {
+case _ComposerViewState() when $default != null:
+return $default(_that.input,_that.thread,_that.start,_that.submissions,_that.submissionOperations,_that.submissionFailures,_that.actionFailure,_that.projects,_that.delegation,_that.modeCatalog,_that.standalonePreparing);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _ComposerViewState implements ComposerViewState {
+  const _ComposerViewState({required this.input, this.thread, this.start,  List<ComposerSubmission> submissions = const [],  Set<String> submissionOperations = const {},  Map<String, Object> submissionFailures = const {}, this.actionFailure,  List<StudioProject> projects = const [], this.delegation, this.modeCatalog = const ThreadModeCatalogView(), this.standalonePreparing = false}): _submissions = submissions,_submissionOperations = submissionOperations,_submissionFailures = submissionFailures,_projects = projects;
+
+
+@override final  ComposerInputState input;
+@override final  ComposerDockViewState? thread;
+@override final  StartPageComposerViewState? start;
+ final  List<ComposerSubmission> _submissions;
+@override@JsonKey() List<ComposerSubmission> get submissions {
+  if (_submissions is EqualUnmodifiableListView) return _submissions;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_submissions);
+}
+
+ final  Set<String> _submissionOperations;
+@override@JsonKey() Set<String> get submissionOperations {
+  if (_submissionOperations is EqualUnmodifiableSetView) return _submissionOperations;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableSetView(_submissionOperations);
+}
+
+ final  Map<String, Object> _submissionFailures;
+@override@JsonKey() Map<String, Object> get submissionFailures {
+  if (_submissionFailures is EqualUnmodifiableMapView) return _submissionFailures;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(_submissionFailures);
+}
+
+@override final  Object? actionFailure;
+ final  List<StudioProject> _projects;
+@override@JsonKey() List<StudioProject> get projects {
+  if (_projects is EqualUnmodifiableListView) return _projects;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_projects);
+}
+
+@override final  DelegationSettingsView? delegation;
+@override@JsonKey() final  ThreadModeCatalogView modeCatalog;
+@override@JsonKey() final  bool standalonePreparing;
+
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$ComposerViewStateCopyWith<_ComposerViewState> get copyWith => __$ComposerViewStateCopyWithImpl<_ComposerViewState>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ComposerViewState&&(identical(other.input, input) || other.input == input)&&(identical(other.thread, thread) || other.thread == thread)&&(identical(other.start, start) || other.start == start)&&const DeepCollectionEquality().equals(other.submissions, _submissions)&&const DeepCollectionEquality().equals(other.submissionOperations, _submissionOperations)&&const DeepCollectionEquality().equals(other.submissionFailures, _submissionFailures)&&const DeepCollectionEquality().equals(other.actionFailure, actionFailure)&&const DeepCollectionEquality().equals(other.projects, _projects)&&(identical(other.delegation, delegation) || other.delegation == delegation)&&(identical(other.modeCatalog, modeCatalog) || other.modeCatalog == modeCatalog)&&(identical(other.standalonePreparing, standalonePreparing) || other.standalonePreparing == standalonePreparing));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,input,thread,start,const DeepCollectionEquality().hash(_submissions),const DeepCollectionEquality().hash(_submissionOperations),const DeepCollectionEquality().hash(_submissionFailures),const DeepCollectionEquality().hash(actionFailure),const DeepCollectionEquality().hash(_projects),delegation,modeCatalog,standalonePreparing);
+}
+
+@override
+String toString() {
+    return 'ComposerViewState(input: $input, thread: $thread, start: $start, submissions: $submissions, submissionOperations: $submissionOperations, submissionFailures: $submissionFailures, actionFailure: $actionFailure, projects: $projects, delegation: $delegation, modeCatalog: $modeCatalog, standalonePreparing: $standalonePreparing)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$ComposerViewStateCopyWith<$Res> implements $ComposerViewStateCopyWith<$Res> {
+  factory _$ComposerViewStateCopyWith(_ComposerViewState value, $Res Function(_ComposerViewState) _then) = __$ComposerViewStateCopyWithImpl;
+@override @useResult
+$Res call({
+ ComposerInputState input, ComposerDockViewState? thread, StartPageComposerViewState? start, List<ComposerSubmission> submissions, Set<String> submissionOperations, Map<String, Object> submissionFailures, Object? actionFailure, List<StudioProject> projects, DelegationSettingsView? delegation, ThreadModeCatalogView modeCatalog, bool standalonePreparing
+});
+
+
+@override $ComposerDockViewStateCopyWith<$Res>? get thread;@override $StartPageComposerViewStateCopyWith<$Res>? get start;
+
+}
+/// @nodoc
+class __$ComposerViewStateCopyWithImpl<$Res>
+    implements _$ComposerViewStateCopyWith<$Res> {
+  __$ComposerViewStateCopyWithImpl(this._self, this._then);
+
+  final _ComposerViewState _self;
+  final $Res Function(_ComposerViewState) _then;
+
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? input = null,Object? thread = freezed,Object? start = freezed,Object? submissions = null,Object? submissionOperations = null,Object? submissionFailures = null,Object? actionFailure = freezed,Object? projects = null,Object? delegation = freezed,Object? modeCatalog = null,Object? standalonePreparing = null,}) {
+  return _then(_ComposerViewState(
+input: null == input ? _self.input : input // ignore: cast_nullable_to_non_nullable
+as ComposerInputState,thread: freezed == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
+as ComposerDockViewState?,start: freezed == start ? _self.start : start // ignore: cast_nullable_to_non_nullable
+as StartPageComposerViewState?,submissions: null == submissions ? _self._submissions : submissions // ignore: cast_nullable_to_non_nullable
+as List<ComposerSubmission>,submissionOperations: null == submissionOperations ? _self._submissionOperations : submissionOperations // ignore: cast_nullable_to_non_nullable
+as Set<String>,submissionFailures: null == submissionFailures ? _self._submissionFailures : submissionFailures // ignore: cast_nullable_to_non_nullable
+as Map<String, Object>,actionFailure: freezed == actionFailure ? _self.actionFailure : actionFailure ,projects: null == projects ? _self._projects : projects // ignore: cast_nullable_to_non_nullable
+as List<StudioProject>,delegation: freezed == delegation ? _self.delegation : delegation // ignore: cast_nullable_to_non_nullable
+as DelegationSettingsView?,modeCatalog: null == modeCatalog ? _self.modeCatalog : modeCatalog // ignore: cast_nullable_to_non_nullable
+as ThreadModeCatalogView,standalonePreparing: null == standalonePreparing ? _self.standalonePreparing : standalonePreparing // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ComposerDockViewStateCopyWith<$Res>? get thread {
+    if (_self.thread == null) {
+    return null;
+  }
+
+  return $ComposerDockViewStateCopyWith<$Res>(_self.thread!, (value) {
+    return _then(_self.copyWith(thread: value));
+  });
+}/// Create a copy of ComposerViewState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StartPageComposerViewStateCopyWith<$Res>? get start {
+    if (_self.start == null) {
+    return null;
+  }
+
+  return $StartPageComposerViewStateCopyWith<$Res>(_self.start!, (value) {
+    return _then(_self.copyWith(start: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$StartPageComposerViewState {
 
  StudioProject? get project; List<ModelSelectionAccount> get accounts; List<ModeModelRouteView> get modeModelRoutes; bool get settingsLoaded;/// Recovery 已判为访问受阻时不允许编辑；执行阻塞只禁提交。

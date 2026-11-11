@@ -1,9 +1,9 @@
-# Configure and verify LSP
+# Language-server configuration
 
-Language servers supply semantic operations such as hover, definitions, references
-and diagnostics. Start language development by checking the current workspace's
-LSP status. Configuration and initialization are separate: a valid TOML file or a
-successful executable version check does not prove the server can answer queries.
+This reference owns anywork's document format and loading behavior. Server
+executables, arguments and server-specific options are not universal presets:
+select them for the task and installed server version using its official manual.
+A valid document does not by itself prove that the server can answer queries.
 
 ## Location and execution side
 
@@ -13,61 +13,44 @@ Create one document at:
 <actual execution workspace>/.anywork/lsp/<server-id>.toml
 ```
 
-The workspace is the current Thread's checkout or worktree, not necessarily the
-project's original directory. Use the latest host facts. SSH reads this directory
-on the remote machine and starts the executable there. A program installed on
-the Studio host cannot serve a remote project through a local path.
+Use the current Thread's actual checkout/worktree. SSH reads this directory on
+the remote machine and starts the executable there; a program installed on the
+Studio host cannot serve a remote project through a local path.
 
-Each file has its own `schema_version = 1` and an `id` matching the filename.
-IDs contain ASCII letters, digits, `-`, `_` or `.`, excluding `.` and `..`.
-Local defaults may live at `<studio-home>/lsp/host/<server-id>.toml`; a workspace
-document with the same ID replaces the entire default. SSH does not inherit Host
-defaults. Prefer workspace documents for project-specific configuration.
+Each file has `schema_version = 1` and an `id` matching its filename. IDs contain
+ASCII letters, digits, `-`, `_` or `.`, excluding `.` and `..`. Local defaults may
+live at `<studio-home>/lsp/host/<server-id>.toml`; a workspace document with the
+same ID replaces the entire default. SSH does not inherit Host defaults. Prefer
+workspace documents for project-specific configuration.
 
-## Rust example
+## Document structure
 
-Check the execution-side installation and the project's toolchain before writing
-the configuration. If command execution is authorized, use that platform's
-commands to locate `rust-analyzer` and inspect its version. A rustup proxy may
-exist even when the selected toolchain lacks the component. Report that error;
-install a component only within the user's authorization. The product does not
-automatically install language servers.
+The following is a **shape template**, not a runnable server preset. Replace the
+executable and language ID with verified values and supply arguments/options
+from the selected server's current official contract:
 
 ```toml
-# .anywork/lsp/rust-analyzer.toml
+# .anywork/lsp/project-language.toml
 schema_version = 1
-id = "rust-analyzer"
-command = "rust-analyzer"
-language_ids = ["rust"]
-extensions = [".rs"]
-detection = ["Cargo.toml"]
-
-[initialization_options]
-checkOnSave = false
-
-[initialization_options.files]
-watcher = "client"
-
-[settings.rust-analyzer.files]
-watcher = "client"
+id = "project-language"
+command = "<verified execution-side executable>"
+language_ids = ["<server language ID>"]
+# args = [...]                 # Separate arguments, when needed by this server.
+# extensions = [...]           # Source extensions claimed by this server.
+# detection = [...]            # Actual root markers, if detection is desired.
+# initialization_options and settings use the server's own nested schema.
 ```
 
-`checkOnSave = false` avoids an unsolicited check build in a navigation-only
-session. Change it when the project's intended server behavior requires checks.
-Use the server's official documentation for all settings:
-[rust-analyzer configuration](https://rust-analyzer.github.io/book/configuration.html).
-Its initialization options use the server's own names and nesting.
-
-`command` is an execution-side PATH program or absolute executable path.
-`args` is an array of separate arguments, not a shell command.
-`env` adds environment entries for the server. No shell expansion is performed.
-`{workspaceRoot}` can be used in commands, arguments, environment and nested
-configuration strings to refer to the actual absolute execution workspace.
-Do not put `~`, shell substitutions or a compound shell command in `command`.
+`command` is an execution-side PATH program or absolute executable path, not a
+shell command. No shell expansion is performed. `{workspaceRoot}` can be used
+in commands, arguments, environment and nested configuration strings to refer
+to the actual absolute execution workspace. Do not use `~`, shell substitutions
+or compound commands. For stdio, use an executable that preserves the server's
+protocol stream rather than a wrapper that adds stdout messages.
 
 Required fields are `schema_version`, `id`, `command` and nonempty `language_ids`.
 Unknown fields are rejected. There is no `cwd`, `enabled` or `transport` field;
-execution uses the actual workspace and the command driver.
+execution uses the actual workspace and command driver.
 
 | Optional field | Type/default |
 | --- | --- |
@@ -84,72 +67,82 @@ Operation names are `goToDefinition`, `findReferences`, `hover`, `documentSymbol
 `outgoingCalls`, `diagnostics`. Server capabilities still determine availability.
 Avoid two servers claiming the same language in one workspace.
 
+Detection is not recursive. For a monorepo without a relevant root marker,
+omit it or choose a real root marker, then configure the server's project roots
+according to its own contract. Do not invent a detection path to a nested package.
+
+## Select server parameters from development needs
+
+Inspect the project's SDK/toolchain, manifests, existing configuration and
+intended build/run command before choosing options. Consult documentation matching
+the installed version, including help/version output where supported. Preserve
+intentional project settings rather than replacing them with generic defaults.
+
+Useful official sources include:
+
+- [rust-analyzer configuration](https://rust-analyzer.github.io/book/configuration.html)
+  and [installation](https://rust-analyzer.github.io/book/installation.html).
+  Select analysis platform, feature/default-feature set and Cargo target kinds
+  from the requested build context. Analysis options, checker options and build
+  output directories serve different purposes. Evaluate generated code, build
+  scripts and procedural macros when needed; startup may invoke Cargo or execute
+  project code even if continuous checking is disabled. A rustup proxy does not
+  prove the selected toolchain contains the component. Do not default to enabling
+  every feature or fabricate cfg/project descriptions to hide errors.
+- [Dart analysis server LSP documentation](https://github.com/dart-lang/sdk/blob/main/pkg/analysis_server/tool/lsp_spec/README.md).
+  Use the project's actual Dart SDK (normally Flutter's bundled SDK for Flutter),
+  derive invocation/options from that SDK's help and documentation, and verify
+  package resolution. Do not run project commands inside the SDK installation or
+  edit generated package configuration. Native LSP does not require a Flutter app
+  launch and has separate configuration/state from Dart MCP.
+
+These are sources for decisions, not fixed parameter lists. The product does not
+automatically install servers. Install components only within authorization.
+
 ## Initialization options and settings
 
-These are different LSP mechanisms:
+These are separate LSP mechanisms:
 
-- `initialization_options` goes in the initialize request. Restarting the affected
-  server is required to apply a change.
-- `settings` supplies `workspace/didChangeConfiguration` and the responses to
-  `workspace/configuration`. Use nested sections named as the server expects.
+- `initialization_options` goes in the initialize request. Changing it requires
+  restarting the affected server; configuration reload handles that lifecycle.
+- `settings` supplies `workspace/didChangeConfiguration` and responses to
+  `workspace/configuration`. Use the nested section names the server requests.
 
-Do not assume another editor's setting names are automatically translated.
-For example, `settings.rust-analyzer` is the section queried by rust-analyzer;
-its initialization options do not need that prefix.
-The distinction follows the
+Do not assume editor setting names are automatically translated. Derive both
+namespaces from the server's official contract. If the same choice is supplied
+through both mechanisms, keep the values consistent. Follow the
 [LSP specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
-and is also explained by [Zed](https://zed.dev/docs/configuring-languages).
+for their protocol meanings, not an unrelated editor's file format.
 
-## Project-specific auxiliary files in session scratch
+## Project-specific auxiliary files
 
-Use the latest `studio.session-files` fact for this Thread's execution-side
-`scratch` directory. It already tells the model where temporary files belong.
-Create server-specific response files, generated project descriptions or other
-temporary configuration there when the server supports them. Reference the
-actual path explicitly in its documented argument, environment variable or
-initialization setting.
+Use the latest session fact for this Thread's execution-side scratch directory.
+When a server supports response files, generated project descriptions or temporary
+build configuration, place task-specific files there and reference the actual
+path through the server's documented argument/environment/initialization option.
+A normal project should use its existing manifest rather than a dummy auxiliary
+file made to suppress load errors.
 
-For rust-analyzer, a project using a generated `rust-project.json` can place that
-file in current scratch and set `initialization_options.linkedProjects` to an
-array containing its execution-side absolute path. Generate a valid project
-description according to rust-analyzer's official contract; do not use a dummy
-file to suppress Cargo errors. A normal Cargo project generally needs no such
-file. Temporary toolchain/build settings can instead be passed through the
-documented `cargo.extraEnv` settings.
+Never substitute local paths for remote ones or inspect another Thread's scratch.
+Do not put credentials in documents or auxiliary files. Session archival can
+remove temporary files, so configurations referring to them need preparation
+again before reuse. Shared persistent settings belong in the project's intended
+location.
 
-Never substitute a local scratch path for a remote one. Never inspect another
-Thread's directory. Do not save credentials in TOML or auxiliary files. Session
-archival removes temporary files, so a configuration that references them needs
-those files prepared again before reuse. Shared persistent project settings
-belong in the project's intended location.
+## Reload and verify configuration
 
-## Observe, verify and recover
+Configuration changes trigger background loading and initialization; the GUI also
+provides explicit reload. Servers initialize concurrently. The read-only status
+operation reports published state; it does not scan, start or wait for a server.
 
-Use the independently available, read-only `lsp_status` tool to inspect the
-current workspace. It does not start a server or wait for initialization.
-Configuration changes trigger background loading and initialization; the GUI
-also provides explicit reload. Servers initialize concurrently, so one slow or
-failed server does not block the others or the conversation.
+Check the reported configuration source, phase and error. Detection mismatch is
+different from an executable or handshake failure. A changed document restarts
+only affected members; an unchanged healthy member should not be restarted to
+refresh tools. After fixing an external cause such as a missing executable, an
+explicit reload can retry a failed member even when the document is unchanged.
 
-Inspect the configuration source, lifecycle phase and error:
-
-- No configuration: check the actual execution workspace and filename.
-- Loading/probing/starting/initializing: initialization is still in progress;
-  continue independent work rather than repeatedly restarting.
-- Disabled: check detection files and the project root.
-- Failed: fix the reported TOML, executable, environment or handshake problem.
-  Preserve the original error and unrelated working configurations.
-- Ready: discover the available semantic tools and verify a meaningful query.
-- Stopped or exited: inspect the error and reload after fixing its cause.
-
-Only initialized, live servers contribute semantic tools. If none are healthy,
-semantic tools are absent while status remains available. A healthy server in a
-mixed configuration remains usable. A failed LSP must not prevent normal
-messages, filesystem tools or command execution.
-
-After configuring Rust, request hover over a known function call or definition
-navigation to a symbol in the sample source. Confirm the returned symbol/type or
-location matches the project. A tool being listed, an empty query result or a
-server process being present alone is insufficient. When repairing a failure,
-observe recovery and retry the semantic query in the same Thread; creating a new
-conversation should not be necessary.
+The final configuration check is an actual semantic query in the intended project
+and build context, with a meaningful location/type result. Server process presence,
+valid TOML, readiness alone or an empty query result is insufficient. Preserve
+failures and unrelated working configurations; configuration failure must not
+prevent ordinary messages, filesystem tools or authorized commands.

@@ -796,3 +796,143 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
     );
     Ok(())
 }
+
+#[test]
+fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across_boundary()
+-> Result<()> {
+    use pl_core::chat::{ChatDraft, ChatItem};
+    use pl_protocol::{ThreadContentLifecycle, ThreadItem, ThreadItemState, ThreadThinkingItem};
+
+    fn completed_reasoning(
+        id: &str,
+        ordinal: u64,
+        effect_seq: u64,
+        summaries: Vec<String>,
+        contents: Vec<String>,
+        append_seq: u64,
+    ) -> Result<(ChatAtom, Arc<ChatItem>)> {
+        let item = ThreadItem::new(
+            id.into(),
+            "thread".into(),
+            "turn".into(),
+            ordinal,
+            1,
+            10,
+            20,
+            ThreadItemState::Thinking(ThreadThinkingItem::new(
+                summaries,
+                contents,
+                ThreadContentLifecycle::completed(20),
+            )),
+        );
+        let draft: ChatDraft =
+            crate::studio::runtime::chat_item::completion_draft(&item, effect_seq, "db")?;
+        let mut atom: ChatAtom = serde_json::from_slice(&draft.metadata)?;
+        atom.lifecycle = ChatAtomLifecycle::Terminal {
+            started: Some(at(effect_seq - 1)),
+            ended: Some(at(effect_seq)),
+            outcome: ChatTerminalOutcome::Completed,
+        };
+        atom.started_at = Some(10);
+        atom.finished_at = Some(20);
+        Ok((atom, Arc::new(ChatItem::complete(draft, append_seq, None))))
+    }
+
+    let mut s = state();
+    // 1. Reasoning R1 starts active -> completes with multi-chunk Markdown summary.
+    let mut r1_active = atom("r1", ChatAtomKind::Reasoning, false);
+    r1_active.source_order = Some(1);
+    s.prepare(1, 10, &[r1_active], &[], &[])?;
+    assert_eq!(summary(&s.blocks[&1]).thinking_summary, None);
+
+    let (r1_done, r1_item) = completed_reasoning(
+        "r1",
+        1,
+        2,
+        vec![
+            "旧段落摘要".into(),
+            "第一段说明\n梳理 **会话共享组件** 与 `LiveStatusBar` 边界".into(),
+        ],
+        vec!["完整推理正文".into()],
+        1,
+    )?;
+    s.prepare(2, 20, &[r1_done], &[], &[r1_item])?;
+    assert_eq!(
+        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
+    );
+
+    // 2. Subsequent exec tool runs and finishes inside the same open Work: thinking_summary stays intact.
+    s.prepare(
+        3,
+        25,
+        &[atom("exec-1", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
+    assert_eq!(
+        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
+    );
+    s.prepare(
+        4,
+        30,
+        &[atom("exec-1", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    assert_eq!(
+        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
+    );
+
+    // 3. A raw-only reasoning step without summary does NOT wipe the current group's thinking_summary.
+    let (r_nosummary, r_nosummary_item) =
+        completed_reasoning("r-raw", 2, 6, vec![], vec!["仅有正文无摘要".into()], 2)?;
+    s.prepare(6, 35, &[r_nosummary], &[], &[r_nosummary_item])?;
+    assert_eq!(
+        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
+    );
+
+    // 4. A later reasoning step in the SAME open Work with a new summary replaces it in-place.
+    let (r2_done, r2_item) = completed_reasoning(
+        "r2",
+        3,
+        8,
+        vec!["### 确认收尾检查与 `cargo flutter analyze`".into()],
+        vec!["再次核对".into()],
+        3,
+    )?;
+    s.prepare(8, 40, &[r2_done], &[], &[r2_item])?;
+    assert_eq!(
+        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        Some("### 确认收尾检查与 `cargo flutter analyze`")
+    );
+
+    // 5. Text boundary seals the first Work; opening a new Work after Text starts fresh with None.
+    s.prepare(
+        9,
+        50,
+        &[atom("reply-1", ChatAtomKind::Text, false)],
+        &[],
+        &[],
+    )?;
+    let mut reply_done = atom("reply-1", ChatAtomKind::Text, true);
+    reply_done.content_present = Some(true);
+    s.prepare(10, 55, &[reply_done], &[], &[])?;
+    s.prepare(
+        11,
+        60,
+        &[atom("exec-2", ChatAtomKind::ToolCall, false)],
+        &[],
+        &[],
+    )?;
+    let next_work = s
+        .blocks
+        .values()
+        .find(|block| matches!(block.body, DisplayBlockBody::Work { .. }) && !block.sealed)
+        .expect("new open Work after boundary");
+    assert_eq!(summary(next_work).thinking_summary, None);
+    Ok(())
+}

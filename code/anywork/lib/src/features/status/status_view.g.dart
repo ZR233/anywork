@@ -8,60 +8,6 @@ part of 'status_view.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Mode 选择器只订阅目录本身。Shell 租约由 shell 持有；这里不另开 topic。
-
-@ProviderFor(statusModeCatalog)
-final statusModeCatalogProvider = StatusModeCatalogProvider._();
-
-/// Mode 选择器只订阅目录本身。Shell 租约由 shell 持有；这里不另开 topic。
-
-final class StatusModeCatalogProvider
-    extends
-        $FunctionalProvider<
-          List<ThreadModeDescriptorView>,
-          List<ThreadModeDescriptorView>,
-          List<ThreadModeDescriptorView>
-        >
-    with $Provider<List<ThreadModeDescriptorView>> {
-  /// Mode 选择器只订阅目录本身。Shell 租约由 shell 持有；这里不另开 topic。
-  StatusModeCatalogProvider._()
-    : super(
-        from: null,
-        argument: null,
-        retry: null,
-        name: r'statusModeCatalogProvider',
-        isAutoDispose: true,
-        dependencies: null,
-        $allTransitiveDependencies: null,
-      );
-
-  @override
-  String debugGetCreateSourceHash() => _$statusModeCatalogHash();
-
-  @$internal
-  @override
-  $ProviderElement<List<ThreadModeDescriptorView>> $createElement(
-    $ProviderPointer pointer,
-  ) => $ProviderElement(pointer);
-
-  @override
-  List<ThreadModeDescriptorView> create(Ref ref) {
-    return statusModeCatalog(ref);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(List<ThreadModeDescriptorView> value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<List<ThreadModeDescriptorView>>(
-        value,
-      ),
-    );
-  }
-}
-
-String _$statusModeCatalogHash() => r'cfd28e1941c49630644f5ddd71c4b98ec2a98bcd';
-
 /// LSP 活动只读 store。Shell bundle 不含 LspTopic，无人租用时列表为空。
 
 @ProviderFor(statusLspServers)

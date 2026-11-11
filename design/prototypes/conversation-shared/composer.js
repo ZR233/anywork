@@ -310,7 +310,7 @@
                   data-menu-trigger="attach"
                   aria-haspopup="menu"
                   aria-expanded="false"
-                  title="添加附件（支持拖放文件或 Ctrl+V 粘贴剪贴板图片）"
+                  title="添加附件（支持拖放文件或粘贴剪贴板图片）"
                   aria-label="添加附件">
                   ${icon('paperclip')}
                 </button>
@@ -325,11 +325,11 @@
                   </button>
                   <button type="button" class="cv-menu-item" data-attach-cmd="paste">
                     ${icon('image')}
-                    <span class="cv-item-main">粘贴剪贴板截图（模拟 Ctrl+V）</span>
+                    <span class="cv-item-main">粘贴剪贴板截图</span>
                   </button>
                 </div>
               </div>
-              <span class="cv-kbd-hint"></span>
+              <span class="cv-composer-status"></span>
             </div>
             <div class="cv-toolbar-right">
               <div class="cv-route-bar" role="group" aria-label="工作模式与主模型路由"></div>
@@ -342,7 +342,7 @@
       this.attachmentsEl = this.node.querySelector('.cv-attachments');
       this.textarea = this.node.querySelector('.cv-textarea');
       this.reasonEl = this.node.querySelector('.cv-reason-region');
-      this.kbdHintEl = this.node.querySelector('.cv-kbd-hint');
+      this.statusEl = this.node.querySelector('.cv-composer-status');
       this.routeBarEl = this.node.querySelector('.cv-route-bar');
       this.actionSlotEl = this.node.querySelector('.cv-action-slot');
       this.attachSignature = '';
@@ -387,9 +387,6 @@
           if ((action.kind === 'send' || action.kind === 'sendAndContinue') && action.enabled) {
             this.helpers.onSubmitFromComposer();
           }
-        } else if (event.key === 'Escape' && this.controller.state.stage === 'session' && this.controller.state.live) {
-          event.preventDefault();
-          this.controller.stop();
         }
       });
 
@@ -452,24 +449,24 @@
       } else if (!s.frozenThread.routeAvailable) {
         placeholder = '当前模型不可用（草稿可正常编辑，请先在右下角改选可用模型）…';
       } else if (s.live) {
-        placeholder = '会话运行中，可提前拟定下一条消息、拖放文件或 Ctrl+V 粘贴图片…';
+        placeholder = '会话运行中，可提前拟定下一条消息、拖放文件或粘贴图片…';
       } else if (s.resumable) {
         placeholder = '可直接点击右侧「继续」，或输入补充指示后「发送并继续」…';
       }
       this.textarea.placeholder = placeholder;
 
-      // 2. Sync keyboard / transition hint (keeps right-hand primary action slot 100% fixed width)
-      this.kbdHintEl.textContent = s.stage === 'start'
-        ? (locks.prepRunning ? '正在准备会话空间…' : 'Enter 发送 · Shift + Enter 换行')
+      // 2. Sync transition status (keeps right-hand primary action slot fixed width)
+      this.statusEl.textContent = s.stage === 'start'
+        ? (locks.prepRunning ? '正在准备会话空间…' : '')
         : action.kind === 'stopping'
           ? '正在停止收束当前执行…'
           : action.kind === 'continuing'
             ? '正在恢复执行…'
             : s.live
-              ? '运行中可并发拟稿 · Esc 停止'
+              ? '运行中可并发拟稿'
               : s.resumable
                 ? '已停止 · 点击右侧 ▶ 继续，或输入补充内容发送'
-                : 'Enter 发送 · Shift + Enter 换行';
+                : '';
 
       // 3. Sync attachments rail (image thumbnails with click-to-lightbox + file/link chips)
       const nextAttachSig = s.attachments.map(a => `${a.id}:${a.name}:${a.dimensions || ''}:${a.url || ''}`).join('|');
@@ -1015,7 +1012,6 @@
     if (scored.length === 0) {
       return {
         countText,
-        firstMatchId: null,
         listHTML: `
           <div class="cv-project-empty" role="status">
             ${icon('search-x')}
@@ -1051,7 +1047,6 @@
 
     return {
       countText,
-      firstMatchId: scored[0]?.proj.id || null,
       listHTML
     };
   }
@@ -1367,13 +1362,11 @@
     const projSearchClearBtn = projPanel?.querySelector('.cv-project-search-clear');
     const projCountEl = projPanel?.querySelector('[data-project-count]');
     const projListEl = projPanel?.querySelector('.cv-project-list');
-    let latestFirstMatchId = initialProjMenu.firstMatchId;
 
     const syncProjectSearchList = query => {
       menuManager.projectSearchQuery = query;
       if (projSearchClearBtn) projSearchClearBtn.hidden = !query;
       const rendered = renderProjectMenuListHTML(controller, query);
-      latestFirstMatchId = rendered.firstMatchId;
       if (projCountEl) projCountEl.textContent = rendered.countText;
       if (projListEl) {
         projListEl.innerHTML = rendered.listHTML;
@@ -1395,23 +1388,6 @@
 
     projSearchInput?.addEventListener('input', () => {
       syncProjectSearchList(projSearchInput.value);
-    });
-
-    projSearchInput?.addEventListener('keydown', event => {
-      if (event.isComposing || event.keyCode === 229) return;
-      if (event.key === 'Escape' && projSearchInput.value) {
-        event.preventDefault();
-        event.stopPropagation();
-        projSearchInput.value = '';
-        syncProjectSearchList('');
-      } else if (event.key === 'Enter' && projSearchInput.value.trim() && latestFirstMatchId) {
-        event.preventDefault();
-        event.stopPropagation();
-        const targetId = latestFirstMatchId;
-        menuManager.closeAll();
-        if (helpers.selectProjectOnStart) helpers.selectProjectOnStart(targetId);
-        else controller.selectProjectStart(targetId);
-      }
     });
 
     projSearchClearBtn?.addEventListener('click', event => {

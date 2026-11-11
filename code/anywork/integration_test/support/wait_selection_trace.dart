@@ -15,6 +15,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'composer_target_diagnostic.dart';
+
 /// Passive metadata only: no provider reads, additional demand or frame pumps.
 final class WaitSelectionTrace extends ProviderObserver {
   WaitSelectionTrace(this.graph, Map<String, Object?> report) {
@@ -62,18 +64,19 @@ final class WaitSelectionTrace extends ProviderObserver {
     }
     if (value is AsyncValue) {
       final data = value.asData?.value;
+      final start = data is ComposerViewState ? data.start : null;
       return {
         'loading': value.isLoading,
         'hasValue': value.hasValue,
         'hasError': value.hasError,
-        if (data is StartPageComposerViewState) ...{
-          'project': data.project?.id,
-          'submitting': data.submitting,
-          'canEdit': data.canEdit,
-          'canSubmit': data.canSubmit,
-          'revision': data.sessionDraft.revision,
-          'draftLength': data.draftText.length,
-          'preparation': data.preparation?.phase.name,
+        if (start != null) ...{
+          'project': start.project?.id,
+          'submitting': start.submitting,
+          'canEdit': start.canEdit,
+          'canSubmit': start.canSubmit,
+          'revision': start.sessionDraft.revision,
+          'draftLength': start.draftText.length,
+          'preparation': start.preparation?.phase.name,
         },
       };
     }
@@ -86,8 +89,8 @@ final class WaitSelectionTrace extends ProviderObserver {
     if (identical(context.provider, startSessionControllerProvider)) {
       return 'startDraft';
     }
-    if (identical(context.provider, startPageComposerViewModelProvider)) {
-      return 'startComposer';
+    if (identical(context.provider.from, composerViewModelProvider)) {
+      return 'composer';
     }
     return null;
   }
@@ -133,11 +136,22 @@ final class WaitSelectionTrace extends ProviderObserver {
           {
             'element': identityHashCode(element),
             'creation': (element.widget as PromptComposerView).creationCard,
-            'target': (element.widget as PromptComposerView).pasteTargetId,
-            'controller': identityHashCode(
-              (element.widget as PromptComposerView).textController,
+            'target': composerTargetDiagnostic(
+              (element.widget as PromptComposerView).targetKey,
             ),
-            'locked': (element.widget as PromptComposerView).submissionLocked,
+            'controller': identityHashCode(
+              tester
+                  .widgetList<TextField>(
+                    find.descendant(
+                      of: find.byWidget(element.widget),
+                      matching: inputs,
+                    ),
+                  )
+                  .singleOrNull
+                  ?.controller,
+            ),
+            'locked':
+                (element.widget as PromptComposerView).state.submissionLocked,
           },
       ],
       'fields': [

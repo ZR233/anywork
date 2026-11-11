@@ -275,7 +275,24 @@ AcpAuthAccountView _acpAuthAccountFromFrb(frb.BridgeAcpAuthAccount value) =>
       connectionRevision: _frbInt(value.connectionRevision),
       state: _acpAuthStateFromFrb(value.state),
       usage: value.usage == null ? null : _acpUsageFromFrb(value.usage!),
+      activeOperation: _acpAuthActiveOperationFromFrb(value.activeOperation),
     );
+
+AcpAuthActiveOperationView? _acpAuthActiveOperationFromFrb(
+  frb.BridgeAcpAuthActiveOperation? value,
+) => value == null
+    ? null
+    : AcpAuthActiveOperationView(
+        operationId: value.operationId,
+        connectionRevision: _frbInt(value.connectionRevision),
+        action: _acpAuthActionFromFrb(value.action),
+      );
+
+AcpAuthActionView _acpAuthActionFromFrb(frb.BridgeAcpAuthAction action) =>
+    switch (action) {
+      frb.BridgeAcpAuthAction.check => const AcpCheckActionView(),
+      frb.BridgeAcpAuthAction.queryUsage => const AcpQueryUsageActionView(),
+    };
 
 AcpUsageObservationView _acpUsageFromFrb(
   frb.BridgeAcpUsageObservation value,

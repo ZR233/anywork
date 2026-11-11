@@ -1,7 +1,6 @@
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:anywork/src/features/status/session_selectors.dart';
-import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -24,11 +23,6 @@ void main() {
         final selected = <ThreadModeId>[];
         await tester.pumpWidget(
           ProviderScope(
-            overrides: [
-              statusModeCatalogProvider.overrideWithValue(
-                const <ThreadModeDescriptorView>[],
-              ),
-            ],
             child: MaterialApp(
               theme: ThemeData(platform: TargetPlatform.linux),
               locale: const Locale('en'),
@@ -46,6 +40,7 @@ void main() {
                       focusNode: inputFocus,
                     ),
                     SessionModeSelector(
+                      catalog: const ThreadModeCatalogView(),
                       mode: ThreadModeId.simple,
                       onSelected: selected.add,
                     ),

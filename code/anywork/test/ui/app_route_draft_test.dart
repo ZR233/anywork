@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/conversation_activity_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
@@ -242,7 +242,7 @@ void main() {
             ProviderScope.containerOf(
               tester.element(find.byType(AnyworkApp)),
               listen: false,
-            ).read(conversationActivityViewModelProvider('thread-main')),
+            ).read(liveStatusViewModelProvider('thread-main')),
             isNull,
             reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
           );
@@ -561,6 +561,7 @@ void main() {
           expect(graph.timeline.lease('thread-alt'), isNull);
           expect(composer.stamp, composerStamp);
           expect(router.routerDelegate.state.name, BotDetailsRoute.name);
+          final feedCount = transport.timelineFeeds.length;
           unawaited(
             BotConversationRoute(
               botId: botId,
@@ -572,16 +573,23 @@ void main() {
           await pumpClientUntil(
             tester,
             () => find
-                .byKey(StudioDriverKeys.timelineRetryConnection)
+                .byKey(const ValueKey('conversation-directory-retry'))
                 .evaluate()
                 .isNotEmpty,
             'unavailable route does not display the previous selection',
           );
-          expect(
-            graph.client.conversations.visibleThreadId.value,
-            'missing-thread',
-          );
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
+          expect(transport.timelineFeeds, hasLength(feedCount));
+          await tester.tap(
+            find.byKey(const ValueKey('conversation-directory-retry')),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(const ValueKey('conversation-directory-retry')),
+            findsOneWidget,
+          );
+          expect(transport.timelineFeeds, hasLength(feedCount));
           expect(
             graph.client.drafts.existingComposer('missing-thread'),
             isNull,

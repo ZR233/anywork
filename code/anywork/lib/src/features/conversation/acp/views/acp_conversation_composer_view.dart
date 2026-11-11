@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:anywork_client/models.dart';
-import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -9,6 +8,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../composer/widgets/composer_attachments.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
+import '../../composer/widgets/composer_paste_action.dart';
 import '../state/acp_view_state.dart';
 
 /// Pure ACP session composer view matching Studio's `14px` [StudioPanel]
@@ -40,7 +40,7 @@ class AcpConversationComposerView extends StatefulWidget {
   final ValueChanged<String> onRemoveAttachment;
   final Widget? configurationBar;
   final Future<void> Function(
-    ValueChanged<String> pasteText,
+    Future<void> Function() pasteText,
     bool supportsImages,
   )?
   onPasteClipboard;
@@ -91,19 +91,6 @@ class _AcpConversationComposerViewState
   void dispose() {
     _controller.dispose();
     super.dispose();
-  }
-
-  void _insertPastedText(String text) {
-    final value = _controller.value;
-    final selection = value.selection;
-    final start = selection.isValid ? selection.start : value.text.length;
-    final end = selection.isValid ? selection.end : value.text.length;
-    final updated = value.text.replaceRange(start, end, text);
-    _controller.value = TextEditingValue(
-      text: updated,
-      selection: TextSelection.collapsed(offset: start + text.length),
-    );
-    widget.onDraftChanged(updated);
   }
 
   Future<void> _promptRemoteUrl(BuildContext context) async {
@@ -173,7 +160,6 @@ class _AcpConversationComposerViewState
 
     Widget editor = MultilineEnterShortcuts(
       controller: _controller,
-      onChanged: widget.onDraftChanged,
       child: TextField(
         key: ValueKey(AcpViewKeyValues.composerInput(state.threadId)),
         controller: _controller,
@@ -204,31 +190,22 @@ class _AcpConversationComposerViewState
     );
 
     if (widget.onPasteClipboard case final pasteHandler?) {
-      editor = Shortcuts(
-        shortcuts: const {
-          SingleActivator(LogicalKeyboardKey.paste): _PasteAcpComposerIntent(),
-          SingleActivator(LogicalKeyboardKey.keyV, control: true):
-              _PasteAcpComposerIntent(),
-          SingleActivator(LogicalKeyboardKey.keyV, meta: true):
-              _PasteAcpComposerIntent(),
-          SingleActivator(LogicalKeyboardKey.insert, shift: true):
-              _PasteAcpComposerIntent(),
+      editor = Actions(
+        actions: <Type, Action<Intent>>{
+          PasteTextIntent: ComposerPasteAction(
+            canPaste: () => !widget.state.submitting,
+            paste: (pasteText) {
+              final controller = _controller;
+              unawaited(
+                pasteHandler(() async {
+                  if (!mounted || !identical(_controller, controller)) return;
+                  await pasteText();
+                }, widget.state.supportsImagePaste),
+              );
+            },
+          ),
         },
-        child: Actions(
-          actions: <Type, Action<Intent>>{
-            _PasteAcpComposerIntent: CallbackAction<_PasteAcpComposerIntent>(
-              onInvoke: (_) {
-                if (!state.submitting) {
-                  unawaited(
-                    pasteHandler(_insertPastedText, state.supportsImagePaste),
-                  );
-                }
-                return null;
-              },
-            ),
-          },
-          child: editor,
-        ),
+        child: editor,
       );
     }
 
@@ -359,8 +336,4 @@ class _PrimaryComposerButton extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PasteAcpComposerIntent extends Intent {
-  const _PasteAcpComposerIntent();
 }

@@ -33,8 +33,6 @@ class ContextUsageReadout extends StatefulWidget {
 }
 
 class _ContextUsageReadoutState extends State<ContextUsageReadout> {
-  bool _hovering = false;
-
   @override
   Widget build(BuildContext context) {
     final projection = widget.projection;
@@ -55,27 +53,16 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
         ),
         child: Padding(
           padding: const EdgeInsets.only(right: 2),
-          child: MouseRegion(
-            onEnter: (_) => setState(() => _hovering = true),
-            onExit: (_) => setState(() => _hovering = false),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 120),
-              height: 26,
-              padding: const EdgeInsets.symmetric(horizontal: 7),
-              decoration: BoxDecoration(
-                color: _hovering
-                    ? context.colors.surface.withValues(alpha: 0.76)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(StudioRadii.xs),
-              ),
-              child: SizedBox.square(
-                dimension: 16,
-                child: CustomPaint(
-                  painter: _ContextUsagePainter(
-                    progress: _clampedProgress(projection),
-                    trackColor: context.colors.outlineVariant,
-                    progressColor: _progressColor(context, projection),
-                  ),
+          child: Container(
+            height: 26,
+            padding: const EdgeInsets.symmetric(horizontal: 7),
+            child: SizedBox.square(
+              dimension: 16,
+              child: CustomPaint(
+                painter: _ContextUsagePainter(
+                  progress: _clampedProgress(projection),
+                  trackColor: context.colors.outlineVariant,
+                  progressColor: _progressColor(context, projection),
                 ),
               ),
             ),

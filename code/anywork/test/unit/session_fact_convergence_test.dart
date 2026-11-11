@@ -4,6 +4,7 @@ import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
 import 'package:anywork/src/presentation/providers/client_provider.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -56,7 +57,7 @@ void main() {
       (_, _) {},
     );
     composerHold = container.listen(
-      composerDockViewModelProvider(threadId),
+      composerViewModelProvider(ComposerTarget.thread(threadId: threadId)),
       (_, _) {},
     );
     await graph.client.conversations
@@ -99,8 +100,13 @@ void main() {
   test('任务模式由定向元数据交付，Thread route 由状态帧交付', () async {
     expect(
       container
-          .read(composerDockViewModelProvider(threadId))
+          .read(
+            composerViewModelProvider(
+              ComposerTarget.thread(threadId: threadId),
+            ),
+          )
           .requireValue
+          .thread!
           .row
           ?.mode,
       ThreadModeId.simple,
@@ -145,8 +151,11 @@ void main() {
 
   test('思考强度由 Thread 有序流收敛，命令响应只合并 settings', () async {
     final route = container
-        .read(composerDockViewModelProvider(threadId))
+        .read(
+          composerViewModelProvider(ComposerTarget.thread(threadId: threadId)),
+        )
         .requireValue
+        .thread!
         .modelRoute;
     expect(route, isNotNull, reason: '已建会话必须有 canonical route');
     final canonicalRoute = route!;
@@ -189,8 +198,11 @@ void main() {
       reason: 'route 变更必须带新的模型路由 revision 到达 store',
     );
     final settled = container
-        .read(composerDockViewModelProvider(threadId))
-        .requireValue;
+        .read(
+          composerViewModelProvider(ComposerTarget.thread(threadId: threadId)),
+        )
+        .requireValue
+        .thread!;
     expect(settled.routePending, isFalse, reason: '命令完成后不得停在 pending 目标值');
     expect(
       settled.modelRoute?.effort,

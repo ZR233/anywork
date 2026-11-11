@@ -301,6 +301,7 @@ void main() {
       );
       final owner = await opening.timeout(_budget);
       expect(await harness.client.openAcpConversation('thread'), same(owner));
+      expect(harness.client.hasAcpConversation('thread'), isTrue);
       final call = harness.port.calls.single;
       expect(call.$1, 'open');
       final request = call.$2 as OpenAcpSessionRequestView;

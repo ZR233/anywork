@@ -188,11 +188,11 @@ Map<String, Object?> timelineWaitFailureSnapshot({
     'composer': [
       for (final composer in composers)
         {
-          'enabled': composer.enabled,
-          'submissionLocked': composer.submissionLocked,
-          'blockerKind': composer.blocker?.runtimeType.toString(),
-          'failureKind': composer.failure?.runtimeType.toString(),
-          'failureReason': switch (composer.failure) {
+          'enabled': composer.state.enabled,
+          'submissionLocked': composer.state.submissionLocked,
+          'blockerKind': composer.state.blocker?.runtimeType.toString(),
+          'failureKind': composer.state.failure?.runtimeType.toString(),
+          'failureReason': switch (composer.state.failure) {
             ComposerFailureBlocker(:final reason) => reason?.name,
             _ => null,
           },
@@ -202,7 +202,8 @@ Map<String, Object?> timelineWaitFailureSnapshot({
 }
 
 // Work uses a dedicated single-line header, not TimelineActivityRow. Borrow its
-// actual label Text without the separate elapsed Text or any private widget API.
+// actual title widget (plain Text or single-line Markdown TimelineReasoningSummary)
+// without the separate elapsed Text or any private widget API.
 Finder timelineGroupTitleFinder(
   WidgetTester tester,
   Finder header, {
@@ -210,14 +211,59 @@ Finder timelineGroupTitleFinder(
   VoidCallback? validateOwner,
 }) => find.descendant(
   of: header,
-  matching: find.byWidgetPredicate((widget) {
-    final matches =
-        widget is Text && widget.key != const ValueKey('work-header-elapsed');
-    if (matches) validateOwner?.call();
-    return matches;
+  matching: find.byElementPredicate((element) {
+    final widget = element.widget;
+    if (widget.key == const ValueKey('work-header-title')) {
+      validateOwner?.call();
+      return true;
+    }
+    if (widget is! TimelineReasoningSummary &&
+        (widget is! Text ||
+            widget.key == const ValueKey('work-header-elapsed'))) {
+      return false;
+    }
+    var insideSummaryOrTitle = false;
+    element.visitAncestorElements((ancestor) {
+      if (ancestor.widget.key == const ValueKey('work-header-title') ||
+          ancestor.widget is TimelineReasoningSummary) {
+        insideSummaryOrTitle = true;
+        return false;
+      }
+      return true;
+    });
+    if (!insideSummaryOrTitle) validateOwner?.call();
+    return !insideSummaryOrTitle;
   }, skipOffstage: skipOffstage),
   skipOffstage: skipOffstage,
 );
+
+RenderParagraph timelineGroupTitleParagraph(WidgetTester tester, Finder title) {
+  expect(title, findsOneWidget);
+  final richTexts = find
+      .descendant(
+        of: title,
+        matching: find.byWidgetPredicate((widget) => widget is RichText),
+        matchRoot: true,
+      )
+      .evaluate()
+      .toList();
+  expect(richTexts, isNotEmpty);
+  final target = richTexts.lastWhere((element) {
+    final renderObject = element.renderObject;
+    return renderObject is RenderParagraph &&
+        renderObject.text
+            .toPlainText(includePlaceholders: false)
+            .trim()
+            .isNotEmpty;
+  }, orElse: () => richTexts.last);
+  return target.renderObject! as RenderParagraph;
+}
+
+String timelineGroupTitleText(WidgetTester tester, Finder title) =>
+    timelineGroupTitleParagraph(
+      tester,
+      title,
+    ).text.toPlainText(includePlaceholders: false);
 
 bool timelineWorkHeaderExpanded(WidgetTester tester, Finder header, String id) {
   expect(header, findsOneWidget);

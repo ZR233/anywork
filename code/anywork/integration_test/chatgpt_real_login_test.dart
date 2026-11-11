@@ -15,6 +15,7 @@ import 'package:anywork/src/features/settings/accounts/view_models/account_edito
 import 'package:anywork/src/features/settings/accounts/views/account_details_view.dart';
 import 'package:anywork/src/features/settings/accounts/views/accounts_list_view.dart';
 import 'package:anywork/src/features/settings/accounts/views/native_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/widgets/account_template_selector.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/accounts.dart' as domain;
@@ -166,7 +167,7 @@ void main() {
         (state) => state.templates.isUsable,
       );
       await tester.pumpAndSettle();
-      final selector = find.byKey(const ValueKey('account-template-selector'));
+      final selector = find.byType(AccountTemplateSelector);
       await tester.ensureVisible(selector);
       await tester.pump();
       await tester.tap(
@@ -370,9 +371,8 @@ void main() {
       tester
           .widget<AccountsListView>(find.byType(AccountsListView))
           .value
-          .rows
+          .members
           .single
-          .key
           .id,
       identity.accountId,
     );

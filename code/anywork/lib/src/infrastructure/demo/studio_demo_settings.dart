@@ -104,6 +104,11 @@ class DemoAcpAuth {
         server: server,
         methods: methods,
       ),
+      activeOperation: _activeOperation(
+        account,
+        operationId,
+        const AcpCheckActionView(),
+      ),
     );
     return snapshot;
   }
@@ -147,6 +152,16 @@ class DemoAcpAuth {
     check(account, operationId);
     if (stateOf(account.accountId) is! AcpVerifiedState) {
       _pendingUsage[account.accountId] = operationId;
+      // check() 刚按检查动作投影；这里的真实意图是额度刷新，按受理动作重投影。
+      _set(
+        account,
+        stateOf(account.accountId),
+        activeOperation: _activeOperation(
+          account,
+          operationId,
+          const AcpQueryUsageActionView(),
+        ),
+      );
       return snapshot;
     }
     final current = _accounts[account.accountId]!;
@@ -198,7 +213,21 @@ class DemoAcpAuth {
     return snapshot;
   }
 
-  void _set(AcpAccountSettingsView account, AcpAuthStateView state) {
+  AcpAuthActiveOperationView _activeOperation(
+    AcpAccountSettingsView account,
+    String operationId,
+    AcpAuthActionView action,
+  ) => AcpAuthActiveOperationView(
+    operationId: operationId,
+    connectionRevision: account.connectionRevision,
+    action: action,
+  );
+
+  void _set(
+    AcpAccountSettingsView account,
+    AcpAuthStateView state, {
+    AcpAuthActiveOperationView? activeOperation,
+  }) {
     _accounts[account.accountId] = AcpAuthAccountView(
       accountId: account.accountId,
       connectionRevision: account.connectionRevision,
@@ -206,6 +235,8 @@ class DemoAcpAuth {
       // Authenticating/Verifying 由官方 integration_test 与真实供应商验收覆盖。
       state: state,
       usage: _accounts[account.accountId]?.usage,
+      // demo 同样只投影"当前槽位上的操作"：busy 态携带受理动作，终态为空。
+      activeOperation: activeOperation,
     );
     _revision += 1;
   }

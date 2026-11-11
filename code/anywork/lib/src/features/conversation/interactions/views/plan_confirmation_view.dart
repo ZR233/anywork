@@ -3,7 +3,6 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../../composer/widgets/multiline_enter_shortcuts.dart';
 
 /// Plan-only presentation; the Connector owns availability and decisions.
 class PlanConfirmationView extends StatelessWidget {
@@ -96,26 +95,17 @@ class PlanConfirmationView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 4),
-            MultilineEnterShortcuts(
+            TextField(
+              key: StudioDriverKeys.planFeedbackInput,
               controller: controller,
+              enabled: enabled && !submitting,
+              minLines: 2,
+              maxLines: 4,
+              textInputAction: TextInputAction.newline,
               onChanged: onFeedbackChanged,
-              child: Tooltip(
-                message: context.l10n.interactionPlanFeedbackHint,
-                child: TextField(
-                  key: StudioDriverKeys.planFeedbackInput,
-                  controller: controller,
-                  enabled: enabled && !submitting,
-                  minLines: 2,
-                  maxLines: 4,
-                  textInputAction: TextInputAction.send,
-                  onChanged: onFeedbackChanged,
-                  onEditingComplete: () {},
-                  onSubmitted: (_) => submitRevision(),
-                  decoration: InputDecoration(
-                    hintText: context.l10n.interactionPlanAdjustHint,
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
-                ),
+              decoration: InputDecoration(
+                hintText: context.l10n.interactionPlanAdjustHint,
+                contentPadding: const EdgeInsets.all(12),
               ),
             ),
             if (error case final message?) ...[

@@ -7,7 +7,7 @@ import 'package:anywork_client/studio_client.dart';
 
 import 'unused_account_ports.dart';
 
-AccountSummary usageAccount(String id, {String? name, int query = 1}) =>
+AccountSummary usageAccount(String id, {String? name, int? query = 1}) =>
     AccountSummary(
       identity: NativeAccountIdentity(id),
       name: name ?? id,
@@ -33,7 +33,7 @@ final class ScriptedUsageCall {
 }
 
 /// Scripted backend facts only: it publishes Querying before the provider wait.
-/// The real SDK owns visibility, deduplication, stale rejection and diagnostics.
+/// The real SDK owns observation, deduplication, stale rejection and diagnostics.
 final class ScriptedUsageTransport extends UnusedAccountPorts
     implements StudioTransport {
   final List<ScriptedUsageCall> calls = [];
@@ -44,6 +44,7 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
   int _settingsRevision = 0;
   int _usageRevision = 0;
   AccountDomainFrame? _summaries;
+  final Map<NativeAccountIdentity, AccountDetailFrame> _details = {};
   AccountUsageFrame? _usage;
   static const epoch = 'usage-owner';
   ResourceStamp _stamp(String source, int revision) =>
@@ -56,6 +57,27 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
       accounts,
     );
     _summaries = frame;
+    _emit(frame);
+    return frame;
+  }
+
+  AccountDetailFrame publishDetails(String id, {int query = 1}) {
+    final identity = NativeAccountIdentity(id);
+    final frame = AccountDetailFrame(
+      _stamp('settings', ++_settingsRevision),
+      identity,
+      NativeAccountDetails(
+        identity: identity,
+        name: id,
+        protocol: 'open_ai',
+        baseUrl: 'https://usage.example.test',
+        hasBearerToken: true,
+        credentialRequired: true,
+        usageQueryRevision: query,
+        customModels: const [],
+      ),
+    );
+    _details[identity] = frame;
     _emit(frame);
     return frame;
   }
@@ -127,6 +149,7 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
     _feeds.putIfAbsent(target, () => {}).add(feed);
     final baseline = switch (target) {
       AccountSummariesTarget() => _summaries,
+      AccountDetailTarget(:final identity) => _details[identity],
       AccountUsageTarget() => _usage,
       _ => throw StateError('Unexpected usage test target: ${target.key}'),
     };

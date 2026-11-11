@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'attachment_models.dart';
 
-enum ComposerSubmissionPhase { sending, accepted, unknownOutcome }
+enum ComposerSubmissionPhase { sending, accepted, failed, unknownOutcome }
 
 /// A temporary, immutable view of a submitted composer input.
 final class ComposerSubmission {
@@ -11,6 +11,7 @@ final class ComposerSubmission {
     required this.text,
     required Iterable<AttachmentDraftView> attachments,
     required this.phase,
+    this.error,
   }) : attachments = freezeAttachments(attachments);
 
   ComposerSubmission._({
@@ -18,20 +19,27 @@ final class ComposerSubmission {
     required this.text,
     required this.attachments,
     required this.phase,
+    this.error,
   });
 
   final String inputId;
   final String text;
   final List<AttachmentDraftView> attachments;
   final ComposerSubmissionPhase phase;
+  final Object? error;
 
-  ComposerSubmission withPhase(ComposerSubmissionPhase phase) =>
-      ComposerSubmission._(
-        inputId: inputId,
-        text: text,
-        attachments: attachments,
-        phase: phase,
-      );
+  bool get canRetry => phase == ComposerSubmissionPhase.failed;
+
+  ComposerSubmission withPhase(
+    ComposerSubmissionPhase phase, {
+    Object? error,
+  }) => ComposerSubmission._(
+    inputId: inputId,
+    text: text,
+    attachments: attachments,
+    phase: phase,
+    error: error,
+  );
 
   static List<AttachmentDraftView> freezeAttachments(
     Iterable<AttachmentDraftView> attachments,

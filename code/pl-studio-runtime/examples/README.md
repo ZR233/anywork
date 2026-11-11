@@ -2,6 +2,12 @@
 
 本文说明可选观察入口、参数及采集结果的含义，不规定开发任务的测试顺序或必跑场景。
 
+工具失败恢复可用 `cargo run --locked -p pl-studio-runtime --features live-tests --example tool_error_observe -- deepseek deepseek-flash target/manual-gui/NEW_DIRECTORY`
+显式观察。只读选定账户和凭据，在内存中使用独立账户标识与 Thread，工作区和证据仅写入新目录。
+两个场景分别调用无可用服务器的生产 LSP 查询工具，以及在模型准备期间撤下查询工具；后续由真实模型读取失败结果并调用状态工具。
+故障装配显式暴露查询工具，不代表生产环境会在无健康服务器时注册查询能力。
+每个场景的 `report.json` 保存真实 attempts、调用结果、轮次与错误，review 默认为 pending；人工核对失败是否可见、后续调用和最终完成是否真实发生。
+
 更新器可通过 `updater_observe` 显式观察，不启动安装器：`state ARTIFACT_DIR` 在隔离 home
 将设置文件设为只读并取消一次更新检查，保存 canonical 状态和文件未改写证据；
 `download ARTIFACT_DIR [CANCEL_AFTER_BYTES]` 下载真实稳定 Release，可在指定进度取消。

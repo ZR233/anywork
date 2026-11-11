@@ -147,6 +147,11 @@ class AnyworkClient {
       _acpSessions ??
       (throw UnsupportedError('ACP business port is not installed'));
 
+  /// Whether this Client already owns the member's ACP conversation.
+  /// Safe for Native-only applications and directory metadata still in flight.
+  bool hasAcpConversation(String threadId) =>
+      _acpSessions?.conversationForThread(threadId) != null;
+
   /// Opens the directory's original ACP member, never a replacement session.
   ///
   /// A resident display owner is reused. Cold opens explicitly load history;

@@ -1,0 +1,187 @@
+import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../../presentation/providers/account_domains.dart';
+import '../../../../presentation/providers/attachment_drafts.dart';
+import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/providers/composer_draft_controller.dart';
+import '../../../../presentation/providers/mode_catalog_store.dart';
+import '../../../../presentation/providers/observe_client.dart';
+import '../../../../presentation/providers/project_store.dart';
+import '../../../../presentation/providers/recovery_store.dart';
+import '../../../../presentation/providers/settings_store.dart';
+import '../../../../presentation/providers/start_session_controller.dart';
+import '../../../../presentation/providers/thread_directory_store.dart';
+import '../../../../presentation/providers/thread_session_store.dart';
+import '../../interactions/state/interaction_payload.dart';
+import '../state/composer_view_state.dart';
+
+final class ComposerProjections {
+  const ComposerProjections(this.ref, this.queuedStopStartedAtMs);
+  final Ref ref;
+  final int? queuedStopStartedAtMs;
+
+  StartPageComposerViewState start(String workspaceId) {
+    final sessionDraft = ref.watch(startSessionControllerProvider);
+    final settings = ref.watch(settingsStoreProvider);
+    final accounts = ref.watch(modelSelectionAccountsProvider);
+    final projects =
+        ref.watch(projectStoreProvider).projects?.values ?? const [];
+    final project = projects
+        .where((candidate) => candidate.id == workspaceId)
+        .firstOrNull;
+    final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
+    // 新建目标没有 thread 身份：只按 Application 与目标 project 的 issue 判定。
+    // 访问受阻连编辑入口都撤掉；执行阻塞保留编辑、只禁提交。
+    final recoveryIssue = recoveryIssueBlockingExecution(
+      recovery,
+      workspaceId: workspaceId,
+    );
+    final accessIssue = recoveryIssueBlockingAccess(
+      recovery,
+      workspaceId: workspaceId,
+    );
+    final canEdit = project != null && accessIssue == null;
+    final canonical = settings.canonical;
+    final catalog = ref.watch(modeCatalogStoreProvider).value;
+    final attachments = ref.watch(attachmentDraftsProvider);
+    return StartPageComposerViewState(
+      project: project,
+      accounts: accounts,
+      modeModelRoutes: canonical?.modeModelRoutes ?? const [],
+      settingsLoaded: settings.configLoaded,
+      canEdit: canEdit,
+      canSubmit: canEdit && recoveryIssue == null,
+      recoveryIssue: recoveryIssue,
+      commands: settings.commands,
+      diagnostics: attachments.forProject(workspaceId),
+      modeCatalog: catalog,
+      sessionDraft: sessionDraft,
+      composer: attachments.newThread(workspaceId),
+      targetDiagnostic:
+          attachments.diagnostics[attachmentTargetKey(workspaceId, null)],
+    );
+  }
+
+  ComposerDockViewState thread(String threadId) {
+    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
+    final row = metadata.frame?.row;
+    final backend = switch (row?.backend) {
+      NativeAgentBackendView native => native,
+      AcpAgentBackendView() => throw StateError(
+        'Native prompt composer cannot consume an ACP session',
+      ),
+      null => null,
+    };
+    final session = ref.watch(threadSessionStoreProvider(threadId));
+    final draft = ref.watch(composerDraftControllerProvider(threadId));
+    final settings = ref.watch(settingsStoreProvider);
+    final accounts = ref.watch(modelSelectionAccountsProvider);
+    final attachments = ref.watch(attachmentDraftsProvider);
+    final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
+    final workspaceId = row?.workspaceId;
+    // 已有线程只使用自己的项目身份，不借用主工作区选择。
+    final recoveryBlocker = recoveryIssueBlockingExecution(
+      recovery,
+      workspaceId: workspaceId,
+      threadId: threadId,
+    );
+    final routeCommand = settings.commands['thread-route:$threadId'];
+    final canonicalRoute = session.modelRoute;
+    final client = ref.read(anyworkClientProvider);
+    final commandBoardState = _observe(client.threadCommands.source);
+    // 根可见子任务待决交互按宿主借用已安装的领域镜像；镜像由 Client 的主题
+    // 需求创建，非宿主或未准备页面不观察、不产生第二事实源。
+    final childStore = (row?.isRootRow ?? false)
+        ? client.existingChildInteractions(threadId)
+        : null;
+    final childInteractions = childStore == null
+        ? null
+        : _observe(childStore.source);
+    final stopKey = 'stop:$threadId';
+    final commandBoard = commandBoardState.commands;
+    final stopCommand = commandBoard[stopKey];
+    final continueCommand = commandBoard['continue:$threadId'];
+    final agents =
+        ref.watch(projectStoreProvider).agents?.values ??
+        const <StudioAgentView>[];
+    final rootSessionId = switch (row) {
+      final value? when value.isRootRow => value.sessionId,
+      _ => null,
+    };
+    final children = AgentDirectoryQueries.forSession(
+      sessionId: rootSessionId,
+      agents: agents,
+    );
+    final storage = session.storage;
+    return ComposerDockViewState(
+      row: row,
+      hasSnapshot: session.hasSnapshot,
+      revision: session.revision,
+      composer: draft,
+      activeInteraction: activePendingInteraction(session.interactions),
+      turn: session.activeTurn,
+      execution: session.runtime?.execution,
+      continuation: session.runtime?.continuation,
+      stopCommand: stopCommand,
+      continueCommand: continueCommand,
+      queuedStopStartedAtMs: stopCommand?.startedAtMs == queuedStopStartedAtMs
+          ? queuedStopStartedAtMs
+          : null,
+      saveBlocked:
+          storage != null && (storage.hasFault || storage.resumeRequired),
+      recoveryIssue: recoveryBlocker,
+      // 永久关闭由当前目录身份判定；会话快照属于另一版本域，
+      // 不能用其旧的 Core 资源关闭状态否决目录中仍可执行的会话。
+      executionClosed: backend?.status.blocksNewExecution ?? false,
+      // 展示资格独立于连接相位：只有本代完整基线已接纳（hasCurrentBaseline）
+      // 才投影集合；sync 单独呈现。全释放到 idle 撤资格，重进不回显旧卡；
+      // 仍由在途操作持有的观察可借当前 canonical 作为本地基线。
+      childInteractions:
+          childInteractions != null &&
+              childInteractions.hasCurrentBaseline &&
+              childInteractions.canonical.loaded &&
+              childInteractions.canonical.value?.hostThreadId == threadId &&
+              childInteractions.canonical.value?.state.value != null
+          ? childInteractions.canonical.value!.state.value!.items
+          : const [],
+      childInteractionSync: childInteractions?.canonical.sync,
+      childInteractionSources: {
+        for (final agent in children)
+          agent.threadId: _childSourceLabel(
+            agent,
+            ref.watch(threadMetadataStoreProvider(agent.threadId)).frame?.row,
+          ),
+      },
+      modelRoute: canonicalRoute,
+      routeDisplay: ModelRouteQueries.threadRoute(
+        canonical: canonicalRoute,
+        command: routeCommand,
+        accounts: accounts,
+      ),
+      routePending: routeCommand?.isPending ?? false,
+      routeFailure: routeCommand?.phase == CommandPhase.failed
+          ? routeCommand?.error?.message
+          : null,
+      workflow: session.workflow,
+      accounts: accounts,
+      settingsLoaded: settings.configLoaded,
+      targetDiagnostic: workspaceId == null
+          ? null
+          : attachments.diagnostics[attachmentTargetKey(workspaceId, threadId)],
+      additionalDiagnostics: attachments.forProject(workspaceId),
+    );
+  }
+
+  T _observe<T>(ValueObservation<T> source) =>
+      observeClient(ref, source, (_) => ref.invalidateSelf());
+}
+
+String _childSourceLabel(StudioAgentView agent, SessionDirectoryRow? row) {
+  final title = row?.title.trim() ?? '';
+  if (title.isNotEmpty) return title;
+  final task = agent.task.trim();
+  if (task.isNotEmpty) return task;
+  final role = agent.role.trim();
+  return role.isNotEmpty ? role : agent.threadId;
+}

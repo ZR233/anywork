@@ -292,9 +292,27 @@ impl AcpAuthState {
     }
 }
 
-/// 一个接入的认证观察条目。
+/// 当前操作槽位上的进行中认证操作；由认证所有者与 state 在同一提交边界投影。
+///
+/// 连接已替换而旧进程仍在收束时，这里的连接修订可以小于账号当前修订，动作也仍是旧操作
+/// 启动时冻结的真实意图；不能按账号当前 state、时间或已有额度推导（design/28 §28.9）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpAuthActiveOperation {
+    pub operation_id: String,
+    /// 该操作启动时冻结的连接修订；与账号当前修订不同表示旧连接仍在收束。
+    pub connection_revision: u64,
+    /// 该操作真实的启动动作；来自准入意图，不从忙碌阶段猜测。
+    pub action: AcpAuthAction,
+}
+
+/// 一个接入的认证观察条目。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    from = "AcpAuthAccountWire"
+)]
 pub struct AcpAuthAccount {
     pub account_id: String,
     /// 本次观察对应的连接身份；不等于 Settings revision。
@@ -303,6 +321,116 @@ pub struct AcpAuthAccount {
     /// 本连接代次最近一次显式额度查询；未查询时为空。
     #[serde(default)]
     pub usage: Option<AcpUsageObservation>,
+    /// 当前操作槽位上的进行中操作；无在途操作时为空。
+    ///
+    /// 序列化总是显式出现（无操作为 `null`）；解码要求字段必须出现，缺失即是错误——
+    /// 不能把缺失伪装成"没有在途操作"，也不吞掉未知动作类型。
+    pub active_operation: Option<AcpAuthActiveOperation>,
+}
+
+/// [`AcpAuthAccount`] 的严格解码中间层：`activeOperation` 由非 `Option` 包装承接，
+/// 字段缺失时 serde 直接报 `missing field`，绕开 `Option` 字段隐式取 `None` 的行为。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpAuthAccountWire {
+    account_id: String,
+    connection_revision: u64,
+    state: AcpAuthState,
+    #[serde(default)]
+    usage: Option<AcpUsageObservation>,
+    active_operation: ExplicitNull<AcpAuthActiveOperation>,
+}
+
+impl From<AcpAuthAccountWire> for AcpAuthAccount {
+    fn from(wire: AcpAuthAccountWire) -> Self {
+        Self {
+            account_id: wire.account_id,
+            connection_revision: wire.connection_revision,
+            state: wire.state,
+            usage: wire.usage,
+            active_operation: wire.active_operation.0,
+        }
+    }
+}
+
+/// 显式可空的 JSON 字段：`null` → `None`，值 → `Some`。
+///
+/// serde 对缺失字段会走 `missing_field` 后门：用一个只支持 `deserialize_option` 的
+/// 反序列化器调用字段自身的 `Deserialize`（即使配 `deserialize_with` 也拦不住，缺失
+/// 字段不会调用它）。因此这里**不能**走 option 协议（含委托 `Option::deserialize`），
+/// 而是用 `deserialize_any`：null → `visit_unit`，对象 → `visit_map`；缺失字段在该
+/// 后门上没有 option 出口，直接成为 `missing field` 错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExplicitNull<T>(Option<T>);
+
+impl<'de, T> Deserialize<'de> for ExplicitNull<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ExplicitNullVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> serde::de::Visitor<'de> for ExplicitNullVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = ExplicitNull<T>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an explicit value or null")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ExplicitNull(None))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ExplicitNull(None))
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(|value| ExplicitNull(Some(value)))
+            }
+        }
+
+        deserializer.deserialize_any(ExplicitNullVisitor(std::marker::PhantomData))
+    }
+}
+
+/// `Busy` 拒绝（同账号操作槽位已占用）的结构化详情信封；wire 形状固定为单个 `acpAuthBusy` 键。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpAuthBusyRejection {
+    pub acp_auth_busy: AcpAuthBusyDetails,
+}
+
+/// 拒绝准入那一刻的权威忙碌切面；由认证所有者在拒绝的同一准入锁内捕获。
+///
+/// 它只描述拒绝时刻的占用事实，不代表本次请求已受理；占用操作可能在错误送达前已经
+/// 终态，调用方不能把稍后其他来源的版本附在该切面上（design/28 §28.9）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpAuthBusyDetails {
+    pub account_id: String,
+    /// 拒绝时的当前账号连接修订。
+    pub connection_revision: u64,
+    /// 拒绝时的 `acpAuth` 快照修订；与忙碌槽位在同一锁内原子一致。
+    pub snapshot_revision: u64,
+    /// 拒绝时占用槽位的真实操作身份；可能属于仍在收束的旧连接。
+    pub active_operation: AcpAuthActiveOperation,
 }
 
 /// 与认证结论独立的账户额度观察。
@@ -413,4 +541,134 @@ pub struct CancelAcpAuthRequest {
     pub operation_id: String,
     pub account_id: String,
     pub target_operation_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_operation_round_trips_and_rejects_an_unknown_action() {
+        let busy = AcpAuthAccount {
+            account_id: "account".to_string(),
+            connection_revision: 7,
+            state: AcpAuthState::Checking {
+                operation_id: "op-1".to_string(),
+            },
+            usage: None,
+            active_operation: Some(AcpAuthActiveOperation {
+                operation_id: "op-1".to_string(),
+                connection_revision: 7,
+                action: AcpAuthAction::QueryUsage,
+            }),
+        };
+        let json = serde_json::to_value(&busy).expect("serialize busy account");
+        assert_eq!(
+            json["activeOperation"],
+            serde_json::json!({
+                "operationId": "op-1",
+                "connectionRevision": 7,
+                // AcpAuthAction 是 internally-tagged 枚举，嵌套后保持其既有 wire 形状。
+                "action": {"action": "queryUsage"},
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<AcpAuthAccount>(json).expect("decode busy account"),
+            busy
+        );
+
+        // 未知动作类型必须拒绝：忙碌操作的类型不能被静默丢弃或降级。
+        let mut unknown = serde_json::to_value(&busy).expect("serialize busy account");
+        unknown["activeOperation"]["action"] = serde_json::json!({"action": "unknown"});
+        assert!(serde_json::from_value::<AcpAuthAccount>(unknown).is_err());
+    }
+
+    #[test]
+    fn idle_account_serializes_an_explicit_null_active_operation() {
+        let idle = AcpAuthAccount {
+            account_id: "account".to_string(),
+            connection_revision: 3,
+            state: AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            usage: None,
+            active_operation: None,
+        };
+        let json = serde_json::to_value(&idle).expect("serialize idle account");
+        assert!(
+            json.get("activeOperation")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert_eq!(
+            serde_json::from_value::<AcpAuthAccount>(json).expect("decode idle account"),
+            idle
+        );
+    }
+
+    #[test]
+    fn missing_active_operation_field_is_a_decode_error() {
+        let busy = AcpAuthAccount {
+            account_id: "account".to_string(),
+            connection_revision: 7,
+            state: AcpAuthState::Checking {
+                operation_id: "op-1".to_string(),
+            },
+            usage: None,
+            active_operation: Some(AcpAuthActiveOperation {
+                operation_id: "op-1".to_string(),
+                connection_revision: 7,
+                action: AcpAuthAction::Check,
+            }),
+        };
+        // serde 对 Option 字段缺失会隐式取 None；严格解码必须让缺失直接失败，
+        // 否则忙碌切面被伪装成"没有在途操作"。
+        let mut missing = serde_json::to_value(&busy).expect("serialize busy account");
+        missing
+            .as_object_mut()
+            .expect("json object")
+            .remove("activeOperation");
+        assert!(serde_json::from_value::<AcpAuthAccount>(missing).is_err());
+
+        // 同样拒绝信封内的未知字段：wire 形状不能被静默扩写。
+        let mut unknown_field = serde_json::to_value(&busy).expect("serialize busy account");
+        unknown_field["activeOperation"]["unexpected"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<AcpAuthAccount>(unknown_field).is_err());
+    }
+
+    #[test]
+    fn busy_rejection_details_keep_the_wire_shape() {
+        let rejection = AcpAuthBusyRejection {
+            acp_auth_busy: AcpAuthBusyDetails {
+                account_id: "account".to_string(),
+                connection_revision: 8,
+                snapshot_revision: 12,
+                active_operation: AcpAuthActiveOperation {
+                    operation_id: "op-1".to_string(),
+                    connection_revision: 7,
+                    action: AcpAuthAction::QueryUsage,
+                },
+            },
+        };
+        let json = serde_json::to_value(&rejection).expect("serialize busy rejection");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "acpAuthBusy": {
+                    "accountId": "account",
+                    "connectionRevision": 8,
+                    "snapshotRevision": 12,
+                    "activeOperation": {
+                        "operationId": "op-1",
+                        "connectionRevision": 7,
+                        "action": {"action": "queryUsage"},
+                    },
+                },
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<AcpAuthBusyRejection>(json).expect("decode busy rejection"),
+            rejection
+        );
+    }
 }

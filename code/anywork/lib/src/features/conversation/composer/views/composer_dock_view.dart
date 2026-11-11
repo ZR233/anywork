@@ -29,10 +29,12 @@ class ComposerDockView extends StatelessWidget {
           constraints: const BoxConstraints(
             maxWidth: StudioLayout.conversationWidth,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [...additionalDiagnostics, ?childInteractions, content],
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [...additionalDiagnostics, ?childInteractions, content],
+            ),
           ),
         ),
       ),

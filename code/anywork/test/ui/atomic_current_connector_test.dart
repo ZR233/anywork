@@ -9,7 +9,6 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
@@ -257,7 +256,6 @@ final class _Harness {
           key: ObjectKey(content),
           session: const ThreadSessionState(threadId: 'thread'),
           content: content,
-          region: ContentRealtimeRegion(live: live.value, notices: []),
           live: live,
           loadLiveOlder: loadLiveOlder,
           liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
@@ -1038,6 +1036,7 @@ void main() {
             .conversationActivityCompacting,
       );
       expect(row.active, isTrue);
+      expect(row.indicatorStyle, TimelineActivityIndicatorStyle.compactingZip);
       expect(h.content.scopes, isEmpty);
       h.accept([]);
       await tester.pump();

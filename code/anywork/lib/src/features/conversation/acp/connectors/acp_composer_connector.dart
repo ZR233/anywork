@@ -33,12 +33,14 @@ class AcpComposerConnector extends ConsumerStatefulWidget {
 
 class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
   bool _dragging = false;
+  int _targetGeneration = 0;
 
   @override
   void didUpdateWidget(covariant AcpComposerConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.threadId != widget.threadId) {
       _dragging = false;
+      _targetGeneration++;
     }
   }
 
@@ -82,16 +84,21 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
 
   Future<void> _handleClipboardPaste(
     String originThreadId,
-    ValueChanged<String> pasteText,
+    Future<void> Function() pasteText,
     bool supportsImages,
   ) async {
+    final generation = _targetGeneration;
+    bool isCurrent() =>
+        mounted &&
+        widget.threadId == originThreadId &&
+        _targetGeneration == generation;
     final clipboard = ref.read(clipboardImageReaderProvider);
     final notifier = ref.read(
       acpComposerViewModelProvider(originThreadId).notifier,
     );
     try {
       final image = await clipboard.readImage();
-      if (!mounted || widget.threadId != originThreadId) return;
+      if (!isCurrent()) return;
       if (image != null) {
         if (!supportsImages) {
           notifier.reportFailure(
@@ -102,14 +109,10 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
         await notifier.pasteImage(image);
         return;
       }
-      final text = await clipboard.readText();
-      if (!mounted || widget.threadId != originThreadId) return;
-      if (text != null && text.isNotEmpty) {
-        pasteText(text);
-      }
+      await pasteText();
     } catch (_) {
       // Clipboard plugin failures fall back to a user-visible draft diagnostic.
-      if (!mounted || widget.threadId != originThreadId) return;
+      if (!isCurrent()) return;
       notifier.reportFailure(
         StateError(context.l10n.composerClipboardReadFailed),
       );
@@ -129,7 +132,7 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
       onLeave: () => setState(() => _dragging = false),
       onDrop: (files) {
         setState(() => _dragging = false);
-        unawaited(_handleDroppedFiles(threadId, files));
+        return _handleDroppedFiles(threadId, files);
       },
       child: AcpConversationComposerView(
         state: state,

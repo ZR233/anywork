@@ -7,6 +7,7 @@ import 'package:anywork/src/features/settings/accounts/state/account_presentatio
 import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
 import 'package:anywork/src/features/settings/accounts/views/account_details_view.dart';
 import 'package:anywork/src/features/settings/accounts/views/native_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/widgets/account_template_selector.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/demo/statistics/demo_statistics_feed.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -146,9 +147,7 @@ void main() {
           (value) => value.templates.isUsable,
         );
         await tester.pumpAndSettle();
-        final selector = find.byKey(
-          const ValueKey('account-template-selector'),
-        );
+        final selector = find.byType(AccountTemplateSelector);
         await tester.tap(
           find.descendant(of: selector, matching: find.byType(IconButton)),
         );
@@ -260,6 +259,7 @@ void main() {
       ).location;
       debugPrint('CHATGPT_JOURNEY account saved');
       router.go(detailsLocation);
+      await tester.pump();
       await usagePhase(AccountUsagePhase.querying, identity);
       expect(transport.queries, 1);
       await tap('account-usage-check', duplicate: true);
@@ -286,16 +286,21 @@ void main() {
       router.go(const StudioRoute().location);
       await tester.pumpAndSettle();
       router.go(const SettingsRoute().location);
+      await tester.pump();
+      await usagePhase(AccountUsagePhase.querying, identity);
+      expect(transport.queries, 2, reason: 'A new list card refreshes once');
+      transport.completeUsage();
+      await usagePhase(AccountUsagePhase.succeeded, identity);
       await tester.pumpAndSettle();
       expect(find.text('subscriber@example.test'), findsOneWidget);
       expect(find.text('ChatGPT plus'), findsOneWidget);
       router.go(detailsLocation);
+      await tester.pump();
+      await usagePhase(AccountUsagePhase.querying, identity);
+      transport.completeUsage();
+      await usagePhase(AccountUsagePhase.succeeded, identity);
       await tester.pumpAndSettle();
-      expect(
-        transport.queries,
-        1,
-        reason: 'Reentry observes the existing quota result',
-      );
+      expect(transport.queries, 3, reason: 'A new detail owner refreshes once');
       await tap('account-usage-check');
       await usagePhase(AccountUsagePhase.querying, identity);
       transport.completeUsage(fail: true);

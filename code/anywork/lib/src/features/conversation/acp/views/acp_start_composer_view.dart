@@ -96,7 +96,6 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
           ],
           MultilineEnterShortcuts(
             controller: _controller,
-            onChanged: widget.onDraftChanged,
             child: TextField(
               key: ValueKey(AcpViewKeyValues.startInput(state.workspaceId)),
               controller: _controller,

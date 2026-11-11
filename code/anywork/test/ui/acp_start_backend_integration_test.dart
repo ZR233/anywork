@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
 import 'package:anywork/src/features/conversation/composer/widgets/start_backend_selector.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -121,7 +121,9 @@ Future<({AppGraph graph, _Transport transport, String workspaceId})> _mount(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [appGraphProvider.overrideWithValue(graph)],
-      child: acpTestApp(const StartPageComposerDockConnector()),
+      child: acpTestApp(
+        Composer(target: ComposerTarget.start(workspaceId: project.id)),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -226,7 +228,10 @@ void main() {
       expect(submission.workspaceId, workspaceId);
       expect(submission.input.text, 'Edited through ACP');
       expect(submission.workspaceMode, ThreadWorkspaceMode.worktree.id);
-      expect(draft.state.forProject(workspaceId).text, 'Edited through ACP');
+      expect(draft.state.forProject(workspaceId).text, isEmpty);
+      final failed = draft.submissions.value[workspaceId]!.single;
+      expect(failed.text, 'Edited through ACP');
+      expect(failed.phase, ComposerSubmissionPhase.failed);
       await _close(tester, fixture.graph);
     },
   );
@@ -270,6 +275,11 @@ void main() {
         tester,
         () => !draft.state.submitting,
         'ACP rejection',
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Scripted ACP admission failure'),
+        findsOneWidget,
       );
       draft.setAcpService(workspaceId, null);
       await tester.pumpAndSettle();

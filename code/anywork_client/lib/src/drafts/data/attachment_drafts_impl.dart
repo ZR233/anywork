@@ -714,13 +714,36 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     _submissions[operationId] = _FrozenAttachments(binding.draftId, ids);
   }
 
+  @override
+  void retainRetryFrozen({
+    required OperationId operationId,
+    required String draftId,
+    required Iterable<String> attachmentIds,
+  }) {
+    if (_submissions.containsKey(operationId)) {
+      throw StateError('The submission already owns attachments');
+    }
+    final ids = List<String>.unmodifiable(attachmentIds);
+    _ownership.freeze(operationId, ids);
+    _submissions[operationId] = _FrozenAttachments(draftId, ids);
+  }
+
+  @override
+  void detachFrozenDraft(OperationId operationId) {
+    final frozen = _submissions[operationId];
+    if (frozen == null) return;
+    _ownership.detach(frozen.draftId, frozen.ids);
+  }
+
   Future<void> completeFrozen({
     required OperationId operationId,
     required bool accepted,
     required bool clearCurrent,
     required String? workspaceId,
     required String? threadId,
+    bool retainForRetry = false,
   }) async {
+    if (retainForRetry) return;
     final frozen = _submissions.remove(operationId);
     if (frozen == null) return;
     if (clearCurrent) _ownership.detach(frozen.draftId, frozen.ids);

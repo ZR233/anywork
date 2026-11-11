@@ -51,8 +51,13 @@ class _SidebarTile extends StatefulWidget {
 }
 
 class _SidebarTileState extends State<_SidebarTile> {
-  bool _hovering = false;
-  bool _focused = false;
+  final WidgetStatesController _statesController = WidgetStatesController();
+
+  @override
+  void dispose() {
+    _statesController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -61,88 +66,93 @@ class _SidebarTileState extends State<_SidebarTile> {
         : context.colors.onSurface;
     final leadingActions = widget.leadingActions;
     final actions = widget.actions;
-    final showActions =
-        widget.touchMode || widget.selected || _hovering || _focused;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _hovering = true),
-        onExit: (_) => setState(() => _hovering = false),
-        child: Material(
-          color: widget.selected
-              ? context.colors.surfaceContainerHigh
-              : Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(StudioRadii.md),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: StudioSelectionMarker(
-            selected: widget.selected,
-            child: InkWell(
-              onTap: widget.onTap,
-              onFocusChange: (focused) => setState(() => _focused = focused),
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  widget.leadingPadding,
-                  widget.touchMode ? 0 : 1,
-                  4,
-                  widget.touchMode ? 0 : 1,
-                ),
-                child: Row(
-                  children: [
-                    ?widget.leading,
-                    Expanded(
-                      child: Text(
-                        widget.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.text.labelLarge?.copyWith(
-                          color: foreground,
-                          fontWeight: widget.selected || widget.emphasized
-                              ? FontWeight.w600
-                              : FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    if (leadingActions != null)
-                      Visibility(
-                        visible:
-                            widget.leadingActionsAlwaysVisible || showActions,
-                        maintainSize: true,
-                        maintainAnimation: true,
-                        maintainState: true,
-                        maintainFocusability: true,
-                        child: IconTheme.merge(
-                          data: IconThemeData(
-                            color: context.colors.onSurfaceVariant,
+      child: Material(
+        color: widget.selected
+            ? context.colors.surfaceContainerHigh
+            : Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(StudioRadii.md),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: StudioSelectionMarker(
+          selected: widget.selected,
+          child: InkWell(
+            onTap: widget.onTap,
+            statesController: _statesController,
+            child: ListenableBuilder(
+              listenable: _statesController,
+              builder: (context, _) {
+                final showActions =
+                    widget.touchMode ||
+                    widget.selected ||
+                    widget.onTap == null ||
+                    _statesController.value.contains(WidgetState.hovered) ||
+                    _statesController.value.contains(WidgetState.focused);
+                return Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    widget.leadingPadding,
+                    widget.touchMode ? 0 : 1,
+                    4,
+                    widget.touchMode ? 0 : 1,
+                  ),
+                  child: Row(
+                    children: [
+                      ?widget.leading,
+                      Expanded(
+                        child: Text(
+                          widget.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.text.labelLarge?.copyWith(
+                            color: foreground,
+                            fontWeight: widget.selected || widget.emphasized
+                                ? FontWeight.w600
+                                : FontWeight.w500,
                           ),
-                          child: leadingActions,
                         ),
                       ),
-                    IconTheme.merge(
-                      data: IconThemeData(
-                        color: context.colors.onSurfaceVariant,
-                      ),
-                      child: widget.trailing,
-                    ),
-                    if (actions != null)
-                      Visibility(
-                        visible: showActions,
-                        maintainSize: true,
-                        maintainAnimation: true,
-                        maintainState: true,
-                        maintainFocusability: true,
-                        child: IconTheme.merge(
-                          data: IconThemeData(
-                            color: context.colors.onSurfaceVariant,
+                      const SizedBox(width: 6),
+                      if (leadingActions != null)
+                        Visibility(
+                          visible:
+                              widget.leadingActionsAlwaysVisible || showActions,
+                          maintainSize: true,
+                          maintainAnimation: true,
+                          maintainState: true,
+                          maintainFocusability: true,
+                          child: IconTheme.merge(
+                            data: IconThemeData(
+                              color: context.colors.onSurfaceVariant,
+                            ),
+                            child: leadingActions,
                           ),
-                          child: actions,
                         ),
+                      IconTheme.merge(
+                        data: IconThemeData(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                        child: widget.trailing,
                       ),
-                  ],
-                ),
-              ),
+                      if (actions != null)
+                        Visibility(
+                          visible: showActions,
+                          maintainSize: true,
+                          maintainAnimation: true,
+                          maintainState: true,
+                          maintainFocusability: true,
+                          child: IconTheme.merge(
+                            data: IconThemeData(
+                              color: context.colors.onSurfaceVariant,
+                            ),
+                            child: actions,
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
             ),
           ),
         ),

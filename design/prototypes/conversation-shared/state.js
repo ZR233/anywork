@@ -297,9 +297,9 @@
         }
         if (spec.id === 'reasoning-variants') {
           this.state.live.members = [
-            { id: 'reasoning-summary-body', kind: 'thinking', title: '思考', summary: '梳理会话共享组件与锁定边界', status: 'completed', elapsed: 125,
+            { id: 'reasoning-summary-body', kind: 'thinking', title: '思考', summary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界', status: 'completed', elapsed: 125,
               content: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。' },
-            { id: 'reasoning-summary-only', kind: 'thinking', title: '思考', summary: '核对运行期选择器锁定规则', status: 'completed', elapsed: 125 },
+            { id: 'reasoning-summary-only', kind: 'thinking', title: '思考', summary: '核对运行期 **选择器锁定** 与 `SessionModeSelector` 规则', status: 'completed', elapsed: 125 },
             { id: 'reasoning-body-only', kind: 'thinking', title: '思考', status: 'completed', elapsed: 125,
               content: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。' }
           ];
@@ -351,6 +351,18 @@
       if (spec.stoppingCleanup) {
         this.state.transitionPhase = 'stopping';
         this.note('已受理停止命令 · 正在等待工具子进程树与句柄收束清理');
+      }
+
+      if (spec.id === 'submission-failed') {
+        this.snapshot({
+          id: this.id('submission'),
+          kind: 'user',
+          author: '你',
+          text: '请整理今天的界面走查结论。',
+          time: '刚刚',
+          submissionPhase: 'failed',
+          submissionError: '本次请求明确未发送，原提交内容仍可重试。'
+        });
       }
 
       this.syncRootAgentStatus();
@@ -1223,6 +1235,27 @@
       this.state.attachments = [];
       this.note(wasRunning ? '已发送新指示并接续执行 · 原运行组已先封存进时间线' : '已提交新消息 · 开启新一轮执行');
       this.beginTask();
+    }
+
+    retrySubmission(inputId) {
+      const index = this.state.history.findIndex(item => item.id === inputId);
+      const failed = this.state.history[index];
+      if (failed?.submissionPhase !== 'failed') return;
+      // This concept simulates a confirmed retry; it never reads the new draft.
+      this.state.history[index] = {
+        ...failed,
+        id: this.id('user'),
+        submissionPhase: 'accepted',
+        submissionError: null
+      };
+      this.note('模拟重试已接纳 · 下一条草稿保持不变');
+      this.emit('reset');
+    }
+
+    removeSubmission(inputId) {
+      this.state.history = this.state.history.filter(item =>
+        item.id !== inputId || item.submissionPhase !== 'failed');
+      this.emit('reset');
     }
 
     answer(index, values) {

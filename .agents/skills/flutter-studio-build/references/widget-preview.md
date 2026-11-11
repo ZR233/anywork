@@ -26,6 +26,12 @@ cargo xtask preview-gui --help -v
   使用 `cargo flutter widget-preview clean`，再运行同一入口；不修改 SDK 或 manifest 哈希。
 - 复用生产纯 View、主题、本地化和不可变合成数据，不在预览创建 AppGraph、Client、FRB 或第二套 UI。
   官方工具会编译全部已发现入口，搜索筛选不能隔离原生依赖。生成输入变化先走 `generate-gui`。
+- 核对复合控件的完整外观时，挂载生产装配层或完整公开组件，包含选择器、工具栏和主操作等实际子树。
+  未提供可选插槽的裸 View 只能证明局部外观，不能用其截图判定生产控件消失或宣称整体一致。
+  重构前后对照固定相同配置、草稿、可用状态、视口、主题和字号，再比较布局与画面。
+- 会话 scratch 中的一次性 Widget 测试不会自动继承 `test/ui/flutter_test_config.dart`。
+  需要 UI 测试传输时显式复用其 `testExecutable`，不禁用生产插件或改全局注册绕过原生依赖；
+  字体文件读取等真实异步 IO 放在 `tester.runAsync` 内。此类测试仍只提供组件证据。
 - 官方浏览器模式支持无头运行；浏览器可通过 `CHROME_EXECUTABLE` 指定真实安装路径。
   `--web-server` 是服务模式，其完整热更新调试依赖浏览器扩展，不能仅凭刷新页面证明热重载。
 - 先固定场景、实际视口、主题及字号，操作后核对真实画面；中文后备字体需完成加载。

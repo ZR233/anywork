@@ -3,8 +3,34 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../../domain/models/composer_primary_action.dart';
+import 'composer_input_state.dart';
 
 part 'composer_view_state.freezed.dart';
+
+@freezed
+sealed class ComposerTarget with _$ComposerTarget {
+  const factory ComposerTarget.thread({required String threadId}) =
+      ThreadComposerTarget;
+  const factory ComposerTarget.start({required String workspaceId}) =
+      StartComposerTarget;
+}
+
+@freezed
+abstract class ComposerViewState with _$ComposerViewState {
+  const factory ComposerViewState({
+    required ComposerInputState input,
+    ComposerDockViewState? thread,
+    StartPageComposerViewState? start,
+    @Default([]) List<ComposerSubmission> submissions,
+    @Default({}) Set<String> submissionOperations,
+    @Default({}) Map<String, Object> submissionFailures,
+    Object? actionFailure,
+    @Default([]) List<StudioProject> projects,
+    DelegationSettingsView? delegation,
+    @Default(ThreadModeCatalogView()) ThreadModeCatalogView modeCatalog,
+    @Default(false) bool standalonePreparing,
+  }) = _ComposerViewState;
+}
 
 @freezed
 abstract class StartPageComposerViewState with _$StartPageComposerViewState {

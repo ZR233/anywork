@@ -276,7 +276,7 @@ impl Control {
         script.optional_title(&session_title_prompt(PROMPT));
         script.add(|index| {
             let events = responses_reasoning_tool_calls(
-                &["梳理会话共享组件与锁定边界"],
+                &["梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界"],
                 "concept-read",
                 "fixture-model",
                 &[RealtimeToolCall {

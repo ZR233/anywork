@@ -1,6 +1,13 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
@@ -12,6 +19,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
@@ -243,7 +251,9 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('输出阶段显示书写图标，其余活动显示趴卧猫，故障保留错误图标', (tester) async {
+    testWidgets('输出显示书写图标、压缩显示动态拉链图标、exec 运行显示圆形进度，其余等待显示趴卧猫，故障保留错误图标', (
+      tester,
+    ) async {
       for (final kind in [
         ConversationActivityKind.preparing,
         ConversationActivityKind.compacting,
@@ -265,6 +275,9 @@ void main() {
         if (kind == ConversationActivityKind.responding) {
           expect(find.byType(TimelineRestingCat), findsNothing);
           expect(find.byType(TimelineWritingIndicator), findsOneWidget);
+        } else if (kind == ConversationActivityKind.compacting) {
+          expect(find.byType(TimelineRestingCat), findsNothing);
+          expect(find.byType(TimelineCompactingZipIcon), findsOneWidget);
         } else {
           expect(
             find.byType(TimelineRestingCat),
@@ -279,6 +292,80 @@ void main() {
       final before = progress.value;
       await tester.pump(const Duration(milliseconds: 700));
       expect(progress.value, isNot(before));
+
+      // 前台正在执行 exec 命令时，顶栏切换为圆形进度，不再显示趴卧猫。
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'running-exec',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: const [
+                ThreadActivityToolEntry(
+                  callId: 'exec-call-1',
+                  name: 'exec',
+                  summary: 'cargo flutter test',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 100,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(TimelineRestingCat), findsNothing);
+      expect(find.byType(TimelineExecProgressIndicator), findsOneWidget);
+
+      // 减少动态效果时，圆形进度与动态拉链图标均保持确定性静止帧，不挂载循环帧回调。
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'running-exec-static',
+              kind: ConversationActivityKind.runningTool,
+              activeTools: const [
+                ThreadActivityToolEntry(
+                  callId: 'exec-call-1',
+                  name: 'exec',
+                  summary: 'cargo flutter test',
+                  arguments: ThreadActivityArgumentsKind.commandLine,
+                  state: ThreadActivityToolState.running,
+                  startedAt: 100,
+                ),
+              ],
+            ),
+          ),
+          disableAnimations: true,
+        ),
+      );
+      expect(
+        tester
+            .widget<CircularProgressIndicator>(
+              find.byType(CircularProgressIndicator),
+            )
+            .value,
+        0.72,
+      );
+      await tester.pumpWidget(
+        _wrapWithApp(
+          ConversationActivityStatus(
+            view: _view(
+              identity: 'compacting-static',
+              kind: ConversationActivityKind.compacting,
+            ),
+          ),
+          disableAnimations: true,
+        ),
+      );
+      final zipStatic = tester
+          .widget<TimelineCompactingZipIcon>(
+            find.byType(TimelineCompactingZipIcon),
+          )
+          .progress;
+      expect(zipStatic.value, 0.0);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(zipStatic.value, 0.0);
 
       await tester.pumpWidget(
         _wrapWithApp(
@@ -328,11 +415,14 @@ void main() {
     testWidgets('官方预览直接装配生产组件且各工况可渲染', (tester) async {
       for (final preview in [
         conversationRestingCatPreview,
+        conversationCompactingZipPreview,
+        conversationFourStatesComparisonPreview,
         conversationLiveStatusWaitingPreview,
         conversationLiveStatusCompactingPreview,
         conversationLiveStatusToolsPreview,
         conversationLiveStatusIdleGroupPreview,
         conversationLiveStatusCompletedGroupPreview,
+        conversationLiveStatusNextGroupPreview,
         conversationLiveStatusThinkingPreview,
         conversationLiveStatusLongToolPreview,
         conversationReasoningVariantsPreview,
@@ -608,6 +698,31 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.byType(TimelineToolDetails), findsNWidgets(2));
       expect(find.byType(ExpansionTile), findsNWidgets(2));
+      // _tools[0] 为 exec 命令，展开行使用圆形进度；_tools[1] 为 write_file，保持趴卧猫。
+      final toolRows = tester
+          .widgetList<TimelineToolDetails>(find.byType(TimelineToolDetails))
+          .toList();
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[0]),
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[0]),
+          matching: find.byType(TimelineRestingCat),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byWidget(toolRows[1]),
+          matching: find.byType(TimelineRestingCat),
+        ),
+        findsOneWidget,
+      );
       await tester.pumpWidget(conversationLiveStatusWaitPreview());
       await tester.pump(const Duration(milliseconds: 300));
       final group = tester.widget<CompletionRunView>(
@@ -791,5 +906,608 @@ void main() {
       expect(first, 1);
       expect(next, 1);
     });
+
+    testWidgets('跨全工况切换固定 Logo 槽与单行文案零抖动，且趴卧猫摆尾连续不归零', (tester) async {
+      final harness = _ZeroJitterHarness();
+      addTearDown(harness.dispose);
+      const longThought =
+          '这是一段超长的实时思考概要文案，用于验证从思考中切换到开启新工作组及待交接状态时绝不会折双行跳高或推动文案起点偏移';
+
+      LiveDisplayBlock workBlock(
+        String id, {
+        required int order,
+        DisplayBlockState state = DisplayBlockState.open,
+        int running = 1,
+        String? thought,
+      }) => LiveDisplayBlock(
+        id: id,
+        blockOrder: order,
+        state: state,
+        source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+        body: WorkDisplayBlock(
+          summary: WorkSummary(
+            unavailable: 0,
+            total: 2,
+            terminal: 2 - running,
+            running: running,
+            waiting: 0,
+            failed: 0,
+            cancelled: 0,
+            transferred: 0,
+            createdAt: 100,
+            elapsedMs: 125000,
+            thinkingSummary: thought,
+          ),
+          members: DisplayBlockRef(databaseId: 'db', blockId: id),
+        ),
+      );
+
+      final stages =
+          <
+            ({
+              String name,
+              bool collapsedSingleRow,
+              TimelineActivityIndicatorStyle expectedStyle,
+              String expectedTitle,
+              List<LiveDisplayBlock> blocks,
+              ThreadActivityView? status,
+            })
+          >[
+            (
+              name: 'preparing',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '准备中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-1',
+                revision: 1,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.preparing,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'thinking',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '思考中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-2',
+                revision: 2,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+                thinkingSeconds: 17,
+              ),
+            ),
+            (
+              name: 'workgroup',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: longThought,
+              blocks: [
+                workBlock('work-1', order: 1, running: 2, thought: longThought),
+              ],
+              status: ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-3',
+                revision: 3,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-1',
+                      name: 'exec',
+                      summary: 'cargo flutter analyze',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 100,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            (
+              name: 'group-idle',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: longThought,
+              blocks: [
+                workBlock('work-1', order: 1, running: 0, thought: longThought),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-4',
+                revision: 4,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'text',
+              collapsedSingleRow: false,
+              expectedStyle: TimelineActivityIndicatorStyle.writing,
+              expectedTitle: '正在输出',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                  thought: longThought,
+                ),
+                LiveDisplayBlock(
+                  id: 'text-1',
+                  blockOrder: 2,
+                  state: DisplayBlockState.open,
+                  source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                  body: SingleDisplayBlock(
+                    record: DisplayRecord(
+                      atom: ChatAtom(
+                        id: 'text-1',
+                        source: const ForegroundTurnChatSource(
+                          turnId: 'turn-1',
+                        ),
+                        sourceOrder: null,
+                        kind: ChatAtomKind.text,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
+                          started: null,
+                          status: ChatActiveStatus.running,
+                        ),
+                        startedAt: 120,
+                        contents: const [],
+                        payload: InlinePayload(
+                          bytes: utf8.encode(
+                            jsonEncode({
+                              'contract': 'anywork.chat/1',
+                              'type': 'text',
+                              'data': {'channel': 'final', 'attachments': []},
+                              'bodies': [
+                                {
+                                  'key': 'body',
+                                  'byteLength': utf8
+                                      .encode('流式输出第一段正文。')
+                                      .length,
+                                  'inline': utf8.encode('流式输出第一段正文。'),
+                                },
+                              ],
+                            }),
+                          ),
+                        ),
+                      ),
+                      contentSource: const CurrentAtom(),
+                    ),
+                  ),
+                ),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-5',
+                revision: 5,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.responding,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'after-text',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '思考中',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+              ],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-6',
+                revision: 6,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.thinking,
+                summary: '',
+                thinkingSeconds: 4,
+              ),
+            ),
+            (
+              name: 'next-group-exec-only',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
+              expectedTitle: '工作中',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+                workBlock('work-2', order: 3, running: 1),
+              ],
+              status: ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-7a',
+                revision: 7,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-2',
+                      name: 'exec',
+                      summary: 'cargo flutter test',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 150,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            (
+              name: 'next-group',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '运行测试并核对布局',
+              blocks: [
+                workBlock(
+                  'work-1',
+                  order: 1,
+                  state: DisplayBlockState.sealed,
+                  running: 0,
+                ),
+                workBlock('work-2', order: 3, running: 1, thought: '运行测试并核对布局'),
+              ],
+              status: ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-7b',
+                revision: 8,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.runningTool,
+                summary: '',
+                tools: ThreadActivityTools(
+                  count: 1,
+                  background: 0,
+                  active: const [
+                    ThreadActivityToolEntry(
+                      callId: 'exec-2',
+                      name: 'exec',
+                      summary: 'cargo flutter test',
+                      arguments: ThreadActivityArgumentsKind.commandLine,
+                      state: ThreadActivityToolState.running,
+                      startedAt: 150,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            (
+              name: 'compacting',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
+              expectedTitle: '正在压缩上下文',
+              blocks: [
+                LiveDisplayBlock(
+                  id: 'compact-1',
+                  blockOrder: 4,
+                  state: DisplayBlockState.open,
+                  source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                  body: SingleDisplayBlock(
+                    record: DisplayRecord(
+                      atom: ChatAtom(
+                        id: 'compact-1',
+                        source: const ForegroundTurnChatSource(
+                          turnId: 'turn-1',
+                        ),
+                        sourceOrder: null,
+                        kind: ChatAtomKind.compaction,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
+                          started: null,
+                          status: ChatActiveStatus.running,
+                        ),
+                        startedAt: 200,
+                        contents: const [],
+                      ),
+                      contentSource: const CurrentAtom(),
+                    ),
+                  ),
+                ),
+              ],
+              status: null,
+            ),
+            (
+              name: 'stopping',
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.restingCat,
+              expectedTitle: '停止中',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-9',
+                revision: 9,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.stopping,
+                summary: '',
+              ),
+            ),
+          ];
+
+      Size? baselineCardSize;
+      Offset? baselineLogoOffset;
+      Offset? baselineTitleOffset;
+      double? previousCatPhase;
+
+      for (final stage in stages) {
+        harness.blocks = stage.blocks;
+        harness.status = stage.status;
+        await tester.pumpWidget(harness.build());
+        await tester.pump();
+
+        final barFinder = find.byKey(const ValueKey('conversation-activity'));
+        expect(barFinder, findsOneWidget, reason: stage.name);
+        final barRect = tester.getRect(barFinder);
+
+        final indicatorFinder = find.descendant(
+          of: barFinder,
+          matching: find.byType(TimelineActivityIndicator),
+        );
+        expect(indicatorFinder, findsOneWidget, reason: stage.name);
+        final slotFinder = find
+            .ancestor(
+              of: indicatorFinder,
+              matching: find.byWidgetPredicate(
+                (w) =>
+                    w is SizedBox &&
+                    w.width == TimelineActivityRow.headerLogoSlotSize &&
+                    w.height == TimelineActivityRow.headerLogoSlotSize,
+              ),
+            )
+            .first;
+        final slotRect = tester.getRect(slotFinder);
+        expect(slotRect.size, const Size(32, 32), reason: stage.name);
+
+        final titleFinder = find.descendant(
+          of: barFinder,
+          matching: find.text(stage.expectedTitle),
+        );
+        expect(titleFinder, findsOneWidget, reason: stage.name);
+        final titleRect = tester.getRect(titleFinder);
+
+        final logoRelative = slotRect.topLeft - barRect.topLeft;
+        final titleRelative = titleRect.topLeft - barRect.topLeft;
+
+        baselineLogoOffset ??= logoRelative;
+        baselineTitleOffset ??= titleRelative;
+        expect(
+          logoRelative.dx,
+          closeTo(baselineLogoOffset.dx, 0.001),
+          reason: '${stage.name} Logo 槽水平位置不得偏移',
+        );
+        expect(
+          logoRelative.dy,
+          closeTo(baselineLogoOffset.dy, 0.001),
+          reason: '${stage.name} Logo 槽垂直位置不得偏移',
+        );
+        expect(
+          titleRelative.dx,
+          closeTo(baselineTitleOffset.dx, 0.001),
+          reason: '${stage.name} 文案起点水平位置不得偏移',
+        );
+        expect(
+          titleRelative.dy,
+          closeTo(baselineTitleOffset.dy, 0.001),
+          reason: '${stage.name} 文案起点垂直位置不得偏移',
+        );
+
+        if (stage.collapsedSingleRow) {
+          baselineCardSize ??= barRect.size;
+          expect(
+            barRect.size.height,
+            closeTo(baselineCardSize.height, 0.001),
+            reason: '${stage.name} 折叠单行外框高度不得跳变',
+          );
+          expect(
+            barRect.size.width,
+            closeTo(baselineCardSize.width, 0.001),
+            reason: '${stage.name} 折叠单行外框宽度不得跳变',
+          );
+        }
+
+        switch (stage.expectedStyle) {
+          case TimelineActivityIndicatorStyle.restingCat:
+            final cat = tester.widget<TimelineRestingCat>(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
+            );
+            if (previousCatPhase != null) {
+              expect(
+                cat.progress.value,
+                closeTo(previousCatPhase, 0.001),
+                reason: '${stage.name} 连续猫态切换时趴卧猫相位不得跳回 0',
+              );
+            }
+            await tester.pump(const Duration(milliseconds: 260));
+            expect(cat.progress.value, isNot(previousCatPhase ?? -1));
+            previousCatPhase = cat.progress.value;
+          case TimelineActivityIndicatorStyle.circularProgress:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineExecProgressIndicator),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} exec 运行时顶栏必须显示圆形进度',
+            );
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
+              findsNothing,
+            );
+            await tester.pump(const Duration(milliseconds: 120));
+          case TimelineActivityIndicatorStyle.writing:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineWritingIndicator),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} 输出阶段顶栏必须显示书写图标',
+            );
+            await tester.pump(const Duration(milliseconds: 120));
+          case TimelineActivityIndicatorStyle.compactingZip:
+            previousCatPhase = null;
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineCompactingZipIcon),
+              ),
+              findsOneWidget,
+              reason: '${stage.name} 压缩阶段顶栏必须显示动态拉链图标',
+            );
+            expect(
+              find.descendant(
+                of: barFinder,
+                matching: find.byType(TimelineRestingCat),
+              ),
+              findsNothing,
+            );
+            await tester.pump(const Duration(milliseconds: 120));
+        }
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
   });
+}
+
+class _ZeroJitterSession extends Fake implements ThreadSessionState {
+  @override
+  String get threadId => 'thread';
+  @override
+  ThreadActivityView? get activity => null;
+  @override
+  StudioTurnView get activeTurn => StudioTurnView(
+    turnId: 'turn-1',
+    threadId: 'thread',
+    revision: 1,
+    state: const RunningStudioTurnState(
+      startedAt: 100,
+      activity: StudioTurnActivity.thinking,
+    ),
+    updatedAt: DateTime.fromMillisecondsSinceEpoch(225000),
+  );
+}
+
+class _ZeroJitterContent extends Fake implements ConversationContent {
+  final source = LatestValue<ChatUiState<bool>>(
+    const ChatReady('thread', true),
+  );
+  @override
+  bool get isClosed => false;
+  @override
+  ValueObservation<ChatUiState<bool>> get state => source;
+  @override
+  AttemptId get currentAttemptId => const AttemptId(1);
+}
+
+class _ZeroJitterHarness {
+  final content = _ZeroJitterContent();
+  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  final images = TimelineImageResources(threadId: 'thread');
+  final expansions = <String, TimelineExpansionIntent>{};
+  List<LiveDisplayBlock> blocks = const [];
+  ThreadActivityView? status;
+  int revision = 0;
+
+  Widget build() {
+    final window = LiveDisplayWindow(
+      revision: ++revision,
+      historyThrough: 0,
+      executionPresent: true,
+      blocks: blocks,
+    );
+    live.value = window;
+    final aggregate = LiveStatusStateMachine.transition(
+      LiveStatusAggregate.initial('thread'),
+      LiveStatusObserved(
+        LiveStatusObservation(
+          cut: LiveWindowCut(
+            revision: window.revision,
+            historyThrough: window.historyThrough,
+            executionPresent: window.executionPresent,
+            attemptId: 1,
+            isDisplayActive: true,
+          ),
+          activeTurnId: 'turn-1',
+          activity: status,
+          latestLive: window,
+        ),
+      ),
+    ).state;
+    final presenting = aggregate.barState as LiveStatusPresenting;
+    Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
+      section: s,
+      managedByViewModel: true,
+      session: _ZeroJitterSession(),
+      content: content,
+      live: live,
+      presenting: s == ConversationLiveSection.output ? presenting : null,
+      workSlice: s == ConversationLiveSection.work
+          ? aggregate.timelineWork
+          : null,
+      images: images,
+      readAttachment: (_) async => Uint8List(0),
+      isDisplayActive: () => true,
+      liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+        block: block,
+        executionPresent: executionPresent,
+        expansion: expansions.putIfAbsent(
+          block.id,
+          TimelineExpansionIntent.new,
+        ),
+      ),
+    );
+    return _wrapWithApp(
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          section(ConversationLiveSection.work),
+          section(ConversationLiveSection.output),
+        ],
+      ),
+      width: 560,
+    );
+  }
+
+  void dispose() {
+    for (final intent in expansions.values) {
+      intent.retire();
+      intent.dispose();
+    }
+    images.release();
+    content.source.close();
+    live.dispose();
+  }
 }

@@ -7,12 +7,22 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_timeline_co
 import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_plan_card_view_model.dart';
+import 'package:anywork/src/platform/clipboard_image_reader.dart';
+import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'acp_components_support.dart';
+
+final class _DelayedClipboardReader implements ClipboardImageReader {
+  var result = Completer<Uint8List?>();
+
+  @override
+  Future<Uint8List?> readImage() => result.future;
+}
 
 IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
   final primary = find.byKey(
@@ -24,6 +34,92 @@ IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
 }
 
 void main() {
+  testWidgets('ACP 异步粘贴与换行沿官方编辑动作更新原草稿', (tester) async {
+    final harness = await AcpComponentHarness.create();
+    addTearDown(() => harness.close(tester));
+    final reader = _DelayedClipboardReader();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async => switch (call.method) {
+        'Clipboard.getData' => {'text': 'pasted'},
+        'Clipboard.hasStrings' => {'value': true},
+        _ => null,
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    Widget host(String threadId) => ProviderScope(
+      overrides: [
+        anyworkClientProvider.overrideWithValue(harness.client),
+        clipboardImageReaderProvider.overrideWithValue(reader),
+      ],
+      child: acpTestApp(AcpComposerConnector(threadId: threadId)),
+    );
+    await tester.pumpWidget(host('thread'));
+    await tester.pumpAndSettle();
+    final input = find.byKey(
+      ValueKey(AcpViewKeyValues.composerInput('thread')),
+    );
+    await tester.enterText(input, 'abcd');
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'abcd',
+        selection: TextSelection(baseOffset: 1, extentOffset: 3),
+      ),
+    );
+    await tester.pump();
+    Actions.invoke(
+      tester
+          .state<EditableTextState>(find.byType(EditableText))
+          .widget
+          .focusNode
+          .context!,
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+    );
+    await tester.pump();
+    final draft = harness.client.drafts.composer('thread');
+    expect(draft.state.draft, 'abcd');
+    reader.result.complete(null);
+    await tester.pumpAndSettle();
+    expect(draft.state.draft, 'apastedd');
+    final controller = tester.widget<TextField>(input).controller!;
+    expect(controller.selection, const TextSelection.collapsed(offset: 7));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(draft.state.draft, 'apasted\nd');
+    for (final staleImage in [null, Uint8List(1)]) {
+      reader.result = Completer<Uint8List?>();
+      Actions.invoke(
+        tester
+            .state<EditableTextState>(find.byType(EditableText))
+            .widget
+            .focusNode
+            .context!,
+        const PasteTextIntent(SelectionChangedCause.keyboard),
+      );
+      await tester.pump();
+      await tester.pumpWidget(host('other-thread'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(host('thread'));
+      await tester.pumpAndSettle();
+      reader.result.complete(staleImage);
+      await tester.pumpAndSettle();
+      expect(draft.state.draft, 'apasted\nd');
+      expect(draft.state.failure, isNull);
+      expect(draft.state.attachments, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.tap(input);
+    }
+    expect(harness.port.calls.where((call) => call.$1 == 'prompt'), isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
   testWidgets('仅音频能力不启用图片和文件附件入口', (tester) async {
     final harness = await AcpComponentHarness.create();
     addTearDown(() => harness.close(tester));

@@ -31,6 +31,7 @@ class TimelineView extends StatefulWidget {
     required this.threadId,
     required this.view,
     this.submissions = const [],
+    this.submissionControlsBuilder,
     required this.controls,
     required this.onLoadOlder,
     required this.onRetryOlder,
@@ -54,6 +55,7 @@ class TimelineView extends StatefulWidget {
   final String threadId;
   final TimelineSessionViewState view;
   final List<ComposerSubmission> submissions;
+  final Widget Function(ComposerSubmission)? submissionControlsBuilder;
   final TimelineUiControllers controls;
   final Future<void> Function() onLoadOlder;
   final Future<void> Function() onRetryOlder;
@@ -455,6 +457,9 @@ class _TimelineViewState extends State<TimelineView> {
                                                       _ComposerSubmissionCard(
                                                         submission: submission,
                                                         bodyBuilder: _body,
+                                                        controls: widget
+                                                            .submissionControlsBuilder
+                                                            ?.call(submission),
                                                       ),
                                                   ],
                                                 ),
@@ -636,17 +641,22 @@ class _ComposerSubmissionCard extends StatelessWidget {
   const _ComposerSubmissionCard({
     required this.submission,
     required this.bodyBuilder,
+    this.controls,
   });
 
   final ComposerSubmission submission;
   final Widget Function(String id, String text) bodyBuilder;
+  final Widget? controls;
 
   @override
   Widget build(BuildContext context) {
     final status = switch (submission.phase) {
-      ComposerSubmissionPhase.sending => '正在发送',
-      ComposerSubmissionPhase.accepted => '已收到，等待同步',
-      ComposerSubmissionPhase.unknownOutcome => '发送结果待确认',
+      ComposerSubmissionPhase.sending => context.l10n.composerSubmissionSending,
+      ComposerSubmissionPhase.accepted =>
+        context.l10n.composerSubmissionAccepted,
+      ComposerSubmissionPhase.failed => context.l10n.composerSubmissionFailed,
+      ComposerSubmissionPhase.unknownOutcome =>
+        context.l10n.composerSubmissionUnknown,
     };
     return Align(
       alignment: AlignmentDirectional.centerEnd,
@@ -706,6 +716,15 @@ class _ComposerSubmissionCard extends StatelessWidget {
                 style: Theme.of(context).textTheme.labelSmall,
               ),
             ),
+            if (submission.error case final error?) ...[
+              const SizedBox(height: 4),
+              Text(
+                error.toString(),
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+            ?controls,
           ],
         ),
       ),
@@ -718,10 +737,12 @@ class ComposerSubmissionList extends StatelessWidget {
     super.key,
     required this.submissions,
     required this.bodyBuilder,
+    this.submissionControlsBuilder,
   });
 
   final List<ComposerSubmission> submissions;
   final Widget Function(String id, String text) bodyBuilder;
+  final Widget Function(ComposerSubmission)? submissionControlsBuilder;
 
   @override
   Widget build(BuildContext context) => SelectionArea(
@@ -732,6 +753,7 @@ class ComposerSubmissionList extends StatelessWidget {
           _ComposerSubmissionCard(
             submission: submission,
             bodyBuilder: bodyBuilder,
+            controls: submissionControlsBuilder?.call(submission),
           ),
       ],
     ),

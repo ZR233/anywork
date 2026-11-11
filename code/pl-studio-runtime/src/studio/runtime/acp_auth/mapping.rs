@@ -52,6 +52,16 @@ pub(super) fn acp_error(code: StudioErrorCode, message: &str, retryable: bool) -
     anyhow::Error::new(StudioError::new(code, message, retryable))
 }
 
+/// 忙碌拒绝：code/message/retryable 语义与既有 `Busy` 完全一致，只额外携带
+/// 拒绝准入同一锁内捕获的结构化切面（design/28 §28.9）。
+pub(super) fn acp_busy_error(details: pl_protocol::studio::AcpAuthBusyRejection) -> anyhow::Error {
+    let details = serde_json::to_value(details).expect("busy rejection details serialize");
+    anyhow::Error::new(
+        StudioError::new(StudioErrorCode::Busy, "该接入已有进行中的认证操作", true)
+            .with_details(details),
+    )
+}
+
 /// 前置安装验证失败到类型化认证失败的映射（阶段固定为 `Prepare`）。
 ///
 /// 这些类别只在后台 Prepare 阶段发布，不会把任意错误吞成 `Unchecked` 或成功。

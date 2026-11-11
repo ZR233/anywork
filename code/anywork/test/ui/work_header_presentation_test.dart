@@ -2,20 +2,25 @@ import 'dart:typed_data';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/state/conversation_realtime_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
+import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../integration_test/support/timeline_observation.dart';
 import '../support/chat_fixtures.dart';
 
 WorkSummary _summary({
@@ -427,7 +432,7 @@ void main() {
           ),
         ];
         h.notices = [
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'thinking',
               turnId: 'turn',
@@ -435,28 +440,28 @@ void main() {
               summary: '普通提示不另起一行',
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'stopping',
               turnId: 'turn',
               kind: ConversationActivityKind.stopping,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'approval',
               turnId: 'turn',
               kind: ConversationActivityKind.awaitingApproval,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'storage',
               turnId: 'turn',
               kind: ConversationActivityKind.storageBlocked,
             ),
           ),
-          const ExecutionRealtimeNotice(
+          const ExecutionLiveNotice(
             ConversationActivityView(
               identity: 'error',
               turnId: 'turn',
@@ -466,7 +471,8 @@ void main() {
           ),
         ];
         await tester.pumpWidget(h.host());
-        // Sealed headers use the frozen worked-duration title, never a live summary.
+        // Sealed headers use the frozen worked-duration title in Timeline,
+        // while the active open Work renders inside ConversationActivityBar.
         expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
         expect(find.text('当前组概要'), findsOneWidget);
         expect(
@@ -474,14 +480,15 @@ void main() {
             of: find.byKey(const ValueKey('timeline-current-work')),
             matching: find.byType(CompletionRunView),
           ),
-          findsNWidgets(2),
+          findsOneWidget,
         );
+        expect(tester.getRect(find.byKey(const ValueKey('older'))).left, 24.0);
         expect(
-          find.ancestor(
-            of: find.byType(CompletionRunView),
-            matching: find.byType(ConversationActivityBar),
+          find.descendant(
+            of: find.byType(ConversationActivityBar),
+            matching: find.byType(CompletionRunView),
           ),
-          findsNothing,
+          findsOneWidget,
         );
         expect(find.text('普通提示不另起一行'), findsNothing);
         expect(find.byType(ConversationActivityStatus), findsNWidgets(4));
@@ -525,14 +532,409 @@ void main() {
     );
   }
 
+  testWidgets(
+    'completed open Work (group-idle) merges active Turn thinking notice in place while retaining its thinking summary',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+      final summary = _summary(total: 2, thought: '已结束成员的思考概要');
+      h.blocks = [_work('work', summary: summary)];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'thinking',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      final workFinder = find.descendant(
+        of: find.byType(ConversationActivityBar),
+        matching: find.byType(CompletionRunView),
+      );
+      expect(workFinder, findsOneWidget);
+      final work = tester.widget<CompletionRunView>(workFinder);
+      expect(
+        work.activity,
+        same((h.notices.single as ExecutionLiveNotice).view),
+      );
+      final header = find.byKey(const ValueKey('completion-run-header:work'));
+      expect(
+        find.descendant(of: header, matching: find.text('已结束成员的思考概要')),
+        findsOneWidget,
+      );
+      expect(find.text('思考中'), findsNothing);
+      expect(
+        tester
+            .widget<TimelineActivityIndicator>(
+              find.descendant(
+                of: header,
+                matching: find.byType(TimelineActivityIndicator),
+              ),
+            )
+            .active,
+        isTrue,
+      );
+
+      // Without a thinking summary on the open Work, group-idle falls back to 思考中.
+      h.blocks = [_work('work', summary: _summary(total: 2))];
+      await tester.pumpWidget(h.host());
+      expect(
+        find.descendant(of: header, matching: find.text('思考中')),
+        findsOneWidget,
+      );
+      expect(h.content.reads, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'open Work renders single-line Markdown thinking summary across thinking, exec, group-idle and same-group updates while Timeline keeps worked copy',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+
+      // 1. Open Work before any thinking summary arrives: shows 思考中.
+      h.blocks = [_work('work-1', summary: _summary(total: 1, running: 1))];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-0',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      final barFinder = find.byKey(const ValueKey('conversation-activity'));
+      final header1 = find.byKey(
+        const ValueKey('completion-run-header:work-1'),
+      );
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header1),
+        ),
+        '思考中',
+      );
+      final baselineBarSize = tester.getRect(barFinder).size;
+
+      // 2. Streaming first Markdown thinking summary: replaces 思考中, renders
+      // bold + inline code + link label without gestures, and preserves height.
+      const mdThoughtA =
+          '梳理 **会话共享组件** 与 `LiveStatusBar` [锁定边界](https://example.com)';
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-1',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+            thinkingSummary: mdThoughtA,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      final titleA = timelineGroupTitleFinder(tester, header1);
+      expect(tester.widget(titleA), isA<TimelineReasoningSummary>());
+      expect(
+        timelineGroupTitleText(tester, titleA),
+        '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
+      );
+      final paragraphA = timelineGroupTitleParagraph(tester, titleA);
+      expect(paragraphA.maxLines, 1);
+      expect(paragraphA.softWrap, isFalse);
+      expect(paragraphA.overflow, TextOverflow.ellipsis);
+      expect(
+        tester.getRect(barFinder).size.height,
+        closeTo(baselineBarSize.height, 0.001),
+      );
+
+      // Verify **会话共享组件** span is bold and raw delimiters are absent.
+      TextStyle? boldSpanStyle;
+      void findBold(InlineSpan span, TextStyle inherited) {
+        final effective = inherited.merge(span.style);
+        if (span is TextSpan) {
+          if (span.text == '会话共享组件') boldSpanStyle = effective;
+          for (final child in span.children ?? const <InlineSpan>[]) {
+            findBold(child, effective);
+          }
+        }
+      }
+
+      findBold(paragraphA.text, const TextStyle());
+      expect(boldSpanStyle?.fontWeight, FontWeight.bold);
+
+      // 3. Exec command running: summary.thinkingSummary retains mdThoughtA,
+      // replacing command line copy while leading icon stays restingCat.
+      h.blocks = [
+        _work(
+          'work-1',
+          summary: _summary(total: 2, running: 1, thought: mdThoughtA),
+        ),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-2',
+            turnId: 'turn',
+            kind: ConversationActivityKind.runningTool,
+            summary: 'cargo flutter test',
+            activeTools: [
+              ThreadActivityToolEntry(
+                callId: 'exec-1',
+                name: 'exec',
+                summary: 'cargo flutter test',
+                arguments: ThreadActivityArgumentsKind.commandLine,
+                state: ThreadActivityToolState.running,
+                startedAt: 100,
+              ),
+            ],
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header1),
+        ),
+        '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
+      );
+      expect(find.text('cargo flutter test'), findsNothing);
+      expect(
+        find.descendant(of: header1, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: header1,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        tester.getRect(barFinder).size.height,
+        closeTo(baselineBarSize.height, 0.001),
+      );
+
+      // 4. group-idle: members completed, waiting for next step; retains mdThoughtA
+      // instead of reverting to 思考中, while icon returns to resting cat.
+      h.blocks = [
+        _work(
+          'work-1',
+          summary: _summary(total: 2, running: 0, thought: mdThoughtA),
+        ),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-3',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header1),
+        ),
+        '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
+      );
+      expect(
+        find.descendant(of: header1, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+      expect(
+        tester.getRect(barFinder).size.height,
+        closeTo(baselineBarSize.height, 0.001),
+      );
+
+      // 5. Same open Work receives a newer thinking summary with H1 heading:
+      // immediately replaces older summary in-place without H1 divider or height jump.
+      const mdThoughtB = '# 复核 `Timeline` 封存契约';
+      h.blocks = [
+        _work(
+          'work-1',
+          summary: _summary(total: 3, running: 1, thought: mdThoughtA),
+        ),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-4',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+            thinkingSummary: mdThoughtB,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header1),
+        ),
+        '复核 Timeline 封存契约',
+      );
+      expect(
+        find.descendant(of: header1, matching: find.byType(CustomDivider)),
+        findsNothing,
+      );
+      expect(
+        tester.getRect(barFinder).size.height,
+        closeTo(baselineBarSize.height, 0.001),
+      );
+
+      // 6. Boundary seals work-1 into Timeline (kept as 工作了 2 分 5 秒) and opens
+      // a new work-2 (no leaked thinkingSummary from work-1).
+      h.blocks = [
+        _work(
+          'work-1',
+          blockOrder: 1,
+          state: DisplayBlockState.sealed,
+          summary: _summary(total: 3, running: 0, thought: mdThoughtB),
+        ),
+        _work(
+          'work-2',
+          blockOrder: 2,
+          summary: _summary(total: 1, running: 1, thought: null),
+        ),
+      ];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'act-5',
+            turnId: 'turn',
+            kind: ConversationActivityKind.runningTool,
+            summary: 'cargo flutter analyze',
+            activeTools: [
+              ThreadActivityToolEntry(
+                callId: 'exec-2',
+                name: 'exec',
+                summary: 'cargo flutter analyze',
+                arguments: ThreadActivityArgumentsKind.commandLine,
+                state: ThreadActivityToolState.running,
+                startedAt: 200,
+              ),
+            ],
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header1),
+        ),
+        '工作了 2 分 5 秒',
+      );
+      expect(
+        find.descendant(
+          of: header1,
+          matching: find.byType(TimelineReasoningSummary),
+        ),
+        findsNothing,
+      );
+      final header2 = find.byKey(
+        const ValueKey('completion-run-header:work-2'),
+      );
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, header2),
+        ),
+        'cargo flutter analyze',
+      );
+      expect(h.content.reads, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'tapping Markdown link or inline code in live Work header toggles disclosure; history Work ignores thinkingSummary',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CompletionRunView(
+                id: 'live-md',
+                location: WorkDisplayLocation.live,
+                executionPresent: true,
+                initiallyExpanded: false,
+                summary: _summary(
+                  createdAt: null,
+                  running: 1,
+                  thought:
+                      '检查 `LiveStatusBar` 与 [设计文档](https://example.com) 契约',
+                ),
+                childBuilder: (_) => const Text('expanded member row'),
+              ),
+              CompletionRunView(
+                id: 'history-md',
+                location: WorkDisplayLocation.history,
+                initiallyExpanded: false,
+                summary: _summary(
+                  createdAt: null,
+                  running: 0,
+                  thought:
+                      '检查 `LiveStatusBar` 与 [设计文档](https://example.com) 契约',
+                ),
+                childBuilder: (_) => const Text('history member row'),
+              ),
+            ],
+          ),
+        ),
+      );
+      final liveHeader = find.byKey(
+        const ValueKey('completion-run-header:live-md'),
+      );
+      final liveTitle = timelineGroupTitleFinder(tester, liveHeader);
+      expect(
+        timelineGroupTitleText(tester, liveTitle),
+        '检查 LiveStatusBar 与 设计文档 契约',
+      );
+      expect(
+        timelineWorkHeaderExpanded(tester, liveHeader, 'live-md'),
+        isFalse,
+      );
+      await tester.tap(liveTitle);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(timelineWorkHeaderExpanded(tester, liveHeader, 'live-md'), isTrue);
+      expect(find.text('expanded member row'), findsOneWidget);
+      await tester.tap(liveTitle);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        timelineWorkHeaderExpanded(tester, liveHeader, 'live-md'),
+        isFalse,
+      );
+
+      final historyHeader = find.byKey(
+        const ValueKey('completion-run-header:history-md'),
+      );
+      expect(
+        timelineGroupTitleText(
+          tester,
+          timelineGroupTitleFinder(tester, historyHeader),
+        ),
+        '工作了 2 分 5 秒',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final (outcome, icon, result) in [
-    (ChatTerminalOutcome.completed, Icons.work_outline, null),
     (ChatTerminalOutcome.failed, Icons.error_outline, '1 项执行失败'),
     (ChatTerminalOutcome.cancelled, Icons.stop_circle_outlined, '1 项已停止'),
     (ChatTerminalOutcome.transferred, Icons.call_made, '已交接 1 项'),
   ]) {
     testWidgets(
-      'terminal ${outcome.name} Work keeps its result and independent Turn notice',
+      'abnormal terminal ${outcome.name} Work keeps its result and independent Turn notice',
       (tester) async {
         final h = _LiveHarness();
         addTearDown(h.dispose);
@@ -546,7 +948,7 @@ void main() {
           );
           h.blocks = [_work('work', summary: summary)];
           h.notices = [
-            const ExecutionRealtimeNotice(
+            const ExecutionLiveNotice(
               ConversationActivityView(
                 identity: 'thinking',
                 turnId: 'turn',
@@ -564,7 +966,7 @@ void main() {
                   find.byType(ConversationActivityStatus),
                 )
                 .view,
-            same((h.notices.single as ExecutionRealtimeNotice).view),
+            same((h.notices.single as ExecutionLiveNotice).view),
           );
           expect(find.text('有界思考概要'), findsNothing);
           expect(find.text('状态概要'), findsOneWidget);
@@ -605,7 +1007,7 @@ void main() {
               findsOneWidget,
             );
             final description = tester.getSemantics(header).label;
-            if (result != null) expect(description, contains(result));
+            expect(description, contains(result));
             expect(description, isNot(contains('思考中')));
             expect(
               tester
@@ -622,7 +1024,7 @@ void main() {
 
           expectStaticResult();
           h.notices = [
-            const ExecutionRealtimeNotice(
+            const ExecutionLiveNotice(
               ConversationActivityView(
                 identity: 'thinking',
                 turnId: 'turn',
@@ -651,7 +1053,7 @@ void main() {
       addTearDown(h.dispose);
       h.blocks = [_work('work', thought: '独立概要')];
       h.notices = [
-        const ExecutionRealtimeNotice(
+        const ExecutionLiveNotice(
           ConversationActivityView(
             identity: 'different',
             turnId: 'other-turn',
@@ -663,7 +1065,7 @@ void main() {
       await tester.pumpWidget(h.host());
       expect(find.text('另一来源提示'), findsOneWidget);
       h.executionPresent = false;
-      h.notices = [const UnrestoredRealtimeNotice()];
+      h.notices = [const UnrestoredLiveNotice()];
       await tester.pumpWidget(h.host());
       expect(find.text('上次执行未收束，尚未恢复'), findsOneWidget);
       expect(h.content.reads, 0);
@@ -676,16 +1078,107 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'open Work uses circular progress while exec runs without thinking summary and uses resting cat whenever thinking summary is displayed',
+    (tester) async {
+      final h = _LiveHarness();
+      addTearDown(h.dispose);
+      const runningExecNotice = ExecutionLiveNotice(
+        ConversationActivityView(
+          identity: 'exec-active',
+          turnId: 'turn',
+          kind: ConversationActivityKind.runningTool,
+          activeTools: [
+            ThreadActivityToolEntry(
+              callId: 'call-exec',
+              name: 'exec',
+              summary: 'cargo flutter test',
+              arguments: ThreadActivityArgumentsKind.commandLine,
+              state: ThreadActivityToolState.running,
+              startedAt: 1000,
+            ),
+          ],
+        ),
+      );
+
+      // 1. 尚无思考摘要且前台正在执行 exec 命令：顶栏显示圆形进度。
+      h.blocks = [_work('work-exec', summary: _summary(running: 1))];
+      h.notices = const [runningExecNotice];
+      await tester.pumpWidget(h.host());
+      final header = find.byKey(
+        const ValueKey('completion-run-header:work-exec'),
+      );
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsNothing,
+      );
+
+      // 2. 现工作组展示思考摘要时，即使 exec 仍在运行，顶栏也使用趴卧摇尾猫图标。
+      h.blocks = [
+        _work(
+          'work-exec',
+          summary: _summary(running: 1, thought: '运行 **单元测试** 命令'),
+        ),
+      ];
+      h.notices = const [runningExecNotice];
+      await tester.pumpWidget(h.host());
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+
+      // 3. exec 结束、工作组转入等待交接思考时继续保持趴卧摇尾猫。
+      h.blocks = [_work('work-exec', summary: _summary(running: 0))];
+      h.notices = [
+        const ExecutionLiveNotice(
+          ConversationActivityView(
+            identity: 'thinking-after-exec',
+            turnId: 'turn',
+            kind: ConversationActivityKind.thinking,
+          ),
+        ),
+      ];
+      await tester.pumpWidget(h.host());
+      expect(
+        find.descendant(
+          of: header,
+          matching: find.byType(TimelineExecProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: header, matching: find.byType(TimelineRestingCat)),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }
 
 LiveDisplayBlock _work(
   String id, {
+  int? blockOrder,
   DisplayBlockState state = DisplayBlockState.open,
   String? thought,
   WorkSummary? summary,
 }) => LiveDisplayBlock(
   id: id,
-  blockOrder: id == 'older' ? 1 : 2,
+  blockOrder: blockOrder ?? (id == 'older' ? 1 : 2),
   state: state,
   source: const ForegroundTurnChatSource(turnId: 'turn'),
   body: WorkDisplayBlock(
@@ -729,7 +1222,7 @@ class _LiveHarness {
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = [];
-  List<RealtimeNotice> notices = [];
+  List<LiveStatusNotice> notices = [];
   bool executionPresent = true;
   int revision = 0;
   Widget host() {
@@ -739,13 +1232,37 @@ class _LiveHarness {
       executionPresent: executionPresent,
       blocks: blocks,
     );
+    final projected = LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+      effectiveOutputWindow: live.value,
+      effectiveTimelineWindow: live.value,
+      activeTurnId: 'turn',
+      confirmingPlan: false,
+      outputPaging: const LatestLiveWindow(),
+      rawNotices: notices,
+    );
+    final presenting = projected.surface == null
+        ? null
+        : LiveStatusPresenting(
+            surface: projected.surface!,
+            effectiveWindow: live.value,
+            paging: const LatestLiveWindow(),
+            showInteractionDetails: false,
+          );
+    final workSlice = LiveStatusTimelineWorkSlice(
+      workBlocks: projected.timelineWorkBlocks,
+      effectiveWindow: live.value,
+    );
     Widget section(ConversationLiveSection section) =>
         ConversationCurrentConnector(
           section: section,
+          managedByViewModel: true,
           session: _Session(),
           content: content,
           live: live,
-          region: ContentRealtimeRegion(live: live.value, notices: notices),
+          presenting: section == ConversationLiveSection.output
+              ? presenting
+              : null,
+          workSlice: section == ConversationLiveSection.work ? workSlice : null,
           images: images,
           readAttachment: (_) async => Uint8List(0),
           isDisplayActive: () => true,
