@@ -820,12 +820,6 @@ impl ToolPlan {
             .into()
     }
 
-    pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
-        self.tools
-            .values()
-            .all(|tool| tool.remains_authorized(manager))
-    }
-
     pub(crate) fn retry_compatible(&self, current: &Self) -> bool {
         self.tools.len()
             == current

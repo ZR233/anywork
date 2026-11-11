@@ -134,12 +134,7 @@ impl Owner {
                 });
             }
         }
-        // Mailbox changes can revoke this frozen plan while the provider future is pending. Keep
-        // that hard refusal in the rejected outcome so the returned output and usage are retained.
-        if !plan.remains_authorized(&self.tools) {
-            return Some(ModelOutputViolation::ToolPermissionRevoked);
-        }
-        // Scan every hard identity/authorization boundary before any recoverable rejection. A
+        // Execution authority is checked per call at dispatch, not for unused declarations. A
         // diagnostic unknown name is not an execution identity, even if it equals a real stable ID.
         for call in &output.tool_calls {
             if !matches!(
@@ -520,9 +515,6 @@ impl Owner {
         self.enter_model_execution(ModelExecutionPhase::Admitting);
         self.capacity.admit(input_estimate)?;
         self.ensure_model_admission(&input.cancellation).await?;
-        if !plan.remains_authorized(&self.tools) {
-            return Err(ThreadError::ToolPermissionRevoked);
-        }
         let mut attempts = self.state.attempts.to_vec();
         attempts.push(RequestAttempt {
             turn_id: input.turn_id.clone(),
@@ -621,28 +613,22 @@ impl Owner {
                 Err(ThreadError::Cancelled),
             )
         } else {
-            match result {
-                Err(error) => (
+            let violation = result.as_ref().ok().and_then(|output| {
+                self.output_violation(&input.attempt_id, input_revision, &plan, output)
+            });
+            match (result, violation) {
+                (Err(error), _) => (
                     AttemptOutcome::Failed(error.clone()),
                     Err(ThreadError::Model(error)),
                 ),
-                Ok(output)
-                    if self
-                        .output_violation(&input.attempt_id, input_revision, &plan, &output)
-                        .is_some() =>
-                {
-                    let reason = self
-                        .output_violation(&input.attempt_id, input_revision, &plan, &output)
-                        .ok_or(ThreadError::InvalidOutput)?;
-                    (
-                        AttemptOutcome::Rejected {
-                            output,
-                            reason: reason.clone(),
-                        },
-                        Err(reason.into()),
-                    )
-                }
-                Ok(output) => {
+                (Ok(output), Some(reason)) => (
+                    AttemptOutcome::Rejected {
+                        output,
+                        reason: reason.clone(),
+                    },
+                    Err(reason.into()),
+                ),
+                (Ok(output), None) => {
                     let admitted_call_ids = output
                         .tool_calls
                         .iter()

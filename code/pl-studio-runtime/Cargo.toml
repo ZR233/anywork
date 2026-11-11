@@ -78,6 +78,10 @@ required-features = ["live-tests"]
 name = "model_observe"
 required-features = ["live-tests"]
 
+[[example]]
+name = "tool_error_observe"
+required-features = ["live-tests"]
+
 [build-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
