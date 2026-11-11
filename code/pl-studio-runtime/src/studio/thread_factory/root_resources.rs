@@ -373,6 +373,8 @@ impl StudioThreadFactory {
         };
         // 会话工作区只能由 canonical workspace_mode 与 durable lease 解析；
         // `worktree` 缺失、身份不符或已清理都显式失败，绝不回落到主工作区。
+        let workspace_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "activation_workspace", "starting");
         let workspace_mode = thread.workspace_mode;
         let project_copy = project.clone();
         let bot_root = bot
@@ -413,12 +415,15 @@ impl StudioThreadFactory {
         self.assign_workspace_use(&workspace_usage, &project, workspace.root())
             .await
             .map_err(Self::workspace_usage_error)?;
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "activation_workspace", elapsed_ms = workspace_started.elapsed().as_millis() as u64, "completed");
         let store = FileResourceStore::new(
             self.services
                 .store
                 .session_resources_dir_for(&thread.workspace_id, id)
                 .map_err(|error| resource_error("resolve root session resources", error))?,
         );
+        let tools_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", "starting");
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 verified_local: None,
@@ -435,6 +440,7 @@ impl StudioThreadFactory {
                 helper_source: self.services.helper_source.clone(),
             })
             .await?;
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", elapsed_ms = tools_started.elapsed().as_millis() as u64, "completed");
         prepared.tools = prepared
             .tools
             .with_tools(crate::workflow_tool::workflow_registrations()?);
@@ -475,6 +481,8 @@ impl StudioThreadFactory {
             );
         }
         if is_new {
+            let instructions_started = std::time::Instant::now();
+            tracing::debug!(target: "thread_preparation", thread_id = id, stage = "instructions", "starting");
             let (context, sources) = thread_seed::capture(ThreadInstructionSeed {
                 thread_id: id,
                 config: &config,
@@ -489,6 +497,7 @@ impl StudioThreadFactory {
                 resources: &prepared,
             })
             .await?;
+            tracing::debug!(target: "thread_preparation", thread_id = id, stage = "instructions", elapsed_ms = instructions_started.elapsed().as_millis() as u64, "completed");
             initial_context = context;
             initial_extensions.insert("studio.instructions".into(), sources);
             if config.runtime.tool_capabilities.ask_user {
@@ -523,6 +532,8 @@ impl StudioThreadFactory {
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
+        let persistence_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", "starting");
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             protocol_thread,
@@ -530,6 +541,7 @@ impl StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
         let model = pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
             route.reasoning_config(),

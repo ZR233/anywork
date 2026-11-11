@@ -89,6 +89,12 @@ impl StudioRuntime {
         Ok(thread)
     }
 
+    #[tracing::instrument(
+        target = "thread_preparation",
+        level = "debug",
+        skip_all,
+        fields(workspace_id = %request.workspace_id, input_id = %request.input.input_id)
+    )]
     pub async fn start_new_thread(
         &self,
         request: StudioStartNewThreadRequest,
@@ -114,9 +120,15 @@ impl StudioRuntime {
             .clone()
             .unwrap_or_else(|| provisional_title(&request.input.text));
         let title_prompt = request.input.text.clone();
+        let started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", stage = "admission_lock", "starting");
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
+        tracing::debug!(target: "thread_preparation", stage = "admission_lock", elapsed_ms = started.elapsed().as_millis() as u64, "completed");
         report(ThreadPreparationStage::CheckingProject, None, None);
+        let ready_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", stage = "runtime_ready", "starting");
         self.ensure_prompt_runtime_ready().await?;
+        tracing::debug!(target: "thread_preparation", stage = "runtime_ready", elapsed_ms = ready_started.elapsed().as_millis() as u64, "completed");
         let drafts = self
             .attachment_drafts
             .resolve(&request.input.attachment_draft_ids)
@@ -154,9 +166,12 @@ impl StudioRuntime {
             "standalone sessions only support local workspaces"
         );
         self.ensure_project_thread_admission_open(&request.workspace_id)?;
+        let project_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", stage = "project", "starting");
         self.thread_factory
             .verify_project_workspace(&project)
             .await?;
+        tracing::debug!(target: "thread_preparation", stage = "project", elapsed_ms = project_started.elapsed().as_millis() as u64, "completed");
         self.ensure_mode_available(&request.mode)?;
 
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
@@ -169,6 +184,8 @@ impl StudioRuntime {
                 .then_some(project.path.as_str()),
             None,
         );
+        let workspace_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", stage = "workspace", "starting");
         if request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
             // 创建窗口内的 lease 由进程内「创建中」标记保护：在记录 `prepared` 之前设置，
             // 直到 owner Thread 目录事实提交（或失败 settle 并发布）之后才清除。
@@ -202,6 +219,7 @@ impl StudioRuntime {
             Some(lease) => lease.path.clone(),
             None => local_thread_workspace(&project, &thread_id).await?,
         };
+        tracing::debug!(target: "thread_preparation", stage = "workspace", elapsed_ms = workspace_started.elapsed().as_millis() as u64, "completed");
         report(
             ThreadPreparationStage::InitializingSession,
             Some(&workspace_path),
@@ -255,6 +273,8 @@ impl StudioRuntime {
         // 目录事实已提交：owner Thread 行已存在，创建窗口收束。
         self.clear_creating_session_worktree(&session_lease);
         let thread = ThreadRecord::from_directory_thread(thread);
+        let activation_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "activation", "starting");
         if let Err(error) = self.register_new_thread(thread.clone()).await {
             self.thread_factory.clear_initial_route(&thread.id);
             // 目录事实已发布：必须先按未启动会话补偿（关闭并归档），不能留下无法激活的
@@ -279,12 +299,15 @@ impl StudioRuntime {
             }
             return Err(error);
         }
+        tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "activation", elapsed_ms = activation_started.elapsed().as_millis() as u64, "completed");
         self.thread_factory.clear_initial_route(&thread.id);
         report(
             ThreadPreparationStage::SubmittingPrompt,
             Some(&thread.workspace_path),
             None,
         );
+        let submission_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "first_input", "starting");
         let submission = self
             .submit_prompt_for_owned_thread_with_lifecycle_lock(
                 StudioSubmitPromptRequest {
@@ -295,6 +318,7 @@ impl StudioRuntime {
                 thread.clone(),
             )
             .await;
+        tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "first_input", elapsed_ms = submission_started.elapsed().as_millis() as u64, success = submission.is_ok(), total_elapsed_ms = started.elapsed().as_millis() as u64, "completed");
         let submission = match submission {
             Ok(submission) => submission,
             Err(error) => {

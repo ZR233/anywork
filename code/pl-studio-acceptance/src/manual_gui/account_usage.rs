@@ -114,7 +114,7 @@ fn credential_contract() -> Result<Value> {
     config.models.accounts.clear();
     let assert_key = |config: &StudioConfig, expected: Option<&str>| -> Result<()> {
         for id in builtin_mcp_server_ids() {
-            let server = build_builtin_effective_config(id, true, None, &config.models)
+            let server = build_builtin_effective_config(id, true, false, None, &config.models)
                 .context("missing builtin definition")?;
             ensure!(
                 server.bearer_token.as_deref() == expected,
@@ -169,9 +169,11 @@ fn credential_contract() -> Result<Value> {
     assert_key(&config, Some("fixture-plan-a"))?;
     ensure!(
         builtin_mcp_server_ids().iter().all(|id| {
-            build_builtin_effective_config(id, false, None, &config.models).is_some_and(|server| {
-                server.status_kind == pl_studio_runtime::config::McpServerStatusKind::Disabled
-            })
+            build_builtin_effective_config(id, false, false, None, &config.models).is_some_and(
+                |server| {
+                    server.status_kind == pl_studio_runtime::config::McpServerStatusKind::Disabled
+                },
+            )
         }),
         "explicit builtin disable was lost"
     );

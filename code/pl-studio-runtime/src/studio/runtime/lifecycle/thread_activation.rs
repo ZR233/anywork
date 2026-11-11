@@ -5,6 +5,7 @@ use crate::thread_assembler::ThreadActivation;
 use anyhow::{Context, Result};
 
 impl StudioRuntime {
+    #[tracing::instrument(target = "thread_preparation", level = "debug", skip_all, fields(thread_id = id))]
     pub(in crate::studio) async fn ensure_thread_owner(
         &self,
         id: &str,
@@ -19,7 +20,10 @@ impl StudioRuntime {
         let requested_activation = self.thread_factory.activation(id)?;
         // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
         // activation's inline future, while retaining this caller's cancellation ownership.
+        let preflight_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", stage = "activation_preflight", "starting");
         Box::pin(self.verify_activation_preflight(id)).await?;
+        tracing::debug!(target: "thread_preparation", stage = "activation_preflight", elapsed_ms = preflight_started.elapsed().as_millis() as u64, "completed");
         // This operation already borrows the runtime. Retain only the residency owner, not
         // another full StudioRuntime clone, across activation/recovery awaits.
         let _activation_pin = self.residency.pin_many([id.to_owned()]);
@@ -42,11 +46,15 @@ impl StudioRuntime {
             }
             let record = self.read_owned_thread(&cursor).await?;
             self.store.ensure_agent_execution_allowed(&cursor).await?;
-            self.verify_thread_execution_preparation(
-                &pl_protocol::Thread::from(record.clone()),
-                None,
-            )
-            .await?;
+            // The requested target was just verified by preflight (also for hot owners).
+            // Only additional cold ancestors need their own physical workspace check.
+            if cursor != id {
+                self.verify_thread_execution_preparation(
+                    &pl_protocol::Thread::from(record.clone()),
+                    None,
+                )
+                .await?;
+            }
             self.check_thread_execution_access(&pl_protocol::Thread::from(record.clone()))?;
             anyhow::ensure!(
                 record.visibility == crate::studio::ThreadVisibility::Active,
@@ -69,6 +77,8 @@ impl StudioRuntime {
             let session = self.sessions.materialize(&identity.agent.session_id)?;
             // The assembler owns/coalesces preparation. Its waiter need not inline that
             // state alongside the runtime's ancestry records and residency protection.
+            let assembler_started = std::time::Instant::now();
+            tracing::debug!(target: "thread_preparation", thread_id = %activated_id, stage = "assembler", "starting");
             if let Err(error) =
                 Box::pin(session.activate(identity, self.thread_factory.clone())).await
             {
@@ -85,6 +95,7 @@ impl StudioRuntime {
                 }
                 return Err(error.into());
             }
+            tracing::debug!(target: "thread_preparation", thread_id = %activated_id, stage = "assembler", elapsed_ms = assembler_started.elapsed().as_millis() as u64, "completed");
             self.residency.touch(&activated_id).await;
         }
         // 主会话载入/恢复时就地核对它自己的子成员：中断事实与待决摘要只在各自保存的检查点里

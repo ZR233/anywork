@@ -6,6 +6,9 @@ use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
 use pl_model::model::ModelInfo;
 use pl_model::protocol::ProtocolEndpoint;
 
+#[path = "preparation_tests.rs"]
+mod preparation_tests;
+
 fn options(home: &Path) -> StudioRuntimeOptions {
     StudioRuntimeOptions {
         studio_home: Some(home.to_owned()),

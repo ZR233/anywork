@@ -758,6 +758,7 @@ async fn t12_t13_remote_streamable_http_and_budget() -> anyhow::Result<()> {
             bearer_token_env_var: None,
             headers,
             enabled: true,
+            required: false,
             startup_timeout_secs: Some(10),
             tool_timeout_secs: Some(10),
             enabled_tools: None,

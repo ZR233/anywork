@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -48,6 +49,9 @@ pub(crate) struct ThreadMcpOwner {
     state: Mutex<ThreadMcpStateSnapshot>,
     pub(super) command_lock: Arc<tokio::sync::Mutex<()>>,
     watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    preparation: Mutex<Option<McpCloseCompletion>>,
+    projection_ready: AtomicBool,
+    projection_revision: AtomicU64,
     shutdown: Mutex<Option<McpCloseCompletion>>,
 }
 
@@ -85,6 +89,9 @@ impl ThreadMcpOwner {
             state: Mutex::new(initial_state),
             command_lock: Arc::new(tokio::sync::Mutex::new(())),
             watcher: Mutex::new(None),
+            preparation: Mutex::new(None),
+            projection_ready: AtomicBool::new(true),
+            projection_revision: AtomicU64::new(0),
             shutdown: Mutex::new(None),
         })
     }
@@ -140,9 +147,15 @@ impl ThreadMcpOwner {
                         }
                     }
                     owner.publish_shutting_down(&events);
-                    owner.runtime.shutdown().await.map_err(|source| {
-                        Arc::new(resource_error("shutdown member MCP", source))
-                    })?;
+                    // Shutdown is the worker's cancellation-and-join boundary. A reconcile
+                    // waiter must not be joined first: it can still be awaiting that worker.
+                    let stopped =
+                        owner.runtime.shutdown().await.map_err(|source| {
+                            Arc::new(resource_error("shutdown member MCP", source))
+                        });
+                    let prepared = owner.finish_preparation().await;
+                    stopped?;
+                    prepared?;
                     owner.publish_closed(&events);
                     Ok(())
                 });
@@ -193,6 +206,189 @@ impl ThreadMcpOwner {
             .servers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = servers;
+    }
+
+    fn matches_servers(&self, servers: &BTreeMap<String, ResolvedThreadMcpServer>) -> bool {
+        let _state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.projection_ready.load(Ordering::Acquire)
+            && *self
+                .servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *servers
+    }
+
+    fn pause_projection(&self) {
+        let _state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.projection_ready.store(false, Ordering::Release);
+        self.projection_revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn resume_projection(&self) {
+        let _state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.projection_ready.store(true, Ordering::Release);
+    }
+
+    async fn finish_preparation(&self) -> McpCloseResult {
+        let completion = self
+            .preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match completion {
+            Some(completion) => completion.await,
+            None => Ok(()),
+        }
+    }
+
+    fn preparation_error(&self) -> Result<(), ThreadAssemblyError> {
+        use futures::FutureExt;
+        let slot = self
+            .preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(Err(error)) = slot
+            .as_ref()
+            .and_then(|completion| completion.clone().now_or_never())
+        {
+            return Err(resource_error(
+                "prepare background Thread MCP servers",
+                error,
+            ));
+        }
+        Ok(())
+    }
+
+    // Called under command_lock, after the previous producer reached its terminal result.
+    // The task deliberately does not hold command_lock while the worker prepares a generation:
+    // same-config input/step refreshes must keep using the already ready lease.
+    fn start_preparation(
+        self: &Arc<Self>,
+        servers: BTreeMap<String, pl_tool::mcp::config::EffectiveMcpServerConfig>,
+        events: ProductEventBus,
+    ) {
+        use futures::FutureExt;
+        let owner = self.clone();
+        let task = tokio::spawn(async move {
+            let result = owner.runtime.reconcile(servers).await;
+            if owner.lifetime.cancellation.is_cancelled() {
+                // The close owner awaits runtime.shutdown separately and checks its result.
+                return Ok(());
+            }
+            match result {
+                Ok(()) => {
+                    owner.refresh_snapshot(&events).await;
+                    Ok(())
+                }
+                Err(error) => {
+                    // No endpoint, environment, credential, or unredacted connector error.
+                    tracing::error!(thread_id = %owner.thread_id, "background Thread MCP preparation failed");
+                    Err(Arc::new(resource_error(
+                        "prepare background Thread MCP servers",
+                        error,
+                    )))
+                }
+            }
+        });
+        let completion = async move {
+            task.await.unwrap_or_else(|source| {
+                Err(Arc::new(resource_error(
+                    "join background Thread MCP preparation",
+                    source,
+                )))
+            })
+        }
+        .boxed()
+        .shared();
+        *self
+            .preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completion);
+    }
+
+    async fn prepare_required(
+        self: &Arc<Self>,
+        resolved: BTreeMap<String, ResolvedThreadMcpServer>,
+        remote: Option<Arc<RemoteCommandBackend>>,
+        events: &ProductEventBus,
+        cancellation: &CancellationToken,
+    ) -> Result<McpTurnLease, ThreadAssemblyError> {
+        let _command = tokio::select! {
+            biased;
+            () = self.lifetime.cancellation.cancelled() => return Err(ThreadAssemblyError::Closed),
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
+            guard = self.command_lock.lock() => guard,
+        };
+        // A refresh may have queued behind the initial required gate. Recheck after acquiring
+        // the lock so it cannot turn into a second waiter for the optional background batch.
+        if self.matches_servers(&resolved) {
+            self.preparation_error()?;
+            return self
+                .runtime
+                .acquire_turn_lease()
+                .await
+                .map_err(|error| resource_error("acquire current Thread MCP lease", error));
+        }
+        self.pause_projection();
+        // Existing worker APIs intentionally retain an accepted reconcile even if its waiter
+        // disappears. Join that producer before publishing/reconciling a changed desired set.
+        tokio::select! {
+            biased;
+            () = self.lifetime.cancellation.cancelled() => return Err(ThreadAssemblyError::Closed),
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
+            result = self.finish_preparation() => result.map_err(|error| resource_error("finish previous Thread MCP preparation", error))?,
+        }
+        self.update_resolved(resolved.clone(), remote);
+        self.publish_connecting(None, events);
+        let required: BTreeMap<_, _> = resolved
+            .iter()
+            .filter(|(_, entry)| entry.server.config.enabled && entry.server.config.required)
+            .map(|(id, entry)| (id.clone(), entry.server.clone()))
+            .collect();
+        let prepared = tokio::select! {
+            biased;
+            () = self.lifetime.cancellation.cancelled() => return Err(ThreadAssemblyError::Closed),
+            () = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
+            result = self.runtime.reconcile(required.clone()) => result,
+        };
+        prepared.map_err(|error| resource_error("prepare required Thread MCP servers", error))?;
+        let availability = self.runtime.snapshots().await;
+        self.resume_projection();
+        self.refresh_snapshot(events).await;
+        for id in required.keys() {
+            if !availability
+                .get(id)
+                .is_some_and(|state| state.availability_kind == McpAvailabilityKind::Available)
+            {
+                self.pause_projection();
+                return Err(resource_error(
+                    "prepare required Thread MCP servers",
+                    anyhow::anyhow!("required MCP server '{id}' is unavailable"),
+                ));
+            }
+        }
+        let lease = self
+            .runtime
+            .acquire_turn_lease()
+            .await
+            .map_err(|error| resource_error("acquire required Thread MCP lease", error))?;
+        let effective = resolved
+            .into_iter()
+            .map(|(id, entry)| (id, entry.server))
+            .collect();
+        if effective != required {
+            self.start_preparation(effective, events.clone());
+        }
+        Ok(lease)
     }
 
     pub(super) fn read_snapshot(&self) -> ThreadMcpStateSnapshot {
@@ -278,7 +474,28 @@ impl ThreadMcpOwner {
         product_events.emit_thread_mcp_state(snapshot);
     }
 
+    fn publish_reconnect_failure(&self, product_events: &ProductEventBus) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for server in &mut state.servers {
+            server.lifecycle = ThreadMcpLifecycleKind::Unavailable;
+            server.tool_count = None;
+            server.message =
+                Some("MCP reconnect did not replace the previous tool generation".into());
+        }
+        state.generation = state.generation.saturating_add(1);
+        product_events.emit_thread_mcp_state(state.clone());
+    }
+
     pub(super) async fn refresh_snapshot(&self, product_events: &ProductEventBus) {
+        let revision = self.projection_revision.load(Ordering::Acquire);
+        if !self.projection_ready.load(Ordering::Acquire)
+            || self.lifetime.cancellation.is_cancelled()
+        {
+            return;
+        }
         let availabilities = self.runtime.snapshots().await;
         let servers = self
             .servers
@@ -296,11 +513,18 @@ impl ThreadMcpOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revision != self.projection_revision.load(Ordering::Acquire)
+            || !self.projection_ready.load(Ordering::Acquire)
+            || self.lifetime.cancellation.is_cancelled()
+        {
+            return;
+        }
         if guard.servers != next_servers {
             guard.generation = guard.generation.saturating_add(1);
             guard.servers = next_servers;
             let snapshot = guard.clone();
-            drop(guard);
+            // ProductEventBus only enqueues broadcasts. Serialize that enqueue with
+            // pause_projection, not just the snapshot write, to forbid a late old event.
             product_events.emit_thread_mcp_state(snapshot);
         }
     }
@@ -319,6 +543,12 @@ fn server_state_from_availability(
             | McpAvailabilityKind::Disabled
             | McpAvailabilityKind::MissingCredential => ThreadMcpLifecycleKind::Unavailable,
         },
+        None if !entry.server.config.enabled
+            || entry.server.status_kind
+                == pl_tool::mcp::config::McpServerStatusKind::MissingCredential =>
+        {
+            ThreadMcpLifecycleKind::Unavailable
+        }
         None => ThreadMcpLifecycleKind::Connecting,
     });
     ThreadMcpServerState {
@@ -366,11 +596,6 @@ impl StudioThreadFactory {
                 remote_commands.clone(),
             )
             .map_err(|error| resource_error("resolve Thread MCP servers", error))?;
-        let effective_servers: BTreeMap<String, _> = resolved_servers
-            .iter()
-            .map(|(id, entry)| (id.clone(), entry.server.clone()))
-            .collect();
-
         match preparation {
             CatalogPreparation::Initial => {
                 self.shutdown_thread_mcp(thread_id)
@@ -382,10 +607,11 @@ impl StudioThreadFactory {
                     lifetime.clone(),
                     scope,
                     workspace.root().to_path_buf(),
-                    remote_commands,
+                    remote_commands.clone(),
                     runtime.handle(),
-                    resolved_servers,
+                    resolved_servers.clone(),
                 );
+                owner.pause_projection();
                 owner.start_watcher(self.services.product_events.clone());
                 let initial_snapshot = owner.read_snapshot();
                 *self
@@ -398,29 +624,17 @@ impl StudioThreadFactory {
                     .product_events
                     .emit_thread_mcp_state(initial_snapshot);
 
-                let reconcile_result = {
-                    let _guard = owner.command_lock.lock().await;
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => Err(ThreadAssemblyError::from(pl_core::thread::ThreadError::Cancelled)),
-                        res = owner.runtime.reconcile(effective_servers) => res.map_err(|error| resource_error("reconcile initial Thread MCP servers", error)),
-                    }
-                };
-                if let Err(error) = reconcile_result {
-                    if let Err(cleanup) = self.shutdown_thread_mcp(thread_id).await {
-                        return Err(ThreadAssemblyError::Cleanup {
-                            id: thread_id.into(),
-                            setup: Box::new(error),
-                            cleanup: Box::new(resource_error("close failed member MCP", cleanup)),
-                        });
-                    }
-                    return Err(error);
-                }
-                owner.refresh_snapshot(&self.services.product_events).await;
-                match owner.runtime.acquire_turn_lease().await {
+                match owner
+                    .prepare_required(
+                        resolved_servers,
+                        remote_commands,
+                        &self.services.product_events,
+                        cancellation,
+                    )
+                    .await
+                {
                     Ok(lease) => Ok(lease),
-                    Err(error) => {
-                        let setup = resource_error("acquire initial Thread MCP lease", error);
+                    Err(setup) => {
                         if let Err(cleanup) = self.shutdown_thread_mcp(thread_id).await {
                             return Err(ThreadAssemblyError::Cleanup {
                                 id: thread_id.into(),
@@ -438,10 +652,7 @@ impl StudioThreadFactory {
             CatalogPreparation::Refresh { .. } => {
                 let existing = self.mcp_owner(thread_id);
                 let owner = match existing {
-                    Some(owner) => {
-                        owner.update_resolved(resolved_servers, remote_commands);
-                        owner
-                    }
+                    Some(owner) => owner,
                     None => {
                         let runtime = McpRuntime::new(self.services.mcp_connector.clone());
                         let owner = ThreadMcpOwner::new(
@@ -449,10 +660,11 @@ impl StudioThreadFactory {
                             lifetime.clone(),
                             scope,
                             workspace.root().to_path_buf(),
-                            remote_commands,
+                            remote_commands.clone(),
                             runtime.handle(),
-                            resolved_servers,
+                            resolved_servers.clone(),
                         );
+                        owner.pause_projection();
                         owner.start_watcher(self.services.product_events.clone());
                         let initial_snapshot = owner.read_snapshot();
                         *self
@@ -468,20 +680,26 @@ impl StudioThreadFactory {
                         owner
                     }
                 };
-                {
-                    let _guard = owner.command_lock.lock().await;
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
-                        res = owner.runtime.reconcile(effective_servers) => res.map_err(|error| resource_error("reconcile refreshed Thread MCP servers", error))?,
-                    }
+                if owner.lifetime.cancellation.is_cancelled() || cancellation.is_cancelled() {
+                    return Err(pl_core::thread::ThreadError::Cancelled.into());
                 }
-                owner.refresh_snapshot(&self.services.product_events).await;
+                if owner.matches_servers(&resolved_servers) {
+                    owner.preparation_error()?;
+                    let lease = owner.runtime.acquire_turn_lease().await.map_err(|error| {
+                        resource_error("acquire refreshed Thread MCP lease", error)
+                    })?;
+                    tracing::debug!(target: "thread_preparation", thread_id,
+                        stage = "mcp_current_lease", tools = lease.tools().len(), "completed");
+                    return Ok(lease);
+                }
                 owner
-                    .runtime
-                    .acquire_turn_lease()
+                    .prepare_required(
+                        resolved_servers,
+                        remote_commands,
+                        &self.services.product_events,
+                        cancellation,
+                    )
                     .await
-                    .map_err(|error| resource_error("acquire refreshed Thread MCP lease", error))
             }
         }
     }
@@ -519,6 +737,7 @@ impl StudioThreadFactory {
             !owner.lifetime.cancellation.is_cancelled(),
             "member MCP is closing"
         );
+        // Reject invalid commands without fencing projection or joining another producer.
         let resolved_servers = self.services.config_runtime.resolve_thread_mcp_configs(
             &owner.scope,
             &owner.workspace_root,
@@ -533,6 +752,17 @@ impl StudioThreadFactory {
             ))
             .into());
         }
+        owner.pause_projection();
+        tokio::select! {
+            biased;
+            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
+            result = owner.finish_preparation() => result.map_err(|error| resource_error("finish MCP preparation before reconnect", error))?,
+        }
+        let configuration_changed = *owner
+            .servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            != resolved_servers;
         owner.set_servers(resolved_servers.clone());
         owner.publish_connecting(server_id, &self.services.product_events);
         let effective_servers = resolved_servers
@@ -545,8 +775,23 @@ impl StudioThreadFactory {
             },
             None => McpResetScope::All,
         };
-        owner.runtime.reset(reset_scope, effective_servers).await?;
+        let reset = tokio::select! {
+            biased;
+            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
+            result = owner.runtime.reset(reset_scope, effective_servers) => result,
+        };
+        if reset.is_err() && configuration_changed {
+            // reset preserves the old worker generation on failure. It must not be projected
+            // as readiness of a changed endpoint/configuration with the same server id.
+            // Keep projection paused; the next config preparation must prove the new set.
+            owner.publish_reconnect_failure(&self.services.product_events);
+            return reset
+                .map(|()| owner.read_snapshot())
+                .map_err(anyhow::Error::from);
+        }
+        owner.resume_projection();
         owner.refresh_snapshot(&self.services.product_events).await;
+        reset?;
         Ok(owner.read_snapshot())
     }
 
@@ -565,7 +810,6 @@ impl StudioThreadFactory {
             .filter(|owner| include_all || scopes.contains(&owner.scope))
             .collect::<Vec<_>>();
         for owner in owners {
-            let _guard = owner.command_lock.lock().await;
             if owner.lifetime.cancellation.is_cancelled() {
                 continue;
             }
@@ -585,19 +829,24 @@ impl StudioThreadFactory {
                     continue;
                 }
             };
-            owner.set_servers(resolved_servers.clone());
-            let effective_servers = resolved_servers
-                .into_iter()
-                .map(|(id, entry)| (id, entry.server))
-                .collect();
-            if let Err(error) = owner.runtime.reconcile(effective_servers).await {
+            if owner.matches_servers(&resolved_servers) {
+                continue;
+            }
+            if owner
+                .prepare_required(
+                    resolved_servers,
+                    owner.remote_commands(),
+                    &self.services.product_events,
+                    &owner.lifetime.cancellation,
+                )
+                .await
+                .is_err()
+            {
                 tracing::warn!(
                     thread_id = %owner.thread_id,
-                    error = %error,
                     "failed to reconcile Thread MCP runtime after catalog change"
                 );
             }
-            owner.refresh_snapshot(&self.services.product_events).await;
         }
     }
 
@@ -687,6 +936,7 @@ pub(crate) mod tests {
     fn sample_resolved_server(id: &str, url: &str) -> ResolvedThreadMcpServer {
         let config = McpServerConfig {
             enabled: true,
+            required: false,
             transport: McpServerTransport::StreamableHttp,
             command: None,
             args: Vec::new(),

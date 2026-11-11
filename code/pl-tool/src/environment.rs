@@ -64,7 +64,7 @@ impl ShellDialect {
     }
 }
 
-/// Verified runtime execution facts shared by command execution and prompts.
+/// Resolved runtime execution facts shared by command execution and prompts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionEnvironment {
     pub transport: ExecutionTransport,
@@ -165,52 +165,86 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(windows)]
 fn resolve_windows_shell() -> (ShellDialect, PathBuf) {
     select_windows_shell(
-        find_powershell_executable("pwsh.exe", &[r"C:\Program Files\PowerShell\7\pwsh.exe"]),
-        find_powershell_executable(
-            "powershell.exe",
-            &[r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"],
-        ),
+        || find_powershell_executable("pwsh.exe", &[r"C:\Program Files\PowerShell\7\pwsh.exe"]),
+        || {
+            find_powershell_executable(
+                "powershell.exe",
+                &[r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"],
+            )
+        },
     )
 }
 
 #[cfg(not(windows))]
 fn resolve_windows_shell() -> (ShellDialect, PathBuf) {
-    select_windows_shell(None, None)
+    select_windows_shell(|| None, || None)
 }
 
 fn select_windows_shell(
-    pwsh: Option<PathBuf>,
-    powershell: Option<PathBuf>,
+    pwsh: impl FnOnce() -> Option<PathBuf>,
+    powershell: impl FnOnce() -> Option<PathBuf>,
 ) -> (ShellDialect, PathBuf) {
-    if let Some(path) = pwsh {
+    if let Some(path) = pwsh() {
         return (ShellDialect::Pwsh, path);
     }
-    if let Some(path) = powershell {
+    if let Some(path) = powershell() {
         return (ShellDialect::PowerShell, path);
     }
     (ShellDialect::Cmd, PathBuf::from("cmd.exe"))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn find_powershell_executable(name: &str, fallbacks: &[&str]) -> Option<PathBuf> {
-    let candidates = which::which(name)
+    // Resolve the candidate only. A trial process cannot guarantee that a later
+    // command will run, and used to block every new local tool binding.
+    which::which(name)
         .ok()
         .into_iter()
-        .chain(fallbacks.iter().map(PathBuf::from));
-    for path in candidates {
-        if !path.is_file() {
-            continue;
-        }
-        let mut command = std::process::Command::new(&path);
-        command.args(["-NoLogo", "-NoProfile", "-Command", "Write-Output ok"]);
-        pl_remote_helper::process::configure_background_std_command(&mut command);
-        if command
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-        {
-            return Some(path);
-        }
+        .chain(fallbacks.iter().map(PathBuf::from))
+        .find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_shell_selection_stops_at_the_first_available_candidate() {
+        let pwsh = PathBuf::from("preferred/pwsh.exe");
+        assert_eq!(
+            select_windows_shell(
+                || Some(pwsh.clone()),
+                || panic!("must not resolve Windows PowerShell after finding pwsh"),
+            ),
+            (ShellDialect::Pwsh, pwsh),
+        );
+        let powershell = PathBuf::from("fallback/powershell.exe");
+        assert_eq!(
+            select_windows_shell(|| None, || Some(powershell.clone())),
+            (ShellDialect::PowerShell, powershell),
+        );
+        assert_eq!(
+            select_windows_shell(|| None, || None),
+            (ShellDialect::Cmd, PathBuf::from("cmd.exe")),
+        );
     }
-    None
+
+    #[test]
+    fn powershell_resolution_does_not_execute_the_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let candidate = temp.path().join("powershell.exe");
+        // Deliberately not an executable image: selection must not try to run it.
+        std::fs::write(&candidate, b"not a process probe").unwrap();
+        let missing = temp.path().join("missing.exe");
+        let directory = temp.path().to_str().unwrap();
+        let fallbacks = [
+            missing.to_str().unwrap(),
+            directory,
+            candidate.to_str().unwrap(),
+        ];
+        assert_eq!(
+            find_powershell_executable("anywork-test-missing-powershell.exe", &fallbacks),
+            Some(candidate),
+        );
+    }
 }

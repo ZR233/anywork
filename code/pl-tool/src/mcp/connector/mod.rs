@@ -11,7 +11,6 @@ use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::*;
 use rmcp::service::{ClientInitializeError, NotificationContext, Peer, RunningService};
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, RoleClient};
@@ -30,6 +29,7 @@ use pl_remote_helper::client::ManagedWorker;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod host_http;
 pub(crate) mod remote_http;
 mod remote_stdio;
 mod stderr_capture;
@@ -1035,7 +1035,8 @@ async fn connect_http(
             })?;
         transport_config = transport_config.auth_header(token);
     }
-    let transport = StreamableHttpClientTransport::from_config(transport_config.clone());
+    let transport = host_http::transport(transport_config.clone())
+        .map_err(|error| connection_error(&request.server_id, error))?;
     let service = match client_handler(
         &request.server_id,
         ProtocolVersion::V_2026_07_28,
@@ -1049,7 +1050,8 @@ async fn connect_http(
             // rmcp 会先耗尽 startup SSE，只转发成功 response；传统服务返回的
             // METHOD_NOT_FOUND error 因而表现为关闭 discover response。失败的 worker
             // 不可复用，必须用一个全新的 transport 走标准 initialize。
-            let transport = StreamableHttpClientTransport::from_config(transport_config);
+            let transport = host_http::transport(transport_config)
+                .map_err(|error| connection_error(&request.server_id, error))?;
             client_handler(
                 &request.server_id,
                 ProtocolVersion::V_2025_11_25,

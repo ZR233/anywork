@@ -1558,16 +1558,20 @@ fn build_scoped_entry_and_server(
         }
         McpFileSpecV1::Builtin {
             enabled,
+            required,
             builtin_id,
             cwd,
         } => {
-            let effective =
-                build_builtin_effective_config(builtin_id, *enabled, cwd.clone(), models)
-                    .ok_or_else(|| {
-                        PureError::ConfigError(format!(
-                            "unknown built-in MCP server '{builtin_id}'"
-                        ))
-                    })?;
+            let effective = build_builtin_effective_config(
+                builtin_id,
+                *enabled,
+                *required,
+                cwd.clone(),
+                models,
+            )
+            .ok_or_else(|| {
+                PureError::ConfigError(format!("unknown built-in MCP server '{builtin_id}'"))
+            })?;
             let effective_source = match (scope, inherited_from_host) {
                 (McpScope::Host, _) => McpEffectiveSource::HostBuiltin,
                 (McpScope::Ssh { .. }, true) => McpEffectiveSource::InheritedHostBuiltin,
@@ -1659,7 +1663,12 @@ pub fn resolve_scoped_servers_for_thread(
 ) -> Result<BTreeMap<String, ResolvedThreadMcpServer>> {
     let mut resolved = BTreeMap::new();
     for (id, mut entry) in scoped {
-        if entry.config_status != McpConfigStatusKind::Enabled {
+        if !entry.server.config.enabled
+            || !matches!(
+                entry.config_status,
+                McpConfigStatusKind::Enabled | McpConfigStatusKind::MissingPrereq
+            )
+        {
             continue;
         }
         match &entry.execution_location {
@@ -1841,6 +1850,7 @@ mod tests {
 id = "shared_git"
 kind = "server"
 enabled = true
+required = true
 transport = "stdio"
 command = "uvx"
 args = ["mcp-server-git"]
@@ -1895,6 +1905,10 @@ url = "https://host.example.com/mcp"
         assert!(inherited_git.inherited_from_host);
         assert!(inherited_git.can_override_in_ssh);
         assert!(inherited_git.can_disable_in_ssh);
+        let inherited_servers = resource
+            .effective_servers_for_scope(&paths, &config.models, &ssh_scope)
+            .unwrap();
+        assert!(inherited_servers["shared_git"].server.config.required);
 
         // Inherited stdio cwd resolves against host_base_cwd, NOT remote workspace_root.
         let resolved_inherited_cwd = resolve_stdio_cwd(
@@ -1948,6 +1962,10 @@ cwd = "sub/remote"
         );
         assert!(overridden_git.overridden_in_scope);
         assert!(overridden_git.can_restore_inheritance);
+        let overridden_servers = resource
+            .effective_servers_for_scope(&paths, &config.models, &ssh_scope)
+            .unwrap();
+        assert!(!overridden_servers["shared_git"].server.config.required);
 
         let resolved_remote_cwd = resolve_stdio_cwd(
             Some("sub/remote"),
