@@ -80,6 +80,7 @@ const specializedToolContracts = {
   'builtin.show_files@1',
   'builtin.lsp_query@1',
   'builtin.lsp_capabilities@1',
+  'builtin.lsp_status@1',
   'builtin.plan_current@1',
   'builtin.plan_next@1',
   'builtin.plan_history@1',
@@ -94,4 +95,12 @@ const specializedToolContracts = {
   'builtin.web_search@1',
   'builtin.deepseek_web_search@1',
   'builtin.deepseek_web_fetch@1',
+};
+
+/// 是否为内置 LSP 系列工具展示契约（仅按显式契约判定，不按工具名猜测）。
+bool timelineIsLspContract(String contract) => switch (contract) {
+  'builtin.lsp_query@1' ||
+  'builtin.lsp_capabilities@1' ||
+  'builtin.lsp_status@1' => true,
+  _ => false,
 };

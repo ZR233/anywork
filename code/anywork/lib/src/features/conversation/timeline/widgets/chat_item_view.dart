@@ -12,9 +12,11 @@ import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/tool_presentation.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_lsp_tool_view.dart';
 import 'timeline_patch_diff_view.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_reasoning_view.dart';
@@ -385,13 +387,15 @@ class _ChatItemViewState extends State<ChatItemView> {
       }
       final declaredContents = item.atom?.contents;
       final applyPatch = tool.presentationContract == 'builtin.apply_patch@1';
+      final lspTool = timelineIsLspContract(tool.presentationContract);
       // apply_patch 成功不重复呈现原始输出；行标题继续使用权威 changedFiles。
       final suppressSuccessOutput =
           applyPatch && tool.statusString == 'succeeded';
+      // LSP 工具的请求参数已内联于 DecodedToolCard 并融合进语义上下文头，不重复读取原始参数窗口。
       final contents = declaredContents
           ?.where(
             (content) =>
-                content.role == ChatContentRole.toolArguments ||
+                (content.role == ChatContentRole.toolArguments && !lspTool) ||
                 (content.role == ChatContentRole.toolOutput &&
                     !suppressSuccessOutput),
           )
@@ -402,6 +406,7 @@ class _ChatItemViewState extends State<ChatItemView> {
         inline: wait != null,
         initiallyExpanded: widget.initiallyExpanded,
         onExpansionChanged: widget.onExpansionChanged,
+        markdownBuilder: widget.bodyBuilder,
         additionalContentBuilder: item.attachments.isEmpty
             ? null
             : (_) => _media(),
@@ -414,6 +419,12 @@ class _ChatItemViewState extends State<ChatItemView> {
                         applyPatch &&
                             content.role == ChatContentRole.toolArguments
                         ? timelineApplyPatchWindowBody
+                        : lspTool && content.role == ChatContentRole.toolOutput
+                        ? (text) => timelineLspWindowBody(
+                            tool,
+                            text,
+                            markdownBuilder: widget.bodyBuilder,
+                          )
                         : null,
                     child:
                         widget.contentRangeBuilder?.call(
