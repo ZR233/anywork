@@ -46,7 +46,7 @@ void main() {
       p.join(projectsRoot, 'sidebar-project-with-a-very-long-visible-name'),
     );
     await _prepareSyntheticGitProject(project);
-    projectPath = project.absolute.path;
+    projectPath = await project.resolveSymbolicLinks();
     harness = await ProductionStudioHarness.start(
       binding: binding,
       artifactsEnvironmentVariable: 'ANYWORK_SIDEBAR_ARTIFACTS',
@@ -705,12 +705,15 @@ void main() {
       await scene.capture('sidebar-narrow-drawer');
 
       final archiveDirectory = Directory(
-        '${Directory(projectPath).parent.path}/sidebar-project-close-target',
+        p.join(
+          Directory(projectPath).parent.path,
+          'sidebar-project-close-target',
+        ),
       );
       await _prepareSyntheticGitProject(archiveDirectory);
       final archiveProject = await harness.openProject(
         scene,
-        archiveDirectory.absolute.path,
+        await archiveDirectory.resolveSymbolicLinks(),
       );
       final archiveProjectRow = find.byKey(
         StudioDriverKeys.projectRow(archiveProject.id),
@@ -1118,7 +1121,7 @@ Future<void> _prepareSyntheticGitProject(Directory project) async {
     throw StateError('Synthetic project path must be new: ${project.path}');
   }
   await project.create(recursive: true);
-  await File('${project.path}/README.md')
+  await File(p.join(project.path, 'README.md'))
       .writeAsString('# Sidebar integration fixture\n', flush: true);
   await _runGit(project, [
     '-c',

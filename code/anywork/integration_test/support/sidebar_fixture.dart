@@ -88,12 +88,20 @@ final class SidebarFixture {
       );
 
       await graph.client.directoryCommands.openProject(projectPath);
-      final projects =
-          graph.client.project.state.projects?.values ??
-          const <StudioProject>[];
-      final project = projects.singleWhere(
-        (candidate) => candidate.path == projectPath,
+      final projectId = graph.client.selection.state.selectedProjectId;
+      final projectState = await graph.client.project.source.waitFor(
+        (state) =>
+            state.projects?.values.any((value) => value.id == projectId) ==
+            true,
       );
+      final project = projectState.projects!.values.singleWhere(
+        (candidate) => candidate.id == projectId,
+      );
+      if (!await FileSystemEntity.identical(project.path, projectPath)) {
+        throw StateError(
+          'Opened project does not identify the fixture directory',
+        );
+      }
       final thread = await _submitRoot(
         graph,
         project,
