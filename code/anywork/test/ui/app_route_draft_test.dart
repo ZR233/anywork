@@ -561,6 +561,7 @@ void main() {
           expect(graph.timeline.lease('thread-alt'), isNull);
           expect(composer.stamp, composerStamp);
           expect(router.routerDelegate.state.name, BotDetailsRoute.name);
+          final feedCount = transport.timelineFeeds.length;
           unawaited(
             BotConversationRoute(
               botId: botId,
@@ -572,16 +573,23 @@ void main() {
           await pumpClientUntil(
             tester,
             () => find
-                .byKey(StudioDriverKeys.timelineRetryConnection)
+                .byKey(const ValueKey('conversation-directory-retry'))
                 .evaluate()
                 .isNotEmpty,
             'unavailable route does not display the previous selection',
           );
-          expect(
-            graph.client.conversations.visibleThreadId.value,
-            'missing-thread',
-          );
+          expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
+          expect(transport.timelineFeeds, hasLength(feedCount));
+          await tester.tap(
+            find.byKey(const ValueKey('conversation-directory-retry')),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(const ValueKey('conversation-directory-retry')),
+            findsOneWidget,
+          );
+          expect(transport.timelineFeeds, hasLength(feedCount));
           expect(
             graph.client.drafts.existingComposer('missing-thread'),
             isNull,

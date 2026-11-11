@@ -33,6 +33,7 @@ class ComposerContentView extends StatefulWidget {
     required this.actions,
     this.compact = false,
     this.onAddProject,
+    this.startBackendSelector,
     super.key,
   });
 
@@ -41,6 +42,7 @@ class ComposerContentView extends StatefulWidget {
   final ComposerViewModel actions;
   final bool compact;
   final VoidCallback? onAddProject;
+  final Widget? startBackendSelector;
 
   @override
   State<ComposerContentView> createState() => _ComposerContentViewState();
@@ -151,6 +153,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
               state: state,
               actions: actions,
               onAddProject: widget.onAddProject,
+              backendSelector: widget.startBackendSelector,
             ),
             composer: input,
           ),

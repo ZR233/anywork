@@ -38,6 +38,7 @@ final class AccountSummary {
     this.billingKindOverride,
     this.credentialReady,
     this.usageQueryRevision,
+    this.acpEnabled,
     this.acpConnectionRevision,
     required this.capabilities,
   });
@@ -54,9 +55,25 @@ final class AccountSummary {
   final bool? credentialReady;
   final int? usageQueryRevision;
 
+  /// Whether ACP is enabled in configuration, not connected or authenticated.
+  ///
+  /// Native accounts have `null` instead of an ACP configuration fact.
+  final bool? acpEnabled;
+
   /// Native is null; ACP carries its canonical owner's connection revision.
   final int? acpConnectionRevision;
   final AccountCapabilities capabilities;
+}
+
+/// Safe diagnostic from the same published definitions snapshot as the summaries.
+final class AcpDefinitionDiagnosticView {
+  const AcpDefinitionDiagnosticView({
+    required this.fileName,
+    required this.message,
+  });
+
+  final String fileName;
+  final String message;
 }
 
 /// A target-local value. A loaded null means deleted, not an empty account.
@@ -122,13 +139,16 @@ final class AccountsState {
   AccountsState({
     this.stamp,
     Iterable<AccountSummary> accounts = const [],
+    Iterable<AcpDefinitionDiagnosticView> acpDiagnostics = const [],
     this.templates = const AccountCatalogView.empty(),
     this.loading = false,
     this.failure,
     this.stale = false,
-  }) : accounts = List.unmodifiable(accounts);
+  }) : accounts = List.unmodifiable(accounts),
+       acpDiagnostics = List.unmodifiable(acpDiagnostics);
   final ResourceStamp? stamp;
   final List<AccountSummary> accounts;
+  final List<AcpDefinitionDiagnosticView> acpDiagnostics;
   final AccountCatalogView templates;
   final bool loading;
   final StudioFailure? failure;

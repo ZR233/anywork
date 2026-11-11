@@ -583,6 +583,7 @@ class DemoStudioTransport extends StudioTransport
                 brandKey: account.template?.wire ?? '',
                 displayEndpoint: null,
                 isDefault: false,
+                acpEnabled: account.enabled,
                 acpConnectionRevision: account.connectionRevision,
                 capabilities: const AccountCapabilities(
                   setDefault: false,

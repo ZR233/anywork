@@ -5,12 +5,14 @@ import 'package:material_ui/material_ui.dart';
 class StudioMenuLabel extends StatelessWidget {
   const StudioMenuLabel({
     required this.label,
+    this.leading,
     this.enabled = true,
     this.maxWidth = 180,
     super.key,
   });
 
   final String label;
+  final Widget? leading;
   final bool enabled;
   final double maxWidth;
 
@@ -25,6 +27,14 @@ class StudioMenuLabel extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (leading case final leadingWidget?)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(end: 6),
+                child: IconTheme.merge(
+                  data: IconThemeData(size: 15, color: color),
+                  child: leadingWidget,
+                ),
+              ),
             Flexible(
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: maxWidth),

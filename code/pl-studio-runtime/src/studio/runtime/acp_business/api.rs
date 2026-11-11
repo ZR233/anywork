@@ -438,6 +438,40 @@ impl StudioRuntime {
             .map(|snapshot| projection::snapshot(target, snapshot))
             .map_err(projection::failure)
     }
+    pub(in crate::studio::runtime) async fn acp_prompt_capabilities_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<sdk::schema::PromptCapabilities> {
+        let (session, agent) = self
+            .agent_facility
+            .product_events
+            .directory_facts(thread_id)
+            .context("ACP product member is missing")?;
+        ensure!(
+            !session.archived
+                && !agent.explicitly_closed
+                && agent.is_root_agent()
+                && session.root_agent_id == agent.agent_id
+                && matches!(&agent.backend, AgentBackend::Acp { .. }),
+            "ACP product membership is not executable"
+        );
+        let id = pl_protocol::SessionId::new(session.session_id.clone())?;
+        let owner = self
+            .sessions
+            .get(&id)
+            .context("ACP session is not resident")?;
+        let acp = owner
+            .resident_acp(thread_id)?
+            .context("ACP member is not resident")?;
+        let target = target(&session, &agent, &acp);
+        let resources = self.business_resources(&target)?;
+        let snapshot = resources.session()?.snapshot().await?;
+        ensure!(
+            snapshot.ready && !snapshot.closing,
+            "ACP session is not ready for prompt"
+        );
+        Ok(snapshot.capabilities.prompt_capabilities)
+    }
     pub async fn close_acp_session(&self, target: AcpSessionTarget) -> Result<AcpBusinessClose> {
         let id = pl_protocol::SessionId::new(target.session_id)?;
         let owner = self

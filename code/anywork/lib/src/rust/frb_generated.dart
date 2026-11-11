@@ -10784,6 +10784,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAcpAgentCapabilities
+  dco_decode_box_autoadd_bridge_acp_agent_capabilities(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_acp_agent_capabilities(raw);
+  }
+
+  @protected
   BridgeAcpAnnotations dco_decode_box_autoadd_bridge_acp_annotations(
     dynamic raw,
   ) {
@@ -12854,6 +12861,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return BridgeAccountDomainFrame_Summaries(
           stamp: dco_decode_box_autoadd_bridge_resource_stamp(raw[1]),
           accounts: dco_decode_list_bridge_account_summary(raw[2]),
+          acpDiagnostics: dco_decode_list_bridge_acp_definition_diagnostic(
+            raw[3],
+          ),
         );
       case 1:
         return BridgeAccountDomainFrame_Detail(
@@ -13076,8 +13086,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAccountSummary dco_decode_bridge_account_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return BridgeAccountSummary(
       identity: dco_decode_bridge_account_identity(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -13093,8 +13103,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ),
       credentialReady: dco_decode_opt_box_autoadd_bool(arr[8]),
       usageQueryRevision: dco_decode_opt_box_autoadd_u_64(arr[9]),
-      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[10]),
-      capabilities: dco_decode_bridge_account_capabilities(arr[11]),
+      acpEnabled: dco_decode_opt_box_autoadd_bool(arr[10]),
+      acpConnectionRevision: dco_decode_opt_box_autoadd_u_64(arr[11]),
+      capabilities: dco_decode_bridge_account_capabilities(arr[12]),
     );
   }
 
@@ -13384,6 +13395,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       args: dco_decode_opt_list_String(arr[4]),
       env: dco_decode_Map_String_String_None(arr[5]),
       enabled: dco_decode_bool(arr[6]),
+    );
+  }
+
+  @protected
+  BridgeAcpAgentCapabilities dco_decode_bridge_acp_agent_capabilities(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return BridgeAcpAgentCapabilities(
+      image: dco_decode_bool(arr[0]),
+      audio: dco_decode_bool(arr[1]),
+      embeddedContext: dco_decode_bool(arr[2]),
+      loadSession: dco_decode_bool(arr[3]),
+      listSessions: dco_decode_bool(arr[4]),
+      resumeSession: dco_decode_bool(arr[5]),
+      closeSession: dco_decode_bool(arr[6]),
+      mcpHttp: dco_decode_bool(arr[7]),
+      mcpSse: dco_decode_bool(arr[8]),
+      meta: dco_decode_opt_Map_String_bridge_acp_json_value_None(arr[9]),
     );
   }
 
@@ -13927,6 +13960,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       amount: dco_decode_f_64(arr[0]),
       currency: dco_decode_String(arr[1]),
       meta: dco_decode_opt_Map_String_bridge_acp_json_value_None(arr[2]),
+    );
+  }
+
+  @protected
+  BridgeAcpDefinitionDiagnostic dco_decode_bridge_acp_definition_diagnostic(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BridgeAcpDefinitionDiagnostic(
+      fileName: dco_decode_String(arr[0]),
+      message: dco_decode_String(arr[1]),
     );
   }
 
@@ -14743,40 +14790,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
       case 0:
+        return BridgeAcpSessionEvent_Initialized(
+          capabilities: dco_decode_box_autoadd_bridge_acp_agent_capabilities(
+            raw[1],
+          ),
+        );
+      case 1:
         return BridgeAcpSessionEvent_Update(
           update: dco_decode_box_autoadd_bridge_acp_session_notification(
             raw[1],
           ),
         );
-      case 1:
+      case 2:
         return BridgeAcpSessionEvent_Ready(
           response: dco_decode_box_autoadd_bridge_acp_new_session_response(
             raw[1],
           ),
         );
-      case 2:
+      case 3:
         return BridgeAcpSessionEvent_Failed(
           failure: dco_decode_box_autoadd_bridge_acp_business_failure(raw[1]),
         );
-      case 3:
+      case 4:
         return BridgeAcpSessionEvent_Permission(
           id: dco_decode_box_autoadd_bridge_acp_permission_id(raw[1]),
           request: dco_decode_box_autoadd_bridge_acp_permission_request(raw[2]),
         );
-      case 4:
+      case 5:
         return BridgeAcpSessionEvent_Configured(
           configOptions: dco_decode_list_bridge_acp_config_option(raw[1]),
           meta: dco_decode_opt_Map_String_bridge_acp_json_value_None(raw[2]),
         );
-      case 5:
+      case 6:
         return BridgeAcpSessionEvent_ModeSet(
           modeId: dco_decode_box_autoadd_bridge_acp_mode_id(raw[1]),
         );
-      case 6:
+      case 7:
         return BridgeAcpSessionEvent_Completed(
           completed: dco_decode_box_autoadd_bridge_acp_completed_run(raw[1]),
         );
-      case 7:
+      case 8:
         return BridgeAcpSessionEvent_Gap(
           gap: dco_decode_bridge_acp_observation_gap(raw[1]),
         );
@@ -22394,6 +22447,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<BridgeAcpDefinitionDiagnostic>
+  dco_decode_list_bridge_acp_definition_diagnostic(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_bridge_acp_definition_diagnostic)
+        .toList();
+  }
+
+  @protected
   List<BridgeAcpInstallEntry> dco_decode_list_bridge_acp_install_entry(
     dynamic raw,
   ) {
@@ -25596,6 +25658,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAcpAgentCapabilities
+  sse_decode_box_autoadd_bridge_acp_agent_capabilities(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_acp_agent_capabilities(deserializer));
+  }
+
+  @protected
   BridgeAcpAnnotations sse_decode_box_autoadd_bridge_acp_annotations(
     SseDeserializer deserializer,
   ) {
@@ -27986,9 +28057,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           deserializer,
         );
         var var_accounts = sse_decode_list_bridge_account_summary(deserializer);
+        var var_acpDiagnostics =
+            sse_decode_list_bridge_acp_definition_diagnostic(deserializer);
         return BridgeAccountDomainFrame_Summaries(
           stamp: var_stamp,
           accounts: var_accounts,
+          acpDiagnostics: var_acpDiagnostics,
         );
       case 1:
         var var_stamp = sse_decode_box_autoadd_bridge_resource_stamp(
@@ -28319,6 +28393,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_decode_opt_box_autoadd_bridge_billing_kind(deserializer);
     var var_credentialReady = sse_decode_opt_box_autoadd_bool(deserializer);
     var var_usageQueryRevision = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_acpEnabled = sse_decode_opt_box_autoadd_bool(deserializer);
     var var_acpConnectionRevision = sse_decode_opt_box_autoadd_u_64(
       deserializer,
     );
@@ -28334,6 +28409,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       billingKindOverride: var_billingKindOverride,
       credentialReady: var_credentialReady,
       usageQueryRevision: var_usageQueryRevision,
+      acpEnabled: var_acpEnabled,
       acpConnectionRevision: var_acpConnectionRevision,
       capabilities: var_capabilities,
     );
@@ -28723,6 +28799,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       args: var_args,
       env: var_env,
       enabled: var_enabled,
+    );
+  }
+
+  @protected
+  BridgeAcpAgentCapabilities sse_decode_bridge_acp_agent_capabilities(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_image = sse_decode_bool(deserializer);
+    var var_audio = sse_decode_bool(deserializer);
+    var var_embeddedContext = sse_decode_bool(deserializer);
+    var var_loadSession = sse_decode_bool(deserializer);
+    var var_listSessions = sse_decode_bool(deserializer);
+    var var_resumeSession = sse_decode_bool(deserializer);
+    var var_closeSession = sse_decode_bool(deserializer);
+    var var_mcpHttp = sse_decode_bool(deserializer);
+    var var_mcpSse = sse_decode_bool(deserializer);
+    var var_meta = sse_decode_opt_Map_String_bridge_acp_json_value_None(
+      deserializer,
+    );
+    return BridgeAcpAgentCapabilities(
+      image: var_image,
+      audio: var_audio,
+      embeddedContext: var_embeddedContext,
+      loadSession: var_loadSession,
+      listSessions: var_listSessions,
+      resumeSession: var_resumeSession,
+      closeSession: var_closeSession,
+      mcpHttp: var_mcpHttp,
+      mcpSse: var_mcpSse,
+      meta: var_meta,
     );
   }
 
@@ -29434,6 +29541,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       amount: var_amount,
       currency: var_currency,
       meta: var_meta,
+    );
+  }
+
+  @protected
+  BridgeAcpDefinitionDiagnostic sse_decode_bridge_acp_definition_diagnostic(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileName = sse_decode_String(deserializer);
+    var var_message = sse_decode_String(deserializer);
+    return BridgeAcpDefinitionDiagnostic(
+      fileName: var_fileName,
+      message: var_message,
     );
   }
 
@@ -30428,22 +30548,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var tag_ = sse_decode_i_32(deserializer);
     switch (tag_) {
       case 0:
+        var var_capabilities =
+            sse_decode_box_autoadd_bridge_acp_agent_capabilities(deserializer);
+        return BridgeAcpSessionEvent_Initialized(
+          capabilities: var_capabilities,
+        );
+      case 1:
         var var_update = sse_decode_box_autoadd_bridge_acp_session_notification(
           deserializer,
         );
         return BridgeAcpSessionEvent_Update(update: var_update);
-      case 1:
+      case 2:
         var var_response =
             sse_decode_box_autoadd_bridge_acp_new_session_response(
               deserializer,
             );
         return BridgeAcpSessionEvent_Ready(response: var_response);
-      case 2:
+      case 3:
         var var_failure = sse_decode_box_autoadd_bridge_acp_business_failure(
           deserializer,
         );
         return BridgeAcpSessionEvent_Failed(failure: var_failure);
-      case 3:
+      case 4:
         var var_id = sse_decode_box_autoadd_bridge_acp_permission_id(
           deserializer,
         );
@@ -30454,7 +30580,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           id: var_id,
           request: var_request,
         );
-      case 4:
+      case 5:
         var var_configOptions = sse_decode_list_bridge_acp_config_option(
           deserializer,
         );
@@ -30465,17 +30591,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           configOptions: var_configOptions,
           meta: var_meta,
         );
-      case 5:
+      case 6:
         var var_modeId = sse_decode_box_autoadd_bridge_acp_mode_id(
           deserializer,
         );
         return BridgeAcpSessionEvent_ModeSet(modeId: var_modeId);
-      case 6:
+      case 7:
         var var_completed = sse_decode_box_autoadd_bridge_acp_completed_run(
           deserializer,
         );
         return BridgeAcpSessionEvent_Completed(completed: var_completed);
-      case 7:
+      case 8:
         var var_gap = sse_decode_bridge_acp_observation_gap(deserializer);
         return BridgeAcpSessionEvent_Gap(gap: var_gap);
       default:
@@ -40272,6 +40398,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<BridgeAcpDefinitionDiagnostic>
+  sse_decode_list_bridge_acp_definition_diagnostic(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <BridgeAcpDefinitionDiagnostic>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_bridge_acp_definition_diagnostic(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<BridgeAcpInstallEntry> sse_decode_list_bridge_acp_install_entry(
     SseDeserializer deserializer,
   ) {
@@ -44714,6 +44855,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_acp_agent_capabilities(
+    BridgeAcpAgentCapabilities self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_acp_agent_capabilities(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_acp_annotations(
     BridgeAcpAnnotations self,
     SseSerializer serializer,
@@ -47253,10 +47403,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeAccountDomainFrame_Summaries(
         stamp: final stamp,
         accounts: final accounts,
+        acpDiagnostics: final acpDiagnostics,
       ):
         sse_encode_i_32(0, serializer);
         sse_encode_box_autoadd_bridge_resource_stamp(stamp, serializer);
         sse_encode_list_bridge_account_summary(accounts, serializer);
+        sse_encode_list_bridge_acp_definition_diagnostic(
+          acpDiagnostics,
+          serializer,
+        );
       case BridgeAccountDomainFrame_Detail(
         stamp: final stamp,
         identity: final identity,
@@ -47520,6 +47675,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_opt_box_autoadd_bool(self.credentialReady, serializer);
     sse_encode_opt_box_autoadd_u_64(self.usageQueryRevision, serializer);
+    sse_encode_opt_box_autoadd_bool(self.acpEnabled, serializer);
     sse_encode_opt_box_autoadd_u_64(self.acpConnectionRevision, serializer);
     sse_encode_bridge_account_capabilities(self.capabilities, serializer);
   }
@@ -47820,6 +47976,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_list_String(self.args, serializer);
     sse_encode_Map_String_String_None(self.env, serializer);
     sse_encode_bool(self.enabled, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_acp_agent_capabilities(
+    BridgeAcpAgentCapabilities self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.image, serializer);
+    sse_encode_bool(self.audio, serializer);
+    sse_encode_bool(self.embeddedContext, serializer);
+    sse_encode_bool(self.loadSession, serializer);
+    sse_encode_bool(self.listSessions, serializer);
+    sse_encode_bool(self.resumeSession, serializer);
+    sse_encode_bool(self.closeSession, serializer);
+    sse_encode_bool(self.mcpHttp, serializer);
+    sse_encode_bool(self.mcpSse, serializer);
+    sse_encode_opt_Map_String_bridge_acp_json_value_None(self.meta, serializer);
   }
 
   @protected
@@ -48395,6 +48569,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_f_64(self.amount, serializer);
     sse_encode_String(self.currency, serializer);
     sse_encode_opt_Map_String_bridge_acp_json_value_None(self.meta, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_acp_definition_diagnostic(
+    BridgeAcpDefinitionDiagnostic self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.fileName, serializer);
+    sse_encode_String(self.message, serializer);
   }
 
   @protected
@@ -49197,26 +49381,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     switch (self) {
-      case BridgeAcpSessionEvent_Update(update: final update):
+      case BridgeAcpSessionEvent_Initialized(capabilities: final capabilities):
         sse_encode_i_32(0, serializer);
+        sse_encode_box_autoadd_bridge_acp_agent_capabilities(
+          capabilities,
+          serializer,
+        );
+      case BridgeAcpSessionEvent_Update(update: final update):
+        sse_encode_i_32(1, serializer);
         sse_encode_box_autoadd_bridge_acp_session_notification(
           update,
           serializer,
         );
       case BridgeAcpSessionEvent_Ready(response: final response):
-        sse_encode_i_32(1, serializer);
+        sse_encode_i_32(2, serializer);
         sse_encode_box_autoadd_bridge_acp_new_session_response(
           response,
           serializer,
         );
       case BridgeAcpSessionEvent_Failed(failure: final failure):
-        sse_encode_i_32(2, serializer);
+        sse_encode_i_32(3, serializer);
         sse_encode_box_autoadd_bridge_acp_business_failure(failure, serializer);
       case BridgeAcpSessionEvent_Permission(
         id: final id,
         request: final request,
       ):
-        sse_encode_i_32(3, serializer);
+        sse_encode_i_32(4, serializer);
         sse_encode_box_autoadd_bridge_acp_permission_id(id, serializer);
         sse_encode_box_autoadd_bridge_acp_permission_request(
           request,
@@ -49226,17 +49416,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         configOptions: final configOptions,
         meta: final meta,
       ):
-        sse_encode_i_32(4, serializer);
+        sse_encode_i_32(5, serializer);
         sse_encode_list_bridge_acp_config_option(configOptions, serializer);
         sse_encode_opt_Map_String_bridge_acp_json_value_None(meta, serializer);
       case BridgeAcpSessionEvent_ModeSet(modeId: final modeId):
-        sse_encode_i_32(5, serializer);
+        sse_encode_i_32(6, serializer);
         sse_encode_box_autoadd_bridge_acp_mode_id(modeId, serializer);
       case BridgeAcpSessionEvent_Completed(completed: final completed):
-        sse_encode_i_32(6, serializer);
+        sse_encode_i_32(7, serializer);
         sse_encode_box_autoadd_bridge_acp_completed_run(completed, serializer);
       case BridgeAcpSessionEvent_Gap(gap: final gap):
-        sse_encode_i_32(7, serializer);
+        sse_encode_i_32(8, serializer);
         sse_encode_bridge_acp_observation_gap(gap, serializer);
     }
   }
@@ -56809,6 +56999,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_bridge_acp_content_block(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_bridge_acp_definition_diagnostic(
+    List<BridgeAcpDefinitionDiagnostic> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_bridge_acp_definition_diagnostic(item, serializer);
     }
   }
 

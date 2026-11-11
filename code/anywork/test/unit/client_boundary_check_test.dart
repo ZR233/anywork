@@ -6,6 +6,7 @@ const _client = 'code/anywork_client/lib/src/fixture.dart';
 const _feature = 'code/anywork/lib/src/features/chat/chat_view.dart';
 const _account = 'code/anywork/lib/src/presentation/providers/fixture.dart';
 const _accountsFeature = 'code/anywork/lib/src/features/settings/accounts/';
+const _acpFeature = 'code/anywork/lib/src/features/conversation/acp/';
 
 void main() {
   // These are parsed Dart programs, not examples of a rule's own regexp or
@@ -147,6 +148,50 @@ void main() {
       name: 'Account View cannot become part of a Connector library',
       path: '${_accountsFeature}views/fixture.dart',
       source: "part of '../connectors/fixture.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP View cannot import live ACP session owners',
+      path: '${_acpFeature}views/fixture.dart',
+      source: "import 'package:anywork_client/acp_sessions.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP Widget cannot import Riverpod or ViewModels',
+      path: '${_acpFeature}widgets/fixture.dart',
+      source: "import '../view_models/acp_session_view_model.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP pure barrel cannot export a Connector',
+      path: '${_acpFeature}acp_views.dart',
+      source: "export 'connectors/acp_workspace_connector.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP state cannot depend on Material UI widgets',
+      path: '${_acpFeature}state/fixture.dart',
+      source: "import 'package:material_ui/material_ui.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP state cannot carry a StreamSubscription',
+      path: '${_acpFeature}state/fixture.dart',
+      source:
+          'class AcpState { final StreamSubscription<int> sub; '
+          'AcpState(this.sub); }',
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP ViewModel cannot import Flutter widgets or views',
+      path: '${_acpFeature}view_models/fixture.dart',
+      source: "import '../views/acp_workspace_view.dart';",
+      rule: 'UI-02',
+    ),
+    (
+      name: 'ACP ViewModel cannot import flutter_riverpod widget bindings',
+      path: '${_acpFeature}view_models/fixture.dart',
+      source: "import 'package:flutter_riverpod/flutter_riverpod.dart';",
       rule: 'UI-02',
     ),
     (
@@ -346,6 +391,35 @@ import 'dart:async';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:anywork_client/accounts.dart';
 import '../../../../presentation/providers/account_domains.dart';
+import '../state/fixture.dart';
+part 'fixture.g.dart';
+''',
+        ),
+        (
+          path: '${_acpFeature}state/fixture.dart',
+          source: '''
+import 'package:anywork_client/models.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
+import '../../timeline/state/tool_presentation.dart';
+part 'fixture.freezed.dart';
+''',
+        ),
+        (
+          path: '${_acpFeature}views/fixture.dart',
+          source: '''
+import 'package:anywork_client/models.dart';
+import 'package:material_ui/material_ui.dart';
+import '../../../../app/theme/studio_tokens.dart';
+import '../../../../shared/studio_chrome.dart';
+import '../state/fixture.dart';
+''',
+        ),
+        (
+          path: '${_acpFeature}view_models/fixture.dart',
+          source: '''
+import 'package:anywork_client/acp_sessions.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+import '../../../../presentation/providers/client_provider.dart';
 import '../state/fixture.dart';
 part 'fixture.g.dart';
 ''',

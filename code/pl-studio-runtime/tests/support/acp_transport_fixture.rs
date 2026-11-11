@@ -1,16 +1,15 @@
 //! Shared Linux-only ACP transport fixture. The peer is the sole protocol implementation.
 //!
-//! Consumers bind `studio_runtime` in the parent test module: `use crate as studio_runtime`
-//! in runtime unit tests, or `use pl_studio_runtime as studio_runtime` in external tests.
-//! Include this file only with `#[cfg(test)] #[path = "..."] mod acp_transport_fixture;`.
+//! Runtime unit tests share the crate-root module; external test binaries may
+//! include this file with `#[cfg(test)] #[path = "..."] mod acp_transport_fixture;`.
 //! Keep the fixture alive through real close/shutdown; dropping an observer is not owner cleanup.
 #![cfg(test)]
 
-use super::studio_runtime::{
-    AcpSessionOpen, StudioHostKind, StudioRuntime, StudioRuntimeOptions, WorkspaceRecord,
-};
 use anyhow::{Context, Result};
 use pl_protocol::studio::*;
+use pl_studio_runtime::{
+    AcpSessionOpen, StudioHostKind, StudioRuntime, StudioRuntimeOptions, WorkspaceRecord,
+};
 use std::time::Duration;
 use tokio::time::timeout;
 

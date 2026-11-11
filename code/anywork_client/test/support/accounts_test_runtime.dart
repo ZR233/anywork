@@ -288,6 +288,7 @@ List<AccountDomainFrame> accountFrames(
           identity: AcpAccountIdentity(account.accountId),
           name: account.name,
           isDefault: false,
+          acpEnabled: account.enabled,
           brandKey: account.template?.wire ?? 'terminal',
           capabilities: const AccountCapabilities(
             setDefault: false,

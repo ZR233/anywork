@@ -91,7 +91,14 @@ void main() {
             name: 'Same name',
             isDefault: false,
             capabilities: capabilities,
+            acpEnabled: false,
             acpConnectionRevision: BigInt.from(connectionRevision),
+          ),
+        ],
+        acpDiagnostics: const [
+          frb_accounts.BridgeAcpDefinitionDiagnostic(
+            fileName: 'broken.toml',
+            message: 'Invalid ACP definition',
           ),
         ],
       );
@@ -105,6 +112,10 @@ void main() {
         (account) => account.identity == const AcpAccountIdentity('same'),
       );
       expect(native.acpConnectionRevision, isNull);
+      expect(native.acpEnabled, isNull);
+      expect(acp.acpEnabled, isFalse);
+      expect(frame.acpDiagnostics.single.fileName, 'broken.toml');
+      expect(frame.acpDiagnostics.single.message, 'Invalid ACP definition');
       expect(
         acp.acpConnectionRevision,
         connectionRevision,

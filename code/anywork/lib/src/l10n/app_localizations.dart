@@ -98,6 +98,180 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @conversationDirectoryUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Session information is unavailable. Please retry.'**
+  String get conversationDirectoryUnavailable;
+
+  /// No description provided for @acpHistoryButton.
+  ///
+  /// In en, this message translates to:
+  /// **'External sessions'**
+  String get acpHistoryButton;
+
+  /// No description provided for @acpHistoryOpenPanel.
+  ///
+  /// In en, this message translates to:
+  /// **'View external sessions'**
+  String get acpHistoryOpenPanel;
+
+  /// No description provided for @acpHistoryNoOwner.
+  ///
+  /// In en, this message translates to:
+  /// **'No active ACP session'**
+  String get acpHistoryNoOwner;
+
+  /// No description provided for @acpHistoryOwnerLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening ACP session'**
+  String get acpHistoryOwnerLoading;
+
+  /// No description provided for @acpHistoryUnknownCapability.
+  ///
+  /// In en, this message translates to:
+  /// **'The ACP service capability is not known yet'**
+  String get acpHistoryUnknownCapability;
+
+  /// No description provided for @acpHistoryUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This ACP service cannot list sessions'**
+  String get acpHistoryUnsupported;
+
+  /// No description provided for @acpHistoryNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP session is not ready'**
+  String get acpHistoryNotReady;
+
+  /// No description provided for @acpHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'External ACP sessions'**
+  String get acpHistoryTitle;
+
+  /// No description provided for @acpHistoryClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get acpHistoryClose;
+
+  /// No description provided for @acpHistoryRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get acpHistoryRefresh;
+
+  /// No description provided for @acpHistoryLoadMore.
+  ///
+  /// In en, this message translates to:
+  /// **'Load more'**
+  String get acpHistoryLoadMore;
+
+  /// No description provided for @acpHistoryLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading sessions…'**
+  String get acpHistoryLoading;
+
+  /// No description provided for @acpHistoryEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No external sessions'**
+  String get acpHistoryEmpty;
+
+  /// No description provided for @acpHistoryActions.
+  ///
+  /// In en, this message translates to:
+  /// **'Open options'**
+  String get acpHistoryActions;
+
+  /// No description provided for @acpHistoryLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Load history'**
+  String get acpHistoryLoad;
+
+  /// No description provided for @acpHistoryResume.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume'**
+  String get acpHistoryResume;
+
+  /// No description provided for @acpHistoryResumeNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume does not replay history'**
+  String get acpHistoryResumeNote;
+
+  /// No description provided for @acpHistoryLoadNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Load replays history when supported by the peer'**
+  String get acpHistoryLoadNote;
+
+  /// No description provided for @acpHistoryUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'This session cannot be opened with the available capabilities'**
+  String get acpHistoryUnavailable;
+
+  /// No description provided for @acpHistoryOpening.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening…'**
+  String get acpHistoryOpening;
+
+  /// No description provided for @acpHistoryOpened.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened'**
+  String get acpHistoryOpened;
+
+  /// No description provided for @acpHistoryUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The open result is unknown. Do not retry; check the conversation list.'**
+  String get acpHistoryUnknown;
+
+  /// No description provided for @acpHistoryListFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read sessions'**
+  String get acpHistoryListFailed;
+
+  /// No description provided for @acpHistoryCwd.
+  ///
+  /// In en, this message translates to:
+  /// **'cwd'**
+  String get acpHistoryCwd;
+
+  /// No description provided for @acpHistoryUpdated.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated'**
+  String get acpHistoryUpdated;
+
+  /// No description provided for @acpConversationNoServices.
+  ///
+  /// In en, this message translates to:
+  /// **'No ACP services added'**
+  String get acpConversationNoServices;
+
+  /// No description provided for @acpConversationServiceDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get acpConversationServiceDisabled;
+
+  /// No description provided for @acpConversationManageServices.
+  ///
+  /// In en, this message translates to:
+  /// **'Manage ACP services'**
+  String get acpConversationManageServices;
+
   /// No description provided for @accountsModelModalityCapabilities.
   ///
   /// In en, this message translates to:
@@ -11375,6 +11549,546 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'ACP'**
   String get accountsAcp;
+
+  /// No description provided for @acpBackendNativeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'anywork'**
+  String get acpBackendNativeLabel;
+
+  /// No description provided for @acpBackendNativeHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in model API runtime'**
+  String get acpBackendNativeHint;
+
+  /// No description provided for @acpBackendServicesHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP services'**
+  String get acpBackendServicesHeader;
+
+  /// No description provided for @acpBackendReadyBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled'**
+  String get acpBackendReadyBadge;
+
+  /// No description provided for @acpStartDraftHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Optional initial draft (carried into the new ACP session without auto-sending)…'**
+  String get acpStartDraftHint;
+
+  /// No description provided for @acpStartHandshakeNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.'**
+  String get acpStartHandshakeNote;
+
+  /// No description provided for @acpStartCreateAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Start ACP session'**
+  String get acpStartCreateAction;
+
+  /// No description provided for @acpStartCreatingAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting…'**
+  String get acpStartCreatingAction;
+
+  /// No description provided for @acpStartSshUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP sessions do not support SSH remote projects yet. Select a local project.'**
+  String get acpStartSshUnsupported;
+
+  /// No description provided for @acpStartExistingAttachmentsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.'**
+  String get acpStartExistingAttachmentsHint;
+
+  /// No description provided for @acpSessionConnectingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting to ACP service…'**
+  String get acpSessionConnectingTitle;
+
+  /// No description provided for @acpSessionConnectingSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Initializing protocol handshake and negotiating capabilities.'**
+  String get acpSessionConnectingSubtitle;
+
+  /// No description provided for @acpSessionReadyEmptyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP session is ready'**
+  String get acpSessionReadyEmptyTitle;
+
+  /// No description provided for @acpSessionReadyEmptySubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send a message below or adjust server options in the toolbar.'**
+  String get acpSessionReadyEmptySubtitle;
+
+  /// No description provided for @acpCapabilityImage.
+  ///
+  /// In en, this message translates to:
+  /// **'Image input'**
+  String get acpCapabilityImage;
+
+  /// No description provided for @acpCapabilityAudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio input'**
+  String get acpCapabilityAudio;
+
+  /// No description provided for @acpCapabilityEmbeddedContext.
+  ///
+  /// In en, this message translates to:
+  /// **'Embedded context'**
+  String get acpCapabilityEmbeddedContext;
+
+  /// No description provided for @acpCapabilityLoadSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Load history'**
+  String get acpCapabilityLoadSession;
+
+  /// No description provided for @acpCapabilityResumeSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume session'**
+  String get acpCapabilityResumeSession;
+
+  /// No description provided for @acpCapabilityListSessions.
+  ///
+  /// In en, this message translates to:
+  /// **'External sessions'**
+  String get acpCapabilityListSessions;
+
+  /// No description provided for @acpNoticeErrorTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP session error'**
+  String get acpNoticeErrorTitle;
+
+  /// No description provided for @acpNoticeDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'The ACP connection closed. Existing output remains readable.'**
+  String get acpNoticeDisconnected;
+
+  /// No description provided for @acpNoticeObservationEnded.
+  ///
+  /// In en, this message translates to:
+  /// **'Session observation has ended.'**
+  String get acpNoticeObservationEnded;
+
+  /// No description provided for @acpNoticeGapWindowExceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Streaming observation encountered a gap (buffer window exceeded); displayed content may be incomplete.'**
+  String get acpNoticeGapWindowExceeded;
+
+  /// No description provided for @acpNoticeGapDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Streaming observation encountered a gap (connection interrupted); displayed content may be incomplete.'**
+  String get acpNoticeGapDisconnected;
+
+  /// No description provided for @acpNoticeGapEncoding.
+  ///
+  /// In en, this message translates to:
+  /// **'Streaming observation encountered a gap (frame decoding issue); displayed content may be incomplete.'**
+  String get acpNoticeGapEncoding;
+
+  /// No description provided for @acpNoticeResumedWithoutHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Resumed an external session without replaying prior messages; earlier history may exist on the peer.'**
+  String get acpNoticeResumedWithoutHistory;
+
+  /// No description provided for @acpNoticeResidentWithoutObservation.
+  ///
+  /// In en, this message translates to:
+  /// **'Attached to a resident session without prior stream history; earlier content is not assumed complete.'**
+  String get acpNoticeResidentWithoutObservation;
+
+  /// No description provided for @acpNoticeIncompleteHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Loaded history is incomplete; displayed messages cannot be assumed complete.'**
+  String get acpNoticeIncompleteHistory;
+
+  /// No description provided for @acpNoticeLoadReplay.
+  ///
+  /// In en, this message translates to:
+  /// **'Replayed history from external session'**
+  String get acpNoticeLoadReplay;
+
+  /// No description provided for @acpStatusConnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting'**
+  String get acpStatusConnecting;
+
+  /// No description provided for @acpStatusReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Ready'**
+  String get acpStatusReady;
+
+  /// No description provided for @acpStatusRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get acpStatusRunning;
+
+  /// No description provided for @acpStatusStopping.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping'**
+  String get acpStatusStopping;
+
+  /// No description provided for @acpStatusDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnected'**
+  String get acpStatusDisconnected;
+
+  /// No description provided for @acpStatusObservationEnded.
+  ///
+  /// In en, this message translates to:
+  /// **'Ended'**
+  String get acpStatusObservationEnded;
+
+  /// No description provided for @acpStatusCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed · {reason}'**
+  String acpStatusCompleted(String reason);
+
+  /// No description provided for @acpStopReasonEndTurn.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn finished'**
+  String get acpStopReasonEndTurn;
+
+  /// No description provided for @acpStopReasonMaxTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'Max tokens reached'**
+  String get acpStopReasonMaxTokens;
+
+  /// No description provided for @acpStopReasonMaxTurnRequests.
+  ///
+  /// In en, this message translates to:
+  /// **'Request limit reached'**
+  String get acpStopReasonMaxTurnRequests;
+
+  /// No description provided for @acpStopReasonRefusal.
+  ///
+  /// In en, this message translates to:
+  /// **'Declined'**
+  String get acpStopReasonRefusal;
+
+  /// No description provided for @acpStopReasonCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted'**
+  String get acpStopReasonCancelled;
+
+  /// No description provided for @acpProvenanceReplay.
+  ///
+  /// In en, this message translates to:
+  /// **'Loaded history'**
+  String get acpProvenanceReplay;
+
+  /// No description provided for @acpProvenanceResumed.
+  ///
+  /// In en, this message translates to:
+  /// **'Resumed'**
+  String get acpProvenanceResumed;
+
+  /// No description provided for @acpUsageReadout.
+  ///
+  /// In en, this message translates to:
+  /// **'Context {used} / {size}'**
+  String acpUsageReadout(String used, String size);
+
+  /// No description provided for @acpPlanTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution plan'**
+  String get acpPlanTitle;
+
+  /// No description provided for @acpPlanProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'{completed} / {total} done'**
+  String acpPlanProgress(int completed, int total);
+
+  /// No description provided for @acpPlanPriorityHigh.
+  ///
+  /// In en, this message translates to:
+  /// **'High'**
+  String get acpPlanPriorityHigh;
+
+  /// No description provided for @acpPlanPriorityMedium.
+  ///
+  /// In en, this message translates to:
+  /// **'Medium'**
+  String get acpPlanPriorityMedium;
+
+  /// No description provided for @acpPlanPriorityLow.
+  ///
+  /// In en, this message translates to:
+  /// **'Low'**
+  String get acpPlanPriorityLow;
+
+  /// No description provided for @acpPlanStatusPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get acpPlanStatusPending;
+
+  /// No description provided for @acpPlanStatusInProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'In progress'**
+  String get acpPlanStatusInProgress;
+
+  /// No description provided for @acpPlanStatusCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get acpPlanStatusCompleted;
+
+  /// No description provided for @acpPermissionTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Permission requested'**
+  String get acpPermissionTitle;
+
+  /// No description provided for @acpPermissionQueueBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} pending'**
+  String acpPermissionQueueBadge(int count);
+
+  /// No description provided for @acpPermissionCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get acpPermissionCancel;
+
+  /// No description provided for @acpPermissionSubmitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitting decision…'**
+  String get acpPermissionSubmitting;
+
+  /// No description provided for @acpConfigModeFallbackLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode'**
+  String get acpConfigModeFallbackLabel;
+
+  /// No description provided for @acpConfigMoreLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'More settings'**
+  String get acpConfigMoreLabel;
+
+  /// No description provided for @acpConfigMoreCountLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'More ({count})'**
+  String acpConfigMoreCountLabel(int count);
+
+  /// No description provided for @acpConfigApplying.
+  ///
+  /// In en, this message translates to:
+  /// **'Applying configuration…'**
+  String get acpConfigApplying;
+
+  /// No description provided for @acpConfigFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration failed: {error}'**
+  String acpConfigFailed(String error);
+
+  /// No description provided for @acpConfigBooleanOn.
+  ///
+  /// In en, this message translates to:
+  /// **'On'**
+  String get acpConfigBooleanOn;
+
+  /// No description provided for @acpConfigBooleanOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get acpConfigBooleanOff;
+
+  /// No description provided for @acpComposerHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Message ACP agent (Enter to send, Shift+Enter for newline)…'**
+  String get acpComposerHint;
+
+  /// No description provided for @acpComposerSendTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Send'**
+  String get acpComposerSendTooltip;
+
+  /// No description provided for @acpComposerInterruptTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupt'**
+  String get acpComposerInterruptTooltip;
+
+  /// No description provided for @acpComposerBlockerOpening.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening ACP session…'**
+  String get acpComposerBlockerOpening;
+
+  /// No description provided for @acpComposerBlockerInitializing.
+  ///
+  /// In en, this message translates to:
+  /// **'Initializing ACP session…'**
+  String get acpComposerBlockerInitializing;
+
+  /// No description provided for @acpComposerBlockerDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP connection is closed'**
+  String get acpComposerBlockerDisconnected;
+
+  /// No description provided for @acpComposerBlockerEnded.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP observation has ended'**
+  String get acpComposerBlockerEnded;
+
+  /// No description provided for @acpComposerBlockerNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP session is not ready'**
+  String get acpComposerBlockerNotReady;
+
+  /// No description provided for @acpComposerBlockerConfigPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Applying configuration; wait before sending'**
+  String get acpComposerBlockerConfigPending;
+
+  /// No description provided for @acpComposerBlockerConfigError.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration failed: {error}'**
+  String acpComposerBlockerConfigError(String error);
+
+  /// No description provided for @acpComposerBlockerSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending message…'**
+  String get acpComposerBlockerSending;
+
+  /// No description provided for @acpComposerBlockerRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Response in progress'**
+  String get acpComposerBlockerRunning;
+
+  /// No description provided for @acpContentThoughtLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Thinking'**
+  String get acpContentThoughtLabel;
+
+  /// No description provided for @acpContentAudioLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio content'**
+  String get acpContentAudioLabel;
+
+  /// No description provided for @acpContentResourceLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Embedded resource'**
+  String get acpContentResourceLabel;
+
+  /// No description provided for @acpContentBinarySummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{mimeType} · {byteCount} bytes'**
+  String acpContentBinarySummary(String mimeType, int byteCount);
+
+  /// No description provided for @acpContentCopyUri.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy reference'**
+  String get acpContentCopyUri;
+
+  /// No description provided for @acpContentOpenLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Open link'**
+  String get acpContentOpenLink;
+
+  /// No description provided for @acpToolTerminalPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Terminal {id}'**
+  String acpToolTerminalPrefix(String id);
+
+  /// No description provided for @acpUpdateCompaction.
+  ///
+  /// In en, this message translates to:
+  /// **'Context compaction · {status}'**
+  String acpUpdateCompaction(String status);
+
+  /// No description provided for @acpUpdateSessionInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'Session metadata updated'**
+  String get acpUpdateSessionInfo;
+
+  /// No description provided for @acpUpdateGeneric.
+  ///
+  /// In en, this message translates to:
+  /// **'Session status updated'**
+  String get acpUpdateGeneric;
+
+  /// No description provided for @acpCommandsSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Available commands ({count})'**
+  String acpCommandsSummary(int count);
+
+  /// No description provided for @acpHistorySubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Browse peer sessions on this ACP service to load history or resume execution.'**
+  String get acpHistorySubtitle;
+
+  /// No description provided for @acpMediaOpenLinkFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open link: {error}'**
+  String acpMediaOpenLinkFailed(String error);
+
+  /// No description provided for @acpMediaImageLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to decode image: {error}'**
+  String acpMediaImageLoadFailed(String error);
 
   /// No description provided for @timelineLspStatusTitle.
   ///

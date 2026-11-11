@@ -201,7 +201,7 @@ fn format_generated_dart_files(app_dir: &Path, files: &[PathBuf]) -> Result<()> 
     if files.is_empty() {
         return Ok(());
     }
-    let mut args = vec![OsString::from("format")];
+    let mut paths = Vec::with_capacity(files.len());
     for path in files {
         let relative = path.strip_prefix(app_dir).with_context(|| {
             format!(
@@ -210,9 +210,16 @@ fn format_generated_dart_files(app_dir: &Path, files: &[PathBuf]) -> Result<()> 
                 app_dir.display()
             )
         })?;
-        args.push(relative.as_os_str().to_owned());
+        paths.push(relative.as_os_str().to_owned());
     }
-    run_os_tool("dart", &args, app_dir)
+    // Windows invokes dart.bat through cmd.exe, whose command line is limited
+    // to 8191 characters. Keep the generated-only file list in small batches.
+    for batch in paths.chunks(16) {
+        let mut args = vec![OsString::from("format")];
+        args.extend_from_slice(batch);
+        run_os_tool("dart", &args, app_dir)?;
+    }
+    Ok(())
 }
 
 fn format_generated_rust_file(workspace_root: &Path, app_dir: &Path) -> Result<()> {

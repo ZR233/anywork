@@ -559,6 +559,7 @@ class StartSessionProjectDraft {
     this.workspaceMode = ThreadWorkspaceMode.local,
     this.delegationModeOverride,
     this.delegationPreferenceOverride,
+    this.acpAccountId,
   });
 
   final String text;
@@ -566,6 +567,7 @@ class StartSessionProjectDraft {
   final ThreadWorkspaceMode workspaceMode;
   final DelegationMode? delegationModeOverride;
   final DelegationPreference? delegationPreferenceOverride;
+  final String? acpAccountId;
 
   DelegationSettingsView resolveDelegation(DelegationSettingsView defaults) =>
       DelegationSettingsView(
@@ -579,11 +581,15 @@ class StartSessionProjectDraft {
     ThreadWorkspaceMode? workspaceMode,
     Object? delegationModeOverride = _delegationUnchanged,
     Object? delegationPreferenceOverride = _delegationUnchanged,
+    Object? acpAccountId = _delegationUnchanged,
   }) {
     return StartSessionProjectDraft(
       text: text ?? this.text,
       mode: mode ?? this.mode,
       workspaceMode: workspaceMode ?? this.workspaceMode,
+      acpAccountId: identical(acpAccountId, _delegationUnchanged)
+          ? this.acpAccountId
+          : acpAccountId as String?,
       delegationModeOverride:
           identical(delegationModeOverride, _delegationUnchanged)
           ? this.delegationModeOverride
@@ -601,6 +607,7 @@ class StartSessionProjectDraft {
       other is StartSessionProjectDraft &&
           text == other.text &&
           mode == other.mode &&
+          acpAccountId == other.acpAccountId &&
           delegationModeOverride == other.delegationModeOverride &&
           delegationPreferenceOverride == other.delegationPreferenceOverride &&
           workspaceMode == other.workspaceMode;
@@ -610,6 +617,7 @@ class StartSessionProjectDraft {
     text,
     mode,
     workspaceMode,
+    acpAccountId,
     delegationModeOverride,
     delegationPreferenceOverride,
   );

@@ -150,17 +150,23 @@ final class ProductionStudioHarness {
       throw StateError('Synthetic project directory does not exist: $path');
     }
     await graph.client.directoryCommands.openProject(path);
+    final projectId = graph.client.selection.state.selectedProjectId;
     late StudioProject project;
     await scene.until(() {
       final matches =
           (graph.client.project.state.projects?.values ??
                   const <StudioProject>[])
-              .where((candidate) => candidate.path == path)
+              .where((candidate) => candidate.id == projectId)
               .toList(growable: false);
       if (matches.length != 1) return false;
       project = matches.single;
       return true;
-    }, 'canonical project directory contains $path');
+    }, 'canonical project directory contains the opened project');
+    if (!await FileSystemEntity.identical(project.path, path)) {
+      throw StateError(
+        'Opened project does not identify the requested directory',
+      );
+    }
     return project;
   }
 

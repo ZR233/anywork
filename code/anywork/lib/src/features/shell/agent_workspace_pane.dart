@@ -1,5 +1,36 @@
 part of 'studio_shell.dart';
 
+class _ConversationDirectoryUnavailable extends ConsumerWidget {
+  const _ConversationDirectoryUnavailable({required this.threadId});
+
+  final String threadId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final metadata = ref.watch(threadMetadataStoreProvider(threadId));
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            metadata.error?.message ??
+                context.l10n.conversationDirectoryUnavailable,
+          ),
+          TextButton(
+            key: const ValueKey('conversation-directory-retry'),
+            onPressed: metadata.isLoading
+                ? null
+                : () => unawaited(
+                    ref.read(threadMetadataDemandProvider(threadId)).refresh(),
+                  ),
+            child: Text(context.l10n.sidebarRetry),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 会话阅读区域与输入栏的组合。
 ///
 /// 阅读布局（并排 / 全宽 / 窄窗）只替换 [readingArea]；[footer] 始终是同一个子位置，
@@ -121,6 +152,19 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   Widget build(BuildContext context) {
     final threadId = widget.threadId;
     if (threadId == null) return const _StudioStartPage();
+    switch (ref.watch(conversationBackendViewModelProvider(threadId))) {
+      case ConversationBackendKind.acp:
+        return AcpWorkspaceConnector(threadId: threadId);
+      case ConversationBackendKind.loading:
+        return const Center(
+          key: ValueKey('agent-workspace-loading'),
+          child: CircularProgressIndicator(),
+        );
+      case ConversationBackendKind.unresolved:
+        return _ConversationDirectoryUnavailable(threadId: threadId);
+      case ConversationBackendKind.native:
+        break;
+    }
     final workspaceProvider = conversationWorkspaceProvider(
       threadId,
       needsOpen: widget.needsOpen,

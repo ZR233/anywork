@@ -15,6 +15,28 @@ import '../support/recording_demo_transport.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'visible ACP membership never admits Native content or state feeds',
+    () async {
+      final fixture = await _fixture(acpRoot: true);
+      final graph = fixture.graph;
+      final row = fixture.root;
+      final metadata = graph.client.threadDirectory.observeThread(row.threadId);
+      addTearDown(metadata.release);
+      await metadata.state.waitFor((state) => state.frame?.row != null);
+      graph.setConversationPageVisible(true);
+      graph.client.selection.selectThread(
+        workspaceId: row.workspaceId,
+        threadId: row.threadId,
+      );
+      expect(graph.client.conversations.visibleThreadId.value, isNull);
+      expect(graph.client.conversations.existingSession(row.threadId), isNull);
+      expect(fixture.transport.stateReads, isEmpty);
+      expect(fixture.transport.feeds, isEmpty);
+      expect(graph.client.drafts.existingComposer(row.threadId), isNotNull);
+    },
+  );
+
   test('explicit cold selection reads only its metadata and opens only its history', () async {
     final fixture = await _fixture();
     final client = fixture.graph.client;
@@ -373,10 +395,10 @@ void main() {
     final newReply = Completer<SessionDirectoryRow>();
     fixture.transport.respond = (id) {
       if (id == fixture.child.threadId) {
-        oldEntered.complete();
+        if (!oldEntered.isCompleted) oldEntered.complete();
         return oldReply.future;
       }
-      newEntered.complete();
+      if (!newEntered.isCompleted) newEntered.complete();
       return newReply.future;
     };
     final creation = StreamController<NewThreadStartEvent>();
@@ -435,6 +457,9 @@ void main() {
     await newer;
     fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
+    await client.conversations.visibleThreadId.waitFor(
+      (value) => value == sibling.threadId,
+    );
     await client.conversations.session(sibling.threadId).content.ready;
     expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
@@ -629,11 +654,11 @@ Future<void> _expectLatestQueuedColdSelection({
   final newError = StateError('latest metadata read failed');
   fixture.transport.respond = (id) {
     if (id == fixture.child.threadId) {
-      oldEntered.complete();
+      if (!oldEntered.isCompleted) oldEntered.complete();
       return oldReply.future;
     }
     if (id == sibling.threadId) {
-      newEntered.complete();
+      if (!newEntered.isCompleted) newEntered.complete();
       return newReply.future;
     }
     throw StateError('Unexpected metadata read: $id');
@@ -691,6 +716,9 @@ Future<void> _expectLatestQueuedColdSelection({
     expect(await newNavigation, isNull);
     fixture.graph.timeline.updateReadDemand(chatDemand);
     fixture.graph.setConversationPageVisible(true);
+    await client.conversations.visibleThreadId.waitFor(
+      (value) => value == sibling.threadId,
+    );
     final session = client.conversations.existingSession(sibling.threadId)!;
     await session.source.waitFor((state) => state.workspace != null);
     await session.content.state.waitFor((state) => state.snapshot == true);
@@ -773,6 +801,9 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
   fixture.graph.timeline.updateReadDemand(chatDemand);
   fixture.graph.setConversationPageVisible(true);
+  await client.conversations.visibleThreadId.waitFor(
+    (value) => value == fixture.child.threadId,
+  );
   final session = client.conversations.existingSession(fixture.child.threadId)!;
   await session.source.waitFor((state) => state.workspace != null);
   await session.content.state.waitFor((state) => state.snapshot == true);
@@ -802,12 +833,27 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(fixture.transport.restoreCalls, 0);
 }
 
-Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
+Future<_ColdFixture> _fixture({
+  bool distinctRootIdentity = false,
+  bool acpRoot = false,
+}) async {
   final transport = _ColdSelectionTransport();
   final saved = await transport.savedThreads();
-  final root = distinctRootIdentity
+  var root = distinctRootIdentity
       ? saved[0].copyWith(sessionId: 'S', agentId: 'A', threadId: 'T')
       : saved[0];
+  if (acpRoot) {
+    root = root.copyWith(
+      mode: null,
+      backend: const AcpAgentBackendView(
+        reference: AcpSessionReferenceView(
+          accountId: 'custom-acp',
+          acpSessionId: 'external-session',
+          cwd: '/project',
+        ),
+      ),
+    );
+  }
   final child = distinctRootIdentity
       ? saved[1].copyWith(
           backend: (saved[1].backend as NativeAgentBackendView).copyWith(
@@ -848,8 +894,9 @@ Future<_ColdFixture> _fixture({bool distinctRootIdentity = false}) async {
         delegationPreference: row.delegationPreference,
         frozenModel: row.frozenModel,
         state:
-            (row.backend as NativeAgentBackendView).status ==
-                ThreadStatusView.closed
+            row.backend is NativeAgentBackendView &&
+                (row.backend as NativeAgentBackendView).status ==
+                    ThreadStatusView.closed
             ? const ClosedStudioAgent()
             : const IdleStudioAgent(),
         updatedAt: row.updatedAt,

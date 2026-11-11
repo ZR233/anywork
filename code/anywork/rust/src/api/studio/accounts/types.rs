@@ -46,9 +46,17 @@ pub struct BridgeAccountSummary {
     pub billing_kind_override: Option<BridgeBillingKind>,
     pub credential_ready: Option<bool>,
     pub usage_query_revision: Option<u64>,
+    /// Configured availability only; absent for Native, not a connection/authentication result.
+    pub acp_enabled: Option<bool>,
     /// ACP authentication-owner identity; not a settings/catalog observation watermark.
     pub acp_connection_revision: Option<u64>,
     pub capabilities: BridgeAccountCapabilities,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeAcpDefinitionDiagnostic {
+    pub file_name: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +70,7 @@ pub enum BridgeAccountDomainFrame {
     Summaries {
         stamp: BridgeResourceStamp,
         accounts: Vec<BridgeAccountSummary>,
+        acp_diagnostics: Vec<BridgeAcpDefinitionDiagnostic>,
     },
     Detail {
         stamp: BridgeResourceStamp,

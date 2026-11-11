@@ -7,22 +7,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelInfo;
 use pl_protocol::studio::{
-    AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource,
-    StudioAttachmentModality, StudioError,
+    AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource, StudioError,
 };
 use sha2::{Digest, Sha256};
 
 use crate::studio::store::attachment::AttachmentDraftObject;
 
 use super::normalize::normalize_loaded_source;
-use super::source::{
-    LoadedSource, MAX_GENERIC_SOURCE_BYTES, MAX_IMAGE_SOURCE_BYTES, fetch_remote_snapshot,
-    read_local_file,
-};
-use super::validate::{
-    model_modality, preflight_sources, validate_actual_limits, validate_draft_batch,
-    validate_model_source,
-};
+use super::source::{LoadedSource, fetch_remote_snapshot, read_local_file};
+use super::validate::{InputPolicy, preflight_sources, validate_draft_batch};
 
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct AttachmentDraftRuntime {
@@ -45,24 +38,15 @@ impl AttachmentDraftRuntime {
     pub(super) async fn admit(
         &self,
         sources: Vec<StudioAttachmentDraftSource>,
-        model: &ModelInfo,
+        policy: &InputPolicy,
     ) -> Result<AdmitAttachmentDraftsResponse> {
-        let predicted = preflight_sources(&sources, model)?;
+        let predicted = preflight_sources(&sources, policy)?;
 
         let mut admitted = Vec::with_capacity(sources.len());
         for (source, (filename, predicted_modality, source_kind)) in
             sources.into_iter().zip(predicted)
         {
-            let max_bytes = model
-                .capabilities
-                .input_capability(model_modality(predicted_modality))
-                .and_then(|capability| capability.limits.max_bytes)
-                .unwrap_or(match predicted_modality {
-                    StudioAttachmentModality::Image => MAX_IMAGE_SOURCE_BYTES,
-                    StudioAttachmentModality::Video | StudioAttachmentModality::File => {
-                        MAX_GENERIC_SOURCE_BYTES
-                    }
-                });
+            let max_bytes = policy.max_source_bytes(predicted_modality);
             let result = async {
                 let loaded = match source {
                     StudioAttachmentDraftSource::LocalFile { path } => LoadedSource {
@@ -87,8 +71,7 @@ impl AttachmentDraftRuntime {
                         StudioError::invalid_argument("附件内容与文件名类型不匹配。").into(),
                     );
                 }
-                validate_model_source(model, normalized.modality, source_kind)?;
-                validate_actual_limits(model, &normalized)?;
+                policy.validate_loaded(&normalized, source_kind)?;
                 let draft_id = crate::studio::ids::new_id("attachment-draft");
                 let storage_path = self.root.join(&draft_id);
                 tokio::fs::write(&storage_path, &normalized.bytes).await?;
@@ -116,7 +99,7 @@ impl AttachmentDraftRuntime {
             admitted.push(draft);
         }
 
-        if let Err(error) = validate_draft_batch(model, &admitted) {
+        if let Err(error) = policy.validate_batch(&admitted) {
             cleanup_drafts(&admitted).await;
             return Err(error);
         }

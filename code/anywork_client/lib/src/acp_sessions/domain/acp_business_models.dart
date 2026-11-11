@@ -212,6 +212,29 @@ sealed class AcpSessionEventView {
   const AcpSessionEventView();
 }
 
+final class AcpAgentCapabilitiesView {
+  const AcpAgentCapabilitiesView({
+    required this.image,
+    required this.audio,
+    required this.embeddedContext,
+    required this.loadSession,
+    required this.listSessions,
+    required this.resumeSession,
+  });
+
+  final bool image;
+  final bool audio;
+  final bool embeddedContext;
+  final bool loadSession;
+  final bool listSessions;
+  final bool resumeSession;
+}
+
+final class AcpInitializedEventView extends AcpSessionEventView {
+  const AcpInitializedEventView(this.capabilities);
+  final AcpAgentCapabilitiesView capabilities;
+}
+
 final class AcpUpdateEventView extends AcpSessionEventView {
   const AcpUpdateEventView(this.update);
   final AcpSessionNotificationView update;

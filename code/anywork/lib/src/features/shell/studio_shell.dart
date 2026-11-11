@@ -15,6 +15,7 @@ import '../../presentation/providers/project_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/thread_directory_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
@@ -40,6 +41,8 @@ import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
 import '../settings/settings_remote_directory_dialog.dart';
 import '../conversation/composer/composer.dart';
+import '../conversation/composer/view_models/conversation_backend_view_model.dart';
+import '../conversation/acp/connectors/acp_workspace_connector.dart';
 import '../status/thread_status_bar.dart';
 import '../conversation/timeline/live_status/live_status_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';

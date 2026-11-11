@@ -16,7 +16,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'types.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAccountCapabilities {
   final bool setDefault;
@@ -80,6 +80,7 @@ sealed class BridgeAccountDomainFrame with _$BridgeAccountDomainFrame {
   const factory BridgeAccountDomainFrame.summaries({
     required BridgeResourceStamp stamp,
     required List<BridgeAccountSummary> accounts,
+    required List<BridgeAcpDefinitionDiagnostic> acpDiagnostics,
   }) = BridgeAccountDomainFrame_Summaries;
   const factory BridgeAccountDomainFrame.detail({
     required BridgeResourceStamp stamp,
@@ -286,6 +287,9 @@ class BridgeAccountSummary {
   final bool? credentialReady;
   final BigInt? usageQueryRevision;
 
+  /// Configured availability only; absent for Native, not a connection/authentication result.
+  final bool? acpEnabled;
+
   /// ACP authentication-owner identity; not a settings/catalog observation watermark.
   final BigInt? acpConnectionRevision;
   final BridgeAccountCapabilities capabilities;
@@ -301,6 +305,7 @@ class BridgeAccountSummary {
     this.billingKindOverride,
     this.credentialReady,
     this.usageQueryRevision,
+    this.acpEnabled,
     this.acpConnectionRevision,
     required this.capabilities,
   });
@@ -317,6 +322,7 @@ class BridgeAccountSummary {
       billingKindOverride.hashCode ^
       credentialReady.hashCode ^
       usageQueryRevision.hashCode ^
+      acpEnabled.hashCode ^
       acpConnectionRevision.hashCode ^
       capabilities.hashCode;
 
@@ -335,6 +341,7 @@ class BridgeAccountSummary {
           billingKindOverride == other.billingKindOverride &&
           credentialReady == other.credentialReady &&
           usageQueryRevision == other.usageQueryRevision &&
+          acpEnabled == other.acpEnabled &&
           acpConnectionRevision == other.acpConnectionRevision &&
           capabilities == other.capabilities;
 }
@@ -467,6 +474,27 @@ sealed class BridgeAccountUsageValue with _$BridgeAccountUsageValue {
     String? level,
     required List<BridgeAccountQuota> quotas,
   }) = BridgeAccountUsageValue_Subscription;
+}
+
+class BridgeAcpDefinitionDiagnostic {
+  final String fileName;
+  final String message;
+
+  const BridgeAcpDefinitionDiagnostic({
+    required this.fileName,
+    required this.message,
+  });
+
+  @override
+  int get hashCode => fileName.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpDefinitionDiagnostic &&
+          runtimeType == other.runtimeType &&
+          fileName == other.fileName &&
+          message == other.message;
 }
 
 @freezed

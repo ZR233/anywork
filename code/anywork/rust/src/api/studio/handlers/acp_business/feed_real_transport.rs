@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::studio::*;
-use pl_studio_runtime as studio_runtime;
 use tokio::time::{sleep, timeout};
 
 use super::*;
@@ -63,21 +62,28 @@ async fn real_peer_frb_close_observation_does_not_cancel_original_prompt() -> Re
             anyhow::bail!("real FRB acceptance missing");
         };
         ensure!(bridged == target.clone().into());
-        let (mut ready, mut settled) = (0, 0);
+        let (mut initialized, mut ready, mut settled) = (0, 0, 0);
         while ready == 0 || settled == 0 {
             match frame(&handle).await? {
                 BridgeAcpSessionFrame::Settled {
                     result: BridgeAcpSettlement::Succeeded,
                 } => settled += 1,
                 BridgeAcpSessionFrame::Event { event }
+                    if matches!(*event, BridgeAcpSessionEvent::Initialized { .. }) =>
+                {
+                    ensure!(initialized == 0 && ready == 0);
+                    initialized += 1;
+                }
+                BridgeAcpSessionFrame::Event { event }
                     if matches!(*event, BridgeAcpSessionEvent::Ready { .. }) =>
                 {
+                    ensure!(initialized == 1);
                     ready += 1
                 }
                 other => anyhow::bail!("unexpected real FRB publication: {other:?}"),
             }
         }
-        ensure!(ready == 1 && settled == 1);
+        ensure!(initialized == 1 && ready == 1 && settled == 1);
         let run = fixture
             .runtime
             .prompt_acp_session(

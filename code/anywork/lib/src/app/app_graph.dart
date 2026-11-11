@@ -130,6 +130,9 @@ class AppGraph {
   Observation? _selectionObservation;
   Observation? _conversationObservation;
   Observation? _workspaceObservation;
+  DirectoryObservation<ThreadMetadataFrame>? _backendDemand;
+  Observation? _backendObservation;
+  String? _backendThreadId;
   bool _conversationPageVisible = false;
   String? _routeThreadId;
   bool _hostVisible = true;
@@ -184,8 +187,29 @@ class AppGraph {
   void _syncVisibleConversation() {
     if (_closed) return;
     final target = _conversationTarget;
-    timeline.noteVisibleSelection(target);
     final conversations = client.conversations;
+    if (_backendThreadId != target) {
+      _releaseBackendDemand();
+      if (target != null) {
+        _backendThreadId = target;
+        final demand = client.threadDirectory.observeThread(target);
+        _backendDemand = demand;
+        _backendObservation = demand.state.watch((_) {
+          if (_conversationTarget == target) _syncVisibleConversation();
+        });
+      }
+    }
+    final backend = _backendDemand?.state.value.frame?.row?.backend;
+    if (target != null && backend is! NativeAgentBackendView) {
+      conversations.setVisibleThread(null);
+      timeline.noteVisibleSelection(null);
+      timeline.select(null);
+      // ACP display demand belongs to its component ViewModel; the Client's
+      // resident protocol owner continues independently when this page hides.
+      if (backend is AcpAgentBackendView) client.drafts.composer(target);
+      return;
+    }
+    timeline.noteVisibleSelection(target);
     if (target != conversations.visibleThreadId.value) {
       conversations.setVisibleThread(null);
     }
@@ -199,6 +223,22 @@ class AppGraph {
       client.drafts.composer(target);
     }
     if (target == _conversationTarget) conversations.setVisibleThread(target);
+  }
+
+  void _releaseBackendDemand() {
+    _backendObservation?.cancel();
+    _backendObservation = null;
+    final demand = _backendDemand;
+    _backendDemand = null;
+    _backendThreadId = null;
+    if (demand != null) {
+      unawaited(
+        demand.release().catchError((Object error, StackTrace stack) {
+          // The Client directory retains failed retirement for shutdown retry.
+          recordDartError(error, stack, stage: 'conversation-backend-release');
+        }),
+      );
+    }
   }
 
   Future<CloseReport> close({required DateTime deadline}) {
@@ -223,6 +263,7 @@ class AppGraph {
     _conversationObservation = null;
     _workspaceObservation?.cancel();
     _workspaceObservation = null;
+    _releaseBackendDemand();
     final clientClose = client.close(deadline: deadline);
     final timelineClose = timeline.close(deadline: deadline);
     final statisticsClose = statisticsRepository.close(deadline: deadline);

@@ -1,4 +1,33 @@
 {
+  "conversationDirectoryUnavailable": "无法获取会话信息。请重试。",
+  "acpHistoryButton": "外部会话",
+  "acpHistoryOpenPanel": "查看外部会话",
+  "acpHistoryNoOwner": "没有活动的 ACP 会话",
+  "acpHistoryOwnerLoading": "正在打开 ACP 会话",
+  "acpHistoryUnknownCapability": "ACP 服务能力尚未确认",
+  "acpHistoryUnsupported": "此 ACP 服务不支持列出会话",
+  "acpHistoryNotReady": "ACP 会话尚未就绪",
+  "acpHistoryTitle": "外部 ACP 会话",
+  "acpHistoryClose": "关闭",
+  "acpHistoryRefresh": "刷新",
+  "acpHistoryLoadMore": "加载更多",
+  "acpHistoryLoading": "正在读取会话…",
+  "acpHistoryEmpty": "没有外部会话",
+  "acpHistoryActions": "打开方式",
+  "acpHistoryLoad": "加载历史",
+  "acpHistoryResume": "继续",
+  "acpHistoryResumeNote": "继续操作不会回放历史",
+  "acpHistoryLoadNote": "加载会在对端支持时回放历史",
+  "acpHistoryUnavailable": "当前能力不支持打开此会话",
+  "acpHistoryOpening": "正在打开…",
+  "acpHistoryOpened": "已打开",
+  "acpHistoryUnknown": "打开结果未知。请勿重试，请检查对话列表。",
+  "acpHistoryListFailed": "读取会话失败",
+  "acpHistoryCwd": "cwd",
+  "acpHistoryUpdated": "更新时间",
+  "acpConversationNoServices": "尚未添加 ACP 服务",
+  "acpConversationServiceDisabled": "已禁用",
+  "acpConversationManageServices": "管理 ACP 服务",
   "accountsModelModalityCapabilities": "输入／输出模态与能力",
   "accountsModelContextThreshold": "上下文与压缩阈值",
   "accountsModelProtocolOrigin": "协议与模型来源",
@@ -2462,6 +2491,196 @@
   "acpRemoveEntry": "移除",
   "accountsApi": "API",
   "accountsAcp": "ACP",
+  "acpBackendNativeLabel": "糊来帮",
+  "acpBackendNativeHint": "内置模型 API 运行时",
+  "acpBackendServicesHeader": "ACP 服务",
+  "acpBackendReadyBadge": "可用",
+  "acpStartDraftHint": "可选：输入初始草稿（创建后带入新会话输入框，不会自动发送）…",
+  "acpStartHandshakeNote": "创建会话先完成服务握手并获取动态配置；上方草稿将原样带入新会话输入框。",
+  "acpStartCreateAction": "创建 ACP 会话",
+  "acpStartCreatingAction": "正在创建…",
+  "acpStartSshUnsupported": "ACP 会话暂不支持 SSH 项目，请选择本地项目。",
+  "acpStartExistingAttachmentsHint": "当前项目草稿中的附件已保留供内置会话使用，创建 ACP 会话时不会发送。",
+  "acpSessionConnectingTitle": "正在连接 ACP 服务…",
+  "acpSessionConnectingSubtitle": "正在完成协议初始化与能力协商。",
+  "acpSessionReadyEmptyTitle": "ACP 会话已就绪",
+  "acpSessionReadyEmptySubtitle": "可在下方输入消息开始对话，或在工具栏调整服务端选项。",
+  "acpCapabilityImage": "图片输入",
+  "acpCapabilityAudio": "音频输入",
+  "acpCapabilityEmbeddedContext": "内嵌上下文",
+  "acpCapabilityLoadSession": "加载历史",
+  "acpCapabilityResumeSession": "恢复会话",
+  "acpCapabilityListSessions": "外部会话列表",
+  "acpNoticeErrorTitle": "ACP 会话异常",
+  "acpNoticeDisconnected": "ACP 连接已断开，已收到的内容仍可正常查阅。",
+  "acpNoticeObservationEnded": "ACP 会话观察已结束。",
+  "acpNoticeGapWindowExceeded": "观察出现缺口（缓冲窗口超出），当前内容可能缺失。",
+  "acpNoticeGapDisconnected": "观察出现缺口（连接中断），当前内容可能缺失。",
+  "acpNoticeGapEncoding": "观察出现缺口（帧编码异常），当前内容可能缺失。",
+  "acpNoticeResumedWithoutHistory": "该会话由外部继续打开，对端未回放历史，不能据此认为历史完整。",
+  "acpNoticeResidentWithoutObservation": "已附着到驻留会话但无早先观察流，不能据此认为历史完整。",
+  "acpNoticeIncompleteHistory": "历史记录未完整加载，不能据此认为历史完整。",
+  "acpNoticeLoadReplay": "已从外部会话回放历史记录",
+  "acpStatusConnecting": "正在连接",
+  "acpStatusReady": "已就绪",
+  "acpStatusRunning": "正在运行",
+  "acpStatusStopping": "正在中断",
+  "acpStatusDisconnected": "连接已断开",
+  "acpStatusObservationEnded": "观察已结束",
+  "acpStatusCompleted": "已完成 · {reason}",
+  "@acpStatusCompleted": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "acpStopReasonEndTurn": "正常结束",
+  "acpStopReasonMaxTokens": "达到词元上限",
+  "acpStopReasonMaxTurnRequests": "达到请求上限",
+  "acpStopReasonRefusal": "已拒绝",
+  "acpStopReasonCancelled": "已中断",
+  "acpProvenanceReplay": "历史回放",
+  "acpProvenanceResumed": "外部继续",
+  "acpUsageReadout": "上下文 {used} / {size}",
+  "@acpUsageReadout": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpPlanTitle": "执行计划",
+  "acpPlanProgress": "已完成 {completed} / {total}",
+  "@acpPlanProgress": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpPlanPriorityHigh": "高",
+  "acpPlanPriorityMedium": "中",
+  "acpPlanPriorityLow": "低",
+  "acpPlanStatusPending": "待处理",
+  "acpPlanStatusInProgress": "进行中",
+  "acpPlanStatusCompleted": "已完成",
+  "acpPermissionTitle": "需要工具权限",
+  "acpPermissionQueueBadge": "{count} 项待审批",
+  "@acpPermissionQueueBadge": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpPermissionCancel": "取消",
+  "acpPermissionSubmitting": "正在提交决定…",
+  "acpConfigModeFallbackLabel": "模式",
+  "acpConfigMoreLabel": "更多设置",
+  "acpConfigMoreCountLabel": "更多设置 ({count})",
+  "@acpConfigMoreCountLabel": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpConfigApplying": "正在应用配置…",
+  "acpConfigFailed": "配置失败：{error}",
+  "@acpConfigFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpConfigBooleanOn": "开启",
+  "acpConfigBooleanOff": "关闭",
+  "acpComposerHint": "向 ACP 智能体发送消息（Enter 发送，Shift+Enter 换行）…",
+  "acpComposerSendTooltip": "发送",
+  "acpComposerInterruptTooltip": "中断",
+  "acpComposerBlockerOpening": "正在打开 ACP 会话…",
+  "acpComposerBlockerInitializing": "正在初始化 ACP 会话…",
+  "acpComposerBlockerDisconnected": "ACP 连接已断开",
+  "acpComposerBlockerEnded": "ACP 观察已结束",
+  "acpComposerBlockerNotReady": "ACP 会话尚未就绪",
+  "acpComposerBlockerConfigPending": "正在应用配置，完成前不能发送消息",
+  "acpComposerBlockerConfigError": "配置失败：{error}",
+  "@acpComposerBlockerConfigError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpComposerBlockerSending": "正在发送…",
+  "acpComposerBlockerRunning": "正在生成回复",
+  "acpContentThoughtLabel": "思考过程",
+  "acpContentAudioLabel": "音频内容",
+  "acpContentResourceLabel": "内嵌资源",
+  "acpContentBinarySummary": "{mimeType} · {byteCount} 字节",
+  "@acpContentBinarySummary": {
+    "placeholders": {
+      "mimeType": {
+        "type": "String"
+      },
+      "byteCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpContentCopyUri": "复制引用",
+  "acpContentOpenLink": "打开链接",
+  "acpToolTerminalPrefix": "终端 {id}",
+  "@acpToolTerminalPrefix": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpdateCompaction": "上下文压缩 · {status}",
+  "@acpUpdateCompaction": {
+    "placeholders": {
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpdateSessionInfo": "会话信息已更新",
+  "acpUpdateGeneric": "ACP 会话状态已更新",
+  "acpCommandsSummary": "可用命令 ({count})",
+  "@acpCommandsSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySubtitle": "浏览当前 ACP 服务对端已有的会话，可选择回放历史或直接继续对话。",
+  "acpMediaOpenLinkFailed": "无法打开链接：{error}",
+  "@acpMediaOpenLinkFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMediaImageLoadFailed": "图片读取失败：{error}",
+  "@acpMediaImageLoadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "timelineLspStatusTitle": "LSP 状态",
   "timelineLspCapabilitiesRunning": "正在读取语言服务能力",
   "timelineLspCapabilitiesSucceeded": "已读取语言服务能力",

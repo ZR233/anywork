@@ -7,13 +7,94 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::{
     MediaMixPolicy, MediaRepresentation, ModelInfo, ModelInputSource, ModelModality,
 };
+use pl_protocol::studio::acp_schema::PromptCapabilities;
 use pl_protocol::studio::{StudioAttachmentDraftSource, StudioAttachmentModality, StudioError};
 use url::Url;
 
 use crate::studio::store::attachment::AttachmentDraftObject;
 
 use super::normalize::{NormalizedSource, sanitize_filename};
-use super::source::validate_remote_url;
+use super::source::{MAX_GENERIC_SOURCE_BYTES, MAX_IMAGE_SOURCE_BYTES, validate_remote_url};
+
+pub(super) enum InputPolicy {
+    Native(Box<ModelInfo>),
+    Acp(PromptCapabilities),
+}
+
+impl InputPolicy {
+    fn validate_source(
+        &self,
+        modality: StudioAttachmentModality,
+        source: DraftSourceKind,
+    ) -> Result<()> {
+        match self {
+            Self::Native(model) => validate_model_source(model, modality, source),
+            Self::Acp(capabilities) => {
+                let (supported, label) = match modality {
+                    StudioAttachmentModality::Image => (capabilities.image, "图片"),
+                    StudioAttachmentModality::File => (capabilities.embedded_context, "文件"),
+                    StudioAttachmentModality::Video => (false, "视频"),
+                };
+                ensure!(
+                    supported,
+                    StudioError::invalid_argument(format!("当前 ACP 会话不支持{label}附件。"))
+                );
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn max_source_bytes(&self, modality: StudioAttachmentModality) -> u64 {
+        let host_limit = match modality {
+            StudioAttachmentModality::Image => MAX_IMAGE_SOURCE_BYTES,
+            StudioAttachmentModality::Video | StudioAttachmentModality::File => {
+                MAX_GENERIC_SOURCE_BYTES
+            }
+        };
+        match self {
+            Self::Native(model) => model
+                .capabilities
+                .input_capability(model_modality(modality))
+                .and_then(|capability| capability.limits.max_bytes)
+                .unwrap_or(host_limit),
+            Self::Acp(_) => host_limit,
+        }
+    }
+
+    pub(super) fn validate_loaded(
+        &self,
+        source: &NormalizedSource,
+        source_kind: DraftSourceKind,
+    ) -> Result<()> {
+        self.validate_source(source.modality, source_kind)?;
+        match self {
+            Self::Native(model) => validate_actual_limits(model, source),
+            Self::Acp(_) => {
+                ensure!(
+                    source.bytes.len() as u64 <= self.max_source_bytes(source.modality),
+                    StudioError::invalid_argument("附件文件大小超过限制。")
+                );
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn validate_batch(&self, drafts: &[AttachmentDraftObject]) -> Result<()> {
+        match self {
+            Self::Native(model) => validate_draft_batch(model, drafts),
+            Self::Acp(_) => {
+                for draft in drafts {
+                    self.validate_source(draft.modality, DraftSourceKind::Local)?;
+                    ensure!(
+                        draft.byte_size <= self.max_source_bytes(draft.modality),
+                        StudioError::invalid_argument("附件文件大小超过限制。")
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 fn validate_predicted_counts(
     model: &ModelInfo,
@@ -159,7 +240,7 @@ pub(super) fn validate_draft_batch(
 
 pub(super) fn preflight_sources(
     sources: &[StudioAttachmentDraftSource],
-    model: &ModelInfo,
+    policy: &InputPolicy,
 ) -> Result<Vec<(String, StudioAttachmentModality, DraftSourceKind)>> {
     ensure!(
         !sources.is_empty(),
@@ -168,11 +249,13 @@ pub(super) fn preflight_sources(
     let mut predicted = Vec::with_capacity(sources.len());
     for source in sources {
         let (filename, modality, source_kind) = predict_source(source)?;
-        validate_model_source(model, modality, source_kind)?;
+        policy.validate_source(modality, source_kind)?;
         predicted.push((filename, modality, source_kind));
     }
-    validate_mix_policy(model, predicted.iter().map(|entry| entry.1))?;
-    validate_predicted_counts(model, predicted.iter().map(|entry| entry.1))?;
+    if let InputPolicy::Native(model) = policy {
+        validate_mix_policy(model, predicted.iter().map(|entry| entry.1))?;
+        validate_predicted_counts(model, predicted.iter().map(|entry| entry.1))?;
+    }
     Ok(predicted)
 }
 

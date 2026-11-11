@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 
 pub use agent_client_protocol_schema::v1 as acp_schema;
 pub use agent_client_protocol_schema::v1::{
-    ContentBlock, ListSessionsRequest, ListSessionsResponse, NewSessionResponse,
+    AgentCapabilities, ContentBlock, ListSessionsRequest, ListSessionsResponse, NewSessionResponse,
     PermissionOptionId, PromptResponse, RequestPermissionRequest, SessionConfigId,
     SessionConfigOption, SessionConfigOptionValue, SessionId as AcpSessionId, SessionModeId,
     SessionModeState, SessionNotification, SetSessionConfigOptionResponse,
@@ -121,6 +121,10 @@ pub struct AcpCompletedRun {
     rename_all_fields = "camelCase"
 )]
 pub enum AcpSessionEvent {
+    Initialized {
+        #[schema(value_type = Object)]
+        capabilities: Box<AgentCapabilities>,
+    },
     Update {
         #[schema(value_type = Object)]
         update: SessionNotification,
@@ -277,6 +281,44 @@ pub struct AcpListRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialized_event_preserves_official_agent_capabilities_shape() {
+        use acp_schema::{PromptCapabilities, SessionCapabilities, SessionListCapabilities};
+        let capabilities = AgentCapabilities::new()
+            .load_session(true)
+            .prompt_capabilities(
+                PromptCapabilities::new()
+                    .image(true)
+                    .audio(false)
+                    .embedded_context(true),
+            )
+            .session_capabilities(SessionCapabilities::new().list(SessionListCapabilities::new()));
+        let official = serde_json::to_value(&capabilities).unwrap();
+        let frame = serde_json::to_value(AcpSessionFrame::Event {
+            event: Box::new(AcpSessionEvent::Initialized {
+                capabilities: Box::new(capabilities),
+            }),
+        })
+        .unwrap();
+        assert_eq!(frame["event"]["kind"], "initialized");
+        assert_eq!(frame["event"]["capabilities"], official);
+        assert_eq!(official["loadSession"], true);
+        assert_eq!(official["promptCapabilities"]["embeddedContext"], true);
+        assert_eq!(
+            official["sessionCapabilities"]["list"],
+            serde_json::json!({})
+        );
+        assert!(official["sessionCapabilities"].get("resume").is_none());
+        let decoded: AcpSessionFrame = serde_json::from_value(frame).unwrap();
+        assert!(matches!(
+            decoded,
+            AcpSessionFrame::Event { event }
+                if matches!(event.as_ref(), AcpSessionEvent::Initialized { capabilities }
+                    if capabilities.session_capabilities.list.is_some()
+                        && capabilities.session_capabilities.resume.is_none())
+        ));
+    }
 
     #[test]
     fn config_uses_official_typed_values_and_separate_permission_identity() {

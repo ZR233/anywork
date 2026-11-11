@@ -1,5 +1,49 @@
 use super::*;
 
+#[test]
+fn initialized_capabilities_map_actual_optional_session_support() {
+    for supported in [false, true] {
+        let capabilities = s::AgentCapabilities::new()
+            .load_session(supported)
+            .prompt_capabilities(
+                s::PromptCapabilities::new()
+                    .image(supported)
+                    .audio(!supported)
+                    .embedded_context(supported),
+            )
+            .mcp_capabilities(s::McpCapabilities::new().http(supported).sse(!supported))
+            .session_capabilities(if supported {
+                s::SessionCapabilities::new()
+                    .list(s::SessionListCapabilities::new())
+                    .resume(s::SessionResumeCapabilities::new())
+                    .close(s::SessionCloseCapabilities::new())
+            } else {
+                s::SessionCapabilities::new()
+            });
+        let mapped = frame(p::AcpSessionFrame::Event {
+            event: Box::new(p::AcpSessionEvent::Initialized {
+                capabilities: Box::new(capabilities),
+            }),
+        })
+        .unwrap();
+        let BridgeAcpSessionFrame::Event { event } = mapped else {
+            panic!("{mapped:?}");
+        };
+        let BridgeAcpSessionEvent::Initialized { capabilities } = *event else {
+            panic!("{event:?}");
+        };
+        assert_eq!(capabilities.image, supported);
+        assert_eq!(capabilities.audio, !supported);
+        assert_eq!(capabilities.embedded_context, supported);
+        assert_eq!(capabilities.load_session, supported);
+        assert_eq!(capabilities.list_sessions, supported);
+        assert_eq!(capabilities.resume_session, supported);
+        assert_eq!(capabilities.close_session, supported);
+        assert_eq!(capabilities.mcp_http, supported);
+        assert_eq!(capabilities.mcp_sse, !supported);
+    }
+}
+
 fn target() -> p::AcpSessionTarget {
     p::AcpSessionTarget {
         session_id: "product-session".into(),

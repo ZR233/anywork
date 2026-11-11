@@ -7,11 +7,7 @@ use anyhow::{Context, Result};
 use pl_protocol::studio::*;
 use tokio::time::timeout;
 
-use crate as studio_runtime;
-
-#[path = "../../../../tests/support/acp_transport_fixture.rs"]
-mod acp_transport_fixture;
-use acp_transport_fixture::AcpTransportFixture as Fixture;
+use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 
 #[tokio::test]
 async fn public_launch_failures_distinguish_install_required_from_missing_executable() -> Result<()>
@@ -103,10 +99,23 @@ async fn public_launch_failures_distinguish_install_required_from_missing_execut
 #[tokio::test]
 async fn factory_stream_publication_prompt_and_real_reclamation() -> Result<()> {
     let fixture = Fixture::new("replay").await?;
+    assert!(
+        fixture
+            .runtime
+            .acp_prompt_capabilities_for_thread("missing")
+            .await
+            .is_err()
+    );
+    assert!(!fixture.home.path().join("pid").exists());
     let mut open = fixture
         .open_intent(AcpOpenIntent::Load("remote-one".into()))
         .await?;
     let observer = open.observation.as_mut().unwrap();
+    let first = timeout(Duration::from_secs(15), observer.recv()).await?;
+    assert!(
+        matches!(first, Some(AcpSessionEvent::Initialized { .. })),
+        "initialize must precede replay: {first:?}"
+    );
     let first = timeout(Duration::from_secs(15), observer.recv()).await?;
     assert!(
         matches!(first, Some(AcpSessionEvent::Update { .. })),
@@ -114,6 +123,13 @@ async fn factory_stream_publication_prompt_and_real_reclamation() -> Result<()> 
     );
     Fixture::ready(&mut open).await?;
     let target = open.target.clone();
+    assert_eq!(
+        fixture
+            .runtime
+            .acp_prompt_capabilities_for_thread(&target.thread_id)
+            .await?,
+        pl_acp::session::schema::PromptCapabilities::default()
+    );
     assert_ne!(target.session_id, target.agent_id);
     assert_ne!(target.agent_id, target.thread_id);
     let owner = fixture
@@ -193,13 +209,28 @@ async fn factory_stream_publication_prompt_and_real_reclamation() -> Result<()> 
         }
     }
     let pid = fixture.pid("pid")?;
-    let close = fixture.runtime.close_acp_session(target).await?;
+    let close = fixture.runtime.close_acp_session(target.clone()).await?;
     assert!(close.local_complete, "{close:?}");
+    assert!(
+        fixture
+            .runtime
+            .acp_prompt_capabilities_for_thread(&target.thread_id)
+            .await
+            .is_err()
+    );
     assert!(
         !PathBuf::from(format!("/proc/{pid}")).exists(),
         "supervised process must exit"
     );
     let methods = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+    assert_eq!(
+        methods
+            .lines()
+            .filter(|method| *method == "initialize")
+            .count(),
+        1,
+        "capability reads must never initialize or reopen a session"
+    );
     assert_eq!(
         methods
             .lines()

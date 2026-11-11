@@ -10,6 +10,7 @@ import '../state/composer_input_state.dart';
 import '../view_models/composer_actions.dart';
 import '../widgets/composer_attachments.dart';
 import '../widgets/multiline_enter_shortcuts.dart';
+import '../widgets/composer_paste_action.dart';
 import 'composer_support_views.dart';
 
 /// 原因区的最大高度：三行文案在窄矮窗口里换行时改在区内滚动，不撑破底栏。
@@ -234,7 +235,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
               ),
             Actions(
               actions: {
-                PasteTextIntent: _ComposerPasteAction(
+                PasteTextIntent: ComposerPasteAction(
                   canPaste: () => widget.state.enabled,
                   paste: _pasteClipboard,
                 ),
@@ -617,30 +618,5 @@ class PromptComposerViewState extends State<PromptComposerView> {
     );
     if (!isCurrent() || url == null || url.isEmpty) return;
     widget.actions.addUrl(url);
-  }
-}
-
-class _ComposerPasteAction extends Action<PasteTextIntent> {
-  _ComposerPasteAction({required this.canPaste, required this.paste});
-
-  final bool Function() canPaste;
-  final void Function(Future<void> Function()) paste;
-
-  @override
-  bool isEnabled(PasteTextIntent intent) => canPaste();
-
-  @override
-  Object? invoke(PasteTextIntent intent) {
-    // EditableText supplies the original overridable action only during invoke.
-    // Capture it before the asynchronous image read, rather than looking it up
-    // later or duplicating platform shortcuts and text selection edits.
-    final defaultPaste = callingAction!;
-    paste(() async {
-      final result = defaultPaste.invoke(intent);
-      if (result is Future) {
-        await result;
-      }
-    });
-    return null;
   }
 }

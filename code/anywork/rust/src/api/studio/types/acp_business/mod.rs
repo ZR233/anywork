@@ -311,7 +311,23 @@ pub enum BridgeAcpSessionFrame {
     },
 }
 #[derive(Debug, Clone, PartialEq)]
+pub struct BridgeAcpAgentCapabilities {
+    pub image: bool,
+    pub audio: bool,
+    pub embedded_context: bool,
+    pub load_session: bool,
+    pub list_sessions: bool,
+    pub resume_session: bool,
+    pub close_session: bool,
+    pub mcp_http: bool,
+    pub mcp_sse: bool,
+    pub meta: Option<BridgeAcpMeta>,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub enum BridgeAcpSessionEvent {
+    Initialized {
+        capabilities: BridgeAcpAgentCapabilities,
+    },
     Update {
         update: BridgeAcpSessionNotification,
     },

@@ -7,6 +7,10 @@
 #[cfg(test)]
 extern crate self as pl_studio_runtime;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/acp_transport_fixture.rs"]
+mod acp_transport_fixture;
+
 #[cfg(test)]
 #[expect(
     dead_code,

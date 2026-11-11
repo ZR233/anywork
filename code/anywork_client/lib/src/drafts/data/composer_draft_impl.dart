@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../../acp_sessions.dart';
+import '../../../directory_ports.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
 import '../../observation/latest_value.dart';
@@ -16,7 +19,9 @@ import 'submission_observation.dart';
 final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     implements ComposerDraftOwner {
   ComposerDraftImpl(this._dependencies, this.threadId)
-    : super(const ComposerThreadState.idle());
+    : super(const ComposerThreadState.idle()) {
+    _observeAcpMetadata();
+  }
 
   final DraftsDependencies _dependencies;
   final String threadId;
@@ -35,6 +40,17 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   final Set<String> _presentedInputIds = {};
   Future<void>? _closing;
   DraftStamp? _unknownStamp;
+  DirectoryObservation<ThreadMetadataFrame>? _metadata;
+  bool _acpUnknown = false;
+
+  void _observeAcpMetadata() {
+    if (_closed || _metadata != null) return;
+    if (_dependencies.acpSessions?.conversationForThread(threadId) != null ||
+        _dependencies.directory?.observedThread(threadId)?.backend
+            is AcpAgentBackendView) {
+      _metadata = _dependencies.directory?.observeThread(threadId);
+    }
+  }
 
   @override
   ValueObservation<List<ComposerSubmission>> get submissions => _submissions;
@@ -272,6 +288,35 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     });
     // Register before begin() publishes its synchronous mutation notification.
     _pendingByStamp[submissionStamp] = pending;
+    _observeAcpMetadata();
+    final metadata = _metadata?.state.value;
+    if (_metadata != null &&
+        (metadata!.frame == null ||
+            metadata.closed ||
+            metadata.error != null)) {
+      reportFailure(StateError('Thread directory metadata is unavailable'));
+      completion.complete();
+      return pending;
+    }
+    final row =
+        metadata?.frame?.row ??
+        _dependencies.directory?.observedThread(threadId);
+    if (row?.backend is AcpAgentBackendView) {
+      unawaited(
+        _submitAcp(
+          row!,
+          beforeSubmit,
+        ).then(completion.complete, onError: completion.completeError),
+      );
+      return pending;
+    }
+    if (_dependencies.directory != null && row == null) {
+      reportFailure(
+        StateError('Thread submission target is no longer available'),
+      );
+      completion.complete();
+      return pending;
+    }
     late final FrozenComposerSubmission frozen;
     try {
       frozen = _freezeForSubmit();
@@ -287,6 +332,194 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       ).then(completion.complete, onError: completion.completeError),
     );
     return pending;
+  }
+
+  void _requireAcpSend(
+    SessionDirectoryRow row,
+    AcpConversationSession owner,
+    AcpSessionTargetView target,
+  ) {
+    final current = _metadata?.state.value;
+    final currentRow = current?.frame?.row;
+    final value = owner.state;
+    if (_closed ||
+        _dependencies.isClosed ||
+        _acpUnknown ||
+        current?.closed == true ||
+        current?.error != null ||
+        currentRow == null ||
+        currentRow.backend != row.backend ||
+        currentRow.workspaceId != row.workspaceId ||
+        currentRow.sessionId != target.sessionId ||
+        currentRow.agentId != target.agentId ||
+        currentRow.isChildRow ||
+        !identical(
+          _dependencies.acpSessions?.conversationForThread(threadId),
+          owner,
+        ) ||
+        value.target != target ||
+        !value.ready ||
+        value.openPending ||
+        value.disconnected ||
+        value.observationEnded) {
+      throw StateError('The ACP prompt target is unavailable or unresolved');
+    }
+    if (value.configPending ||
+        value.configError != null ||
+        value.sendPending ||
+        value.activeRun != null) {
+      throw StateError('Resolve ACP configuration or the current prompt first');
+    }
+    final workspace = _dependencies.project.value.projects?.values
+        .where((item) => item.id == row.workspaceId)
+        .firstOrNull;
+    if (workspace == null || workspace.sshAlias != null) {
+      throw StateError('ACP requires an available local workspace');
+    }
+    final recoveryIssue = recoveryIssueBlockingExecution(
+      _dependencies.recovery.value.value?.values ?? const [],
+      workspaceId: row.workspaceId,
+      threadId: threadId,
+    );
+    if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
+  }
+
+  Future<void> _submitAcp(
+    SessionDirectoryRow row,
+    Future<void> Function()? beforeSubmit,
+  ) async {
+    OperationId? operationId;
+    var accepted = false;
+    var clear = false;
+    var dispatched = false;
+    final frozenStamp = stamp;
+    final generation = _generation;
+    final text = state.draft;
+    final attachments = List<AttachmentDraftView>.unmodifiable(
+      state.attachments,
+    );
+    try {
+      final owner = _dependencies.acpSessions?.conversationForThread(threadId);
+      final target = owner?.state.target;
+      if (owner == null || target == null) {
+        throw StateError('The ACP conversation has not been opened');
+      }
+      _requireAcpSend(row, owner, target);
+      operationId = OperationId(newPromptInputId());
+      _dependencies.attachments.retainFrozen(
+        operationId: operationId,
+        binding: binding,
+        attachmentIds: attachments.map((item) => item.id),
+      );
+      apply(
+        SubmittingComposerThreadState(
+          draft: state.draft,
+          attachments: state.attachments,
+          submissionRevision: state.submissionRevision + 1,
+          attachmentGeneration: state.attachmentGeneration,
+          cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+          inputId: operationId.value,
+        ),
+      );
+      _requireAcpSend(row, owner, target);
+      if (_generation != generation) {
+        throw StateError('The ACP draft was discarded before dispatch');
+      }
+      final content = await _acpContent(
+        text,
+        attachments,
+        owner.state.capabilities,
+      );
+      if (beforeSubmit != null) await beforeSubmit();
+      _requireAcpSend(row, owner, target);
+      if (_generation != generation) {
+        throw StateError('The ACP draft was discarded before dispatch');
+      }
+      dispatched = true;
+      await owner.send(content);
+      accepted = true;
+      clear = !_closed && stamp == frozenStamp && _generation == generation;
+      if (!_closed) {
+        apply(
+          ComposerThreadState.idle(
+            draft: clear ? '' : state.draft,
+            attachments: clear ? const [] : state.attachments,
+            submissionRevision: state.submissionRevision,
+            attachmentGeneration: state.attachmentGeneration,
+            cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+          ),
+        );
+      }
+    } catch (error) {
+      if (dispatched && error is! AcpBusinessFailureView) _acpUnknown = true;
+      if (!_closed && _generation == generation) {
+        apply(
+          ComposerThreadState.failure(
+            error: error,
+            draft: state.draft,
+            attachments: state.attachments,
+            submissionRevision: state.submissionRevision,
+            attachmentGeneration: state.attachmentGeneration,
+            cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+            inputId: operationId?.value,
+          ),
+        );
+      }
+    } finally {
+      if (operationId != null) {
+        await _dependencies.attachments.completeFrozen(
+          operationId: operationId,
+          accepted: accepted,
+          clearCurrent: clear,
+          workspaceId: row.workspaceId,
+          threadId: threadId,
+        );
+      }
+    }
+  }
+
+  Future<List<AcpContentBlockView>> _acpContent(
+    String text,
+    List<AttachmentDraftView> attachments,
+    AcpAgentCapabilitiesView? capabilities,
+  ) async {
+    final content = <AcpContentBlockView>[
+      if (text.isNotEmpty) AcpTextContentView(text: text),
+    ];
+    for (final attachment in attachments) {
+      final supported = switch (attachment.modality) {
+        AttachmentModalityView.image => capabilities?.image == true,
+        AttachmentModalityView.file => capabilities?.embeddedContext == true,
+        AttachmentModalityView.video => false,
+      };
+      if (!supported) {
+        throw StateError('The ACP agent does not support this attachment');
+      }
+      final bytes = await _dependencies.transport.readAttachmentDraft(
+        attachment.id,
+      );
+      final data = base64Encode(bytes);
+      content.add(switch (attachment.modality) {
+        AttachmentModalityView.image => AcpImageContentView(
+          data: data,
+          mimeType: attachment.mediaType,
+        ),
+        AttachmentModalityView.file => AcpEmbeddedResourceView(
+          resource: AcpBlobResourceContentsView(
+            uri: Uri(
+              scheme: 'attachment',
+              pathSegments: [attachment.id, attachment.filename],
+            ).toString(),
+            mimeType: attachment.mediaType,
+            blob: data,
+          ),
+        ),
+        AttachmentModalityView.video => throw StateError(
+          'ACP video is unsupported',
+        ),
+      });
+    }
+    return List.unmodifiable(content);
   }
 
   Future<void> _prepareAndSubmit(
@@ -650,15 +883,23 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       observation.cancel();
     }
     _observations.clear();
+    try {
+      await _metadata?.release();
+    } catch (error, stackTrace) {
+      failure ??= error;
+      failureStack ??= stackTrace;
+    }
     if (failure != null) Error.throwWithStackTrace(failure!, failureStack!);
   }
 
-  String? get _workspaceId => _dependencies.conversations
-      .session(threadId)
-      .state
-      .workspace
-      ?.thread
-      .workspaceId;
+  String? get _workspaceId => _dependencies.directory != null
+      ? _dependencies.directory!.observedThread(threadId)?.workspaceId
+      : _dependencies.conversations
+            .session(threadId)
+            .state
+            .workspace
+            ?.thread
+            .workspaceId;
 }
 
 final class FrozenComposerSubmission {

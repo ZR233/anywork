@@ -181,6 +181,7 @@ final class ClientBoundaryDiagnostic {
 String _normalized(String path) => path.replaceAll('\\', '/');
 
 const _accountsRoot = 'code/anywork/lib/src/features/settings/accounts/';
+const _acpRoot = 'code/anywork/lib/src/features/conversation/acp/';
 
 // Normalize package and relative imports to the same source boundary. This
 // does not resolve symbols or infer ownership from a type's name.
@@ -316,6 +317,15 @@ bool _isAccountPresentation(String path) =>
       'previews/',
     ].any((directory) => path.startsWith('$_accountsRoot$directory'));
 
+bool _isAcpPresentation(String path) =>
+    path == '${_acpRoot}acp_views.dart' ||
+    const [
+      'state/',
+      'views/',
+      'widgets/',
+      'previews/',
+    ].any((directory) => path.startsWith('$_acpRoot$directory'));
+
 bool _isHandwrittenDart(String path) {
   path = _normalized(path);
   return path.endsWith('.dart') &&
@@ -351,6 +361,10 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   bool get isAccountState => path.startsWith('${_accountsRoot}state/');
   bool get isAccountViewModel =>
       path.startsWith('${_accountsRoot}view_models/');
+  bool get isAcpFeature => path.startsWith(_acpRoot);
+  bool get isAcpPresentation => _isAcpPresentation(path);
+  bool get isAcpState => path.startsWith('${_acpRoot}state/');
+  bool get isAcpViewModel => path.startsWith('${_acpRoot}view_models/');
 
   @override
   void visitImportDirective(ImportDirective node) {
@@ -373,13 +387,13 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   @override
   void visitPartDirective(PartDirective node) {
     final uri = node.uri.stringValue ?? '';
-    if (isAccountFeature &&
+    if ((isAccountFeature || isAcpFeature) &&
         !uri.endsWith('.g.dart') &&
         !uri.endsWith('.freezed.dart')) {
       report(
         node.offset,
         'UI-02',
-        'Account modules use imports; only generator-owned parts are allowed',
+        'Feature MVVM modules use imports; only generator-owned parts are allowed',
       );
     }
     super.visitPartDirective(node);
@@ -389,11 +403,11 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   void visitPartOfDirective(PartOfDirective node) {
     // Generated files are excluded by the source walker, so a handwritten
     // part cannot evade the dependency boundary of its owning library.
-    if (isAccountFeature && _isHandwrittenDart(path)) {
+    if ((isAccountFeature || isAcpFeature) && _isHandwrittenDart(path)) {
       report(
         node.offset,
         'UI-02',
-        'Account modules cannot be handwritten parts',
+        'Feature MVVM modules cannot be handwritten parts',
       );
     }
     super.visitPartOfDirective(node);
@@ -491,11 +505,94 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
         'Account ViewModel uses domain APIs and injected providers, not Widgets or adapters: $uri',
       );
     }
+    if (isAcpPresentation) {
+      final appDependency = resolved.startsWith('code/anywork/lib/');
+      final pureAppDependency =
+          _isAcpPresentation(resolved) ||
+          resolved.startsWith('code/anywork/lib/src/l10n/') ||
+          resolved.startsWith('code/anywork/lib/src/app/theme/') ||
+          resolved.startsWith('code/anywork/lib/src/shared/') ||
+          resolved.startsWith(
+            'code/anywork/lib/src/features/conversation/timeline/state/',
+          ) ||
+          resolved.startsWith(
+            'code/anywork/lib/src/features/conversation/timeline/widgets/',
+          ) ||
+          resolved.startsWith(
+            'code/anywork/lib/src/features/conversation/interactions/widgets/',
+          ) ||
+          resolved ==
+              'code/anywork/lib/src/features/conversation/composer/views/composer_dock_view.dart' ||
+          resolved ==
+              'code/anywork/lib/src/features/conversation/composer/widgets/composer_attachments.dart' ||
+          resolved ==
+              'code/anywork/lib/src/features/conversation/composer/widgets/multiline_enter_shortcuts.dart' ||
+          resolved ==
+              'code/anywork/lib/src/features/conversation/composer/widgets/composer_paste_action.dart' ||
+          resolved ==
+              'code/anywork/lib/src/features/status/status_bar_item.dart';
+      final businessPackage =
+          (uri.startsWith('package:anywork_client/') &&
+              uri != 'package:anywork_client/models.dart') ||
+          uri.startsWith('package:flutter_rust_bridge/') ||
+          const [
+            'riverpod',
+            'flutter_riverpod',
+            'riverpod_annotation',
+            'provider',
+          ].any((package) => uri.startsWith('package:$package/'));
+      if (businessPackage ||
+          (appDependency && !pureAppDependency) ||
+          const {'dart:io', 'dart:ffi', 'dart:isolate'}.contains(uri)) {
+        report(
+          literal.offset,
+          'UI-02',
+          'ACP presentation/preview must not depend on business or platform owners: $uri',
+        );
+      }
+    }
+    if (isAcpState &&
+        (uri.startsWith('package:flutter/') ||
+            uri.startsWith('package:material_ui/') ||
+            uri.startsWith('package:cupertino_ui/') ||
+            resolved.startsWith('code/anywork/lib/src/l10n/') ||
+            resolved.startsWith('code/anywork/lib/src/app/theme/') ||
+            resolved.startsWith('code/anywork/lib/src/shared/') ||
+            (resolved.startsWith(_acpRoot) &&
+                !resolved.startsWith('${_acpRoot}state/')))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'ACP presentation values cannot depend on Widgets or UI controllers: $uri',
+      );
+    }
+    if (isAcpViewModel &&
+        ((uri.startsWith('package:flutter/') &&
+                uri != 'package:flutter/foundation.dart') ||
+            uri.startsWith('package:material_ui/') ||
+            uri.startsWith('package:cupertino_ui/') ||
+            uri.startsWith('package:flutter_riverpod/') ||
+            resolved == '${_acpRoot}acp_views.dart' ||
+            const [
+              'views/',
+              'widgets/',
+              'connectors/',
+              'previews/',
+            ].any((directory) => resolved.startsWith('$_acpRoot$directory')) ||
+            resolved.startsWith('code/anywork/lib/src/app/') ||
+            resolved.startsWith('code/anywork/lib/src/platform/') ||
+            const {'dart:io', 'dart:ffi'}.contains(uri))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'ACP ViewModel uses domain APIs and injected providers, not Widgets or platform adapters: $uri',
+      );
+    }
   }
 
   @override
   void visitNamedType(NamedType node) {
-    if (isAccountState &&
+    if ((isAccountState || isAcpState) &&
         const {
           'Future',
           'FutureOr',
@@ -508,7 +605,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
       report(
         node.offset,
         'UI-02',
-        'Account presentation values cannot carry asynchronous resources',
+        'Presentation state values cannot carry asynchronous resources',
       );
     }
     if (isClient &&

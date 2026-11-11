@@ -19,6 +19,7 @@ final class DraftsRepositoryImpl implements DraftsRepository {
       clipboardImageCleanup: clipboardImageCleanup,
     );
     dependencies.attachments = attachments;
+    dependencies.composer = composer;
     startDraft = StartSessionDraftImpl(dependencies);
     dependencies.startDraft = startDraft;
   }
@@ -47,11 +48,15 @@ final class DraftsRepositoryImpl implements DraftsRepository {
   List<ComposerDraftOwner> projectComposers(String workspaceId) =>
       List.unmodifiable([
         for (final owner in _composers.values)
-          if (dependencies.conversations
-                  .sessionState(owner.threadId)
-                  ?.workspace
-                  ?.thread
-                  .workspaceId ==
+          if ((dependencies.directory != null
+                  ? dependencies.directory!
+                        .observedThread(owner.threadId)
+                        ?.workspaceId
+                  : dependencies.conversations
+                        .sessionState(owner.threadId)
+                        ?.workspace
+                        ?.thread
+                        .workspaceId) ==
               workspaceId)
             owner,
       ]);

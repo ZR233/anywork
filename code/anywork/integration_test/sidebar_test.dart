@@ -7,6 +7,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/features/shell/sidebar/studio_sidebar.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -41,11 +42,9 @@ void main() {
   const longTitle = '侧栏原生集成长标题用于验证抽屉内会话行在放大字体和狭窄窗口下仍保持单行省略且不会产生布局溢出';
 
   setUpAll(() async {
-    final project = Directory(
-      '$projectsRoot/sidebar-project-with-a-very-long-visible-name',
-    );
+    final project = Directory(p.join(projectsRoot, 'sidebar-project'));
     await _prepareSyntheticGitProject(project);
-    projectPath = project.absolute.path;
+    projectPath = await project.resolveSymbolicLinks();
     harness = await ProductionStudioHarness.start(
       binding: binding,
       artifactsEnvironmentVariable: 'ANYWORK_SIDEBAR_ARTIFACTS',
@@ -538,8 +537,6 @@ void main() {
     (tester) async {
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
-      final semantics = tester.ensureSemantics();
-      addTearDown(semantics.dispose);
       final shell = find.byKey(StudioDriverKeys.shell);
       final divider = find.byKey(StudioDriverKeys.sidebarResize);
       expect(shell, findsOneWidget);
@@ -596,9 +593,17 @@ void main() {
         'drag cannot cross the 440px upper boundary',
       );
 
-      await tester.tap(divider);
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(divider);
+      // Native integration uses real gesture timers. Resolve the position once
+      // and avoid a rendered frame between taps consuming the double-tap window.
+      final resetPosition = tester.getCenter(divider);
+      final doubleTapClock = Stopwatch()..start();
+      await tester.tapAt(resetPosition);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 80)),
+      );
+      final secondTapAt = doubleTapClock.elapsedMilliseconds;
+      await tester.tapAt(resetPosition);
+      debugPrint('SIDEBAR_DOUBLE_TAP secondDownAfterMs=$secondTapAt');
       await scene.until(
         () => (width() - 336).abs() <= 1 && canonicalWidth() == 336,
         'double tap restores and saves the canonical default',
@@ -620,6 +625,8 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     },
+    // The official test binding owns and releases the semantics handle.
+    semanticsEnabled: true,
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
@@ -696,12 +703,15 @@ void main() {
       await scene.capture('sidebar-narrow-drawer');
 
       final archiveDirectory = Directory(
-        '${Directory(projectPath).parent.path}/sidebar-project-close-target',
+        p.join(
+          Directory(projectPath).parent.path,
+          'sidebar-project-close-target',
+        ),
       );
       await _prepareSyntheticGitProject(archiveDirectory);
       final archiveProject = await harness.openProject(
         scene,
-        archiveDirectory.absolute.path,
+        await archiveDirectory.resolveSymbolicLinks(),
       );
       final archiveProjectRow = find.byKey(
         StudioDriverKeys.projectRow(archiveProject.id),
@@ -1109,7 +1119,7 @@ Future<void> _prepareSyntheticGitProject(Directory project) async {
     throw StateError('Synthetic project path must be new: ${project.path}');
   }
   await project.create(recursive: true);
-  await File('${project.path}/README.md')
+  await File(p.join(project.path, 'README.md'))
       .writeAsString('# Sidebar integration fixture\n', flush: true);
   await _runGit(project, [
     '-c',

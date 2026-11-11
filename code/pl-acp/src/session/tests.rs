@@ -92,6 +92,7 @@ struct PeerState {
     lists: usize,
     modes: Vec<SessionModeId>,
     boolean_advertised: bool,
+    initialize_request: Option<InitializeRequest>,
     held_closes: Vec<Responder<CloseSessionResponse>>,
     held_load: Option<(Responder<LoadSessionResponse>, LoadSessionResponse)>,
 }
@@ -116,6 +117,7 @@ enum PeerCommand {
 struct Harness {
     session: Session,
     observer: Observer,
+    initialized: bool,
     driver: tokio::task::JoinHandle<Exit>,
     peer: tokio::task::JoinHandle<Result<(), RpcError>>,
     state: PeerShared,
@@ -168,6 +170,7 @@ impl Harness {
             let cancel_changed = peer_changed.clone();
             Agent.v1()
                 .on_receive_request(async move |request: InitializeRequest, responder: Responder<InitializeResponse>, _: ConnectionTo<Client>| {
+                    peer_lock(&init_state).initialize_request = Some(request.clone());
                     peer_lock(&init_state).boolean_advertised = request.client_capabilities.session.and_then(|session| session.config_options)
                         .is_some_and(|config| config.boolean.is_some());
                     responder.respond(InitializeResponse::new(ProtocolVersion::V1)
@@ -287,6 +290,7 @@ impl Harness {
         Self {
             session,
             observer,
+            initialized: false,
             driver,
             peer,
             state,
@@ -310,14 +314,29 @@ impl Harness {
     }
 
     async fn event(&mut self) -> Event {
-        tokio::time::timeout(Duration::from_secs(5), self.observer.recv())
+        let event = tokio::time::timeout(Duration::from_secs(5), self.observer.recv())
             .await
             .unwrap()
-            .unwrap()
+            .unwrap();
+        if matches!(event, Event::Initialized(_)) {
+            assert!(
+                !self.initialized,
+                "initialize must be published exactly once"
+            );
+            self.initialized = true;
+        }
+        event
     }
 
     async fn ready(&mut self) -> NewSessionResponse {
-        match self.event().await {
+        let event = self.event().await;
+        let event = if matches!(event, Event::Initialized(_)) {
+            self.event().await
+        } else {
+            event
+        };
+        assert!(self.initialized, "Ready must follow initialize");
+        match event {
             Event::Ready(response) => response,
             event => panic!("{event:?}"),
         }
@@ -414,6 +433,10 @@ async fn official_new_load_resume_and_realtime_load_replay() {
                 ..Scenario::default()
             },
         );
+        let Event::Initialized(capabilities) = harness.event().await else {
+            panic!("initialize must precede every setup or replay event");
+        };
+        assert_eq!(*capabilities, Scenario::default().capabilities);
         if matches!(intent, Open::Load(_)) {
             assert!(matches!(
                 harness.event().await,
@@ -463,7 +486,19 @@ async fn official_new_load_resume_and_realtime_load_replay() {
             Some(configs("a")),
             "setup response follows pre-load update"
         );
-        assert!(!peer_lock(&harness.state).boolean_advertised);
+        assert!(peer_lock(&harness.state).boolean_advertised);
+        let initialize = peer_lock(&harness.state)
+            .initialize_request
+            .as_ref()
+            .unwrap()
+            .to_untyped_message()
+            .unwrap();
+        assert!(
+            initialize.params["clientCapabilities"]["session"]["configOptions"]["boolean"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             peer_lock(&harness.state).opens,
             vec![match intent {
@@ -481,6 +516,31 @@ async fn opened(session: &Session) -> Result<SessionId, Error> {
     tokio::time::timeout(Duration::from_secs(5), session.opened())
         .await
         .expect("open must settle")
+}
+
+#[tokio::test]
+async fn initialized_capabilities_use_the_original_byte_window_without_failing_open() {
+    let mut meta = Meta::new();
+    meta.insert("large".into(), "x".repeat(8 * 1024 * 1024).into());
+    let mut harness = Harness::new(
+        Open::New,
+        Scenario {
+            capabilities: Scenario::default().capabilities.meta(meta),
+            ..Scenario::default()
+        },
+    );
+    assert!(matches!(
+        harness.event().await,
+        Event::Gap(Gap::WindowExceeded)
+    ));
+    assert!(harness.observer.recv().await.is_none());
+    assert_eq!(
+        opened(&harness.session).await.unwrap().to_string(),
+        "business"
+    );
+    assert_eq!(peer_lock(&harness.state).opens, vec!["new"]);
+    let exit = harness.finish().await;
+    assert_eq!(exit.observation_gap, Some(Gap::WindowExceeded));
 }
 
 #[tokio::test]
@@ -736,6 +796,7 @@ async fn capabilities_fail_before_open_without_fallback() {
                 ..Scenario::default()
             },
         );
+        assert!(matches!(harness.event().await, Event::Initialized(_)));
         assert!(matches!(
             harness.event().await,
             Event::Failed(Error::Unsupported)
@@ -816,6 +877,14 @@ async fn configuration_full_lists_follow_wire_order_and_failure_keeps_push() {
             .clone();
         assert_eq!(request.config_id.to_string(), id);
         assert_eq!(request.value, expected);
+        let wire = request.to_untyped_message().unwrap();
+        assert_eq!(wire.params["configId"].as_str(), Some(id));
+        if id == "safe" {
+            assert_eq!(wire.params["type"].as_str(), Some("boolean"));
+            assert_eq!(wire.params["value"].as_bool(), Some(false));
+        } else {
+            assert_eq!(wire.params["value"].as_str(), Some("fast"));
+        }
         harness
             .control
             .send(PeerCommand::Config {
@@ -1335,6 +1404,17 @@ async fn prompt_capabilities_and_list_are_checked_before_publication() {
             },
         );
         harness.ready().await;
+        assert_eq!(
+            harness
+                .session
+                .snapshot()
+                .await
+                .unwrap()
+                .capabilities
+                .prompt_capabilities
+                .image,
+            image_supported
+        );
         assert!(matches!(
             harness.session.list(ListSessionsRequest::new()).await,
             Err(Error::Unsupported)
@@ -1368,6 +1448,7 @@ async fn auth_required_keeps_actual_agent_guidance_without_auth_or_usage() {
             ..Scenario::default()
         },
     );
+    assert!(matches!(harness.event().await, Event::Initialized(_)));
     assert!(
         matches!(harness.event().await, Event::Failed(Error::Rpc(error)) if error.code == agent_client_protocol::ErrorCode::AUTH_REQUIRED)
     );

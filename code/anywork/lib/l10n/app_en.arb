@@ -1,4 +1,33 @@
 {
+  "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",
+  "acpHistoryButton": "External sessions",
+  "acpHistoryOpenPanel": "View external sessions",
+  "acpHistoryNoOwner": "No active ACP session",
+  "acpHistoryOwnerLoading": "Opening ACP session",
+  "acpHistoryUnknownCapability": "The ACP service capability is not known yet",
+  "acpHistoryUnsupported": "This ACP service cannot list sessions",
+  "acpHistoryNotReady": "ACP session is not ready",
+  "acpHistoryTitle": "External ACP sessions",
+  "acpHistoryClose": "Close",
+  "acpHistoryRefresh": "Refresh",
+  "acpHistoryLoadMore": "Load more",
+  "acpHistoryLoading": "Loading sessions…",
+  "acpHistoryEmpty": "No external sessions",
+  "acpHistoryActions": "Open options",
+  "acpHistoryLoad": "Load history",
+  "acpHistoryResume": "Resume",
+  "acpHistoryResumeNote": "Resume does not replay history",
+  "acpHistoryLoadNote": "Load replays history when supported by the peer",
+  "acpHistoryUnavailable": "This session cannot be opened with the available capabilities",
+  "acpHistoryOpening": "Opening…",
+  "acpHistoryOpened": "Opened",
+  "acpHistoryUnknown": "The open result is unknown. Do not retry; check the conversation list.",
+  "acpHistoryListFailed": "Could not read sessions",
+  "acpHistoryCwd": "cwd",
+  "acpHistoryUpdated": "Updated",
+  "acpConversationNoServices": "No ACP services added",
+  "acpConversationServiceDisabled": "Disabled",
+  "acpConversationManageServices": "Manage ACP services",
   "accountsModelModalityCapabilities": "Input/output modalities and capabilities",
   "accountsModelContextThreshold": "Context and compaction threshold",
   "accountsModelProtocolOrigin": "Protocol and model origin",
@@ -3081,6 +3110,196 @@
   "acpRemoveEntry": "Remove",
   "accountsApi": "API",
   "accountsAcp": "ACP",
+  "acpBackendNativeLabel": "anywork",
+  "acpBackendNativeHint": "Built-in model API runtime",
+  "acpBackendServicesHeader": "ACP services",
+  "acpBackendReadyBadge": "Enabled",
+  "acpStartDraftHint": "Optional initial draft (carried into the new ACP session without auto-sending)…",
+  "acpStartHandshakeNote": "Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.",
+  "acpStartCreateAction": "Start ACP session",
+  "acpStartCreatingAction": "Starting…",
+  "acpStartSshUnsupported": "ACP sessions do not support SSH remote projects yet. Select a local project.",
+  "acpStartExistingAttachmentsHint": "Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.",
+  "acpSessionConnectingTitle": "Connecting to ACP service…",
+  "acpSessionConnectingSubtitle": "Initializing protocol handshake and negotiating capabilities.",
+  "acpSessionReadyEmptyTitle": "ACP session is ready",
+  "acpSessionReadyEmptySubtitle": "Send a message below or adjust server options in the toolbar.",
+  "acpCapabilityImage": "Image input",
+  "acpCapabilityAudio": "Audio input",
+  "acpCapabilityEmbeddedContext": "Embedded context",
+  "acpCapabilityLoadSession": "Load history",
+  "acpCapabilityResumeSession": "Resume session",
+  "acpCapabilityListSessions": "External sessions",
+  "acpNoticeErrorTitle": "ACP session error",
+  "acpNoticeDisconnected": "The ACP connection closed. Existing output remains readable.",
+  "acpNoticeObservationEnded": "Session observation has ended.",
+  "acpNoticeGapWindowExceeded": "Streaming observation encountered a gap (buffer window exceeded); displayed content may be incomplete.",
+  "acpNoticeGapDisconnected": "Streaming observation encountered a gap (connection interrupted); displayed content may be incomplete.",
+  "acpNoticeGapEncoding": "Streaming observation encountered a gap (frame decoding issue); displayed content may be incomplete.",
+  "acpNoticeResumedWithoutHistory": "Resumed an external session without replaying prior messages; earlier history may exist on the peer.",
+  "acpNoticeResidentWithoutObservation": "Attached to a resident session without prior stream history; earlier content is not assumed complete.",
+  "acpNoticeIncompleteHistory": "Loaded history is incomplete; displayed messages cannot be assumed complete.",
+  "acpNoticeLoadReplay": "Replayed history from external session",
+  "acpStatusConnecting": "Connecting",
+  "acpStatusReady": "Ready",
+  "acpStatusRunning": "Running",
+  "acpStatusStopping": "Stopping",
+  "acpStatusDisconnected": "Disconnected",
+  "acpStatusObservationEnded": "Ended",
+  "acpStatusCompleted": "Completed · {reason}",
+  "@acpStatusCompleted": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "acpStopReasonEndTurn": "Turn finished",
+  "acpStopReasonMaxTokens": "Max tokens reached",
+  "acpStopReasonMaxTurnRequests": "Request limit reached",
+  "acpStopReasonRefusal": "Declined",
+  "acpStopReasonCancelled": "Interrupted",
+  "acpProvenanceReplay": "Loaded history",
+  "acpProvenanceResumed": "Resumed",
+  "acpUsageReadout": "Context {used} / {size}",
+  "@acpUsageReadout": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpPlanTitle": "Execution plan",
+  "acpPlanProgress": "{completed} / {total} done",
+  "@acpPlanProgress": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpPlanPriorityHigh": "High",
+  "acpPlanPriorityMedium": "Medium",
+  "acpPlanPriorityLow": "Low",
+  "acpPlanStatusPending": "Pending",
+  "acpPlanStatusInProgress": "In progress",
+  "acpPlanStatusCompleted": "Completed",
+  "acpPermissionTitle": "Permission requested",
+  "acpPermissionQueueBadge": "{count} pending",
+  "@acpPermissionQueueBadge": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpPermissionCancel": "Cancel",
+  "acpPermissionSubmitting": "Submitting decision…",
+  "acpConfigModeFallbackLabel": "Mode",
+  "acpConfigMoreLabel": "More settings",
+  "acpConfigMoreCountLabel": "More ({count})",
+  "@acpConfigMoreCountLabel": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpConfigApplying": "Applying configuration…",
+  "acpConfigFailed": "Configuration failed: {error}",
+  "@acpConfigFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpConfigBooleanOn": "On",
+  "acpConfigBooleanOff": "Off",
+  "acpComposerHint": "Message ACP agent (Enter to send, Shift+Enter for newline)…",
+  "acpComposerSendTooltip": "Send",
+  "acpComposerInterruptTooltip": "Interrupt",
+  "acpComposerBlockerOpening": "Opening ACP session…",
+  "acpComposerBlockerInitializing": "Initializing ACP session…",
+  "acpComposerBlockerDisconnected": "ACP connection is closed",
+  "acpComposerBlockerEnded": "ACP observation has ended",
+  "acpComposerBlockerNotReady": "ACP session is not ready",
+  "acpComposerBlockerConfigPending": "Applying configuration; wait before sending",
+  "acpComposerBlockerConfigError": "Configuration failed: {error}",
+  "@acpComposerBlockerConfigError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpComposerBlockerSending": "Sending message…",
+  "acpComposerBlockerRunning": "Response in progress",
+  "acpContentThoughtLabel": "Thinking",
+  "acpContentAudioLabel": "Audio content",
+  "acpContentResourceLabel": "Embedded resource",
+  "acpContentBinarySummary": "{mimeType} · {byteCount} bytes",
+  "@acpContentBinarySummary": {
+    "placeholders": {
+      "mimeType": {
+        "type": "String"
+      },
+      "byteCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpContentCopyUri": "Copy reference",
+  "acpContentOpenLink": "Open link",
+  "acpToolTerminalPrefix": "Terminal {id}",
+  "@acpToolTerminalPrefix": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpdateCompaction": "Context compaction · {status}",
+  "@acpUpdateCompaction": {
+    "placeholders": {
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpdateSessionInfo": "Session metadata updated",
+  "acpUpdateGeneric": "Session status updated",
+  "acpCommandsSummary": "Available commands ({count})",
+  "@acpCommandsSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySubtitle": "Browse peer sessions on this ACP service to load history or resume execution.",
+  "acpMediaOpenLinkFailed": "Could not open link: {error}",
+  "@acpMediaOpenLinkFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMediaImageLoadFailed": "Failed to decode image: {error}",
+  "@acpMediaImageLoadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "timelineLspStatusTitle": "LSP status",
   "timelineLspCapabilitiesRunning": "Checking language server capabilities",
   "timelineLspCapabilitiesSucceeded": "Checked language server capabilities",

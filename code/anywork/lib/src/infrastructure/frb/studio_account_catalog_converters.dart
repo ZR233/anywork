@@ -108,38 +108,52 @@ AccountDomainFrame _accountFrameFromFrb(
   frb_accounts.BridgeAccountDomainFrame_Summaries(
     :final stamp,
     :final accounts,
+    :final acpDiagnostics,
   ) =>
-    AccountSummariesFrame(_accountStampFromFrb(stamp), [
-      for (final account in accounts)
-        AccountSummary(
-          identity: _accountIdentityFromFrb(account.identity),
-          name: account.name,
-          brandKey: account.brandKey,
-          displayEndpoint: account.displayEndpoint,
-          chatgptAccount: account.chatgptAccount == null
-              ? null
-              : _chatGptAccountInfoFromFrb(account.chatgptAccount!),
-          isDefault: account.isDefault,
-          billingKind: account.billingKind == null
-              ? null
-              : _billingKindFromFrb(account.billingKind!),
-          billingKindOverride: account.billingKindOverride == null
-              ? null
-              : _billingKindFromFrb(account.billingKindOverride!),
-          credentialReady: account.credentialReady,
-          usageQueryRevision: account.usageQueryRevision?.toInt(),
-          acpConnectionRevision: _frbNullableInt(account.acpConnectionRevision),
-          capabilities: AccountCapabilities(
-            setDefault: account.capabilities.setDefault,
-            edit: account.capabilities.edit,
-            remove: account.capabilities.remove,
-            queryUsage: account.capabilities.queryUsage,
-            syncModels: account.capabilities.syncModels,
-            editModels: account.capabilities.editModels,
-            acpAuth: account.capabilities.acpAuth,
+    AccountSummariesFrame(
+      _accountStampFromFrb(stamp),
+      [
+        for (final account in accounts)
+          AccountSummary(
+            identity: _accountIdentityFromFrb(account.identity),
+            name: account.name,
+            brandKey: account.brandKey,
+            displayEndpoint: account.displayEndpoint,
+            chatgptAccount: account.chatgptAccount == null
+                ? null
+                : _chatGptAccountInfoFromFrb(account.chatgptAccount!),
+            isDefault: account.isDefault,
+            billingKind: account.billingKind == null
+                ? null
+                : _billingKindFromFrb(account.billingKind!),
+            billingKindOverride: account.billingKindOverride == null
+                ? null
+                : _billingKindFromFrb(account.billingKindOverride!),
+            credentialReady: account.credentialReady,
+            usageQueryRevision: account.usageQueryRevision?.toInt(),
+            acpEnabled: account.acpEnabled,
+            acpConnectionRevision: _frbNullableInt(
+              account.acpConnectionRevision,
+            ),
+            capabilities: AccountCapabilities(
+              setDefault: account.capabilities.setDefault,
+              edit: account.capabilities.edit,
+              remove: account.capabilities.remove,
+              queryUsage: account.capabilities.queryUsage,
+              syncModels: account.capabilities.syncModels,
+              editModels: account.capabilities.editModels,
+              acpAuth: account.capabilities.acpAuth,
+            ),
           ),
-        ),
-    ]),
+      ],
+      acpDiagnostics: [
+        for (final diagnostic in acpDiagnostics)
+          AcpDefinitionDiagnosticView(
+            fileName: diagnostic.fileName,
+            message: diagnostic.message,
+          ),
+      ],
+    ),
   frb_accounts.BridgeAccountDomainFrame_Detail(
     :final stamp,
     :final identity,

@@ -10,6 +10,93 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get conversationDirectoryUnavailable => '无法获取会话信息。请重试。';
+
+  @override
+  String get acpHistoryButton => '外部会话';
+
+  @override
+  String get acpHistoryOpenPanel => '查看外部会话';
+
+  @override
+  String get acpHistoryNoOwner => '没有活动的 ACP 会话';
+
+  @override
+  String get acpHistoryOwnerLoading => '正在打开 ACP 会话';
+
+  @override
+  String get acpHistoryUnknownCapability => 'ACP 服务能力尚未确认';
+
+  @override
+  String get acpHistoryUnsupported => '此 ACP 服务不支持列出会话';
+
+  @override
+  String get acpHistoryNotReady => 'ACP 会话尚未就绪';
+
+  @override
+  String get acpHistoryTitle => '外部 ACP 会话';
+
+  @override
+  String get acpHistoryClose => '关闭';
+
+  @override
+  String get acpHistoryRefresh => '刷新';
+
+  @override
+  String get acpHistoryLoadMore => '加载更多';
+
+  @override
+  String get acpHistoryLoading => '正在读取会话…';
+
+  @override
+  String get acpHistoryEmpty => '没有外部会话';
+
+  @override
+  String get acpHistoryActions => '打开方式';
+
+  @override
+  String get acpHistoryLoad => '加载历史';
+
+  @override
+  String get acpHistoryResume => '继续';
+
+  @override
+  String get acpHistoryResumeNote => '继续操作不会回放历史';
+
+  @override
+  String get acpHistoryLoadNote => '加载会在对端支持时回放历史';
+
+  @override
+  String get acpHistoryUnavailable => '当前能力不支持打开此会话';
+
+  @override
+  String get acpHistoryOpening => '正在打开…';
+
+  @override
+  String get acpHistoryOpened => '已打开';
+
+  @override
+  String get acpHistoryUnknown => '打开结果未知。请勿重试，请检查对话列表。';
+
+  @override
+  String get acpHistoryListFailed => '读取会话失败';
+
+  @override
+  String get acpHistoryCwd => 'cwd';
+
+  @override
+  String get acpHistoryUpdated => '更新时间';
+
+  @override
+  String get acpConversationNoServices => '尚未添加 ACP 服务';
+
+  @override
+  String get acpConversationServiceDisabled => '已禁用';
+
+  @override
+  String get acpConversationManageServices => '管理 ACP 服务';
+
+  @override
   String get accountsModelModalityCapabilities => '输入／输出模态与能力';
 
   @override
@@ -6055,6 +6142,304 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountsAcp => 'ACP';
+
+  @override
+  String get acpBackendNativeLabel => '糊来帮';
+
+  @override
+  String get acpBackendNativeHint => '内置模型 API 运行时';
+
+  @override
+  String get acpBackendServicesHeader => 'ACP 服务';
+
+  @override
+  String get acpBackendReadyBadge => '可用';
+
+  @override
+  String get acpStartDraftHint => '可选：输入初始草稿（创建后带入新会话输入框，不会自动发送）…';
+
+  @override
+  String get acpStartHandshakeNote => '创建会话先完成服务握手并获取动态配置；上方草稿将原样带入新会话输入框。';
+
+  @override
+  String get acpStartCreateAction => '创建 ACP 会话';
+
+  @override
+  String get acpStartCreatingAction => '正在创建…';
+
+  @override
+  String get acpStartSshUnsupported => 'ACP 会话暂不支持 SSH 项目，请选择本地项目。';
+
+  @override
+  String get acpStartExistingAttachmentsHint =>
+      '当前项目草稿中的附件已保留供内置会话使用，创建 ACP 会话时不会发送。';
+
+  @override
+  String get acpSessionConnectingTitle => '正在连接 ACP 服务…';
+
+  @override
+  String get acpSessionConnectingSubtitle => '正在完成协议初始化与能力协商。';
+
+  @override
+  String get acpSessionReadyEmptyTitle => 'ACP 会话已就绪';
+
+  @override
+  String get acpSessionReadyEmptySubtitle => '可在下方输入消息开始对话，或在工具栏调整服务端选项。';
+
+  @override
+  String get acpCapabilityImage => '图片输入';
+
+  @override
+  String get acpCapabilityAudio => '音频输入';
+
+  @override
+  String get acpCapabilityEmbeddedContext => '内嵌上下文';
+
+  @override
+  String get acpCapabilityLoadSession => '加载历史';
+
+  @override
+  String get acpCapabilityResumeSession => '恢复会话';
+
+  @override
+  String get acpCapabilityListSessions => '外部会话列表';
+
+  @override
+  String get acpNoticeErrorTitle => 'ACP 会话异常';
+
+  @override
+  String get acpNoticeDisconnected => 'ACP 连接已断开，已收到的内容仍可正常查阅。';
+
+  @override
+  String get acpNoticeObservationEnded => 'ACP 会话观察已结束。';
+
+  @override
+  String get acpNoticeGapWindowExceeded => '观察出现缺口（缓冲窗口超出），当前内容可能缺失。';
+
+  @override
+  String get acpNoticeGapDisconnected => '观察出现缺口（连接中断），当前内容可能缺失。';
+
+  @override
+  String get acpNoticeGapEncoding => '观察出现缺口（帧编码异常），当前内容可能缺失。';
+
+  @override
+  String get acpNoticeResumedWithoutHistory => '该会话由外部继续打开，对端未回放历史，不能据此认为历史完整。';
+
+  @override
+  String get acpNoticeResidentWithoutObservation =>
+      '已附着到驻留会话但无早先观察流，不能据此认为历史完整。';
+
+  @override
+  String get acpNoticeIncompleteHistory => '历史记录未完整加载，不能据此认为历史完整。';
+
+  @override
+  String get acpNoticeLoadReplay => '已从外部会话回放历史记录';
+
+  @override
+  String get acpStatusConnecting => '正在连接';
+
+  @override
+  String get acpStatusReady => '已就绪';
+
+  @override
+  String get acpStatusRunning => '正在运行';
+
+  @override
+  String get acpStatusStopping => '正在中断';
+
+  @override
+  String get acpStatusDisconnected => '连接已断开';
+
+  @override
+  String get acpStatusObservationEnded => '观察已结束';
+
+  @override
+  String acpStatusCompleted(String reason) {
+    return '已完成 · $reason';
+  }
+
+  @override
+  String get acpStopReasonEndTurn => '正常结束';
+
+  @override
+  String get acpStopReasonMaxTokens => '达到词元上限';
+
+  @override
+  String get acpStopReasonMaxTurnRequests => '达到请求上限';
+
+  @override
+  String get acpStopReasonRefusal => '已拒绝';
+
+  @override
+  String get acpStopReasonCancelled => '已中断';
+
+  @override
+  String get acpProvenanceReplay => '历史回放';
+
+  @override
+  String get acpProvenanceResumed => '外部继续';
+
+  @override
+  String acpUsageReadout(String used, String size) {
+    return '上下文 $used / $size';
+  }
+
+  @override
+  String get acpPlanTitle => '执行计划';
+
+  @override
+  String acpPlanProgress(int completed, int total) {
+    return '已完成 $completed / $total';
+  }
+
+  @override
+  String get acpPlanPriorityHigh => '高';
+
+  @override
+  String get acpPlanPriorityMedium => '中';
+
+  @override
+  String get acpPlanPriorityLow => '低';
+
+  @override
+  String get acpPlanStatusPending => '待处理';
+
+  @override
+  String get acpPlanStatusInProgress => '进行中';
+
+  @override
+  String get acpPlanStatusCompleted => '已完成';
+
+  @override
+  String get acpPermissionTitle => '需要工具权限';
+
+  @override
+  String acpPermissionQueueBadge(int count) {
+    return '$count 项待审批';
+  }
+
+  @override
+  String get acpPermissionCancel => '取消';
+
+  @override
+  String get acpPermissionSubmitting => '正在提交决定…';
+
+  @override
+  String get acpConfigModeFallbackLabel => '模式';
+
+  @override
+  String get acpConfigMoreLabel => '更多设置';
+
+  @override
+  String acpConfigMoreCountLabel(int count) {
+    return '更多设置 ($count)';
+  }
+
+  @override
+  String get acpConfigApplying => '正在应用配置…';
+
+  @override
+  String acpConfigFailed(String error) {
+    return '配置失败：$error';
+  }
+
+  @override
+  String get acpConfigBooleanOn => '开启';
+
+  @override
+  String get acpConfigBooleanOff => '关闭';
+
+  @override
+  String get acpComposerHint => '向 ACP 智能体发送消息（Enter 发送，Shift+Enter 换行）…';
+
+  @override
+  String get acpComposerSendTooltip => '发送';
+
+  @override
+  String get acpComposerInterruptTooltip => '中断';
+
+  @override
+  String get acpComposerBlockerOpening => '正在打开 ACP 会话…';
+
+  @override
+  String get acpComposerBlockerInitializing => '正在初始化 ACP 会话…';
+
+  @override
+  String get acpComposerBlockerDisconnected => 'ACP 连接已断开';
+
+  @override
+  String get acpComposerBlockerEnded => 'ACP 观察已结束';
+
+  @override
+  String get acpComposerBlockerNotReady => 'ACP 会话尚未就绪';
+
+  @override
+  String get acpComposerBlockerConfigPending => '正在应用配置，完成前不能发送消息';
+
+  @override
+  String acpComposerBlockerConfigError(String error) {
+    return '配置失败：$error';
+  }
+
+  @override
+  String get acpComposerBlockerSending => '正在发送…';
+
+  @override
+  String get acpComposerBlockerRunning => '正在生成回复';
+
+  @override
+  String get acpContentThoughtLabel => '思考过程';
+
+  @override
+  String get acpContentAudioLabel => '音频内容';
+
+  @override
+  String get acpContentResourceLabel => '内嵌资源';
+
+  @override
+  String acpContentBinarySummary(String mimeType, int byteCount) {
+    return '$mimeType · $byteCount 字节';
+  }
+
+  @override
+  String get acpContentCopyUri => '复制引用';
+
+  @override
+  String get acpContentOpenLink => '打开链接';
+
+  @override
+  String acpToolTerminalPrefix(String id) {
+    return '终端 $id';
+  }
+
+  @override
+  String acpUpdateCompaction(String status) {
+    return '上下文压缩 · $status';
+  }
+
+  @override
+  String get acpUpdateSessionInfo => '会话信息已更新';
+
+  @override
+  String get acpUpdateGeneric => 'ACP 会话状态已更新';
+
+  @override
+  String acpCommandsSummary(int count) {
+    return '可用命令 ($count)';
+  }
+
+  @override
+  String get acpHistorySubtitle => '浏览当前 ACP 服务对端已有的会话，可选择回放历史或直接继续对话。';
+
+  @override
+  String acpMediaOpenLinkFailed(String error) {
+    return '无法打开链接：$error';
+  }
+
+  @override
+  String acpMediaImageLoadFailed(String error) {
+    return '图片读取失败：$error';
+  }
 
   @override
   String get timelineLspStatusTitle => 'LSP 状态';

@@ -13,6 +13,8 @@ class StartEnvironmentBar extends StatelessWidget {
     required this.actions,
     this.onAddProject,
     this.enabled = true,
+    this.projectOnly = false,
+    this.backendSelector,
     super.key,
   });
 
@@ -20,6 +22,8 @@ class StartEnvironmentBar extends StatelessWidget {
   final ComposerViewModel actions;
   final VoidCallback? onAddProject;
   final bool enabled;
+  final bool projectOnly;
+  final Widget? backendSelector;
 
   @override
   Widget build(BuildContext context) {
@@ -34,22 +38,49 @@ class StartEnvironmentBar extends StatelessWidget {
       onSelected: actions.selectProject,
     );
     final defaults = state.delegation;
-    if (defaults == null || workspace == null) {
-      return Align(alignment: Alignment.centerLeft, child: selector);
+    if (projectOnly || defaults == null || workspace == null) {
+      return _withBackend(
+        Align(alignment: Alignment.centerLeft, child: selector),
+      );
     }
     final draft = start.sessionDraft.forProject(workspace.id);
-    return StartEnvironmentView(
-      projectSelector: selector,
-      defaultMode: defaults.mode,
-      defaultPreference: defaults.preference,
-      modeOverride: draft.delegationModeOverride,
-      preferenceOverride: draft.delegationPreferenceOverride,
-      workspaceMode: draft.workspaceMode,
-      isStandalone: workspace.isStandalone,
-      enabled: editable,
-      onModeChanged: actions.setDelegationMode,
-      onPreferenceChanged: actions.setDelegationPreference,
-      onWorkspaceModeChanged: actions.setWorkspaceMode,
+    return _withBackend(
+      StartEnvironmentView(
+        projectSelector: selector,
+        defaultMode: defaults.mode,
+        defaultPreference: defaults.preference,
+        modeOverride: draft.delegationModeOverride,
+        preferenceOverride: draft.delegationPreferenceOverride,
+        workspaceMode: draft.workspaceMode,
+        isStandalone: workspace.isStandalone,
+        enabled: editable,
+        onModeChanged: actions.setDelegationMode,
+        onPreferenceChanged: actions.setDelegationPreference,
+        onWorkspaceModeChanged: actions.setWorkspaceMode,
+      ),
+    );
+  }
+
+  Widget _withBackend(Widget leading) {
+    final backend = backendSelector;
+    if (backend == null) return leading;
+    return LayoutBuilder(
+      builder: (context, constraints) => constraints.maxWidth < 520
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                leading,
+                Align(alignment: Alignment.centerRight, child: backend),
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(child: leading),
+                const SizedBox(width: 8),
+                backend,
+              ],
+            ),
     );
   }
 }
