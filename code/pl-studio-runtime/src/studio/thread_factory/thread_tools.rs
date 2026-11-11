@@ -294,10 +294,13 @@ impl StudioThreadFactory {
         } else {
             super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
         }
+        let shell_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", "starting");
         let environment = remote
             .as_ref()
             .map(|host| host.execution_environment.clone())
             .unwrap_or_else(pl_tool::environment::ExecutionEnvironment::detect_local);
+        tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", elapsed_ms = shell_started.elapsed().as_millis() as u64, "completed");
         let child_environment = if self
             .services
             .bots
@@ -348,6 +351,8 @@ impl StudioThreadFactory {
             CatalogPreparation::Initial => None,
             CatalogPreparation::Refresh { commands, .. } => commands.clone(),
         };
+        let bindings_started = std::time::Instant::now();
+        tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_bindings", "starting");
         let mut tools = StudioThreadTools::with_command_processes(
             StudioWorkspaceTools {
                 binding,
@@ -369,6 +374,7 @@ impl StudioThreadFactory {
             commands,
         )
         .await?;
+        tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_bindings", elapsed_ms = bindings_started.elapsed().as_millis() as u64, "completed");
         if config.runtime.tool_capabilities.ask_user && thread_id == root_thread_id {
             tools = tools.with_tools(crate::plan_tool::plan_registrations(Default::default())?);
         }
@@ -394,6 +400,8 @@ impl StudioThreadFactory {
             };
         }
         if config.runtime.tool_capabilities.mcp {
+            let mcp_started = std::time::Instant::now();
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_mcp", "starting");
             tools = tools.with_mcp(
                 self.prepare_thread_mcp(ThreadMcpPreparation {
                     thread_id,
@@ -406,9 +414,19 @@ impl StudioThreadFactory {
                 })
                 .await?,
             )?;
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_mcp", elapsed_ms = mcp_started.elapsed().as_millis() as u64, "completed");
+            let owner = self
+                .mcp_owner(thread_id)
+                .ok_or(ThreadAssemblyError::Closed)?;
+            tools = tools.with_tools(vec![super::mcp_refresh_tool::registration(
+                self.clone(),
+                &owner,
+            )?]);
         }
         let mut skill_catalog = None;
         if config.runtime.tool_capabilities.skills && config.skills.enabled {
+            let skills_started = std::time::Instant::now();
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_skills", "starting");
             let catalog = if matches!(preparation, CatalogPreparation::Refresh { .. }) {
                 let catalog = self
                     .services
@@ -443,6 +461,7 @@ impl StudioThreadFactory {
                     tools = tools.with_local_skill_management(catalog, workspace.clone())?;
                 }
             }
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_skills", elapsed_ms = skills_started.elapsed().as_millis() as u64, "completed");
         }
         let reviewer =
             if config.runtime.permission_mode == crate::approval::PermissionMode::AutoReview {
@@ -461,6 +480,8 @@ impl StudioThreadFactory {
             reviewer,
         };
         if config.runtime.tool_capabilities.lsp {
+            let lsp_started = std::time::Instant::now();
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", "starting");
             let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
                 Some(host) => Some(Arc::new(host.clone())),
                 None => {
@@ -508,6 +529,7 @@ impl StudioThreadFactory {
                 None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
             };
             tools = tools.with_lsp(lsp.clone(), paths).await?;
+            tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", elapsed_ms = lsp_started.elapsed().as_millis() as u64, "completed");
         }
         if thread_id == root_thread_id {
             tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;

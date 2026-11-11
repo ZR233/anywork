@@ -7,11 +7,9 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/features/shell/sidebar/sidebar_views.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/mode_catalog_store.dart';
-import 'package:anywork/src/presentation/providers/project_store.dart';
 import 'package:anywork/src/presentation/providers/recovery_store.dart';
-import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
@@ -23,7 +21,7 @@ import '../support/recording_demo_transport.dart';
 import '../../../anywork_client/test/support/directory_feed.dart';
 
 void main() {
-  test('production sidebarViewProvider matches scope and prioritizes actual blockers', () async {
+  test('production per-project recovery projection matches scope and prioritizes actual blockers', () async {
     final transport = RecordingDemoTransport();
     final bootstrap = await transport.readBootstrap();
     final root = bootstrap.threadDirectory.rows
@@ -34,12 +32,6 @@ void main() {
       const revision = 100;
       final container = ProviderContainer(
         overrides: [
-          projectStoreProvider.overrideWithValue(
-            ProjectStoreState(
-              projects: bootstrap.projectDirectory,
-              agents: bootstrap.agentDirectory,
-            ),
-          ),
           recoveryStoreProvider.overrideWithValue(
             CanonicalClockState<RecoveryStateSnapshot>(
               value: RecoveryStateSnapshot(revision: revision, values: issues),
@@ -47,24 +39,13 @@ void main() {
               loaded: true,
             ),
           ),
-          modeCatalogStoreProvider.overrideWithValue(
-            CanonicalClockState<ThreadModeCatalogView>(
-              value: bootstrap.threadModeCatalog,
-              revision: bootstrap.threadModeCatalog.revision,
-              loaded: true,
-            ),
-          ),
-          selectionStoreProvider.overrideWithValue(
-            SelectionStoreState(
-              selectedProjectId: root.workspaceId,
-              selectedThreadId: root.threadId,
-              needsOpen: true,
-            ),
-          ),
         ],
       );
       addTearDown(container.dispose);
-      return container.read(sidebarViewProvider);
+      return <String, StudioRecoveryIssue>{
+        for (final project in bootstrap.projectDirectory.values)
+          project.id: ?container.read(sidebarRecoveryIssueProvider(project.id)),
+      };
     }
 
     final childOnly = readProductionView([
@@ -79,7 +60,7 @@ void main() {
         detail: 'Preserved child remains reviewable',
       ),
     ]);
-    expect(childOnly.projectRecoveryIssues, isEmpty);
+    expect(childOnly, isEmpty);
 
     final threadOnlyAdvisory = readProductionView([
       StudioRecoveryIssue(
@@ -93,7 +74,7 @@ void main() {
         detail: 'Thread observation is being retried',
       ),
     ]);
-    expect(threadOnlyAdvisory.projectRecoveryIssues, isEmpty);
+    expect(threadOnlyAdvisory, isEmpty);
 
     final applicationAccess = StudioRecoveryIssue(
       id: 'application-access-block',
@@ -127,10 +108,7 @@ void main() {
       projectAdvisory,
       rootAdvisory,
     ]);
-    expect(
-      appWide.projectRecoveryIssues[root.workspaceId]?.id,
-      applicationAccess.id,
-    );
+    expect(appWide[root.workspaceId]?.id, applicationAccess.id);
 
     final applicationAdvisory = StudioRecoveryIssue(
       id: 'application-advisory',
@@ -164,10 +142,7 @@ void main() {
       projectAdvisoryLater,
       rootAdvisory,
     ]);
-    expect(
-      prioritized.projectRecoveryIssues[root.workspaceId]?.id,
-      projectExecution.id,
-    );
+    expect(prioritized[root.workspaceId]?.id, projectExecution.id);
     final rootExecution = StudioRecoveryIssue(
       id: 'root-execution-block',
       scope: RecoveryIssueScope.thread,
@@ -184,10 +159,7 @@ void main() {
       rootAdvisory,
       rootExecution,
     ]);
-    expect(
-      exact.projectRecoveryIssues[root.workspaceId]?.id,
-      projectExecution.id,
-    );
+    expect(exact[root.workspaceId]?.id, projectExecution.id);
 
     final foreignProject = readProductionView([
       StudioRecoveryIssue(
@@ -201,7 +173,7 @@ void main() {
         detail: 'A mismatched non-null project cannot grant a match',
       ),
     ]);
-    expect(foreignProject.projectRecoveryIssues, isEmpty);
+    expect(foreignProject, isEmpty);
   });
 
   test('Project recovery gates Project operations while exact Thread recovery gates only its owner', () async {
@@ -227,7 +199,9 @@ void main() {
     final directoryFrame = await directoryDemand.state
         .waitFor((state) => state.frame != null)
         .timeout(const Duration(seconds: 5));
-    final rows = directoryFrame.frame!.rows;
+    final rows = await Future.wait([
+      for (final id in directoryFrame.frame!.threadIds) _readThread(client, id),
+    ]);
     final healthy = rows.firstWhere((row) => row.isRootRow);
     final affected = rows.firstWhere(
       (row) =>
@@ -516,55 +490,66 @@ void main() {
         () => rootRow.evaluate().isNotEmpty,
         'production sidebar renders root row',
       );
-      final sidebarQuery = transport.openedDirectoryQueries.lastWhere(
-        (query) => query.workspaceId == root.workspaceId,
-      );
-      final directoryDemand = graph.client.threadDirectory.observeThreads(
-        sidebarQuery,
-        DirectoryWindow(),
+      final metadataDemand = graph.client.threadDirectory.observeThread(
+        root.threadId,
       );
       addTearDown(
         () => pumpClientFuture(
           tester,
-          directoryDemand.release(),
-          'release sidebar diagnostic borrow',
+          metadataDemand.release(),
+          'release sidebar metadata borrow',
         ),
       );
       await pumpClientUntil(
         tester,
-        () =>
-            directoryDemand.state.value.frame?.query == sidebarQuery &&
-            directoryDemand.state.value.frame?.window == DirectoryWindow(),
-        'borrow the production sidebar directory frame',
+        () => metadataDemand.state.value.frame != null,
+        'borrow production row metadata',
       );
       // Let the shell's production topic observations pass their ten-second
       // stability windows before introducing the continuously animated badge.
       await tester.pump(const Duration(seconds: 10));
       await tester.pump();
-      transport.directoryRevision++;
-      transport.directoryThreads[root.threadId] = root.copyWith(
-        backend: (root.backend as NativeAgentBackendView).copyWith(
-          status: ThreadStatusView.running,
+      var sidebarBuilds = 0;
+      final projectBuilds = <String, int>{};
+      final previousRebuild = debugOnRebuildDirtyWidget;
+      debugOnRebuildDirtyWidget = (element, builtOnce) {
+        previousRebuild?.call(element, builtOnce);
+        final widget = element.widget;
+        if (widget is StudioSidebar) sidebarBuilds++;
+        if (widget is SidebarProjectRow) {
+          projectBuilds.update(
+            widget.project.id,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+        }
+      };
+      addTearDown(() => debugOnRebuildDirtyWidget = previousRebuild);
+      transport.emitThread(
+        root.copyWith(
+          backend: (root.backend as NativeAgentBackendView).copyWith(
+            status: ThreadStatusView.running,
+          ),
         ),
-      );
-      await pumpClientFuture(
-        tester,
-        directoryDemand.refresh(),
-        'refresh the actual sidebar window',
+        root.threadId,
+        revision: transport.directoryRevision + 1,
       );
       await pumpClientUntil(
         tester,
         () =>
-            directoryDemand.state.value.frame?.rows.any(
-              (row) =>
-                  row.threadId == root.threadId &&
-                  (row.backend as NativeAgentBackendView).status ==
-                      ThreadStatusView.running,
-            ) ==
-            true,
+            (metadataDemand.state.value.frame?.row?.backend
+                    as NativeAgentBackendView?)
+                ?.status ==
+            ThreadStatusView.running,
         'running root frame is accepted',
       );
       await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        sidebarBuilds,
+        0,
+        reason: 'selected metadata must not rebuild the root sidebar through the shell header',
+      );
+      expect(projectBuilds, isEmpty);
 
       final statusSlot = find.byKey(
         ValueKey('thread-status-slot-${root.threadId}'),
@@ -623,6 +608,38 @@ void main() {
         findsOneWidget,
         reason: 'Project-scoped advisory remains on its Project row',
       );
+
+      final projects = graph.client.project.state.projects!;
+      graph.client.project.applyProjectDirectory(
+        ProjectDirectoryState(
+          revision: projects.revision + 1,
+          values: [
+            for (final project in projects.values)
+              StudioProject(
+                id: project.id,
+                name: project.id == root.workspaceId
+                    ? 'Renamed project'
+                    : project.name,
+                path: project.path,
+                kind: project.kind,
+                sshAlias: project.sshAlias,
+              ),
+          ],
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => find.text('Renamed project').evaluate().isNotEmpty,
+        'target project content update',
+      );
+      expect(
+        sidebarBuilds,
+        0,
+        reason: 'project content is not shell structure',
+      );
+      expect(projectBuilds[root.workspaceId], greaterThan(0));
+      expect(projectBuilds.keys, everyElement(root.workspaceId));
+      debugOnRebuildDirtyWidget = previousRebuild;
 
       graph.client.recovery.apply(
         RecoveryStateSnapshot(
@@ -827,3 +844,16 @@ final class _DirectoryFailureTransport extends RecordingDemoTransport {
 
 final class _SidebarStatusTransport extends RecordingDemoTransport
     with DirectoryFeedFixture {}
+
+Future<SessionDirectoryRow> _readThread(AnyworkClient client, String id) async {
+  final demand = client.threadDirectory.observeThread(id);
+  try {
+    final state = await demand.state
+        .waitFor((state) => state.frame != null || state.error != null)
+        .timeout(const Duration(seconds: 5));
+    if (state.error case final error?) throw error;
+    return state.frame!.row!;
+  } finally {
+    await demand.release();
+  }
+}

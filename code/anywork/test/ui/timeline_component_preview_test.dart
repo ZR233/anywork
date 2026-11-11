@@ -36,12 +36,15 @@ void main() {
       await tester.pumpAndSettle();
       final workHeaders = find.byType(CompletionRunView);
       expect(workHeaders, findsNWidgets(2));
-      Finder workHeader(int index) => find.byWidgetPredicate(
-        (widget) =>
-            widget is CompletionRunView &&
-            widget.presentation.representative.recordId ==
-                'spacing-group-$index',
-      );
+      Finder workHeader(int index) =>
+          find.byKey(ValueKey('completion-run-header:spacing-group-$index'));
+      for (final work in tester.widgetList<CompletionRunView>(workHeaders)) {
+        expect(work.summary.total, 3);
+        expect(work.summary.terminal, 3);
+        expect(work.summary.elapsedMs, 125000);
+        expect(work.location, WorkDisplayLocation.history);
+        expect(work.initiallyExpanded, isFalse);
+      }
       final items = [
         find.byKey(const ValueKey('chat-item:spacing-intro')),
         find.byKey(const ValueKey('chat-item:spacing-plain')),

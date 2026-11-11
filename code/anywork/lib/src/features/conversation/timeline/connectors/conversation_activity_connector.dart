@@ -1,13 +1,16 @@
+import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_state.dart';
+import '../../interactions/state/interaction_payload.dart';
 import '../view_models/conversation_activity_view_model.dart';
 import '../view_models/timeline_view_model.dart';
-import '../widgets/conversation_activity_bar.dart';
+import '../state/conversation_activity_state.dart';
 import '../widgets/conversation_activity_viewport.dart';
+import '../widgets/conversation_activity_bar.dart';
 import 'conversation_current_connector.dart';
 import 'interaction_details_connector.dart';
 
@@ -25,40 +28,60 @@ class ConversationActivityConnector extends ConsumerWidget {
     final session = conversations.existingSession(threadId);
     final content = session?.content;
     StudioDriverState.publishConversationActivity(state?.view);
+    // Only the selected plan's duplicate details are replaced by its reader and
+    // dock. Work belongs to Timeline; actual output and critical notices retain
+    // their original display qualification here.
+    final interaction = activePendingInteraction(sessionState.interactions);
+    final confirmingPlan = interaction?.planConfirmation != null;
     final children = <Widget>[];
-    if (content != null && state?.activity != null) {
-      ref.watch(timelineViewModelProvider(threadId));
-      final timeline = ref.read(timelineSessionOwnerProvider);
-      final lease = timeline.lease(threadId);
-      if (lease != null && identical(lease.content, content)) {
-        children.add(
-          ConversationCurrentConnector(
-            key: ValueKey((threadId, content, lease.generation)),
-            session: sessionState,
-            content: content,
-            view: state?.view,
-            onExpandedChanged: StudioDriverState.publishActivityExpanded,
-            registerDisplay: lease.registerCurrentDisplay,
-            images: lease.imageResources,
-            readAttachment: (id) => ref
-                .read(anyworkClientProvider)
-                .readAttachmentBytes(threadId, id),
-            isDisplayActive: () =>
-                !lease.retirement.value &&
-                identical(timeline.lease(threadId), lease) &&
-                identical(lease.content, content),
-          ),
-        );
-      }
-    } else if (state?.view case final view?) {
-      children.add(
-        ConversationActivityBar(
-          children: [ConversationActivityStatus(view: view)],
-        ),
-      );
+    switch (state?.region) {
+      case ContentRealtimeRegion region when content != null:
+        ref.watch(timelineViewModelProvider(threadId));
+        final timeline = ref.read(timelineSessionOwnerProvider);
+        final lease = timeline.lease(threadId);
+        if (lease != null && identical(lease.content, content)) {
+          // This renderer owns any explicitly loaded older window. Only it can
+          // decide whether its actual sources produce content or zero layout.
+          children.add(
+            ConversationCurrentConnector(
+              section: ConversationLiveSection.output,
+              key: ValueKey((threadId, content, lease.generation)),
+              session: sessionState,
+              content: content,
+              region: region,
+              live: lease.live,
+              liveUnit: lease.liveUnit,
+              loadLiveOlder: (before) => lease.loadLiveOlder(before: before),
+              onExpandedChanged: StudioDriverState.publishActivityExpanded,
+              registerDisplay: lease.registerCurrentDisplay,
+              images: lease.imageResources,
+              readAttachment: (id) => ref
+                  .read(anyworkClientProvider)
+                  .readAttachmentBytes(threadId, id),
+              isDisplayActive: () =>
+                  !lease.retirement.value &&
+                  identical(timeline.lease(threadId), lease) &&
+                  identical(lease.content, content),
+            ),
+          );
+        } else {
+          children.add(
+            ConversationActivityBar(
+              children: [ConversationRealtimeNotices(notices: region.notices)],
+            ),
+          );
+        }
+      case HiddenRealtimeRegion() || DockRealtimeRegion() || null:
+        break;
+      case ContentRealtimeRegion():
+        break;
     }
     final reference = sessionState.businessRefs?.interactions;
-    if (content != null &&
+    // Ordinary questions/approvals keep their independent details reader.
+    // The selected plan already has a dedicated reader; unmounting this one
+    // retires only its local demand, not the underlying interaction or tools.
+    if (!confirmingPlan &&
+        content != null &&
         reference != null &&
         sessionState.interactions.isNotEmpty) {
       children.add(
@@ -77,6 +100,7 @@ class ConversationActivityConnector extends ConsumerWidget {
         ),
       );
     }
+    if (children.isEmpty) return const SizedBox.shrink();
     return ConversationActivityViewport(
       key: ValueKey(threadId),
       children: children,

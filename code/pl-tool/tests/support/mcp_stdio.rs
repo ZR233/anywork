@@ -192,6 +192,7 @@ pub fn stdio_effective_config(
         tool_effect: None,
         execution_context,
         config: McpServerConfig {
+            required: false,
             transport: McpServerTransport::Stdio,
             command: Some("python3".to_owned()),
             args,

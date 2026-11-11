@@ -320,6 +320,7 @@ impl StudioRuntime {
                 () = cancellation.cancelled() => continue,
                 guard = gate.lock_owned() => guard,
             };
+            tracing::debug!(target: "thread_preparation", thread_id = %id, stage = "catalog_refresh", "starting");
             let cleanup = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 self.rejected_tools.retry(Some(&thread)),
@@ -524,6 +525,7 @@ impl StudioRuntime {
         thread
             .register_tools_if_extensions(snapshot.extension_sequence, registrations)
             .await?;
+        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "catalog_install", "completed");
         self.publish_tool_binding(id, thread, snapshot.extension_sequence, binding)
             .await?;
         let snapshot = thread.snapshot();

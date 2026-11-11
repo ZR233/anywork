@@ -418,18 +418,31 @@ final class ThreadDirectoryFrame {
     required this.query,
     required this.window,
     required this.stamp,
-    required List<SessionDirectoryRow> rows,
+    required List<String> threadIds,
     this.nextCursor,
-  }) : rows = List.unmodifiable(rows) {
+  }) : threadIds = List.unmodifiable(threadIds) {
     if (stamp.resourceKey != 'thread-directory') {
       throw ArgumentError.value(stamp.resourceKey, 'stamp.resourceKey');
+    }
+    if (this.threadIds.any((threadId) => threadId.isEmpty)) {
+      throw ArgumentError.value(threadIds, 'threadIds');
+    }
+    if (this.threadIds.toSet().length != this.threadIds.length) {
+      throw ArgumentError.value(threadIds, 'threadIds', 'IDs must be unique');
+    }
+    if (this.threadIds.length > window.limit) {
+      throw ArgumentError.value(
+        threadIds,
+        'threadIds',
+        'IDs exceed the requested window',
+      );
     }
   }
 
   final DirectoryQuery query;
   final DirectoryWindow window;
   final ResourceStamp stamp;
-  final List<SessionDirectoryRow> rows;
+  final List<String> threadIds;
   final String? nextCursor;
 }
 

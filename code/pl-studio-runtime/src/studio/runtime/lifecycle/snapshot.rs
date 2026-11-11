@@ -26,7 +26,6 @@ impl StudioRuntime {
                     ))
                 })?;
         let (settings, config, catalog) = published?;
-        let models = settings.config.models.clone();
         self.settings_updates.send_replace(settings);
         self.agent_facility
             .product_events
@@ -46,7 +45,7 @@ impl StudioRuntime {
                 ),
             },
         );
-        for mcp_catalog in self.config_runtime.refresh_mcp_catalogs_for_models(&models) {
+        for mcp_catalog in self.config_runtime.refresh_mcp_catalogs_for_models()? {
             self.agent_facility
                 .product_events
                 .emit_mcp_catalog(mcp_catalog);
@@ -67,14 +66,8 @@ impl StudioRuntime {
                 ),
             },
         );
-        for mcp_catalog in self
-            .config_runtime
-            .refresh_mcp_catalogs_for_models(&settings.config.models)
-        {
-            self.agent_facility
-                .product_events
-                .emit_mcp_catalog(mcp_catalog);
-        }
+        // Online model observations do not change MCP account/credential configuration.
+        // Publishing this read model must not perform an independent configuration write.
         Ok(())
     }
 

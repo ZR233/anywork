@@ -10,6 +10,8 @@ mod binding_host;
 mod binding_tests;
 #[path = "support/helper.rs"]
 mod helper;
+#[path = "support/mcp_refresh.rs"]
+mod refresh_tests;
 #[path = "support/mcp_stdio.rs"]
 mod stdio;
 #[path = "support/remote.rs"]
@@ -393,6 +395,12 @@ struct MockMcpHttpState {
     get_stream_requests: Arc<AtomicUsize>,
     expire_next_call: Arc<std::sync::atomic::AtomicBool>,
     emit_oversized_sse: Arc<std::sync::atomic::AtomicBool>,
+    list_reply: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    list_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    list_entered: Arc<tokio::sync::Notify>,
+    list_requests: Arc<AtomicUsize>,
+    call_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    call_entered: Arc<tokio::sync::Notify>,
 }
 
 async fn handle_mcp_post(
@@ -470,11 +478,17 @@ async fn handle_mcp_post(
         }
         "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
         "tools/list" => {
+            state.list_requests.fetch_add(1, Ordering::SeqCst);
+            let gate = state.list_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                state.list_entered.notify_one();
+                gate.acquire().await.unwrap().forget();
+            }
             let session = headers
                 .get("Mcp-Session-Id")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("none");
-            let event = serde_json::json!({
+            let mut event = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
@@ -485,6 +499,13 @@ async fn handle_mcp_post(
                     }]
                 }
             });
+            if let Some(reply) = state.list_reply.lock().unwrap().clone() {
+                event.as_object_mut().unwrap().remove("result");
+                event
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(reply.as_object().unwrap().clone());
+            }
             let sse_body = format!("data: {}\n\n", serde_json::to_string(&event).unwrap());
             (
                 StatusCode::OK,
@@ -494,6 +515,11 @@ async fn handle_mcp_post(
                 .into_response()
         }
         "tools/call" => {
+            let gate = state.call_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                state.call_entered.notify_one();
+                gate.acquire().await.unwrap().forget();
+            }
             if state.expire_next_call.swap(false, Ordering::SeqCst) {
                 return (StatusCode::NOT_FOUND, "session expired").into_response();
             }
@@ -758,6 +784,7 @@ async fn t12_t13_remote_streamable_http_and_budget() -> anyhow::Result<()> {
             bearer_token_env_var: None,
             headers,
             enabled: true,
+            required: false,
             startup_timeout_secs: Some(10),
             tool_timeout_secs: Some(10),
             enabled_tools: None,

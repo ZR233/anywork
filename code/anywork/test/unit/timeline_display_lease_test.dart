@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -10,12 +11,50 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 import '../support/mapped_conversation_feed.dart';
 
 // The real SDK and presentation owner admit batches into the real component.
 // The transport supplies only explicit facts and I/O barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('current renderer borrows coexist, unregister independently and retire together', () async {
+    final h = _Harness([chatMessage('main')]);
+    await h.open();
+    final lease = h.lease..bind();
+    final work = _CurrentDisplay();
+    final output = _CurrentDisplay();
+    final unregisterWork = lease.registerCurrentDisplay(work);
+    final unregisterOutput = lease.registerCurrentDisplay(output);
+    expect(lease.isMounted, isTrue);
+    expect(lease.currentDisplays, unorderedEquals([work, output]));
+    unregisterOutput();
+    expect(lease.currentDisplays, [work]);
+    final unregisterOutputAgain = lease.registerCurrentDisplay(output);
+    unregisterWork();
+    expect(lease.currentDisplays, [output]);
+    unregisterWork();
+    expect(lease.currentDisplays, [output]);
+    lease.registerCurrentDisplay(work);
+    output.isCurrent = false;
+    expect(lease.currentDisplays, [work]);
+    output.isCurrent = true;
+    expect(lease.currentDisplays, unorderedEquals([work, output]));
+    expect(h.transport.opens, 1, reason: 'borrowing never opens a feed');
+    final retiring = lease.retire();
+    expect(lease.isRetired, isTrue);
+    expect(lease.currentDisplays, isEmpty);
+    lease.registerCurrentDisplay(_CurrentDisplay());
+    expect(lease.currentDisplays, isEmpty);
+    unregisterOutputAgain();
+    expect(lease.currentDisplays, isEmpty);
+    // Resource registration does not take over renderer teardown.
+    expect(work.isCurrent, isTrue);
+    expect(output.isCurrent, isTrue);
+    await lease.unbind();
+    await retiring;
+  });
 
   test('Children close failure releases its display and other side without retiring Main', () async {
     final transport = _ScopedTransport();
@@ -28,7 +67,8 @@ void main() {
     await session.content.ready;
     await transport.main.accepted(1);
     final mainLease = owner.lease('thread')!;
-    final mainCurrent = session.activity.value;
+    final mainCurrent = mainLease.live.value;
+    expect(mainCurrent, isNotNull);
     final children = await client.conversations.openChildren(
       threadId: 'thread',
       parentId: 'parent',
@@ -53,7 +93,7 @@ void main() {
     await children.ready;
     await transport.child.accepted(1);
     expect(controller.messages.single.id, 'child');
-    expect(session.activity.value, same(mainCurrent));
+    expect(mainLease.live.value, same(mainCurrent));
     expect(children.activity.value, isNull);
     expect(
       transport.scopes.last,
@@ -78,8 +118,8 @@ void main() {
     expect(transport.childReader.closeCalls, greaterThanOrEqualTo(1));
     expect(transport.main.closed, isFalse);
     expect(owner.lease('thread'), same(mainLease));
-    transport.main.emit(
-      chatBatch([
+    transport.main.emitTimeline(
+      _mainBatch([
         chatMessage('main-next', completionSeq: 2),
       ], placement: ChatPlacement.append),
     );
@@ -128,7 +168,7 @@ void main() {
     final loading = h.owner.loadOlder('thread', generation: lease.generation);
     await h.transport.reader.entered.future;
     h.transport.reader.reply.complete(
-      chatBatch([
+      _mainBatch([
         chatMessage('a', completionSeq: 10),
         chatMessage('b', completionSeq: 11),
       ], placement: ChatPlacement.prepend),
@@ -263,7 +303,7 @@ void main() {
       expect(lease.openDetailQueries(), isNull);
       expect(lease.isReleased, isFalse);
       h.transport.reader.reply.complete(
-        chatBatch([chatMessage('late')], placement: ChatPlacement.prepend),
+        _mainBatch([chatMessage('late')], placement: ChatPlacement.prepend),
       );
       await loading;
       expect((await h.owner.close()).complete, isTrue);
@@ -288,7 +328,7 @@ void main() {
     ]);
     final resource = old.imageResources.borrow('image');
     final oldKey = old.chatKey;
-    h.transport.initial = chatBatch([chatMessage('reset')]);
+    h.transport.initial = _mainBatch([chatMessage('reset')]);
     final content = h.client.conversations.session('thread').content;
     content.refresh();
     await content.ready;
@@ -326,16 +366,31 @@ void main() {
   });
 }
 
+final class _CurrentDisplay implements TimelineCurrentDisplay {
+  @override
+  bool isCurrent = true;
+  @override
+  String? get turnId => 'turn';
+  @override
+  String? get activityId => 'activity';
+  @override
+  bool get expanded => false;
+  @override
+  Iterable<TimelineCurrentCollectionDisplay> get collections => const [];
+  @override
+  Iterable<TimelineCurrentWindowDisplay> get windows => const [];
+}
+
 final class _Harness {
   _Harness(List<CompletedEntry> messages, {String? before})
-    : transport = _LeaseTransport(chatBatch(messages, before: before)) {
+    : transport = _LeaseTransport(_mainBatch(messages, before: before)) {
     client = AnyworkClient(transport: transport, clientId: 'lease');
     owner = TimelineSessionOwner(client: client)..updateReadDemand(chatDemand);
     addTearDown(() async {
       transport.reader.failClose = false;
       if (!transport.reader.reply.isCompleted) {
         transport.reader.reply.complete(
-          chatBatch([], placement: ChatPlacement.prepend),
+          _mainBatch([], placement: ChatPlacement.prepend),
         );
       }
       client.conversations.setVisibleThread(null);
@@ -360,26 +415,27 @@ final class _Harness {
   }
 
   Future<void> append(List<CompletedEntry> messages) async {
-    transport.feed.emit(chatBatch(messages, placement: ChatPlacement.append));
+    transport.feed.emitTimeline(
+      _mainBatch(messages, placement: ChatPlacement.append),
+    );
     await transport.feed.accepted(transport.feed.deliveredFrames);
   }
 }
 
-final class _LeaseTransport extends Fake implements StudioTransport {
+final class _LeaseTransport extends Fake
+    implements StudioTransport, TimelineTransport {
   _LeaseTransport(this.initial) {
     _createFeed();
   }
-  ChatBatch initial;
+  TimelineBatch initial;
   void _createFeed() {
-    feed = ScriptedConversationFeed(
-      threadId: 'thread',
-      subscriptionId: 'lease',
+    feed = ScriptedTimelineFeed(
+      queries: _TimelineQueries(reader, 'lease'),
       initial: () => initial,
-      reader: reader,
     );
   }
 
-  late ScriptedConversationFeed feed;
+  late ScriptedTimelineFeed feed;
   _Reader reader = _Reader();
   int opens = 0;
 
@@ -399,9 +455,8 @@ final class _LeaseTransport extends Fake implements StudioTransport {
   );
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
     if (opens > 0) {
@@ -416,14 +471,13 @@ final class _LeaseTransport extends Fake implements StudioTransport {
 final class _Reader extends Fake implements ConversationReader {
   @override
   String get threadId => 'thread';
-  final reply = Completer<ChatBatch>();
+  final reply = Completer<TimelineBatch>();
   final entered = Completer<void>();
   final boundaries = <String>[];
   final demands = <ReadDemand>[];
   bool failClose = false;
   int closeCalls = 0;
-  @override
-  Future<ChatBatch> loadOlder({
+  Future<TimelineBatch> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -442,14 +496,13 @@ final class _Reader extends Fake implements ConversationReader {
   }
 }
 
-final class _ScopedTransport extends Fake implements StudioTransport {
+final class _ScopedTransport extends Fake
+    implements StudioTransport, TimelineTransport {
   final mainReader = _Reader();
   final childReader = _Reader();
-  late final main = ScriptedConversationFeed(
-    threadId: 'thread',
-    subscriptionId: 'main',
-    reader: mainReader,
-    initial: () => chatBatch([chatMessage('main')]),
+  late final main = ScriptedTimelineFeed(
+    queries: _TimelineQueries(mainReader, 'main'),
+    initial: () => _mainBatch([chatMessage('main')]),
   );
   late final child = ScriptedConversationFeed(
     threadId: 'thread',
@@ -478,12 +531,62 @@ final class _ScopedTransport extends Fake implements StudioTransport {
   );
 
   @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  }) async => main;
+  @override
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
     required ReadDemand demand,
   }) async {
     scopes.add(scope);
-    return scope is MainChatScope ? main : child;
+    expect(scope, isA<ChildrenChatScope>());
+    return child;
   }
+}
+
+TimelineBatch _mainBatch(
+  List<CompletedEntry> entries, {
+  ChatPlacement placement = ChatPlacement.set,
+  String? before,
+}) {
+  final through = entries.lastOrNull?.completionSeq ?? 0;
+  return displayBatch(
+    [for (final entry in entries) displaySingle(entry)],
+    placement: placement,
+    before: before,
+    from: placement == ChatPlacement.append
+        ? entries.first.completionSeq - 1
+        : null,
+    through: through,
+    live: placement == ChatPlacement.set
+        ? LiveDisplayWindow(
+            revision: 1,
+            historyThrough: through,
+            executionPresent: false,
+            blocks: const [],
+          )
+        : null,
+  );
+}
+
+final class _TimelineQueries extends Fake implements TimelineFeed {
+  _TimelineQueries(this.reader, this.subscriptionId);
+  @override
+  final _Reader reader;
+  @override
+  String get threadId => 'thread';
+  @override
+  final String subscriptionId;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => reader.loadTimelineOlder(before: before, demand: demand);
+  @override
+  void requestClose() {}
+  @override
+  Future<void> close() async {}
 }

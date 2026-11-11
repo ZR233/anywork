@@ -117,6 +117,23 @@ sealed class ContentOwner {
   const ContentOwner();
 }
 
+final class DisplayObservationContentOwner extends ContentOwner {
+  const DisplayObservationContentOwner({
+    required this.blockId,
+    required this.memberKey,
+  });
+  final String blockId;
+  final String memberKey;
+  @override
+  bool operator ==(Object other) =>
+      other is DisplayObservationContentOwner &&
+      blockId == other.blockId &&
+      memberKey == other.memberKey;
+  @override
+  int get hashCode =>
+      Object.hash(DisplayObservationContentOwner, blockId, memberKey);
+}
+
 final class ItemContentOwner extends ContentOwner {
   const ItemContentOwner({required this.itemId});
 

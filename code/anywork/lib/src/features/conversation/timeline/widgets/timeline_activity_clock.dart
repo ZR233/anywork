@@ -4,7 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 
-enum ActivityDurationKind { elapsed, worked, reasoning }
+enum ActivityDurationKind { elapsed, worked, reasoning, executing }
 
 /// 只格式化已有时间事实；未知或倒序时间不构造耗时。
 String activityDurationLabel(
@@ -16,6 +16,12 @@ String activityDurationLabel(
   final minutes = seconds ~/ 60;
   final remainder = seconds % 60;
   return switch (kind) {
+    ActivityDurationKind.executing => switch (seconds) {
+      <= 0 => l10n.timelineGroupExecutingUnderSecond,
+      < 60 => l10n.timelineGroupExecutingSeconds(seconds),
+      _ when remainder == 0 => l10n.timelineGroupExecutingMinutes(minutes),
+      _ => l10n.timelineGroupExecutingMinutesSeconds(minutes, remainder),
+    },
     ActivityDurationKind.worked => switch (seconds) {
       <= 0 => l10n.timelineGroupWorkedUnderSecond,
       < 60 => l10n.timelineGroupWorkedSeconds(seconds),
@@ -44,11 +50,13 @@ class TimelineActivityClock extends StatefulWidget {
     this.startedAt,
     this.finishedAt,
     this.running = false,
+    this.now,
     super.key,
   });
   final int? startedAt;
   final int? finishedAt;
   final bool running;
+  final DateTime Function()? now;
   final Widget Function(BuildContext, int?) builder;
   @override
   State<TimelineActivityClock> createState() => _ClockState();
@@ -94,7 +102,9 @@ class _ClockState extends State<TimelineActivityClock> {
     final start = widget.startedAt;
     final end =
         widget.finishedAt ??
-        (widget.running ? DateTime.now().millisecondsSinceEpoch ~/ 1000 : null);
+        (widget.running
+            ? (widget.now ?? DateTime.now)().millisecondsSinceEpoch ~/ 1000
+            : null);
     return widget.builder(
       context,
       start == null || end == null || end < start ? null : end - start,

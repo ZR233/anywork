@@ -18,7 +18,15 @@ pub(in super::super) async fn apply(
         super::content::write_content(db, &write.content, true).await?;
     }
     super::sources::apply(db, effect, &prepared.source_changes).await?;
-    super::facts::apply(db, &prepared.atom_facts, effect).await
+    super::facts::apply(db, &prepared.atom_facts, effect).await?;
+    if let Some(display) = &prepared.display {
+        ensure!(
+            display.effect_seq == effect,
+            "display delta belongs to another effect"
+        );
+        super::display::apply(db, display).await?;
+    }
+    Ok(())
 }
 
 pub(in super::super) async fn verify(
@@ -32,6 +40,9 @@ pub(in super::super) async fn verify(
     )
     .await?;
     super::facts::verify(db, &prepared.atom_facts).await?;
+    if let Some(display) = &prepared.display {
+        super::display::verify(db, display).await?;
+    }
     for write in prepared.contents.iter() {
         let manifest = super::content::validate_content(db, &write.content)
             .await?

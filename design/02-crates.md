@@ -41,7 +41,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
 | 独立工具家族 crate | 文件、命令、Git、LSP、MCP、搜索、媒体与文件展示、技能、机器人各自聚合相关工具，以模块保存各工具的声明、校验、领域编排、结果与错误；通过 `pl-agent-tool` 被独立宿主消费，跨家族只共享必要的窄领域支持 |
 | `pl-tool` | Anywork 工具宿主适配、受限本地/SSH/容器后端与共享服务所有权、内核结果及控制映射；保留用户交互、笔记、待办、轮次完成、任务治理和多智能体等宿主控制工具 |
-| `pl-protocol` | Studio 与外围适配器共用的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
+| `pl-protocol` | 多个 crate 或产品适配边界实际共享的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |
@@ -53,6 +53,14 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
 
 Native 完成记录的读取分类由 Runtime 唯一确定，Core 只比较不透明 hint 并在原发布边界分配 seq/run；原 writer 保存不可变记录和两个段索引，不持久化展示组。Flutter 原 controller 按明确呈现类别与 run.start_seq 唯一组合代表卡，SDK 不组合，Widget 不重写分类；段详情沿 Run 独立读取。完整所有权与读取契约见 [26](./26-timeline-content.md)，存储迁移见 [17](./17-studio-storage.md)。
+
+### 共享类型与实现类型
+
+类型按领域所有者和实际消费边界归属，不以 `pub`、可序列化或包含“协议”字样作为进入 `pl-protocol` 的依据。仅供一个业务 crate 使用的请求、内部事件、分页游标布局和控制协议由该 crate 维护；同一 package 的库、二进制及测试共享的定义也留在该 package。产品对外只传递不透明游标时，编解码和游标内部结构归分页服务所有者。
+
+共享关系包括公共字段、枚举载荷、函数签名和序列化结构的传递使用。HTTP、FRB 等产品适配边界发布的契约及其成员，不因只有一个直接构造者而视为私有实现；迁移成员必须与父契约和依赖方向一起核对。
+
+同一领域含义和序列化契约只维护一份定义，消费者直接使用所有者的类型，不通过 JSON 往返转换在重复定义之间搬运数据。独立工具拥有其输入与结果契约，宿主只添加路由、授权和配置等必要适配；不同业务含义、生命周期或历史迁移责任的相似结构保持各自边界，不为减少结构体数量强行合并。
 
 ### 工程与测试工具边界
 

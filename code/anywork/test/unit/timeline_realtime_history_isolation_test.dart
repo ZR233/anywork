@@ -7,11 +7,12 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
-// Main Activity and State facts traverse the real SDK and display owner.
-// Empty-message Append must not touch the historical component collection. A
+// Main Timeline and State facts traverse the real SDK and display owner.
+// Pure-live Append must not touch the historical component collection. A
 // explicit producer-item Append below is the positive control for operation observation.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -44,7 +45,6 @@ void main() {
     final session = graph.client.conversations.session(threadId);
     await session.source.waitFor((state) => state.hasSnapshot);
     await session.content.ready;
-    await session.activity.waitFor((snapshot) => snapshot != null);
 
     final lease = graph.timeline.lease(threadId)!;
     expect(lease.controller.messages, isNotEmpty);
@@ -77,55 +77,75 @@ void main() {
         expect(lease.controller.messages[i], same(baselineMessages[i]));
       }
       expect(
-        feed.reader.queries,
+        feed.reader.queries + feed.timelineQueries,
         0,
         reason: '$phase must not query any content or older page',
       );
     }
 
-    final activity = ActivitySnapshot(
-      revision: (session.activity.value?.revision ?? 0) + 1,
-      completedThrough: feed.completedThrough,
+    final live = LiveDisplayWindow(
+      revision: (lease.live.value?.revision ?? 0) + 1,
+      historyThrough: feed.historyThrough,
       executionPresent: true,
-      entries: [
-        ActivityEntry(
-          identity: const ModelPartActivityIdentity(atomId: 'live'),
-          atom: ChatAtom(
-            id: 'live',
-            source: const ForegroundTurnChatSource(turnId: 'turn-isolation'),
-            sourceOrder: 1,
-            kind: ChatAtomKind.text,
-            delivery: ChatDeliveryKind.foreground,
-            lifecycle: const ActiveChatAtom(
-              started: null,
-              status: ChatActiveStatus.running,
+      blocks: [
+        LiveDisplayBlock(
+          id: 'live',
+          blockOrder: 1,
+          state: DisplayBlockState.open,
+          body: SingleDisplayBlock(
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'live',
+                source: const ForegroundTurnChatSource(
+                  turnId: 'turn-isolation',
+                ),
+                sourceOrder: 1,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                contents: const [],
+                payload: InlinePayload(bytes: [65]),
+              ),
+              contentSource: const CurrentAtom(),
             ),
-            contents: const [],
-            payload: InlinePayload(bytes: [65]),
           ),
         ),
       ],
     );
-    await feed.emitAndWait(ConversationActivityEvent(snapshot: activity));
-    expect(session.activity.value, same(activity));
-    expect(session.activity.value!.entries.single.atom.id, 'live');
-    expectRealtimeOnly('Activity snapshot');
     await feed.emitAndWait(
-      ConversationChatEvent(
-        batch: chatBatch(
+      ConversationTimelineEvent(
+        batch: displayBatch(
           [],
           placement: ChatPlacement.append,
-          fromSeq: feed.completedThrough,
-          throughSeq: feed.completedThrough + 1,
+          from: feed.historyThrough,
+          through: feed.historyThrough,
+          live: live,
+        ),
+      ),
+    );
+    expect(lease.live.value, same(live));
+    expect(lease.live.value!.blocks.single.id, 'live');
+    expectRealtimeOnly('live snapshot');
+    await feed.emitAndWait(
+      ConversationTimelineEvent(
+        batch: displayBatch(
+          [],
+          placement: ChatPlacement.append,
+          from: feed.historyThrough,
+          through: feed.historyThrough,
+          live: live,
         ),
       ),
     );
     expect(
-      session.activity.value,
-      same(activity),
-      reason: 'Empty Append cannot replace Activity',
+      lease.live.value,
+      same(live),
+      reason: 'Pure live changes do not retire accepted blocks',
     );
-    expectRealtimeOnly('empty Append');
+    expectRealtimeOnly('pure-live Append');
     // 2. typed runtime/token/usage/计时事实。
     final runtimeBefore = session.state.runtime!;
     final liveUsage = ThreadRuntimeLiveUsageView(
@@ -190,9 +210,9 @@ void main() {
       ),
     );
     expect(
-      session.activity.value,
-      same(activity),
-      reason: 'State turn cannot overwrite Activity',
+      lease.live.value,
+      same(live),
+      reason: 'State turn cannot overwrite accepted live',
     );
     await publish(
       ThreadActivityUpdate(
@@ -207,9 +227,9 @@ void main() {
       ),
     );
     expect(
-      session.activity.value,
-      same(activity),
-      reason: 'State activity cannot overwrite Activity',
+      lease.live.value,
+      same(live),
+      reason: 'State activity cannot overwrite accepted live',
     );
     expectRealtimeOnly('Turn/活动进度');
 
@@ -234,13 +254,17 @@ void main() {
     // Positive control: an explicit producer item traverses the same SDK/ACK path.
     final acksBeforeSeed = feed.acknowledgements.length;
     await feed.emitAndWait(
-      ConversationChatEvent(
-        batch: chatBatch([
-          chatMessage(
-            'isolation-completed',
-            completionSeq: feed.completedThrough + 1,
-          ),
-        ], placement: ChatPlacement.append),
+      ConversationTimelineEvent(
+        batch: displayBatch(
+          [
+            displaySingle(
+              chatMessage('isolation-completed', completionSeq: 200),
+              historyPos: feed.historyThrough + 1,
+            ),
+          ],
+          placement: ChatPlacement.append,
+          from: feed.historyThrough,
+        ),
       ),
     );
     await operationSeen.future.timeout(const Duration(seconds: 5));
@@ -250,22 +274,27 @@ void main() {
     expect(operations, isNotEmpty, reason: '正对照：真实完成批次必须产生历史 Controller 操作');
     expect(lease.loadedCount, baselineLoaded + 1);
     expect(lease.controller.messages.last.id, 'isolation-completed');
-    expect(feed.reader.queries, 0);
+    expect(feed.reader.queries + feed.timelineQueries, 0);
     await feed.emitAndWait(
-      ConversationActivityEvent(
-        snapshot: ActivitySnapshot(
-          revision: activity.revision + 1,
-          completedThrough: feed.completedThrough,
-          executionPresent: false,
-          entries: const [],
+      ConversationTimelineEvent(
+        batch: displayBatch(
+          [],
+          placement: ChatPlacement.append,
+          from: feed.historyThrough,
+          through: feed.historyThrough,
+          live: LiveDisplayWindow(
+            revision: live.revision + 1,
+            historyThrough: feed.historyThrough,
+            executionPresent: false,
+            blocks: const [],
+          ),
         ),
       ),
     );
     expect(
-      session.activity.value!.entries,
+      lease.live.value!.blocks,
       isEmpty,
-      reason:
-          'An explicit empty Activity snapshot retires unfinished operations',
+      reason: 'An explicit empty live window retires unfinished operations',
     );
   });
 }
@@ -287,13 +316,12 @@ final class _IsolationTransport extends DemoStudioTransport {
   @override
   Duration get shutdownPhaseDelay => Duration.zero;
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
     final feed = _InjectingFeed(
-      await super.openConversationFeed(threadId, scope: scope, demand: demand),
+      await super.openTimelineFeed(threadId, demand: demand),
     );
     feeds.add(feed);
     return feed;
@@ -302,14 +330,47 @@ final class _IsolationTransport extends DemoStudioTransport {
 
 /// 输入边界包装：原样转发原生帧并重排连续 deliverySequence，注入的显式
 /// typed 事实在同一序列上排队，并等待 SDK 处理后的真实 ACK。不是归约者。
-final class _InjectingFeed implements ConversationFeed {
+final class _InjectingFeed implements TimelineFeed {
   _InjectingFeed(this.inner) : reader = _CountingReader(inner.reader);
   @override
   final _CountingReader reader;
-  final ConversationFeed inner;
+  final TimelineFeed inner;
+  int timelineQueries = 0;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    timelineQueries++;
+    return inner.loadTimelineOlder(before: before, demand: demand);
+  }
+
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) {
+    timelineQueries++;
+    return inner.loadLiveOlder(before: before, demand: demand);
+  }
+
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) {
+    timelineQueries++;
+    return inner.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
+  }
+
   final acknowledgements = <int>[];
   int deliveredFrames = 0;
-  int completedThrough = 0;
+  int historyThrough = 0;
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
@@ -347,8 +408,8 @@ final class _InjectingFeed implements ConversationFeed {
     _subscription = inner.events.listen(
       (frame) {
         if (_closed) return;
-        if (frame.event case ConversationChatEvent(:final batch)) {
-          completedThrough = batch.throughSeq;
+        if (frame.event case ConversationTimelineEvent(:final batch)) {
+          historyThrough = batch.throughPos;
         }
         final terminal =
             frame.event is ConversationClosedEvent ||
@@ -377,8 +438,8 @@ final class _InjectingFeed implements ConversationFeed {
   /// 在传输输入边界发布一条显式 typed 事实，并等待 SDK 的真实 ACK。
   Future<void> emitAndWait(ConversationEvent event) {
     if (_closed) return Future.error(StateError('Injecting feed is closed'));
-    if (event case ConversationChatEvent(:final batch)) {
-      completedThrough = batch.throughSeq;
+    if (event case ConversationTimelineEvent(:final batch)) {
+      historyThrough = batch.throughPos;
     }
     final accepted = Completer<void>();
     final sequence = ++_sequence;

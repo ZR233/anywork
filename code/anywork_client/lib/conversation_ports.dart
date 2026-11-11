@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'models.dart';
+import 'src/conversation/domain/conversation_repository.dart'
+    show DisplayMembers;
 import 'src/studio/thread_frames.dart';
 export 'src/studio/thread_frames.dart';
 
@@ -11,6 +13,29 @@ abstract interface class ConversationTransport {
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
+    required ReadDemand demand,
+  });
+}
+
+abstract interface class TimelineTransport {
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
+  });
+}
+
+abstract interface class TimelineFeed implements ConversationFeed {
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
     required ReadDemand demand,
   });
 }
@@ -76,7 +101,8 @@ abstract interface class ConversationFeed {
   String get subscriptionId;
   ConversationReader get reader;
 
-  /// Content-only events: Chat, Activity, Failure or Closed.
+  /// Content-only events: completion feeds carry Chat/Activity, while Timeline
+  /// feeds carry Timeline. Both may report Failure or Closed, never State.
   Stream<ConversationFrame> get events;
   Future<void> acknowledge(int deliverySequence);
   void requestClose();
@@ -108,6 +134,11 @@ final class ConversationStateEvent extends ConversationEvent {
 final class ConversationChatEvent extends ConversationEvent {
   const ConversationChatEvent({required this.batch});
   final ChatBatch batch;
+}
+
+final class ConversationTimelineEvent extends ConversationEvent {
+  const ConversationTimelineEvent({required this.batch});
+  final TimelineBatch batch;
 }
 
 final class ConversationActivityEvent extends ConversationEvent {

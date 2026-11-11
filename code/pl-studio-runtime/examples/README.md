@@ -31,6 +31,15 @@ review 默认 pending，由观察者阅读过程、结果和产物后另行记�
 缺少配置、鉴权失败、超时与事件缺口必须保留，不能静默跳过。
 不会断言回答文字、工具次数、缓存命中或业务终态。
 
+工具输出协议也可用真实账号单独验证。先设置 `ANYWORK_LIVE_ACCOUNT_ID` 和
+`ANYWORK_LIVE_MODEL_ID`，再从仓库根目录执行：
+
+```bash
+cargo test --locked -p pl-studio-runtime --features live-tests --test live_schema_output -- --ignored --nocapture
+```
+
+该可选测试要求模型使用 Responses 协议。它读取账号配置与凭据，让模型直接调用作者声明了输出 schema 的无副作用测试工具，并检查普通文本结果能否被接收；它会产生真实模型用量，不启动 Studio 界面或创建会话。
+
 完整工具/协作任务使用 `collaboration_observe`，由操作者准备真实任务和 fixture，再显式运行。
 它只收集事实和转交操作者决议，不替模型实现业务，不根据回复文字、工具次数或标记判断通过。
 本 example 仅支持 Linux；非 Linux 在复制真实配置或启动业务前明确拒绝，不代表产品停止支持

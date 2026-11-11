@@ -81,6 +81,9 @@ impl RuntimeWorker {
         generation: McpGeneration,
         server_id: &str,
     ) -> Result<(Arc<ConnectedMcp>, Duration, McpErrorRedactor)> {
+        if let Some(state) = self.generations.get(&generation) {
+            state.ensure_active()?;
+        }
         self.generations
             .get(&generation)
             .and_then(|generation| generation.servers.get(server_id))
@@ -111,6 +114,7 @@ impl RuntimeWorker {
                     tool: "mcp".to_string(),
                     error: format!("MCP generation {} is unavailable", generation.0),
                 })?;
+        state.ensure_active()?;
         match server_id {
             Some(server_id) => {
                 let supports_resources = state

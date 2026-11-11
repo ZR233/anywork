@@ -28,7 +28,7 @@ pub struct BridgeThreadDirectoryFrame {
     pub query: BridgeThreadDirectoryQuery,
     pub window: BridgeThreadDirectoryWindow,
     pub stamp: BridgeResourceStamp,
-    pub rows: Vec<BridgeSessionDirectoryRow>,
+    pub thread_ids: Vec<String>,
     pub next_cursor: Option<String>,
 }
 

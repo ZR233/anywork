@@ -1,23 +1,40 @@
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:material_ui/material_ui.dart';
 
+import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../state/completion_run_presentation.dart';
+import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 
-/// The folded header reads only the representative's explicit class and
-/// ordinal. No body or aggregate facts are read to render a one-member Run.
+enum WorkDisplayLocation { live, history }
+
+/// One producer-defined Work header with bounded, explicitly requested members.
 class CompletionRunView extends StatefulWidget {
   const CompletionRunView({
     required this.id,
-    required this.presentation,
+    required this.summary,
     required this.childBuilder,
     required this.initiallyExpanded,
+    required this.location,
     this.onExpandedChanged,
+    this.executionPresent = false,
+    DisplayBlockState? state,
+    this.activity,
+    this.now,
     super.key,
-  });
+  }) : state =
+           state ??
+           (location == WorkDisplayLocation.history
+               ? DisplayBlockState.sealed
+               : DisplayBlockState.open);
   final String id;
-  final CompletionRunPresentation presentation;
+  final WorkSummary summary;
+  final bool executionPresent;
+  final DisplayBlockState state;
+  final WorkDisplayLocation location;
+  final ConversationActivityView? activity;
+  final DateTime Function()? now;
   final WidgetBuilder childBuilder;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpandedChanged;
@@ -49,12 +66,16 @@ class _CompletionRunViewState extends State<CompletionRunView> {
 
   @override
   Widget build(BuildContext context) {
-    final entry = widget.presentation.representative;
-    final label = entry.mainPresentation == MainPresentation.backgroundResults
-        ? context.l10n.timelineBackgroundResults
-        : context.l10n.timelineGroupRecord;
-    final count = context.l10n.timelineGroupMemberCount(entry.run!.ordinal);
+    final summary = widget.summary;
+    final live = widget.state == DisplayBlockState.open;
+    final runningClock =
+        live && widget.executionPresent && summary.createdAt != null;
+    final savedElapsed = summary.elapsedMs;
+    final savedSeconds = savedElapsed != null && savedElapsed >= 0
+        ? savedElapsed ~/ 1000
+        : null;
     return Expansible(
+      key: ValueKey('completion-run-disclosure:${widget.id}'),
       controller: _disclosure,
       maintainState: false,
       animationStyle: MediaQuery.disableAnimationsOf(context)
@@ -66,11 +87,20 @@ class _CompletionRunViewState extends State<CompletionRunView> {
         child: InkWell(
           onTap: _disclosure.toggle,
           borderRadius: BorderRadius.circular(8),
-          child: TimelineActivityRow(
-            key: ValueKey('completion-run-header:${widget.id}'),
-            label: '$label · $count',
-            header: true,
-            expanded: _disclosure.isExpanded,
+          child: TimelineActivityClock(
+            startedAt: runningClock ? summary.createdAt : null,
+            running: runningClock,
+            now: widget.now,
+            builder: (context, seconds) => _WorkHeader(
+              key: ValueKey('completion-run-header:${widget.id}'),
+              summary: summary,
+              location: widget.location,
+              executionPresent: widget.executionPresent,
+              state: widget.state,
+              activity: widget.activity,
+              seconds: runningClock ? seconds : savedSeconds,
+              expanded: _disclosure.isExpanded,
+            ),
           ),
         ),
       ),
@@ -81,13 +111,169 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               child: TimelineActivityRail(
                 inset: 3,
                 contentInset: 14,
-                child: Builder(builder: widget.childBuilder),
+                child: live
+                    ? ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 186),
+                        child: SingleChildScrollView(
+                          child: Builder(builder: widget.childBuilder),
+                        ),
+                      )
+                    : Builder(builder: widget.childBuilder),
               ),
             ),
-      expansibleBuilder: (context, header, body, animation) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, body],
+      expansibleBuilder: (context, header, body, animation) => LayoutBuilder(
+        builder: (context, constraints) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            if (live && constraints.hasBoundedHeight)
+              Flexible(fit: FlexFit.loose, child: body)
+            else
+              body,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Work alone has a strict single-line header. Other activity rows retain
+/// their existing wrapping policy for questions, tools and reasoning.
+class _WorkHeader extends StatelessWidget {
+  const _WorkHeader({
+    super.key,
+    required this.summary,
+    required this.location,
+    required this.executionPresent,
+    required this.state,
+    required this.seconds,
+    required this.expanded,
+    this.activity,
+  });
+
+  final WorkSummary summary;
+  final WorkDisplayLocation location;
+  final bool executionPresent;
+  final DisplayBlockState state;
+  final int? seconds;
+  final bool expanded;
+  final ConversationActivityView? activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final live = state == DisplayBlockState.open;
+    final cold = live && !executionPresent;
+    final l10n = context.l10n;
+    final fallback = cold
+        ? l10n.timelineGroupUnrestored
+        : activity != null
+        ? context.conversationActivityLabel(activity!)
+        : summary.waiting > 0
+        ? l10n.conversationActivityWaitingTools
+        : summary.running == 0
+        ? l10n.timelineGroupWaitingForNext
+        : l10n.timelineGroupWorking;
+    final thought =
+        [summary.thinkingSummary, activity?.thinkingSummary, activity?.summary]
+            .whereType<String>()
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .firstOrNull;
+    final status = live && !cold && thought?.isNotEmpty == true
+        ? thought!
+        : fallback;
+    final duration = seconds == null
+        ? null
+        : activityDurationLabel(
+            context,
+            seconds!,
+            kind: live
+                ? ActivityDurationKind.executing
+                : ActivityDurationKind.worked,
+          );
+    final label = live ? status : duration ?? l10n.timelineGroupRecord;
+    final outcomes = <String>[
+      if (summary.failed > 0) l10n.timelineGroupFailedCount(summary.failed),
+      if (summary.cancelled > 0)
+        l10n.timelineGroupStoppedCount(summary.cancelled),
+      if (summary.transferred > 0)
+        l10n.timelineGroupTransferredCount(summary.transferred),
+      if (!live && (summary.running > 0 || summary.waiting > 0)) '封存时尚未结束',
+      if (summary.unavailable > 0) '旧边界观察不可用',
+    ];
+    final description = [
+      label,
+      if (live && label != fallback) fallback,
+      if (live && duration != null) duration,
+      l10n.timelineGroupMemberCount(summary.total),
+      ...outcomes,
+    ].join('，');
+    final issue = summary.failed > 0;
+    final active =
+        live &&
+        executionPresent &&
+        !issue &&
+        (summary.running > 0 || summary.waiting > 0 || activity != null);
+    final icon = issue
+        ? Icons.error_outline
+        : cold
+        ? Icons.history_outlined
+        : summary.cancelled > 0
+        ? Icons.stop_circle_outlined
+        : summary.transferred > 0
+        ? Icons.call_made
+        : activity?.kind.icon ?? Icons.work_outline;
+    final style = context.text.bodySmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+    );
+    return Semantics(
+      label: description,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: description,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              TimelineActivityIndicator(
+                icon: icon,
+                active: active,
+                color: issue
+                    ? context.colors.error
+                    : context.colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: style,
+                ),
+              ),
+              if (live && duration != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  duration,
+                  key: const ValueKey('work-header-elapsed'),
+                  maxLines: 1,
+                  softWrap: false,
+                  style: style,
+                ),
+              ],
+              const SizedBox(width: 4),
+              Icon(
+                expanded
+                    ? Icons.keyboard_arrow_down_rounded
+                    : Icons.chevron_right_rounded,
+                size: 18,
+                color: context.colors.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

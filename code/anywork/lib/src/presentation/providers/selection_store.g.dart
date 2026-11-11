@@ -58,4 +58,4 @@ final class SelectionStoreProvider
   }
 }
 
-String _$selectionStoreHash() => r'526eda592f856aa1f2a5efea97b79984222bba24';
+String _$selectionStoreHash() => r'bb5b6ad6387909dcd5d9205312f9597ec6d9e329';

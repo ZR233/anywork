@@ -47,6 +47,10 @@ impl Hash for McpExecutionContext {
 pub struct McpServerConfig {
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub enabled: bool,
+    /// An enabled server must be ready before the owning Thread's initial preparation succeeds.
+    /// Optional servers prepare in the same owner's background.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub required: bool,
     #[serde(default, skip_serializing_if = "McpServerTransport::is_default")]
     pub transport: McpServerTransport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,6 +223,7 @@ impl Default for McpServerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            required: false,
             transport: McpServerTransport::Stdio,
             command: None,
             args: Vec::new(),
@@ -298,4 +303,8 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

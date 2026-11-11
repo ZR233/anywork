@@ -31,7 +31,7 @@
 ### 预置系统技能
 
 Studio 预置系统技能归属 `pl-studio-runtime`，规范源码检入仓库 `code/pl-studio-runtime/assets/skills/` 目录，分为两类来源：
-- **仓库原创技能**（`skill-creator`、`studio-config`、`subagent-workflow`）：直接在源码树中维护（其中 `studio-config` 为 `anywork` 配置指南，随 [20](./20-config.md) 同步维护）。
+- **仓库原创技能**（`skill-creator`、`studio-config`、`subagent-workflow`）：直接在源码树中维护。其中 `studio-config` 提供与当前实现匹配的配置位置索引及按需加载的格式、示例和验证指南；不承载历史迁移流水账。配置所有权与迁移契约见 [20](./20-config.md)，配置变更的同步要求见 [项目规约](../AGENTS.md)。
 - **上游整理技能**：`canvas-design`、`frontend-design` 来自 anthropics/skills；Office 领域仅保留 DeepSeek Harness 的 `office`、`office-docx`、`office-pptx`、`office-xlsx`、`office-render`、`office-recalculate`、`office-export-pdf` 七项独立技能。通过工具读取已核验许可的固定上游提交，手动拷贝并按本项目技能目录规范整理后检入源码，不使用子模块、外部仓库 checkout、自动同步脚本或构建期下载。固定修订号、上游路径、许可与本地适配记录于 `THIRD_PARTY_NOTICES.md`，适用许可证随技能资源分发。
 
 内置技能目录是发现的唯一内容事实源，不维护技能名称或数量白名单，也不按 Office 等领域增加工具分支。每个有资产的一级技能目录必须包含有效的 `SKILL.md`，其 `name` 与目录名一致、`description` 非空；继续复用统一技能元数据与路径校验。无效主文档、缺失主文档的资产目录及越界路径必须使资源发布失败，不能静默跳过。新增或删除符合规则的目录即可改变内置技能集合，无需修改 Rust 名称清单。

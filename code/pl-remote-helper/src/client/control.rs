@@ -4,7 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pl_protocol::process_worker::ProcessWorkerCommand;
+use crate::process_worker_protocol::ProcessWorkerCommand;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::sync::watch;
 

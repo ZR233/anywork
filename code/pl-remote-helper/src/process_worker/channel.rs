@@ -3,7 +3,7 @@ use std::net::Shutdown;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
-use pl_protocol::process_worker::{ProcessWorkerCommand, ProcessWorkerEvent};
+use pl_remote_helper::process_worker_protocol::{ProcessWorkerCommand, ProcessWorkerEvent};
 
 pub(super) struct Channel {
     stream: Option<UnixStream>,

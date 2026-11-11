@@ -1,22 +1,240 @@
 import 'dart:convert';
 
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/domain/models/composer_primary_action.dart';
+import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Finds the current title inside one exact header without resolving the header
-/// again for every candidate. A clock may replace a custom label during a pump.
+Map<String, Object?> _sourceCut(ChatSourceId source) => switch (source) {
+  ForegroundTurnChatSource(:final turnId) => {
+    'kind': 'foregroundTurn',
+    'turnId': turnId,
+  },
+  InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
+  InboxMessageChatSource(:final sourceId, :final messageId) => {
+    'kind': 'inboxMessage',
+    'sourceId': sourceId,
+    'messageId': messageId,
+  },
+  BackgroundResultChatSource(:final messageId) => {
+    'kind': 'backgroundResult',
+    'messageId': messageId,
+  },
+  OperationChatSource(:final operationId) => {
+    'kind': 'operation',
+    'operationId': operationId,
+  },
+  ReceiptChatSource(:final receiptId) => {
+    'kind': 'receipt',
+    'receiptId': receiptId,
+  },
+};
+
+Map<String, Object?> _atomCut(ChatAtom atom) => {
+  'atomId': atom.id,
+  'kind': atom.kind.name,
+  'source': _sourceCut(atom.source),
+  'turnId': atom.turnId,
+  'lifecycle': atom.lifecycle.runtimeType.toString(),
+  'completionItemId': atom.completionItemId,
+  'completionSeq': atom.completionSeq,
+};
+
+// One synchronous failure cut of public identities, never body/payload/draft
+// text, a query, or a new Session. Work headers deliberately have no source.
+Map<String, Object?> timelineWaitFailureSnapshot({
+  required WidgetTester tester,
+  required String? selectedThreadId,
+  required String? submittedThreadId,
+  required String? submittedTurnId,
+  required String? previousTurnId,
+  required TimelineDisplayLease? lease,
+  required ThreadSessionState? session,
+  String? afterTurnId,
+  String? targetTurnId,
+  required String expectedOutcome,
+}) {
+  Map<String, Object?>? turn(StudioTurnView? value) => value == null
+      ? null
+      : {
+          'threadId': value.threadId,
+          'turnId': value.turnId,
+          'status': value.state.status.name,
+          'isBusy': value.state.isBusy,
+          'isTerminal': value.state.isTerminal,
+        };
+  Map<String, Object?> body(DisplayBlockBody value, String id) =>
+      switch (value) {
+        SingleDisplayBlock(:final record) => {
+          'bodyKind': 'single',
+          ..._atomCut(record.atom),
+        },
+        WorkDisplayBlock(:final members, :final summary) => {
+          'bodyKind': 'work',
+          'source': null,
+          'sourceEvidence':
+              'bounded member heads, not a source on the Work header',
+          'memberBlockId': members.blockId,
+          'total': summary.total,
+          'terminal': summary.terminal,
+          'mountedMembers': [
+            for (final display
+                in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
+              if (display.unitId == id && display.isCurrent)
+                for (final atom in display.atoms) _atomCut(atom),
+          ],
+        },
+      };
+  final main = lease == null || lease.isReleased
+      ? const <TimelineDisplayUnit>[]
+      : TimelineObservation(tester, () => lease).main.toList();
+  final live = lease?.isReleased == false ? lease?.live.value : null;
+  final execution = session?.runtime?.execution;
+  final composers = tester
+      .widgetList<PromptComposerView>(find.byType(PromptComposerView))
+      .toList();
+  return {
+    'selectedThreadId': selectedThreadId,
+    'submittedThreadId': submittedThreadId,
+    'submittedTurnId': submittedTurnId,
+    'previousTurnId': previousTurnId,
+    'afterTurnId': afterTurnId,
+    'targetTurnId': targetTurnId,
+    'expectedOutcome': expectedOutcome,
+    'candidateTurn': turn(session?.lastTurn),
+    'activeTurn': turn(session?.activeTurn),
+    'execution': execution == null
+        ? null
+        : {
+            'id': execution.id,
+            'turnId': execution.turnId,
+            'phase': execution.phase.name,
+          },
+    'activity': session?.activity == null
+        ? null
+        : {
+            'kind': session!.activity!.kind.name,
+            'count': session.activity!.tools.count,
+            'background': session.activity!.tools.background,
+          },
+    'lease': lease == null
+        ? null
+        : {
+            'threadId': lease.threadId,
+            'generation': lease.generation,
+            'selectionId': lease.selectionId,
+            'mounted': lease.isMounted,
+            'retired': lease.isRetired,
+            'released': lease.isReleased,
+            'appliedSets': lease.appliedSets,
+          },
+    'historyBlockCount': main.length,
+    'historyTailLimit': 64,
+    'historyTruncated': main.length > 64,
+    'history': [
+      for (final unit in main.skip(main.length > 64 ? main.length - 64 : 0))
+        {
+          'blockId': unit.id,
+          'historyPos': unit.historyPos,
+          ...body(unit.body, unit.id),
+        },
+    ],
+    'live': live == null
+        ? null
+        : {
+            'revision': live.revision,
+            'historyThrough': live.historyThrough,
+            'executionPresent': live.executionPresent,
+            'blocks': [
+              for (final block in live.blocks)
+                {
+                  'blockId': block.id,
+                  'blockOrder': block.blockOrder,
+                  ...body(block.body, block.id),
+                  'source': block.source == null
+                      ? null
+                      : _sourceCut(block.source!),
+                  'state': block.state.name,
+                },
+            ],
+          },
+    'mainScrollableCount': lease == null || lease.isReleased
+        ? 0
+        : find
+              .byWidgetPredicate(
+                (widget) =>
+                    widget is Scrollable &&
+                    identical(widget.controller, lease.scrollController),
+              )
+              .evaluate()
+              .length,
+    'composer': [
+      for (final composer in composers)
+        {
+          'enabled': composer.enabled,
+          'submissionLocked': composer.submissionLocked,
+          'blockerKind': composer.blocker?.runtimeType.toString(),
+          'failureKind': composer.failure?.runtimeType.toString(),
+          'failureReason': switch (composer.failure) {
+            ComposerFailureBlocker(:final reason) => reason?.name,
+            _ => null,
+          },
+        },
+    ],
+  };
+}
+
+// Work uses a dedicated single-line header, not TimelineActivityRow. Borrow its
+// actual label Text without the separate elapsed Text or any private widget API.
 Finder timelineGroupTitleFinder(
+  WidgetTester tester,
+  Finder header, {
+  bool skipOffstage = true,
+  VoidCallback? validateOwner,
+}) => find.descendant(
+  of: header,
+  matching: find.byWidgetPredicate((widget) {
+    final matches =
+        widget is Text && widget.key != const ValueKey('work-header-elapsed');
+    if (matches) validateOwner?.call();
+    return matches;
+  }, skipOffstage: skipOffstage),
+  skipOffstage: skipOffstage,
+);
+
+bool timelineWorkHeaderExpanded(WidgetTester tester, Finder header, String id) {
+  expect(header, findsOneWidget);
+  final disclosure = find.ancestor(
+    of: header,
+    matching: find.byKey(
+      ValueKey('completion-run-disclosure:$id'),
+      skipOffstage: false,
+    ),
+  );
+  expect(disclosure, findsOneWidget);
+  return tester.widget<Expansible>(disclosure).controller.isExpanded;
+}
+
+// Members and Single disclosures still use TimelineActivityRow. Their label may
+// be a custom widget; keep the original row-specific observation separate.
+Finder timelineActivityTitleFinder(
   WidgetTester tester,
   Finder header, {
   bool skipOffstage = true,
@@ -45,6 +263,12 @@ Finder timelineGroupTitleFinder(
   skipOffstage: skipOffstage,
 );
 
+typedef ObservedLiveDisplayRecord = ({
+  String blockId,
+  String displayId,
+  DisplayRecord record,
+});
+
 /// UI operations and synchronous borrows of the production presentation owner.
 /// No copied group/current list, payload fallback, query, or test-owned reducer.
 final class TimelineObservation {
@@ -63,41 +287,254 @@ final class TimelineObservation {
         value.id,
         reason: 'one canonical Main card owns one Message',
       );
-      expect(value.entry.completionSeq, greaterThan(0));
-      expect(value.entry.mainPresentation, isNot(MainPresentation.hidden));
-      if (value.run != null) {
-        expect(value.run!.representative, same(value.entry));
-        expect(value.run!.reference.startSeq, value.entry.run!.startSeq);
+      expect(value.historyPos, greaterThan(0));
+      if (value.body case WorkDisplayBlock(:final summary, :final members)) {
+        expect(summary.total, greaterThan(0));
+        expect(members.blockId, value.id);
       } else {
-        expect(value.entry.mainPresentation, MainPresentation.single);
+        expect(value.body, isA<SingleDisplayBlock>());
       }
       yield value;
     }
   }
 
-  Iterable<CompletedEntry> get entries => main.map((unit) => unit.entry);
+  Iterable<TimelineDisplayUnit> get singleBlocks =>
+      main.where((unit) => unit.body is SingleDisplayBlock);
   Iterable<ChatAtom> get mountedMembers =>
       lease.groupDisplays.expand((display) => display.atoms);
-  Iterable<ActivityEntry> get activity =>
-      lease.content.activity.value?.entries ?? const [];
-  Iterable<TimelineDisplayUnit> workFor(ChatSourceId source) => main.where(
-    (unit) => unit.entry.atom.source == source && unit.run != null,
-  );
+  Iterable<LiveDisplayBlock> get liveBlocks =>
+      lease.live.value?.blocks ?? const [];
+  Iterable<TimelineDisplayUnit> get liveWork => liveBlocks
+      .where((block) => block.body is WorkDisplayBlock)
+      .map(
+        (block) => lease.liveUnit(block, lease.live.value!.executionPresent),
+      );
+  Iterable<ChatAtom> get liveAtoms sync* {
+    final workIds = liveWork.map((block) => block.id).toSet();
+    for (final block in liveBlocks) {
+      if (block.body case SingleDisplayBlock(:final record)) yield record.atom;
+    }
+    for (final display in lease.groupDisplays) {
+      if (workIds.contains(display.unitId)) yield* display.atoms;
+    }
+  }
+
+  // Resolve display identity only from the admitted block or its mounted page.
+  // No query, ID decoding, or parallel member inventory is involved.
+  Iterable<ObservedLiveDisplayRecord> liveDisplayRecords(
+    LiveDisplayBlock block,
+  ) sync* {
+    switch (block.body) {
+      case SingleDisplayBlock(:final record):
+        yield (blockId: block.id, displayId: block.id, record: record);
+      case WorkDisplayBlock(:final members):
+        final group = lease.groupDisplays
+            .where(
+              (display) =>
+                  display.unitId == block.id &&
+                  display.blockReference == members &&
+                  display.expanded &&
+                  !display.loading,
+            )
+            .singleOrNull;
+        if (group == null) return;
+        expect(group.error, isNull);
+        final page = unit(block.id).expansion.members?.page;
+        if (page == null) return;
+        expect(page.block, members);
+        for (final entry in page.entries) {
+          yield (
+            blockId: block.id,
+            displayId: entry.memberKey,
+            record: entry.record,
+          );
+        }
+    }
+  }
+
+  Finder liveRenderer(ObservedLiveDisplayRecord head) {
+    final row = find.byWidgetPredicate(
+      (widget) =>
+          widget is TimelineMemberAtom &&
+          widget.displayId == head.displayId &&
+          widget.record == head.record &&
+          identical(widget.content, lease.content) &&
+          widget.isActive(),
+    );
+    final block = liveBlocks.singleWhere((block) => block.id == head.blockId);
+    return block.body is WorkDisplayBlock
+        ? find.descendant(of: groupRow(block.id), matching: row)
+        : row;
+  }
+
+  TimelineCurrentDisplay currentDisplayForWork(String blockId) {
+    final parent = find.ancestor(
+      of: groupRow(blockId),
+      matching: find.byType(ConversationCurrentConnector),
+    );
+    expect(parent, findsOneWidget);
+    final current = tester.state(parent) as TimelineCurrentDisplay;
+    expect(
+      lease.currentDisplays.where((display) => identical(display, current)),
+      hasLength(1),
+    );
+    expect(current.isCurrent, isTrue);
+    return current;
+  }
+
+  Iterable<TimelineDisplayUnit> get workBlocks =>
+      main.where((unit) => unit.body is WorkDisplayBlock);
+  Iterable<TimelineDisplayUnit> get allWork sync* {
+    yield* workBlocks;
+    yield* liveWork;
+  }
+
+  /// Explicit bounded provenance evidence, not an atom-history scan or a cache.
+  Future<DisplayMemberPage> readMemberPage(
+    DisplayBlockRef reference, {
+    DisplayMemberWindow window = const LatestDisplayMembers(),
+    ReadDemand demand = const ReadDemand(maxItems: 1, maxBytes: 16384),
+  }) async {
+    final original = lease;
+    final handle = await original.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
+    try {
+      final page = await handle.next();
+      expect(lease, same(original));
+      expect(page, isNotNull);
+      expect(page!.block, reference);
+      return page;
+    } finally {
+      handle.requestClose();
+      await handle.close();
+    }
+  }
+
+  Future<List<TimelineDisplayUnit>> workForSource(ChatSourceId source) async {
+    final matched = <TimelineDisplayUnit>[];
+    for (final block in allWork.toList()) {
+      final page = await readMemberPage(block.memberReference!);
+      expect(page.entries, isNotEmpty);
+      if (page.entries.single.record.atom.source == source) matched.add(block);
+    }
+    return matched;
+  }
+
+  Future<bool> hasHistoricalSource(ChatSourceId source) async {
+    final original = lease;
+    if (singleBlocks.any((unit) => unit.atom!.source == source)) return true;
+    // A tool-only successful Turn need not manufacture a Single/receipt.
+    // Borrow only one bounded member head per already admitted Work.
+    for (final block in workBlocks.toList()) {
+      final page = await readMemberPage(block.memberReference!);
+      expect(lease, same(original));
+      final admitted = main.where((unit) => unit.id == block.id).single;
+      expect(admitted.historyPos, block.historyPos);
+      expect(admitted.memberReference, block.memberReference);
+      expect(page.entries, hasLength(1));
+      if (page.entries.single.record.atom.source == source) return true;
+    }
+    return false;
+  }
+
+  /// Explicit finite fixture inventory. UI still owns just its selected page.
+  Future<List<DisplayMemberHead>> readMemberInventory(
+    TimelineDisplayUnit block, {
+    required int expectedCount,
+  }) async {
+    expect(block.summary!.total, expectedCount);
+    final result = <DisplayMemberHead>[];
+    DisplayMemberWindow window = const LatestDisplayMembers();
+    int? revision;
+    while (true) {
+      final page = await readMemberPage(
+        block.memberReference!,
+        window: window,
+        demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
+      );
+      revision ??= page.revision;
+      expect(
+        page.revision,
+        revision,
+        reason: 'A mutable fixture inventory must stay at one structural cut',
+      );
+      result.insertAll(0, page.entries);
+      expect(result.length, lessThanOrEqualTo(expectedCount));
+      final before = page.before;
+      if (before == null) break;
+      window = BeforeDisplayMembers(memberOrder: before);
+    }
+    expect(result, hasLength(expectedCount));
+    expect(
+      result.map((head) => head.memberKey).toSet(),
+      hasLength(expectedCount),
+    );
+    var previous = 0;
+    for (final head in result) {
+      expect(head.memberOrder, greaterThan(previous));
+      previous = head.memberOrder;
+    }
+    return List.unmodifiable(result);
+  }
+
+  Future<List<ChatAtom>> readFixtureAtoms(
+    TimelineDisplayUnit block, {
+    required int expectedCount,
+  }) async {
+    final heads = await readMemberInventory(
+      block,
+      expectedCount: expectedCount,
+    );
+    final scope = lease.content.openScope(generation: lease.generation);
+    try {
+      final atoms = <ChatAtom>[];
+      for (final head in heads) {
+        final record = head.record;
+        switch (record.contentSource) {
+          case CurrentAtom() || FrozenObservation():
+            atoms.add(record.atom);
+          case CompletedOriginal(:final completionId):
+            final original = await scope.readCompleted(
+              recordId: completionId,
+              demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+            );
+            expect(original.atom.id, record.atom.id);
+            expect(original.atom.source, record.atom.source);
+            expect(original.recordId, completionId);
+            expect(original.completionSeq, record.atom.completionSeq);
+            atoms.add(original.atom);
+        }
+      }
+      return List.unmodifiable(atoms);
+    } finally {
+      scope.retire();
+      expect((await scope.close()).complete, isTrue);
+    }
+  }
+
   TimelineDisplayUnit unitForMember(String id) => unit(
     lease.groupDisplays
         .singleWhere((display) => display.atoms.any((atom) => atom.id == id))
         .unitId,
   );
-  Future<void> openSourceRuns(ChatSourceId source) async {
-    for (final run in workFor(source).toList()) {
-      await openRun(run.id);
+  Future<void> openSourceWork(ChatSourceId source) async {
+    for (final block in await workForSource(source)) {
+      await openWork(block.id);
     }
   }
 
-  TimelineDisplayUnit unit(String id) =>
-      main.singleWhere((unit) => unit.id == id);
-  TimelineDisplayUnit unitForRun(CompletionRunRef reference) =>
-      main.singleWhere((unit) => unit.run?.reference == reference);
+  TimelineDisplayUnit unit(String id) {
+    final historical = main.where((unit) => unit.id == id).singleOrNull;
+    if (historical != null) return historical;
+    final block = liveBlocks.singleWhere((block) => block.id == id);
+    return lease.liveUnit(block, lease.live.value!.executionPresent);
+  }
+
+  TimelineDisplayUnit unitForBlock(DisplayBlockRef reference) =>
+      allWork.singleWhere((unit) => unit.memberReference == reference);
 
   Finder groupRow(String id, {bool skipOffstage = true}) =>
       find.byWidgetPredicate(
@@ -119,15 +556,39 @@ final class TimelineObservation {
     skipOffstage: skipOffstage,
   );
 
+  bool groupExpanded(String id) =>
+      timelineWorkHeaderExpanded(tester, groupHeader(id), id);
+
+  Future<void> tapGroupHeader(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final original = lease;
+    final controller = original.controller;
+    final generation = original.generation;
+    await tap(
+      groupHeader(id),
+      timeout: timeout,
+      isActive: () {
+        expect(lease, same(original));
+        expect(original.isRetired, isFalse);
+        expect(original.isReleased, isFalse);
+        expect(original.isMounted, isTrue);
+        expect(original.controller, same(controller));
+        expect(original.generation, generation);
+        return true;
+      },
+    );
+  }
+
   Finder _groupTitle(String id, {bool skipOffstage = true}) {
     final header = groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
     final originalLease = lease;
     final originalController = originalLease.controller;
     final originalGeneration = originalLease.generation;
-    // The header's Align/Row can have its centre in a Spacer, outside its
-    // children's hit path. Target the real title inside this exact unit, not
-    // the disclosure's body or another group's identically labelled header.
+    // Navigation reveals the actual title in this exact Work header, not a
+    // member or another group's label. Toggle gestures use tapGroupHeader.
     final title = timelineGroupTitleFinder(
       tester,
       header,
@@ -140,7 +601,7 @@ final class TimelineObservation {
             !originalLease.isMounted ||
             !identical(current.controller, originalController) ||
             current.generation != originalGeneration) {
-          fail('Timeline owner changed while resolving Run title $id');
+          fail('Timeline owner changed while resolving Work title $id');
         }
       },
     );
@@ -238,13 +699,17 @@ final class TimelineObservation {
     final demands = <Map<String, Object?>>[];
 
     bool matchesCanonical(Element element) {
-      final widget = element.widget;
       final unit = originalUnit;
       return unit != null &&
-          widget is ChatItemView &&
-          widget.item.id == unitId &&
-          identical(widget.item.displayUnit, unit) &&
-          identical(Scrollable.maybeOf(element), originalScrollable);
+          originalScrollable != null &&
+          identical(
+            _mainRevealRowUnit(
+              originalController,
+              originalScrollable!,
+              element,
+            ),
+            unit,
+          );
     }
 
     final canonical = find.byElementPredicate(
@@ -350,6 +815,7 @@ final class TimelineObservation {
             .map((element) => _mainRevealElementInfo(element, state))
             .toList(),
         'canonicalRenderBranches': _mainRevealBranches(canonical),
+        'canonicalAnchor': 'ChatMessage canonical key/id and controller unit',
         'targetFinder': target.describeMatch(Plurality.many),
         'targetSkipOffstage': target.skipOffstage,
         'targetFinderCount': targetElements.length,
@@ -444,6 +910,84 @@ final class TimelineObservation {
       return belongs;
     }
 
+    bool rendererReady() {
+      final rows = canonical.evaluate().toList();
+      if (rows.length != 1) return false;
+      final renderers = find
+          .descendant(
+            of: canonical,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is ChatItemView &&
+                  identical(widget.item.displayUnit, originalUnit),
+            ),
+          )
+          .evaluate()
+          .toList();
+      if (renderers.length > 1) {
+        stop('Main canonical row has multiple payload renderers');
+      }
+      if (renderers.isEmpty) {
+        // Observe the connector's actual UI branch, never open/refresh its
+        // reader or infer a tool/business outcome from an error message.
+        final connectors = find.descendant(
+          of: canonical,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineCanonicalPayloadConnector &&
+                identical(widget.item.displayUnit, originalUnit),
+          ),
+        );
+        for (final element in connectors.evaluate()) {
+          element.visitChildren((child) {
+            final widget = child.widget;
+            if (widget is Text && widget.data != '正在读取完成内容…') {
+              stop('Main canonical metadata connector displays an error');
+            }
+          });
+        }
+        return false;
+      }
+      final element = renderers.single;
+      final item = (element.widget as ChatItemView).item;
+      if (item.id != unitId ||
+          !identical(Scrollable.maybeOf(element), originalScrollable) ||
+          !belongsTo(element, rows.single)) {
+        stop('Main payload renderer lost its canonical row/domain');
+      }
+      if (item.compatibility == ChatItemCompatibility.deferred) return false;
+      if (item.compatibility != ChatItemCompatibility.current) {
+        stop('Main payload renderer has unavailable canonical metadata');
+      }
+      final body = originalUnit!.body;
+      if (body is SingleDisplayBlock) {
+        final atom = item.atom;
+        final record = body.record;
+        final head = record.atom;
+        final completionId = switch (record.contentSource) {
+          CompletedOriginal(:final completionId) => completionId,
+          CurrentAtom() || FrozenObservation() => null,
+        };
+        if (atom == null ||
+            atom.id != head.id ||
+            atom.source != head.source ||
+            atom.kind != head.kind ||
+            atom.turnId != head.turnId ||
+            atom.delivery != head.delivery ||
+            atom.lifecycle != head.lifecycle ||
+            atom.tool?.callId != head.tool?.callId ||
+            atom.tool?.name != head.tool?.name ||
+            atom.completionItemId != head.completionItemId ||
+            atom.completionSeq != head.completionSeq ||
+            (completionId != null && atom.completionItemId != completionId)) {
+          stop(
+            'Main payload renderer completion identity differs from its unit',
+          );
+        }
+      }
+      return true;
+    }
+
     Element requireTarget() {
       final matches = target.evaluate().toList();
       if (matches.length != 1) {
@@ -471,7 +1015,7 @@ final class TimelineObservation {
       final fragment = requireTarget();
       interaction = target;
       interactionIsHeader = false;
-      if (originalUnit!.run == null) return true;
+      if (originalUnit!.body is SingleDisplayBlock) return true;
       final headers = groupHeader(unitId).evaluate().toList();
       if (headers.length > 1) {
         stop('Main reveal group header is not unique');
@@ -568,11 +1112,6 @@ final class TimelineObservation {
         stop('Main did not reveal the requested canonical row');
       }
       if (canonical.evaluate().isNotEmpty) {
-        await demand(
-          'ensure canonical visible',
-          () => tester.ensureVisible(canonical),
-        );
-        requireOriginal();
         final wanted = originalController.messages.indexWhere(
           (message) => message.id == unitId,
         );
@@ -581,7 +1120,22 @@ final class TimelineObservation {
           originalScrollable!,
           visibleOnly: true,
         ).contains(wanted)) {
-          // A cached row can move again while the reversed list measures it.
+          await demand(
+            'ensure canonical visible',
+            () => tester.ensureVisible(canonical),
+          );
+          requireOriginal();
+          if (!_mainRevealIndices(
+            originalController,
+            originalScrollable!,
+            visibleOnly: true,
+          ).contains(wanted)) {
+            // A cached shell can move while the reversed list measures it.
+            continue;
+          }
+        }
+        if (!rendererReady()) {
+          await demand('wait for original Main payload renderer', () async {});
           continue;
         }
         if (!borrowInteraction()) {
@@ -613,6 +1167,7 @@ final class TimelineObservation {
                 (message) => message.id == unitId,
               ),
             ) ||
+            !rendererReady() ||
             !borrowInteraction()) {
           continue;
         }
@@ -663,18 +1218,15 @@ final class TimelineObservation {
 
   Map<String, Object?>? _mainRevealUnitInfo(TimelineDisplayUnit? unit) {
     if (unit == null) return null;
-    final ref = unit.run?.reference;
+    final ref = unit.memberReference;
     return {
       'identity': identityHashCode(unit),
       'id': unit.id,
-      'kind': unit.entry.mainPresentation.name,
-      'runReference': ref == null
+      'kind': unit.body is WorkDisplayBlock ? 'work' : 'single',
+      'historyPos': unit.historyPos,
+      'blockReference': ref == null
           ? null
-          : {
-              'databaseId': ref.databaseId,
-              'indexVersion': ref.indexVersion,
-              'startSeq': ref.startSeq,
-            },
+          : {'databaseId': ref.databaseId, 'blockId': ref.blockId},
     };
   }
 
@@ -683,17 +1235,14 @@ final class TimelineObservation {
     ScrollableState? main,
   ) {
     final widget = element.widget;
+    ChatMessage? outer = widget is ChatMessage ? widget : null;
     ChatItemView? row = widget is ChatItemView ? widget : null;
-    if (row == null) {
-      element.visitAncestorElements((ancestor) {
-        final widget = ancestor.widget;
-        if (widget is ChatItemView) {
-          row = widget;
-          return false;
-        }
-        return true;
-      });
-    }
+    element.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is ChatItemView) row ??= widget;
+      if (widget is ChatMessage) outer ??= widget;
+      return outer == null;
+    });
     final render = element.findRenderObject();
     final viewport = RenderAbstractViewport.maybeOf(render);
     final box = render is RenderBox ? render : null;
@@ -713,9 +1262,19 @@ final class TimelineObservation {
     return {
       'widget': widget.runtimeType.toString(),
       'key': widget.key?.toString(),
+      'outerMessageId': outer?.message.id,
+      'outerUnitIdentity':
+          outer?.message.metadata?[timelineDisplayUnitKey] == null
+          ? null
+          : identityHashCode(outer!.message.metadata![timelineDisplayUnitKey]),
       'presentationType': row?.item.type,
       'compatibility': row?.item.compatibility.name,
-      'metadata': _mainRevealUnitInfo(row?.item.displayUnit),
+      'metadata': _mainRevealUnitInfo(
+        outer?.message.metadata?[timelineDisplayUnitKey] is TimelineDisplayUnit
+            ? outer!.message.metadata![timelineDisplayUnitKey]
+                  as TimelineDisplayUnit
+            : row?.item.displayUnit,
+      ),
       'scrollable': nearest == null ? null : identityHashCode(nearest),
       'sameMainScrollable': identical(nearest, main),
       'renderType': render.runtimeType.toString(),
@@ -748,6 +1307,8 @@ final class TimelineObservation {
         (widget) =>
             widget is TimelineDisplayUnitView ||
             widget is TimelineActivityRow ||
+            widget is TimelineCanonicalPayloadConnector ||
+            widget is ChatItemView ||
             widget is Text,
         skipOffstage: false,
       ),
@@ -758,8 +1319,56 @@ final class TimelineObservation {
         {
           'widget': element.widget.runtimeType.toString(),
           'key': element.widget.key?.toString(),
+          if (element.widget case Text(:final data, :final textSpan))
+            'text': data ?? textSpan?.toPlainText(),
+          if (element.widget case TimelineCanonicalPayloadConnector(
+            :final item,
+          ))
+            'connectorItem': _mainRevealPresentationInfo(item),
+          if (element.widget case ChatItemView(:final item))
+            'rendererItem': _mainRevealPresentationInfo(item),
         },
     ];
+  }
+
+  Map<String, Object?> _mainRevealPresentationInfo(ChatItemPresentation item) =>
+      {
+        'id': item.id,
+        'type': item.type,
+        'compatibility': item.compatibility.name,
+        'unitIdentity': item.displayUnit == null
+            ? null
+            : identityHashCode(item.displayUnit),
+        'atomId': item.atom?.id,
+        if (item.atom case final atom?) 'source': _sourceCut(atom.source),
+        'completionItemId': item.atom?.completionItemId,
+        'completionSeq': item.atom?.completionSeq,
+        'diagnostic': item.diagnostic,
+      };
+
+  TimelineDisplayUnit? _mainRevealRowUnit(
+    ChatController controller,
+    ScrollableState main,
+    Element element,
+  ) {
+    final widget = element.widget;
+    if (widget is! ChatMessage ||
+        widget.key != StudioDriverKeys.timelineRow(widget.message.id) ||
+        !identical(Scrollable.maybeOf(element), main)) {
+      return null;
+    }
+    final unit = widget.message.metadata?[timelineDisplayUnitKey];
+    if (unit is! TimelineDisplayUnit || unit.id != widget.message.id) {
+      return null;
+    }
+    final messages = controller.messages.where(
+      (message) => message.id == unit.id,
+    );
+    if (messages.length != 1 ||
+        !identical(messages.single.metadata?[timelineDisplayUnitKey], unit)) {
+      return null;
+    }
+    return unit;
   }
 
   Map<String, Object?> _mainRevealPointer(
@@ -797,15 +1406,12 @@ final class TimelineObservation {
     required bool visibleOnly,
   }) {
     final indices = <int>{};
-    // ChatItemView is the canonical Main container, including typed payloads
-    // and groups. Its inner TimelineDisplayUnitView must not be counted twice.
-    final rows = find.byType(ChatItemView, skipOffstage: visibleOnly);
+    // Use the same production shell as the canonical finder. Deferred metadata
+    // can legitimately leave this shell without a ChatItemView child.
+    final rows = find.byType(ChatMessage, skipOffstage: visibleOnly);
     for (final element in rows.evaluate()) {
-      if (!identical(Scrollable.maybeOf(element), main)) continue;
-      final unit = (element.widget as ChatItemView).item.displayUnit;
-      if (unit == null) {
-        continue; // Not a Main item (e.g. an Atom).
-      }
+      final unit = _mainRevealRowUnit(controller, main, element);
+      if (unit == null) continue;
       final index = controller.messages.indexWhere(
         (message) =>
             message.id == unit.id &&
@@ -834,34 +1440,30 @@ final class TimelineObservation {
     return indices.toList()..sort();
   }
 
-  Future<TimelineGroupDisplay> openRun(
+  Future<TimelineGroupDisplay> openWork(
     String id, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    if (timeout <= Duration.zero) {
-      fail('Opening a timeline Run requires a positive deadline');
-    }
-    final clock = Stopwatch()..start();
-    Duration remaining() {
-      final value = timeout - clock.elapsed;
-      if (value <= Duration.zero) {
-        fail('Timed out opening timeline Run $id');
-      }
-      return value;
-    }
-
     final originalLease = lease;
     final value = unit(id);
-    final originalController = lease.controller;
-    final originalGeneration = lease.generation;
-    final mainSets = lease.appliedSets;
-    expect(value.run, isNotNull);
+    final reference = value.memberReference;
+    expect(reference, isNotNull);
+    final controller = lease.controller;
+    final sets = lease.appliedSets;
     final header = groupHeader(id);
-    await reveal(header, id, timeout: remaining());
-    expect(header, findsOneWidget);
-    if (!tester.widget<TimelineActivityRow>(header).expanded) {
-      await tap(_groupTitle(id), timeout: remaining());
+    if (value.historyPos != null) {
+      await reveal(header, id, timeout: timeout);
+    } else {
+      await until(
+        () => header.evaluate().length == 1,
+        'live Work header $id',
+        timeout: timeout,
+      );
     }
+    if (!groupExpanded(id)) {
+      await tapGroupHeader(id, timeout: timeout);
+    }
+    expect(groupExpanded(id), isTrue);
     TimelineGroupDisplay? display;
     await until(
       () {
@@ -869,72 +1471,57 @@ final class TimelineObservation {
             .where((display) => display.unitId == id)
             .singleOrNull;
         if (display?.error case final error?) throw StateError('$error');
-        // Main and Run are delivered independently. Keep the bound,
-        // but qualify both observed views before accepting this open.
         return display?.isCurrent == true &&
             display?.expanded == true &&
-            display!.atoms.isNotEmpty &&
-            display!.atoms.length <= unit(id).entry.run!.ordinal;
+            display?.loading == false &&
+            display!.atoms.isNotEmpty;
       },
-      'mounted original ordinary Run $id',
-      timeout: remaining(),
+      'bounded member page for Work $id',
+      timeout: timeout,
     );
-    remaining();
-    expect(display!.atoms, isNotEmpty);
-    expect(display!.runReference, value.run!.reference);
-    if (value.entry.mainPresentation == MainPresentation.backgroundResults) {
-      for (final atom in display!.atoms) {
-        expect(atom.source, isA<BackgroundResultChatSource>());
-        expect(atom.delivery, ChatDeliveryKind.independent);
-        expect(atom.lifecycle, isA<TerminalChatAtom>());
-      }
-    }
+    expect(display!.blockReference, reference);
+    expect(display!.atoms.length, lessThanOrEqualTo(unit(id).summary!.total));
     expect(
       display!.atoms.map((atom) => atom.id).toSet(),
       hasLength(display!.atoms.length),
     );
-    expect(
-      display!.atoms.length,
-      lessThanOrEqualTo(unit(id).entry.run!.ordinal),
-    );
     expect(lease, same(originalLease));
-    expect(lease.controller, same(originalController));
-    expect(lease.generation, originalGeneration);
+    expect(lease.controller, same(controller));
     expect(
       lease.appliedSets,
-      mainSets,
-      reason: 'group expansion must not replace the original Main Set',
+      sets,
+      reason: 'Member demand cannot replace Main',
     );
     return display!;
   }
 
-  /// Demand one older page through the exact mounted Run's production control.
+  /// Demand one older page through the exact mounted Work's production control.
   /// The caller owns the total budget across opening, paging and qualification.
-  Future<void> loadOlderRunPage(
+  Future<void> loadOlderMemberPage(
     TimelineGroupDisplay display, {
     required Duration timeout,
   }) async {
     if (timeout <= Duration.zero) {
-      fail('Loading a Run page requires a positive deadline');
+      fail('Loading a member page requires a positive deadline');
     }
     final clock = Stopwatch()..start();
     Duration remaining() {
       final value = timeout - clock.elapsed;
       if (value <= Duration.zero) {
-        fail('Timed out loading original Run page ${display.unitId}');
+        fail('Timed out loading original member page ${display.unitId}');
       }
       return value;
     }
 
     final originalLease = lease;
-    final reference = unit(display.unitId).run!.reference;
+    final reference = unit(display.unitId).memberReference!;
     final before = display.before;
     expect(before, isNotNull);
     void requireOriginal() {
       expect(lease, same(originalLease));
       expect(display.isCurrent, isTrue);
       expect(display.expanded, isTrue);
-      expect(display.runReference, reference);
+      expect(display.blockReference, reference);
       expect(
         lease.groupDisplays.singleWhere(
           (value) => value.unitId == display.unitId,
@@ -946,7 +1533,7 @@ final class TimelineObservation {
 
     final older = find.descendant(
       of: groupRow(display.unitId),
-      matching: find.byKey(const ValueKey('timeline-children-load-older')),
+      matching: find.widgetWithText(TextButton, '更早成员'),
     );
     await until(
       () {
@@ -957,7 +1544,7 @@ final class TimelineObservation {
         return matches == 1 &&
             tester.widget<TextButton>(older).onPressed != null;
       },
-      'enabled original Run pagination control',
+      'enabled original member pagination control',
       timeout: remaining(),
     );
     await tap(older, timeout: remaining());
@@ -966,100 +1553,240 @@ final class TimelineObservation {
         requireOriginal();
         return !display.loading && display.before != before;
       },
-      'explicit original Run page advanced',
+      'explicit original member page advanced',
       timeout: remaining(),
     );
     remaining();
   }
 
-  Future<void> revealItem(
-    CompletedEntry entry, {
+  Future<void> selectLatestMembers(
+    TimelineGroupDisplay display, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    expect(entry.mainPresentation, MainPresentation.single);
-    await reveal(itemRow(entry.recordId), entry.recordId, timeout: timeout);
+    final original = lease;
+    if (unit(display.unitId).expansion.members!.window
+        is LatestDisplayMembers) {
+      return;
+    }
+    final latest = find.descendant(
+      of: groupRow(display.unitId),
+      matching: find.widgetWithText(TextButton, '最新成员'),
+    );
+    await tap(latest, timeout: timeout);
+    await until(
+      () {
+        expect(lease, same(original));
+        expect(display.isCurrent, isTrue);
+        if (display.error case final error?) throw StateError('$error');
+        return !display.loading &&
+            unit(display.unitId).expansion.members!.window
+                is LatestDisplayMembers;
+      },
+      'latest bounded member page',
+      timeout: timeout,
+    );
+  }
+
+  Future<void> revealSingle(
+    TimelineDisplayUnit block, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    expect(block.body, isA<SingleDisplayBlock>());
+    await reveal(itemRow(block.id), block.id, timeout: timeout);
   }
 
   Future<TimelineGroupDisplay> revealMember(
     ChatAtom atom, {
-    required CompletionRunRef reference,
+    required DisplayBlockRef reference,
+    Duration timeout = const Duration(seconds: 60),
   }) async {
-    final value = main.singleWhere((unit) => unit.run?.reference == reference);
-    expect(value.run!.reference, reference);
-    final display = await openRun(value.id);
-    expect(display.atoms.where((entry) => entry.id == atom.id), hasLength(1));
-    final children = find.descendant(
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) fail('Timed out revealing member ${atom.id}');
+      return value;
+    }
+
+    final value = unitForBlock(reference);
+    final display = await openWork(value.id, timeout: remaining());
+    if (!display.atoms.any((member) => member.id == atom.id)) {
+      await selectLatestMembers(display);
+    }
+    while (!display.atoms.any((member) => member.id == atom.id)) {
+      remaining();
+      expect(
+        display.before,
+        isNotNull,
+        reason: 'The producer-defined member must be in this block',
+      );
+      await loadOlderMemberPage(display, timeout: remaining());
+    }
+    final row = find.descendant(
       of: groupRow(value.id),
-      matching: find.byType(TimelineChildrenView),
-    );
-    await until(
-      () => children.evaluate().length == 1,
-      'original member viewport ${value.id}',
-    );
-    final view = tester.widget<TimelineChildrenView>(children);
-    final list = find.descendant(
-      of: children,
-      matching: find.byKey(
-        ValueKey(('timeline-children-list', view.generation)),
+      matching: find.byWidgetPredicate(
+        (widget) => widget is TimelineMemberAtom && widget.atom.id == atom.id,
       ),
     );
-    expect(list, findsOneWidget);
-    // The list's own Scrollable precedes any text-internal scrollables.
-    final scrollable = find
-        .descendant(of: list, matching: find.byType(Scrollable))
-        .first;
-    expect(scrollable, findsOneWidget);
-    await tester.ensureVisible(children);
+    await until(
+      () => row.evaluate().length == 1,
+      'mounted member ${atom.id}',
+      timeout: remaining(),
+    );
+    await tester.ensureVisible(row);
     await tester.pump();
-    // Members have their own bounded viewport and controller order. Main's
-    // parent index cannot locate a lazily mounted member inside that viewport.
-    final clock = Stopwatch()..start();
-    while (memberRow(atom.id).evaluate().isEmpty) {
-      if (clock.elapsed > const Duration(seconds: 60)) {
-        fail('Group ${value.id} did not mount original member ${atom.id}');
-      }
-      expect(display.isCurrent, isTrue);
-      expect(display.error, isNull);
-      final ordered = view.controller.messages
-          .map((message) => message.id)
-          .toList();
-      final wanted = view.controller.messages.indexWhere(
-        (message) => chatItemPresentationOf(message)?.atom?.id == atom.id,
-      );
-      expect(wanted, greaterThanOrEqualTo(0));
-      final mounted =
-          tester
-              .widgetList<ChatItemView>(
-                find.descendant(
-                  of: children,
-                  matching: find.byType(ChatItemView),
-                ),
-              )
-              .map((widget) => ordered.indexOf(widget.item.id))
-              .where((index) => index >= 0)
-              .toList()
-            ..sort();
-      if (mounted.isNotEmpty) {
-        if (wanted > mounted.last) {
-          await tester.drag(scrollable, const Offset(0, -240));
-        } else if (wanted < mounted.first) {
-          await tester.drag(scrollable, const Offset(0, 240));
-        }
-      }
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(tester.takeException(), isNull);
-    }
-    await tester.ensureVisible(memberRow(atom.id));
-    await tester.pump();
-    expect(memberRow(atom.id), findsOneWidget);
-    final rendered = tester.widget<ChatItemView>(memberRow(atom.id)).item.atom!;
+    final rendered = tester.widget<TimelineMemberAtom>(row).atom;
     expect(rendered.id, atom.id);
     expect(rendered.source, atom.source);
     expect(rendered.tool?.callId, atom.tool?.callId);
+    if (atom.kind == ChatAtomKind.reasoning ||
+        atom.kind == ChatAtomKind.toolCall) {
+      await ensureMemberReadable(row, rendered, timeout: remaining());
+    }
     return display;
   }
 
-  Future<void> closeRun(TimelineGroupDisplay display) async {
+  Future<void> ensureMemberReadable(
+    Finder row,
+    ChatAtom atom, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    if (atom.kind == ChatAtomKind.toolCall) {
+      await expandMemberDisclosure(row, atom.id, timeout: timeout);
+      return;
+    }
+    expect(atom.kind, ChatAtomKind.reasoning);
+    expect(
+      atom.contents,
+      isNotEmpty,
+      reason: 'Reasoning readability requires producer-declared content',
+    );
+    expect(
+      atom.contents.every(
+        (content) =>
+            content.role == ChatContentRole.body ||
+            content.role == ChatContentRole.reasoningSummary,
+      ),
+      isTrue,
+      reason: 'Unsupported reasoning content roles must not guess a renderer',
+    );
+    if (atom.contents.any((content) => content.role == ChatContentRole.body)) {
+      await expandMemberDisclosure(row, atom.id, timeout: timeout);
+      return;
+    }
+
+    final reasoning = find.descendant(
+      of: row,
+      matching: find.byType(TimelineReasoningView),
+    );
+    await until(
+      () {
+        if (reasoning.evaluate().isEmpty) return false;
+        expect(reasoning, findsOneWidget);
+        expect(tester.widget<TimelineReasoningView>(reasoning).body, isNull);
+        final header = find.descendant(
+          of: reasoning,
+          matching: find.byType(TimelineActivityRow),
+        );
+        expect(header, findsOneWidget);
+        expect(tester.widget<TimelineActivityRow>(header).expandable, isFalse);
+        expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
+        // A summary read error may itself be displayed as summary text. Borrow
+        // existing window diagnostics so it cannot satisfy the visibility gate.
+        final observations = <TimelineCurrentWindowDisplay>[
+          for (final element in row.evaluate())
+            if (element is StatefulElement &&
+                element.state is TimelineMemberDisplay)
+              ...(element.state as TimelineMemberDisplay).windows,
+          for (final element
+              in find
+                  .descendant(
+                    of: reasoning,
+                    matching: find.byType(TimelineContentRangeConnector),
+                  )
+                  .evaluate())
+            (element as StatefulElement).state as TimelineCurrentWindowDisplay,
+        ];
+        for (final observation in observations) {
+          expect(
+            atom.contents.any(
+              (content) => content.reference == observation.reference,
+            ),
+            isTrue,
+          );
+          expect(observation.error, isNull);
+          if (observation.window == null || observation.window!.bytes.isEmpty) {
+            return false;
+          }
+        }
+        final summaries = find.descendant(
+          of: reasoning,
+          matching: find.byType(TimelineReasoningSummary),
+        );
+        if (summaries.evaluate().isEmpty ||
+            tester
+                .widgetList<TimelineReasoningSummary>(summaries)
+                .any((summary) => summary.text.trim().isEmpty)) {
+          return false;
+        }
+        return find
+            .descendant(
+              of: summaries,
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is RichText &&
+                    widget.text.toPlainText().trim().isNotEmpty,
+              ),
+            )
+            .hitTestable()
+            .evaluate()
+            .isNotEmpty;
+      },
+      'visible summary-only reasoning ${atom.id}',
+      timeout: timeout,
+    );
+  }
+
+  Future<void> expandMemberDisclosure(
+    Finder row,
+    String memberId, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() => timeout - clock.elapsed;
+    // A Deferred member is mounted before its canonical renderer is ready.
+    // Evaluate the candidates, not .first, while there may be no header yet.
+    final candidates = find.descendant(
+      of: row,
+      matching: find.byWidgetPredicate(
+        (widget) => widget is TimelineActivityRow && widget.expandable,
+      ),
+    );
+    await until(
+      () => candidates.evaluate().isNotEmpty,
+      'readable member disclosure $memberId',
+      timeout: remaining(),
+    );
+    final header = candidates.first;
+    if (!tester.widget<TimelineActivityRow>(header).expanded) {
+      await tap(
+        timelineActivityTitleFinder(tester, header),
+        timeout: remaining(),
+      );
+    }
+    expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
+  }
+
+  Future<void> closeWork(
+    TimelineGroupDisplay display, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) fail('Timed out closing ${display.unitId}');
+      return value;
+    }
+
     if (display.isCurrent && display.expanded) {
       // This original owner is mounted in current or the Main cache. Reveal
       // its exact title directly, without navigating to a replacement row.
@@ -1073,6 +1800,7 @@ final class TimelineObservation {
             skipOffstage: false,
           ),
           isActive: () => display.isCurrent && display.expanded,
+          timeout: remaining(),
         );
       }
     }
@@ -1084,18 +1812,19 @@ final class TimelineObservation {
           display.before == null &&
           !display.loading,
       'collapsed member window revoked',
+      timeout: remaining(),
     );
     expect(display.error, isNull);
   }
 
-  Future<void> closeSource(
+  Future<void> closeSourceWork(
     ChatSourceId source, {
     Map<String, Object?>? diagnostics,
   }) async {
     final owner = lease;
     final controller = owner.controller;
     final generation = owner.generation;
-    final ids = workFor(source).map((unit) => unit.id).toList();
+    final ids = (await workForSource(source)).map((unit) => unit.id).toList();
     expect(ids, isNotEmpty);
     expect(ids.toSet(), hasLength(ids.length));
     final evidence = diagnostics ?? <String, Object?>{};
@@ -1165,12 +1894,20 @@ final class TimelineObservation {
       for (final id in ids) {
         requireOwnerAndCollapsedCards();
         sample('before-reveal', id: id);
-        await reveal(groupHeader(id), id, timeout: remaining());
+        if (unit(id).historyPos != null) {
+          await reveal(groupHeader(id), id, timeout: remaining());
+        } else {
+          await until(
+            () => groupHeader(id).evaluate().length == 1,
+            'live Work header before collapse',
+            timeout: remaining(),
+          );
+        }
         sample('after-reveal', id: id);
         requireOwnerAndCollapsedCards();
         final header = groupHeader(id);
         expect(header, findsOneWidget);
-        if (tester.widget<TimelineActivityRow>(header).expanded) {
+        if (groupExpanded(id)) {
           TimelineGroupDisplay? current;
           await until(
             () {
@@ -1185,11 +1922,15 @@ final class TimelineObservation {
           );
           final original = current!;
           tracked.add(original);
-          expect(original.runReference, unit(id).run!.reference);
+          expect(original.blockReference, unit(id).memberReference!);
           sample('before-click', id: id);
-          // Borrow after navigation. This dynamic exact-card title remains the
+          // Borrow after navigation. This exact-card header remains the
           // target if layout replaces its Element; retirement is not a click.
-          await tap(_groupTitle(id), timeout: remaining());
+          await tapGroupHeader(id, timeout: remaining());
+          // Collapsing a tall history card may virtualize its header out of
+          // Main. Check the retained expansion intent before revealing it
+          // again; absence of an Element is not the collapsed UI assertion.
+          expect(unit(id).expansion.expanded, isFalse);
           clicked.add(id);
           sample('after-click', id: id);
           requireOwnerAndCollapsedCards();
@@ -1205,6 +1946,10 @@ final class TimelineObservation {
             timeout: remaining(),
           );
           expect(original.error, isNull);
+          if (unit(id).historyPos != null) {
+            await reveal(groupHeader(id), id, timeout: remaining());
+          }
+          expect(groupExpanded(id), isFalse);
         } else {
           expect(unit(id).expansion.expanded, isFalse);
         }

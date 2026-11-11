@@ -495,6 +495,7 @@ class FrbStudioTransport
         AccountConfigurationPort,
         AccountModelsPort,
         AccountUsagePort,
+        TimelineTransport,
         AcpPort {
   static final startupProgress = ValueNotifier(
     StudioStartupPhase.loadingBridge,
@@ -2711,9 +2712,47 @@ class FrbStudioTransport
     String threadId, {
     required ChatScope scope,
     required ReadDemand demand,
+  }) => _openConversationOwner(
+    threadId,
+    () async => _FrbNativeConversation.conversation(
+      await frb_chat.openConversationFeed(
+        threadId: threadId,
+        scope: switch (scope) {
+          MainChatScope() => const frb_chat_types.BridgeChatScope.main(),
+          RunChatScope(:final reference) => frb_chat_types.BridgeChatScope.run(
+            reference: _completionRunToFrb(reference),
+          ),
+          ChildrenChatScope(:final parentId) =>
+            frb_chat_types.BridgeChatScope.children(parentId: parentId),
+        },
+        demand: _readDemandToFrb(demand),
+      ),
+    ),
+    FrbConversationFeed._,
+  );
+
+  @override
+  Future<TimelineFeed> openTimelineFeed(
+    String threadId, {
+    required ReadDemand demand,
   }) async {
+    frb_timeline.BridgeTimelineFeed? timeline;
+    return _openConversationOwner<FrbTimelineFeed>(threadId, () async {
+      timeline = await frb_timeline.openTimelineFeed(
+        threadId: threadId,
+        initialDemand: _readDemandToFrb(demand),
+      );
+      return _FrbNativeConversation.timeline(timeline!);
+    }, (_) => FrbTimelineFeed(timeline!));
+  }
+
+  Future<T> _openConversationOwner<T extends FrbConversationFeed>(
+    String threadId,
+    Future<_FrbNativeConversation> Function() open,
+    T Function(_FrbNativeConversation) adapt,
+  ) async {
     await _ensureReady();
-    frb_chat.BridgeConversationFeed? handle;
+    _FrbNativeConversation? handle;
     FrbConversationFeed? adapter;
     final tracked = _DartSubscription(
       'conversation:$threadId',
@@ -2733,22 +2772,8 @@ class FrbStudioTransport
     );
     _trackDartSubscription(tracked);
     try {
-      handle = await _bridgeCall(
-        () => frb_chat.openConversationFeed(
-          threadId: threadId,
-          scope: switch (scope) {
-            MainChatScope() => const frb_chat_types.BridgeChatScope.main(),
-            RunChatScope(:final reference) =>
-              frb_chat_types.BridgeChatScope.run(
-                reference: _completionRunToFrb(reference),
-              ),
-            ChildrenChatScope(:final parentId) =>
-              frb_chat_types.BridgeChatScope.children(parentId: parentId),
-          },
-          demand: _readDemandToFrb(demand),
-        ),
-      );
-      final feed = FrbConversationFeed(handle!);
+      handle = await _bridgeCall(open);
+      final feed = adapt(handle!);
       adapter = feed;
       // Register before awaiting open: exit must retain a late native owner.
       tracked.markCreated();

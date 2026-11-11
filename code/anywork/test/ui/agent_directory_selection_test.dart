@@ -79,6 +79,9 @@ void main() {
       );
       await container.pump();
       expect(header.read().selectedRootRow?.threadId, 'T');
+      expect(container.read(sidebarSelectedRootThreadIdProvider), 'T');
+      expect(container.read(sidebarThreadViewProvider('T')).selected, isTrue);
+      expect(container.read(sidebarThreadViewProvider('C')).selected, isFalse);
       expect(
         container.read(conversationWorkspaceProvider('C'))?.rootRow.threadId,
         'T',
@@ -997,13 +1000,12 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
-    return super.openConversationFeed(threadId, scope: scope, demand: demand);
+    return super.openTimelineFeed(threadId, demand: demand);
   }
 
   @override

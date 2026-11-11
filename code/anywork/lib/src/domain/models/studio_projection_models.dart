@@ -26,34 +26,22 @@ abstract class SidebarView with _$SidebarView {
   const SidebarView._();
 
   const factory SidebarView({
-    required List<StudioProject> projects,
+    required List<String> projectIds,
+    required String? standaloneProjectId,
     required String? selectedProjectId,
-    required bool isBusy,
-    required Map<String, StudioRecoveryIssue> projectRecoveryIssues,
-    required Map<String, String> modeDisplayNames,
   }) = _SidebarView;
 
   factory SidebarView.fromProjects({
     required List<StudioProject> projects,
     required String? selectedProjectId,
-    required bool isBusy,
-    required List<StudioRecoveryIssue> recoveryIssues,
-    required Map<String, String> modeDisplayNames,
   }) {
-    final projectRecoveryIssues = <String, StudioRecoveryIssue>{};
-    for (final project in projects) {
-      final issue = recoveryIssuesForTarget(
-        recoveryIssues,
-        workspaceId: project.id,
-      ).firstOrNull;
-      if (issue != null) projectRecoveryIssues[project.id] = issue;
-    }
     return SidebarView(
-      projects: projects,
+      projectIds: [for (final project in projects) project.id],
+      standaloneProjectId: projects
+          .where((project) => project.isStandalone)
+          .firstOrNull
+          ?.id,
       selectedProjectId: selectedProjectId,
-      isBusy: isBusy,
-      projectRecoveryIssues: projectRecoveryIssues,
-      modeDisplayNames: modeDisplayNames,
     );
   }
 }

@@ -23,7 +23,7 @@
 - **历史推理字段出站规则**：历史推理文本的出站字段严格遵循目标模型的能力声明，分别映射至 `reasoning_content` 或 `reasoning`；目标模型未声明交错推理（interleaved reasoning）能力时不发送额外推理字段。结构化的 `reasoning_details` 严禁从纯文本伪造，若缺少原始结构数据则在请求准备阶段明确拒绝，内部已保存的响应材料不会因此丢失。
 - **会话请求诊断**：每个模型会话独立维护请求诊断状态，记录实际规范请求的指令、工具和上下文散列值及其变化原因。诊断世代（generation）递增不会触发厂商提示缓存键轮换；缺乏诊断数据的历史旧回执保持为未知状态。
 
-独立模型成员的权威结束必须先经唯一累积器的身份、内容冲突、输出与 replay 预算校验，再交付给 Core 的可靠完成端口；实时 progress 可合并更新，不是该端口。不能把仅为通道切换产生的 block 关闭当作成员结束，也不能在校验之前发布不可撤销事实。可靠结束、未提供结束的协议边界以及与最终调用回执的幂等交接统一见 [26 §26.1](./26-timeline-content.md#261-完成事实与唯一所有者)。
+独立模型成员的权威结束必须先经唯一累积器的身份、内容冲突、输出与 replay 预算校验，再交付给 Core 的可靠完成端口；实时 progress 可合并更新，不是该端口。不能把仅为通道切换产生的 block 关闭当作成员结束，也不能在校验之前发布不可撤销事实。可靠结束、未提供结束的协议边界以及与最终调用回执的幂等交接统一见 [26 §26.1](./26-timeline-content.md#261-两个完成点与唯一所有者)。
 
 ### 工具调用身份
 
@@ -41,6 +41,8 @@
 工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 显式声明 Direct 与 Programmatic 两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
 
 作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
+
+Responses 的工具输出声明与实际交给模型的内容必须一致：工具作者和 MCP 的原始输出 schema 仍保存在冻结声明中，但模型上下文可能包含多段文本、截断提示或工具错误，不能保证符合原始 schema。仅支持直接调用的工具不向 Responses 声明输出 schema，其结果保留原文；支持供应商托管编程式调用的工具仍需声明开放对象，并将其结果编码为包含 JSON 对象的字符串。已是 JSON 对象时保留原文，其他 JSON 值和普通文本放在对象的 `content` 字段中；带编程式 caller 的历史结果也按此编码。历史重放按当前请求的工具声明重新投影，仅改变出站表示，不更改会话事实，也不重复执行工具。
 
 ## 6.3 模型能力矩阵
 

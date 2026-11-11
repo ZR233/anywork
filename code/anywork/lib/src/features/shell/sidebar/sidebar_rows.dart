@@ -77,9 +77,20 @@ class SidebarProjectRow extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (project.sshAlias != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                  child: Text('SSH', style: context.text.labelSmall),
+                Tooltip(
+                  message: project.sshAlias!,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 64),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: Text(
+                        project.sshAlias!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.text.labelSmall,
+                      ),
+                    ),
+                  ),
                 ),
               if (issue != null) _recoveryIndicator(context, issue),
               // 常驻新建入口：折叠热区与项目的行内操作互不干扰。
@@ -145,6 +156,62 @@ class SidebarProjectRow extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Loading, missing and failure are distinct; only this identity may be retained.
+class SidebarThreadContent extends StatelessWidget {
+  const SidebarThreadContent({
+    super.key,
+    required this.threadId,
+    required this.row,
+    required this.loading,
+    required this.loaded,
+    required this.error,
+    required this.onRetry,
+    required this.rowBuilder,
+  });
+
+  final String threadId;
+  final SessionDirectoryRow? row;
+  final bool loading;
+  final bool loaded;
+  final String? error;
+  final VoidCallback onRetry;
+  final Widget Function(SessionDirectoryRow row) rowBuilder;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      if (row case final value?) rowBuilder(value),
+      if (error case final message?)
+        Row(
+          key: ValueKey('sidebar-thread-error-$threadId'),
+          children: [
+            Expanded(
+              child: Text(
+                message,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: onRetry,
+              child: Text(context.l10n.sidebarRetry),
+            ),
+          ],
+        )
+      else if (row == null && (loading || !loaded))
+        LinearProgressIndicator(
+          key: ValueKey('sidebar-thread-loading-$threadId'),
+        )
+      else if (row == null)
+        Text(
+          context.l10n.studioFailureCodeNotFound,
+          key: ValueKey('sidebar-thread-missing-$threadId'),
+        ),
+    ],
+  );
 }
 
 class SidebarThreadRow extends StatelessWidget {

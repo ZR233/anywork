@@ -23,16 +23,16 @@ use std::time::Duration;
 /// block on a gate or fail on demand. `admit` accepts writes so the member close really joins
 /// this store, exactly like the deletion fixtures in `thread_service`.
 #[derive(Debug, Clone)]
-struct ProbeStore {
-    flushes: Arc<AtomicUsize>,
+pub(crate) struct ProbeStore {
+    pub(crate) flushes: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
-    gate: Arc<tokio::sync::Semaphore>,
+    pub(crate) gate: Arc<tokio::sync::Semaphore>,
     entered: tokio::sync::watch::Sender<bool>,
 }
 
 impl ProbeStore {
     /// `gated` starts the flush barrier closed; the test releases it explicitly.
-    fn open(gated: bool) -> (Self, tokio::sync::watch::Receiver<bool>) {
+    pub(crate) fn open(gated: bool) -> (Self, tokio::sync::watch::Receiver<bool>) {
         let (entered, entered_rx) = tokio::sync::watch::channel(false);
         (
             Self {
@@ -104,7 +104,7 @@ fn explicit_activation(session: &str, id: &str, parent: Option<&str>) -> ThreadA
 /// Assembles one real member of the owning session generation: explicit identity bound to
 /// `session.id()`, optional parent for descendant topologies, optional probe storage. Each
 /// session keeps a single root; siblings and later members hang off that root.
-async fn member_with_probe(
+pub(crate) async fn member_with_probe(
     session: &SessionRuntime,
     id: &str,
     parent: Option<&str>,

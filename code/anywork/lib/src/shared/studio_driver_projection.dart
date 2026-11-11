@@ -61,8 +61,9 @@ StudioDriverFacts queryStudioDriverFacts(
   var directoryHasMore = false;
   for (final frame in client.threadDirectory.observedWindows) {
     directoryHasMore = directoryHasMore || frame.nextCursor != null;
-    for (final row in frame.rows) {
-      rowsById.putIfAbsent(row.threadId, () => row);
+    for (final threadId in frame.threadIds) {
+      final row = client.threadDirectory.observedThread(threadId);
+      if (row != null) rowsById.putIfAbsent(threadId, () => row);
     }
   }
   final rootRows = [
@@ -103,11 +104,19 @@ StudioDriverFacts queryStudioDriverFacts(
   );
   SessionDirectoryRow? rootRow;
   if (sessionId != null) {
-    final candidate = rowsById[sessionId];
-    if (candidate != null && candidate.isRootRow) {
-      rootRow = candidate;
-    } else if (row?.isRootRow == true && row?.sessionId == sessionId) {
+    if (row?.isRootRow == true && row?.sessionId == sessionId) {
       rootRow = row;
+    } else {
+      final rootThreadId = agents
+          .where(
+            (agent) =>
+                agent.sessionId == sessionId && agent.parentAgentId == null,
+          )
+          .firstOrNull
+          ?.threadId;
+      rootRow = rootThreadId == null
+          ? null
+          : client.threadDirectory.observedThread(rootThreadId);
     }
   }
   final threadComposer = observedThreadId == null
@@ -289,18 +298,21 @@ TimelineDisplayFacts? _timelineFacts(
     appliedSets: lease?.appliedSets,
     appliedPrepends: lease?.appliedPrepends,
     appliedAppends: lease?.appliedAppends,
-    current: _currentDisplayJson(lease?.currentDisplay),
+    currentDisplays: [
+      for (final display
+          in lease?.currentDisplays ?? const <TimelineCurrentDisplay>[])
+        _currentDisplayJson(display),
+    ],
     groups: [
       for (final display
           in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
         {
           'unitId': display.unitId,
           'expanded': display.expanded,
-          'runReference': switch (display.runReference) {
+          'blockReference': switch (display.blockReference) {
             final reference? => {
               'databaseId': reference.databaseId,
-              'indexVersion': reference.indexVersion,
-              'startSeq': reference.startSeq,
+              'blockId': reference.blockId,
             },
             null => null,
           },
@@ -349,8 +361,7 @@ TimelineDisplayFacts? _timelineFacts(
 }
 
 /// Serializes only already mounted, admitted resources. No getter opens a scope or performs IO.
-Map<String, Object?>? _currentDisplayJson(TimelineCurrentDisplay? display) {
-  if (display == null || !display.isCurrent) return null;
+Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
   return {
     'turnId': display.turnId,
     'activityId': display.activityId,
@@ -425,6 +436,11 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
       'kind': 'body',
       'key': key,
       'owner': switch (owner) {
+        DisplayObservationContentOwner(:final blockId, :final memberKey) => {
+          'kind': 'displayObservation',
+          'blockId': blockId,
+          'memberKey': memberKey,
+        },
         ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
         CurrentContentOwner(:final domain, :final id, :final revision) => {
           'kind': 'current',
@@ -440,22 +456,38 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-  if (unit?.run != null) {
-    final projected = unit!.entry;
+  if (unit != null) {
+    final atom = unit.atom;
+    final item = chatItemPresentationOf(message);
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: projected.atom.finishedAt,
+      sealedAt: atom?.finishedAt ?? unit.summary?.finishedAt,
       compatibility: 'current',
       omittedBytes: null,
-      kind: projected.mainPresentation.name,
+      kind: unit.summary == null ? atom?.kind.name ?? 'single' : 'work',
       status: 'history',
-      text: '',
-      channel: null,
-      timeline: _timelineEnvelopeFacts(projected),
+      text: item == null ? '' : _timelineItemFacts(item).text,
+      channel: atom?.textChannel?.name,
+      timeline: {
+        'blockId': unit.id,
+        'historyPos': unit.historyPos,
+        'members': switch (unit.memberReference) {
+          final reference? => {
+            'databaseId': reference.databaseId,
+            'blockId': reference.blockId,
+          },
+          null => null,
+        },
+        if (atom != null) ...{
+          'recordId': atom.completionItemId,
+          'completionSeq': atom.completionSeq,
+          'source': _sourceFacts(atom.source),
+        },
+      },
     );
   }
   final item = chatItemPresentationOf(message);
-  if (item != null) return _timelineItemFacts(item, timeline: unit?.entry);
+  if (item != null) return _timelineItemFacts(item);
   return TimelineItemFacts(
     id: message.id,
     sealedAt: null,

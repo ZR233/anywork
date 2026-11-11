@@ -515,7 +515,18 @@ class _OverlapCurrentPreview extends StatefulWidget {
 class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
   final activity = TimelinePreviewFixtures.overlapActivity;
   late final units = [
-    TimelineDisplayUnit(entry: TimelinePreviewFixtures.overlapText),
+    TimelineDisplayUnit(
+      block: DisplayBlock(
+        id: 'overlap-text',
+        historyPos: 1,
+        body: SingleDisplayBlock(
+          record: DisplayRecord(
+            atom: TimelinePreviewFixtures.overlapText.atom,
+            contentSource: const CurrentAtom(),
+          ),
+        ),
+      ),
+    ),
   ];
 
   @override
@@ -691,6 +702,26 @@ Widget timelineToolDetailsPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
     child: TimelineToolDetails(
       item: (TimelinePreviewFixtures.tool.toolCard as DecodedToolCard).value,
+    ),
+  ),
+);
+
+@Preview(
+  name: '工具 / apply_patch 修改片段',
+  group: 'Timeline · 历史组件',
+  size: Size(760, 560),
+)
+@Preview(
+  name: '工具 / apply_patch 修改片段 · 窄窗口',
+  group: 'Timeline · 历史组件',
+  size: Size(360, 720),
+)
+Widget timelineApplyPatchPreview() => _timelinePreviewHost(
+  TimelineActivityTileTheme(
+    child: TimelineToolDetails(
+      item: (TimelinePreviewFixtures.applyPatchTool.toolCard as DecodedToolCard)
+          .value,
+      initiallyExpanded: true,
     ),
   ),
 );

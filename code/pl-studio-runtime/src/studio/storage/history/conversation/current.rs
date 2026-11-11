@@ -20,6 +20,9 @@ pub(crate) struct CurrentContentWrite {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedCurrent {
+    /// Alias of the original PreparedEffect's frozen display material, not another queue.
+    pub(in crate::studio) display:
+        Option<Arc<crate::studio::thread_projection::presentation::PreparedDisplayDelta>>,
     pub(in crate::studio) recovery_interruption: Option<(String, pl_protocol::ChatFactPosition)>,
     /// Actual accepted start/terminal facts, frozen by the existing execution owner.
     pub(in crate::studio) atom_facts: Arc<[pl_protocol::ChatAtom]>,
@@ -34,6 +37,7 @@ impl PreparedCurrent {
         contents: Arc<[CurrentContentWrite]>,
     ) -> Self {
         Self {
+            display: None,
             recovery_interruption: None,
             atom_facts: Arc::from([]),
             projection,

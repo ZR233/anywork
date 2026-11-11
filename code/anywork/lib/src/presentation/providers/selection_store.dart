@@ -11,6 +11,6 @@ part 'selection_store.g.dart';
 /// Riverpod owns this display observation; the Client owns the resource.
 @riverpod
 SelectionStoreState selectionStore(Ref ref) {
-  final source = ref.read(anyworkClientProvider).selection.source;
+  final source = ref.watch(anyworkClientProvider).selection.source;
   return observeClient(ref, source, (_) => ref.invalidateSelf());
 }

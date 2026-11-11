@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::ffi::OsStringExt;
 use std::process::Command;
 
-use pl_protocol::process_worker::{
+use pl_remote_helper::process_worker_protocol::{
     PROCESS_WORKER_MAX_CONFIGURATION_BYTES, ProcessWorkerConfiguration,
 };
 

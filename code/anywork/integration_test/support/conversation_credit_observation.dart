@@ -1,3 +1,5 @@
+import 'display_record_observation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -10,7 +12,7 @@ final class ConversationCreditObservation {
     : _reader = feed.reader,
       _events = StreamIterator(feed.events) {
     evidence.addAll({
-      'source': 'real-frb-conversation-feed',
+      'source': 'real-frb-timeline-feed',
       'threadId': feed.threadId,
       'subscriptionId': feed.subscriptionId,
       'readerThreadId': _reader.threadId,
@@ -25,7 +27,7 @@ final class ConversationCreditObservation {
   }
 
   static const deadline = Duration(seconds: 20);
-  final ConversationFeed feed;
+  final TimelineFeed feed;
   final Map<String, Object?> evidence;
   final ConversationReader _reader;
   final StreamIterator<ConversationFrame> _events;
@@ -33,12 +35,18 @@ final class ConversationCreditObservation {
   final _operations = <Map<String, Object?>>[];
   List<String> _setItemIds = const [];
   List<String> _setContentItemIds = const [];
+  final _historyIds = <String>{};
+  int? _through;
+  int? _liveRevision;
   int _acknowledged = 0;
   bool _joined = false;
   bool _cancelled = false;
 
-  Future<void> _next(int sequence) async {
-    if (!await _events.moveNext().timeout(deadline)) {
+  Future<TimelineBatch> _next(
+    int sequence, {
+    Duration timeout = deadline,
+  }) async {
+    if (!await _events.moveNext().timeout(timeout)) {
       throw StateError('Credit feed ended before ordinary frame $sequence');
     }
     final frame = _events.current;
@@ -52,8 +60,7 @@ final class ConversationCreditObservation {
     if (event is ConversationClosedEvent) {
       throw StateError('Credit feed closed before ordinary frame $sequence');
     }
-    if (sequence > 3 ||
-        frame.deliverySequence != sequence ||
+    if (frame.deliverySequence != sequence ||
         _frames.length != sequence - 1 ||
         _acknowledged != sequence - 1) {
       throw StateError('Credit observation requires one outstanding frame');
@@ -66,64 +73,125 @@ final class ConversationCreditObservation {
       'outstandingSequence': sequence,
       'outstandingCount': 1,
     };
-    switch (event) {
-      case ConversationChatEvent(:final batch):
-        final items = batch.entries;
-        final ids = [for (final item in items) item.recordId];
-        final contentIds = [for (final item in items) item.recordId];
-        if (sequence == 1) {
-          if (batch.placement != ChatPlacement.set) {
-            throw StateError('Credit first frame is not the original Set');
-          }
-          _setItemIds = List.unmodifiable(ids);
-          _setContentItemIds = List.unmodifiable(contentIds);
-          evidence['heldSetItemIds'] = _setItemIds;
-          evidence['heldSetContentItemIds'] = _setContentItemIds;
-        }
-        observation.addAll({
-          'event': 'chat',
-          'placement': batch.placement.name,
-          'itemIds': ids,
-          'entryCount': batch.entries.length,
-        });
-      case ConversationStateEvent(:final frame):
-        if (sequence == 1) {
-          throw StateError('Credit first frame is state rather than Set');
-        }
-        if (frame is ThreadSnapshotFrame &&
-            (frame.schemaVersion != 17 || frame.completedHistoryVersion != 1)) {
-          throw StateError('Credit State lacks the completed handshake');
-        }
-        observation.addAll({
-          'event': 'state',
-          'frameKind': frame.runtimeType.toString(),
-        });
-      case ConversationActivityEvent(:final snapshot):
-        if (sequence == 1) {
-          throw StateError('Credit first frame is Activity rather than Set');
-        }
-        observation.addAll({
-          'event': 'activity',
-          'revision': snapshot.revision,
-          'completedThrough': snapshot.completedThrough,
-        });
-      default:
-        throw StateError('Credit observation received a nonordinary frame');
+    if (event is! ConversationTimelineEvent) {
+      throw StateError('Timeline credit requires Timeline-only frames');
     }
+    final batch = event.batch;
+    if (batch.presentationVersion != presentationVersion) {
+      throw StateError('Credit Timeline has an unsupported version');
+    }
+    final initial = sequence == 1;
+    final validPlacement = initial
+        ? batch.placement == ChatPlacement.set &&
+              batch.fromPos == null &&
+              batch.live != null
+        : batch.placement == ChatPlacement.append &&
+              batch.before == null &&
+              batch.fromPos == _through &&
+              (batch.throughPos > _through! ||
+                  (batch.throughPos == _through &&
+                      batch.blocks.isEmpty &&
+                      batch.live != null));
+    if (!validPlacement || batch.throughPos < 0) {
+      throw StateError(
+        'Credit Timeline placement or history cut is discontinuous',
+      );
+    }
+    final ids = <String>{};
+    var previous = batch.fromPos ?? 0;
+    var hasGap = false;
+    for (final block in batch.blocks) {
+      if (block.id.isEmpty ||
+          !ids.add(block.id) ||
+          _historyIds.contains(block.id) ||
+          block.historyPos <= previous ||
+          block.historyPos > batch.throughPos) {
+        throw StateError(
+          'Credit Timeline blocks are duplicated or out of order',
+        );
+      }
+      if (!initial && block.historyPos != previous + 1) {
+        hasGap = true;
+      }
+      previous = block.historyPos;
+    }
+    if (hasGap) {
+      throw StateError('Credit Timeline history positions contain a gap');
+    }
+    if (!initial && previous != batch.throughPos) {
+      throw StateError(
+        'Credit Timeline history cut includes undelivered blocks',
+      );
+    }
+    if (batch.live case final live?) {
+      if (live.historyThrough != batch.throughPos ||
+          live.revision < (_liveRevision ?? 0)) {
+        throw StateError('Credit Timeline live cut is discontinuous');
+      }
+      var order = 0;
+      final cutIds = {...ids};
+      for (final block in live.blocks) {
+        if (block.id.isEmpty ||
+            !cutIds.add(block.id) ||
+            _historyIds.contains(block.id) ||
+            block.blockOrder <= order) {
+          throw StateError(
+            'Credit Timeline live blocks are duplicated or out of order',
+          );
+        }
+        order = block.blockOrder;
+      }
+      _liveRevision = live.revision;
+    }
+    _historyIds.addAll(ids);
+    _through = batch.throughPos;
+    if (initial) {
+      _setItemIds = List.unmodifiable(ids);
+      _setContentItemIds = List.unmodifiable([
+        for (final block in batch.blocks)
+          if (block.body case SingleDisplayBlock(
+            record: DisplayRecord(
+              contentSource: CompletedOriginal(:final completionId),
+            ),
+          ))
+            completionId,
+      ]);
+      evidence['heldSetItemIds'] = _setItemIds;
+      evidence['heldSetContentItemIds'] = _setContentItemIds;
+    }
+    observation.addAll({
+      'event': 'timeline',
+      'presentationVersion': batch.presentationVersion,
+      'placement': batch.placement.name,
+      'itemIds': ids.toList(),
+      'blocks': [
+        for (final block in batch.blocks)
+          {'blockId': block.id, 'historyPos': block.historyPos},
+      ],
+      'blockCount': batch.blocks.length,
+      'fromPos': batch.fromPos,
+      'throughPos': batch.throughPos,
+      'liveRevision': batch.live?.revision,
+    });
     _frames.add(Map.unmodifiable(observation));
     _operations.add({'operation': 'frame', 'deliverySequence': sequence});
     evidence['actualOrdinaryFrameCount'] = _frames.length;
     evidence['acknowledgedThrough'] = _acknowledged;
     evidence['outstandingSequence'] = sequence;
     evidence['outstandingCount'] = 1;
+    return batch;
   }
 
-  Future<void> _rejectFuture(int sequence) async {
+  Future<void> _rejectFuture(
+    int sequence, {
+    Duration timeout = deadline,
+  }) async {
     await _expectFailure(
       'future-ack',
       () => feed.acknowledge(sequence),
       StudioFailureCode.invalidArgument,
       sequence: sequence,
+      timeout: timeout,
     );
   }
 
@@ -132,9 +200,10 @@ final class ConversationCreditObservation {
     Future<void> Function() action,
     StudioFailureCode code, {
     int? sequence,
+    Duration timeout = deadline,
   }) async {
     try {
-      await action().timeout(deadline);
+      await action().timeout(timeout);
     } on StudioFailure catch (failure) {
       if (failure.code != code) rethrow;
       _operations.add({
@@ -156,17 +225,23 @@ final class ConversationCreditObservation {
     await _rejectFuture(2);
   }
 
-  Future<void> queryCompletedText(CompletedEntry item) async {
-    final itemId = item.recordId;
-    final terminal = item.atom.lifecycle;
+  Future<void> queryCompletedText({
+    required String blockId,
+    required int historyPos,
+    required SingleDisplayBlock single,
+  }) async {
+    final atom = single.record.atom;
+    final itemId = completedOriginalId(single.record);
+    final terminal = atom.lifecycle;
     if (_frames.length != 1 ||
         _acknowledged != 0 ||
-        item.mainPresentation != MainPresentation.single ||
-        item.atom.kind != ChatAtomKind.text ||
-        item.completionSeq <= 0 ||
+        atom.kind != ChatAtomKind.text ||
+        itemId == null ||
+        historyPos <= 0 ||
+        (atom.completionSeq ?? 0) <= 0 ||
         terminal is! TerminalChatAtom ||
         terminal.outcome != ChatTerminalOutcome.completed ||
-        _setItemIds.contains(item.recordId) ||
+        _setItemIds.contains(blockId) ||
         _setContentItemIds.contains(itemId)) {
       throw StateError('Credit query requires a new, truly completed text');
     }
@@ -207,9 +282,11 @@ final class ConversationCreditObservation {
     }
     final query = <String, Object?>{
       'operation': 'query-completed-text',
-      'recordId': item.recordId,
+      'blockId': blockId,
+      'historyPos': historyPos,
+      'recordId': itemId,
       'contentItemId': itemId,
-      'completionSeq': item.completionSeq,
+      'completionSeq': atom.completionSeq,
       'outcome': terminal.outcome.name,
       'absentFromHeldSet': true,
       'readerSource': 'original-held-feed',
@@ -231,18 +308,75 @@ final class ConversationCreditObservation {
     await _rejectFuture(2);
   }
 
-  Future<void> observeSuccessors() async {
-    for (final sequence in [1, 2]) {
+  Future<void> observeSuccessors({
+    required String blockId,
+    required int historyPos,
+  }) async {
+    final query = evidence['query'];
+    if (_frames.length != 1 ||
+        _acknowledged != 0 ||
+        query is! Map ||
+        query['blockId'] != blockId ||
+        query['historyPos'] != historyPos ||
+        historyPos <= _through!) {
+      throw StateError(
+        'Credit target must be the original queried completed text',
+      );
+    }
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final left = deadline - clock.elapsed;
+      if (left <= Duration.zero) {
+        throw TimeoutException(
+          'Credit target delivery exceeded its budget',
+          deadline,
+        );
+      }
+      return left;
+    }
+
+    while (true) {
+      final sequence = _frames.length;
       // Only acknowledge a frame already received, then await its successor.
-      await feed.acknowledge(sequence).timeout(deadline);
+      await feed.acknowledge(sequence).timeout(remaining());
       _acknowledged = sequence;
+      evidence['acknowledgedThrough'] = sequence;
+      evidence['outstandingSequence'] = null;
+      evidence['outstandingCount'] = 0;
       _operations.add({'operation': 'ack', 'deliverySequence': sequence});
-      await _next(sequence + 1);
-      await _rejectFuture(sequence + 2);
+      final batch = await _next(sequence + 1, timeout: remaining());
+      await _rejectFuture(sequence + 2, timeout: remaining());
+      final target = batch.blocks
+          .where((block) => block.id == blockId)
+          .singleOrNull;
+      if (target != null) {
+        if (target.historyPos != historyPos) {
+          throw StateError(
+            'Credit target block arrived at the wrong history position',
+          );
+        }
+        evidence['targetDelivery'] = {
+          'blockId': blockId,
+          'historyPos': historyPos,
+          'deliverySequence': sequence + 1,
+          'throughPos': batch.throughPos,
+          'actualOrdinaryFrameCount': _frames.length,
+          'acknowledgedThrough': _acknowledged,
+          'outstandingSequence': sequence + 1,
+        };
+        // Retain this actually received frame unacknowledged for close/join.
+        return;
+      }
+      if (batch.throughPos >= historyPos) {
+        throw StateError(
+          'Credit Timeline passed the target position without its block',
+        );
+      }
     }
   }
 
   Future<void> verifyClosed(String itemId) async {
+    final heldSequence = _frames.length;
     await close();
     await _expectFailure('closed-reader-query', () async {
       await _reader.listContents(
@@ -252,9 +386,9 @@ final class ConversationCreditObservation {
     }, StudioFailureCode.cancelled);
     await _expectFailure(
       'closed-feed-ack',
-      () => feed.acknowledge(3),
+      () => feed.acknowledge(heldSequence),
       StudioFailureCode.cancelled,
-      sequence: 3,
+      sequence: heldSequence,
     );
     evidence['closedAdmissionsVerified'] = true;
   }

@@ -31,11 +31,12 @@ final class TimelineDisplayFacts {
     this.appliedPrepends,
     this.appliedAppends,
     this.firstContentLayout,
-    this.current,
+    List<Map<String, Object?>> currentDisplays = const [],
     List<Map<String, Object?>> groups = const [],
     List<TimelineChildrenFacts> children = const [],
     List<TimelineItemFacts> items = const [],
-  }) : groups = List.unmodifiable(groups),
+  }) : currentDisplays = List.unmodifiable(currentDisplays),
+       groups = List.unmodifiable(groups),
        items = List.unmodifiable(items),
        children = List.unmodifiable(children);
 
@@ -58,7 +59,7 @@ final class TimelineDisplayFacts {
   final TimelineContentLayoutFacts? firstContentLayout;
 
   /// Request-local JSON projected from existing mounted current resources, never a resource owner.
-  final Map<String, Object?>? current;
+  final List<Map<String, Object?>> currentDisplays;
   final List<Map<String, Object?>> groups;
   final List<TimelineChildrenFacts> children;
   final List<TimelineItemFacts> items;
@@ -1287,7 +1288,7 @@ abstract final class StudioDriverState {
       'appliedSets': timeline.appliedSets,
       'appliedPrepends': timeline.appliedPrepends,
       'appliedAppends': timeline.appliedAppends,
-      'current': timeline.current,
+      'currentDisplays': timeline.currentDisplays,
       'groups': timeline.groups,
       'firstContentLayout': switch (timeline.firstContentLayout) {
         final layout? => {

@@ -1,12 +1,71 @@
+import 'display_record_observation.dart';
+
 import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const timelineConceptImagePrompt = '读取三张设计截图，并说明无法读取的图片。';
+
+// A nonempty canonical attachment list is required before checking media;
+// every() on a Deferred head's empty list must never count as UI evidence.
+Future<void> waitForTimelineConceptInputImages(
+  WidgetTester tester,
+  ChatItemPresentation item, {
+  Duration timeout = const Duration(seconds: 60),
+}) async {
+  expect(item.compatibility, ChatItemCompatibility.current);
+  expect(item.atom!.kind, ChatAtomKind.input);
+  final attachments = item.attachments;
+  expect(attachments, hasLength(3));
+  expect(attachments.map((attachment) => attachment.id).toSet(), hasLength(3));
+  final card = find.byWidgetPredicate(
+    (widget) => widget is ChatItemView && identical(widget.item, item),
+  );
+  final deadline = tester.binding.clock.fromNowBy(timeout);
+  while (true) {
+    expect(card, findsOneWidget);
+    final views = tester
+        .widgetList<TimelineImageView>(
+          find.descendant(of: card, matching: find.byType(TimelineImageView)),
+        )
+        .toList();
+    for (final view in views) {
+      expect(view.itemId, item.id);
+      if (view.error case final error?) throw StateError('$error');
+    }
+    if (views.length == attachments.length) {
+      expect(
+        views.map((view) => view.attachment.id),
+        orderedEquals(attachments.map((attachment) => attachment.id)),
+      );
+      if (views.every(
+        (view) =>
+            view.active &&
+            !view.isTool &&
+            view.bytes != null &&
+            view.bytes!.isNotEmpty &&
+            view.width == view.attachment.width &&
+            view.height == view.attachment.height,
+      )) {
+        return;
+      }
+    }
+    if (!tester.binding.clock.now().isBefore(deadline)) {
+      fail('Three real input images did not become readable for ${item.id}');
+    }
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(tester.takeException(), isNull);
+  }
+}
+
 const _filenames = [
   'concept-input-a.png',
   'concept-input-b.png',
@@ -22,24 +81,30 @@ final class TimelineConceptImageInput {
     required this.threadId,
     required this.inputId,
     required List<AttachmentDraftView> drafts,
+    this.prompt = timelineConceptImagePrompt,
   }) : drafts = List.unmodifiable(drafts);
 
   final String threadId;
   final String inputId;
   final List<AttachmentDraftView> drafts;
+  final String prompt;
 
   /// Call with the completed entry and attachment refs from ONE Main message.
   /// Returns identities to archive alongside the later layout assertions.
   Map<String, Object?> verifyItem(
-    CompletedEntry item,
+    TimelineDisplayUnit item,
     List<ThreadAttachmentView> attachments,
   ) {
-    expect(item.mainPresentation, MainPresentation.single);
-    expect(item.atom.kind, ChatAtomKind.input);
-    expect(item.atom.source, InputChatSource(inputId: inputId));
-    expect(item.recordId, isNotNull);
-    expect(item.recordId, isNotEmpty);
-    expect(item.completionSeq, greaterThan(0));
+    expect(item.body, isA<SingleDisplayBlock>());
+    expect(item.atom!.kind, ChatAtomKind.input);
+    expect(item.atom!.source, InputChatSource(inputId: inputId));
+    expect(item.id, isNotEmpty);
+    expect(
+      completedOriginalId((item.body as SingleDisplayBlock).record),
+      isNotEmpty,
+    );
+    expect(item.historyPos, greaterThan(0));
+    expect(item.atom!.completionSeq, greaterThan(0));
     expect(attachments, hasLength(3));
     expect(attachments.map((item) => item.id).toSet(), hasLength(3));
     for (var index = 0; index < attachments.length; index++) {
@@ -54,8 +119,12 @@ final class TimelineConceptImageInput {
     }
     return {
       ...toJson(),
-      'itemId': item.recordId,
-      'contentItemId': item.recordId,
+      'itemId': item.id,
+      'contentItemId': completedOriginalId(
+        (item.body as SingleDisplayBlock).record,
+      ),
+      'historyPos': item.historyPos,
+      'completionSeq': item.atom!.completionSeq,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
     };
   }
@@ -64,7 +133,7 @@ final class TimelineConceptImageInput {
   /// No dependency on an in-flight owner/key/Driver DTO contract.
   Map<String, Object?> verifyHorizontalLayout(
     WidgetTester tester, {
-    required CompletedEntry item,
+    required TimelineDisplayUnit item,
     required List<ThreadAttachmentView> attachments,
     required Finder itemFinder,
     required Finder Function(String resourceId) thumbnailFinder,
@@ -104,7 +173,7 @@ final class TimelineConceptImageInput {
   Map<String, Object?> toJson() => {
     'threadId': threadId,
     'inputId': inputId,
-    'prompt': timelineConceptImagePrompt,
+    'prompt': prompt,
     'attachments': [
       for (final draft in drafts)
         {
@@ -128,6 +197,8 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
   AppGraph graph, {
   required String threadId,
   required String projectPath,
+  String prompt = timelineConceptImagePrompt,
+  Future<void> Function()? beforeSubmit,
 }) async {
   expect(graph.client.selection.state.selectedThreadId, threadId);
   final composer = graph.client.drafts.composer(threadId);
@@ -163,10 +234,11 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
   }
   final input = find.byKey(const ValueKey('composer-input'));
   expect(input, findsOneWidget);
-  await tester.enterText(input, timelineConceptImagePrompt);
+  await tester.enterText(input, prompt);
   await tester.pump();
-  expect(composer.state.draft, timelineConceptImagePrompt);
+  expect(composer.state.draft, prompt);
   expect(graph.client.selection.state.selectedThreadId, threadId);
+  if (beforeSubmit != null) await beforeSubmit();
 
   // Register before the tap: a fast submit can return to Idle before a pump.
   // Observe the existing source synchronously, without a test product API.
@@ -188,7 +260,7 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
     expect(frozen.map((state) => state.inputId).toSet(), hasLength(1));
     final submitted = frozen.first;
     expect(submitted.inputId, isNotEmpty);
-    expect(submitted.draft, timelineConceptImagePrompt);
+    expect(submitted.draft, prompt);
     expect(
       submitted.attachments.map((draft) => draft.id),
       orderedEquals(drafts.map((draft) => draft.id)),
@@ -199,6 +271,7 @@ Future<TimelineConceptImageInput> submitTimelineConceptImageInput(
       threadId: threadId,
       inputId: submitted.inputId,
       drafts: drafts,
+      prompt: prompt,
     );
   } finally {
     watch.observation.cancel();

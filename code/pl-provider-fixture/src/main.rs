@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use pl_provider_fixture::{
     FixtureLiveStatus, FixtureOptions, FixtureServer, GUI_SCENARIOS,
-    GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES, ReadyFile, WebSearchFault, WebSearchOptions,
-    gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
+    GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES, ReadyFile, RealtimeScope, WebSearchFault,
+    WebSearchOptions, gui_history_fault_script, gui_history_lock_script, gui_mode_editor_script,
     gui_plan_recovery_script, gui_realtime_script, gui_script, gui_shutdown_script,
     gui_statistics_script, gui_stress_body_large_script, gui_stress_body_script, gui_stress_script,
     gui_timeline_history_20k_script, gui_timeline_history_script, gui_tool_scroll_script,
@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     #[arg(long)]
     scenario: Option<String>,
+    #[arg(long, value_parser = ["stop-background"])]
+    realtime_focus: Option<String>,
     /// Generate POSIX commands for the tool-scroll workspace on remote Linux.
     #[arg(long)]
     posix_exec: bool,
@@ -97,6 +99,22 @@ struct Args {
     feishu_observe: bool,
 }
 
+impl Args {
+    fn realtime_scope(&self) -> Result<RealtimeScope> {
+        match self.realtime_focus.as_deref() {
+            None => Ok(RealtimeScope::Full),
+            Some("stop-background") => {
+                ensure!(
+                    self.scenario.as_deref() == Some("realtime-presentation"),
+                    "--realtime-focus requires --scenario realtime-presentation"
+                );
+                Ok(RealtimeScope::StopBackground)
+            }
+            Some(value) => bail!("unknown realtime focus: {value}"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // The catalog probe runs exactly `<program> --version`; answer it before clap
@@ -108,6 +126,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    let realtime_scope = args.realtime_scope()?;
     if args.mcp_stdio {
         let coord_file = args
             .coord_file
@@ -221,6 +240,8 @@ async fn main() -> Result<()> {
     let mut realtime_host_cwd: Option<tempfile::TempDir> = None;
     let timeline_concept = match scenario {
         "timeline-concept" => Some(pl_provider_fixture::timeline_concept::Control::default()),
+        "timeline-boundary" => Some(pl_provider_fixture::timeline_concept::Control::boundary()),
+        "media-handoff" => Some(pl_provider_fixture::timeline_concept::Control::default()),
         "question-history" => Some(pl_provider_fixture::timeline_concept::Control::questions()),
         "realtime-presentation" => Some(pl_provider_fixture::timeline_concept::Control::realtime()),
         "message-submission" => {
@@ -243,6 +264,8 @@ async fn main() -> Result<()> {
         "timeline-history-20k" => gui_timeline_history_20k_script(),
         "statistics" => gui_statistics_script(),
         "timeline-concept" => timeline_concept.as_ref().unwrap().script(),
+        "timeline-boundary" => timeline_concept.as_ref().unwrap().boundary_script(),
+        "media-handoff" => timeline_concept.as_ref().unwrap().media_handoff_script(),
         "message-submission" => timeline_concept
             .as_ref()
             .unwrap()
@@ -261,8 +284,8 @@ async fn main() -> Result<()> {
                 .to_owned();
             realtime_host_cwd = Some(directory);
             match timeline_concept.as_ref() {
-                Some(control) => control.realtime_script(&path),
-                None => gui_realtime_script(&path, None),
+                Some(control) => control.realtime_script(&path, realtime_scope),
+                None => gui_realtime_script(&path, None, RealtimeScope::Full),
             }
         }
         "history-lock" => gui_history_lock_script(),
@@ -648,4 +671,55 @@ fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(
     }
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod realtime_focus_tests {
+    use super::*;
+
+    #[test]
+    fn realtime_focus_cli_is_finite_and_preset_bound() {
+        let full =
+            Args::try_parse_from(["fixture", "--scenario", "realtime-presentation"]).unwrap();
+        assert_eq!(full.realtime_scope().unwrap(), RealtimeScope::Full);
+        for scenario in GUI_SCENARIOS {
+            let args = Args::try_parse_from([
+                "fixture",
+                "--scenario",
+                scenario,
+                "--realtime-focus",
+                "stop-background",
+            ])
+            .unwrap();
+            if scenario == "realtime-presentation" {
+                assert_eq!(
+                    args.realtime_scope().unwrap(),
+                    RealtimeScope::StopBackground
+                );
+            } else {
+                assert!(args.realtime_scope().is_err(), "{scenario}");
+            }
+        }
+        for value in ["full", "parallel", "", "stop-background "] {
+            assert!(
+                Args::try_parse_from([
+                    "fixture",
+                    "--scenario",
+                    "realtime-presentation",
+                    "--realtime-focus",
+                    value,
+                ])
+                .is_err(),
+                "{value}"
+            );
+        }
+        let stdio = Args::try_parse_from([
+            "fixture",
+            "--mcp-stdio",
+            "--realtime-focus",
+            "stop-background",
+        ])
+        .unwrap();
+        assert!(stdio.realtime_scope().is_err());
+    }
 }

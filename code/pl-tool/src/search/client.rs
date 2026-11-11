@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use pl_protocol::search::{SearchRequest, SearchResponse};
+use super::standalone::SearchRequest;
 use pl_protocol::{PureError, Result};
+use pl_tool_search::tools::web_search::Response;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -19,8 +20,6 @@ pub enum WebSearchError {
     },
     #[error("invalid web search response: {0}")]
     Response(#[source] reqwest::Error),
-    #[error("web search command mapping failed: {0}")]
-    Commands(#[from] serde_json::Error),
 }
 
 /// Explicit standalone search transport parameters. Credentials are supplied by the host.
@@ -80,10 +79,10 @@ impl WebSearchClient {
         })
     }
 
-    pub async fn search(
+    pub(super) async fn search(
         &self,
         request: &SearchRequest,
-    ) -> std::result::Result<SearchResponse, WebSearchError> {
+    ) -> std::result::Result<Response, WebSearchError> {
         let response = self
             .client
             .post(&self.endpoint)
@@ -103,7 +102,7 @@ impl WebSearchClient {
             });
         }
         response
-            .json::<SearchResponse>()
+            .json::<Response>()
             .await
             .map_err(WebSearchError::Response)
     }

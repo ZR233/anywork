@@ -6,6 +6,26 @@ import '../../../../l10n/studio_l10n.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
+import '../state/conversation_realtime_presentation.dart';
+
+class ConversationRealtimeNotices extends StatelessWidget {
+  const ConversationRealtimeNotices({required this.notices, super.key});
+  final List<RealtimeNotice> notices;
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      for (final notice in notices)
+        switch (notice) {
+          ExecutionRealtimeNotice(:final view) => ConversationActivityStatus(
+            view: view,
+          ),
+          UnrestoredRealtimeNotice() => const Text('上次执行未收束，尚未恢复'),
+        },
+    ],
+  );
+}
 
 /// 实时区唯一外壳。生产连接层和官方预览传入同一套纯呈现组件。
 class ConversationActivityBar extends StatelessWidget {

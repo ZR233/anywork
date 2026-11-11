@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use pl_protocol::studio::{
-    ResourceStamp, StudioError, StudioErrorCode, ThreadDirectoryFrame, ThreadDirectoryQuery,
+    StudioError, StudioErrorCode, ThreadDirectoryFrame, ThreadDirectoryQuery,
     ThreadDirectoryWindow, ThreadMetadataFrame,
 };
 use tokio::sync::{Mutex, watch};
@@ -12,22 +12,36 @@ use tokio_util::sync::CancellationToken;
 
 use super::StudioRuntime;
 use crate::StudioProductTopic;
-use crate::studio::product_event_bus::ProductEventBus;
+use crate::studio::product_event_bus::{ProductEventBus, ThreadMetadataSignal};
 use crate::studio::store::directory::ThreadDirectoryCursor;
 
 #[cfg(test)]
 mod tests;
 
-struct ReadState {
-    signal: Option<watch::Receiver<()>>,
-    initial: bool,
-    last: Option<ResourceStamp>,
+enum DirectorySignal {
+    Structure(watch::Receiver<()>),
+    Metadata(ThreadMetadataSignal),
 }
 
-impl ReadState {
-    fn new(events: &ProductEventBus) -> Self {
+impl DirectorySignal {
+    fn receiver(&mut self) -> &mut watch::Receiver<()> {
+        match self {
+            Self::Structure(receiver) => receiver,
+            Self::Metadata(signal) => signal.receiver(),
+        }
+    }
+}
+
+struct ReadState<T> {
+    signal: Option<DirectorySignal>,
+    initial: bool,
+    last: Option<T>,
+}
+
+impl<T> ReadState<T> {
+    fn new(signal: DirectorySignal) -> Self {
         Self {
-            signal: Some(events.subscribe_topic_signal(&StudioProductTopic::ThreadDirectory)),
+            signal: Some(signal),
             initial: true,
             last: None,
         }
@@ -44,13 +58,13 @@ impl ReadState {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return false,
-                changed = signal.changed() => if changed.is_err() { return false; },
+                changed = signal.receiver().changed() => if changed.is_err() { return false; },
             }
         }
         self.initial = false;
         if let Some(signal) = self.signal.as_mut() {
             // Consume before reading, so a mutation during the read remains pending.
-            signal.borrow_and_update();
+            signal.receiver().borrow_and_update();
         }
         true
     }
@@ -67,7 +81,7 @@ struct ThreadsInner {
     query: ThreadDirectoryQuery,
     window: ThreadDirectoryWindow,
     cancellation: CancellationToken,
-    next: Mutex<ReadState>,
+    next: Mutex<ReadState<(Vec<String>, Option<String>)>>,
 }
 
 #[derive(Clone)]
@@ -80,7 +94,7 @@ struct MetadataInner {
     epoch: String,
     thread_id: String,
     cancellation: CancellationToken,
-    next: Mutex<ReadState>,
+    next: Mutex<ReadState<Option<pl_protocol::SessionDirectoryRow>>>,
 }
 
 impl StudioRuntime {
@@ -123,7 +137,9 @@ impl ThreadsObservation {
             return Err(StudioError::invalid_argument("Invalid directory boundary").into());
         }
         // Registration precedes every initial read, including an empty result.
-        let next = Mutex::new(ReadState::new(&events));
+        let next = Mutex::new(ReadState::new(DirectorySignal::Structure(
+            events.subscribe_topic_signal(&StudioProductTopic::ThreadDirectory),
+        )));
         Ok(ThreadsObservation {
             inner: Arc::new(ThreadsInner {
                 events,
@@ -142,7 +158,9 @@ impl ThreadMetadataObservation {
         if thread_id.trim().is_empty() {
             return Err(StudioError::invalid_argument("Thread identity is required").into());
         }
-        let next = Mutex::new(ReadState::new(&events));
+        let next = Mutex::new(ReadState::new(DirectorySignal::Metadata(
+            events.subscribe_thread_metadata(&thread_id),
+        )));
         Ok(ThreadMetadataObservation {
             inner: Arc::new(MetadataInner {
                 events,
@@ -175,11 +193,13 @@ impl ThreadsObservation {
                 &self.inner.window,
                 &self.inner.epoch,
             )?;
-            if state.last.as_ref() == Some(&frame.stamp) {
+            if state.last.as_ref().is_some_and(|(ids, cursor)| {
+                ids == &frame.thread_ids && cursor == &frame.next_cursor
+            }) {
                 continue;
             }
             // No await separates the consistent owner read and delivery.
-            state.last = Some(frame.stamp.clone());
+            state.last = Some((frame.thread_ids.clone(), frame.next_cursor.clone()));
             return Ok(Some(frame));
         }
         Ok(None)
@@ -209,10 +229,10 @@ impl ThreadMetadataObservation {
                 .inner
                 .events
                 .read_thread_metadata(&self.inner.thread_id, &self.inner.epoch)?;
-            if state.last.as_ref() == Some(&frame.stamp) {
+            if state.last.as_ref() == Some(&frame.row) {
                 continue;
             }
-            state.last = Some(frame.stamp.clone());
+            state.last = Some(frame.row.clone());
             return Ok(Some(frame));
         }
         Ok(None)

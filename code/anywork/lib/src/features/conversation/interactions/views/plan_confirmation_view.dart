@@ -47,44 +47,8 @@ class PlanConfirmationView extends StatelessWidget {
       visualDensity: VisualDensity.standard,
       tapTargetSize: MaterialTapTargetSize.padded,
     );
-    final hintStyle = context.text.labelSmall?.copyWith(
+    final statusStyle = context.text.labelSmall?.copyWith(
       color: context.colors.onSurfaceVariant,
-    );
-    final hint = Stack(
-      alignment: AlignmentDirectional.centerStart,
-      children: [
-        // Keep the idle hint's footprint during submission so the actions
-        // do not move between rows when this shorter message appears.
-        Visibility(
-          visible: !submitting,
-          maintainSize: true,
-          maintainAnimation: true,
-          maintainState: true,
-          child: Text(
-            context.l10n.interactionPlanFeedbackHint,
-            style: hintStyle,
-          ),
-        ),
-        if (submitting)
-          Positioned.fill(
-            child: Row(
-              children: [
-                const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 1.5),
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    context.l10n.planDecisionSubmitting,
-                    style: hintStyle,
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
     );
     final actions = Wrap(
       alignment: WrapAlignment.end,
@@ -114,57 +78,43 @@ class PlanConfirmationView extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                const Icon(Icons.check, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    context.l10n.interactionPlanConfirmTitle,
-                    style: context.text.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                if (trailing != null) ...[const SizedBox(width: 8), trailing!],
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              context.l10n.interactionPlanConfirmSubtitle,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
+            if (trailing != null)
+              Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: trailing!,
               ),
-            ),
-            const SizedBox(height: 12),
+            if (trailing != null) const SizedBox(height: 8),
             Text(
               context.l10n.interactionPlanAdjust,
               style: context.text.bodySmall?.copyWith(
                 color: context.colors.onSurfaceVariant,
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             MultilineEnterShortcuts(
               controller: controller,
               onChanged: onFeedbackChanged,
-              child: TextField(
-                key: StudioDriverKeys.planFeedbackInput,
-                controller: controller,
-                enabled: enabled && !submitting,
-                minLines: 2,
-                maxLines: 4,
-                textInputAction: TextInputAction.send,
-                onChanged: onFeedbackChanged,
-                onEditingComplete: () {},
-                onSubmitted: (_) => submitRevision(),
-                decoration: InputDecoration(
-                  hintText: context.l10n.interactionPlanAdjustHint,
-                  contentPadding: const EdgeInsets.all(16),
+              child: Tooltip(
+                message: context.l10n.interactionPlanFeedbackHint,
+                child: TextField(
+                  key: StudioDriverKeys.planFeedbackInput,
+                  controller: controller,
+                  enabled: enabled && !submitting,
+                  minLines: 2,
+                  maxLines: 4,
+                  textInputAction: TextInputAction.send,
+                  onChanged: onFeedbackChanged,
+                  onEditingComplete: () {},
+                  onSubmitted: (_) => submitRevision(),
+                  decoration: InputDecoration(
+                    hintText: context.l10n.interactionPlanAdjustHint,
+                    contentPadding: const EdgeInsets.all(12),
+                  ),
                 ),
               ),
             ),
@@ -194,9 +144,34 @@ class PlanConfirmationView extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: 8),
+            if (submitting) const SizedBox(height: 4),
             LayoutBuilder(
               builder: (context, constraints) {
+                Widget progress() => Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        context.l10n.planDecisionSubmitting,
+                        style: statusStyle,
+                      ),
+                    ),
+                  ],
+                );
+
+                if (!submitting) {
+                  return Align(
+                    alignment: AlignmentDirectional.centerEnd,
+                    child: actions,
+                  );
+                }
+
                 double textWidth(String text, TextStyle? style) {
                   final painter = TextPainter(
                     text: TextSpan(text: text, style: style),
@@ -209,9 +184,6 @@ class PlanConfirmationView extends StatelessWidget {
                   return width;
                 }
 
-                // Measure the actual localized labels and text scale rather
-                // than reserving a fixed fraction of the footer for actions.
-                // Each button adds 28 padding + 18 icon + 8 icon gap.
                 final actionsWidth =
                     textWidth(
                       context.l10n.interactionPlanAdjustSubmit,
@@ -223,14 +195,16 @@ class PlanConfirmationView extends StatelessWidget {
                     ) +
                     2 * (28 + 18 + 8) +
                     8;
-                final hintWidth = textWidth(
-                  context.l10n.interactionPlanFeedbackHint,
-                  hintStyle,
-                );
-                if (hintWidth + 16 + actionsWidth <= constraints.maxWidth) {
+                final progressWidth =
+                    textWidth(
+                      context.l10n.planDecisionSubmitting,
+                      statusStyle,
+                    ) +
+                    18;
+                if (progressWidth + 16 + actionsWidth <= constraints.maxWidth) {
                   return Row(
                     children: [
-                      Expanded(child: hint),
+                      Expanded(child: progress()),
                       const SizedBox(width: 16),
                       actions,
                     ],
@@ -239,8 +213,8 @@ class PlanConfirmationView extends StatelessWidget {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    hint,
-                    const SizedBox(height: 8),
+                    progress(),
+                    const SizedBox(height: 4),
                     Align(
                       alignment: AlignmentDirectional.centerEnd,
                       child: actions,

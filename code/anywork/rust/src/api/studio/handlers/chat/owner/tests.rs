@@ -10,6 +10,7 @@ use crate::api::studio::types::{BridgeConversationEvent, BridgeReadDemand};
 mod live;
 mod output_limit;
 mod state;
+mod timeline;
 
 fn managed(feed: ConversationFeed) -> Arc<ConversationOwner> {
     let owner = Arc::new(ConversationOwner::new(feed, CancellationToken::new()));

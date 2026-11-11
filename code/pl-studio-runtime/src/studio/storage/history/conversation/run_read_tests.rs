@@ -4,7 +4,7 @@ use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
 use sea_orm::TransactionTrait;
 
 #[path = "run_read_tests/sqlite_work.rs"]
-mod sqlite_work;
+pub(in crate::studio::storage::history::conversation) mod sqlite_work;
 
 fn atom(id: &str, kind: ChatAtomKind, source: &str) -> ChatAtom {
     let mut atom: ChatAtom = serde_json::from_slice(&super::tests::metadata(id)).unwrap();

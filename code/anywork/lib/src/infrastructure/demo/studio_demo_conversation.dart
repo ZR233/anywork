@@ -420,6 +420,8 @@ ChatAtom _demoCopy(
   PayloadData? payload,
   int? completionSeq,
   ChatSourceState? sourceState,
+  ChatAtomLifecycle? lifecycle,
+  List<ChatAtomContent>? contents,
   bool frozen = false,
 }) => ChatAtom(
   id: atom.id,
@@ -430,7 +432,7 @@ ChatAtom _demoCopy(
   kind: atom.kind,
   sourceState: frozen ? null : sourceState ?? atom.sourceState,
   delivery: atom.delivery,
-  lifecycle: atom.lifecycle,
+  lifecycle: lifecycle ?? atom.lifecycle,
   turnId: atom.turnId,
   attemptId: atom.attemptId,
   tool: atom.tool,
@@ -439,7 +441,7 @@ ChatAtom _demoCopy(
   contentPresent: atom.contentPresent,
   startedAt: atom.startedAt,
   finishedAt: atom.finishedAt,
-  contents: atom.contents,
+  contents: contents ?? atom.contents,
   payload: payload ?? atom.payload,
 );
 int _demoEncoded(Object? value) => utf8.encode(jsonEncode(value)).length;
@@ -452,6 +454,12 @@ final class _DemoBody {
   int length = 0;
   int generation = 1;
   bool sealed = false;
+  _DemoBody frozen() => _DemoBody()
+    .._chunks.addAll(_chunks)
+    .._ends.addAll(_ends)
+    ..length = length
+    ..generation = generation
+    ..sealed = true;
   void append(List<int> bytes) {
     if (sealed) throw StateError('Cannot append sealed Demo content');
     for (var start = 0; start < bytes.length; start += 4096) {
@@ -530,9 +538,17 @@ final class _DemoFrozen {
 }
 
 final class _DemoHistory {
-  // Demo scripts explicitly assign one display slot per scripted event. Thinking
-  // and tool fixtures each have exactly one member; this is not the production
-  // grouping algorithm and never merges adjacent atoms or scans a Turn.
+  final List<DisplayBlock> displayBlocks = [];
+  final Map<String, _DemoDisplayScript> displayScripts = {};
+  final Map<String, String> displayMembership = {};
+  final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
+  final Map<String, int> displayMemberRevisions = {};
+  LiveDisplayWindow? displayLiveSeed;
+  int displayRevision = 0;
+  bool displayExecutionPresent = false;
+  int get displayHead => displayBlocks.lastOrNull?.historyPos ?? 0;
+  // Original completion consumers retain their own ordered envelopes and Run
+  // fixtures. GUI display positions and grouping are declared separately above.
   final List<CompletedEntry> displayItems = [];
   final Map<String, CompletedEntry> completed = {};
   final String epoch = newStudioCorrelationId();
@@ -600,6 +616,11 @@ final class _DemoHistory {
 
   void changed(ThreadWorkspace workspace) {
     revision++;
+    final executionPresent = workspace.runtime.execution != null;
+    if (displayExecutionPresent != executionPresent) {
+      displayExecutionPresent = executionPresent;
+      displayRevision++;
+    }
     prepareCurrent(workspace);
     for (final wake in changes.toList()) {
       wake();
@@ -779,6 +800,7 @@ final class _DemoHistory {
     for (final entry in item.content.fields.entries) {
       (contents[entry.key] ??= _DemoBody()).update(entry.value);
     }
+    updateDisplayMember(item.id);
   }
 
   void complete(_DemoItem item) {
@@ -858,6 +880,7 @@ final class _DemoHistory {
     if (!accept(message, memberScope)) return;
     final display = displayFixture(item, message);
     completed[display.recordId] = display;
+    updateDisplayMember(item.id);
     if (message.contentPresent != false) displayItems.add(display);
     final ended = <ChatSourceId>[
       if (active.source is! ForegroundTurnChatSource) active.source,
@@ -897,6 +920,7 @@ final class _DemoReader implements ConversationReader {
   final Map<String, (String, int, int)> _cursors = {};
   final Set<Future<void>> _accepted = {};
   final Set<_DemoContentWatch> _watches = {};
+  final Set<_DemoDisplayMembers> _displayReads = {};
   bool _closed = false;
   Future<void>? _closing;
   String cursor(String kind, int revision, int boundary) {
@@ -1128,6 +1152,13 @@ final class _DemoReader implements ConversationReader {
         return _history.payloads[itemId] ?? (throw _demoMissing());
       case BodyContentTarget(:final owner, :final key):
         switch (owner) {
+          case DisplayObservationContentOwner(:final blockId, :final memberKey):
+            return _history.bodies[jsonEncode([
+                  'display-observation',
+                  blockId,
+                  memberKey,
+                ])]?[key] ??
+                (throw _demoMissing());
           case ItemContentOwner(:final itemId):
             return _itemBodies(itemId)[key] ?? (throw _demoMissing());
           case CurrentContentOwner(:final domain, :final id, :final revision):
@@ -1363,6 +1394,9 @@ final class _DemoReader implements ConversationReader {
     for (final watch in _watches.toList()) {
       watch.requestClose();
     }
+    for (final members in _displayReads.toList()) {
+      members.requestClose();
+    }
   }
 
   @override
@@ -1373,6 +1407,7 @@ final class _DemoReader implements ConversationReader {
       await Future.wait([
         ..._accepted,
         for (final watch in _watches.toList()) watch.close(),
+        for (final members in _displayReads.toList()) members.close(),
       ]);
       _cursors.clear();
       _api._ownedHistoryReaders.remove(this);
@@ -1462,17 +1497,22 @@ int _demoBatchBytes(ChatBatch batch) => _demoEncoded({
   'throughSeq': batch.throughSeq,
 });
 
-final class _DemoConversationFeed implements ConversationFeed {
+class _DemoConversationFeed implements ConversationFeed {
   _DemoConversationFeed(
     this._api,
     this.threadId,
     this._history,
     ChatScope scope,
-    this._demand,
-  ) : subscriptionId = 'demo:${newStudioCorrelationId()}',
-      reader = _DemoReader(_api, threadId, _history, scope) {
+    this._demand, {
+    this.timeline = false,
+  }) : subscriptionId = 'demo:${newStudioCorrelationId()}',
+       reader = _DemoReader(_api, threadId, _history, scope) {
     _demoDemand(_demand);
-    _initial = reader.page(_demand);
+    if (timeline) {
+      _initialTimeline = reader.timelinePage(_demand, initial: true);
+    } else {
+      _initial = reader.page(_demand);
+    }
     _completed = reader.h0;
     _currentRevision = _history.revision;
     // No await separates source registration and capture. Failed preparation
@@ -1483,6 +1523,12 @@ final class _DemoConversationFeed implements ConversationFeed {
   final DemoStudioTransport _api;
   final _DemoHistory _history;
   final ReadDemand _demand;
+  final bool timeline;
+  TimelineBatch? _initialTimeline;
+  // One bounded (Pt, live_t) cut owns this catch-up, including a separate live
+  // frame when the last immutable prefix consumes the byte budget.
+  LiveDisplayWindow? _displayTarget;
+  int _displayThrough = 0, _displayRevision = -1;
   @override
   final String threadId;
   @override
@@ -1558,16 +1604,39 @@ final class _DemoConversationFeed implements ConversationFeed {
     try {
       if (_phase == 0) {
         _phase = 1;
-        _send(ConversationChatEvent(batch: _initial!));
+        if (timeline) {
+          final batch = _initialTimeline!;
+          _displayThrough = batch.throughPos;
+          _displayRevision = batch.live!.revision;
+          _send(ConversationTimelineEvent(batch: batch));
+          _initialTimeline = null;
+        } else {
+          _send(ConversationChatEvent(batch: _initial!));
+        }
         _initial = null;
         return;
       }
-      if (_phase == 1 && reader.scope is MainChatScope) {
+      if (!timeline && _phase == 1 && reader.scope is MainChatScope) {
         _phase = 2;
         _send(ConversationActivityEvent(snapshot: _activity()));
         return;
       }
       _phase = 2;
+      if (timeline) {
+        if (_displayTarget != null ||
+            _displayThrough < _history.displayHead ||
+            _displayRevision != _history.displayRevision) {
+          final target = _displayTarget ??= reader.timelineTarget(_demand);
+          final batch = reader.timelineAppend(_demand, _displayThrough, target);
+          _displayThrough = batch.throughPos;
+          if (batch.live != null) {
+            _displayRevision = batch.live!.revision;
+            _displayTarget = null;
+          }
+          _send(ConversationTimelineEvent(batch: batch));
+        }
+        return;
+      }
       final head = _history.head;
       if (_completed < head) {
         final selected = <CompletedEntry>[];
@@ -1662,6 +1731,8 @@ final class _DemoConversationFeed implements ConversationFeed {
     _send(const ConversationClosedEvent(), terminal: true);
     _closed = true;
     _initial = null;
+    _initialTimeline = null;
+    _displayTarget = null;
     _unregister();
     if (!_ended) {
       _ended = true;

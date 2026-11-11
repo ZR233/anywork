@@ -196,7 +196,10 @@ pub(crate) struct TaskPermissions {
 
 /// Opaque, non-secret identity of a host authorization policy. It is never part of model declarations.
 #[derive(Debug, Clone)]
-pub struct ToolAuthorization(Arc<AuthorizationIdentity>);
+pub struct ToolAuthorization(
+    Arc<AuthorizationIdentity>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
 
 #[derive(Debug)]
 enum AuthorizationIdentity {
@@ -205,6 +208,10 @@ enum AuthorizationIdentity {
     Scoped {
         parent: ToolAuthorization,
         revision: u64,
+    },
+    Guarded {
+        parent: ToolAuthorization,
+        guard: ToolAuthorization,
     },
 }
 
@@ -227,29 +234,82 @@ impl PartialEq for ToolAuthorization {
                     revision: right_revision,
                 },
             ) => left == right && left_revision == right_revision,
+            (
+                AuthorizationIdentity::Guarded {
+                    parent: left,
+                    guard: left_guard,
+                },
+                AuthorizationIdentity::Guarded {
+                    parent: right,
+                    guard: right_guard,
+                },
+            ) => left == right && left_guard == right_guard,
             (AuthorizationIdentity::Unique, _)
             | (AuthorizationIdentity::Named(_), _)
-            | (AuthorizationIdentity::Scoped { .. }, _) => false,
+            | (AuthorizationIdentity::Scoped { .. }, _)
+            | (AuthorizationIdentity::Guarded { .. }, _) => false,
         }
     }
 }
 impl Eq for ToolAuthorization {}
 
 impl ToolAuthorization {
+    fn from_identity(identity: AuthorizationIdentity) -> Self {
+        Self(
+            Arc::new(identity),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+
     /// The host must change this identity when an earlier policy must no longer authorize new execution.
     pub fn new(identity: impl Into<Arc<str>>) -> Self {
-        Self(Arc::new(AuthorizationIdentity::Named(identity.into())))
+        Self::from_identity(AuthorizationIdentity::Named(identity.into()))
     }
     /// Creates a process-local authority whose clones retain the same identity without counters or addresses.
     pub fn unique() -> Self {
-        Self(Arc::new(AuthorizationIdentity::Unique))
+        Self::from_identity(AuthorizationIdentity::Unique)
     }
     /// Binds a revision to this authority; equal revisions from other authorities remain distinct.
     pub fn scoped(&self, revision: u64) -> Self {
-        Self(Arc::new(AuthorizationIdentity::Scoped {
+        Self::from_identity(AuthorizationIdentity::Scoped {
             parent: self.clone(),
             revision,
-        }))
+        })
+    }
+
+    /// Constrains this identity to another host authority's validity without changing either.
+    pub fn guarded_by(&self, guard: &Self) -> Self {
+        Self::from_identity(AuthorizationIdentity::Guarded {
+            parent: self.clone(),
+            guard: guard.clone(),
+        })
+    }
+
+    /// Permanently revokes this instance and authorities derived from it. Identity equality
+    /// remains stable; callers must also check [`Self::is_active`] at admission boundaries.
+    /// This does not cancel external work already accepted under the authority.
+    pub fn revoke(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether this authority and all authorities constraining it remain valid.
+    pub fn is_active(&self) -> bool {
+        if self.1.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        match self.0.as_ref() {
+            AuthorizationIdentity::Named(_) | AuthorizationIdentity::Unique => true,
+            AuthorizationIdentity::Scoped { parent, .. } => parent.is_active(),
+            AuthorizationIdentity::Guarded { parent, guard } => {
+                parent.is_active() && guard.is_active()
+            }
+        }
+    }
+
+    /// Whether both values are clones of the same authority, including its revocation state.
+    /// Equal named or scoped identities created independently are not interchangeable guards.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -294,7 +354,9 @@ pub(crate) struct ExecutionAuthority {
 impl ExecutionAuthority {
     pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
         manager.tools.get(&self.tool_id).is_some_and(|current| {
-            self.authorization == current.authorization
+            authorization_active(self.authorization.as_ref())
+                && authorization_active(current.authorization.as_ref())
+                && self.authorization == current.authorization
                 && match (&self.execution_policy, &current.execution_policy) {
                     (None, None) => true,
                     (Some(identity), Some(policy)) => identity.matches(policy),
@@ -414,6 +476,10 @@ impl Registration {
 }
 
 impl FrozenTool {
+    fn authorization_active(&self) -> bool {
+        authorization_active(self.authorization.as_ref())
+    }
+
     pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
         self.authority().remains_authorized(manager)
     }
@@ -482,6 +548,11 @@ impl FrozenTool {
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::new(crate::thread::ThreadError::Cancelled));
             }
+            if !self.authorization_active() {
+                return Err(ToolError::new(
+                    crate::thread::ThreadError::ToolPermissionRevoked,
+                ));
+            }
             context.grant = match &self.execution_policy {
                 Some(policy) => policy.authorize(&input, &context).await?,
                 None => Default::default(),
@@ -513,11 +584,20 @@ impl FrozenTool {
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::new(crate::thread::ThreadError::Cancelled));
             }
+            if !self.authorization_active() {
+                return Err(ToolError::new(
+                    crate::thread::ThreadError::ToolPermissionRevoked,
+                ));
+            }
             self.executor.execute(input, context).await
         })
         .await
         .map_err(ToolError::new)?
     }
+}
+
+fn authorization_active(authorization: Option<&ToolAuthorization>) -> bool {
+    authorization.is_none_or(ToolAuthorization::is_active)
 }
 
 fn fence_error(
@@ -568,7 +648,10 @@ impl ToolManager {
         authorization: Option<&ToolAuthorization>,
     ) -> bool {
         self.tools.get(id).is_some_and(|tool| {
-            tool.may_cancel_tasks && tool.authorization.as_ref() == authorization
+            tool.may_cancel_tasks
+                && tool.authorization_active()
+                && authorization_active(authorization)
+                && tool.authorization.as_ref() == authorization
         })
     }
 
@@ -585,13 +668,16 @@ impl ToolManager {
     pub(crate) fn replace(
         &mut self,
         registrations: Vec<Registration>,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<(), crate::thread::ThreadError> {
         self.retain_candidates(&registrations);
         let mut tools = BTreeMap::new();
         for registration in registrations {
+            if !registration.binding.authorization_active() {
+                return Err(crate::thread::ThreadError::ToolPermissionRevoked);
+            }
             let id = registration.binding.declaration.tool_id.clone();
             if tools.insert(id.clone(), registration.binding).is_some() {
-                return Err(RegistryError::DuplicateIdentity(id));
+                return Err(RegistryError::DuplicateIdentity(id).into());
             }
         }
         self.revealed.retain(|id, declaration| {
@@ -606,13 +692,13 @@ impl ToolManager {
         &mut self,
         remove: &[String],
         registrations: Vec<Registration>,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<(), crate::thread::ThreadError> {
         self.retain_candidates(&registrations);
         let mut changed = BTreeMap::new();
         for registration in registrations {
             let id = registration.binding.declaration.tool_id.clone();
             if changed.insert(id.clone(), registration).is_some() {
-                return Err(RegistryError::DuplicateIdentity(id));
+                return Err(RegistryError::DuplicateIdentity(id).into());
             }
         }
         let mut next = self
@@ -696,6 +782,7 @@ impl ToolManager {
             tools: self
                 .tools
                 .iter()
+                .filter(|(_, tool)| tool.authorization_active())
                 .filter(|(id, tool)| !tool.deferred || self.revealed.contains_key(*id))
                 .map(|(id, tool)| (id.clone(), tool.clone()))
                 .collect(),
@@ -749,6 +836,8 @@ impl ToolPlan {
             && self.tools.iter().all(|(id, previous)| {
                 current.tools.get(id).is_some_and(|next| {
                     previous.declaration == next.declaration
+                        && previous.authorization_active()
+                        && next.authorization_active()
                         && previous.authorization == next.authorization
                         && super::execution_policy::same_policy(
                             previous.execution_policy.as_ref(),

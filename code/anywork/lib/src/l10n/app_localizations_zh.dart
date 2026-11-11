@@ -1795,6 +1795,38 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupExecutingUnderSecond => '执行了不到 1 秒';
+
+  @override
+  String timelineGroupExecutingSeconds(int seconds) {
+    return '执行了 $seconds 秒';
+  }
+
+  @override
+  String timelineGroupExecutingMinutes(int minutes) {
+    return '执行了 $minutes 分';
+  }
+
+  @override
+  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
+    return '执行了 $minutes 分 $seconds 秒';
+  }
+
+  @override
+  String get timelineGroupClosing => '正在收束';
+
+  @override
+  String get timelineGroupWaitingForNext => '等待下一步';
+
+  @override
+  String get timelineGroupUnrestored => '上次执行未收束，尚未恢复';
+
+  @override
+  String timelineGroupTransferredCount(int count) {
+    return '已交接 $count 项';
+  }
+
+  @override
   String get timelineReasoningSummary => '概要';
 
   @override
@@ -2231,15 +2263,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionReasonLabel => '原因';
 
   @override
-  String get interactionPlanConfirmTitle => '确认实施计划';
-
-  @override
-  String get interactionPlanConfirmSubtitle => '批准后按此计划继续，也可以提出修改意见。';
-
-  @override
-  String get interactionPlanReadyTitle => '实施计划已准备好';
-
-  @override
   String get interactionPlanAwaitingConfirmation => '等待确认';
 
   @override
@@ -2252,24 +2275,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get planDetailRevisionRequested => '已请求修改';
 
   @override
-  String get planDetailDraftingHelp => '计划准备好后会请你确认。';
-
-  @override
-  String get planDetailAwaitingHelp => '请阅读计划，再批准或提出修改意见。';
-
-  @override
-  String get planDetailRevisionHelp => '修改意见已提交，更新后会再次请你确认。';
-
-  @override
-  String get planDetailApprovedHelp => '已获批准，可随时查阅。';
-
-  @override
-  String get planDetailEmptyTitle => '计划正在起草';
-
-  @override
-  String get planDetailEmptyHelp => '准备好后，你可以在这里阅读完整计划。';
-
-  @override
   String get planDecisionSubmitting => '正在提交决定…';
 
   @override
@@ -2277,6 +2282,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get interactionPlanViewDetails => '查看完整计划';
+
+  @override
+  String get interactionPlanCollapseDetails => '收起计划';
 
   @override
   String get interactionPlanDetailsTitle => '实施计划';

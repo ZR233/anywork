@@ -855,6 +855,45 @@
       }
     }
   },
+  "timelineGroupExecutingUnderSecond": "Running for less than 1s",
+  "timelineGroupExecutingSeconds": "Running for {seconds}s",
+  "@timelineGroupExecutingSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupExecutingMinutes": "Running for {minutes}m",
+  "@timelineGroupExecutingMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupExecutingMinutesSeconds": "Running for {minutes}m {seconds}s",
+  "@timelineGroupExecutingMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineGroupClosing": "Finishing work",
+  "timelineGroupWaitingForNext": "Waiting for the next step",
+  "timelineGroupUnrestored": "Previous work is unfinished and has not resumed",
+  "timelineGroupTransferredCount": "{count} transferred",
+  "@timelineGroupTransferredCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -1194,22 +1233,14 @@
   "interactionReject": "Reject",
   "interactionApprove": "Approve",
   "interactionReasonLabel": "Reason",
-  "interactionPlanConfirmTitle": "Confirm implementation plan",
-  "interactionPlanConfirmSubtitle": "Approve to continue with this plan, or request changes.",
-  "interactionPlanReadyTitle": "Implementation plan ready",
   "interactionPlanAwaitingConfirmation": "Awaiting confirmation",
   "interactionPlanApproved": "Approved",
   "planDetailDrafting": "Drafting",
   "planDetailRevisionRequested": "Changes requested",
-  "planDetailDraftingHelp": "You will be asked to confirm when the plan is ready.",
-  "planDetailAwaitingHelp": "Read the plan, then approve it or request changes.",
-  "planDetailRevisionHelp": "Your feedback was submitted. You will be asked to confirm the updated plan.",
-  "planDetailApprovedHelp": "Approved and available to read at any time.",
-  "planDetailEmptyTitle": "The plan is being drafted",
-  "planDetailEmptyHelp": "You can read the full plan here when it is ready.",
   "planDecisionSubmitting": "Submitting your decision…",
   "statusPlanEntry": "Plan",
   "interactionPlanViewDetails": "View full plan",
+  "interactionPlanCollapseDetails": "Collapse plan",
   "interactionPlanDetailsTitle": "Implementation plan",
   "interactionPlanConfirmFooterHint": "Confirming starts the document-editing checkpoint in {mode} mode.",
   "@interactionPlanConfirmFooterHint": {

@@ -26,6 +26,7 @@ const MODEL: &str = "server-fixture";
 const ACCOUNT: &str = "server-fixture";
 
 mod journey;
+mod timeline;
 
 /// Both fixtures use the same explicit, credential-free loopback model route.
 fn configure(home: &std::path::Path, base_url: String) -> Result<()> {

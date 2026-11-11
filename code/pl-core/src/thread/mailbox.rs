@@ -537,7 +537,6 @@ impl Owner {
                     let result = self
                         .tools
                         .replace(tools)
-                        .map_err(ThreadError::from)
                         .and_then(|()| self.revoke_stale_permissions());
                     result.and_then(|()| {
                         self.state.discovered_tools = self.tools.discovery();

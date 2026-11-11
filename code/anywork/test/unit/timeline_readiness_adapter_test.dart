@@ -12,7 +12,7 @@ import '../support/test_statistics_feed.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('首Chat Set实际接纳前，两个ready等待不能提前完成或ACK', () async {
+  test('首Timeline Set实际接纳前，两个ready等待不能提前完成或ACK', () async {
     var diagnosticSequence = 0;
     void record(Map<String, Object?> facts) => debugPrintSynchronously(
       jsonEncode({'sequence': ++diagnosticSequence, ...facts}),
@@ -26,7 +26,7 @@ void main() {
       stateOpened.complete(observed);
       return observed;
     };
-    transport.conversationFeedFactory = (threadId, inner) async {
+    transport.timelineFeedFactory = (threadId, inner) async {
       final held = _AckObservedFeed(inner: inner, record: record)
         ..initialGate = release;
       opened.complete(held);
@@ -84,7 +84,7 @@ void main() {
       ownerObservation.cancel();
       contentObservation.cancel();
     });
-    expect(transport.feeds, isEmpty, reason: '读取session不隐式声明内容需求');
+    expect(transport.timelineFeeds, isEmpty, reason: '读取session不隐式声明内容需求');
     graph.timeline.updateReadDemand(chatDemand);
     final metadata = graph.client.threadDirectory.observeThread('thread-main');
     final metadataState = await metadata.state
@@ -143,20 +143,20 @@ void main() {
       'deliveredFrames': held.deliveredFrames,
       'acknowledgements': [...held.acknowledgements],
     });
-    expect(transport.feeds, hasLength(1));
+    expect(transport.timelineFeeds, hasLength(1));
     expect(held.initialCalls, 1);
     final display = graph.timeline.lease('thread-main');
     expect(display, isNotNull, reason: 'ready 只能在真实展示接纳完成基线后完成');
     expect(display!.controller.messages, isNotEmpty);
     expect(session.state.businessRefs, isNotNull);
     graph.setConversationPageVisible(false);
-    await transport.feeds.single.joined.future;
-    expect(transport.feeds.single.closeCalls, 1);
+    await transport.timelineFeeds.single.joined.future;
+    expect(transport.timelineFeeds.single.closeCalls, 1);
     expect(session.content.hasDemand, isFalse);
   });
 }
 
-final class _AckObservedFeed extends RecordingConversationFeed {
+final class _AckObservedFeed extends RecordingTimelineFeed {
   _AckObservedFeed({required super.inner, required this.record});
 
   final void Function(Map<String, Object?>) record;
@@ -169,11 +169,11 @@ final class _AckObservedFeed extends RecordingConversationFeed {
       'subscriptionId': frame.subscriptionId,
       'deliverySequence': frame.deliverySequence,
       'event': frame.event.runtimeType.toString(),
-      if (frame.event case ConversationChatEvent(:final batch)) ...{
+      if (frame.event case ConversationTimelineEvent(:final batch)) ...{
         'placement': batch.placement.name,
         'entries': [
-          for (final entry in batch.entries)
-            {'recordId': entry.recordId, 'atomId': entry.atom.id},
+          for (final entry in batch.blocks)
+            {'blockId': entry.id, 'historyPos': entry.historyPos},
         ],
       },
     });

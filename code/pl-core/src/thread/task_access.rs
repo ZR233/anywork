@@ -476,6 +476,13 @@ impl TaskAccess {
     }
 
     fn ensure_running(&self, snapshot: &ThreadSnapshot) -> Result<(), ThreadError> {
+        if self
+            .authorization
+            .as_ref()
+            .is_some_and(|authority| !authority.is_active())
+        {
+            return Err(ThreadError::ToolPermissionRevoked);
+        }
         if snapshot
             .tasks
             .get(&self.caller)

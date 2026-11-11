@@ -17,7 +17,6 @@ mod message;
 mod model_context;
 mod observed_state;
 mod permission;
-pub mod process_worker;
 pub mod remote;
 pub mod session;
 pub mod session_runtime;
@@ -72,14 +71,15 @@ pub use billing::{
     ModelPricingSnapshot,
 };
 pub use conversation::*;
+pub mod presentation;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
-    DELEGATION_MODEL_CURSOR_VERSION, DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX,
-    DelegationMode, DelegationModelCapability, DelegationModelCursor, DelegationModelDetail,
-    DelegationModelFilter, DelegationModelKey, DelegationModelList, DelegationModelListItem,
-    DelegationPreference, DelegationSettings, EvaluateAgentReceipt, EvaluateAgentRequest,
-    GetDelegationModelRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
+    DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX, DelegationMode,
+    DelegationModelCapability, DelegationModelDetail, DelegationModelFilter, DelegationModelList,
+    DelegationModelListItem, DelegationPreference, DelegationSettings, EvaluateAgentReceipt,
+    EvaluateAgentRequest, GetDelegationModelRequest, ListDelegationModelsRequest,
+    LocalModelPerformanceSummary,
 };
 pub use error::{PureError, Result};
 pub use event::{
@@ -120,6 +120,7 @@ pub use observed_state::{
     UninitializedResource,
 };
 pub use permission::PermissionLevel;
+pub use presentation::*;
 pub use session::{SessionDescriptor, SessionDirectoryRow, SessionId};
 // 持久化观测契约（队列压力、逐 Thread 水位）同时由 runtime 协调器与其上层
 // bridge/HTTP 适配器命名，因此在 crate 根重导出，消费方无需再拼 `studio::` 路径。

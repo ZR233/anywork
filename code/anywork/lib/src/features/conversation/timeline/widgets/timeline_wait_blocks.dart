@@ -16,6 +16,7 @@ class TimelineWaitPanel extends StatelessWidget {
     this.diagnostics,
     this.initiallyExpanded = false,
     this.onExpansionChanged,
+    this.staticObservation = false,
     super.key,
   });
 
@@ -24,6 +25,7 @@ class TimelineWaitPanel extends StatelessWidget {
   final Widget? diagnostics;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
+  final bool staticObservation;
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +51,7 @@ class TimelineWaitPanel extends StatelessWidget {
                     ? null
                     : _waitStateColor(context, presentation.state),
                 label: rowLabel,
-                active: waiting,
+                active: waiting && !staticObservation,
                 expanded: expanded,
                 tooltip: subtitle,
               ),

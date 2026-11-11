@@ -12,7 +12,8 @@ import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/conversation.dart' show ProtocolVersionMismatch;
+import 'package:anywork_client/conversation.dart'
+    show DisplayMembers, ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -38,8 +39,10 @@ import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
+import '../../rust/api/studio/handlers/chat/timeline.dart' as frb_timeline;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
+import '../../rust/api/studio/types/presentation.dart' as frb_presentation;
 import '../../rust/api/studio/types/command.dart' as frb_command;
 import '../../rust/api/studio/handlers/attachment.dart' as frb_attachment;
 import '../../rust/api/studio/handlers/ssh.dart' as frb_ssh;
@@ -62,7 +65,10 @@ import '../../rust/frb_generated.dart';
 part 'studio_thread_stream.dart';
 part 'studio_thread_preparation.dart';
 part 'studio_conversation.dart';
+part 'studio_conversation_native.dart';
+part 'studio_timeline.dart';
 part 'studio_conversation_descriptor.dart';
+part 'studio_presentation_converters.dart';
 part 'studio_conversation_content_watch.dart';
 part 'studio_api_contract.dart';
 part 'studio_frb_converters.dart';

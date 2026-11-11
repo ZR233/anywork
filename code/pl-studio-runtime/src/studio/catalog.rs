@@ -217,9 +217,9 @@ impl CatalogStore {
                     // projection cannot erase the checkpoint-derived, monotonic seal.
                     agent.explicitly_closed |= existing.explicitly_closed;
                     if existing.explicitly_closed
-                        && existing.native_status() == Some(ThreadStatus::Closed)
+                        && let Some(status) = existing.native_status()
                     {
-                        agent.set_native_status(ThreadStatus::Closed);
+                        agent.set_native_status(status);
                     }
                     if *existing == agent {
                         return false;
@@ -236,7 +236,11 @@ impl CatalogStore {
         .await
     }
 
-    pub(in crate::studio) async fn project_explicit_close(&self, agent_id: &str) -> Result<()> {
+    pub(in crate::studio) async fn project_explicit_close(
+        &self,
+        agent_id: &str,
+        execution_closed: bool,
+    ) -> Result<()> {
         ensure!(
             self.get_agent(agent_id)
                 .is_some_and(|agent| agent.parent_agent_id.is_some()),
@@ -251,13 +255,21 @@ impl CatalogStore {
             else {
                 return false;
             };
-            if agent.explicitly_closed {
+            let status = if execution_closed {
+                ThreadStatus::Closed
+            } else {
+                ThreadStatus::Closing
+            };
+            if agent.explicitly_closed
+                && agent
+                    .native_status()
+                    .is_none_or(|current| current == status)
+            {
                 return false;
             }
             agent.explicitly_closed = true;
-            // An old normal-shutdown Closed status says nothing about this close's progress.
-            // The current owner publishes Closed only after its real shutdown is confirmed.
-            agent.set_native_status(ThreadStatus::Closing);
+            // Only the durable close owner can advance or restore this progress.
+            agent.set_native_status(status);
             true
         })
         .await
@@ -296,9 +308,9 @@ impl CatalogStore {
                     {
                         agent.explicitly_closed |= existing.explicitly_closed;
                         if existing.explicitly_closed
-                            && existing.native_status() == Some(ThreadStatus::Closed)
+                            && let Some(status) = existing.native_status()
                         {
-                            agent.set_native_status(ThreadStatus::Closed);
+                            agent.set_native_status(status);
                         }
                         *existing = agent;
                     } else {

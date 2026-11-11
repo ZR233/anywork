@@ -167,8 +167,8 @@ pub(super) fn query(
     query: &ThreadDirectoryQuery,
     before: Option<String>,
     limit: u32,
-) -> Result<ThreadDirectoryFrame> {
-    events.read_threads_window(
+) -> Result<DirectoryRead> {
+    events.read_threads_window_inner(
         query,
         &ThreadDirectoryWindow { before, limit },
         "owner-test",

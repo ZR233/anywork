@@ -27,6 +27,7 @@ pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
 mod live;
+pub(in crate::studio) mod presentation;
 pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
     seed_repaired_targets,

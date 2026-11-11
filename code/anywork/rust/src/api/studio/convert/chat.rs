@@ -33,6 +33,13 @@ pub(crate) fn content_ref(value: protocol::ContentRef) -> BridgeContentRef {
             }
             protocol::ContentTarget::Body { owner, key } => BridgeContentTarget::Body {
                 owner: match owner {
+                    protocol::ContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    } => BridgeContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    },
                     protocol::ContentOwner::Item { item_id } => {
                         BridgeContentOwner::Item { item_id }
                     }
@@ -61,6 +68,13 @@ pub(crate) fn protocol_content_ref(value: BridgeContentRef) -> protocol::Content
             }
             BridgeContentTarget::Body { owner, key } => protocol::ContentTarget::Body {
                 owner: match owner {
+                    BridgeContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    } => protocol::ContentOwner::DisplayObservation {
+                        block_id,
+                        member_key,
+                    },
                     BridgeContentOwner::Item { item_id } => {
                         protocol::ContentOwner::Item { item_id }
                     }
@@ -100,7 +114,7 @@ fn payload(value: protocol::PayloadData) -> BridgePayloadData {
     }
 }
 
-fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
+pub(super) fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
     match value {
         protocol::ChatSourceId::ForegroundTurn { turn_id } => {
             BridgeChatSourceId::ForegroundTurn { turn_id }
@@ -125,7 +139,7 @@ fn source_id(value: protocol::ChatSourceId) -> BridgeChatSourceId {
     }
 }
 
-fn fact_position(value: protocol::ChatFactPosition) -> BridgeChatFactPosition {
+pub(super) fn fact_position(value: protocol::ChatFactPosition) -> BridgeChatFactPosition {
     BridgeChatFactPosition {
         effect_seq: value.effect_seq,
         suborder: value.suborder,
@@ -190,7 +204,7 @@ fn atom_content(value: protocol::ChatAtomContent) -> BridgeChatAtomContent {
     }
 }
 
-fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
+pub(super) fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
     BridgeChatAtom {
         id: value.id,
         completion_item_id: value.completion_item_id,
@@ -273,15 +287,19 @@ pub(crate) fn completed(value: protocol::CompletedEntry) -> BridgeCompletedEntry
 
 pub(crate) fn batch(value: protocol::ChatBatch) -> BridgeChatBatch {
     BridgeChatBatch {
-        placement: match value.placement {
-            protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
-            protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
-            protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
-        },
+        placement: placement(value.placement),
         entries: value.entries.into_iter().map(completed).collect(),
         before: value.before,
         from_seq: value.from_seq,
         through_seq: value.through_seq,
+    }
+}
+
+pub(super) fn placement(value: protocol::ChatPlacement) -> BridgeChatPlacement {
+    match value {
+        protocol::ChatPlacement::Set => BridgeChatPlacement::Set,
+        protocol::ChatPlacement::Prepend => BridgeChatPlacement::Prepend,
+        protocol::ChatPlacement::Append => BridgeChatPlacement::Append,
     }
 }
 
@@ -567,6 +585,13 @@ mod tests {
     #[test]
     fn content_references_round_trip_without_reinterpreting_owner_identity() {
         for target in [
+            protocol::ContentTarget::Body {
+                owner: protocol::ContentOwner::DisplayObservation {
+                    block_id: "original-block".into(),
+                    member_key: "original-observation-row".into(),
+                },
+                key: "boundary-prefix".into(),
+            },
             protocol::ContentTarget::ItemPayload {
                 item_id: "unknown:payload".into(),
             },

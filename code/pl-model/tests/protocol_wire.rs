@@ -1122,6 +1122,314 @@ fn replay_turn(prompt: &str, cancellation: CancellationToken) -> TurnInput {
 }
 
 #[tokio::test]
+async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
+    use pl_provider_fixture::RealtimeToolCall;
+
+    for (protocol, profile) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+        ),
+    ] {
+        let call = RealtimeToolCall {
+            item_id: "schema-item",
+            call_id: "schema-call",
+            name: "exec",
+            arguments: pl_provider_fixture::replay_tool_arguments(),
+        };
+        let fixture = FixtureServer::start(vec![
+            Step::prompt(
+                protocol,
+                "schema tool",
+                0,
+                correction_tool_reply(protocol, "schema-response", &[call]),
+            ),
+            Step::tool_output(
+                protocol,
+                "schema-call",
+                "replay-tool-marker",
+                1,
+                correction_text_reply(protocol, "schema-done", "completed"),
+            ),
+            Step::prompt(
+                protocol,
+                "resume schema history",
+                2,
+                correction_text_reply(protocol, "schema-resumed", "resumed"),
+            ),
+        ])
+        .await
+        .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::openai(Some(fixture.base_url())),
+            model("fixture-model", profile),
+        )
+        .unwrap();
+        let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+            .open_session()
+            .await
+            .unwrap();
+        let thread = ThreadHandle::start("schema-output".into(), session).unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let definition = pl_agent_tool::ToolDefinition::json(
+            "exec",
+            "Read data",
+            json!({"type":"object"}),
+        )
+        .unwrap()
+        .with_output_schema(
+            json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
+        )
+        .unwrap();
+        let spec = pl_model::completion::tool_definition_to_spec(
+            &definition,
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        );
+        let registration = pl_core::tool::opaque::Registration::prepare(
+            "exec".into(),
+            pl_model::runtime::thread_tool_declaration(&spec).unwrap(),
+        )
+        .unwrap()
+        .attach(pl_agent_tool::ToolHandle::new(ReplayTool {
+            count: count.clone(),
+            definition,
+        }))
+        .foreground_coexisting();
+        thread.register_tools(vec![registration]).await.unwrap();
+
+        let first = thread
+            .run_turn(replay_turn("schema tool", Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(first.outcome, TurnOutcome::Completed, "{protocol:?}");
+        let resumed = thread
+            .run_turn(replay_turn("resume schema history", Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(resumed.outcome, TurnOutcome::Completed, "{protocol:?}");
+        thread.close().await.unwrap();
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let records = fixture.finish().await.unwrap();
+        let declaration = records[1].body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "exec")
+            .unwrap();
+        assert!(declaration.get("output_schema").is_none());
+        for request in if protocol == Protocol::ResponsesHttp {
+            &records[1..3]
+        } else {
+            &records[1..2]
+        } {
+            let output = request.body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| {
+                    item["type"] == "function_call_output" && item["call_id"] == "schema-call"
+                })
+                .unwrap()["output"]
+                .as_str()
+                .unwrap();
+            assert_eq!(output, "replay-tool-marker");
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_schema_projection_preserves_content_and_program_caller() {
+    use pl_model::completion::ToolCallPolicy;
+    use pl_protocol::ToolCallRecord;
+
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "project outputs",
+        0,
+        Reply::Sse(responses_text("done", "projection-done", "gpt-5.5")),
+    )])
+    .await
+    .unwrap();
+    let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
+    endpoint
+        .service_capabilities
+        .responses_tools
+        .programmatic_tool_calling = true;
+    let mut info = bundled("gpt-5.5");
+    info.binding
+        .set_transport(ModelTransportProfile::responses_http());
+    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let cases = [
+        (
+            "object",
+            Some(json!({"type":"object","required":["value"]})),
+            true,
+            "{\"value\":7}",
+            None,
+            json!({"value":7}),
+        ),
+        (
+            "error_object",
+            Some(json!({"type":"object","required":["value"]})),
+            true,
+            "{\"error\":\"tool failed\"}",
+            None,
+            json!({"error":"tool failed"}),
+        ),
+        (
+            "array",
+            Some(json!({"type":"object"})),
+            true,
+            "[1,2]",
+            None,
+            json!({"content":[1,2]}),
+        ),
+        (
+            "failure",
+            Some(json!({"type":"object"})),
+            true,
+            "tool failed\nsource detail",
+            None,
+            json!({"content":"tool failed\nsource detail"}),
+        ),
+        (
+            "program",
+            None,
+            true,
+            "program result",
+            Some(ToolCallCaller::Program {
+                caller_id: "program-1".into(),
+            }),
+            json!({"content":"program result"}),
+        ),
+        (
+            "direct_schema",
+            Some(json!({"type":"object"})),
+            false,
+            "unstructured schema tool output",
+            None,
+            Value::Null,
+        ),
+        (
+            "plain",
+            None,
+            false,
+            "unstructured direct output",
+            None,
+            Value::Null,
+        ),
+    ];
+    let mut tools = Vec::new();
+    let mut assistant = user("");
+    assistant.role = MessageRole::Assistant;
+    let mut calls = Vec::new();
+    let mut outputs = Vec::new();
+    for (name, schema, programmatic, text, caller, _) in &cases {
+        let mut definition =
+            pl_agent_tool::ToolDefinition::json(*name, "lookup", json!({"type":"object"})).unwrap();
+        if let Some(schema) = schema {
+            definition = definition.with_output_schema(schema.clone()).unwrap();
+        }
+        tools.push(pl_model::completion::tool_definition_to_spec(
+            &definition,
+            if *programmatic {
+                ToolCallPolicy::DirectAndProgrammatic
+            } else {
+                ToolCallPolicy::DirectOnly
+            },
+        ));
+        calls.push(ToolCallRecord {
+            item_id: format!("item-{name}"),
+            call_id: format!("call-{name}"),
+            name: (*name).into(),
+            kind: ToolCallKind::Function,
+            arguments: json!({}),
+            caller: caller.clone(),
+        });
+        let mut output = user(text);
+        output.role = MessageRole::Tool;
+        output.tool_result = Some(ToolResultRecord {
+            item_id: format!("item-{name}"),
+            call_id: format!("call-{name}"),
+            name: (*name).into(),
+            kind: ToolCallKind::Function,
+        });
+        outputs.push(output);
+    }
+    assistant.tool_calls = Some(calls);
+    let mut messages = vec![user("project outputs"), assistant];
+    messages.extend(outputs);
+    tools.push(ToolSpec::ProgrammaticToolCalling);
+    let request = CompletionRequest::builder()
+        .messages(messages)
+        .tools(tools)
+        .build();
+    runtime
+        .complete(request.clone(), ModelInvocationContext::default())
+        .await
+        .unwrap();
+    let records = fixture.finish().await.unwrap();
+    let input = records[0].body["input"].as_array().unwrap();
+    let declarations = records[0].body["tools"].as_array().unwrap();
+    for (name, schema, programmatic, original, caller, expected) in &cases {
+        let declaration = declarations
+            .iter()
+            .find(|tool| tool["name"] == *name)
+            .unwrap();
+        if *programmatic {
+            assert_eq!(
+                declaration["output_schema"],
+                json!({"type":"object","additionalProperties":true})
+            );
+        } else {
+            assert!(declaration.get("output_schema").is_none());
+        }
+        let output = input
+            .iter()
+            .find(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == format!("call-{name}")
+            })
+            .unwrap();
+        let text = output["output"].as_str().unwrap();
+        if !*programmatic {
+            assert_eq!(text, *original);
+        } else {
+            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), *expected);
+        }
+        if caller.is_some() {
+            assert_eq!(
+                output["caller"],
+                json!({"type":"program","caller_id":"program-1"})
+            );
+        } else {
+            assert!(output.get("caller").is_none());
+        }
+        if let Some(schema) = schema {
+            let ToolSpec::Function { output_schema, .. } = request.tools.iter().find(|tool| matches!(tool, ToolSpec::Function { name: tool_name, .. } if tool_name.as_str() == *name)).unwrap() else { unreachable!() };
+            assert_eq!(output_schema.as_ref(), Some(schema));
+        }
+        let original_message = request
+            .input
+            .iter()
+            .filter_map(|item| item.as_message())
+            .find(|message| {
+                message
+                    .tool_result
+                    .as_ref()
+                    .is_some_and(|result| result.name == *name)
+            })
+            .unwrap();
+        assert_eq!(original_message.content.text_value(), *original);
+    }
+}
+
+#[tokio::test]
 async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
     use pl_core::model::ModelToolCallRejection;
     use pl_provider_fixture::RealtimeToolCall;

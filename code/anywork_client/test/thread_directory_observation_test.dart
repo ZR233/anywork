@@ -87,8 +87,8 @@ SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
         config: const NativeAgentConfigView(),
         status: ThreadStatusView.idle,
       ),
-      sessionId: id,
-      agentId: id,
+      sessionId: 'session-$id',
+      agentId: 'agent-$id',
       threadId: id,
       workspaceId: 'workspace',
       title: title,
@@ -102,7 +102,7 @@ SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
 ThreadDirectoryFrame _frame(
   DirectoryQuery query,
   DirectoryWindow window,
-  List<SessionDirectoryRow> rows, {
+  List<String> threadIds, {
   int revision = 1,
   String? nextCursor,
 }) => ThreadDirectoryFrame(
@@ -113,19 +113,17 @@ ThreadDirectoryFrame _frame(
     ownerEpoch: 'runtime',
     revision: revision,
   ),
-  rows: rows,
+  threadIds: threadIds,
   nextCursor: nextCursor,
 );
 
 void main() {
-  test('directory observation retains ACP references and nullable mode without Native status', () async {
-    final feed = _Feed();
-    final store = ThreadDirectoryStore(feed: feed);
+  test('directory identities and metadata retain ACP references and nullable mode without Native status', () async {
+    final transport = TestConversationTransport();
+    final store = ThreadDirectoryStore(feed: transport);
+    addTearDown(store.close);
     const query = DirectoryQuery(archived: true);
     final window = DirectoryWindow();
-    final lease = store.observeThreads(query, window);
-    final handle = _Handle();
-    feed.threads.single.result.complete(handle);
     final native = _thread('native')
         .copyWith(mode: ThreadModeId.task, archived: true);
     const reference = AcpSessionReferenceView(
@@ -138,30 +136,91 @@ void main() {
       backend: const AcpAgentBackendView(reference: reference),
       archived: true,
     );
-    handle.add(_frame(query, window, [native, acp]));
-    await lease.state.waitFor((state) => state.frame != null);
-    final observed = lease.state.value.frame!.rows;
-    expect(observed.first.mode, ThreadModeId.task);
-    expect(observed.last.mode, isNull);
-    expect(
-      observed.last.backend,
-      const AcpAgentBackendView(reference: reference),
-    );
-    expect(observed.last.frozenModel, isNull);
-    expect(observed.last.isRootRow, isTrue);
-    expect(observed.last.archived, isTrue);
     final child = native.copyWith(
       threadId: 'child',
-      agentId: 'child',
+      agentId: 'child-agent',
       parentAgentId: native.agentId,
       mode: null,
     );
-    expect(child.mode, isNull);
-    expect(child.isChildRow, isTrue);
-    expect(native.mode, ThreadModeId.task);
-    final releasing = lease.release();
-    handle.allowClose.complete();
-    await releasing;
+    for (final row in [native, acp, child]) {
+      transport.seedThread(row);
+    }
+    final lease = store.observeThreads(query, window);
+    await lease.state.waitFor((state) => state.frame != null);
+    final structure = lease.state.value.frame!;
+    expect(structure.threadIds, [native.threadId, acp.threadId]);
+    expect(transport.openedMetadataThreadIds, isEmpty);
+
+    final nativeMetadata = store.observeThread(native.threadId);
+    final acpMetadata = store.observeThread(acp.threadId);
+    final childMetadata = store.observeThread(child.threadId);
+    for (final observation in [nativeMetadata, acpMetadata, childMetadata]) {
+      await observation.state.waitFor((state) => state.frame != null);
+    }
+    final observedNative = nativeMetadata.state.value.frame!.row!;
+    final observedAcp = acpMetadata.state.value.frame!.row!;
+    final observedChild = childMetadata.state.value.frame!.row!;
+    expect(observedNative.mode, ThreadModeId.task);
+    expect(observedAcp.mode, isNull);
+    expect(
+      observedAcp.backend,
+      const AcpAgentBackendView(reference: reference),
+    );
+    expect(observedAcp.sessionId, acp.sessionId);
+    expect(observedAcp.agentId, acp.agentId);
+    expect(observedAcp.threadId, acp.threadId);
+    expect(observedAcp.frozenModel, isNull);
+    expect(observedAcp.isRootRow, isTrue);
+    expect(observedAcp.archived, isTrue);
+    expect(observedChild.mode, isNull);
+    expect(observedChild.isChildRow, isTrue);
+    expect(observedChild.sessionId, native.sessionId);
+
+    transport.emitThread(
+      acp.copyWith(title: 'Updated external session'),
+      acp.threadId,
+      revision: transport.directoryRevision + 1,
+    );
+    await acpMetadata.state.waitFor(
+      (state) => state.frame?.row?.title == 'Updated external session',
+    );
+    expect(acpMetadata.state.value.frame!.row!.mode, isNull);
+    expect(acpMetadata.state.value.frame!.row!.backend, observedAcp.backend);
+    expect(lease.state.value.frame, same(structure));
+    expect(nativeMetadata.state.value.frame!.row, same(observedNative));
+    await Future.wait([
+      nativeMetadata.release(),
+      acpMetadata.release(),
+      childMetadata.release(),
+      lease.release(),
+    ]);
+  });
+
+  test('directory frames freeze and validate ordered thread identities', () {
+    final ids = ['first', 'second'];
+    final frame = _frame(
+      const DirectoryQuery(),
+      DirectoryWindow(limit: 2),
+      ids,
+    );
+    ids.add('later');
+    expect(frame.threadIds, ['first', 'second']);
+    expect(() => frame.threadIds.add('later'), throwsUnsupportedError);
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(), ['same', 'same']),
+      throwsArgumentError,
+    );
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(), ['']),
+      throwsArgumentError,
+    );
+    expect(
+      () => _frame(const DirectoryQuery(), DirectoryWindow(limit: 1), [
+        'one',
+        'two',
+      ]),
+      throwsArgumentError,
+    );
   });
 
   test(
@@ -182,8 +241,8 @@ void main() {
       final bHandle = _Handle();
       feed.threads[0].result.complete(aHandle);
       feed.threads[1].result.complete(bHandle);
-      aHandle.add(_frame(a, window, [_thread('a')]));
-      bHandle.add(_frame(b, window, [_thread('b')]));
+      aHandle.add(_frame(a, window, ['a']));
+      bHandle.add(_frame(b, window, ['b']));
       await a1.state.waitFor((state) => state.frame != null);
       await b1.state.waitFor((state) => state.frame != null);
       expect(store.observedWindows.map((frame) => frame.query), {a, b});
@@ -211,7 +270,7 @@ void main() {
       expect(feed.threads, hasLength(3), reason: 'retired A is never revived');
       final nextAHandle = _Handle();
       feed.threads[2].result.complete(nextAHandle);
-      nextAHandle.add(_frame(a, window, [_thread('a2')], revision: 2));
+      nextAHandle.add(_frame(a, window, ['a2'], revision: 2));
       await a3.state.waitFor((state) => state.frame?.stamp.revision == 2);
 
       final closingB = b1.release();
@@ -236,9 +295,7 @@ void main() {
       final observation = store.observeThreads(query, window);
       final first = _Handle();
       feed.threads.single.result.complete(first);
-      first.add(
-        _frame(query, window, [_thread('older')], nextCursor: 'cursor-40'),
-      );
+      first.add(_frame(query, window, ['older'], nextCursor: 'cursor-40'));
       await observation.state.waitFor((state) => state.frame != null);
 
       final refreshing = observation.refresh();
@@ -250,15 +307,11 @@ void main() {
       expect(feed.threads.last.window, window);
       final second = _Handle();
       feed.threads.last.result.complete(second);
-      second.add(
-        _frame(query, window, [
-          _thread('older', title: 'changed'),
-        ], revision: 2),
-      );
+      second.add(_frame(query, window, ['older'], revision: 2));
       final refreshed = await observation.state.waitFor(
         (state) => state.frame?.stamp.revision == 2,
       );
-      expect(refreshed.frame!.rows.single.title, 'changed');
+      expect(refreshed.frame!.threadIds, ['older']);
 
       final closing = observation.release();
       await second.closeEntered.future;
@@ -321,7 +374,7 @@ void main() {
       expect(feed.threads, hasLength(1));
       final firstHandle = _Handle();
       feed.threads.single.result.complete(firstHandle);
-      firstHandle.add(_frame(query, window, [_thread('pin-a')]));
+      firstHandle.add(_frame(query, window, ['pin-a']));
       await firstBorrow.state.waitFor((state) => state.frame != null);
 
       await firstBorrow.release();
@@ -343,9 +396,7 @@ void main() {
       );
       final replacementHandle = _Handle();
       feed.threads.last.result.complete(replacementHandle);
-      replacementHandle.add(
-        _frame(replacementQuery, window, [_thread('replacement')]),
-      );
+      replacementHandle.add(_frame(replacementQuery, window, ['replacement']));
       await replacement.state.waitFor((state) => state.frame != null);
 
       final retrying = store.retryCleanup();

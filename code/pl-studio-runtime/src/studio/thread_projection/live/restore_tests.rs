@@ -239,9 +239,11 @@ async fn compaction_current_restores_without_an_item_and_settles_each_real_outco
                     .atoms
                     .is_empty()
             );
-            let (_, mut repeated) = restored.prepare(&thread, &effect, &state, false).await?;
+            let mut repeated = prepared.clone();
             restored.publish_prepared(&session, &mut repeated).await?;
-            assert!(repeated.completions.is_empty());
+            assert!(Arc::ptr_eq(&prepared, &repeated));
+            assert!(Arc::ptr_eq(&prepared.completions, &repeated.completions));
+            save(&history, &effect, &repeated).await?;
             assert_eq!(session.head_seq(), 1);
         }
         Ok(())

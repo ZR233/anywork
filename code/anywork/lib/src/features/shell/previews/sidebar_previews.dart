@@ -41,10 +41,52 @@ Widget _wholeSidebar({required double width, double textScale = 1}) =>
         height: 900,
         child: StudioSidebar(
           data: sidebarPreviewData,
-          hostApps: sidebarPreviewHostApps,
           onQueryChanged: recordSidebarPreviewIntent,
-          onLoadPage: (workspaceId, more) =>
-              recordSidebarPreviewIntent('load $workspaceId more=$more'),
+          projectStructureBuilder: (context, projectId, selection, builder) =>
+              builder(
+                sidebarPreviewProjects.singleWhere(
+                  (project) => project.id == projectId,
+                ),
+                SidebarProjectStructure(
+                  window: SidebarWindow(
+                    threadIds: [
+                      for (final row in sidebarPreviewThreads)
+                        if (row.workspaceId == projectId) row.threadId,
+                    ],
+                    loaded: true,
+                  ),
+                  onLoadPage: () => recordSidebarPreviewIntent('more'),
+                  onRetry: () => recordSidebarPreviewIntent('retry'),
+                  onFirstPage: () => recordSidebarPreviewIntent('first'),
+                  onRetryPinned: () =>
+                      recordSidebarPreviewIntent('retry pinned'),
+                ),
+              ),
+          threadBuilder:
+              (
+                context,
+                project,
+                threadId,
+                touchMode,
+                archived,
+                onSelect,
+                onAction,
+              ) {
+                final row = sidebarPreviewThreads.singleWhere(
+                  (row) => row.threadId == threadId,
+                );
+                return SidebarThreadRow(
+                  row: row,
+                  project: project,
+                  selected: threadId == 'thread-active',
+                  pinned: threadId == 'thread-queued',
+                  touchMode: touchMode,
+                  archived: archived,
+                  hostApps: sidebarPreviewHostApps,
+                  onSelect: () => onSelect(row),
+                  onAction: (action) => onAction(row, action),
+                );
+              },
           onNewSession: () => recordSidebarPreviewIntent('new session'),
           onAddProject: () => recordSidebarPreviewIntent('add project'),
           onSelectProject: (project) =>
@@ -178,7 +220,7 @@ Widget sidebarThreadRowPreview() => _sidebarPreviewHost(
   Padding(
     padding: const EdgeInsets.all(8),
     child: SidebarThreadRow(
-      row: sidebarPreviewData.windows['project-local']!.rows.first,
+      row: sidebarPreviewThreads.first,
       project: sidebarPreviewProjects.first,
       selected: true,
       pinned: true,
@@ -215,7 +257,7 @@ Widget sidebarPageStatusPreview() => _sidebarPreviewHost(
   SidebarPageStatus(
     workspaceId: 'project-local',
     window: SidebarWindow(
-      rows: sidebarPreviewData.windows['project-local']!.rows,
+      threadIds: sidebarPreviewThreads.map((row) => row.threadId).toList(),
       hasMore: true,
       loaded: true,
     ),
@@ -263,7 +305,7 @@ Widget sidebarProjectMenuPreview() => _sidebarPreviewHost(
 @Preview(name: '会话菜单', group: 'Shell · Sidebar parts', size: Size(48, 48))
 Widget sidebarThreadMenuPreview() => _sidebarPreviewHost(
   SidebarThreadMenu(
-    row: sidebarPreviewData.windows['project-local']!.rows.first,
+    row: sidebarPreviewThreads.first,
     canRetryRecovery: false,
     blocked: false,
     targetDescription: '/work/pure-lang-pure',

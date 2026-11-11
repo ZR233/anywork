@@ -19,6 +19,7 @@ use pl_protocol::{
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     ConversationEvent, ConversationStateFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+    TimelineEvent,
     config::{ConfigPaths, ConfigStore},
 };
 use serde::Serialize;
@@ -173,9 +174,12 @@ async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
 async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) -> Result<String> {
     let created = Box::pin(create_seed_thread(runtime, workspace_id, index)).await?;
     let mut subscription = runtime.open_conversation_state_feed(&created).await?;
+    // The initial snapshot belongs to this feed, not to each subsequent Turn.
+    let mut saw_snapshot = false;
     let mut route_revision = Box::pin(wait_completed(
         runtime,
         &mut subscription,
+        &mut saw_snapshot,
         &created,
         &format!("read-input-{index}-00"),
     ))
@@ -184,6 +188,7 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
         route_revision = Box::pin(seed_followup(
             runtime,
             &mut subscription,
+            &mut saw_snapshot,
             &created,
             index,
             turn,
@@ -228,6 +233,7 @@ async fn create_seed_thread(
 async fn seed_followup(
     runtime: &StudioRuntime,
     subscription: &mut ConversationStateFeed,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     index: usize,
     turn: usize,
@@ -247,7 +253,7 @@ async fn seed_followup(
             },
         )
         .await?;
-    wait_completed(runtime, subscription, thread_id, &input_id).await
+    wait_completed(runtime, subscription, saw_snapshot, thread_id, &input_id).await
 }
 
 async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<usize>> {
@@ -354,11 +360,11 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
 async fn wait_completed(
     runtime: &StudioRuntime,
     subscription: &mut ConversationStateFeed,
+    saw_snapshot: &mut bool,
     thread_id: &str,
     input_id: &str,
 ) -> Result<u64> {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let mut saw_snapshot = false;
         while let Some(update) = subscription.recv().await? {
             match update {
                 ThreadSubscriptionUpdate::Snapshot {
@@ -366,18 +372,18 @@ async fn wait_completed(
                     ..
                 } => {
                     ensure!(
-                        !saw_snapshot,
+                        !*saw_snapshot,
                         "Thread subscription repeated its initial State snapshot"
                     );
                     ensure!(
                         completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
                         "unsupported completed history version {completed_history_version}"
                     );
-                    saw_snapshot = true;
+                    *saw_snapshot = true;
                 }
                 ThreadSubscriptionUpdate::Notification { notification } => {
                     ensure!(
-                        saw_snapshot,
+                        *saw_snapshot,
                         "Thread notification arrived before State snapshot"
                     );
                     if let ThreadNotification::TurnCompleted { turn } = notification.notification
@@ -390,7 +396,15 @@ async fn wait_completed(
                                 && matches!(turn.state, pl_protocol::TurnState::Completed(_))
                                 && snapshot.active_turn.is_none()
                                 && snapshot.thread.status == pl_protocol::ThreadStatus::Idle,
-                            "completed Turn notification and schema-17 Thread State disagree"
+                            "completed Turn notification and schema-17 Thread State disagree: \
+                             input_id={input_id:?}, schema={}, thread_id={}, turn_state={:?}, \
+                             active_turn_present={}, thread_status={:?}, state_revision={}",
+                            snapshot.schema_version,
+                            snapshot.thread.id,
+                            turn.state,
+                            snapshot.active_turn.is_some(),
+                            snapshot.thread.status,
+                            snapshot.revision,
                         );
                         return snapshot
                             .model_route
@@ -412,26 +426,21 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         max_items: 32,
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
-    let mut feed = runtime
-        .open_conversation_feed(thread_id, ChatScope::Main, demand)
-        .await?;
-    let mut batch = loop {
-        match feed.recv().await? {
-            Some(ConversationEvent::Chat { batch }) if batch.placement == ChatPlacement::Set => {
-                break *batch;
-            }
-            Some(_) => {}
-            None => bail!("conversation feed ended before the cold Set"),
-        }
-    };
+    let mut feed = runtime.open_timeline_feed(thread_id, demand).await?;
+    let TimelineEvent::Timeline { batch } = feed.receive().await?;
+    ensure!(
+        batch.placement == ChatPlacement::Set,
+        "timeline feed did not begin with a cold Set"
+    );
+    let mut batch = *batch;
     let reader = feed.reader().clone();
-    let count_items = |batch: &pl_protocol::ChatBatch| -> Result<usize> {
-        batch.validate_for(&ChatScope::Main)?;
-        Ok(batch.entries.len())
+    let count_items = |batch: &pl_protocol::TimelineBatch| -> Result<usize> {
+        batch.validate()?;
+        Ok(batch.blocks.len())
     };
     let mut total = count_items(&batch)?;
     while let Some(before) = batch.before {
-        batch = reader.load_older(&before, demand).await?;
+        batch = reader.load_timeline_older(&before, demand).await?;
         ensure!(
             batch.before.as_deref() != Some(before.as_str()),
             "Main item continuation did not advance"
@@ -444,4 +453,29 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         "seeded conversation exceeded the public read item ceiling"
     );
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closed_seed_reuses_one_state_baseline_across_turns_and_counts_display_blocks() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let working = temp.path().join("working");
+        fs::create_dir_all(&working)?;
+        let cases = seed_closed_home(&home, &working)?;
+        ensure!(cases.len() == THREAD_COUNT, "missing seeded read cases");
+        ensure!(
+            cases.iter().all(|case| case.main_items > 40),
+            "closed display history must require bounded pagination"
+        );
+        ensure!(
+            cases[0].switch_thread_id.as_deref() == Some(cases[1].thread_id.as_str()),
+            "cold switch case must retain the other real Thread identity"
+        );
+        Ok(())
+    }
 }

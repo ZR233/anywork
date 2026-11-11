@@ -23,10 +23,6 @@ pub const AGENT_EVALUATION_COMMENT_MAX_CHARS: usize = 300;
 /// 评价详情与摘要统计的有效样本窗口。
 pub const AGENT_EVALUATION_WINDOW: u32 = 10;
 
-/// 分页游标版本；查询身份或排序语义变化时递增。
-pub const DELEGATION_MODEL_CURSOR_VERSION: u32 = 1;
-const DELEGATION_MODEL_CURSOR_PREFIX: &str = "dmc1.";
-
 /// 根会话的子智能体分发模式。
 ///
 /// 与 Thread Mode、工作区模式独立；创建后只读，主代理模型不受其影响。
@@ -120,26 +116,6 @@ pub struct DelegationModelFilter {
     pub min_context_window: Option<u64>,
 }
 
-/// 稳定目录身份；分页按该顺序推进。
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    JsonSchema,
-    ToSchema,
-)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DelegationModelKey {
-    pub account_id: String,
-    pub model_id: String,
-}
-
 /// 有界模型资格查询输入。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,53 +171,6 @@ impl ListDelegationModelsRequest {
     }
 }
 
-/// 绑定查询条件与目录水位的分页游标。
-///
-/// 只表达身份边界：查询条件、目录水位或锚点不成立时必须重新查询，而不是把游标当成
-/// 「附近某条」的猜测位置。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DelegationModelCursor {
-    pub version: u32,
-    pub filter: DelegationModelFilter,
-    /// 产生该位置的目录水位。
-    pub catalog_watermark: u64,
-    /// 本页最后一条的稳定身份。
-    pub after: DelegationModelKey,
-}
-
-impl DelegationModelCursor {
-    /// 构造当前版本游标。
-    pub fn new(
-        filter: DelegationModelFilter,
-        catalog_watermark: u64,
-        after: DelegationModelKey,
-    ) -> Self {
-        Self {
-            version: DELEGATION_MODEL_CURSOR_VERSION,
-            filter,
-            catalog_watermark,
-            after,
-        }
-    }
-
-    /// 编码为可跨 wire 传输的 opaque token。
-    ///
-    /// # Panics
-    /// 仅在内部 JSON 编码失败时 panic；字段均为可序列化的原始类型。
-    pub fn encode(&self) -> String {
-        let payload = serde_json::to_string(self).expect("delegation cursor is serializable");
-        format!("{DELEGATION_MODEL_CURSOR_PREFIX}{payload}")
-    }
-
-    /// 解析 opaque token；非游标输入或版本不符返回 `None`。
-    pub fn decode(token: &str) -> Option<Self> {
-        let payload = token.strip_prefix(DELEGATION_MODEL_CURSOR_PREFIX)?;
-        let cursor: Self = serde_json::from_str(payload).ok()?;
-        (cursor.version == DELEGATION_MODEL_CURSOR_VERSION).then_some(cursor)
-    }
-}
-
 /// 列表一行：紧凑资料、价格/计费、本地速度样本与评价窗口摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -278,7 +207,7 @@ pub struct DelegationModelList {
     pub models: Vec<DelegationModelListItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// 本页消费的目录水位，与 [`DelegationModelCursor::catalog_watermark`] 同一身份，
+    /// 本页消费的目录水位，与 opaque 分页游标绑定同一身份，
     /// 即 canonical 模型目录快照 revision；不用第二套哈希域。
     pub catalog_revision: u64,
 }

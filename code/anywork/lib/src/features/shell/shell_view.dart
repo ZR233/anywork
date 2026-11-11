@@ -1,4 +1,5 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -121,29 +122,126 @@ SidebarView sidebarView(Ref ref) {
   final projects =
       ref.watch(projectStoreProvider).projects?.values ??
       const <StudioProject>[];
-  final recovery =
-      ref.watch(recoveryStoreProvider).value?.values ??
-      const <StudioRecoveryIssue>[];
-  final modes =
-      ref.watch(modeCatalogStoreProvider).value?.modes ??
-      const <ThreadModeDescriptorView>[];
-  var busy = false;
-  final selectedId = selection.selectedThreadId;
-  if (selectedId != null && !selection.needsOpen) {
-    busy =
-        ref
-            .watch(threadSessionStoreProvider(selectedId))
-            .activeTurn
-            ?.state
-            .isBusy ??
-        false;
-  }
   return SidebarView.fromProjects(
     projects: projects,
     selectedProjectId: selection.selectedProjectId,
-    isBusy: busy,
-    recoveryIssues: recovery,
-    modeDisplayNames: {for (final mode in modes) mode.id: mode.displayName},
+  );
+}
+
+/// Select by value so another project's fresh DTO does not rebuild this one.
+@riverpod
+StudioProject? sidebarProjectView(Ref ref, String projectId) {
+  final value = ref.watch(
+    projectStoreProvider.select((state) {
+      final project = state.projects?.values
+          .where((project) => project.id == projectId)
+          .firstOrNull;
+      return (
+        id: project?.id,
+        name: project?.name,
+        path: project?.path,
+        kind: project?.kind,
+        sshAlias: project?.sshAlias,
+      );
+    }),
+  );
+  if (value.id == null) return null;
+  return StudioProject(
+    id: value.id!,
+    name: value.name!,
+    path: value.path!,
+    kind: value.kind!,
+    sshAlias: value.sshAlias,
+  );
+}
+
+@riverpod
+String? sidebarSelectedRootThreadId(Ref ref) {
+  final selectedId = ref.watch(
+    selectionStoreProvider.select((state) => state.selectedThreadId),
+  );
+  if (selectedId == null) return null;
+  final identity = ref.watch(
+    threadMetadataStoreProvider(selectedId).select((state) {
+      final row = state.frame?.row;
+      return (sessionId: row?.sessionId, root: row?.isRootRow ?? false);
+    }),
+  );
+  if (identity.root) return selectedId;
+  if (identity.sessionId == null) return null;
+  return ref.watch(
+    projectStoreProvider.select(
+      (state) => state.agents?.values
+          .where(
+            (agent) =>
+                agent.sessionId == identity.sessionId &&
+                agent.parentAgentId == null,
+          )
+          .firstOrNull
+          ?.threadId,
+    ),
+  );
+}
+
+@riverpod
+StudioRecoveryIssue? sidebarRecoveryIssue(
+  Ref ref,
+  String? workspaceId, {
+  String? threadId,
+}) {
+  ref.watch(
+    recoveryStoreProvider.select((state) {
+      final issue = recoveryIssuesForTarget(
+        state.value?.values ?? const [],
+        workspaceId: workspaceId,
+        threadId: threadId,
+      ).firstOrNull;
+      return issue == null
+          ? null
+          : (
+              issue.id,
+              issue.scope,
+              issue.category,
+              issue.impact,
+              issue.detail,
+              issue.workspaceId,
+              issue.threadId,
+              issue.availableActions.map((action) => action.name).join(','),
+            );
+    }),
+  );
+  return recoveryIssuesForTarget(
+    ref.read(recoveryStoreProvider).value?.values ?? const [],
+    workspaceId: workspaceId,
+    threadId: threadId,
+  ).firstOrNull;
+}
+
+typedef SidebarThreadView = ({
+  DirectoryObservationState<ThreadMetadataFrame> metadata,
+  bool selected,
+  bool pinned,
+  StudioRecoveryIssue? recoveryIssue,
+});
+
+/// Read-only, per-identity projection; no list overlay or runtime subscription.
+@riverpod
+SidebarThreadView sidebarThreadView(Ref ref, String threadId) {
+  final metadata = ref.watch(threadMetadataStoreProvider(threadId));
+  final row = metadata.frame?.row;
+  return (
+    metadata: metadata,
+    selected: ref.watch(
+      sidebarSelectedRootThreadIdProvider.select((id) => id == threadId),
+    ),
+    pinned: ref.watch(
+      shellGeneralProvider.select(
+        (general) => general.pinnedThreadIds.contains(threadId),
+      ),
+    ),
+    recoveryIssue: ref.watch(
+      sidebarRecoveryIssueProvider(row?.workspaceId, threadId: threadId),
+    ),
   );
 }
 

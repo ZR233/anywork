@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,11 +7,15 @@ import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
+import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -21,6 +26,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/timeline_observation.dart';
+import 'support/presentation_capture.dart';
+import 'support/wait_selection_trace.dart';
 
 typedef _StartedBackgroundTask = ({String callId, String taskId});
 
@@ -31,8 +38,19 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   late AppGraph graph;
-  late ProviderContainer container;
+  late WaitSelectionTrace trace;
   final projectRoot = Platform.environment['ANYWORK_WAIT_PROJECTS'];
+  final captureReport = <String, Object?>{
+    'scenario': 'wait-events',
+    'runner': 'flutter.integration_test',
+    'coverageGaps': {
+      'permissionApproval':
+          'The existing wait stories do not request approval.',
+      'storageFailure':
+          'No visible storage failure is produced by these stories.',
+    },
+    'presentationCaptures': <Map<String, Object?>>[],
+  };
 
   setUpAll(() async {
     expect(
@@ -41,14 +59,7 @@ void main() {
       reason: 'Use cargo xtask test-project --suite desktop --case wait_events',
     );
     graph = createProductionAppGraph();
-    container = ProviderContainer(
-      overrides: [
-        appGraphProvider.overrideWithValue(graph),
-        statisticsRepositoryProvider.overrideWithValue(
-          graph.statisticsRepository,
-        ),
-      ],
-    );
+    trace = WaitSelectionTrace(graph, captureReport);
     await graph.initialize();
   });
   tearDownAll(() async {
@@ -66,11 +77,33 @@ void main() {
         isA<DrainedStudioPendingPersistence>(),
       );
     } finally {
-      container.dispose();
+      trace.close();
+      final traceOutput = Platform.environment['ANYWORK_WAIT_TRACE_OUTPUT'];
+      if (traceOutput != null) await trace.write(traceOutput);
+      final directory =
+          Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS'];
+      if (directory != null && directory.isNotEmpty) {
+        await File('$directory/wait-events-captures.json').writeAsString(
+          '${const JsonEncoder.withIndent('  ').convert(captureReport)}\n',
+        );
+      }
     }
   });
 
   Future<_Scene> open(WidgetTester tester, String name) async {
+    // Match production's root ProviderScope lifetime. Each test mounts a new
+    // application root, so it must not inherit the scheduler of a disposed
+    // UncontrolledProviderScope from a previous test. The application graph,
+    // SDK and timeline owner remain shared and close only in tearDownAll.
+    final container = ProviderContainer(
+      observers: [trace],
+      overrides: [
+        appGraphProvider.overrideWithValue(graph),
+        statisticsRepositoryProvider.overrideWithValue(
+          graph.statisticsRepository,
+        ),
+      ],
+    );
     // This suite tests Waiting, not native IME compatibility. The SDK warns
     // that enterText and a real IME can overwrite each other's editing state.
     // Use its standard keyboard for the entire scene, before any field mounts.
@@ -94,18 +127,25 @@ void main() {
           isTrue,
         );
       } finally {
+        container.dispose();
         tester.testTextInput.unregister();
         FlutterError.onError = testErrorHandler;
       }
     });
     await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const AnyworkApp(enableDesktopHost: false),
+      RepaintBoundary(
+        key: presentationCaptureKey,
+        child: UncontrolledProviderScope(
+          container: container,
+          child: const AnyworkApp(enableDesktopHost: false),
+        ),
       ),
     );
+    captureReport['nativeWindow'] = await configurePresentationWindow(tester);
+    trace.snapshot(tester, name, 'before-open-project');
     await graph.client.directoryCommands.openProject('$projectRoot/$name');
-    return _Scene(tester, graph);
+    trace.snapshot(tester, name, 'after-open-project');
+    return _Scene(tester, graph, name, captureReport, trace);
   }
 
   for (final (name, prefix, completedName, runningName) in const [
@@ -133,6 +173,12 @@ void main() {
       // A later UI read verifies the original immutable result, not whether
       // the model is still running. Early-return proof belongs to Core barriers.
       await scene.expandWait(wait, ThreadWaitStateView.ready);
+      await scene.capture(
+        'wait-events-$name-ready.png',
+        '[[wait_${name.replaceAll('-', '_')}]]; immutable ready result expanded',
+        'Real any-of result: one task succeeded while the other was still running.',
+        wait.atom!,
+      );
 
       if (name == 'sleep-first') {
         final previous = scene.latestTurnId;
@@ -162,6 +208,12 @@ void main() {
     expect(target['status'], 'running');
     expect(target['cancelRequested'], isFalse);
     await scene.expandWait(wait, ThreadWaitStateView.timedOut);
+    await scene.capture(
+      'wait-events-timeout-result.png',
+      '[[wait_timeout]]; immutable timeout result expanded',
+      'Real timedOut result does not imply cancellation of its running task.',
+      wait.atom!,
+    );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets('child wakes parent; a later request retains one report', (
@@ -202,19 +254,17 @@ void main() {
     );
     final taskId = startedTask.taskId;
     expect(taskId, isA<String>());
-    scene.expectBackgroundTaskLive(prepared, startedTask);
+    scene.expectBackgroundTaskLive(
+      prepared,
+      startedTask,
+      expectedKind: ThreadActivityKind.runningTool,
+      expectedBackground: 0,
+    );
     final prepareTurn = scene.latestTurnId;
     await scene.closeTurn(prepared);
     await scene.submit('[[wait_cancel]]');
-    await scene.until(
-      () =>
-          scene.lease.content.activity.value?.entries.any(
-            (entry) =>
-                entry.atom.tool?.callId.startsWith('cancel-wait-t') == true,
-          ) ==
-          true,
-      'original wait call in the canonical current head',
-    );
+    // The typed live Work and original member window below prove the exact
+    // running call; the GUI no longer consumes the atomic Activity channel.
     await scene.currentWaiting('cancel-wait-t');
     await scene.tap(find.byKey(const ValueKey('composer-stop')));
     final stopped = await scene.completedTurn(
@@ -225,8 +275,13 @@ void main() {
       stopped,
       ChatTerminalOutcome.cancelled,
     );
-    expect(stoppedReceipt.atom.kind, ChatAtomKind.turnReceipt);
-    scene.expectBackgroundTaskLive(prepared, startedTask);
+    expect(stoppedReceipt.atom!.kind, ChatAtomKind.turnReceipt);
+    scene.expectBackgroundTaskLive(
+      prepared,
+      startedTask,
+      expectedKind: ThreadActivityKind.runningTool,
+      expectedBackground: 0,
+    );
     final stoppedTurn = scene.latestTurnId;
     await scene.closeTurn(stopped);
     await scene.submit('[[wait_cancel_query]]');
@@ -244,9 +299,12 @@ void main() {
 }
 
 final class _Scene {
-  _Scene(this.tester, this.graph);
+  _Scene(this.tester, this.graph, this.name, this.captureReport, this.trace);
   final WidgetTester tester;
   final AppGraph graph;
+  final String name;
+  final Map<String, Object?> captureReport;
+  final WaitSelectionTrace trace;
   String? latestTurnId;
   String? _submittedThreadId;
   String? _priorTurnId;
@@ -256,14 +314,52 @@ final class _Scene {
       graph.timeline.lease(graph.client.selection.state.selectedThreadId!)!;
   late final observed = TimelineObservation(tester, () => lease);
 
+  Future<void> capture(
+    String fileName,
+    String stage,
+    String coverage,
+    ChatAtom atom,
+  ) async {
+    final evidence = <String, Object?>{
+      'fileName': fileName,
+      'fixtureStage': stage,
+      'coverage': coverage,
+      'threadId': lease.threadId,
+      'turnId': atom.turnId,
+      'blockId': observed.unitForMember(atom.id).id,
+      'memberId': atom.id,
+      'toolCallId': atom.tool?.callId,
+      'waitState': atom.wait?.state.name,
+      'captureRequested':
+          Platform
+              .environment['ANYWORK_PRESENTATION_SCREENSHOTS']
+              ?.isNotEmpty ??
+          false,
+      'captureCompleted': false,
+    };
+    (captureReport['presentationCaptures'] as List<Map<String, Object?>>).add(
+      evidence,
+    );
+    await capturePresentation(tester, fileName);
+    expect(tester.takeException(), isNull);
+    evidence['captureCompleted'] = evidence['captureRequested'];
+  }
+
   Future<void> until(
-    bool Function() ready,
+    FutureOr<bool> Function() ready,
     String description, {
     Duration timeout = const Duration(seconds: 60),
     String Function()? diagnostic,
   }) async {
     final clock = Stopwatch()..start();
-    while (!ready()) {
+    while (true) {
+      final remaining = timeout - clock.elapsed;
+      if (await Future<bool>.sync(ready).timeout(
+        remaining > Duration.zero ? remaining : Duration.zero,
+        onTimeout: () => false,
+      )) {
+        return;
+      }
       if (clock.elapsed >= timeout) {
         final details = diagnostic?.call();
         fail(
@@ -272,6 +368,7 @@ final class _Scene {
         );
       }
       await tester.pump(const Duration(milliseconds: 50));
+      trace.snapshot(tester, name, 'pump');
       expect(tester.takeException(), isNull);
     }
   }
@@ -293,11 +390,30 @@ final class _Scene {
     if (returnLive.hitTestable().evaluate().isNotEmpty) {
       await tap(returnLive);
     }
-    final input = find.byKey(const ValueKey('composer-input'));
-    await until(() => input.evaluate().isNotEmpty, 'composer');
+    // SDK project selection can precede its keyed composer subtree. An input
+    // from the previous workspace must not qualify the new submission.
+    final composerTarget = find.byWidgetPredicate((widget) {
+      if (widget is! PromptComposerView) return false;
+      final selection = graph.client.selection.state;
+      return widget.pasteTargetId ==
+              (selection.selectedThreadId ?? selection.selectedProjectId) &&
+          widget.enabled &&
+          !widget.submissionLocked;
+    });
+    final input = find.descendant(
+      of: composerTarget,
+      matching: find.byKey(const ValueKey('composer-input')),
+    );
+    await until(
+      () => input.evaluate().length == 1,
+      'composer for the actual selected target',
+    );
     try {
+      trace.snapshot(tester, name, 'before-enter');
       await tester.enterText(input, prompt);
+      trace.snapshot(tester, name, 'after-enter');
       await tester.pump();
+      trace.snapshot(tester, name, 'after-enter-pump');
       expect(tester.widget<TextField>(input).controller!.text, prompt);
       _submittedThreadId = graph.client.selection.state.selectedThreadId;
       _priorTurnId = _submittedThreadId == null
@@ -309,21 +425,54 @@ final class _Scene {
                 ?.turnId;
       _submittedTurnId = null;
       await tap(find.byKey(const ValueKey('composer-submit')));
-    } catch (_) {
-      final composer = tester.widget<PromptComposerView>(
-        find.byType(PromptComposerView),
-      );
-      debugPrintSynchronously(
-        'Composer submission failure: text=${tester.widget<TextField>(input).controller!.text}, '
-        'draft=${composer.composer.draft}, pending=${composer.composer.isSubmissionPending}, '
-        'sdkDraft=${graph.client.drafts.existingComposer(graph.client.selection.state.selectedThreadId!)?.state.draft}, '
-        'execution=${composer.execution?.id}/${composer.execution?.phase}, '
-        'continuation=${composer.continuation?.claimed}, '
-        'stop=${composer.stopCommand?.phase}/${composer.stopCommand?.accepted}/${composer.stopCommand?.target.label}, '
-        'blocker=${composer.blocker}, failure=${composer.failure}, '
-        'enabled=${composer.enabled}, locked=${composer.submissionLocked}',
-      );
-      rethrow;
+    } catch (error, stack) {
+      trace.dump();
+      try {
+        final composer = tester
+            .widgetList<PromptComposerView>(find.byType(PromptComposerView))
+            .singleOrNull;
+        final selected = graph.client.selection.state.selectedThreadId;
+        final diagnostic = {
+          'scene': name,
+          'error': error.toString(),
+          'selectedThreadId': selected,
+          'selectionNeedsOpen': graph.client.selection.state.needsOpen,
+          'workspacePaneThreadIds': [
+            for (final pane in tester.widgetList<AgentWorkspacePane>(
+              find.byType(AgentWorkspacePane, skipOffstage: false),
+            ))
+              pane.threadId,
+          ],
+          'text': tester
+              .widgetList<TextField>(input)
+              .singleOrNull
+              ?.controller
+              ?.text,
+          'draft': composer?.composer.draft,
+          'pending': composer?.composer.isSubmissionPending,
+          'sdkDraft': selected == null
+              ? null
+              : graph.client.drafts.existingComposer(selected)?.state.draft,
+          'execution': composer?.execution?.id,
+          'blocker': composer?.blocker?.runtimeType.toString(),
+          'failure': composer?.failure?.runtimeType.toString(),
+          'enabled': composer?.enabled,
+          'locked': composer?.submissionLocked,
+        };
+        captureReport['submissionFailure:$name'] = diagnostic;
+        debugPrintSynchronously(
+          'WAIT_SUBMISSION_FAILURE ${jsonEncode(diagnostic)}',
+        );
+        await capturePresentation(
+          tester,
+          'wait-events-$name-submission-failure.png',
+        );
+      } catch (diagnosticError) {
+        debugPrintSynchronously(
+          'WAIT_SUBMISSION_DIAGNOSTIC_FAILURE ${diagnosticError.runtimeType}',
+        );
+      }
+      Error.throwWithStackTrace(error, stack);
     }
   }
 
@@ -335,7 +484,7 @@ final class _Scene {
   }) async {
     StudioTurnView? turn;
     _StartedBackgroundTask? backgroundTask;
-    bool ready({bool checkActivity = true}) {
+    Future<bool> ready({bool checkActivity = true}) async {
       final id = graph.client.selection.state.selectedThreadId;
       if (id == null) return false;
       _submittedThreadId ??= id;
@@ -353,13 +502,16 @@ final class _Scene {
       final originalLease = graph.timeline.lease(id);
       if (!candidate.state.isTerminal ||
           candidate.state.status != outcome ||
-          originalLease == null) {
+          originalLease == null ||
+          !originalLease.isMounted ||
+          originalLease.isRetired) {
         return false;
       }
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
       // State proves completion; Main must separately accept this source and
       // mount its original viewport within this same wait budget before reveal.
-      if (!observed.entries.any((item) => item.atom.source == source)) {
+      // An independent background timer may still be live after this Turn.
+      if (observed.liveBlocks.any((block) => block.source == source)) {
         return false;
       }
       final mainScrollable = find.byWidgetPredicate(
@@ -368,29 +520,49 @@ final class _Scene {
             identical(widget.controller, originalLease.scrollController),
       );
       if (mainScrollable.evaluate().length != 1) return false;
-      if (checkActivity) {
-        final activities = observed.activity
-            .where((entry) => entry.atom.source == source)
-            .toList();
-        final expected = backgroundTask;
-        if (expected == null) {
-          if (activities.isNotEmpty) return false;
-        } else if (activities.length != 1 ||
-            !_matchesBackgroundTask(activities.single, expected)) {
+      if (!await observed.hasHistoricalSource(source)) return false;
+      // A bounded member query cannot qualify a later selection/generation.
+      if (graph.client.selection.state.selectedThreadId != id ||
+          !identical(graph.timeline.lease(id), originalLease) ||
+          !originalLease.isMounted ||
+          originalLease.isRetired) {
+        return false;
+      }
+      final current = graph.client.conversations
+          .existingSession(id)
+          ?.state
+          .lastTurn;
+      if (current?.turnId != candidate.turnId ||
+          current?.state.isTerminal != true ||
+          current?.state.status != outcome ||
+          observed.liveBlocks.any((block) => block.source == source)) {
+        return false;
+      }
+      if (checkActivity && backgroundTask != null) {
+        final activity = graph.client.conversations
+            .existingSession(id)
+            ?.state
+            .activity;
+        final tools = activity?.tools;
+        if (activity?.kind != ThreadActivityKind.runningTool ||
+            tools == null ||
+            tools.count != 1 ||
+            tools.active.length != 1 ||
+            tools.background != 0 ||
+            !_matchesBackgroundTask(tools.active.single, backgroundTask)) {
           return false;
         }
       }
       if (outcome == StudioTurnStatus.cancelled) {
-        final receipts = observed.entries
+        final receipts = observed.singleBlocks
             .where(
               (item) =>
-                  item.atom.source == source &&
-                  item.mainPresentation == MainPresentation.single &&
-                  item.atom.kind == ChatAtomKind.turnReceipt,
+                  item.atom!.source == source &&
+                  item.atom!.kind == ChatAtomKind.turnReceipt,
             )
             .toList();
         expect(receipts.length, lessThanOrEqualTo(1));
-        return (receipts.singleOrNull?.atom.lifecycle as TerminalChatAtom?)
+        return (receipts.singleOrNull?.atom?.lifecycle as TerminalChatAtom?)
                 ?.outcome ==
             ChatTerminalOutcome.cancelled;
       }
@@ -399,81 +571,144 @@ final class _Scene {
 
     const budget = Duration(seconds: 60);
     final clock = Stopwatch()..start();
-    if (readBackgroundStart != null) {
-      // Borrow the accepted Main source to read its actual handoff card before
-      // deciding which live activity is expected. Both phases share one budget.
+    try {
+      if (readBackgroundStart != null) {
+        // Main must accept the real source before reading its original handoff.
+        // The source and exact live-task checks share the original wait budget.
+        await until(
+          () => ready(checkActivity: false),
+          '${outcome.name} Turn Main source for background handoff',
+          timeout: budget,
+        );
+        backgroundTask = await readBackgroundStart(turn!);
+      }
+      final remaining = budget - clock.elapsed;
+      if (remaining <= Duration.zero) {
+        fail('Timed out waiting for ${outcome.name} Turn');
+      }
       await until(
-        () => ready(checkActivity: false),
-        '${outcome.name} Turn Main source for background handoff',
-        timeout: budget,
+        () => ready(),
+        '${outcome.name} Turn',
+        timeout: remaining,
+        diagnostic: () {
+          final id = graph.client.selection.state.selectedThreadId;
+          final candidate = id == null
+              ? null
+              : graph.client.conversations.session(id).state.lastTurn;
+          final originalLease = id == null ? null : graph.timeline.lease(id);
+          final source = candidate == null
+              ? null
+              : ForegroundTurnChatSource(turnId: candidate.turnId);
+          final liveBlocks = originalLease == null
+              ? const <LiveDisplayBlock>[]
+              : observed.liveBlocks
+                    .where((block) => block.source == source)
+                    .toList();
+          final activity = id == null
+              ? null
+              : graph.client.conversations.existingSession(id)?.state.activity;
+          final activities =
+              activity?.tools.active ?? const <ThreadActivityToolEntry>[];
+          final mainTools = originalLease == null
+              ? const <String>[]
+              : observed.mountedMembers
+                    .where(
+                      (atom) =>
+                          atom.source == source &&
+                          atom.tool != null &&
+                          atom.lifecycle is TerminalChatAtom,
+                    )
+                    .map(_toolDiagnostic)
+                    .toList();
+          final viewportCount = originalLease == null
+              ? null
+              : find
+                    .byWidgetPredicate(
+                      (widget) =>
+                          widget is Scrollable &&
+                          identical(
+                            widget.controller,
+                            originalLease.scrollController,
+                          ),
+                    )
+                    .evaluate()
+                    .length;
+          return 'selectedThread=$id submittedThread=$_submittedThreadId '
+              'submittedTurn=$_submittedTurnId priorTurn=$_priorTurnId after=$after '
+              'candidate=${candidate?.turnId}/${candidate?.state.status} '
+              'terminal=${candidate?.state.isTerminal} expected=$outcome '
+              'lease=${originalLease != null} viewportCount=$viewportCount '
+              'activity.kind=${activity?.kind.name} '
+              'activity.count=${activity?.tools.count} '
+              'activity.background=${activity?.tools.background} '
+              'sameSourceLiveBlocks=${liveBlocks.map((block) => block.id).toList()}\n'
+              'activeTools=${activities.map(_activityDiagnostic).toList()}\n'
+              'sameSourceMountedCompletedTools=$mainTools';
+        },
       );
-      backgroundTask = await readBackgroundStart(turn!);
+    } catch (_) {
+      trace.snapshot(tester, name, 'turn-failure');
+      trace.dump();
+      final failureKey = 'turnWaitFailure:$name:${outcome.name}';
+      if (!captureReport.containsKey(failureKey)) {
+        final selected = graph.client.selection.state.selectedThreadId;
+        final sessionId = selected ?? _submittedThreadId;
+        try {
+          final cut = timelineWaitFailureSnapshot(
+            tester: tester,
+            selectedThreadId: selected,
+            submittedThreadId: _submittedThreadId,
+            submittedTurnId: _submittedTurnId,
+            previousTurnId: _priorTurnId,
+            afterTurnId: after,
+            targetTurnId: turn?.turnId,
+            expectedOutcome: outcome.name,
+            lease: selected == null ? null : graph.timeline.lease(selected),
+            session: sessionId == null
+                ? null
+                : graph.client.conversations.existingSession(sessionId)?.state,
+          );
+          cut.addAll({
+            'scene': name,
+            'selectionNeedsOpen': graph.client.selection.state.needsOpen,
+            'workspacePaneThreadIds': [
+              for (final pane in tester.widgetList<AgentWorkspacePane>(
+                find.byType(AgentWorkspacePane, skipOffstage: false),
+              ))
+                pane.threadId,
+            ],
+            'ownerSourceThreadId': graph.timeline.source.value?.threadId,
+            'connectorOnstage': find
+                .byType(TimelineConnector)
+                .evaluate()
+                .length,
+            'connectorAll': find
+                .byType(TimelineConnector, skipOffstage: false)
+                .evaluate()
+                .length,
+            'timelineViewOnstage': find.byType(TimelineView).evaluate().length,
+            'timelineViewAll': find
+                .byType(TimelineView, skipOffstage: false)
+                .evaluate()
+                .length,
+          });
+          captureReport[failureKey] = cut;
+          debugPrintSynchronously('WAIT_TURN_FAILURE ${jsonEncode(cut)}');
+          await capturePresentation(
+            tester,
+            'wait-events-$name-${outcome.name}-failure.png',
+          );
+        } catch (diagnosticError) {
+          captureReport['$failureKey:diagnostic'] = {
+            'diagnosticFailureKind': diagnosticError.runtimeType.toString(),
+          };
+          debugPrintSynchronously(
+            'WAIT_TURN_FAILURE ${jsonEncode(captureReport['$failureKey:diagnostic'])}',
+          );
+        }
+      }
+      rethrow;
     }
-    final remaining = budget - clock.elapsed;
-    if (remaining <= Duration.zero) {
-      fail('Timed out waiting for ${outcome.name} Turn');
-    }
-    await until(
-      () => ready(),
-      '${outcome.name} Turn',
-      timeout: remaining,
-      diagnostic: () {
-        final id = graph.client.selection.state.selectedThreadId;
-        final candidate = id == null
-            ? null
-            : graph.client.conversations.session(id).state.lastTurn;
-        final originalLease = id == null ? null : graph.timeline.lease(id);
-        final source = candidate == null
-            ? null
-            : ForegroundTurnChatSource(turnId: candidate.turnId);
-        final mainCount = originalLease == null
-            ? null
-            : observed.entries
-                  .where((item) => item.atom.source == source)
-                  .length;
-        final activeCount = originalLease == null
-            ? null
-            : observed.activity
-                  .where((entry) => entry.atom.source == source)
-                  .length;
-        final viewportCount = originalLease == null
-            ? null
-            : find
-                  .byWidgetPredicate(
-                    (widget) =>
-                        widget is Scrollable &&
-                        identical(
-                          widget.controller,
-                          originalLease.scrollController,
-                        ),
-                  )
-                  .evaluate()
-                  .length;
-        final activities = originalLease == null
-            ? const <String>[]
-            : observed.activity
-                  .where((entry) => entry.atom.source == source)
-                  .map(_activityDiagnostic)
-                  .toList();
-        final mainTools = originalLease == null
-            ? const <String>[]
-            : observed.entries
-                  .where(
-                    (entry) =>
-                        entry.atom.source == source && entry.atom.tool != null,
-                  )
-                  .map((entry) => _toolDiagnostic(entry.atom))
-                  .toList();
-        return 'selectedThread=$id submittedThread=$_submittedThreadId '
-            'submittedTurn=$_submittedTurnId priorTurn=$_priorTurnId after=$after '
-            'candidate=${candidate?.turnId}/${candidate?.state.status} '
-            'terminal=${candidate?.state.isTerminal} expected=$outcome '
-            'lease=${originalLease != null} mainCount=$mainCount '
-            'activeCount=$activeCount viewportCount=$viewportCount\n'
-            'sameSourceActivities=$activities\n'
-            'sameSourceCompletedTools=$mainTools';
-      },
-    );
     final original = turn!;
     latestTurnId = original.turnId;
     expect(original.state.status, outcome);
@@ -481,47 +716,95 @@ final class _Scene {
   }
 
   bool _matchesBackgroundTask(
-    ActivityEntry entry,
+    ThreadActivityToolEntry entry,
     _StartedBackgroundTask task,
   ) =>
-      entry.identity == BackgroundToolActivityIdentity(callId: task.callId) &&
-      entry.atom.kind == ChatAtomKind.toolCall &&
-      entry.atom.tool?.callId == task.callId &&
-      entry.atom.lifecycle is ActiveChatAtom;
+      entry.callId == task.callId &&
+      entry.taskId == task.taskId &&
+      entry.state == ThreadActivityToolState.running;
 
   void expectBackgroundTaskLive(
     StudioTurnView sourceTurn,
-    _StartedBackgroundTask task,
-  ) {
-    final source = ForegroundTurnChatSource(turnId: sourceTurn.turnId);
-    final activities = observed.activity
-        .where((entry) => entry.atom.source == source)
-        .toList();
+    _StartedBackgroundTask task, {
+    ThreadActivityKind? expectedKind,
+    required int expectedBackground,
+  }) {
+    final state = graph.client.conversations
+        .existingSession(sourceTurn.threadId)
+        ?.state;
+    final activity = state?.activity;
+    final activeTurn = state?.activeTurn;
+    final execution = state?.runtime?.execution;
+    final activities =
+        activity?.tools.active ?? const <ThreadActivityToolEntry>[];
+    final diagnostic = <String, Object?>{
+      'selectedThreadId': graph.client.selection.state.selectedThreadId,
+      'sourceThreadId': sourceTurn.threadId,
+      'sourceTurnId': sourceTurn.turnId,
+      'submittedTurnId': _submittedTurnId,
+      'expected': {
+        'kind': expectedKind?.name,
+        'count': 1,
+        'background': expectedBackground,
+        'callId': task.callId,
+        'taskId': task.taskId,
+        'state': ThreadActivityToolState.running.name,
+      },
+      'activeTurn': activeTurn == null
+          ? null
+          : {
+              'threadId': activeTurn.threadId,
+              'turnId': activeTurn.turnId,
+              'status': activeTurn.state.status.name,
+              'activity': activeTurn.state.activity?.name,
+            },
+      'execution': execution == null
+          ? null
+          : {
+              'id': execution.id,
+              'turnId': execution.turnId,
+              'phase': execution.phase.name,
+            },
+      'activity': activity == null
+          ? null
+          : {
+              'threadId': activity.threadId,
+              'turnId': activity.turnId,
+              'kind': activity.kind.name,
+              'count': activity.tools.count,
+              'background': activity.tools.background,
+              'active': [
+                for (final entry in activities)
+                  {
+                    'callId': entry.callId,
+                    'taskId': entry.taskId,
+                    'name': entry.name,
+                    'state': entry.state.name,
+                    'ordinal': entry.ordinal,
+                    'startedAt': entry.startedAt,
+                  },
+              ],
+            },
+    };
+    (captureReport.putIfAbsent(
+      'backgroundTaskLive:$name',
+      () => <Map<String, Object?>>[],
+    ) as List<Map<String, Object?>>).add(diagnostic);
+    debugPrintSynchronously('WAIT_BACKGROUND_LIVE ${jsonEncode(diagnostic)}');
+    expect(graph.client.selection.state.selectedThreadId, sourceTurn.threadId);
+    expect(activity, isNotNull);
+    expect(activity!.threadId, sourceTurn.threadId);
+    if (expectedKind != null) expect(activity.kind, expectedKind);
+    expect(activity.tools.count, 1);
     expect(activities, hasLength(1));
-    final activity = activities.single;
-    expect(activity.identity, isA<BackgroundToolActivityIdentity>());
-    expect(_matchesBackgroundTask(activity, task), isTrue);
-    expect(
-      (activity.atom.lifecycle as ActiveChatAtom).status,
-      ChatActiveStatus.running,
-    );
-    debugPrint(
-      'WAIT_BACKGROUND_LIVE callId=${task.callId} taskId=${task.taskId} '
-      '${_activityDiagnostic(activity)}',
-    );
+    expect(activity.tools.background, expectedBackground);
+    expect(_matchesBackgroundTask(activities.single, task), isTrue);
   }
 
-  String _activityDiagnostic(ActivityEntry entry) {
-    final identity = switch (entry.identity) {
-      ModelPartActivityIdentity(:final atomId) => 'atomId=$atomId',
-      ForegroundToolActivityIdentity(:final callId) => 'callId=$callId',
-      BackgroundToolActivityIdentity(:final callId) => 'callId=$callId',
-      OtherActivityIdentity(:final domain, :final id) =>
-        'domain=$domain id=$id',
-    };
-    return '${entry.identity.runtimeType}($identity) '
-        '${_toolDiagnostic(entry.atom)}';
-  }
+  String _activityDiagnostic(ThreadActivityToolEntry entry) =>
+      'callId=${entry.callId} taskId=${entry.taskId} name=${entry.name} '
+      'state=${entry.state.name} ordinal=${entry.ordinal} '
+      'startedAt=${entry.startedAt}';
 
   String _toolDiagnostic(ChatAtom atom) {
     final card = atom.tool == null || atom.payload == null
@@ -547,47 +830,41 @@ final class _Scene {
       readBackgroundStart: readBackgroundStart,
     );
     final source = ForegroundTurnChatSource(turnId: original.turnId);
-    expect(observed.workFor(source), isNotEmpty);
+    expect(await observed.workForSource(source), isNotEmpty);
     // The typed Turn identifies the real source. Tool lookup still opens and
     // verifies its original ordinary work segment, independently of completion.
     return original;
   }
 
-  Future<CompletedEntry> turnReceipt(
+  Future<TimelineDisplayUnit> turnReceipt(
     StudioTurnView turn,
     ChatTerminalOutcome outcome,
   ) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
-    final receipt = observed.entries.singleWhere(
+    final receipt = observed.singleBlocks.singleWhere(
       (item) =>
-          item.atom.source == source &&
-          item.mainPresentation == MainPresentation.single &&
-          item.atom.kind == ChatAtomKind.turnReceipt,
+          item.atom!.source == source &&
+          item.atom!.kind == ChatAtomKind.turnReceipt,
     );
-    expect((receipt.atom.lifecycle as TerminalChatAtom).outcome, outcome);
-    final payload = receipt.atom.payload;
-    final byteLength = payload is InlinePayload
-        ? payload.bytes.length
-        : payload is DeferredPayload
-        ? payload.byteLength
-        : null;
+    expect((receipt.atom!.lifecycle as TerminalChatAtom).outcome, outcome);
     final reason =
-        'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${receipt.recordId}, '
-        'payloadType=${payload?.runtimeType}, byteLength=$byteLength. '
-        'Over-budget payloads may remain Deferred in the product.';
-    expect(payload is InlinePayload, isTrue, reason: reason);
-    expect(
-      ChatItemPresentation.forUnit(observed.unit(receipt.recordId))
-          .compatibility,
-      ChatItemCompatibility.current,
-      reason: reason,
-    );
-    await observed.revealItem(receipt);
-    final rendered = tester
-        .widget<ChatItemView>(observed.itemRow(receipt.recordId))
-        .item;
+        'Canonical wait Turn receipt must restore in its real Main row: '
+        '${receipt.id}';
+    await observed.revealSingle(receipt);
+    late ChatItemPresentation rendered;
+    await until(() {
+      final row = observed.itemRow(receipt.id);
+      if (row.evaluate().length != 1) return false;
+      final value = tester.widget<ChatItemView>(row).item;
+      if (value.compatibility != ChatItemCompatibility.current) return false;
+      rendered = value;
+      return true;
+    }, 'canonical cancelled Turn receipt renderer');
+    expect(rendered.atom?.id, receipt.atom!.id);
+    expect(rendered.atom?.source, source);
+    expect(rendered.atom?.completionItemId, receipt.atom!.completionItemId);
+    expect(rendered.atom?.completionSeq, receipt.atom!.completionSeq);
     expect(
       rendered.compatibility,
       ChatItemCompatibility.current,
@@ -605,9 +882,9 @@ final class _Scene {
   }) async {
     final source = ForegroundTurnChatSource(turnId: turn.turnId);
     expect(graph.client.selection.state.selectedThreadId, turn.threadId);
-    final groups = observed.workFor(source).toList();
+    final groups = await observed.workForSource(source);
     expect(groups, isNotEmpty);
-    await observed.openSourceRuns(source);
+    await observed.openSourceWork(source);
     final matches = observed.mountedMembers
         .where(
           (atom) =>
@@ -622,23 +899,17 @@ final class _Scene {
     );
     final atom = matches.single;
     expect(atom.kind, ChatAtomKind.toolCall);
-    final payload = atom.payload;
-    final byteLength = payload is InlinePayload
-        ? payload.bytes.length
-        : payload is DeferredPayload
-        ? payload.byteLength
-        : null;
-    // Select by reliable metadata first. A missing/Deferred/malformed envelope
-    // must fail as delivery/presentation, not be filtered into "no member".
+    expect(atom.source, source);
+    expect(atom.lifecycle, isA<TerminalChatAtom>());
+    expect(atom.completionItemId, isNotNull);
+    expect(atom.completionSeq, isNotNull);
+    // Select by reliable metadata; business assertions consume only the actual
+    // renderer after its qualified canonical read, not the Deferred head.
     final reason =
-        'Known small wait fixture requires Inline/current business '
-        'presentation within the original frame =${atom.id}, '
+        'Canonical wait tool must restore in its original member row =${atom.id}, '
         'completion=${atom.completionItemId}/${atom.completionSeq}, '
-        'call=${atom.tool!.callId}, payloadType=${payload?.runtimeType}, '
-        'byteLength=$byteLength. '
-        'Over-budget payloads may remain Deferred in the product.';
-    expect(payload, isA<InlinePayload>(), reason: reason);
-    final reference = observed.unitForMember(atom.id).run!.reference;
+        'call=${atom.tool!.callId}.';
+    final reference = observed.unitForMember(atom.id).memberReference!;
     final display = await observed.revealMember(atom, reference: reference);
     expect(display.expanded, isTrue);
     expect(
@@ -650,9 +921,15 @@ final class _Scene {
       ),
       hasLength(1),
     );
-    final rendered = tester
-        .widget<ChatItemView>(observed.memberRow(atom.id))
-        .item;
+    late ChatItemPresentation rendered;
+    await until(() {
+      final row = observed.memberRow(atom.id);
+      if (row.evaluate().length != 1) return false;
+      final value = tester.widget<ChatItemView>(row).item;
+      if (value.compatibility != ChatItemCompatibility.current) return false;
+      rendered = value;
+      return true;
+    }, 'canonical wait tool renderer ${atom.id}');
     expect(
       rendered.compatibility,
       ChatItemCompatibility.current,
@@ -670,7 +947,9 @@ final class _Scene {
   }
 
   Future<void> closeTurn(StudioTurnView turn) async {
-    await observed.closeSource(ForegroundTurnChatSource(turnId: turn.turnId));
+    await observed.closeSourceWork(
+      ForegroundTurnChatSource(turnId: turn.turnId),
+    );
     expect(
       (await graph.client.conversations.retryCleanup(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
@@ -694,54 +973,87 @@ final class _Scene {
         return false;
       }
       _submittedTurnId ??= turn.turnId;
-      return turn.turnId == _submittedTurnId &&
-          observed.activity.any(
-            (entry) =>
-                entry.atom.source ==
-                ForegroundTurnChatSource(turnId: turn.turnId),
-          );
+      return turn.turnId == _submittedTurnId && observed.liveWork.isNotEmpty;
     }, 'live work item with explicit member reference');
     final source = ForegroundTurnChatSource(turnId: _submittedTurnId!);
-    await until(
-      () =>
-          observed.activity
-              .map((entry) => entry.atom)
-              .where(
-                (atom) =>
-                    atom.source == source &&
-                    atom.tool?.callId.startsWith(prefix) == true,
-              )
-              .length ==
-          1,
-      'exact live wait atom',
-    );
-    final atom = observed.activity
-        .map((entry) => entry.atom)
-        .singleWhere(
-          (atom) =>
-              atom.source == source &&
-              atom.tool?.callId.startsWith(prefix) == true,
+    await observed.openSourceWork(source);
+    Iterable<ObservedLiveDisplayRecord> currentWaitRecords() => observed
+        .liveBlocks
+        .where((block) => block.state == DisplayBlockState.open)
+        .expand(observed.liveDisplayRecords)
+        .where(
+          (head) =>
+              head.record.contentSource is CurrentAtom &&
+              head.record.atom.source == source &&
+              head.record.atom.turnId == _submittedTurnId &&
+              head.record.atom.tool?.callId.startsWith(prefix) == true &&
+              head.record.atom.lifecycle is ActiveChatAtom,
         );
+    await until(() => currentWaitRecords().length == 1, 'exact live wait atom');
+    final atom = currentWaitRecords().single.record.atom;
     expect(atom.lifecycle, isA<ActiveChatAtom>());
     expect(atom.wait?.state, ThreadWaitStateView.waiting);
-    final panel = find.byWidgetPredicate(
-      (widget) =>
-          widget is TimelineWaitPanel &&
-          widget.identity == atom.id &&
-          widget.presentation.state == ThreadWaitStateView.waiting,
-    );
-    await until(
-      () => panel.evaluate().length == 1,
-      'typed production Waiting panel',
-    );
+    final originalLease = lease;
+    final generation = originalLease.generation;
+    late Finder panel;
+    await until(() {
+      expect(lease, same(originalLease));
+      expect(originalLease.generation, generation);
+      expect(originalLease.isMounted && !originalLease.isRetired, isTrue);
+      expect(
+        graph.client.selection.state.selectedThreadId,
+        originalLease.threadId,
+      );
+      final heads = currentWaitRecords()
+          .where(
+            (head) =>
+                head.record.atom.id == atom.id &&
+                head.record.atom.source == source &&
+                head.record.atom.turnId == _submittedTurnId &&
+                head.record.atom.tool?.callId == atom.tool!.callId &&
+                head.record.atom.lifecycle is ActiveChatAtom,
+          )
+          .toList();
+      if (heads.length != 1) return false;
+      final head = heads.single;
+      expect(head.record.atom.wait?.state, ThreadWaitStateView.waiting);
+      final renderer = observed.liveRenderer(head);
+      if (renderer.evaluate().length != 1) return false;
+      panel = find.descendant(
+        of: renderer,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is TimelineWaitPanel &&
+              widget.identity == head.displayId &&
+              widget.presentation.state == ThreadWaitStateView.waiting,
+        ),
+      );
+      return panel.evaluate().length == 1;
+    }, 'typed production Waiting panel');
     expect(
-      observed.activity
-          .map((entry) => entry.atom)
-          .singleWhere((member) => member.id == atom.id)
+      currentWaitRecords()
+          .singleWhere(
+            (head) =>
+                head.record.atom.id == atom.id &&
+                head.record.atom.source == source &&
+                head.record.atom.turnId == _submittedTurnId &&
+                head.record.atom.tool?.callId == atom.tool!.callId,
+          )
+          .record
+          .atom
           .lifecycle,
       isA<ActiveChatAtom>(),
     );
     expect(tester.getSize(panel).isEmpty, isFalse);
+    await Scrollable.ensureVisible(tester.element(panel), alignment: 0.5);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await capture(
+      'wait-events-$name-waiting.png',
+      '[[wait_cancel]]; exact live wait member / before stop',
+      'Real active wait member and its production Waiting panel; not a permission dock.',
+      atom,
+    );
   }
 
   Map<String, dynamic> result(ChatItemPresentation item) =>
@@ -771,5 +1083,8 @@ final class _Scene {
       find.byKey(StudioDriverKeys.waitingDetails(item.id)),
       findsOneWidget,
     );
+    await Scrollable.ensureVisible(tester.element(details), alignment: 0.5);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   }
 }

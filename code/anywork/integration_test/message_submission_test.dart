@@ -1,3 +1,5 @@
+import 'support/display_record_observation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -239,7 +241,11 @@ void main() {
     await until(
       () =>
           graph.timeline.lease(threadId) != null &&
-          observed.entries.any((entry) => entry.atom.source is InputChatSource),
+          observed.singleBlocks.any(
+            (block) =>
+                (block.body as SingleDisplayBlock).record.atom.source
+                    is InputChatSource,
+          ),
       'first real InputChatSource applied',
     );
     StudioTurnView? latestTurn() {
@@ -277,8 +283,10 @@ void main() {
     expect(transport.realSecondRpcStarted, isFalse);
     expect(transport.receipt, isNull);
     expect(
-      observed.entries.where(
-        (entry) => entry.atom.source == InputChatSource(inputId: inputId),
+      observed.singleBlocks.where(
+        (block) =>
+            (block.body as SingleDisplayBlock).record.atom.source ==
+            InputChatSource(inputId: inputId),
       ),
       isEmpty,
     );
@@ -302,8 +310,10 @@ void main() {
     expect(find.text('已收到，等待同步'), findsOneWidget);
     expect(card.hitTestable(), findsOneWidget);
     expect(
-      observed.entries.where(
-        (entry) => entry.atom.source == InputChatSource(inputId: inputId),
+      observed.singleBlocks.where(
+        (block) =>
+            (block.body as SingleDisplayBlock).record.atom.source ==
+            InputChatSource(inputId: inputId),
       ),
       isEmpty,
     );
@@ -315,21 +325,26 @@ void main() {
       () =>
           owner.submissions.value.isEmpty &&
           card.evaluate().isEmpty &&
-          observed.entries
+          observed.singleBlocks
                   .where(
-                    (entry) =>
-                        entry.atom.source == InputChatSource(inputId: inputId),
+                    (block) =>
+                        (block.body as SingleDisplayBlock).record.atom.source ==
+                        InputChatSource(inputId: inputId),
                   )
                   .length ==
               1,
       'one canonical input replaces the local echo',
     );
     expect(card, findsNothing);
-    final canonical = observed.entries.singleWhere(
-      (entry) => entry.atom.source == InputChatSource(inputId: inputId),
+    final canonical = observed.singleBlocks.singleWhere(
+      (block) =>
+          (block.body as SingleDisplayBlock).record.atom.source ==
+          InputChatSource(inputId: inputId),
     );
-    await observed.revealItem(canonical);
-    final row = observed.itemRow(canonical.recordId);
+    final canonicalBody = canonical.body as SingleDisplayBlock;
+    expect(completedOriginalId(canonicalBody.record), isNotNull);
+    await observed.revealSingle(canonical);
+    final row = observed.itemRow(canonical.id);
     expect(row.hitTestable(), findsOneWidget);
     expect(
       tester.widget<ChatItemView>(row).item.atom!.source,
@@ -338,7 +353,8 @@ void main() {
     expect(find.text(_second), findsOneWidget);
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,
-      'recordId': canonical.recordId,
+      'blockId': canonical.id,
+      'recordId': completedOriginalId(canonicalBody.record),
       'deliverySequence': transport.lastHeldSequence,
     });
     await capturePresentation(tester, 'submission-canonical.png');
@@ -348,11 +364,12 @@ void main() {
       return turn != null &&
           turn.turnId != firstTurn.turnId &&
           turn.state.status == StudioTurnStatus.completed &&
-          observed.entries.any(
-            (entry) =>
-                entry.atom.source ==
+          observed.singleBlocks.any(
+            (block) =>
+                (block.body as SingleDisplayBlock).record.atom.source ==
                     ForegroundTurnChatSource(turnId: turn.turnId) &&
-                entry.atom.kind == ChatAtomKind.text,
+                (block.body as SingleDisplayBlock).record.atom.kind ==
+                    ChatAtomKind.text,
           );
     }, 'second real model turn completed after interrupting the first');
     report['inputId'] = inputId;
@@ -449,21 +466,20 @@ class _SubmissionTransport extends FrbStudioTransport {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async => _SubmissionFeed(
-    await super.openConversationFeed(threadId, scope: scope, demand: demand),
+    await super.openTimelineFeed(threadId, demand: demand),
     this,
   );
 }
 
 /// asyncMap preserves order/identity/backpressure. ACK and reader stay on the
 /// original feed. Closing releases an in-flight barrier before joining native.
-class _SubmissionFeed implements ConversationFeed {
+class _SubmissionFeed implements TimelineFeed {
   _SubmissionFeed(this.original, this.owner);
-  final ConversationFeed original;
+  final TimelineFeed original;
   final _SubmissionTransport owner;
   late final Stream<ConversationFrame> _events = original.events.asyncMap(
     owner.deliver,
@@ -474,6 +490,26 @@ class _SubmissionFeed implements ConversationFeed {
   String get subscriptionId => original.subscriptionId;
   @override
   ConversationReader get reader => original.reader;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => original.loadTimelineOlder(before: before, demand: demand);
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => original.loadLiveOlder(before: before, demand: demand);
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => original.openDisplayMembers(
+    reference: reference,
+    window: window,
+    demand: demand,
+  );
   @override
   Stream<ConversationFrame> get events => _events;
   @override

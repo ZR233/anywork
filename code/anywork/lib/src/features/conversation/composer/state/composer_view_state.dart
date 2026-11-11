@@ -74,8 +74,10 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
     /// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
     required StudioRecoveryIssue? recoveryIssue,
 
-    /// 目录行或已加载 canonical workspace.thread 已 closing/closed：
-    /// 不显示执行入口，历史仍展示、草稿不清。
+    /// 当前 Native 目录身份是否已永久封闭执行。
+    ///
+    /// Closing/closed 时不显示执行入口，历史仍展示、草稿不清；
+    /// 独立会话快照中的 Core 资源关闭状态不参与此判定。
     required bool executionClosed,
     required List<ChildInteractionSummary> childInteractions,
     required DomainSyncStatus? childInteractionSync,

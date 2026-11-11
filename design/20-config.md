@@ -233,13 +233,15 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 
 ## 20.8 MCP 按环境独立单文件配置与合并规则
 
+自定义与内置 MCP 服务均可配置布尔字段 `required`，默认 `false`；旧文档省略该字段即视为可选，不重写用户文件或凭据。该字段仅约束已启用服务，禁用优先；启用且必需的服务缺少凭据或准备失败会阻止会话初次装配。继承或整份覆盖同时携带该字段，不维护第二份启动策略。准备、状态和工具目录语义见 [9.6](./09-tool-runtime.md#96-mcp-能力声明thread-独占运行时与轮次租约)，操作示例见内置 MCP 配置指南。
+
 MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模型（独立根版本 `schema_version = 1`），不再嵌入 `config.toml`：
 - **Host 作用域（`McpScope::Host`）**：保存在 `~/.anywork/mcp/host/<server-key>.toml`，定义本地会话的 MCP 服务及 SSH 会话的默认继承基线。
 - **SSH 服务器作用域（`McpScope::Ssh { ssh_alias }`）**：保存在 `~/.anywork/mcp/ssh/<ssh-key>/<server-key>.toml`，定义该 SSH 服务器的专属 MCP 服务、对同名 Host 服务的覆盖配置或禁用墓碑。
 
 `server-key` 与 `ssh-key` 分别为稳定服务 ID 与 SSH alias 的 SHA-256，由现有路径 owner 生成；文件名不是语义 ID。每份文档必须携带字符串 `id`，仅允许包含 ASCII 字母、数字、`_` 与 `-`，目录条目交付实际文档引用供读取和编辑，调用方不能根据显示名称猜文件路径。文档通过 `kind` 区分三类配置：
-- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），包含 `enabled`（默认 `true`）与传输方式 `transport`（`stdio` 或 `streamableHttp`）。`stdio` 服务须配置 `command`、`args`、`env` 及可选 `cwd`（SSH 作用域下 `cwd` 必须为远端 POSIX 绝对路径）；`streamableHttp` 服务须配置 `url`、`headers` 及可选 `bearer_token_env_var`。
-- `kind = "builtin"`：内置智谱 Coding Plan MCP 服务的启用开关覆盖（仅限保留 ID `zhipu_search`、`zhipu_reader`、`zhipu_zread`、`zhipu_vision`），仅包含 `enabled: bool`。
+- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），显式声明 `transport`（`stdio` 或 `streamableHttp`）。stdio 必须提供命令，HTTP 必须提供 URL，两类传输字段不能混用；进程参数、环境、HTTP 头、超时和工具过滤等完整字段及默认值见内置 [MCP 配置指南](../code/pl-studio-runtime/assets/skills/studio-config/references/mcp.md)。SSH stdio 的工作目录按远端 POSIX 语义解析：省略时使用实际工作区，相对路径相对于该工作区解析，也可直接使用绝对路径。
+- `kind = "builtin"`：内置服务的启用开关覆盖，`id` 与 `builtin_id` 必须匹配保留身份；只有 stdio 内置服务允许指定工作目录，端点、命令和凭据来源由产品管理。
 - `kind = "disabled"`：仅限 SSH 作用域目录使用的**按服务器禁用墓碑**，显式屏蔽继承自 Host 的同名自定义或内置服务；删除该墓碑文件即可恢复继承 Host 配置。Host 作用域下禁止写入 `kind = "disabled"`。
 
 `McpScope::Ssh { ssh_alias }` 的有效目录按稳定 `id` 合并（严禁在 SSH 覆盖失败、禁用或配置损坏时静默回退到 Host 配置）：
@@ -249,6 +251,10 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 4. 若某个单文件 TOML 解析或校验失败，仅将该文件对应的 `id` 标记为 `InvalidDocument` 并保留诊断供用户在设置页修复或删除，不影响同目录下其他合法文件，也绝不回退读取被其覆盖的 Host 同名文件。
 
 设置页的 MCP 标签页按作用域（`Host` 或 `SSH · <alias>`）展示合并后的静态期望配置与单文件诊断，提供单文件 TOML 新建、编辑、删除、按机覆盖、按机禁用与恢复继承操作，不在设置页发起运行时探测连接。真实的 MCP 进程与连接生命周期由每个已激活会话（`Thread`）独占的 `McpRuntime` 持有，工具命名规范化（格式为 `mcp__{server_id}__{tool_name}`，最长 64 字符，超长或冲突时追加稳定哈希后缀）、轮次租约（`McpTurnLease`）与会话状态栏重连契约见 [09](./09-tool-runtime.md) §9.6。
+
+配置文档创建、保存、删除与重载在验证并发布目录后，统一增量应用至受影响的活跃 Thread；文件系统直接编辑仍需显式重载，不新增常驻文件监视器。智能体可调用空参数的 `refresh_mcp` 重载其 Thread 固定环境的有效配置并重新发现工具；SSH 环境同时重读 Host 继承来源，不允许调用者选择其他环境。主动刷新、逐服务结果与后续工具目录生效语义统一见 [09](./09-tool-runtime.md) §9.2、§9.6；文件格式、版本与凭据存储不变。
+
+配置目录所有者也是有效配置授权的唯一发布者：有效配置提交与旧授权失效在同一同步边界完成，快照读取同时返回对应授权；不能在网络操作结束后才补发撤权。Host 变更须使受影响的继承作用域失效，SSH 局部修改不撤销无关作用域；仅文案、诊断或无实质配置变化不制造新权限身份。此授权只存在于进程内，不进入 TOML、模型上下文或持久化凭据，运行时及内核的消费规则见 [09](./09-tool-runtime.md)。
 
 内置智谱 Coding Plan MCP 服务固定包含 `zhipu_search`、`zhipu_reader`、`zhipu_zread`（均为官方端点的 `Streamable HTTP` 传输）与 `zhipu_vision`（经 `npm` 启动的 `stdio` 传输）。这组内置服务仅复用 `template = "zhipu-coding-plan"` 账号实例的有效 Bearer 令牌（存在多个实例时按账号 ID 稳定排序选取首个具备有效凭据的实例）；无可用令牌时配置状态标记为缺少前置凭据且不发起连接，具备有效令牌且未在当前作用域禁用时由激活会话的 `McpRuntime` 按需连接。
 
@@ -264,7 +270,7 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 - `disabled`：禁用的技能名称列表，默认空列表。
 - `auto_learn_min_tool_calls`：触发自学习审查所需的最少工具调用次数，默认 `5`。
 
-用户技能直接读取平台用户主目录 `.agents/skills/`，不配置 `user_dir`，不受 Studio home 覆盖影响。配置升级在具名迁移中移除旧字段且保留其他选择；旧内容只保全，不向标准目录复制或覆盖。目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 `studio-config` 技能是面向智能体的 `anywork` 配置指南；任何涉及配置文件路径、结构版本、配置段字段及默认值、凭据解析优先级或保存重载语义的变更，均须在同一提交中同步更新该技能文档。
+用户技能直接读取平台用户主目录 `.agents/skills/`，不配置 `user_dir`，不受 Studio home 覆盖影响。配置升级在具名迁移中移除旧字段且保留其他选择；旧内容只保全，不向标准目录复制或覆盖。目录优先级、前置元数据（frontmatter）格式、工具契约与自学习语义见 [10](./10-skills.md)。系统内置的 [studio-config](../code/pl-studio-runtime/assets/skills/studio-config/SKILL.md) 提供当前实现的配置位置、格式、默认值、有效示例及生效验证说明，按配置领域拆分参考文档；不保存历史格式或迁移流水账。本文保留所有权、发布和迁移契约，不再复制完整操作手册。新增配置及配置变更的同提交同步要求见 [项目规约](../AGENTS.md)。
 
 ## 20.10 配置草稿与保存前校验
 

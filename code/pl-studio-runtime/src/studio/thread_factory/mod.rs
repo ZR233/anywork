@@ -6,6 +6,7 @@ mod errors;
 mod execution_admission;
 mod execution_cleanup;
 pub(crate) mod mcp;
+mod mcp_refresh_tool;
 pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;

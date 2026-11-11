@@ -19,6 +19,47 @@ Widget host(Widget child) => MaterialApp(
   home: Scaffold(body: child),
 );
 void main() {
+  testWidgets('热更新字面标记经 Markdown 行内代码保留完整四字形', (tester) async {
+    var source = '热更新正文：';
+    final markers = <String>[];
+    for (var index = 0; index <= 20; index++) {
+      if (index > 0) {
+        final number = index.toString().padLeft(2, '0');
+        source += ' `[$number]`';
+        markers.add('[$number]');
+      }
+      await tester.pumpWidget(
+        host(
+          TimelineMarkdown(
+            id: 'hot-update-literal-markers',
+            text: source,
+            onLink: (_) => fail('字面标记不是链接'),
+            isSafeLink: (_) => false,
+            imageBuilder: (_, _) => throw StateError('没有图片'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final paragraphs = find.descendant(
+        of: find.byType(TimelineMarkdown),
+        matching: find.byWidgetPredicate((widget) => widget is RichText),
+      );
+      final texts = tester
+          .widgetList<RichText>(paragraphs)
+          .map((widget) => widget.text.toPlainText())
+          .toList();
+      expect(texts.any((text) => text.contains('热更新正文：')), isTrue);
+      for (final marker in markers) {
+        expect(
+          texts.where((text) => text.contains(marker)),
+          hasLength(1),
+          reason: '正文必须绘制完整字面标记，而不是来源标签的占位符或编号',
+        );
+      }
+      expect(tester.takeException(), isNull);
+    }
+  });
+
   testWidgets('Timeline Markdown 邮箱与不安全链接均无手势且保留源文', (tester) async {
     const source = 'user@example.test\n\n[危险链接](javascript:alert(1))';
     var launched = false;

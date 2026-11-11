@@ -70,26 +70,31 @@ class _PlanDetailViewState extends State<PlanDetailView> {
     key: StudioDriverKeys.planDetails,
     builder: (context, constraints) {
       final header = SelectionContainer.disabled(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 8, 12),
-              child: Row(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 8, 8),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final titleAndStatus = Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Icon(
                     Icons.description_outlined,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      widget.title,
-                      key: StudioDriverKeys.planDetailsTitle,
-                      style: Theme.of(context).textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
+                  Text(
+                    widget.title,
+                    key: StudioDriverKeys.planDetailsTitle,
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
                   ),
+                  _PlanStatus(status: widget.status),
+                ],
+              );
+              final actions = Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   if (widget.onToggleReadingMode != null) ...[
                     IconButton(
                       key: StudioDriverKeys.planDetailsReadingMode,
@@ -122,17 +127,33 @@ class _PlanDetailViewState extends State<PlanDetailView> {
                     icon: const Icon(Icons.close),
                   ),
                 ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-              child: _PlanStatus(status: widget.status),
-            ),
-          ],
+              );
+
+              if (constraints.maxWidth < 440) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    titleAndStatus,
+                    const SizedBox(height: 4),
+                    Align(
+                      alignment: AlignmentDirectional.centerEnd,
+                      child: actions,
+                    ),
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: titleAndStatus),
+                  actions,
+                ],
+              );
+            },
+          ),
         ),
       );
       final body = MarkdownDocumentBody(
-        child: widget.body ?? const _PlanEmptyBody(),
+        child: widget.body ?? const SizedBox.shrink(),
       );
       Widget scroll(Widget child) => Scrollbar(
         controller: _scroll,
@@ -173,97 +194,42 @@ class _PlanStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final (icon, tone, copy) = switch (status) {
-      PlanDetailStatus.drafting => (
-        Icons.edit_outlined,
-        StudioTone.neutral,
-        l10n.planDetailDraftingHelp,
-      ),
+    final (icon, tone) = switch (status) {
+      PlanDetailStatus.drafting => (Icons.edit_outlined, StudioTone.neutral),
       PlanDetailStatus.awaitingConfirmation => (
         Icons.schedule,
         StudioTone.warning,
-        l10n.planDetailAwaitingHelp,
       ),
       PlanDetailStatus.revisionRequested => (
         Icons.edit_outlined,
         StudioTone.brand,
-        l10n.planDetailRevisionHelp,
       ),
-      PlanDetailStatus.approved => (
-        Icons.check,
-        StudioTone.success,
-        l10n.planDetailApprovedHelp,
-      ),
+      PlanDetailStatus.approved => (Icons.check, StudioTone.success),
     };
     final foreground = tone.foreground(context);
-    return Wrap(
-      spacing: 12,
-      runSpacing: 8,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: tone.background(context),
-            borderRadius: BorderRadius.circular(24),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 14, color: foreground),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    planDetailStatusLabel(context, status),
-                    key: StudioDriverKeys.planDetailsStatus,
-                    style: Theme.of(context).textTheme.labelMedium
-                        ?.copyWith(color: foreground),
-                  ),
-                ),
-              ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: tone.background(context),
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: foreground),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                planDetailStatusLabel(context, status),
+                key: StudioDriverKeys.planDetailsStatus,
+                style: Theme.of(context).textTheme.labelMedium
+                    ?.copyWith(color: foreground),
+              ),
             ),
-          ),
+          ],
         ),
-        Text(
-          copy,
-          style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
-        ),
-      ],
+      ),
     );
   }
-}
-
-class _PlanEmptyBody extends StatelessWidget {
-  const _PlanEmptyBody();
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 24),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          Icons.description_outlined,
-          size: 32,
-          color: Theme.of(context).colorScheme.outline,
-        ),
-        const SizedBox(height: 16),
-        Text(
-          context.l10n.planDetailEmptyTitle,
-          style: Theme.of(context).textTheme.titleMedium,
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          context.l10n.planDetailEmptyHelp,
-          style: Theme.of(context).textTheme.bodyMedium
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
-          textAlign: TextAlign.center,
-        ),
-      ],
-    ),
-  );
 }

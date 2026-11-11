@@ -21,7 +21,7 @@ import 'package:go_router/go_router.dart';
 
 import '../support/recording_demo_transport.dart';
 import '../support/chat_fixtures.dart';
-import '../support/mapped_conversation_feed.dart';
+import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 
@@ -118,7 +118,7 @@ void main() {
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.feeds,
+        transport.timelineFeeds,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
@@ -128,13 +128,17 @@ void main() {
         reason: 'Navigating without a Thread opens no state subscription',
       );
 
-      // Demo's _rootWorkspace installs turn-demo user/reasoning/tool/final
-      // at positions 1..4. seedTimelineItems appends after that explicit fixture.
+      // Raw completions and producer-chosen display positions are seeded separately.
       const firstPosition = 5;
-      transport.seedTimelineItems('thread-main', [
+      final seeded = [
         for (var i = 0; i < 40; i++)
           chatMessage('route-item-$i', completionSeq: firstPosition + i),
-      ]);
+      ];
+      transport.seedTimelineItems('thread-main', seeded);
+      transport.seedDisplayBlocks(
+        threadId: 'thread-main',
+        blocks: [for (final entry in seeded) displaySingle(entry)],
+      );
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
         tester,
@@ -153,7 +157,7 @@ void main() {
         'thread-main',
       )!;
       final attemptId = session.content.currentAttemptId?.value;
-      final connection = transport.feeds.single;
+      final connection = transport.timelineFeeds.single;
       final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -200,10 +204,10 @@ void main() {
             'route fixture must leave older content: loaded=${oldLease.loadedCount}, reads=${transport.pageCalls}, demand=${oldLease.demand.maxItems}',
       );
       final previousPageCalls = transport.pageCalls;
-      final oldPage = Completer<ChatBatch>();
+      final oldPage = Completer<TimelineBatch>();
       addTearDown(() {
         if (!oldPage.isCompleted) {
-          oldPage.complete(chatBatch([], placement: ChatPlacement.prepend));
+          oldPage.complete(displayBatch([], placement: ChatPlacement.prepend));
         }
       });
       transport.scriptedPage = oldPage;
@@ -260,13 +264,16 @@ void main() {
             ),
           );
           expect(completed.state, isA<CompletedStudioTurnState>());
-          transport.seedTimelineItems('thread-main', [
-            chatMessage(
-              'settings-completed-body',
-              body: '隐藏期间完成的真实正文',
-              completionSeq: 100,
-            ),
-          ]);
+          final completedBody = chatMessage(
+            'settings-completed-body',
+            body: '隐藏期间完成的真实正文',
+            completionSeq: 100,
+          );
+          transport.seedTimelineItems('thread-main', [completedBody]);
+          transport.seedDisplayBlocks(
+            threadId: 'thread-main',
+            blocks: [displaySingle(completedBody, historyPos: 45)],
+          );
           expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
           expect(connection.deliveredFrames, hiddenFrames);
@@ -278,28 +285,28 @@ void main() {
             graph.client.conversations.existingSession('thread-main'),
             same(session),
           );
-          expect(transport.feeds, hasLength(1));
+          expect(transport.timelineFeeds, hasLength(1));
         },
       );
 
       await pumpClientUntil(
         tester,
         () =>
-            transport.feeds.length == 2 &&
+            transport.timelineFeeds.length == 2 &&
             graph.timeline.lease('thread-main') != null &&
             session.state.activeTurn == null &&
             session.state.runtime?.execution == null,
         'fresh visible feed reads hidden completion',
       );
-      final newConnection = transport.feeds.last;
+      final newConnection = transport.timelineFeeds.last;
       final newLease = graph.timeline.lease('thread-main')!;
       expect(newConnection.subscriptionId, isNot(connection.subscriptionId));
       expect(newLease, isNot(same(oldLease)));
       final currentMessages = [...newLease.controller.messages];
       final currentBefore = newLease.olderCursor;
       oldPage.complete(
-        chatBatch([
-          chatMessage('late-old-page'),
+        displayBatch([
+          displaySingle(chatMessage('late-old-page')),
         ], placement: ChatPlacement.prepend),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
@@ -328,7 +335,8 @@ void main() {
               (item) =>
                   item.id == 'settings-completed-body' &&
                   item.atom?.lifecycle is TerminalChatAtom &&
-                  item.displayUnit?.entry.completionSeq == 100,
+                  item.displayUnit?.body is SingleDisplayBlock &&
+                  item.atom?.completionSeq == 100,
             ),
         isNotEmpty,
         reason: '新内容基线包含隐藏期间真正提交的终态事实',
@@ -347,7 +355,7 @@ void main() {
       );
       expect(session.content.currentAttemptId?.value, isNot(attemptId));
       expect(session.content.state.value.snapshot != null, isTrue);
-      expect(transport.feeds, hasLength(2));
+      expect(transport.timelineFeeds, hasLength(2));
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
       expect(connection.deliveredFrames, hiddenFrames);
@@ -417,7 +425,7 @@ void main() {
           final directoryFrame = await directoryDemand.state
               .waitFor((state) => state.frame != null)
               .timeout(const Duration(seconds: 5));
-          expect(directoryFrame.frame!.rows, isEmpty);
+          expect(directoryFrame.frame!.threadIds, isEmpty);
           final metadataDemand = graph.client.threadDirectory.observeThread(
             'thread-alt',
           );
@@ -458,7 +466,7 @@ void main() {
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
-          final botFeed = transport.feeds.last;
+          final botFeed = transport.timelineFeeds.last;
           final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
           expect(router.routerDelegate.state.name, BotConversationRoute.name);
@@ -495,7 +503,7 @@ void main() {
           // independent sidebar query still has no matching rows.
           expect(graph.client.findThread('thread-alt'), isNotNull);
           expect(facts.workspace!.threadId, 'thread-alt');
-          expect(directoryDemand.state.value.frame!.rows, isEmpty);
+          expect(directoryDemand.state.value.frame!.threadIds, isEmpty);
           expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
           expect(graph.client.selection.state.selectedThreadId, isNull);
           unawaited(
@@ -540,7 +548,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(_composerText(tester), 'Bot draft follows route target');
-          final returnedFeed = transport.feeds.last;
+          final returnedFeed = transport.timelineFeeds.last;
           expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
@@ -620,7 +628,10 @@ void main() {
       );
       expect(connection.joined.isCompleted, isTrue);
       expect(newConnection.joined.isCompleted, isTrue);
-      expect(transport.feeds.every((feed) => feed.joined.isCompleted), isTrue);
+      expect(
+        transport.timelineFeeds.every((feed) => feed.joined.isCompleted),
+        isTrue,
+      );
       expect(tester.takeException(), isNull);
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -680,17 +691,13 @@ DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 /// 只选择权威发布时点；状态与正文均由 Demo 自身发布点生成，不向旧 feed 注入事实。
 final class _RouteTurnTransport extends RecordingDemoTransport {
   _RouteTurnTransport() {
-    conversationFeedFactory = (threadId, inner) async => MappedConversationFeed(
-      inner,
-      (frame) => frame,
-      reader: _RouteReader(inner.reader, this),
-    );
+    timelineFeedFactory = (_, inner) async => _RouteTimelineFeed(inner, this);
   }
   int _turnUpdates = 0;
   int runtimeSubscriptions = 0;
   int runtimeCancellations = 0;
   late String botProjectId;
-  Completer<ChatBatch>? scriptedPage;
+  Completer<TimelineBatch>? scriptedPage;
   int pageCalls = 0;
 
   @override
@@ -717,18 +724,13 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   );
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<TimelineFeed> openTimelineFeed(
     String threadId, {
-    required ChatScope scope,
     required ReadDemand demand,
   }) async {
-    final feed = await super.openConversationFeed(
-      threadId,
-      scope: scope,
-      demand: demand,
-    );
+    final feed = await super.openTimelineFeed(threadId, demand: demand);
     if (threadId != 'thread-main') return feed;
-    final owner = feed as RecordingConversationFeed;
+    final owner = feed as RecordingTimelineFeed;
     runtimeSubscriptions++;
     owner.onClosed = () {
       runtimeCancellations++;
@@ -769,62 +771,18 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   }
 }
 
-final class _RouteReader implements ConversationReader {
-  _RouteReader(this.inner, this.transport);
-  final ConversationReader inner;
+final class _RouteTimelineFeed extends RecordingTimelineFeed {
+  _RouteTimelineFeed(TimelineFeed inner, this.transport) : super(inner: inner);
   final _RouteTurnTransport transport;
   @override
-  String get threadId => inner.threadId;
-  @override
-  Future<ThreadBusinessRefs> readBusinessRefs() => inner.readBusinessRefs();
-  @override
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
-    required ReadDemand demand,
-  }) => inner.readCompleted(recordId: recordId, demand: demand);
-  @override
-  Future<ChatBatch> loadOlder({
+  Future<TimelineBatch> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
     transport.pageCalls++;
     final gate = transport.scriptedPage;
     transport.scriptedPage = null;
-    return gate?.future ?? inner.loadOlder(before: before, demand: demand);
+    return gate?.future ??
+        super.loadTimelineOlder(before: before, demand: demand);
   }
-
-  @override
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  }) => inner.listContents(
-    itemId: itemId,
-    continuation: continuation,
-    demand: demand,
-  );
-  @override
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) => inner.readContent(reference: reference, range: range);
-  @override
-  ConversationContentWatch watchContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) => inner.watchContent(reference: reference, range: range);
-  @override
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) => inner.pageCurrent(
-    reference: reference,
-    continuation: continuation,
-    demand: demand,
-  );
-  @override
-  void requestClose() => inner.requestClose();
-  @override
-  Future<void> close() => inner.close();
 }

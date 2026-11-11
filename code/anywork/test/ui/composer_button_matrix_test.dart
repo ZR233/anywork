@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/connectors/composer_dock_connector.dart';
+import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -14,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/pump_client_future.dart';
+import '../support/mapped_conversation_feed.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -29,6 +31,42 @@ final _continuation = ContinuationView(
 
 /// 记录停止/继续目标并按脚本受理或拒绝；canonical 执行与继续点由测试注入。
 final class _ScriptedTransport extends RecordingDemoTransport {
+  ThreadStatusView? directoryStatus;
+  PendingInteraction? restoredPlan;
+
+  @override
+  Future<ConversationStateFeed> openConversationStateFeed(
+    String threadId,
+  ) async {
+    final inner = await super.openConversationStateFeed(threadId);
+    final plan = restoredPlan;
+    if (plan == null) return inner;
+    return MappedConversationStateFeed(inner, (frame) {
+      if (frame case ThreadSnapshotFrame(:final workspace)) {
+        return ThreadSnapshotFrame(
+          workspace: workspace.copyWith(
+            thread: workspace.thread.copyWith(status: ThreadStatusView.closed),
+            interactions: [plan],
+            runtime: workspace.runtime.copyWith(
+              execution: null,
+              continuation: null,
+            ),
+          ),
+          completedHistoryVersion: frame.completedHistoryVersion,
+          schemaVersion: frame.schemaVersion,
+        );
+      }
+      return frame;
+    });
+  }
+
+  @override
+  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
+    final inner = await super.openThreadObservation(threadId);
+    final status = directoryStatus;
+    return status == null ? inner : _StatusObservation(inner, status);
+  }
+
   final List<String> stopTargets = [];
   final List<({String threadId, String continuationId, int revision})>
   continues = [];
@@ -92,6 +130,37 @@ final class _ScriptedTransport extends RecordingDemoTransport {
   }
 }
 
+/// Only the external directory response changes; Client owns metadata reduction.
+final class _StatusObservation implements ThreadObservationHandle {
+  _StatusObservation(this.inner, this.status);
+  final ThreadObservationHandle inner;
+  final ThreadStatusView status;
+
+  @override
+  Future<ThreadMetadataFrame?> next() async {
+    final frame = await inner.next();
+    if (frame == null) return null;
+    return ThreadMetadataFrame(
+      threadId: frame.threadId,
+      stamp: ResourceStamp(
+        resourceKey: frame.stamp.resourceKey,
+        ownerEpoch: frame.stamp.ownerEpoch,
+        revision: frame.stamp.revision + 1,
+      ),
+      row: frame.row?.copyWith(
+        backend: (frame.row!.backend as NativeAgentBackendView).copyWith(
+          status: status,
+        ),
+      ),
+    );
+  }
+
+  @override
+  void requestClose() => inner.requestClose();
+  @override
+  Future<void> close() => inner.close();
+}
+
 StudioCommandReceipt _receipt(OperationId operationId) => StudioCommandReceipt(
   operationId: operationId,
   disposition: CommitDisposition.applied,
@@ -145,8 +214,14 @@ final class _Composer {
 
 const _unset = Object();
 
-Future<_Composer> _composer(WidgetTester tester) async {
-  final transport = _ScriptedTransport();
+Future<_Composer> _composer(
+  WidgetTester tester, {
+  ThreadStatusView? directoryStatus,
+  PendingInteraction? restoredPlan,
+}) async {
+  final transport = _ScriptedTransport()
+    ..directoryStatus = directoryStatus
+    ..restoredPlan = restoredPlan;
   final graph = AppGraph(
     transport: transport,
     clientId: 'composer-matrix',
@@ -257,6 +332,69 @@ Future<void> _close(WidgetTester tester, _Composer composer) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final status in [
+    ThreadStatusView.idle,
+    ThreadStatusView.closing,
+    ThreadStatusView.closed,
+  ]) {
+    testWidgets('目录 ${status.name} 决定旧 closed 快照中待确认计划的执行资格', (tester) async {
+      final pending = PendingInteraction(
+        id: 'restored-plan',
+        threadId: _threadId,
+        turnId: 'plan-turn',
+        kind: InteractionKind.userInput,
+        title: 'Plan',
+        body: '# Restored plan',
+        payload: const UserInputInteractionPayload(
+          questions: [
+            UserQuestionView(
+              id: agentSessionPlanConfirmationQuestionId,
+              header: 'Implementation plan',
+              question: '# Restored plan\n\n1. Preserve pending decisions.',
+              isOther: false,
+              isSecret: false,
+              options: [],
+            ),
+          ],
+        ),
+      );
+      // The stale identity must arrive in the first State frame: later frames
+      // deliberately do not replace the session's original identity.
+      final composer = await _composer(
+        tester,
+        directoryStatus: status,
+        restoredPlan: pending,
+      );
+      await _pump(tester, composer);
+      expect(
+        (composer.owner.state.directoryRow!.backend as NativeAgentBackendView)
+            .status,
+        status,
+      );
+      expect(
+        composer.owner.state.workspace?.thread.status,
+        ThreadStatusView.closed,
+        reason: 'session snapshot remains a separate version domain',
+      );
+      expect(composer.owner.state.interactions, [pending]);
+      final visible = status == ThreadStatusView.idle;
+      expect(
+        find.byType(PlanConfirmationConnector),
+        visible ? findsOneWidget : findsNothing,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.planApprove),
+        visible ? findsOneWidget : findsNothing,
+      );
+      expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
+      expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
+      expect(find.byKey(StudioDriverKeys.composerContinue), findsNothing);
+      expect(composer.transport.submitCalls, 0);
+      expect(composer.transport.continues, isEmpty);
+      await _close(tester, composer);
+    });
+  }
 
   testWidgets('点击停止使用执行身份；空输入继续只能点击且携带已观察路由版本', (tester) async {
     final composer = await _composer(tester);
@@ -1672,12 +1810,13 @@ void main() {
       lessThanOrEqualTo(84),
       reason: '原因区受高度约束，长文案改在区内滚动',
     );
-    // 320 宽下选择器行本身已有既有的横向溢出（`session_selectors.dart` /
-    // `studio_menu_label.dart`，与本原因区无关），这里把它们取走，
-    // 在不溢出的宽度上单独验证原因区不新增溢出。
-    while (tester.takeException() != null) {}
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: '320 宽下选择器及原因区都服从真实可用宽度，不忽略布局错误',
+    );
 
-    // 不触发选择器横向溢出的窄宽 + 矮高：三种原因同时存在也不产生溢出。
+    // 视口调整后仍保留三类原因，且不产生新的布局错误。
     await _pumpSized(
       tester,
       composer,

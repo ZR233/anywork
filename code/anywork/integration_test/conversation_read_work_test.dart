@@ -226,14 +226,34 @@ void main() {
       }
       final applied = events
           .where((event) => event['name'] == 'conversation.applied')
-          .map((event) => event['args'] as Map<String, dynamic>);
+          .map((event) => event['args'] as Map<String, dynamic>)
+          .toList();
+      final generationApplied = applied
+          .where((args) => args['generation'] == samples.last['generation'])
+          .toList();
+      final initialSet = generationApplied.singleWhere(
+        (args) => args['placement'] == 'set',
+      );
+      expect(initialSet['acceptedBlocks'], initialSet['controllerMessages']);
+      expect(initialSet['acceptedBlocks'], greaterThan(0));
+      expect(initialSet['acceptedBlocks'], lessThan(total));
+      // First content layout may already include viewport-filling prepends.
+      // Check each actual admission cut, not a Set batch against a later total.
+      var admitted = 0;
+      final admittedCounts = <int>[];
+      for (final args in generationApplied) {
+        if (args['placement'] == 'set') admitted = 0;
+        admitted += args['acceptedBlocks'] as int;
+        expect(args['controllerMessages'], admitted);
+        admittedCounts.add(admitted);
+      }
       expect(
-        applied.singleWhere(
-          (args) =>
-              args['placement'] == 'set' &&
-              args['generation'] == samples.last['generation'],
-        )['acceptedEntries'],
-        samples.last['initialControllerMessages'],
+        admittedCounts,
+        contains(samples.last['initialControllerMessages']),
+      );
+      expect(
+        admittedCounts,
+        contains(samples.last['afterPageControllerMessages']),
       );
       expect(
         applied.where((args) => args['placement'] == 'prepend'),

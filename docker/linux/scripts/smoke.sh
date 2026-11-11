@@ -61,9 +61,10 @@ for package in packages:
 print(f"flutter-tools-package-roots-readable={len(packages)}; no-private-root-paths")
 PYTHON
 for tool in clang clang++ cmake ninja pkg-config dpkg-deb dpkg-shlibdeps \
-    desktop-file-validate xvfb-run dbus-run-session; do
+    desktop-file-validate xvfb-run xprop xwininfo dbus-run-session; do
     command -v "$tool"
 done
+xvfb-run -a bash -euc 'xprop -root >/dev/null; xwininfo -root >/dev/null'
 cat > main.rs <<'RUST'
 fn main() {
     println!("rust-host-ok");

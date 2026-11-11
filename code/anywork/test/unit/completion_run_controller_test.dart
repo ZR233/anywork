@@ -1,236 +1,299 @@
 import 'dart:async';
-import 'dart:collection';
 
-import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 void main() {
-  late _CountingController stock;
+  late InMemoryChatController stock;
   late TimelineMessageController adapter;
-  late List<ChatOperation> operations;
   late StreamSubscription<ChatOperation> subscription;
+  late List<ChatOperation> operations;
+  final intents = <String, TimelineExpansionIntent>{};
   setUp(() {
-    stock = _CountingController();
-    adapter = TimelineMessageController(stock, generation: 1);
+    intents.clear();
+    stock = InMemoryChatController();
     operations = [];
     subscription = stock.operationsStream.listen(operations.add);
+    adapter = TimelineMessageController(
+      stock,
+      generation: 1,
+      expansionForBlock: (id) =>
+          intents.putIfAbsent(id, TimelineExpansionIntent.new),
+    );
   });
   tearDown(() async {
     adapter.dispose();
     await subscription.cancel();
     stock.dispose();
   });
-  Future<void> flush() => Future<void>.delayed(Duration.zero);
   TimelineDisplayUnit unit(int index) =>
       stock.messages[index].metadata![timelineDisplayUnitKey]
           as TimelineDisplayUnit;
 
+  test('a frozen 100000-member block is one synchronous Main operation without members', () async {
+    final accepted = adapter.applyTimeline(
+      displayBatch([displayWork('large', 3, total: 100000)]),
+    );
+    expect(
+      stock.messages.single.id,
+      'large',
+      reason: 'mutation precedes Future/paint',
+    );
+    expect(unit(0).summary!.total, 100000);
+    expect(unit(0).expansion.members, isNull);
+    await accepted;
+    await Future<void>.delayed(Duration.zero);
+    expect(operations.single.type, ChatOperationType.set);
+    expect(operations.single.animated, isFalse);
+  });
+
   test(
-    'Set uses one operation and Prepend accepts complete representatives',
+    'Set/Prepend/Append each batch once and never update an old tail block',
     () async {
-      await adapter.applyBatch(
-        completedBatch(
-          [completionEntry('latest', 20, start: 10, ordinal: 9)],
-          through: 25,
-          before: 'older',
-        ),
-      );
-      await flush();
-      expect(operations.single.type, ChatOperationType.set);
-      expect(operations.single.animated, isFalse);
-      final latest = stock.messages.single;
-      await adapter.applyBatch(
-        completedBatch(
-          [
-            completionEntry('first', 5, start: 1, ordinal: 4),
-            completionEntry('text', 8, presentation: MainPresentation.single),
-          ],
+      await adapter.applyTimeline(displayBatch([displayWork('middle', 3)]));
+      await adapter.applyTimeline(
+        displayBatch(
+          [displayWork('old-a', 1), displayWork('old-b', 2)],
           placement: ChatPlacement.prepend,
-          through: 25,
+          through: 3,
         ),
       );
-      expect(stock.messages, hasLength(3));
-      expect(stock.messages.last, same(latest));
-      expect(unit(0).entry.run!.ordinal, 4);
-      expect(unit(2).entry.run!.ordinal, 9);
+      final oldTail = stock.messages.last;
+      await adapter.applyTimeline(
+        displayBatch(
+          [displayWork('next-a', 4), displayWork('next-b', 5)],
+          placement: ChatPlacement.append,
+          from: 3,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(stock.messages.map((message) => message.id), [
+        'old-a',
+        'old-b',
+        'middle',
+        'next-a',
+        'next-b',
+      ]);
+      expect(stock.messages[2], same(oldTail));
+      expect(operations.map((operation) => operation.type), [
+        ChatOperationType.set,
+        ChatOperationType.insertAll,
+        ChatOperationType.insertAll,
+      ]);
     },
   );
 
   test(
-    'B → text → A preserves completion order without source reordering',
+    'pure live changes perform no history enumeration or component operation',
     () async {
-      await adapter.applyBatch(completedBatch([]));
-      await adapter.applyBatch(
-        completedBatch(
-          [
-            completionEntry('B', 1),
-            completionEntry('body', 2, presentation: MainPresentation.single),
-            completionEntry('A', 3),
-          ],
+      final reads = _ReadCounter();
+      final controller = TimelineMessageController(reads, generation: 1);
+      await controller.applyTimeline(displayBatch([displayWork('first', 1)]));
+      reads.reads = 0;
+      await controller.applyTimeline(
+        displayBatch(
+          [],
+          placement: ChatPlacement.append,
+          from: 1,
+          through: 1,
+          live: LiveDisplayWindow(
+            revision: 2,
+            historyThrough: 1,
+            executionPresent: true,
+            blocks: [],
+          ),
+        ),
+      );
+      expect(reads.reads, 0);
+      controller.dispose();
+      reads.dispose();
+    },
+  );
+
+  test('handoff borrows the exact live disclosure identity and keeps expansion intent', () async {
+    final intent = intents.putIfAbsent('work', TimelineExpansionIntent.new);
+    intent.expanded = true;
+    await adapter.applyTimeline(displayBatch([displayWork('work', 1)]));
+    expect(unit(0).expansion, same(intent));
+    expect(unit(0).expansion.expanded, isTrue);
+    expect(
+      unit(0).memberReference,
+      const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
+    );
+  });
+
+  test('invalid cuts reject synchronously before touching Main', () async {
+    await adapter.applyTimeline(displayBatch([displayWork('work', 1)]));
+    final original = stock.messages.single;
+    expect(
+      () => adapter.applyTimeline(
+        displayBatch(
+          [displayWork('invalid', 2)],
           placement: ChatPlacement.append,
           from: 0,
         ),
-      );
-      expect(
-        [for (var i = 0; i < 3; i++) unit(i).entry.recordId],
-        ['B', 'body', 'A'],
-      );
-      expect(stock.messages.map((message) => message.id).toSet(), hasLength(3));
-    },
-  );
-
-  test('adjacent Append updates only the tail and preserves disclosure and member scope', () async {
-    await adapter.applyBatch(
-      completedBatch([
-        for (var i = 1; i <= 1000; i++) completionEntry('row-$i', i),
-      ]),
-    );
-    final before = stock.messages[998];
-    final original = unit(999);
-    original.expansion.expanded = true;
-    original.expansion.setBodyVisible(Object(), true);
-    final bodyGeneration = original.expansion.bodyGeneration;
-    await flush();
-    operations.clear();
-    stock.resetCounts();
-    await adapter.applyBatch(
-      completedBatch(
-        [completionEntry('grown', 1001, start: 1000, ordinal: 2)],
-        placement: ChatPlacement.append,
-        from: 1000,
       ),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    await flush();
-    expect(stock.iterations, 0);
-    expect(operations.single.type, ChatOperationType.update);
-    expect(stock.messages, hasLength(1000));
-    expect(stock.messages[998], same(before));
-    expect(unit(999).id, original.id);
-    expect(unit(999).expansion, same(original.expansion));
-    expect(unit(999).expansion.bodyGeneration, same(bodyGeneration));
-    expect(unit(999).expansion.expanded, isTrue);
-    final card =
-        stock.messages.last.metadata![completionRunPresentationKey]
-            as CompletionRunPresentation;
-    expect(card.representative.run!.ordinal, 2);
-  });
-
-  test('empty Append and Activity perform zero historical enumeration or operations', () async {
-    await adapter.applyBatch(completedBatch([completionEntry('first', 1)]));
-    await flush();
-    operations.clear();
-    stock.resetCounts();
-    await adapter.applyBatch(
-      completedBatch([], placement: ChatPlacement.append, from: 1, through: 5),
-    );
-    await adapter.applyActivity(
-      ActivitySnapshot(
-        revision: 1,
-        completedThrough: 5,
-        executionPresent: true,
-        entries: const [],
+    expect(stock.messages.single, same(original));
+    expect(
+      () => adapter.applyTimeline(
+        displayBatch(
+          [displayWork('overlap', 1)],
+          placement: ChatPlacement.prepend,
+          through: 1,
+        ),
       ),
+      throwsA(isA<ConversationContinuityError>()),
     );
-    await flush();
-    expect(stock.iterations, 0);
-    expect(stock.reads, 0);
-    expect(operations, isEmpty);
   });
 
   test(
-    'return to a non-tail Run and decreasing ordinal fail without mutation',
+    'cross-batch duplicate IDs reject synchronously for Append and Prepend',
     () async {
-      await adapter.applyBatch(
-        completedBatch([
-          completionEntry('first', 1),
-          completionEntry('second', 2),
-        ]),
-      );
-      for (final entry in [
-        completionEntry('old-run', 3, start: 1, ordinal: 2),
-        completionEntry('backwards', 3, start: 2, ordinal: 1),
-        completionEntry('missing-run-head', 4, start: 3, ordinal: 2),
+      await adapter.applyTimeline(displayBatch([displayWork('existing', 3)]));
+      final original = stock.messages.single;
+      final current = intents['existing']!.current;
+      for (final batch in [
+        displayBatch(
+          [displayWork('existing', 4)],
+          placement: ChatPlacement.append,
+          from: 3,
+        ),
+        displayBatch(
+          [displayWork('existing', 2)],
+          placement: ChatPlacement.prepend,
+          through: 3,
+        ),
       ]) {
-        await expectLater(
-          adapter.applyBatch(
-            completedBatch([entry], placement: ChatPlacement.append, from: 2),
-          ),
+        expect(
+          () => adapter.applyTimeline(batch),
           throwsA(isA<ConversationContinuityError>()),
         );
+        expect(stock.messages.single, same(original));
+        expect(intents['existing']!.current, same(current));
+        expect(intents['existing']!.isRetired, isFalse);
       }
-      expect(stock.messages, hasLength(2));
-    },
-  );
-
-  test(
-    'independent Run members cannot overwrite Main total and reject replay',
-    () async {
-      await adapter.applyBatch(
-        completedBatch([completionEntry('head', 99, start: 1, ordinal: 80)]),
-      );
-      final members = InMemoryChatController();
-      final reader = TimelineMemberController(members);
-      await reader.applyBatch(
-        completedBatch([
-          completionEntry('member', 98, start: 1, ordinal: 79),
-        ], through: 99),
-      );
-      expect(unit(0).entry.run!.ordinal, 80);
-      await expectLater(
-        reader.applyBatch(
-          completedBatch(
-            [completionEntry('member', 98)],
-            placement: ChatPlacement.prepend,
-            through: 99,
-          ),
+      await adapter.applyTimeline(
+        displayBatch(
+          [displayWork('valid', 4)],
+          placement: ChatPlacement.append,
+          from: 3,
         ),
-        throwsA(isA<ConversationContinuityError>()),
       );
-      expect(members.messages.single.id, 'member');
-      reader.dispose();
-      members.dispose();
+      expect(stock.messages.map((message) => message.id), [
+        'existing',
+        'valid',
+      ]);
     },
   );
+
+  for (final placement in ChatPlacement.values) {
+    test(
+      'failed component Future for ${placement.name} preserves position, Main and shared intent until a correct retry',
+      () async {
+        final component = _FailingComponent();
+        final created = <String>[];
+        final retired = <String>[];
+        final localIntents = <String, TimelineExpansionIntent>{};
+        final projection = TimelineMessageController(
+          component,
+          generation: 2,
+          expansionForBlock: (id) =>
+              localIntents.putIfAbsent(id, TimelineExpansionIntent.new),
+          onUnitCreated: (unit) => created.add(unit.id),
+          onUnitRetired: (unit) => retired.add(unit.id),
+        );
+        await projection.applyTimeline(displayBatch([displayWork('old', 3)]));
+        final old = component.messages.single;
+        final oldUnit = localIntents['old']!.current!;
+        final pendingIntent = localIntents.putIfAbsent(
+          'next',
+          TimelineExpansionIntent.new,
+        )..expanded = true;
+        final liveUnit = TimelineDisplayUnit(
+          block: displayWork('next', 1),
+          expansion: pendingIntent,
+        );
+        pendingIntent.current = liveUnit;
+        final gate = Completer<void>();
+        component.failure = gate.future;
+        final batch = switch (placement) {
+          ChatPlacement.set => displayBatch([displayWork('next', 5)]),
+          ChatPlacement.prepend => displayBatch(
+            [displayWork('next', 2)],
+            placement: placement,
+            through: 3,
+          ),
+          ChatPlacement.append => displayBatch(
+            [displayWork('next', 4)],
+            placement: placement,
+            from: 3,
+          ),
+        };
+        final applying = projection.applyTimeline(batch);
+        final failure = StateError('component failed asynchronously');
+        final rejected = expectLater(applying, throwsA(same(failure)));
+        expect(pendingIntent.current, same(liveUnit));
+        expect(created, ['old']);
+        expect(retired, isEmpty);
+        gate.completeError(failure);
+        await rejected;
+        expect(component.messages.single, same(old));
+        expect(localIntents['old']!.current, same(oldUnit));
+        expect(oldUnit.expansion.isRetired, isFalse);
+        expect(pendingIntent.current, same(liveUnit));
+        expect(pendingIntent.expanded, isTrue);
+        expect(created, ['old']);
+        expect(retired, isEmpty);
+        component.failure = null;
+        await projection.applyTimeline(
+          displayBatch(
+            [displayWork('next', 4)],
+            placement: ChatPlacement.append,
+            from: 3,
+          ),
+        );
+        expect(component.messages.map((message) => message.id), [
+          'old',
+          'next',
+        ]);
+        expect(pendingIntent.current!.historyPos, 4);
+        expect(pendingIntent.expanded, isTrue);
+        expect(created, ['old', 'next']);
+        expect(retired, isEmpty);
+        projection.dispose();
+        component.dispose();
+      },
+    );
+  }
 }
 
-final class _CountingController extends InMemoryChatController {
-  int iterations = 0;
+class _FailingComponent extends InMemoryChatController {
+  Future<void>? failure;
+  @override
+  Future<void> setMessages(List<Message> messages, {bool animated = true}) =>
+      failure ?? super.setMessages(messages, animated: animated);
+  @override
+  Future<void> insertAllMessages(
+    List<Message> messages, {
+    int? index,
+    bool animated = true,
+  }) =>
+      failure ??
+      super.insertAllMessages(messages, index: index, animated: animated);
+}
+
+class _ReadCounter extends InMemoryChatController {
   int reads = 0;
-  void resetCounts() {
-    iterations = 0;
-    reads = 0;
-  }
-
   @override
-  List<Message> get messages => _CountingList(super.messages, this);
-}
-
-final class _CountingList extends ListBase<Message> {
-  _CountingList(this.source, this.owner);
-  final List<Message> source;
-  final _CountingController owner;
-  @override
-  int get length => source.length;
-  @override
-  set length(int value) => source.length = value;
-  @override
-  Message operator [](int index) {
-    owner.reads++;
-    return source[index];
-  }
-
-  @override
-  void operator []=(int index, Message value) => source[index] = value;
-  @override
-  Iterator<Message> get iterator {
-    owner.iterations++;
-    return super.iterator;
+  List<Message> get messages {
+    reads++;
+    return super.messages;
   }
 }

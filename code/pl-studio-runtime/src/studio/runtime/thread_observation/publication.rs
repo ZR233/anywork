@@ -10,6 +10,7 @@ pub(in crate::studio::runtime) const CURRENT_FRAME_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct ConversationSource {
+    pub presentation: crate::studio::thread_projection::presentation::PresentationHandle,
     pub serial: u64,
     pub session: Session,
     pub head: u64,
@@ -22,6 +23,7 @@ pub(in crate::studio::runtime) struct ConversationRegistration {
     pub owner_progress: watch::Receiver<super::Progress>,
 }
 pub(super) struct ConversationPublication {
+    presentation: Mutex<crate::studio::thread_projection::presentation::PresentationHandle>,
     latest: Mutex<Option<Arc<ConversationSource>>>,
     progress: watch::Sender<Option<Arc<ConversationSource>>>,
     content_changed: watch::Sender<u64>,
@@ -29,10 +31,20 @@ pub(super) struct ConversationPublication {
 impl ConversationPublication {
     pub(super) fn new() -> Self {
         Self {
+            presentation: Mutex::new(Default::default()),
             latest: Mutex::new(None),
             progress: watch::channel(None).0,
             content_changed: watch::channel(0).0,
         }
+    }
+    pub(super) fn bind_presentation(
+        &self,
+        owner: crate::studio::thread_projection::presentation::PresentationHandle,
+    ) {
+        *self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = owner;
     }
     pub(super) fn content_changes(&self) -> watch::Receiver<u64> {
         self.content_changed.subscribe()
@@ -93,6 +105,11 @@ impl ConversationPublication {
             "activity snapshot exceeds bounded publication budget"
         );
         let source = Arc::new(ConversationSource {
+            presentation: self
+                .presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             serial,
             session: session.clone(),
             head,

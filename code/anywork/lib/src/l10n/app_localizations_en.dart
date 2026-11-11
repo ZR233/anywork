@@ -1905,6 +1905,39 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get timelineGroupExecutingUnderSecond => 'Running for less than 1s';
+
+  @override
+  String timelineGroupExecutingSeconds(int seconds) {
+    return 'Running for ${seconds}s';
+  }
+
+  @override
+  String timelineGroupExecutingMinutes(int minutes) {
+    return 'Running for ${minutes}m';
+  }
+
+  @override
+  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
+    return 'Running for ${minutes}m ${seconds}s';
+  }
+
+  @override
+  String get timelineGroupClosing => 'Finishing work';
+
+  @override
+  String get timelineGroupWaitingForNext => 'Waiting for the next step';
+
+  @override
+  String get timelineGroupUnrestored =>
+      'Previous work is unfinished and has not resumed';
+
+  @override
+  String timelineGroupTransferredCount(int count) {
+    return '$count transferred';
+  }
+
+  @override
   String get timelineReasoningSummary => 'Summary';
 
   @override
@@ -2357,16 +2390,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionReasonLabel => 'Reason';
 
   @override
-  String get interactionPlanConfirmTitle => 'Confirm implementation plan';
-
-  @override
-  String get interactionPlanConfirmSubtitle =>
-      'Approve to continue with this plan, or request changes.';
-
-  @override
-  String get interactionPlanReadyTitle => 'Implementation plan ready';
-
-  @override
   String get interactionPlanAwaitingConfirmation => 'Awaiting confirmation';
 
   @override
@@ -2379,29 +2402,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get planDetailRevisionRequested => 'Changes requested';
 
   @override
-  String get planDetailDraftingHelp =>
-      'You will be asked to confirm when the plan is ready.';
-
-  @override
-  String get planDetailAwaitingHelp =>
-      'Read the plan, then approve it or request changes.';
-
-  @override
-  String get planDetailRevisionHelp =>
-      'Your feedback was submitted. You will be asked to confirm the updated plan.';
-
-  @override
-  String get planDetailApprovedHelp =>
-      'Approved and available to read at any time.';
-
-  @override
-  String get planDetailEmptyTitle => 'The plan is being drafted';
-
-  @override
-  String get planDetailEmptyHelp =>
-      'You can read the full plan here when it is ready.';
-
-  @override
   String get planDecisionSubmitting => 'Submitting your decision…';
 
   @override
@@ -2409,6 +2409,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get interactionPlanViewDetails => 'View full plan';
+
+  @override
+  String get interactionPlanCollapseDetails => 'Collapse plan';
 
   @override
   String get interactionPlanDetailsTitle => 'Implementation plan';

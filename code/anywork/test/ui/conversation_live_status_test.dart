@@ -8,9 +8,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
-import 'package:anywork/src/features/conversation/timeline/state/completion_run_presentation.dart';
 
-import '../support/completion_fixtures.dart';
+import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
@@ -119,10 +118,10 @@ const _tools = [
 
 Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
   if (!live) {
-    final entry = completionEntry('test-group', 82, start: 1, ordinal: 82);
     return CompletionRunView(
       id: 'test-group',
-      presentation: CompletionRunPresentation.fromEntry(entry),
+      summary: displaySummary(82),
+      location: WorkDisplayLocation.history,
       initiallyExpanded: false,
       childBuilder: (_) => content ?? const Text('成员正文'),
     );
@@ -406,9 +405,7 @@ void main() {
           final l10n = AppLocalizations.of(
             tester.element(find.byType(Scaffold)),
           );
-          final label = find.text(
-            '${l10n.timelineGroupRecord} · ${l10n.timelineGroupMemberCount(82)}',
-          );
+          final label = find.text(l10n.timelineGroupRecord);
           expect(label, findsOneWidget);
           final card = tester.getRect(
             find.byKey(const ValueKey('conversation-activity')),
@@ -417,7 +414,7 @@ void main() {
           expect(find.textContaining('执行失败'), findsNothing);
           expect(title.left, greaterThanOrEqualTo(card.left));
           expect(title.right, lessThanOrEqualTo(card.right));
-          expect(tester.widget<Text>(label).maxLines, isNull);
+          expect(tester.widget<Text>(label).maxLines, 1);
           await tester.pumpWidget(const SizedBox.shrink());
         });
       }
@@ -613,6 +610,25 @@ void main() {
       expect(find.byType(ExpansionTile), findsNWidgets(2));
       await tester.pumpWidget(conversationLiveStatusWaitPreview());
       await tester.pump(const Duration(milliseconds: 300));
+      final group = tester.widget<CompletionRunView>(
+        find.byType(CompletionRunView),
+      );
+      final disclosure = find.byKey(
+        ValueKey('completion-run-disclosure:${group.id}'),
+      );
+      expect(
+        tester.widget<Expansible>(disclosure).controller.isExpanded,
+        isFalse,
+      );
+      expect(find.byType(TimelineWaitDetails), findsNothing);
+      await tester.tap(
+        find.byKey(ValueKey('completion-run-header:${group.id}')),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        tester.widget<Expansible>(disclosure).controller.isExpanded,
+        isTrue,
+      );
       expect(find.byType(TimelineWaitDetails), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     });

@@ -12,6 +12,6 @@ part 'recovery_store.g.dart';
 /// Riverpod owns this display observation; the Client owns the resource.
 @riverpod
 CanonicalClockState<RecoveryStateSnapshot> recoveryStore(Ref ref) {
-  final source = ref.read(anyworkClientProvider).recovery.source;
+  final source = ref.watch(anyworkClientProvider).recovery.source;
   return observeClient(ref, source, (_) => ref.invalidateSelf());
 }

@@ -19,6 +19,9 @@ pub use self::handlers::acp_business::{
     configure_acp_session, interrupt_acp_session, list_acp_sessions, open_acp_session,
     prompt_acp_session, replace_acp_session, set_acp_session_mode,
 };
+pub use self::handlers::chat::timeline::{
+    BridgeDisplayMembers, BridgeTimelineFeed, open_timeline_feed,
+};
 pub use self::handlers::{
     BridgeConversationFeed, BridgeConversationStateFeed, BridgeStudioUpdateOperation,
     activate_project, admit_attachment_drafts, apply_settings_field, archive_project,

@@ -71,6 +71,16 @@ impl StudioRuntime {
         scope: ChatScope,
         demand: ReadDemand,
     ) -> Result<ConversationFeed> {
+        self.open_feed_resources(thread_id, scope, demand, true)
+            .await
+    }
+    pub(super) async fn open_feed_resources(
+        &self,
+        thread_id: &str,
+        scope: ChatScope,
+        demand: ReadDemand,
+        completed: bool,
+    ) -> Result<ConversationFeed> {
         core_demand(demand)?;
         let scope_query = query(&scope)?;
         let id = crate::studio::ids::new_id("conversation");
@@ -132,30 +142,42 @@ impl StudioRuntime {
             )
             .for_scope(&scope);
             validate_run(&scope, &database_id, &source.session, source.head, &budget).await?;
-            let page = source
-                .session
-                .page(
-                    core::ChatPageRequest {
-                        query: scope_query,
-                        demand: core_demand(demand)?,
-                        before: None,
-                        ceiling: Some(source.head),
-                    },
-                    &budget,
+            let page = if completed {
+                Some(
+                    source
+                        .session
+                        .page(
+                            core::ChatPageRequest {
+                                query: scope_query,
+                                demand: core_demand(demand)?,
+                                before: None,
+                                ceiling: Some(source.head),
+                            },
+                            &budget,
+                        )
+                        .await?,
                 )
-                .await?;
+            } else {
+                None
+            };
             initial_serial = source.serial;
             initial_activity = source.activity.clone();
-            source_states = source.current.source_states().to_vec();
+            if completed {
+                source_states = source.current.source_states().to_vec();
+            }
             let effect_cut = source.current.projection().source_effect_seq;
             progress = Some(progress_rx);
+            let (items, boundary) = page.map_or_else(
+                || (Vec::new(), None),
+                |page| (page.items, page.before.map(|cursor| cursor.append_seq)),
+            );
             (
                 source.session.clone(),
                 Some(database_id),
                 source.head,
                 effect_cut,
-                page.items,
-                page.before.map(|cursor| cursor.append_seq),
+                items,
+                boundary,
             )
         } else {
             history.prepare_conversation_read().await?;
@@ -172,9 +194,13 @@ impl StudioRuntime {
             )
             .for_scope(&scope);
             // The existing cold facade reads actual business state without installing execution.
-            let cold = history
-                .cold_conversation(scope_query, core_demand(demand)?, &budget)
-                .await?;
+            let cold = if completed {
+                history
+                    .cold_conversation(scope_query, core_demand(demand)?, &budget)
+                    .await?
+            } else {
+                history.cold_presentation_baseline().await?
+            };
             match cold {
                 Some(cold) => {
                     ensure!(
@@ -182,15 +208,17 @@ impl StudioRuntime {
                         resync()
                     );
                     // Initialize the original Session's D/H from its read-only publication seed.
-                    session
-                        .completed_after(
-                            core::ChatCompletionCursor::new(session.epoch(), 0),
-                            None,
-                            Some(0),
-                            core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
-                            &budget,
-                        )
-                        .await?;
+                    if completed {
+                        session
+                            .completed_after(
+                                core::ChatCompletionCursor::new(session.epoch(), 0),
+                                None,
+                                Some(0),
+                                core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
+                                &budget,
+                            )
+                            .await?;
+                    }
                     validate_run(&scope, &cold.database_id, &session, cold.head, &budget).await?;
                     let boundary = if cold.page.exhausted {
                         None
@@ -232,7 +260,10 @@ impl StudioRuntime {
         };
         ensure!(slot.is_current(position.epoch), resync());
         let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
-        if let Some(sources) = cold_sources {
+        if !completed {
+            // The presentation facade shares read resources, never reads/annotates an
+            // atomic completion page as an intermediate representation.
+        } else if let Some(sources) = cold_sources {
             annotate_atoms(&mut initial_entries, &sources)?;
         } else {
             annotate_sources(&mut initial_entries, &history, &source_states, effect_cut).await?;
@@ -253,20 +284,24 @@ impl StudioRuntime {
                 recovery: self.recovery.clone(),
             },
         );
-        let initial = reader.finish_batch(
-            ChatBatch {
-                placement: ChatPlacement::Set,
-                entries: initial_entries,
-                before: reader.before(boundary).await?,
-                from_seq: None,
-                through_seq: head,
-            },
-            demand,
-        )?;
+        let initial = if completed {
+            Some(reader.finish_batch(
+                ChatBatch {
+                    placement: ChatPlacement::Set,
+                    entries: initial_entries,
+                    before: reader.before(boundary).await?,
+                    from_seq: None,
+                    through_seq: head,
+                },
+                demand,
+            )?)
+        } else {
+            None
+        };
         let feed = ConversationFeed {
             reader,
-            initial: Some(initial),
-            initial_activity: Some(initial_activity),
+            initial,
+            initial_activity: completed.then_some(initial_activity),
             progress,
             slot_changed,
             target: None,
@@ -344,11 +379,16 @@ impl ConversationFeed {
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
+    pub(super) fn current_progress(&mut self) -> Option<Arc<ConversationSource>> {
+        self.progress
+            .as_mut()
+            .and_then(|progress| progress.borrow_and_update().clone())
+    }
     pub async fn close(&mut self) -> Result<()> {
         self.finish_production();
         Ok(())
     }
-    fn finish_production(&mut self) {
+    pub(super) fn finish_production(&mut self) {
         self.cancel.cancel();
         self.progress = None;
         self.target = None;
@@ -470,14 +510,16 @@ impl ConversationFeed {
                     snapshot: target.activity.clone(),
                 }));
             }
-            let progress_open = tokio::select! { biased;
-                _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
-                _ = self.slot_changed.changed() => return Err(resync()),
-                progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => progress,
-            };
-            if !progress_open {
-                return Err(resync());
-            }
+            self.wait_change().await?;
         }
+    }
+    pub(super) async fn wait_change(&mut self) -> Result<()> {
+        let progress_open = tokio::select! { biased;
+            _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
+            _ = self.slot_changed.changed() => return Err(resync()),
+            progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => progress,
+        };
+        ensure!(progress_open, resync());
+        Ok(())
     }
 }

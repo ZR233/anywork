@@ -4,15 +4,11 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// A test-only typed frame projection around a real feed. Identity, ACK and close stay native-owned.
-final class MappedConversationFeed implements ConversationFeed {
-  MappedConversationFeed(
-    this.inner,
-    this.mapState, {
-    ConversationReader? reader,
-  }) : reader = reader ?? inner.reader;
+/// A test-only reader override. Identity, events, ACK and close stay native-owned.
+class MappedConversationFeed implements ConversationFeed {
+  MappedConversationFeed(this.inner, {ConversationReader? reader})
+    : reader = reader ?? inner.reader;
   final ConversationFeed inner;
-  final ThreadStreamFrame Function(ThreadStreamFrame frame) mapState;
   @override
   String get threadId => inner.threadId;
   @override
@@ -20,19 +16,7 @@ final class MappedConversationFeed implements ConversationFeed {
   @override
   final ConversationReader reader;
   @override
-  Stream<ConversationFrame> get events => inner.events.map(
-    (frame) => ConversationFrame(
-      threadId: frame.threadId,
-      subscriptionId: frame.subscriptionId,
-      deliverySequence: frame.deliverySequence,
-      event: switch (frame.event) {
-        ConversationStateEvent(:final frame) => ConversationStateEvent(
-          frame: mapState(frame),
-        ),
-        final event => event,
-      },
-    ),
-  );
+  Stream<ConversationFrame> get events => inner.events;
   @override
   Future<void> acknowledge(int deliverySequence) =>
       inner.acknowledge(deliverySequence);
@@ -42,12 +26,51 @@ final class MappedConversationFeed implements ConversationFeed {
   Future<void> close() => inner.close();
 }
 
+/// Preserves the display query capability while overriding the reader.
+final class MappedTimelineFeed extends MappedConversationFeed
+    implements TimelineFeed {
+  MappedTimelineFeed(TimelineFeed super.inner, {super.reader});
+  TimelineFeed get timeline => inner as TimelineFeed;
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => timeline.loadTimelineOlder(before: before, demand: demand);
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => timeline.loadLiveOlder(before: before, demand: demand);
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => timeline.openDisplayMembers(
+    reference: reference,
+    window: window,
+    demand: demand,
+  );
+}
+
 /// 脚本化权威发送端。只发布显式事实，SDK 才是归约者；没有 pull 循环。
 class ScriptedConversationFeed implements ConversationFeed {
   ScriptedConversationFeed({
+    required String threadId,
+    required String subscriptionId,
+    required ChatBatch Function() initial,
+    ConversationReader? reader,
+  }) : this._(
+         threadId: threadId,
+         subscriptionId: subscriptionId,
+         initial: () => ConversationChatEvent(batch: initial()),
+         reader: reader,
+       );
+
+  ScriptedConversationFeed._({
     required this.threadId,
     required this.subscriptionId,
-    required this.initial,
+    required ConversationEvent Function() initial,
     ConversationReader? reader,
   }) : reader = reader ?? _UnusedReader(threadId) {
     _events = StreamController<ConversationFrame>(
@@ -55,7 +78,7 @@ class ScriptedConversationFeed implements ConversationFeed {
         listenCalls++;
         scheduleMicrotask(() {
           if (closed) return;
-          if (!closed) publish(ConversationChatEvent(batch: initial()));
+          publish(initial());
         });
       },
       onCancel: requestClose,
@@ -65,14 +88,12 @@ class ScriptedConversationFeed implements ConversationFeed {
   final String threadId;
   @override
   final String subscriptionId;
-  final ChatBatch Function() initial;
   @override
   final ConversationReader reader;
   late final StreamController<ConversationFrame> _events;
   final Set<int> _unacknowledged = {};
   final List<int> acknowledgements = [];
   final Map<int, Completer<void>> _accepted = {};
-  final _stopped = Completer<void>();
   Future<void> accepted(int sequence) => acknowledgements.contains(sequence)
       ? Future.value()
       : (_accepted[sequence] ??= Completer<void>()).future;
@@ -133,7 +154,6 @@ class ScriptedConversationFeed implements ConversationFeed {
     // 终帧不获取 credit，也不等待 ACK。
     publish(const ConversationClosedEvent());
     closed = true;
-    _stopped.complete();
     reader.requestClose();
   }
 
@@ -151,6 +171,54 @@ class ScriptedConversationFeed implements ConversationFeed {
       _closing = null;
       rethrow;
     }
+  }
+}
+
+/// Explicit Timeline frames, sharing only the scripted credit/lifecycle harness.
+final class ScriptedTimelineFeed extends ScriptedConversationFeed
+    implements TimelineFeed {
+  ScriptedTimelineFeed({
+    required this.queries,
+    required TimelineBatch Function() initial,
+  }) : super._(
+         threadId: queries.threadId,
+         subscriptionId: queries.subscriptionId,
+         reader: queries.reader,
+         initial: () => ConversationTimelineEvent(batch: initial()),
+       );
+  final TimelineFeed queries;
+  void emitTimeline(TimelineBatch batch) =>
+      publish(ConversationTimelineEvent(batch: batch));
+  @override
+  Future<TimelineBatch> loadTimelineOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => queries.loadTimelineOlder(before: before, demand: demand);
+  @override
+  Future<LiveDisplayWindow> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => queries.loadLiveOlder(before: before, demand: demand);
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) => queries.openDisplayMembers(
+    reference: reference,
+    window: window,
+    demand: demand,
+  );
+  @override
+  void requestClose() {
+    super.requestClose();
+    queries.requestClose();
+  }
+
+  @override
+  Future<void> close() async {
+    await super.close();
+    await queries.close();
   }
 }
 
@@ -212,7 +280,9 @@ class ScriptedConversationStateFeed implements ConversationStateFeed {
       if (terminal) return;
       throw StateError('Data after the terminal frame');
     }
-    if (event is ConversationChatEvent || event is ConversationActivityEvent) {
+    if (event is ConversationChatEvent ||
+        event is ConversationTimelineEvent ||
+        event is ConversationActivityEvent) {
       throw StateError('Content never flows on the state feed');
     }
     if (terminal) _terminalSent = true;

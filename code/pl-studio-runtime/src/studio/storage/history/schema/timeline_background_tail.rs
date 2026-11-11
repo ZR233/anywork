@@ -70,7 +70,11 @@ mod tests {
             .filter(|step| {
                 !matches!(
                     step.name(),
-                    TIMELINE_BACKGROUND_TAIL | COMPLETION_BOUNDARY | IMMUTABLE_COMPLETION_RUNS
+                    TIMELINE_BACKGROUND_TAIL
+                        | COMPLETION_BOUNDARY
+                        | IMMUTABLE_COMPLETION_RUNS
+                        | DISPLAY_SNAPSHOTS
+                        | DISPLAY_OBSERVATIONS
                 ) && !is_lifecycle_migration(step.name())
             })
             .collect()

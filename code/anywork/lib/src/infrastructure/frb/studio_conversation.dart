@@ -3,14 +3,17 @@ part of 'studio_api.dart';
 /// Mechanical typed transport only. The SDK owns continuity, reduction and ACK.
 final class FrbConversationFeed extends _FrbConversationDelivery
     implements ConversationFeed {
-  FrbConversationFeed(this._native)
+  FrbConversationFeed(frb_chat.BridgeConversationFeed native)
+    : this._(_FrbNativeConversation.conversation(native));
+
+  FrbConversationFeed._(this._native)
     : super(_native.threadId(), _native.subscriptionId());
 
-  final frb_chat.BridgeConversationFeed _native;
+  final _FrbNativeConversation _native;
   @override
   late final ConversationReader reader = _FrbConversationReader(this);
   final Set<_FrbContentWatch> _contentWatches = {};
-
+  final Set<_FrbDisplayMembers> _memberWatches = {};
   @override
   Stream<frb_chat_types.BridgeConversationFrame> _nativeEvents() =>
       _native.events();
@@ -30,11 +33,15 @@ final class FrbConversationFeed extends _FrbConversationDelivery
     for (final watch in List.of(_contentWatches)) {
       watch.requestClose();
     }
+    for (final watch in List.of(_memberWatches)) {
+      watch.requestClose();
+    }
   }
 
   @override
   Iterable<Future<void>> _closeChildren() => [
     for (final watch in List.of(_contentWatches)) watch.close(),
+    for (final watch in List.of(_memberWatches)) watch.close(),
   ];
 }
 
@@ -133,6 +140,12 @@ abstract class _FrbConversationDelivery {
                     ),
                   frb_chat_types.BridgeConversationEvent_Chat(:final batch) =>
                     ConversationChatEvent(batch: _chatBatchFromFrb(batch)),
+                  frb_chat_types.BridgeConversationEvent_Timeline(
+                    :final batch,
+                  ) =>
+                    ConversationTimelineEvent(
+                      batch: _timelineBatchFromFrb(batch),
+                    ),
                   frb_chat_types.BridgeConversationEvent_Activity(
                     :final snapshot,
                   ) =>

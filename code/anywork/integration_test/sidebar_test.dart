@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/features/shell/sidebar/studio_sidebar.dart';
-import 'package:anywork/src/features/shell/sidebar/sidebar_models.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -205,14 +204,8 @@ void main() {
       scene,
       DirectoryQuery(workspaceId: project.id, filter: DirectoryFilter.running),
     );
-    expect(
-      runningFrame.rows.map((row) => row.threadId),
-      contains(fixture.runningThread.id),
-    );
-    expect(
-      runningFrame.rows.map((row) => row.threadId),
-      isNot(contains(fixture.attentionThread.id)),
-    );
+    expect(runningFrame.threadIds, contains(fixture.runningThread.id));
+    expect(runningFrame.threadIds, isNot(contains(fixture.attentionThread.id)));
 
     await tester.tap(
       find.byKey(const ValueKey<String>('sidebar-filter-attention')),
@@ -231,10 +224,7 @@ void main() {
         filter: DirectoryFilter.attention,
       ),
     );
-    expect(
-      attentionFrame.rows.map((row) => row.threadId),
-      contains(fixture.attentionThread.id),
-    );
+    expect(attentionFrame.threadIds, contains(fixture.attentionThread.id));
 
     await tester.tap(find.byKey(const ValueKey<String>('sidebar-filter-all')));
     await scene.until(
@@ -468,10 +458,7 @@ void main() {
       scene,
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
-    expect(
-      archivedFrame.rows.map((row) => row.threadId),
-      contains(fixture.thread.id),
-    );
+    expect(archivedFrame.threadIds, contains(fixture.thread.id));
 
     await tester.tap(archivedToggle, kind: ui.PointerDeviceKind.mouse);
     await scene.until(
@@ -533,10 +520,7 @@ void main() {
       scene,
       DirectoryQuery(workspaceId: project.id, archived: true),
     );
-    expect(
-      afterRestore.rows.map((row) => row.threadId),
-      isNot(contains(fixture.thread.id)),
-    );
+    expect(afterRestore.threadIds, isNot(contains(fixture.thread.id)));
     await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
     await scene.until(
       () =>
@@ -884,7 +868,7 @@ void main() {
           );
         }
         expect(
-          baselineFrame.rows.any((row) => row.threadId == deletedThreadId),
+          baselineFrame.threadIds.contains(deletedThreadId),
           isTrue,
           reason: 'the held canonical directory must first contain the target',
         );
@@ -1030,7 +1014,7 @@ void main() {
               final frame = state.frame;
               return frame != null &&
                   frame.stamp.covers(deletionStamp) &&
-                  frame.rows.every((row) => row.threadId != deletedThreadId);
+                  !frame.threadIds.contains(deletedThreadId);
             })
             .timeout(const Duration(seconds: 60));
         if (deletedState.error case final error?) {
@@ -1044,7 +1028,7 @@ void main() {
         final deletedFrame = deletedState.frame;
         if (deletedFrame == null ||
             !deletedFrame.stamp.covers(deletionStamp) ||
-            deletedFrame.rows.any((row) => row.threadId == deletedThreadId)) {
+            deletedFrame.threadIds.contains(deletedThreadId)) {
           throw StateError(
             'Canonical directory did not confirm deletion of $deletedThreadId',
           );
@@ -1101,17 +1085,18 @@ Future<void> _writeArchiveTargetDiagnostic(
   final filters = find.byType(SidebarFilters);
   final footer = find.byType(SidebarFooter);
   final search = find.byKey(const ValueKey<String>('sidebar-search'));
-  Map<String, Object?> windows(Map<String, SidebarWindow> source) => {
-    for (final entry in source.entries)
-      entry.key: {
-        'threadIds': entry.value.rows
-            .map((row) => row.threadId)
-            .toList(growable: false),
-        'loading': entry.value.loading,
-        'error': entry.value.error,
-        'loaded': entry.value.loaded,
-        'hasMore': entry.value.hasMore,
-        'hasPrevious': entry.value.hasPrevious,
+  final statuses = tester.widgetList<SidebarPageStatus>(
+    find.byType(SidebarPageStatus),
+  );
+  Map<String, Object?> windows(String prefix) => {
+    for (final status in statuses.where((status) => status.keyPrefix == prefix))
+      status.workspaceId: {
+        'threadIds': status.window.threadIds,
+        'loading': status.window.loading,
+        'error': status.window.error,
+        'loaded': status.window.loaded,
+        'hasMore': status.window.hasMore,
+        'hasPrevious': status.window.hasPrevious,
       },
   };
 
@@ -1123,9 +1108,7 @@ Future<void> _writeArchiveTargetDiagnostic(
       'canonicalProjectIds': canonicalProjects
           .map((project) => project.id)
           .toList(growable: false),
-      'viewProjectIds': data?.projects
-          .map((project) => project.id)
-          .toList(growable: false),
+      'viewProjectIds': data?.projectIds,
       'renderedCanonicalProjectIds': canonicalProjects
           .where(
             (project) => find
@@ -1136,7 +1119,7 @@ Future<void> _writeArchiveTargetDiagnostic(
           .map((project) => project.id)
           .toList(growable: false),
       'selectedProjectId': data?.selectedProjectId,
-      'selectedThreadId': data?.selectedThreadId,
+      'selectedThreadId': scene.graph.client.selection.state.selectedThreadId,
       'filter': filters.evaluate().length == 1
           ? tester.widget<SidebarFilters>(filters).selected.name
           : null,
@@ -1146,8 +1129,8 @@ Future<void> _writeArchiveTargetDiagnostic(
       'search': search.evaluate().length == 1
           ? tester.widget<TextField>(search).controller?.text
           : null,
-      'windows': windows(data?.windows ?? const {}),
-      'pinnedWindows': windows(data?.pinnedWindows ?? const {}),
+      'windows': windows('sidebar'),
+      'pinnedWindows': windows('sidebar-pinned'),
     }),
     flush: true,
   );

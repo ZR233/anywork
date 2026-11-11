@@ -17,14 +17,17 @@ pub const TEXT_A: &str = "已确认共享组件与交接边界，接下来检查
 pub const TEXT_B: &str = "收尾检查完成，工作组与正文分别保留。";
 pub const IMAGE_PROMPT: &str = "读取三张设计截图，并说明无法读取的图片。";
 pub const IMAGE_DONE: &str = "三张设计截图已读取；目录不是图片，读取失败已保留。";
+pub const MEDIA_HANDOFF_DONE: &str = "纯附件已收到，后台图片已读取。";
 pub const FAILED_PROMPT: &str = "保留这段部分结果，再展示供应商失败。";
 pub const PARTIAL_TEXT: &str = "已经完成的部分结果必须保留，不能因后续失败而消失。";
 pub const OVERLAP_PROMPT: &str = "A07：推理尚未结束时开始正文，并保留可读流。";
 pub const OVERLAP_TEXT: &str = "正文已经开始且可以读取，先前推理稍后才结束。";
 pub const OVERLAP_EARLY_REASONING: &str = "后开始的推理 B 已先完成，推理 A 仍在进行。";
-pub const EMPTY_TEXT_PROMPT: &str = "A14：空正文开始和结束不分隔前后相邻工作。";
-pub const EMPTY_TEXT_ANSWER: &str = "空正文没有可见气泡，前后相邻工作仍属于同一段。";
-pub const REQUIRED_STEPS: usize = 9;
+pub const EMPTY_TEXT_PROMPT: &str = "A13：空正文保留真实边界，前后工作使用不同展示组。";
+pub const EMPTY_TEXT_ANSWER: &str = "空正文不显示卡片，前后工作分别保留。";
+pub const HOT_UPDATE_PROMPT: &str = "同一正文内依次追加二十个可控增量，保持展示身份不变。";
+const HOT_UPDATE_HEAD: &str = "热更新正文：";
+pub const REQUIRED_STEPS: usize = 10;
 // Distinct production assets, copied by the isolated harness for ONE input.
 // All are below production's 2000px / 5MiB base64 normalization limits;
 // together they also fit the fixture's existing 1MiB request-body limit.
@@ -83,6 +86,27 @@ pub const STAGES: &[&str] = &[
     "a14-after-empty",
     "a14-text-readable",
     "a14-before-turn-end",
+    "hot-ready",
+    "hot-01",
+    "hot-02",
+    "hot-03",
+    "hot-04",
+    "hot-05",
+    "hot-06",
+    "hot-07",
+    "hot-08",
+    "hot-09",
+    "hot-10",
+    "hot-11",
+    "hot-12",
+    "hot-13",
+    "hot-14",
+    "hot-15",
+    "hot-16",
+    "hot-17",
+    "hot-18",
+    "hot-19",
+    "hot-20",
 ];
 
 /// The listener and strict script share these existing ReplyStage tokens.
@@ -103,6 +127,71 @@ impl Default for Control {
 }
 
 impl Control {
+    pub fn boundary() -> Self {
+        Self {
+            names: OVERLAP_STAGES.to_vec(),
+            stages: OVERLAP_STAGES.iter().map(|_| ReplyStage::new()).collect(),
+        }
+    }
+
+    /// The A07 request uses the same lifecycle events and gates as the journey.
+    pub fn boundary_script(&self) -> Vec<Step> {
+        let mut script = RealtimeScript::new();
+        script.optional_title(&session_title_prompt(OVERLAP_PROMPT));
+        script.add(|index| self.overlap_step(index));
+        script.finish()
+    }
+
+    /// Independent two-step media story; no reasoning/hot-update journey gates.
+    pub fn media_handoff_script(&self) -> Vec<Step> {
+        vec![
+            Step {
+                protocol: Protocol::ResponsesHttp,
+                request: RequestMatch::PromptImages {
+                    text: None,
+                    images: INPUT_IMAGES
+                        .iter()
+                        .map(|(filename, hash)| PromptImage {
+                            filename: (*filename).into(),
+                            png_sha256: (*hash).into(),
+                        })
+                        .collect(),
+                    step: 0,
+                },
+                reply: Reply::Sse(responses_tool_calls(
+                    "media-handoff-image",
+                    "fixture-model",
+                    &[RealtimeToolCall {
+                        item_id: "concept-image-a-item",
+                        call_id: "concept-image-a",
+                        name: "view_image",
+                        arguments: json!({"path":"concept-image-a.png"}).to_string(),
+                    }],
+                )),
+                optional: false,
+            },
+            Step {
+                protocol: Protocol::ResponsesHttp,
+                request: RequestMatch::ToolImages {
+                    images: vec![ToolImage {
+                        call_id: "concept-image-a".into(),
+                        png_sha256:
+                            "0a23b4c2e99e7de221fedb9e4e96d910c786d32385a17dc44dbc1138c13a2b4b"
+                                .into(),
+                    }],
+                    outputs: vec![],
+                    step: 1,
+                },
+                reply: Reply::Sse(responses_text(
+                    MEDIA_HANDOFF_DONE,
+                    "media-handoff-answer",
+                    "fixture-model",
+                )),
+                optional: false,
+            },
+        ]
+    }
+
     /// Holds the first real model response while the UI submits a second input.
     pub fn message_submission() -> Self {
         Self {
@@ -150,21 +239,24 @@ impl Control {
                 "realtime-first-token",
                 "realtime-text-readable",
                 "realtime-parallel-observer",
+                "realtime-background-result",
                 "realtime-host-cwd-observer",
             ],
-            stages: (0..4).map(|_| ReplyStage::new()).collect(),
+            stages: (0..5).map(|_| ReplyStage::new()).collect(),
         }
     }
 
-    pub fn realtime_script(&self, host_cwd: &str) -> Vec<Step> {
+    pub fn realtime_script(&self, host_cwd: &str, scope: RealtimeScope) -> Vec<Step> {
         super::gui_realtime_script(
             host_cwd,
             Some(RealtimeObservers {
                 first_token: &self.stages[0],
                 readable_text: &self.stages[1],
                 parallel: &self.stages[2],
-                host_cwd: &self.stages[3],
+                background_result: &self.stages[3],
+                host_cwd: &self.stages[4],
             }),
+            scope,
         )
     }
 
@@ -323,7 +415,7 @@ impl Control {
             Step {
                 protocol: Protocol::ResponsesHttp,
                 request: RequestMatch::PromptImages {
-                    text: IMAGE_PROMPT.into(),
+                    text: Some(IMAGE_PROMPT.into()),
                     images: INPUT_IMAGES.iter().map(|(filename, hash)| PromptImage {
                         filename: (*filename).into(),
                         png_sha256: (*hash).into(),
@@ -363,7 +455,45 @@ impl Control {
         });
         script.add(|step| self.overlap_step(step));
         script.add(|step| self.empty_text_step(step));
+        script.add(|step| self.hot_update_step(step));
         script.finish()
+    }
+
+    fn hot_update_step(&self, step: usize) -> Step {
+        // One request, one item/content identity, and twenty independently held
+        // deltas. No done/turn boundary is sent until hot-20 is released.
+        let id = "concept-hot-text";
+        let mut first = vec![created("concept-hot")];
+        first.extend(text_start(id, 0, HOT_UPDATE_HEAD));
+        let mut chunks = vec![first];
+        let mut full_text = HOT_UPDATE_HEAD.to_owned();
+        for index in 1..=20 {
+            // The sample observes four literal glyphs, not Markdown's numeric
+            // source-tag chip. Use inline code without changing the
+            // displayed marker or the independently held delta gates.
+            let delta = format!(" `[{index:02}]`");
+            full_text.push_str(&delta);
+            chunks.push(vec![json!({
+                "type":"response.output_text.delta",
+                "output_index":0, "item_id":id, "content_index":0, "delta":delta
+            })]);
+        }
+        chunks.push(vec![
+            text_done(id, 0, &full_text),
+            json!({"type":"response.completed","response":{"id":"concept-hot","model":"fixture-model"}}),
+        ]);
+        let gates = self
+            .names
+            .iter()
+            .zip(&self.stages)
+            .filter_map(|(name, stage)| name.starts_with("hot-").then_some(stage))
+            .collect::<Vec<_>>();
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            HOT_UPDATE_PROMPT,
+            step,
+            ReplyStage::staged(chunks, &gates),
+        )
     }
 
     fn named_stages(&self, names: &[&str]) -> Vec<&ReplyStage> {
@@ -524,4 +654,110 @@ pub(super) async fn release(State(state): State<AppState>, Path(name): Path<Stri
     }
     stage.release();
     StatusCode::NO_CONTENT
+}
+
+// This proves fixture pacing/identity only, not native layout or latency.
+#[cfg(test)]
+mod hot_update_wire_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    fn events(wire: &[u8]) -> Vec<Value> {
+        String::from_utf8_lossy(wire)
+            .split_inclusive("\n\n")
+            .filter(|frame| frame.ends_with("\n\n"))
+            .filter_map(|frame| frame.trim().strip_prefix("data: ").map(str::to_owned))
+            .filter(|frame| frame != "[DONE]")
+            .map(|frame| serde_json::from_str(&frame).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn hot_updates_hold_twenty_deltas_on_one_text_identity() {
+        let mut control = Control::default();
+        let first = control
+            .names
+            .iter()
+            .position(|name| *name == "hot-ready")
+            .unwrap();
+        control.names.drain(..first);
+        control.stages.drain(..first);
+        assert_eq!(control.names.len(), 21);
+        let fixture = FixtureServer::start_with_options(
+            vec![control.hot_update_step(0)],
+            FixtureOptions {
+                timeline_concept: Some(control.clone()),
+                ..FixtureOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let base = fixture.base_url();
+        let gate =
+            |name: &str| format!("{}/__timeline_concept/{name}", base.trim_end_matches("/v1"));
+        let response = client
+            .post(format!("{base}/responses"))
+            .json(&json!({
+                "model":"fixture-model", "stream":true,
+                "input":[{"role":"user","content":[{"type":"input_text","text":HOT_UPDATE_PROMPT}]}],
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.bytes_stream();
+        let mut wire = Vec::new();
+        let mut full_text = HOT_UPDATE_HEAD.to_owned();
+        for (index, name) in control.names.iter().enumerate() {
+            assert_eq!(
+                client.get(gate(name)).send().await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
+            while events(&wire).len() < 3 + index {
+                let chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                    .await
+                    .expect("held hot update was not emitted")
+                    .expect("text ended before its gate")
+                    .unwrap();
+                wire.extend_from_slice(&chunk);
+            }
+            let observed = events(&wire);
+            assert_eq!(observed.len(), 3 + index);
+            assert_eq!(observed[1]["item"]["id"], "concept-hot-text");
+            let delta = &observed[2 + index];
+            assert_eq!(delta["type"], "response.output_text.delta");
+            assert_eq!(delta["item_id"], "concept-hot-text");
+            assert_eq!(delta["output_index"], 0);
+            assert_eq!(delta["content_index"], 0);
+            if index == 0 {
+                assert_eq!(delta["delta"], HOT_UPDATE_HEAD);
+            } else {
+                let expected = format!(" `[{index:02}]`");
+                assert_eq!(delta["delta"], expected);
+                full_text.push_str(&expected);
+            }
+            assert_eq!(
+                client.post(gate(name)).send().await.unwrap().status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("released hot update did not finish")
+        {
+            wire.extend_from_slice(&chunk.unwrap());
+        }
+        let observed = events(&wire);
+        assert_eq!(observed.len(), 25);
+        assert_eq!(observed[23], text_done("concept-hot-text", 0, &full_text));
+        assert_eq!(observed[24]["type"], "response.completed");
+        let requests = fixture.finish().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].accepted);
+    }
 }

@@ -633,7 +633,15 @@ async fn corrupted_current_storage_is_archived_and_preserves_external_data() -> 
             _ => unreachable!(),
         };
         std::fs::create_dir_all(broken.parent().expect("fault parent"))?;
-        std::fs::write(&broken, b"invalid persistent data\n")?;
+        // Unidentifiable diagnostic lines are deliberately preserved and skipped by #327.
+        // Exercise the strict startup failure with a locatable but unsupported record,
+        // rather than asking startup to reject an intentionally skippable opaque line.
+        let bytes: &[u8] = if fault == "log" {
+            b"{\"threadId\":\"cold\",\"callId\":\"broken-call\",\"kind\":\"attempt\",\"version\":999}\n"
+        } else {
+            b"invalid persistent data\n"
+        };
+        std::fs::write(&broken, bytes)?;
         let original = std::fs::read(&broken)?;
         let archived = recover_defaults(&home, &broken, &original).await?;
         assert_eq!(
