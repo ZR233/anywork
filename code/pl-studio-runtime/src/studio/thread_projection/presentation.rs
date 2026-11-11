@@ -743,6 +743,11 @@ impl PresentationState {
                     .clone();
                 ensure!(!header.sealed, "sealed display member is not updatable");
                 update_summary(&mut header, Some(&previous.head.record.atom), &atom)?;
+                if let DisplayBlockBody::Work { summary, .. } = &mut header.body
+                    && let Some(thought) = completed_thinking_summary(&atom, &completed)?
+                {
+                    summary.thinking_summary = Some(thought);
+                }
                 let next_record = record(atom.clone(), previous.head.record.start_fact);
                 let member = Arc::new(DisplayMemberWrite {
                     block_id: header.id.clone(),
@@ -795,6 +800,11 @@ impl PresentationState {
                     .checked_add(1)
                     .context("display member order exhausted")?;
                 update_summary(&mut header, None, &atom)?;
+                if let DisplayBlockBody::Work { summary, .. } = &mut header.body
+                    && let Some(thought) = completed_thinking_summary(&atom, &completed)?
+                {
+                    summary.thinking_summary = Some(thought);
+                }
                 let member = Arc::new(DisplayMemberWrite {
                     block_id: header.id.clone(),
                     association_key: key.clone(),
@@ -1117,11 +1127,15 @@ impl PresentationState {
                             .atom
                             .contents
                             .iter()
+                            .rev()
                             .find(|body| body.role == ChatContentRole::ReasoningSummary)
-                            .or_else(|| member.head.record.atom.contents.first())
+                            .or_else(|| member.head.record.atom.contents.last())
                             .map(|body| body.reference.clone());
-                        summary.thinking_summary =
-                            material_summary(&member.head.record.atom, &captured)?;
+                        if let Some(thought) =
+                            material_summary(&member.head.record.atom, &captured)?
+                        {
+                            summary.thinking_summary = Some(thought);
+                        }
                     }
                     header.revision = header
                         .revision
@@ -1242,23 +1256,7 @@ fn observe_elapsed(header: &mut DisplayHeader, committed_at: i64) {
     }
 }
 
-fn material_summary(
-    atom: &ChatAtom,
-    contents: &BTreeMap<String, Arc<ChatContent>>,
-) -> Result<Option<String>> {
-    let Some(body) = atom
-        .contents
-        .iter()
-        .find(|body| body.role == ChatContentRole::ReasoningSummary)
-    else {
-        return Ok(None);
-    };
-    let ContentTarget::Body { key, .. } = &body.reference.target else {
-        return Ok(None);
-    };
-    let content = contents
-        .get(key)
-        .context("thinking summary lost its frozen content")?;
+fn content_tail_summary(content: &ChatContent) -> Result<Option<String>> {
     let offset = content
         .data
         .len()
@@ -1272,6 +1270,68 @@ fn material_summary(
         }
     }
     anyhow::bail!("thinking summary boundary contains invalid UTF-8")
+}
+
+fn material_summary(
+    atom: &ChatAtom,
+    contents: &BTreeMap<String, Arc<ChatContent>>,
+) -> Result<Option<String>> {
+    for body in atom
+        .contents
+        .iter()
+        .rev()
+        .filter(|body| body.role == ChatContentRole::ReasoningSummary)
+    {
+        let ContentTarget::Body { key, .. } = &body.reference.target else {
+            continue;
+        };
+        let content = contents
+            .get(key)
+            .context("thinking summary lost its frozen content")?;
+        if let Some(summary) = content_tail_summary(content)? {
+            return Ok(Some(summary));
+        }
+    }
+    Ok(None)
+}
+
+fn completed_thinking_summary(
+    atom: &ChatAtom,
+    completed: &HashMap<&str, &Arc<ChatItem>>,
+) -> Result<Option<String>> {
+    if atom.kind != ChatAtomKind::Reasoning
+        || !matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. })
+    {
+        return Ok(None);
+    }
+    let Some(id) = atom.completion_item_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(item) = completed.get(id) else {
+        return Ok(None);
+    };
+    for body in atom
+        .contents
+        .iter()
+        .rev()
+        .filter(|body| body.role == ChatContentRole::ReasoningSummary)
+    {
+        let ContentTarget::Body { owner, key } = &body.reference.target else {
+            continue;
+        };
+        let content_key = ChatContentKey {
+            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            key: key.clone(),
+        };
+        let content = item
+            .contents
+            .get(&content_key)
+            .context("completed thinking summary lost its owned content")?;
+        if let Some(summary) = content_tail_summary(content)? {
+            return Ok(Some(summary));
+        }
+    }
+    Ok(None)
 }
 
 fn update_summary(
@@ -1390,10 +1450,12 @@ fn update_summary(
         summary.thinking_content = atom
             .contents
             .iter()
+            .rev()
             .find(|c| c.role == ChatContentRole::ReasoningSummary)
             .or_else(|| {
                 atom.contents
                     .iter()
+                    .rev()
                     .find(|c| c.role == ChatContentRole::Body)
             })
             .map(|c| c.reference.clone());

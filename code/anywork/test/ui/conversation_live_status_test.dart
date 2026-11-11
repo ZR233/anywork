@@ -1019,7 +1019,7 @@ void main() {
               name: 'group-idle',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
-              expectedTitle: '思考中',
+              expectedTitle: longThought,
               blocks: [
                 workBlock('work-1', order: 1, running: 0, thought: longThought),
               ],

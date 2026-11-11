@@ -109,6 +109,20 @@
     return selection && !selection.isCollapsed && (element.contains(selection.anchorNode) || element.contains(selection.focusNode));
   };
 
+  function renderInlineMarkdown(value) {
+    const singleLine = String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+    if (!singleLine) return '';
+    const headingMatch = singleLine.match(/^#{1,6}\s+(.*)$/);
+    const normalized = headingMatch ? `**${headingMatch[1].trim()}**` : singleLine;
+    if (window.marked?.parseInline && window.DOMPurify?.sanitize) {
+      return window.DOMPurify.sanitize(window.marked.parseInline(normalized, { gfm: true, async: false }), {
+        ALLOWED_TAGS: ['strong', 'b', 'em', 'i', 'code', 'del', 's'],
+        ALLOWED_ATTR: []
+      });
+    }
+    return escape(normalized);
+  }
+
   class SelectableContent {
     constructor(element, render) {
       this.element = element;
@@ -315,11 +329,22 @@
           : member.elapsed < 60 ? `${member.elapsed} 秒`
           : `${Math.floor(member.elapsed / 60)} 分${member.elapsed % 60 ? ` ${member.elapsed % 60} 秒` : ''}`
         : null;
+      const summaryText = thinking ? member.summary?.trim() : '';
       const label = thinking
-        ? member.summary || (elapsed ? `思考了 ${elapsed}` : member.status === 'running' ? '思考中' : '思考结束')
+        ? (elapsed ? `思考了 ${elapsed}` : member.status === 'running' ? '思考中' : '思考结束')
         : member.title;
-      if (this.verb.textContent !== label) this.verb.textContent = label;
-      this.verb.title = label;
+      if (summaryText) {
+        const rendered = renderInlineMarkdown(summaryText);
+        if (this.verbHtml !== rendered) {
+          this.verbHtml = rendered;
+          this.verb.innerHTML = rendered;
+        }
+        this.verb.title = this.verb.textContent;
+      } else {
+        this.verbHtml = null;
+        if (this.verb.textContent !== label) this.verb.textContent = label;
+        this.verb.title = label;
+      }
       if (thinking) {
         const expandable = hasContent;
         this.chevron.hidden = !expandable;
@@ -449,12 +474,25 @@
         this.indicator.replaceWith(nextIndicator);
         this.indicator = nextIndicator;
       }
-      const thinking = group.members.filter(member => member.kind === 'thinking').at(-1);
+      const latestThought = group.members
+        .filter(member => member.kind === 'thinking' && member.summary?.trim())
+        .at(-1)?.summary?.trim();
       this.node.dataset.phase = running.length ? 'working' : 'thinking';
-      this.title.textContent = running.length
-        ? (runningExec ? describe(running.find(member => member.kind === 'command')) : (thinking ? describe(thinking) : describe(running[0])))
-        : '思考中';
-      this.title.title = this.title.textContent;
+      if (latestThought) {
+        const rendered = renderInlineMarkdown(latestThought);
+        if (this.titleHtml !== rendered) {
+          this.titleHtml = rendered;
+          this.title.innerHTML = rendered;
+        }
+        this.title.title = this.title.textContent;
+      } else {
+        this.titleHtml = null;
+        const fallbackTitle = running.length
+          ? (runningExec ? describe(running.find(member => member.kind === 'command')) : describe(running[0]))
+          : '思考中';
+        if (this.title.textContent !== fallbackTitle) this.title.textContent = fallbackTitle;
+        this.title.title = fallbackTitle;
+      }
       if (this.currentStep) {
         this.currentStep.textContent = '';
         this.currentStep.hidden = true;

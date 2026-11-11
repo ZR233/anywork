@@ -6,6 +6,8 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_markdown.dart';
+import 'timeline_reasoning_view.dart';
 
 enum WorkDisplayLocation { live, history }
 
@@ -165,6 +167,11 @@ class _WorkHeader extends StatelessWidget {
     final live = state == DisplayBlockState.open;
     final cold = live && !executionPresent;
     final working = summary.running > 0 || summary.waiting > 0;
+    final cleanIdle =
+        !working &&
+        summary.failed == 0 &&
+        summary.cancelled == 0 &&
+        summary.transferred == 0;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
@@ -175,21 +182,22 @@ class _WorkHeader extends StatelessWidget {
         : summary.running == 0
         ? l10n.timelineGroupWaitingForNext
         : l10n.timelineGroupWorking;
-    final thought =
-        (working || activity == null
-                ? [
-                    summary.thinkingSummary,
-                    activity?.thinkingSummary,
-                    activity?.summary,
-                  ]
-                : [activity?.thinkingSummary])
-            .whereType<String>()
-            .map((value) => value.trim())
-            .where((value) => value.isNotEmpty)
-            .firstOrNull;
-    final status = live && !cold && thought?.isNotEmpty == true
-        ? thought!
-        : fallback;
+    final activeThought = live && !cold && (working || cleanIdle)
+        ? [
+                if (activity != null) activity!.thinkingSummary,
+                summary.thinkingSummary,
+              ]
+              .whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .firstOrNull
+        : null;
+    final rawSummary = live && !cold && (working || activity == null)
+        ? activity?.summary?.trim()
+        : null;
+    final status =
+        activeThought ??
+        (rawSummary != null && rawSummary.isNotEmpty ? rawSummary : fallback);
     final duration = seconds == null
         ? null
         : activityDurationLabel(
@@ -295,14 +303,33 @@ class _WorkHeader extends StatelessWidget {
                         ),
                         const SizedBox(width: TimelineActivityRow.headerGap),
                         Expanded(
-                          child: Text(
-                            label,
-                            maxLines: 1,
-                            softWrap: false,
-                            overflow: TextOverflow.ellipsis,
-                            strutStyle: TimelineActivityRow.headerStrutStyle,
-                            style: titleStyle,
-                          ),
+                          child:
+                              activeThought != null &&
+                                  (timelineNeedsSafeMarkdown(activeThought) ||
+                                      activeThought.contains('\n') ||
+                                      activeThought.contains('\r'))
+                              ? TimelineReasoningSummary(
+                                  key: const ValueKey('work-header-title'),
+                                  id: 'work-header-summary',
+                                  text: activeThought,
+                                  style: titleStyle,
+                                  strutStyle:
+                                      TimelineActivityRow.headerStrutStyle,
+                                  inlineCodeBackgroundColor: context
+                                      .colors
+                                      .surfaceContainerHigh
+                                      .withValues(alpha: .75),
+                                )
+                              : Text(
+                                  label,
+                                  key: const ValueKey('work-header-title'),
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  overflow: TextOverflow.ellipsis,
+                                  strutStyle:
+                                      TimelineActivityRow.headerStrutStyle,
+                                  style: titleStyle,
+                                ),
                         ),
                         if (duration != null) ...[
                           const SizedBox(width: 8),
@@ -344,6 +371,7 @@ class _WorkHeader extends StatelessWidget {
                         Flexible(
                           child: Text(
                             label,
+                            key: const ValueKey('work-header-title'),
                             maxLines: 1,
                             softWrap: false,
                             overflow: TextOverflow.ellipsis,

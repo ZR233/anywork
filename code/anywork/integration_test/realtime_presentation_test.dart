@@ -993,7 +993,7 @@ final class _RealtimeScene {
       expect(observed.groupExpanded(foreground.id), isTrue);
       final label = timelineGroupTitleFinder(tester, header);
       expect(label.hitTestable(), findsOneWidget);
-      expect(tester.widget<Text>(label).data?.trim(), isNotEmpty);
+      expect(timelineGroupTitleText(tester, label).trim(), isNotEmpty);
       expect(backgroundRow, findsOneWidget);
       expect(_laidOut(backgroundRow), isTrue);
       expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
