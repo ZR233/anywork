@@ -26,6 +26,7 @@ use std::{
 };
 
 struct GatedResponse {
+    gate_preparation: bool,
     calls: Vec<ModelToolCall>,
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -40,8 +41,13 @@ impl ModelSession for GatedResponse {
         let started = self.started.clone();
         let release = self.release.clone();
         let returned = self.returned.clone();
+        let gate_preparation = self.gate_preparation;
+        if first && gate_preparation {
+            started.notify_one();
+            release.notified().await;
+        }
         Ok(PreparedModelCall::new(async move {
-            if first {
+            if first && !gate_preparation {
                 started.notify_one();
                 release.notified().await;
             }
@@ -74,6 +80,7 @@ async fn authorization_change_during_response(rejected: ModelToolCall, revoke: b
     let thread = ThreadHandle::start(
         "authorization-change".into(),
         DynModelSession::new(GatedResponse {
+            gate_preparation: false,
             calls: calls.clone(),
             started: started.clone(),
             release: release.clone(),
@@ -106,24 +113,11 @@ async fn authorization_change_during_response(rejected: ModelToolCall, revoke: b
         .unwrap();
     release.notify_one();
     let result = runner.await.unwrap();
-    if revoke {
-        assert!(
-            matches!(
-                result,
-                Err(ThreadError::ModelOutput(
-                    ModelOutputViolation::ToolPermissionRevoked
-                ))
-            ),
-            "revoked authority must be a hard failure, got {result:?}"
-        );
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-    } else {
-        assert_eq!(result.unwrap().model_steps, 2);
-        assert_eq!(requests.load(Ordering::SeqCst), 2);
-    }
+    assert_eq!(result.unwrap().model_steps, 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
     assert!(log.lock().unwrap().is_empty());
     let effects = thread.effects().await.unwrap();
-    let (output, reason) = effects
+    let (output, _) = effects
         .iter()
         .filter_map(|effect| effect.attempt.as_ref())
         .find_map(|attempt| {
@@ -134,9 +128,6 @@ async fn authorization_change_during_response(rejected: ModelToolCall, revoke: b
             }
         })
         .expect("returned response must remain in rejected attempt facts");
-    if revoke {
-        assert_eq!(*reason, ModelOutputViolation::ToolPermissionRevoked);
-    }
     assert_eq!(output.tool_calls, calls);
     assert_eq!(output.usage.input_tokens, Some(13));
     assert_eq!(output.usage.output_tokens, Some(7));
@@ -153,7 +144,7 @@ async fn authorization_change_during_response(rejected: ModelToolCall, revoke: b
 }
 
 #[tokio::test]
-async fn parent_and_guard_revocation_reject_frozen_calls_without_registry_replacement() {
+async fn parent_and_guard_revocation_deliver_call_failure_and_continue() {
     use pl_core::tool::opaque::ToolAuthorization;
     for revoke_guard in [false, true] {
         let parent = ToolAuthorization::unique();
@@ -166,6 +157,7 @@ async fn parent_and_guard_revocation_reject_frozen_calls_without_registry_replac
         let thread = ThreadHandle::start(
             "revoked-frozen".into(),
             DynModelSession::new(GatedResponse {
+                gate_preparation: false,
                 calls: vec![call("never-executed", "record", None)],
                 started: started.clone(),
                 release: release.clone(),
@@ -193,24 +185,204 @@ async fn parent_and_guard_revocation_reject_frozen_calls_without_registry_replac
         assert_eq!(authorization, same_identity);
         assert!(!authorization.is_active());
         release.notify_one();
-        assert!(matches!(
-            runner.await.unwrap(),
-            Err(ThreadError::ModelOutput(
-                ModelOutputViolation::ToolPermissionRevoked
-            ))
-        ));
+        assert_eq!(runner.await.unwrap().unwrap().model_steps, 2);
         assert!(log.lock().unwrap().is_empty());
+        let snapshot = thread.snapshot();
+        let effects = thread.effects().await.unwrap();
+        let delivery = effects
+            .iter()
+            .flat_map(|e| e.deliveries.iter())
+            .find(|d| d.call_id == "never-executed")
+            .unwrap();
+        assert!(
+            matches!(&delivery.outcome, pl_core::thread::ToolOutcome::Failed(error)
+            if matches!(error.source.downcast_ref::<ThreadError>(), Some(ThreadError::ToolPermissionRevoked)))
+        );
+        assert!(snapshot.context.records.iter().any(|r| matches!(&r.source,
+            ContextSource::ToolResult { call_id, .. } if call_id == "never-executed")));
         thread.close().await.unwrap();
     }
 }
 
 #[tokio::test]
-async fn revoked_authorization_cannot_be_hidden_by_unknown_name() {
+async fn revoked_catalog_and_unknown_name_are_correctable_without_execution() {
     authorization_change_during_response(unknown("unknown"), true).await;
 }
 
 #[tokio::test]
-async fn revoked_authorization_cannot_be_hidden_by_invalid_arguments() {
+async fn catalog_removal_only_denies_the_affected_call() {
+    for (call_removed_tool, gate_preparation) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut calls = vec![call("healthy-call", "record", None)];
+        if call_removed_tool {
+            calls.insert(0, call("removed-call", "query", None));
+        }
+        let thread = ThreadHandle::start(
+            "catalog-removal".into(),
+            DynModelSession::new(GatedResponse {
+                gate_preparation,
+                calls,
+                started: started.clone(),
+                release: release.clone(),
+                requests: requests.clone(),
+                returned: Arc::new(Mutex::new(None)),
+            }),
+        )
+        .unwrap();
+        thread
+            .register_tools(vec![
+                tool_support::tool("record", &log),
+                tool_support::tool("query", &log),
+            ])
+            .await
+            .unwrap();
+        let runner = {
+            let thread = thread.clone();
+            tokio::spawn(async move { thread.run_turn(support::turn("catalog-removal")).await })
+        };
+        started.notified().await;
+        thread
+            .register_tools(vec![tool_support::tool("record", &log)])
+            .await
+            .unwrap();
+        release.notify_one();
+        assert_eq!(runner.await.unwrap().unwrap().model_steps, 2);
+        assert_eq!(*log.lock().unwrap(), vec!["healthy-call"]);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let effects = thread.effects().await.unwrap();
+        let deliveries = effects
+            .iter()
+            .flat_map(|e| e.deliveries.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(deliveries.len(), if call_removed_tool { 2 } else { 1 });
+        if call_removed_tool {
+            assert!(deliveries.iter().any(|d| d.call_id == "removed-call"
+                && matches!(&d.outcome, pl_core::thread::ToolOutcome::Failed(error)
+                    if matches!(error.source.downcast_ref::<ThreadError>(), Some(ThreadError::ToolPermissionRevoked)))));
+        }
+        thread.close().await.unwrap();
+    }
+}
+
+#[derive(Debug)]
+struct FailingDuringStop {
+    entered: Arc<tokio::sync::Notify>,
+    wait_for_stop: bool,
+}
+
+impl pl_agent_tool::Tool for FailingDuringStop {
+    type Input = OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        Solo.definition()
+    }
+
+    async fn execute(
+        &self,
+        _: OpaquePayload,
+        context: Self::Context,
+    ) -> Result<Self::Output, Self::Error> {
+        self.entered.notify_one();
+        if self.wait_for_stop {
+            context.cancellation.cancelled().await;
+        }
+        Err(Self::Error::new(std::io::Error::other(
+            "language server disconnected",
+        )))
+    }
+}
+
+#[tokio::test]
+async fn tool_error_during_interrupt_does_not_poison_input_driver() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (thread, _, _) = start(vec![vec![call("failing", "query", None)], vec![]], false).await;
+    thread
+        .register_tools(vec![
+            pl_core::tool::opaque::Registration::prepare(
+                "query".into(),
+                OpaquePayload::text("query"),
+            )
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(FailingDuringStop {
+                entered: entered.clone(),
+                wait_for_stop: true,
+            }))
+            .foreground_coexisting(),
+        ])
+        .await
+        .unwrap();
+    thread
+        .resume_inputs(pl_core::thread::input::InputDriverOptions {
+            max_model_steps: ModelStepLimit::Unlimited,
+        })
+        .await
+        .unwrap();
+    let runner = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(support::turn("stop-error")).await })
+    };
+    entered.notified().await;
+    thread.interrupt();
+    assert!(matches!(runner.await.unwrap(), Err(ThreadError::Cancelled)));
+    assert!(matches!(
+        thread.snapshot().input_execution,
+        pl_core::thread::input::InputExecution::Ready
+    ));
+    assert_eq!(
+        thread
+            .run_turn(support::turn("after-stop"))
+            .await
+            .unwrap()
+            .model_steps,
+        1
+    );
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_internal_error_is_delivered_before_next_model_request() {
+    let (model, requests) = support::ScriptedModel::new(&["query"]);
+    let thread = ThreadHandle::start("internal-error".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .register_tools(vec![
+            pl_core::tool::opaque::Registration::prepare(
+                "query".into(),
+                OpaquePayload::text("query"),
+            )
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(FailingDuringStop {
+                entered: Default::default(),
+                wait_for_stop: false,
+            }))
+            .foreground_coexisting(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(
+        thread
+            .run_turn(support::turn("internal-error"))
+            .await
+            .unwrap()
+            .model_steps,
+        2
+    );
+    assert!(requests.lock().unwrap()[1].records.iter().any(|record| {
+        matches!(&record.source, ContextSource::ToolResult { tool_id, .. } if tool_id == "query")
+            && record.content.iter().any(|content| matches!(content, ContextContent::Text { text } if text.contains("language server disconnected")))
+    }));
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn revoked_catalog_and_invalid_arguments_are_correctable_without_execution() {
     authorization_change_during_response(invalid("invalid"), true).await;
 }
 
@@ -522,7 +694,7 @@ async fn cancellation_during_correction_preparation_prevents_model_dispatch() {
 }
 
 #[tokio::test]
-async fn consistency_and_authorization_errors_cannot_be_hidden_by_recoverable_calls() {
+async fn identity_errors_cannot_be_hidden_by_recoverable_calls() {
     for (batch, expected) in [
         (
             vec![unknown("bad"), call("", "record", None)],
@@ -532,13 +704,6 @@ async fn consistency_and_authorization_errors_cannot_be_hidden_by_recoverable_ca
             vec![unknown("same"), call("same", "record", None)],
             ModelOutputViolation::DuplicateCallIdentity {
                 call_id: "same".into(),
-            },
-        ),
-        (
-            vec![unknown("bad"), call("forbidden", "unregistered", None)],
-            ModelOutputViolation::UnknownTool {
-                tool_id: "unregistered".into(),
-                call_id: "forbidden".into(),
             },
         ),
     ] {
@@ -552,12 +717,13 @@ async fn consistency_and_authorization_errors_cannot_be_hidden_by_recoverable_ca
 }
 
 #[tokio::test]
-async fn solo_unknown_and_argument_rejections_share_two_corrections() {
+async fn solo_unknown_and_argument_rejections_continue_beyond_two_corrections() {
     let (thread, requests, log) = start(
         vec![
             vec![call("solo", "solo", None), call("other", "record", None)],
             vec![unknown("bad")],
             vec![invalid("invalid")],
+            vec![],
         ],
         false,
     )
@@ -578,16 +744,8 @@ async fn solo_unknown_and_argument_rejections_share_two_corrections() {
         .unwrap();
     let mut input = support::turn("limit");
     input.max_model_steps = ModelStepLimit::Limited(10.try_into().unwrap());
-    assert!(matches!(
-        thread.run_turn(input).await,
-        Err(ThreadError::ModelOutput(
-            ModelOutputViolation::ToolCallRejected {
-                rejection: ModelToolCallRejection::InvalidArguments { .. },
-                ..
-            }
-        ))
-    ));
-    assert_eq!(requests.lock().unwrap().len(), 3);
+    assert_eq!(thread.run_turn(input).await.unwrap().model_steps, 4);
+    assert_eq!(requests.lock().unwrap().len(), 4);
     assert!(log.lock().unwrap().is_empty());
     assert!(thread.effects().await.unwrap().iter().any(|effect| {
         matches!(
@@ -602,23 +760,47 @@ async fn solo_unknown_and_argument_rejections_share_two_corrections() {
 }
 
 #[tokio::test]
-async fn absent_rejection_facts_do_not_infer_recoverable_unknown_calls() {
+async fn absent_rejection_facts_preserve_unknown_identity_and_allow_correction() {
     let legacy_call = serde_json::json!({
         "callId": "old-call", "toolId": "",
         "arguments": OpaquePayload::new("pl.model.invalid-call", 1, " original ").unwrap(),
     });
     let decoded: ModelToolCall = serde_json::from_value(legacy_call.clone()).unwrap();
     assert_eq!(decoded.rejection, None);
-    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy_call);
-    let (model, requests) = support::ScriptedModel::new(&[""]);
-    let thread = ThreadHandle::start("legacy".into(), DynModelSession::new(model)).unwrap();
-    assert!(matches!(
-        thread.run_turn(support::turn("legacy")).await,
-        Err(ThreadError::ModelOutput(
-            ModelOutputViolation::UnknownTool { .. }
-        ))
-    ));
-    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), legacy_call);
+    let (thread, requests, log) = start(
+        vec![
+            vec![decoded],
+            vec![call("unregistered-call", "unregistered", None)],
+            vec![],
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(
+        thread
+            .run_turn(support::turn("legacy"))
+            .await
+            .unwrap()
+            .model_steps,
+        3
+    );
+    assert_eq!(requests.lock().unwrap().len(), 3);
+    assert!(log.lock().unwrap().is_empty());
+    assert!(
+        thread
+            .effects()
+            .await
+            .unwrap()
+            .iter()
+            .any(|effect| matches!(
+                effect.attempt.as_ref().map(|a| &a.outcome),
+                Some(AttemptOutcome::Rejected {
+                    reason: ModelOutputViolation::UnknownTool { .. },
+                    ..
+                })
+            ))
+    );
     thread.close().await.unwrap();
 }
 

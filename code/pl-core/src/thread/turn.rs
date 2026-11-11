@@ -293,7 +293,6 @@ impl Owner {
         }
         let mut content = input.content;
         let mut step = 0_u32;
-        let mut corrections = 0_u8;
         let mut recovered_capacity = false;
         let mut correction_source = None;
         loop {
@@ -342,9 +341,7 @@ impl Owner {
                     continue;
                 }
                 Err(ThreadError::ModelOutput(ref reason))
-                    if reason.is_correctable()
-                        && corrections < 2
-                        && !input.max_model_steps.reached(completed) =>
+                    if reason.is_correctable() && !input.max_model_steps.reached(completed) =>
                 {
                     if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
                         return Err(ThreadError::Cancelled);
@@ -353,7 +350,6 @@ impl Owner {
                         text: Arc::from(reason.correction_feedback()),
                     }];
                     correction_source = Some(format!("{}:{step}", input.attempt_prefix));
-                    corrections += 1;
                     step = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
                     continue;
                 }

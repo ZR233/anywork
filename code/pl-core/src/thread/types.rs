@@ -1193,6 +1193,7 @@ pub enum ModelOutputViolation {
     AttemptIdentity { expected: String, actual: String },
     #[error("model context revision mismatch: expected {expected}, got {actual}")]
     ContextRevision { expected: u64, actual: u64 },
+    /// Historical rejected-attempt fact; current execution reports revocation per tool call.
     #[error("frozen tool execution authorization was revoked during model execution")]
     ToolPermissionRevoked,
     #[error("model called unknown tool {tool_id} (call {call_id})")]
@@ -1213,9 +1214,12 @@ pub enum ModelOutputViolation {
 }
 
 impl ModelOutputViolation {
-    /// Whether this rejection can use the Turn's shared, bounded model-output correction budget.
+    /// Whether the model can correct this rejection within the host's model-step policy.
     pub(super) fn is_correctable(&self) -> bool {
-        matches!(self, Self::ToolCallRejected { .. } | Self::SoloBatch { .. })
+        matches!(
+            self,
+            Self::UnknownTool { .. } | Self::ToolCallRejected { .. } | Self::SoloBatch { .. }
+        )
     }
 
     pub(super) fn correction_feedback(&self) -> String {

@@ -7,7 +7,7 @@ use pl_core::{
         DynModelSession, ModelError, ModelRequest, ModelSession, ModelStepOutput, ModelToolCall,
         PreparedModelCall,
     },
-    thread::{ModelOutputViolation, ThreadError, ThreadHandle},
+    thread::{ThreadError, ThreadHandle, ToolOutcome},
     tool::opaque::{Registration, ToolError},
 };
 use pl_tool::{
@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Notify;
 
 #[tokio::test]
-async fn target_effect_and_resource_assignment_changes_revoke_old_plans_but_allow_new_calls()
+async fn target_effect_and_resource_assignment_changes_deny_old_calls_but_allow_new_calls()
 -> anyhow::Result<()> {
     enum Change {
         Target,
@@ -87,6 +87,7 @@ async fn target_effect_and_resource_assignment_changes_revoke_old_plans_but_allo
         thread.register_tools(resources(&replacement)?).await?;
         release.notify_one();
         let outcome = running.await?;
+        let effects = thread.effects().await?;
         thread.close().await?;
         let fresh = ThreadHandle::start(
             "fresh-scope".into(),
@@ -105,15 +106,10 @@ async fn target_effect_and_resource_assignment_changes_revoke_old_plans_but_allo
         fresh.close().await?;
         drop((original, replacement));
         runtime.shutdown().await?;
-        assert!(
-            matches!(
-                outcome,
-                Err(ThreadError::ModelOutput(
-                    ModelOutputViolation::ToolPermissionRevoked
-                ))
-            ),
-            "changed scopes must reject the old frozen plan in Core: {outcome:?}"
-        );
+        assert_eq!(outcome?.model_steps, 2);
+        assert!(effects.iter().flat_map(|effect| effect.deliveries.iter()).any(|delivery|
+            matches!(&delivery.outcome, ToolOutcome::Failed(error)
+                if matches!(error.source.downcast_ref::<ThreadError>(), Some(ThreadError::ToolPermissionRevoked)))));
         fresh_outcome?;
         let delivery = fresh_effects
             .iter()
@@ -340,21 +336,16 @@ async fn removed_or_disabled_resource_server_revokes_frozen_read_and_aggregate_l
         for (thread, release, running) in frozen {
             thread.register_tools(resources(&replacement)?).await?;
             release.notify_one();
-            outcomes.push(running.await?);
+            outcomes.push((running.await?, thread.effects().await?));
             thread.close().await?;
         }
         drop((original, replacement));
         runtime.shutdown().await?;
-        for outcome in outcomes {
-            assert!(
-                matches!(
-                    outcome,
-                    Err(ThreadError::ModelOutput(
-                        ModelOutputViolation::ToolPermissionRevoked
-                    ))
-                ),
-                "old resource plans must fail at Core admission: {outcome:?}"
-            );
+        for (outcome, effects) in outcomes {
+            assert_eq!(outcome?.model_steps, 2);
+            assert!(effects.iter().flat_map(|effect| effect.deliveries.iter()).any(|delivery|
+                matches!(&delivery.outcome, ToolOutcome::Failed(error)
+                    if matches!(error.source.downcast_ref::<ThreadError>(), Some(ThreadError::ToolPermissionRevoked)))));
         }
         for id in ["a", "b"] {
             assert!(
