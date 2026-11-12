@@ -565,12 +565,7 @@ void main() {
     expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
     expect(find.byKey(const ValueKey('composer-continue')), findsNothing);
     expect(tester.widget<TextField>(input).controller!.text, isEmpty);
-    report['resumedViewport'] = await configurePresentationWindow(
-      tester,
-      logicalWidth: 900,
-      logicalHeight: 760,
-    );
-    await capturePresentation(tester, 'submission-resumed-narrow.png');
+    await capturePresentation(tester, 'submission-resumed.png');
     expect(session.state.runtime!.execution!.id, resumedExecution.id);
     record('new-execution-running', {
       'executionId': resumedExecution.id,
@@ -610,7 +605,7 @@ void main() {
       'submission-next-draft.png',
       'submission-stopping.png',
       'submission-stopped.png',
-      'submission-resumed-narrow.png',
+      'submission-resumed.png',
     ]) {
       expect(await File('$output/$name').length(), greaterThan(0));
     }

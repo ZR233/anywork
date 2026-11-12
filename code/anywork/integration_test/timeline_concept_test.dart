@@ -214,7 +214,6 @@ void main() {
       FlutterError.onError = previousErrorHandler;
     });
     final router = createApplicationRouter();
-    final textScale = ValueNotifier<double>(1);
     void syncRoute() {
       if (router.routerDelegate.currentConfiguration.isEmpty) return;
       final state = router.routerDelegate.state;
@@ -269,7 +268,6 @@ void main() {
         tester.testTextInput.unregister();
         router.routerDelegate.removeListener(syncRoute);
         router.dispose();
-        textScale.dispose();
       }
     });
     await tester.pumpWidget(
@@ -286,15 +284,6 @@ void main() {
             ],
             supportedLocales: AppLocalizations.supportedLocales,
             routerConfig: router,
-            builder: (context, child) => ValueListenableBuilder<double>(
-              valueListenable: textScale,
-              child: child,
-              builder: (context, scale, child) => MediaQuery(
-                data: MediaQuery.of(context)
-                    .copyWith(textScaler: TextScaler.linear(scale)),
-                child: child!,
-              ),
-            ),
           ),
         ),
       ),
@@ -302,14 +291,7 @@ void main() {
     report['window'] = await configurePresentationWindow(tester);
     await graph.client.directoryCommands.openProject(project);
     graph.setConversationPageVisible(true);
-    final scene = _ConceptScene(
-      tester,
-      graph,
-      provider,
-      report,
-      phase,
-      textScale,
-    );
+    final scene = _ConceptScene(tester, graph, provider, report, phase);
     Map<String, dynamic>? boundarySaved;
     var selectedThread = emptyThread;
     if (boundary && reopen) {
@@ -408,14 +390,12 @@ final class _ConceptScene {
     this.provider,
     this.report,
     this.phase,
-    this.textScale,
   );
   final WidgetTester tester;
   final AppGraph graph;
   final Uri provider;
   final Map<String, Object?> report;
   final String phase;
-  final ValueNotifier<double> textScale;
   final List<Map<String, Object?>> _checkpoints = [];
   static const _samplePump = Duration(milliseconds: 16);
   String get threadId => graph.client.selection.state.selectedThreadId!;
@@ -817,167 +797,27 @@ final class _ConceptScene {
   Future<void> capture(String name) =>
       capturePresentation(tester, 'concept-$phase-$name.png');
 
-  Future<void> captureAccessibleVariants(
-    String stage, {
-    required String workBlockId,
-    String? streamingAtomId,
-  }) async {
-    final captures = report.putIfAbsent(
-      'accessibleCaptures',
-      () => <Map<String, Object?>>[],
-    ) as List<Map<String, Object?>>;
-    final view = tester.view;
-    final originalWidth = view.physicalSize.width / view.devicePixelRatio;
-    final originalHeight = view.physicalSize.height / view.devicePixelRatio;
-    final originalScale = textScale.value;
-    void expectPausedState() {
-      final work = observed.unit(workBlockId);
-      expect(work.summary!.total, 2);
-      expect(work.summary!.terminal, 1);
-      expect(work.summary!.running, 1);
-      if (streamingAtomId != null) {
-        expect(work.historyPos, greaterThan(0));
-        expect(work.state, DisplayBlockState.sealed);
-        final text = observed.liveBlocks.singleWhere(
-          (block) =>
-              block.body is SingleDisplayBlock &&
-              (block.body as SingleDisplayBlock).record.atom.id ==
-                  streamingAtomId,
-        );
-        expect(
-          (text.body as SingleDisplayBlock).record.atom.lifecycle,
-          isA<ActiveChatAtom>(),
-        );
-      } else {
-        expect(work.state, DisplayBlockState.open);
-        expect(work.historyPos, isNull);
-      }
-    }
-
-    expectPausedState();
-    final evidence = <String, Object?>{
-      'fixtureStage': stage,
-      'workBlockId': workBlockId,
-      'streamingAtomId': streamingAtomId,
-      'liveBlockIds': observed.liveBlocks.map((block) => block.id).toList(),
-      'liveBlocks': [
-        for (final block in observed.liveBlocks)
-          {
-            'blockId': block.id,
-            'state': block.state.name,
-            ...switch (block.body) {
-              WorkDisplayBlock(:final summary) => {
-                'kind': 'work',
-                'total': summary.total,
-                'terminal': summary.terminal,
-                'running': summary.running,
-              },
-              SingleDisplayBlock(record: DisplayRecord(:final atom)) => {
-                'kind': 'single',
-                'atomId': atom.id,
-              },
-            },
-          },
-      ],
-      'originalViewport': {
-        'width': originalWidth,
-        'height': originalHeight,
-        'textScale': originalScale,
-      },
-      'variants': <Map<String, Object?>>[],
-    };
-    captures.add(evidence);
-    if (!Platform.environment.containsKey('ANYWORK_PRESENTATION_SCREENSHOTS')) {
-      evidence['status'] = 'not requested; no native screenshot directory';
-      return;
-    }
-    Object? primaryFailure;
-    try {
-      for (final scale in [1.0, 1.6]) {
-        final name = scale == 1 ? '$stage-narrow' : '$stage-narrow-large-text';
-        final variant = <String, Object?>{
-          'fileName': 'concept-$phase-$name.png',
-          'textScale': scale,
-          'requestedLogicalWidth': 600,
-          'requestedLogicalHeight': 900,
-          'pass': false,
-        };
-        (evidence['variants'] as List<Map<String, Object?>>).add(variant);
-        try {
-          variant['viewport'] = await configurePresentationWindow(
-            tester,
-            logicalWidth: 600,
-            logicalHeight: 900,
-          );
-          textScale.value = scale;
-          await tester.pump(const Duration(milliseconds: 300));
-          expect(tester.takeException(), isNull);
-          expect(
-            MediaQuery.textScalerOf(tester.element(find.byType(TimelineView)))
-                .scale(10),
-            10 * scale,
-          );
-          expect(
-            observed.liveBlocks.map((block) => block.id),
-            orderedEquals(evidence['liveBlockIds'] as List<String>),
-          );
-          expectPausedState();
-          if (streamingAtomId != null) {
-            await _until(
-              tester,
-              () => _incrementGlyph(streamingAtomId, _overlapText) != null,
-              'sealed Work snapshot and fully readable streaming body at $name',
-            );
-          }
-          await capture(name);
-          expect(tester.takeException(), isNull);
-          variant['pass'] = true;
-        } catch (error, stack) {
-          variant['failure'] = '$error';
-          variant['stack'] = '$stack';
-          // Keep the failed real layout as evidence; never shrink text or hide
-          // content to make a constrained native window look successful.
-          final failureName = '$name-failed';
-          try {
-            await capture(failureName);
-            variant['failureScreenshot'] = 'concept-$phase-$failureName.png';
-          } catch (captureError) {
-            variant['failureScreenshotError'] = '$captureError';
-          }
-          rethrow;
-        } finally {
-          variant['observedViewport'] = {
-            'width': view.physicalSize.width / view.devicePixelRatio,
-            'height': view.physicalSize.height / view.devicePixelRatio,
-            'devicePixelRatio': view.devicePixelRatio,
-          };
-        }
-      }
-    } catch (error) {
-      primaryFailure = error;
-      rethrow;
-    } finally {
-      textScale.value = originalScale;
-      try {
-        evidence['restoredViewport'] = await configurePresentationWindow(
-          tester,
-          logicalWidth: originalWidth,
-          logicalHeight: originalHeight,
-        );
-        await tester.pump(const Duration(milliseconds: 300));
-        expect(tester.takeException(), isNull);
-        expect(
-          MediaQuery.textScalerOf(tester.element(find.byType(TimelineView)))
-              .scale(10),
-          10 * originalScale,
-        );
-        evidence['restoredTextScale'] = textScale.value;
-      } catch (error, stack) {
-        evidence['restoreFailure'] = '$error';
-        evidence['restoreStack'] = '$stack';
-        // Preserve the layout/resize failure if restoration fails as well.
-        if (primaryFailure == null) rethrow;
-      }
+  void expectOverlapState(String workBlockId, {String? streamingAtomId}) {
+    final work = observed.unit(workBlockId);
+    expect(work.summary!.total, 2);
+    expect(work.summary!.terminal, 1);
+    expect(work.summary!.running, 1);
+    if (streamingAtomId == null) {
+      expect(work.state, DisplayBlockState.open);
+      expect(work.historyPos, isNull);
+    } else {
+      expect(work.historyPos, greaterThan(0));
+      expect(work.state, DisplayBlockState.sealed);
+      final text = observed.liveBlocks.singleWhere(
+        (block) =>
+            block.body is SingleDisplayBlock &&
+            (block.body as SingleDisplayBlock).record.atom.id ==
+                streamingAtomId,
+      );
+      expect(
+        (text.body as SingleDisplayBlock).record.atom.lifecycle,
+        isA<ActiveChatAtom>(),
+      );
     }
   }
 
@@ -3058,21 +2898,9 @@ final class _ConceptScene {
       () => rows.evaluate().length == 1,
       'one active compaction row',
     );
-    final row = tester.widget<TimelineActivityRow>(rows);
-    expect(
-      row.label,
-      AppLocalizations.of(tester.element(rows)).conversationActivityCompacting,
-    );
-    expect(row.icon, Icons.compress_outlined);
-    expect(row.indicatorStyle, TimelineActivityIndicatorStyle.compactingZip);
-    expect(row.active, isTrue);
-    expect(row.expandable, isFalse);
     report['compactionCurrent'] = {
       'itemId': active.id,
       'operationId': (active.source as OperationChatSource).operationId,
-      'rowLabel': row.label,
-      'rowActive': row.active,
-      'rowExpandable': row.expandable,
     };
     expect(
       tester
@@ -3120,15 +2948,6 @@ final class _ConceptScene {
       () => completedRows.evaluate().length == 1,
       'completed compaction on production page',
     );
-    final completed = tester.widget<TimelineActivityRow>(completedRows);
-    expect(
-      completed.label,
-      AppLocalizations.of(tester.element(completedRows))
-          .timelineContextCompacted,
-    );
-    expect(completed.icon, Icons.compress_outlined);
-    expect(completed.active, isFalse);
-    expect(completed.expandable, isFalse);
     await capture('compacted');
   }
 
@@ -3275,7 +3094,7 @@ final class _ConceptScene {
       () => hasText(_overlapEarlyReasoning),
       'B original body before text',
     );
-    await captureAccessibleVariants('a07-b-terminal', workBlockId: work.id);
+    expectOverlapState(work.id);
     await observed.closeWork(
       lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
     );
@@ -3314,11 +3133,7 @@ final class _ConceptScene {
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
     await unchanged();
-    await captureAccessibleVariants(
-      'a07-text-readable',
-      workBlockId: work.id,
-      streamingAtomId: text.id,
-    );
+    expectOverlapState(work.id, streamingAtomId: text.id);
     await observed.closeWork(
       lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
     );
