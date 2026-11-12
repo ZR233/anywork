@@ -30,10 +30,12 @@ impl ThreadBuiltin {
     /// Returns the deterministic declaration for this implementation's actual input contract.
     pub fn declaration(self) -> ToolDefinition {
         match self {
-            Self::CreateDirectory => crate::file::create_directory_tool_definition(),
-            Self::DeletePath => crate::file::delete_path_tool_definition(),
-            Self::CopyPath => crate::file::copy_path_tool_definition(),
-            Self::MovePath => crate::file::move_path_tool_definition(),
+            Self::CreateDirectory => {
+                crate::workspace_file::WorkspaceMutationKind::CreateDirectory.definition()
+            }
+            Self::DeletePath => crate::workspace_file::WorkspaceMutationKind::Delete.definition(),
+            Self::CopyPath => crate::workspace_file::WorkspaceMutationKind::Copy.definition(),
+            Self::MovePath => crate::workspace_file::WorkspaceMutationKind::Move.definition(),
             Self::ListTasks => crate::task_control::ListTasksTool::declaration(),
             Self::Sleep => crate::session::SleepTool::declaration(),
             Self::ViewImage => crate::image::thread_view_image_tool_definition(),

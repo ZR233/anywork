@@ -30,6 +30,7 @@ pub(super) async fn wait_for_process_activity(entry: &CommandProcessEntry, yield
     }
 }
 
+#[derive(Clone)]
 pub(super) struct CommandLifecycle {
     pub timeout: Duration,
     pub task_cancellation: Option<CancellationToken>,
@@ -45,7 +46,9 @@ pub(super) fn spawn_lifecycle_task(
     lifecycle: CommandLifecycle,
 ) {
     tokio::spawn(async move {
-        let outcome = wait_for_lifecycle_outcome(&mut child, lifecycle).await;
+        let separate_capture = child.has_capture_completion();
+        let deadline = tokio::time::Instant::now() + lifecycle.timeout;
+        let outcome = wait_for_lifecycle_outcome(&mut child, &lifecycle).await;
         let wait_result = match outcome {
             LifecycleOutcome::Exited(result) => result,
             LifecycleOutcome::TimedOut => {
@@ -81,37 +84,9 @@ pub(super) fn spawn_lifecycle_task(
                 {
                     let mut state = entry.state.lock().await;
                     state.exit = Some(status.clone());
-                    let result = match (state.capture_ownership, status.capture) {
-                        (crate::command::CommandCaptureOwnership::Producer, Some(receipt)) => {
-                            state.complete_producer_capture(receipt)
-                        }
-                        (crate::command::CommandCaptureOwnership::Manager, None) => Ok(()),
-                        (crate::command::CommandCaptureOwnership::Producer, None)
-                        | (crate::command::CommandCaptureOwnership::Manager, Some(_)) => {
-                            Err("capture receipt does not match declared owner".into())
-                        }
-                    };
-                    drop(state);
-                    if let Err(error) = result {
-                        apply_transition(
-                            &entry,
-                            CommandProcessTransition::ProcessWaitFailed { error },
-                        )
-                        .await;
-                        return;
+                    if !separate_capture {
+                        state.capture_completion_observed = true;
                     }
-                }
-                if let Some(failure) = status.capture_failure {
-                    apply_transition(&entry, CommandProcessTransition::OutputFailed { failure })
-                        .await;
-                }
-                if let Some(error) = status.supervision_failure {
-                    apply_transition(
-                        &entry,
-                        CommandProcessTransition::ProcessWaitFailed { error },
-                    )
-                    .await;
-                    return;
                 }
                 apply_transition(
                     &entry,
@@ -120,8 +95,53 @@ pub(super) fn spawn_lifecycle_task(
                     },
                 )
                 .await;
+                if separate_capture {
+                    let cancelled = async {
+                        match &lifecycle.task_cancellation {
+                            Some(token) => token.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    let capture = tokio::select! {
+                        result=child.finish_capture()=>result,
+                        _=tokio::time::sleep_until(deadline)=>{
+                            apply_transition(&entry,CommandProcessTransition::TimeOut).await;
+                            entry.drain_stopped.cancel();child.finish_capture().await
+                        }
+                        _=cancelled=>{
+                            apply_transition(&entry,CommandProcessTransition::Cancel).await;
+                            entry.drain_stopped.cancel();child.finish_capture().await
+                        }
+                        _=lifecycle.manager_cancellation.cancelled()=>{
+                            apply_transition(&entry,CommandProcessTransition::Cancel).await;
+                            entry.drain_stopped.cancel();child.finish_capture().await
+                        }
+                    };
+                    match capture {
+                        Ok(Some(capture)) => entry.state.lock().await.observe_capture(capture),
+                        Ok(None) => {
+                            let mut state = entry.state.lock().await;
+                            state.capture_completion_observed = true;
+                            state.promote_drained_final();
+                        }
+                        Err(error) => {
+                            let mut state = entry.state.lock().await;
+                            state.capture_completion_observed = true;
+                            state.record_capture_failure(super::CommandCaptureFailure::Write {
+                                message: error,
+                            });
+                            state.promote_drained_final();
+                        }
+                    }
+
+                    entry.notify.notify_waiters();
+                }
             }
             Err(error) => {
+                entry.drain_stopped.cancel();
+                if separate_capture {
+                    entry.state.lock().await.capture_completion_observed = true;
+                }
                 apply_transition(
                     &entry,
                     CommandProcessTransition::ProcessWaitFailed {
@@ -143,10 +163,10 @@ enum LifecycleOutcome {
 
 async fn wait_for_lifecycle_outcome(
     child: &mut ManagedCommand,
-    lifecycle: CommandLifecycle,
+    lifecycle: &CommandLifecycle,
 ) -> LifecycleOutcome {
     let cancelled = async {
-        match lifecycle.task_cancellation {
+        match &lifecycle.task_cancellation {
             Some(token) => token.cancelled().await,
             None => std::future::pending().await,
         }
@@ -168,8 +188,4 @@ pub(super) async fn apply_transition(
     state.apply_transition(transition);
     drop(state);
     entry.notify.notify_waiters();
-    // Every transition can change whether the single capture writer may settle (a stream closed, or
-    // an output failure stopped admission), so wake it to re-check rather than waiting for another
-    // chunk that may never come.
-    entry.capture_wake.notify_one();
 }

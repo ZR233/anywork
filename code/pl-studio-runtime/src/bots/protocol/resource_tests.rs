@@ -270,7 +270,10 @@ async fn registered_media_window(stage: FileStage, lose_claim: bool) -> Result<(
     }
     // This is the same dedicated-temp cleanup primitive the archive consumes,
     // on the real media producer's frozen physical root, after its true join.
-    SessionTempBackend::Local(&workspace).remove(&files).await?;
+    SessionTempBackend::local(&workspace)
+        .await?
+        .remove(&files)
+        .await?;
     assert!(!workspace.join(files.temp()).exists());
     assert!(!destination.exists());
     assert!(
@@ -474,7 +477,8 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
         RESOURCE_BODY.as_bytes(),
         "an actual retained resource is not rolled back as if copying never happened",
     );
-    SessionTempBackend::Local(&workspace)
+    SessionTempBackend::local(&workspace)
+        .await?
         .remove(&files)
         .await
         .context("post-quiesce removal of the media producer's temp")?;

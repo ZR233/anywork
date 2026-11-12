@@ -27,7 +27,7 @@ pub(crate) struct ToolBinding {
     pub project: WorkspaceRecord,
     pub workspace: ToolWorkspace,
     pub commands: Option<WeakCommandProcesses>,
-    pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub remote: Option<pl_tool::remote::SshWorkspaceBinding>,
     pub ssh_profile: Option<pl_tool::remote::SshServerProfile>,
 }
 
@@ -401,13 +401,13 @@ impl StudioThreadFactory {
                 let opening = self
                     .services
                     .ssh_manager
-                    .open_workspace_host(server, requested.clone());
+                    .open_workspace_binding(server, requested.clone());
                 let host = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
                     result = opening => result.map_err(|error| resource_error("reopen Thread remote workspace", error))?,
                 };
-                if host.files.canonical_path() != requested.as_str() {
+                if host.files().canonical_path() != requested.as_str() {
                     return Err(ThreadAssemblyError::InvalidatedBinding(
                         "remote workspace target changed; reactivate this Thread".into(),
                     ));
@@ -417,7 +417,9 @@ impl StudioThreadFactory {
             None => None,
         };
         let same_connection = match (&binding.remote, &remote) {
-            (Some(previous), Some(current)) => previous.files.is_same_binding(&current.files),
+            (Some(previous), Some(current)) => {
+                previous.execution.is_same_binding(&current.execution)
+            }
             (None, None) => true,
             _ => false,
         };

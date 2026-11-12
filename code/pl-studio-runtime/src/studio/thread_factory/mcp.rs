@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use pl_protocol::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
+use pl_tool::command::ExecutorCommandBackend;
 use pl_tool::mcp::{
     McpAvailabilityKind, McpAvailabilitySnapshot, McpResetScope, McpRuntime, McpRuntimeHandle,
     McpTurnLease,
 };
-use pl_tool::remote::{RemoteCommandBackend, RemoteWorkspaceHost};
+use pl_tool::remote::SshWorkspaceBinding;
 use pl_tool::workspace::ToolWorkspace;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,7 @@ pub(super) struct ThreadMcpPreparation<'a> {
     pub lifetime: &'a Arc<ThreadToolLifetime>,
     pub project: &'a WorkspaceRecord,
     pub workspace: &'a ToolWorkspace,
-    pub remote: Option<&'a RemoteWorkspaceHost>,
+    pub remote: Option<&'a SshWorkspaceBinding>,
     pub preparation: &'a CatalogPreparation,
     pub cancellation: &'a CancellationToken,
 }
@@ -45,7 +46,7 @@ pub(crate) struct ThreadMcpOwner {
     pub(super) lifetime: Arc<ThreadToolLifetime>,
     pub(super) scope: McpScope,
     pub(super) workspace_root: PathBuf,
-    remote_commands: Mutex<Option<Arc<RemoteCommandBackend>>>,
+    remote_commands: Mutex<Option<Arc<ExecutorCommandBackend>>>,
     pub(super) runtime: McpRuntimeHandle,
     servers: Mutex<BTreeMap<String, ResolvedThreadMcpServer>>,
     settings_revision: Mutex<u64>,
@@ -69,7 +70,7 @@ impl ThreadMcpOwner {
         lifetime: Arc<ThreadToolLifetime>,
         scope: McpScope,
         workspace_root: PathBuf,
-        remote_commands: Option<Arc<RemoteCommandBackend>>,
+        remote_commands: Option<Arc<ExecutorCommandBackend>>,
         runtime: McpRuntimeHandle,
         servers: BTreeMap<String, ResolvedThreadMcpServer>,
     ) -> Arc<Self> {
@@ -209,7 +210,7 @@ impl ThreadMcpOwner {
         self.start_close(events).await
     }
 
-    fn remote_commands(&self) -> Option<Arc<RemoteCommandBackend>> {
+    fn remote_commands(&self) -> Option<Arc<ExecutorCommandBackend>> {
         self.remote_commands
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -219,7 +220,7 @@ impl ThreadMcpOwner {
     fn update_resolved(
         &self,
         servers: BTreeMap<String, ResolvedThreadMcpServer>,
-        remote: Option<Arc<RemoteCommandBackend>>,
+        remote: Option<Arc<ExecutorCommandBackend>>,
     ) {
         *self
             .remote_commands
@@ -365,7 +366,7 @@ impl ThreadMcpOwner {
         self: &Arc<Self>,
         resolved: BTreeMap<String, ResolvedThreadMcpServer>,
         authorization: Option<pl_core::tool::opaque::ToolAuthorization>,
-        remote: Option<Arc<RemoteCommandBackend>>,
+        remote: Option<Arc<ExecutorCommandBackend>>,
         events: &ProductEventBus,
         cancellation: &CancellationToken,
     ) -> Result<McpTurnLease, ThreadAssemblyError> {
@@ -667,7 +668,7 @@ impl StudioThreadFactory {
             },
             None => McpScope::Host,
         };
-        let remote_commands = remote.map(|host| Arc::new(host.commands.clone()));
+        let remote_commands = remote.map(|host| Arc::new(host.commands().clone()));
         let resolved = self
             .services
             .config_runtime

@@ -22,7 +22,7 @@ use pl_core::{
     },
 };
 use pl_tool::{
-    execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest, LocalExecutionBackend},
+    execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest, ExecutorExecutionBackend},
     git::{GitHostError, GitTool, GitToolKind, GitWorkspaceConfig, NoGitCredentialProvider},
 };
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ async fn execute(
     let tool = GitTool::new(
         kind,
         config.clone(),
-        Arc::new(LocalExecutionBackend),
+        Arc::new(ExecutorExecutionBackend::default()),
         Arc::new(NoGitCredentialProvider),
         definition.clone(),
     );
@@ -239,14 +239,17 @@ async fn host_backend_errors_keep_the_concrete_source_without_retry() {
 struct SensitiveRemoteBackend;
 
 impl ExecutionBackend for SensitiveRemoteBackend {
-    type Error = pl_tool::remote::RemoteExecutionError;
+    type Error = pl_tool::execution::ExecutionFailure;
 
     async fn run(&self, _request: ExecutionRequest) -> Result<ExecutionOutput, Self::Error> {
-        Err(pl_tool::remote::RemoteExecutionError::Spawn {
-            source: pl_tool::remote::RemoteClientError::Protocol(
-                "fixture-private-remote-diagnostic".into(),
-            ),
-        })
+        Err(pl_tool::execution::ExecutionFailure::Spawn(
+            pl_remote_helper::SpawnError {
+                knowledge: pl_remote_helper::StartKnowledge::Unknown,
+                cause: pl_remote_helper::ExecutionError::Disconnected(
+                    "fixture-private-remote-diagnostic".into(),
+                ),
+            },
+        ))
     }
 }
 
@@ -262,15 +265,15 @@ async fn retained_remote_sources_must_not_publish_private_diagnostics_to_history
     );
     let error = tool.execute(input("{}"), context()).await.unwrap_err();
     assert_public_diagnostic(&error, "fixture-private-remote-diagnostic");
-    assert!(error.to_string().contains("remote command spawn failed"));
+    assert!(error.to_string().contains("git command execution failed"));
     let mut source: &(dyn Error + 'static) = error
         .source
         .downcast_ref::<GitHostError>()
         .unwrap()
         .original();
     loop {
-        if let Some(remote) = source.downcast_ref::<pl_tool::remote::RemoteExecutionError>() {
-            let pl_tool::remote::RemoteExecutionError::Spawn { source } = remote else {
+        if let Some(remote) = source.downcast_ref::<pl_tool::execution::ExecutionFailure>() {
+            let pl_tool::execution::ExecutionFailure::Spawn(source) = remote else {
                 panic!("not the original remote failure")
             };
             assert!(
@@ -292,7 +295,7 @@ fn assert_public_diagnostic(error: &ToolError, private: &str) {
         assert!(!error.to_string().contains(private));
         assert!(!format!("{error:?}").contains(private));
         assert!(!error.is::<pl_tool_git::GitError>());
-        assert!(!error.is::<pl_tool::remote::RemoteExecutionError>());
+        assert!(!error.is::<pl_tool::execution::ExecutionFailure>());
         source = error.source();
     }
     let history = serde_json::to_string(&error).unwrap();
@@ -378,7 +381,10 @@ impl ExecutionBackend for RecordingLocalBackend {
     type Error = String;
 
     async fn run(&self, request: ExecutionRequest) -> Result<ExecutionOutput, Self::Error> {
-        let output = LocalExecutionBackend.run(request).await?;
+        let output = ExecutorExecutionBackend::default()
+            .run(request)
+            .await
+            .map_err(|error| error.to_string())?;
         self.0.lock().unwrap().push(output.clone());
         Ok(output)
     }

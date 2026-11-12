@@ -116,8 +116,6 @@ class SshConnectionView {
     required this.state,
     this.helperVersion,
     this.architecture,
-    this.attempt,
-    this.delaySeconds,
     this.errorCode,
     this.errorMessage,
   });
@@ -126,8 +124,6 @@ class SshConnectionView {
   final String state;
   final String? helperVersion;
   final String? architecture;
-  final int? attempt;
-  final int? delaySeconds;
   final String? errorCode;
   final String? errorMessage;
 }

@@ -56,7 +56,7 @@ pub(super) fn bind_thread_session_files(
 /// cannot refuse pool ignore files, and HostGranted never opens an arbitrary host path.
 pub(super) async fn prepare_bound_session_files(
     workspace: &ToolWorkspace,
-    remote: Option<&pl_tool::remote::RemoteWorkspaceHost>,
+    execution: &pl_tool::command::WorkspaceExecutionBinding,
 ) -> Result<(), ThreadAssemblyError> {
     let files = workspace
         .workspace()
@@ -71,32 +71,14 @@ pub(super) async fn prepare_bound_session_files(
     if workspace.workspace().mutability() == WorkspaceMutability::ReadOnly {
         return Ok(());
     }
-    match remote {
-        Some(host) => {
-            pl_tool::workspace::SessionTempBackend::Ssh(&host.files)
-                .migrate(&files)
-                .await
-                .map_err(|error| resource_error("migrate remote Thread temp files", error))?;
-            pl_tool::workspace::prepare_session_files(&host.files, &files)
-                .await
-                .map_err(|error| resource_error("prepare remote Thread session files", error))
-        }
-        None => {
-            pl_tool::workspace::SessionTempBackend::Local(workspace.root())
-                .migrate(&files)
-                .await
-                .map_err(|error| resource_error("migrate local Thread temp files", error))?;
-            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
-                workspace.root().to_path_buf(),
-                false,
-            )
-            .await
-            .map_err(|error| resource_error("open confined session-file backend", error))?;
-            pl_tool::workspace::prepare_session_files(&backend, &files)
-                .await
-                .map_err(|error| resource_error("prepare local Thread session files", error))
-        }
-    }
+    let backend = execution.files();
+    pl_tool::workspace::SessionTempBackend::new(&backend)
+        .migrate(&files)
+        .await
+        .map_err(|error| resource_error("migrate Thread temp files", error))?;
+    pl_tool::workspace::prepare_session_files(&backend, &files)
+        .await
+        .map_err(|error| resource_error("prepare Thread session files", error))
 }
 
 /// Latest `studio.session-files` fact from the bound layout, not a second string source.

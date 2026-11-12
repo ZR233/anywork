@@ -349,6 +349,8 @@ Client 提交命令的公开错误契约以 `SubmissionNotSent` 明确表达“�
 
 `RemoteActions` 持有 SSH 远端目录浏览的分页游标，类型化目录列表返回的 `nextCursor` 是唯一的续页依据，前端页面不按偏移量重新扫描目录。切换目录、切换服务器或销毁选择器时立即释放旧游标，并通过请求代次拒绝迟到回包；Client 关闭时先锁闭查询准入、等待已接纳请求完成交接，再并行关闭所有仍持有的远端目录游标。
 
+SSH 产品状态只表达当前显式连接：disconnected、connecting、ready、closing、failed。目录浏览游标归服务所有者持有，关闭、取消或连接失效时释放，前端不能将旧游标提交给新连接，也不恢复旧 Child 或协议服务。前端显示稳定端点和当前目录事实，具体 Executor 身份及其流、任务和清理责任留在 Rust owner。
+
 ## 25.13 独立统计领域与呈现模块
 
 统计模块的数据流向固定为：`Rust 统计所有者 → 强类型统计端口 (Port) / FRB 适配器 → StatisticsRepository → ViewModel / ViewState → Connector → 纯视图组件 (View)`。`StatisticsRepository` 是当前应用实例内唯一的统计权威归约器（Reducer），直接持有可见观察需求、分页物化读取、错误状态与资源收束责任，不经由旧版 Client、聚合 `Settings`、通用产品通道或另一个外部存储转发。后端计费所有者与有效的 HTTP 订阅消费者继续共享同一份 Rust 侧权威事实，但这不构成桌面 GUI 回退至旧链路的理由。统计事实来源与不可变读取契约见 [18.2.2](./18-studio-state.md#1822-统计观察与不可变读取)，FRB 推送与关闭边界见 [7.8](./07-streaming.md#78-统计-frb-推送与关闭)。
@@ -495,6 +497,12 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 每个独立的公共呈现职责及组合时间线提供可发现的官方 Widget Previewer 入口。纯呈现导出边界仅暴露呈现值和生产 View/Widget，不传递导出 AppGraph、业务 Connector、Repository 或原生 bridge。预览薄壳只注入真实主题、本地化、合成不可变值及局部动作，不创建 ProviderScope、Client 或业务订阅，不复制一套预览界面。合成的内容窗口、图片和当前态仅证明呈现与局部交互，不构成 FRB、持久化或供应商行为证据。
 
+### 25.15.1 唯一尾组的呈现与读取所有权
+
+Native presentation v3 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
+
+实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不为组件测试保留另一套归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。
+
 ## 25.16 工作模式分域与全屏工作区
 
 ### 领域分域
@@ -508,9 +516,3 @@ Flutter 侧归 `features/modes/`：`state/` 持有 Freezed 工作区视图状态
 页面级导航统一经应用唯一类型化路由树，父子层级、查询与退出职责遵循 [25.4](#254-观察注册与页面导航)。设置分区选择从已提交的类型化目的地派生，不保留独立的标签导航状态。工作区内部内容分区、详情选择、呈现槽位与模态对话框仍是各自职责内的局部状态；窄屏详情页返回时清除选中状态，下层工作区保持挂载以保留画布视口与缩放。
 
 Mode 编辑会话保留打开或新建时的身份；可编辑 JSON 中的文档 ID 不决定离页守卫归属。复制创建新编辑会话后，旧路由只退出自己的草稿；正常编辑、保存与放弃不会改变打开身份，也不会因文档改名绕过守卫。
-
-### 唯一尾组的呈现与读取所有权
-
-Native presentation v3 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
-
-实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不为组件测试保留另一套归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。

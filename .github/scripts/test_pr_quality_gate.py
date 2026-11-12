@@ -24,6 +24,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "flutter-checks": "skipped",
         "gui-generated": "skipped",
         "linux-inputs": "skipped",
+        "linux-test-inputs": "skipped",
         "linux-desktop": "skipped",
         "linux-native": "skipped",
         "windows-build": "skipped",
@@ -116,12 +117,17 @@ class GateEvaluateTest(unittest.TestCase):
             plan = plan_from_paths([path], event_name="push")
             required = plan["required_jobs"]
             self.assertIn(job, required)
+            self.assertIn("linux-test-inputs", required)
             results = _results(**{item: "success" for item in required})
             self.assertEqual(evaluate(required, results), [])
             for status in ("skipped", "cancelled"):
                 with self.subTest(job=job, status=status):
                     errors = evaluate(required, {**results, job: status})
                     self.assertTrue(any(job in error for error in errors))
+            for status in ("skipped", "cancelled", "failure", ""):
+                with self.subTest(input_status=status):
+                    errors = evaluate(required, {**results, "linux-test-inputs": status})
+                    self.assertTrue(any("linux-test-inputs" in error for error in errors))
 
     def test_rust_plan_cannot_skip_either_native_platform(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="push")

@@ -133,8 +133,6 @@ class SshConnectionSnapshotDto {
   final String state;
   final String? helperVersion;
   final String? architecture;
-  final int? attempt;
-  final BigInt? delaySeconds;
   final String? errorCode;
   final String? errorMessage;
 
@@ -143,8 +141,6 @@ class SshConnectionSnapshotDto {
     required this.state,
     this.helperVersion,
     this.architecture,
-    this.attempt,
-    this.delaySeconds,
     this.errorCode,
     this.errorMessage,
   });
@@ -155,8 +151,6 @@ class SshConnectionSnapshotDto {
       state.hashCode ^
       helperVersion.hashCode ^
       architecture.hashCode ^
-      attempt.hashCode ^
-      delaySeconds.hashCode ^
       errorCode.hashCode ^
       errorMessage.hashCode;
 
@@ -169,8 +163,6 @@ class SshConnectionSnapshotDto {
           state == other.state &&
           helperVersion == other.helperVersion &&
           architecture == other.architecture &&
-          attempt == other.attempt &&
-          delaySeconds == other.delaySeconds &&
           errorCode == other.errorCode &&
           errorMessage == other.errorMessage;
 }

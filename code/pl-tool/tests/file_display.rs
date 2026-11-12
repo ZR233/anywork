@@ -74,7 +74,7 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     let large = std::fs::File::create(temp.path().join("large.bin")).unwrap();
     large.set_len(50 * 1024 * 1024 + 1).unwrap();
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::new(temp.path().into(), false)
+        ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
             .await
             .unwrap(),
     );
@@ -174,7 +174,7 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
 async fn archive_selection_uses_typed_thread_facts_including_legacy_cards() {
     let temp = tempfile::tempdir().unwrap();
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::new(temp.path().into(), false)
+        ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
             .await
             .unwrap(),
     );
@@ -300,7 +300,7 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
     )
     .unwrap();
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::new(temp.path().into(), false)
+        ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
             .await
             .unwrap(),
     );
@@ -382,7 +382,7 @@ async fn real_thread_selects_a_legacy_card_whose_context_contains_no_media() {
     )
     .unwrap();
     let new =
-        prepare_native_tool::<ThreadShowFilesTool<LocalWorkspaceFileBackend, Media>>().unwrap();
+        prepare_native_tool::<ThreadShowFilesTool<ExecutorWorkspaceFileBackend, Media>>().unwrap();
     let new_registration =
         prepare_registration("show_files", new.definition(), ToolCallPolicy::DirectOnly).unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -394,7 +394,7 @@ async fn real_thread_selects_a_legacy_card_whose_context_contains_no_media() {
     })).unwrap();
     let media = Arc::new(Media::default());
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::new(temp.path().into(), false)
+        ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
             .await
             .unwrap(),
     );

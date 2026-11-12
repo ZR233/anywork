@@ -6,7 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-pl-protocol = { workspace = true }
 pl-remote-helper = { workspace = true }
 pl-dev-support = { workspace = true }
 anyhow = { workspace = true }

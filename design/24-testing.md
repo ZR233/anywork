@@ -13,7 +13,7 @@
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 构建输入 | 生成检查需要工程工具；原生集成和 GUI 编译才需要双架构 helper。仅平台 Clippy 不触发准备作业，也不因其 skipped 而连带跳过。工程工具与所需 helper 复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
-| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；每个 runner 内顺序复用 acceptance 与对应配置的 bridge，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
+| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance 和开发配置 bridge，经既有受控构件交接供各 runner 只读消费。release/profile bridge 仍由场景所属 runner 编译。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
 | Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui --debug` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。debug 仍编译真实 App、Rust bridge、插件与 helper 资源，保留链接与平台装配检查；不在每个 PR 重复做 release 优化和打包。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
@@ -30,6 +30,8 @@ Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，�
 一次 desktop 套件运行在执行场景前准备一次原生环境、锁定的 Flutter 依赖、debug bridge 与 helper；仅复用不可变构建输入，不复用场景 home、fixture、报告或进程。跨 harness 子命令的准备回执位于 `target/test-project-preparation/` 下的本次临时目录，由父运行持有独占文件锁并在退出时释放和清理。子命令须核对活跃租约、规范工作区、Git 源码状态、宿主/构建配置及构件摘要；缺失、过期或不匹配直接失败，不静默重建。回执仅通过本次子进程环境传递，不是持久依赖缓存、全局“已准备”开关或跨运行复用入口。单独运行场景仍自行完成准备；native 套件的不同入口和构建模式不消费 desktop 回执。
 
 Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。
+
+Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow 的验收工具与开发配置桥接库；这是 CI 工程输入，不是用户配置或持久缓存。交接沿用精确构件 ID、归档摘要、源码、编译工作区和不可变镜像校验，消费时再核对实际 Rust/Cargo 工具链、平台、构建配置、运行编号及各文件摘要。设置入口后缺失、损坏、源码有修改或身份不匹配均直接失败，不回退编译；未设置时保留普通本地 Cargo 构建。仅共享固定只读文件，不共享 Cargo target、Flutter 输出、进程、fixture、场景数据或报告；每个 runner 自己创建和释放调用内准备租约。下游重跑可复用同一 workflow run 的精确生产者构件，不接受跨 run 构件。
 
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；先完成编译缓存恢复，再校验和恢复本次工具。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 
@@ -228,6 +230,8 @@ reader 代证 credit 独立性。此观察不拥有展示分组或第二套接�
 native launcher 与退出报告关联运行器 PID、实际 GUI PID 和 `anywork-native-exit/1`，等待真实退出并
 检查子孙及强制回收记录；超时清理仍须保留，不能改报自行收束。旧 realtime Driver 已退役，其历史
 失败或局部通过不代替新的 credit／原生退出证据，也不冒充同场官方集成的 OS 退出证据。
+
+原生关闭验收区分正常协调关闭与隔离层阻塞后的强制退出。正常关闭继续核对所属资源停止与原生退出，不能用裁判强制回收冒充产品自行收束。强制退出阶段仅裁判真实退出状态和单一 30 秒期限，分别保存退出时仍存在的后代、观察结果及裁判清理；统一 native 执行器不再为每个业务进程创建独立 subreaper，应用强制结束后不能运行其异步析构，因此不把后代回收列为该阶段已证明的产品保证。相关机器检查标记为不保证，不能写成全部进程树已回收。
 
 Linux 主进程的退出计时以实际停止运行为界，已进入 zombie 状态不能因父进程稍后 reap 而继续累计退出耗时；裁判仍须等待启动器并核对真实退出码。子进程树清理继续要求原 PID／启动身份消失，不能用“已退出但尚未回收”代替完整回收，也不改变原有关闭时限。
 

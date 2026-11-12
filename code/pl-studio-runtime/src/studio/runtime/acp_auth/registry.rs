@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{AcpDefinitionEntry, AcpDefinitionsSnapshot, ConfigRuntime};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
 
-use super::super::acp_worker::WorkerSource;
+use pl_remote_helper::Executor;
 
 /// 每条接入在认证 owner 中的代次记录。
 pub(super) struct Slot {
@@ -213,7 +213,7 @@ pub(super) struct AcpAuthInner {
     pub(super) store: StudioStore,
     pub(super) config: ConfigRuntime,
     events: ProductEventBus,
-    pub(super) workers: WorkerSource,
+    pub(super) workers: Executor,
     registry: Mutex<Registry>,
 }
 
@@ -222,7 +222,7 @@ impl AcpAuthInner {
         store: StudioStore,
         config: ConfigRuntime,
         events: ProductEventBus,
-        workers: WorkerSource,
+        workers: Executor,
     ) -> Self {
         Self {
             store,

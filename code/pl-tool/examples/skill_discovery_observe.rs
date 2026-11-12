@@ -133,8 +133,7 @@ async fn observe_configured_provider(root: &Path) -> anyhow::Result<()> {
         project.join("configured/references/guide.md"),
         "configured support",
     )?;
-    let registry = SkillRegistry::new();
-    let _registration = registry.register(Arc::new(FileSystemSkillProvider::new()))?;
+    let (registry, _registrations) = pl_tool::skill::local_skill_registry(root).await?;
     let config = SkillsConfig::default();
     let catalog = registry
         .discover(SkillProviderRequest {

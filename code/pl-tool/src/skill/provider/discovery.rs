@@ -29,6 +29,7 @@ pub struct SkillDiscoverySources {
 #[derive(Debug)]
 struct DiscoveryScope {
     workspace_root: PathBuf,
+    project_dir: PathBuf,
     config: SkillsConfig,
     system_dir: Option<PathBuf>,
     providers: Vec<Arc<dyn SkillProvider>>,
@@ -40,8 +41,9 @@ impl SkillDiscoverySources {
     pub(super) fn capture(
         registry: Arc<SkillRegistryInner>,
         request: &SkillProviderRequest,
+        additional: &[Arc<dyn SkillProvider>],
     ) -> Result<Self> {
-        let providers: Vec<Arc<dyn SkillProvider>> = registry
+        let mut providers: Vec<Arc<dyn SkillProvider>> = registry
             .providers
             .read()
             .map_err(|_| {
@@ -50,10 +52,31 @@ impl SkillDiscoverySources {
             .iter()
             .map(|registered| registered.provider.clone())
             .collect();
+        providers.extend(additional.iter().cloned());
+        let mut ids = std::collections::BTreeSet::new();
+        let mut project_dir = None;
+        for provider in &providers {
+            if !ids.insert(provider.id().clone()) {
+                return Err(PureError::ConfigError(
+                    "duplicate Skill source identity".into(),
+                ));
+            }
+            if let Some(root) = provider.project_directory(&request.config)? {
+                if project_dir.as_ref().is_some_and(|current| current != &root) {
+                    return Err(PureError::ConfigError(
+                        "conflicting project Skill directory facts".into(),
+                    ));
+                }
+                project_dir = Some(root);
+            }
+        }
+        let project_dir =
+            project_dir.unwrap_or_else(|| request.workspace_root.join(&request.config.project_dir));
         let authorization = source_authorization(request, &providers)?;
         Ok(Self {
             scope: Arc::new(DiscoveryScope {
                 workspace_root: request.workspace_root.clone(),
+                project_dir,
                 config: request.config.clone(),
                 system_dir: request.system_dir.clone(),
                 providers,
@@ -120,8 +143,7 @@ impl SkillDiscoverySources {
             system_dir: self.scope.system_dir.clone(),
             cancellation: cancellation.clone(),
         };
-        let project_dir =
-            super::super::project_skills_dir(&request.workspace_root, &request.config)?;
+        let project_dir = self.scope.project_dir.clone();
         let observations = join_all(self.scope.providers.iter().map(|provider| {
             let request = request.clone();
             async move { (provider.clone(), provider.list(request).await) }

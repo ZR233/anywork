@@ -5,11 +5,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pl_tool::skill::SkillsConfig;
-use pl_tool::skill::{
-    SkillProviderRegistration, SkillRegistry, SkillSelectionRequest, SkillSelector,
-};
+use pl_tool::skill::{SkillSelectionRequest, SkillSelector};
 
-use super::remote;
 use super::types::empty_snapshot;
 use super::{SkillCatalogRuntime, SkillSearchResult, SkillsStateSnapshot};
 
@@ -74,7 +71,7 @@ impl SkillCatalogRuntime {
         root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+        remote: Option<Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>>,
     ) -> Result<Arc<pl_tool::skill::FrozenSkillCatalog>> {
         let request = pl_tool::skill::SkillProviderRequest {
             workspace_root: root.to_owned(),
@@ -82,20 +79,21 @@ impl SkillCatalogRuntime {
             system_dir: self.system_skills_dir(),
             cancellation,
         };
-        let catalog = if let Some(remote) = remote {
-            let (registry, registrations) =
-                self.remote_workspace_registry(config, request.system_dir.as_deref(), remote)?;
-            let result = registry
-                .discover(pl_tool::skill::SkillProviderRequest {
-                    system_dir: None,
-                    ..request
-                })
-                .await;
-            drop(registrations);
-            result?
-        } else {
-            self.registry.discover(request).await?
+        let files = match remote {
+            Some(files) => files,
+            None => {
+                let executor = self
+                    .local_executor
+                    .as_ref()
+                    .map_err(|error| anyhow::anyhow!(error.clone()))?
+                    .clone();
+                Arc::new(pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
+                    executor,
+                    root.to_str().context("Skill root is not UTF-8")?,
+                )?)
+            }
         };
+        let catalog = self.registry.discover_project(request, files).await?;
         anyhow::ensure!(
             catalog.snapshot().complete,
             "Skill directory discovery is incomplete: {}",
@@ -108,18 +106,5 @@ impl SkillCatalogRuntime {
         self.system_skills_dir
             .as_ref()
             .map(|path| path.as_ref().clone())
-    }
-
-    /// 组合远端 workspace 与本地只读目录的 Skill registry。
-    ///
-    /// Turn 执行与 Settings 显式发现共用这一组合，保证两边看到同一份
-    /// 远端 Project 与本地 user/system 目录。
-    pub(in crate::studio) fn remote_workspace_registry(
-        &self,
-        config: &SkillsConfig,
-        system_skills_dir: Option<&Path>,
-        remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
-    ) -> Result<(SkillRegistry, Vec<Arc<SkillProviderRegistration>>)> {
-        remote::remote_workspace_registry(config, system_skills_dir, remote_backend)
     }
 }

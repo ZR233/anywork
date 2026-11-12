@@ -11,7 +11,7 @@ use pl_protocol::studio::{
     AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest, StudioErrorCode,
 };
 
-use super::super::acp_worker::{PROCESS_CLEANUP_LIMIT, WorkerSource};
+use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
 use super::mapping::{acp_error, ensure_operation_id};
 use super::operation::{self, OperationPlan};
 use super::registry::{
@@ -19,6 +19,7 @@ use super::registry::{
 };
 use crate::config::{AcpDefinitionsSnapshot, ConfigRuntime, SettingsCommitObserver};
 use crate::studio::{ProductEventBus, StudioStore};
+use pl_remote_helper::Executor;
 
 /// 本 runtime 生命周期内保留的已受理操作身份上限。
 ///
@@ -45,15 +46,10 @@ impl AcpAuthRuntime {
         store: StudioStore,
         config: ConfigRuntime,
         events: ProductEventBus,
-        source: crate::worker_assets::RemoteHelperSource,
+        source: Executor,
     ) -> Self {
         Self {
-            inner: Arc::new(AcpAuthInner::new(
-                store,
-                config,
-                events,
-                WorkerSource::new(source),
-            )),
+            inner: Arc::new(AcpAuthInner::new(store, config, events, source)),
         }
     }
 

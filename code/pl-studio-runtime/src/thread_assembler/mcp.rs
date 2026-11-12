@@ -64,12 +64,6 @@ mod tests {
             "/../pl-tool/tests/support/mcp_stdio.rs"
         ));
     }
-    mod helper {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../pl-tool/tests/support/helper.rs"
-        ));
-    }
     struct UnusedModel;
     impl ModelSession for UnusedModel {
         async fn prepare(&mut self, _: ModelRequest) -> Result<PreparedModelCall, ModelError> {
@@ -85,11 +79,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let script =
             peer::write_python_mcp_server(root.path(), "exposure.py", peer::STDIO_MCP_SCRIPT);
-        let runtime = McpRuntime::new(
-            McpConnector::default()
-                .with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-        )
-        .handle();
+        let runtime = McpRuntime::new(McpConnector::default()).handle();
         for resources in [false, true] {
             let schema_tag = resources.to_string();
             let mut updates = runtime.subscribe();

@@ -216,11 +216,11 @@ pub(in crate::studio) async fn resolve_physical_workspace(
     match project.ssh_alias.as_deref() {
         Some(alias) => {
             let host = ssh
-                .open_workspace_host(alias, root.to_string_lossy().into_owned())
+                .open_workspace_binding(alias, root.to_string_lossy().into_owned())
                 .await?;
             WorkspaceIdentity::canonical(
                 WorkspaceEndpoint::from_profile(Some(&host.profile)),
-                host.files.canonical_path().into(),
+                host.files().canonical_path().into(),
             )
         }
         None => {

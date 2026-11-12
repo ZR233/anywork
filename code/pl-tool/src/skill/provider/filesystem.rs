@@ -90,8 +90,8 @@ impl SkillDirectorySource {
 }
 
 impl FileSystemSkillProvider {
-    /// Creates the built-in local filesystem Provider.
-    pub fn new() -> Self {
+    /// Creates the configured desktop User/System/External read-only Provider.
+    pub fn configured_readonly() -> Self {
         Self {
             id: SkillProviderId(FILESYSTEM_PROVIDER_ID.to_string()),
             sources: FileSystemSkillSources::Configured,
@@ -110,12 +110,6 @@ impl FileSystemSkillProvider {
             id: SkillProviderId::new(id)?,
             sources: FileSystemSkillSources::Explicit(sources),
         })
-    }
-}
-
-impl Default for FileSystemSkillProvider {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -198,34 +192,6 @@ impl SkillProvider for FileSystemSkillProvider {
             })?
         })
     }
-
-    fn record_model_view<'a>(
-        &'a self,
-        candidate: &'a SkillCandidate,
-        cancellation: CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        let records_project_usage = matches!(self.sources, FileSystemSkillSources::Configured)
-            && candidate.summary.source == SkillSourceKind::Project;
-        let candidate = candidate.clone();
-        Box::pin(async move {
-            if !records_project_usage {
-                return Ok(());
-            }
-            tokio::task::spawn_blocking(move || {
-                if cancellation.is_cancelled() {
-                    return Err(cancelled_error());
-                }
-                let locator = FileSystemSkillLocator::from_candidate(&candidate)?;
-                locator.validate(&locator.skill_dir.join(crate::skill::SKILL_FILE_NAME))?;
-                let skill = SkillMetadata::from(candidate.summary);
-                crate::skill::bump_project_view(&locator.source_root, &skill)
-            })
-            .await
-            .map_err(|error| {
-                PureError::ConfigError(format!("filesystem skill usage task failed: {error}"))
-            })?
-        })
-    }
 }
 
 fn load_local_skill(
@@ -284,7 +250,6 @@ fn list_local_skills(
     if request.cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
-    let configured_sources = explicit_sources.is_none();
     let sources = if let Some(sources) = explicit_sources {
         sources
             .into_iter()
@@ -299,14 +264,21 @@ fn list_local_skills(
             })
             .collect::<Result<Vec<_>>>()?
     } else {
-        crate::skill::catalog::skill_sources(
-            &request.workspace_root,
+        crate::skill::resolve_local_readonly_skill_sources(
             &request.config,
             request.system_dir.as_deref(),
         )?
         .into_iter()
-        .map(|source| (source.root, source.kind, source.priority))
-        .collect::<Vec<_>>()
+        .enumerate()
+        .map(|(rank, source)| {
+            Ok((
+                source.root,
+                source.source,
+                u16::try_from(rank)
+                    .map_err(|_| PureError::ConfigError("too many Skill sources".into()))?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
     };
     let disabled = request
         .config
@@ -330,11 +302,7 @@ fn list_local_skills(
             if request.cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let trusted_root = if configured_sources && source_kind == SkillSourceKind::Project {
-                &request.workspace_root
-            } else {
-                &root
-            };
+            let trusted_root = &root;
             let locator = FileSystemSkillLocator {
                 skill_dir: skill_file
                     .parent()

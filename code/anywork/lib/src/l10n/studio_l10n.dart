@@ -377,7 +377,7 @@ extension StudioLocalizationsX on BuildContext {
       'disconnected' => l10n.settingsSshStateDisconnected,
       'connecting' => l10n.settingsSshStateConnecting,
       'waitingForInput' => l10n.settingsSshStateWaitingForInput,
-      'reconnecting' => l10n.settingsSshStateReconnecting,
+      'closing' => l10n.settingsSshStateClosing,
       'failed' => l10n.settingsSshStateFailed,
       _ => state,
     };
