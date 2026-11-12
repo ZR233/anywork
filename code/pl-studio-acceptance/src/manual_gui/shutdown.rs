@@ -2228,15 +2228,10 @@ fn start_gui_with(
     let report = native_report_path(working, label);
     let (log_filename, native_report_filename) = launch_identity_filenames(log_path, &report)?;
     let log = File::create(log_path)?;
-    let mut command = Command::new("cargo");
+    let mut command = super::xtask_command(workspace)?;
     command
         .current_dir(workspace)
-        .args([
-            "xtask",
-            "run-gui",
-            "--native-launch",
-            "--native-exit-report",
-        ])
+        .args(["run-gui", "--native-launch", "--native-exit-report"])
         .arg(&report)
         .env("ANYWORK_HOME", anywork_home)
         .stdout(Stdio::from(log.try_clone()?))
