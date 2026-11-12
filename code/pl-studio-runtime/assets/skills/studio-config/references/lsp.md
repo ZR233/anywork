@@ -5,6 +5,14 @@ executables, arguments and server-specific options are not universal presets:
 select them for the task and installed server version using its official manual.
 A valid document does not by itself prove that the server can answer queries.
 
+For code investigation, a writable preparation owner may set up the required
+project server during planning under the existing authorization; business plan
+approval is not a blanket prerequisite for this setup. Read-only explorers reuse
+the verified service or hand the specific setup gap to the parent. Preserve role,
+path, installation and project-execution restrictions, and do not modify real
+user settings or credentials without authorization. If configuring the server is
+itself the task's deliverable, its implementation approval still applies.
+
 ## Location and execution side
 
 Create one document at:

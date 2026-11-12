@@ -45,6 +45,13 @@ configuration are different locations:
 
 ## Edit and verify
 
+Planning may include minimal, reversible project tooling setup needed for
+investigation, within existing authorization and write permissions. Use a
+writable preparation owner when an explorer is read-only; this does not grant
+business implementation, installation or real user configuration access.
+If configuration itself is the requested deliverable, follow that task's
+implementation approval boundary rather than relabeling it preparation.
+
 1. Inspect the active scope and existing configuration. Prefer available product
    settings/document operations for validation and correct path generation. For a
    file edit, preserve the original and change only the requested settings.

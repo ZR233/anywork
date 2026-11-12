@@ -22,6 +22,11 @@ SDK/toolchain and the build context relevant to the question. Check the native
 LSP status and reuse a suitable healthy server. Confirm existing options match
 the task before relying on conditional or generated code.
 
+Before declaring sources absent, check the execution root, manifest paths and
+search filters or ignore rules. An empty default file listing can exclude an
+ignored nested project even when its manifest and sources exist. Verify expected
+paths with scoped reads; do not alter ignore rules or scan parent workspaces.
+
 An empty status is a preparation step, not proof that LSP is unavailable. In an
 authorized writable workspace, a code question or “do not change business code”
 does not itself prohibit local tooling configuration. An explicit no-write
@@ -29,6 +34,23 @@ request or a read-only role does: reuse existing services and report the gap.
 Do not invent such a restriction from your own “read-only analysis” commentary.
 Do not install programs, execute untrusted project code or expand access without
 authorization.
+
+Planning is not a blanket ban on preparation. Within existing authorization and
+write permissions, the root or an explicitly tasked preparation executor may
+configure the minimal, reversible project tooling needed to investigate code
+before the business implementation plan is approved. This is not permission to
+implement business changes or edit real user settings or credentials. When
+environment configuration is itself the requested deliverable, its implementation
+approval still applies.
+
+For shared prerequisites, one writable preparation owner can configure and
+verify the service before independent explorers use it. Read-only explorers
+reuse a suitable service and query their own symbols; they report missing setup
+to the parent rather than writing configuration or treating their role's
+restriction as a planning-wide ban. Hand off the execution workspace, config
+source, analysis context, meaningful query result and remaining blockers.
+Independent worktrees need their own scope check; shared checkouts do not share
+session scratch. Continue unrelated investigation while preparation is pending.
 
 ## 2. Prepare only what the task needs
 
