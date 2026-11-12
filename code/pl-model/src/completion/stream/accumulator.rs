@@ -51,6 +51,8 @@ pub(crate) struct StreamCompletionAccumulator {
     started_members: std::collections::BTreeMap<PartKey, StartedPart>,
     pending_starts: Vec<ObservedPartIdentity>,
     pending_content_available: Vec<ObservedPartIdentity>,
+    /// Only identities still owned by the pending handoff queue consume this charge.
+    pending_content_available_bytes: usize,
     text_output_bytes: usize,
     /// Charged high-water of each tool call's argument bytes, keyed by the accumulator identity the
     /// stream resolves an event to.
@@ -100,6 +102,7 @@ impl StreamCompletionAccumulator {
             started_members: Default::default(),
             pending_starts: Vec::new(),
             pending_content_available: Vec::new(),
+            pending_content_available_bytes: 0,
             text_output_bytes: 0,
             tool_output_bytes: HashMap::new(),
             tool_stream: ToolStream::new(),
@@ -637,12 +640,16 @@ impl StreamCompletionAccumulator {
             .ok_or_else(|| {
                 PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
             })?;
+        self.pending_content_available_bytes += bytes;
         part.content_available = true;
         self.pending_content_available.push(identity);
         Ok(())
     }
 
     pub(crate) fn take_content_available_members(&mut self) -> Vec<ObservedPartIdentity> {
+        // The collector completes this handoff before accepting another normalized event.
+        // Its receiver funds accepted facts; the accumulator retains only the once flag.
+        self.presentation_bytes -= std::mem::take(&mut self.pending_content_available_bytes);
         std::mem::take(&mut self.pending_content_available)
     }
 
