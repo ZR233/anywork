@@ -71,6 +71,9 @@ _POLICY_EXACT = frozenset(
         "code/anywork_client/analysis_options.yaml",
         "code/anywork_client/pubspec.lock",
         "code/anywork_client/pubspec.yaml",
+        "code/anywork_previews/analysis_options.yaml",
+        "code/anywork_previews/pubspec.lock",
+        "code/anywork_previews/pubspec.yaml",
     }
 )
 _POLICY_PREFIXES = (
@@ -190,7 +193,7 @@ def classify_path(path: str) -> frozenset[str]:
             tags.add("rust_production")
     if path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES):
         tags.add("bridge")
-    if _has_prefix(path, ("code/anywork/", "code/anywork_client/")):
+    if _has_prefix(path, ("code/anywork/", "code/anywork_client/", "code/anywork_previews/")):
         tags.add("flutter")
     if path in _NATIVE_EXACT:
         tags.add("native_exact")

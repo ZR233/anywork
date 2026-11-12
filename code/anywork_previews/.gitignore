@@ -1,0 +1,5 @@
+.dart_tool/
+.flutter-plugins-dependencies
+.widget_preview/
+build/
+pubspec_overrides.yaml

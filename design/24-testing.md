@@ -242,6 +242,11 @@ Linux 主进程的退出计时以实际停止运行为界，已进入 zombie 状
 
 官方依据：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、[Widget 测试](https://docs.flutter.dev/cookbook/testing/widget/introduction)、[`matchesGoldenFile`](https://api.flutter.dev/flutter/flutter_test/matchesGoldenFile.html)。现役 SDK 的具体参数以其 CLI 帮助为准。
 
+预览入口与合成数据独立放在 `code/anywork_previews`，通过普通 Pub path dependency 引用应用的生产组件。
+官方预览器以该开发包为分析根，避免每次更新都扫描应用测试和生成文件；应用的完整分析范围不缩减。
+应用测试只通过 dev dependency 复用预览素材。启动包装仅准备标准 Pub 覆盖并透传参数、终端输入输出，
+预览发现、浏览器和热更新由 Flutter 管理，具体依赖准备见构建技能。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。
