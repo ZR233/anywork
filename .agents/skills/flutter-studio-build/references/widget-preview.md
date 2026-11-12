@@ -16,15 +16,27 @@
 cargo xtask preview-gui --headless --no-devtools
 # 查看当前 SDK 支持的参数，不准备依赖或缓存：
 cargo xtask preview-gui --help -v
+# 只做启动准备和官方发现，不启动浏览器（官方参数，原样透传）：
+cargo xtask preview-gui --no-launch-previewer
+# 随后也可直接使用官方命令，项目包装不驻留：
+cd code/anywork_previews
+flutter widget-preview start --headless --no-devtools
 ```
 
-- 入口先以 `pub get --enforce-lockfile` 准备应用，再将应用的有效 `dependency_overrides`
-  写入官方 `.widget_preview/pubspec_overrides.yaml`，本地包路径转为绝对路径。
-  应用 `pubspec_overrides.yaml` 中显式覆盖的字段遵循 Pub 的替换语义；不要手改生成的缓存配置。
+- `@Preview` 入口和合成数据位于 `code/anywork_previews/lib/`，只引用应用的生产组件、主题与本地化。
+  这是独立 Pub 根，避免每次源码修改都对应用、测试和生成文件进行全量预览扫描；不通过增加
+  Flutter 的查询超时或排除应用分析来掩盖扫描耗时。应用仅用 dev dependency 复用预览测试素材。
+- 入口先以 `pub get --enforce-lockfile` 准备预览包，再将该包的有效 `dependency_overrides`
+  写入其官方 `.widget_preview/pubspec_overrides.yaml`，本地包路径转为绝对路径。
+  预览包的 `pubspec_overrides.yaml` 遵循 Pub 的字段替换语义。Pub 不继承依赖包的 overrides，
+  因此预览包显式声明应用所需的本地 `cross_cache` 和 `diffutil_dart` 版本；不要手改缓存 manifest。
 - 已有 scaffold 启动前由官方 Pub 刷新其依赖解析，使覆盖变化实际进入 `package_config.json`；
   只写 YAML 不代表已切换依赖。此步骤保留预览构建缓存，解析失败原样返回。
 - 编译、发现、缓存和热更新由官方工具负责。首次失败留下不完整 scaffold 时，在停止所属服务后
-  使用 `cargo flutter widget-preview clean`，再运行同一入口；不修改 SDK 或 manifest 哈希。
+  使用 `cargo flutter widget-preview clean ../anywork_previews`，再运行同一入口；不修改 SDK 或 manifest 哈希。
+- 启动准备完成后，全部 CLI 参数及终端输入输出直接交给 Flutter，xtask 不处理 DTD 消息或 reload。也可以进入 `code/anywork_previews` 直接执行
+  `flutter widget-preview start --headless --no-devtools`；更新依赖或清理 scaffold 后重新准备一次。
+  通用 `--packages` 不解决该边界：当前 SDK 的预览编译固定读取 scaffold 自己的 package config。
 - 出现 DTD 断连或 live updates 暂停警告时，先区分 daemon 连接与预览清单查询是否超时，
   不把警告文案直接当作进程已死。保留原 stdout/stderr；没有时间戳的双流不能倒推出先后因果。
   按当前 SDK 官方诊断参数有界取证，日志放本会话 scratch，不默认切换 legacy、延长超时或反复清缓存。
@@ -45,5 +57,6 @@ cargo xtask preview-gui --help -v
   纯界面 PR 直接使用本次预览图片，无须额外构建原生程序；真实业务边界另行选择对应入口。
 - 正常结束或取消后等待命令终态，核对所属 Flutter、分析服务、DTD 和浏览器退出。
   附着的浏览器工具只关闭自身连接，最终浏览器由启动者回收；不得占用 `1420`。
-  无 TTY 时不要假定交互式 `q` 会被监听；按官方信号退出已核实归属的 Flutter 进程并等待，
+  当前 SDK 的预览命令未注册 `r`、`R`、`q` 终端处理器；热更新由文件监听或页面按钮触发。
+  退出使用终端 `Ctrl+C` 或向已核实归属的 Flutter 进程发送官方退出信号并等待，
   不直接杀浏览器或用无差别进程清理代替启动者收束。

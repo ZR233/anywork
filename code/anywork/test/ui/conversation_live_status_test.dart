@@ -24,7 +24,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';

@@ -146,6 +146,17 @@ pub(crate) fn verify_gui() -> Result<()> {
     let app_dir = paths::studio_app_dir(&workspace_root);
     print_context(&workspace_root, &app_dir);
     codegen::check_gui_generated_sources(&workspace_root, &app_dir)?;
+    run_tool(
+        "flutter",
+        &[
+            "pub",
+            "get",
+            "--enforce-lockfile",
+            "--directory",
+            "../anywork_previews",
+        ],
+        &app_dir,
+    )?;
     run_tool("cargo", &["fmt", "--all", "--check"], &workspace_root)?;
     run_tool(
         "dart",
@@ -157,13 +168,14 @@ pub(crate) fn verify_gui() -> Result<()> {
             "test",
             "tool",
             "integration_test",
+            "../anywork_previews/lib",
         ],
         &app_dir,
     )?;
     run_flutter(
         &workspace_root,
         &app_dir,
-        &["analyze", "--no-pub"],
+        &["analyze", "--no-pub", ".", "../anywork_previews"],
         DemoMode::Native,
     )?;
     run_tool(

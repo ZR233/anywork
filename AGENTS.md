@@ -88,6 +88,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Rust crate 名称统一以 `pl-` 开头，例如 `pl-core`、`pl-model`、`pl-studio-bridge`。
 - Flutter app 的 Dart package 名称是 `anywork`。
 - Flutter 项目根目录是 `code/anywork`。
+- 开发用组件预览独立位于 `code/anywork_previews`，只持有 `@Preview` 入口和合成数据，引用应用的生产组件；应用仅通过 dev dependency 在测试中复用它。
 - SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；本地 Client 命令通过 `cargo xtask verify-client` 在正确目录执行。CI 的无 Rust 前端验证可在该 package 目录直接使用官方 Dart SDK 命令，保留锁文件、SDK-only 边界与测试发现检查。
 - Client、AppGraph 与观察层的所有权和依赖边界见 [客户端与前端状态](design/25-frontend-state.md)。
 
@@ -100,9 +101,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### Flutter 与 Dart 命令
 
-- 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。Flutter app 命令的工作目录必须是 `code/anywork`；纯 Client 命令由 `verify-client` 切换到 `code/anywork_client`。不得在 SDK 目录执行项目命令。
+- 禁止在 Flutter 或 Dart SDK 安装目录执行本项目的 `flutter`、`dart` 命令。应用命令的工作目录是 `code/anywork`，独立组件预览命令的项目根是 `code/anywork_previews`；纯 Client 命令由 `verify-client` 切换到 `code/anywork_client`。不得在 SDK 目录执行项目命令。
 - 从仓库根目录执行 Flutter/Dart 命令时，优先使用 `cargo flutter <args...>` 和 `cargo dart <args...>`；参数原样透传，包装命令会自动切换到 `code/anywork`。
-- 只有包装命令无法满足需求时，才可直接运行 `flutter` 或 `dart`，且必须先把工作目录切换到 `code/anywork`；不得把 SDK 目录当作项目目录。
+- 应用命令优先使用包装；需要直接运行时，先进入 `code/anywork`。组件预览依赖准备后可在 `code/anywork_previews` 直接使用官方 Flutter CLI，参数、输入输出和热更新由 Flutter 管理；不得把 SDK 目录当作项目目录。
 - CI 的 Linux 前端作业为避免引入 Cargo/FRB，可在 `code/anywork` 直接运行官方 Flutter/Dart 静态检查和无 bridge 测试，在 `code/anywork_client` 执行 SDK-only Client 检查；依赖安装使用 `--enforce-lockfile`，不绕过 Client/UI 边界或另行生成源码。该例外不放宽原生 GUI 构建入口。
 - Linux CI（包括前端）统一消费同次解析、校验的项目 Docker 构建镜像。系统开发依赖在 `docker/linux/Dockerfile` 维护并由镜像 smoke 验证，消费作业不执行 `apt-get` 补装；与本次源码绑定的 helper 仍在作业内构建。
 - 常用命令：
@@ -118,7 +119,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束，测试必要性由 `test-quality` 判断。
 - 上游技能中的 CLI 示例映射到本项目入口：应用命令使用 `cargo flutter` / `cargo dart`，纯 Client 使用 `verify-client`，生成使用 `generate-gui`，原生启动使用 `run-gui`，桌面测试使用 `test-project`。保留 Riverpod、typed GoRouter、Client/FRB 和既有生成模型；通用示例不要求换状态库、手改锁文件或绑定、增加依赖、开启实验语法或全仓应用自动修复。
 - 人工实验统一按 `flutter-studio-build` 的[实验指南](.agents/skills/flutter-studio-build/references/experiments.md)操作。纯界面开发、局部交互和截图默认使用 `cargo xtask preview-gui --headless --no-devtools`，**不编译 Rust bridge**，不启动模型服务；可重复断言用相关 `test/ui`。只有持久化、模型调用或原生资源才选择隔离原生应用及官方 Dart MCP，不把全部层级排成必跑清单。
-- `preview-gui` 复用官方 `widget-preview start` 的依赖、缓存和热更新，项目只适配应用 Pub overrides；不复制 UI、不手改 SDK 或缓存 manifest。具体适配与故障恢复见构建技能，不为一次截图增加测试入口、环境变量或永久脚本。
+- `preview-gui` 只准备预览包及 scaffold 的 Pub 依赖，再透传参数和终端输入输出给官方 `widget-preview start`；发现、浏览器及热更新均由 Flutter 管理。预览包使用自己的标准 Pub 配置，不能把整个应用作为预览扫描根；不复制 UI、不手改 SDK 或缓存 manifest。依赖已准备后也可在 `code/anywork_previews` 直接使用官方 Flutter 命令；具体适配与故障恢复见构建技能。
 - Dart MCP 使用官方 `dart mcp-server`，项目 roots 按当前工作区注册。MCP 的 stdio 启动直接使用实际 Dart SDK 可执行文件，不能套用会向 stdout 打印日志的 Cargo 包装；项目工作命令仍遵循上面的入口。先读取实际工具 schema，再连接 xtask 启动的应用，不用 MCP `launch_app` 绕过 bridge/helper 准备。
 - Dart 界面修改复用当前载体的官方热更新并检查画面和错误；预览不因截图转为原生构建。原生 `run-gui --inspect` 支持 MCP 热重载，`--native-launch` / release 不作为热重载入口；Rust/FRB/原生变化才构建并完整重开。宿主与容器不要同时改写同一 checkout 的 Pub/生成缓存，切换前结束原运行或使用独立 checkout。
 

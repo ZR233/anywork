@@ -2,13 +2,14 @@
 
 anywork 的 Windows、Linux、macOS 桌面客户端，使用 Material 3、Riverpod、typed GoRouter 和
 flutter_rust_bridge；Rust bridge 位于 `rust/`，SDK-only Client 位于 `../anywork_client/`。
-所有命令从仓库根执行，Flutter/Dart 包装自动进入 `code/anywork`，不要在 SDK 安装目录运行项目命令。
+本页的 Cargo 命令从仓库根执行，Flutter/Dart 包装自动进入 `code/anywork`，不要在 SDK 安装目录运行项目命令。
+独立组件预览位于 `../anywork_previews/`，依赖准备后也支持在该目录直接使用官方 Flutter CLI。
 
 ## 按目标选择最轻入口
 
 | 目标 | 入口 | 边界 |
 | --- | --- | --- |
-| 纯界面调整、局部交互、截图 | `cargo xtask preview-gui --headless --no-devtools` | 官方 Widget Previewer 复用生产组件；**不编译 Rust bridge**，不启动模型服务，不需要 Xvfb |
+| 纯界面调整、局部交互、截图 | `cargo xtask preview-gui --headless --no-devtools` | 独立 `anywork_previews` 开发包通过官方 Widget Previewer 复用生产组件；**不编译 Rust bridge**，不启动模型服务，不需要 Xvfb |
 | 组件布局/交互回归 | `cargo flutter test --no-pub test/ui/<相关用例>` | 无设备，不准备 bridge；保留确定性产品断言，不为截图新增测试入口 |
 | 隔离真实业务观察 | `cargo xtask manual-gui --preset gui --inspect` | 本地严格模拟供应商、真实 AppGraph/FRB/SQLite；官方 Dart MCP 操作和截图 |
 | 原生功能集成 | `cargo xtask test-project --suite desktop --case <用例>` | 官方 `integration_test` 在真实应用断言功能 |

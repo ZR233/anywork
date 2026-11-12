@@ -52,6 +52,12 @@ class ClassifyPathTest(unittest.TestCase):
         self.assertIn("bridge", classify_path("code/pl-studio-bridge/src/lib.rs"))
         self.assertIn("native_exact", classify_path("code/anywork/tool/native_fault_main.dart"))
 
+    def test_preview_catalog_is_checked_as_frontend(self):
+        path = "code/anywork_previews/lib/src/features/shell/previews/sidebar_previews.dart"
+        self.assertEqual(classify_path(path), frozenset({"flutter"}))
+        self.assertTrue(plan_from_paths([path], event_name="pull_request")["flutter_checks"])
+        self.assertIn("policy", classify_path("code/anywork_previews/pubspec.lock"))
+
     def test_only_external_rust_test_files_are_pure_tests(self):
         self.assertIn("pure_test", classify_path("code/pl-core/tests/chat_page.rs"))
         for path in (

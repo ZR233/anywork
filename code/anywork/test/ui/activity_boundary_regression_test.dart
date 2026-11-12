@@ -1,5 +1,5 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';

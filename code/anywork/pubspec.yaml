@@ -45,6 +45,8 @@ dependency_overrides:
   # list diff performance. Message identity remains the unique message id.
   diffutil_dart: 5.0.0
 dev_dependencies:
+  anywork_previews:
+    path: ../anywork_previews
   analyzer: 14.7.0
   args: 2.7.0
   ffi: ^2.2.0

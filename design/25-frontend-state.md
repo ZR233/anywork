@@ -59,7 +59,7 @@ open 操作的观察入口与 Ready/Failed 属于同一次操作，load 完成�
 
 ACP 创建与发送沿原草稿、附件 owner 分支执行，不经过 Native route、mode 或历史 materialize。用户先选服务和真实本机业务 workspace，显式创建一个真实会话；创建后保留输入与附件，由用户按该会话的实际配置发送首条 prompt，不自动发送或重发。配置在途或失败不能悄悄以旧值发送；附件按实际能力验证，失败保留草稿，暂存资源至少保留到实际序列化和发送责任结束。
 
-涉及后端数据的 Flutter 区域统一遵循 `adapter → Client owner → ViewModel → Connector → View/Widget` 分层，其中 `features/conversation/acp/` 按 `state/`、`view_models/`、`connectors/`、`views/`、`widgets/` 与 `previews/` 严格隔离（由 `client_boundary_check.dart` 的 `UI-02` 静态校验守卫）：`state/` 仅持有纯 Freezed 不可变呈现值，不含异步句柄或 Flutter 控件依赖；启动卡片、阅读流头部与按索引单行条目、Plan 卡片、权限停靠栏、服务端动态配置栏、输入框与附件、底部状态栏及外部会话对话框各自拥有独立的 `@riverpod` ViewModel／Notifier，按 `threadId` 或 `workspaceId` 细粒度 `.select` 观察 `anywork_client` 状态并内聚自身命令动作（外部会话 ViewModel 亦仅以 `threadId` 建键并在内部核验当前会话 owner 身份，不跨组件传递 `AcpConversationSession` 实例）；外层工作区与连接器只做布局与身份绑定，不外挂协议归并、提交校验、异步结果处理或整页刷新链；纯 `views/`、`widgets/` 与 `acp_views.dart` 仅接收不可变状态与回调，不导入 Riverpod、Client 仓储或 FRB 类型。组件退役仅释放显示观察，不关闭 Client 业务 owner；焦点、输入法组词区间、滚动与局部展开状态由对应纯视图组件自身持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
+涉及后端数据的 Flutter 区域统一遵循 `adapter → Client owner → ViewModel → Connector → View/Widget` 分层，其中 `features/conversation/acp/` 按 `state/`、`view_models/`、`connectors/`、`views/` 与 `widgets/` 严格隔离，开发预览单独位于 `code/anywork_previews` 并遵守同一纯呈现边界（由 `client_boundary_check.dart` 的 `UI-02` 静态校验守卫）：`state/` 仅持有纯 Freezed 不可变呈现值，不含异步句柄或 Flutter 控件依赖；启动卡片、阅读流头部与按索引单行条目、Plan 卡片、权限停靠栏、服务端动态配置栏、输入框与附件、底部状态栏及外部会话对话框各自拥有独立的 `@riverpod` ViewModel／Notifier，按 `threadId` 或 `workspaceId` 细粒度 `.select` 观察 `anywork_client` 状态并内聚自身命令动作（外部会话 ViewModel 亦仅以 `threadId` 建键并在内部核验当前会话 owner 身份，不跨组件传递 `AcpConversationSession` 实例）；外层工作区与连接器只做布局与身份绑定，不外挂协议归并、提交校验、异步结果处理或整页刷新链；纯 `views/`、`widgets/` 与 `acp_views.dart` 仅接收不可变状态与回调，不导入 Riverpod、Client 仓储或 FRB 类型。组件退役仅释放显示观察，不关闭 Client 业务 owner；焦点、输入法组词区间、滚动与局部展开状态由对应纯视图组件自身持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
 
 服务选择复用用户级定义原发布 owner 的账户读模型，安全摘要包含 ACP 是否启用与连接修订；定义文件诊断和有效服务一起交付，坏文件不隐藏其他有效项。诊断仅交付可定位文件名与固定安全说明，不透传 TOML 输入片段、env 值或原始解析错误。列表读取不连接服务；启用状态也不证明当前认证、连接或模型已加载。
 
@@ -450,6 +450,10 @@ provider 销毁仅解绑自身观察、计时器和 UI helper，不关闭业务�
 ChatGPT 账号的列表身份与套餐来自权威账号摘要的已验证元数据，详情和列表消费同一 Client 投影。Codex 额度沿用账号用量所有者的修订、去重与缓存边界，前端只将结构化周期、剩余百分比和重置时间格式化；空窗口不解释为无限额度。相关登录、账户编辑与额度交互回归和真实 Windows 人工验收使用 Flutter 官方 `integration_test`，浏览器中的账户选择与同意由操作者完成。
 
 ### 独立组件预览
+
+官方 `@Preview` 入口与合成数据归开发包 `code/anywork_previews`，生产组件仍由应用持有。
+两者使用普通 Pub path dependency 关联；应用只在 dev dependency 中复用预览素材。
+独立分析根限定预览发现的扫描范围，不裁减应用的静态检查，也不建立第二套组件实现。
 
 生产列表、详情、编辑、模型资料和每个有独立职责的公共呈现组件必须能通过独立的纯视图入口直接用于官方 Widget Previewer，并具有可发现的预览；私有布局辅助随父组件验证。该入口不连带依赖 Connector、Provider、AppGraph、FRB 或平台业务服务。薄预览包装复用生产主题、本地化与品牌资源，仅注入合成不可变展示值及本地动作，不装配 Client/Repository，不依赖 ProviderScope，不复制 UI 或加入生产业务假分支。复用场景工厂、统一 host 与官方多预览能力表达语义变体、宽窄及文字缩放，避免逐供应商复制组件树或建立平行预览应用。
 
