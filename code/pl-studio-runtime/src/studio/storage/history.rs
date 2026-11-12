@@ -574,10 +574,16 @@ impl HistoryStore {
         }
         // First-connect migration state belongs only to this branch. Do not carry it through
         // every current-history read/recovery poll frame, even when the writer is already open.
+        // Erase the already-boxed initializer's type so callers' Send proofs do not recursively
+        // traverse the entire schema migration future through every close/archive owner.
         let writer = self
             .state
             .writer
-            .get_or_try_init(|| Box::pin(self.clone().initialize_writer(mode)))
+            .get_or_try_init(
+                || -> futures::future::BoxFuture<'static, Result<HistoryConnection>> {
+                    Box::pin(self.clone().initialize_writer(mode))
+                },
+            )
             .await?;
         Ok(Some(writer))
     }
