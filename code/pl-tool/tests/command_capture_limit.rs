@@ -367,7 +367,7 @@ async fn default_raw_capture_budget_has_exact_eof_edges_and_keeps_binary_files()
         let len = (MAX_CAPTURE_BYTES as i64 + delta) as u64;
         // Keep both byte streams active. A shell pipeline would create an unrelated process owner.
         let script = format!(
-            r#"python3 -c 'import os; os.write(2,b"\xff\x00"); left={}; block=b"\x00\xff"*4096
+            r#"python3 -c 'import os; os.write(2,b"\xff\x00"); left={}; block=b"\x00x"*4096
 while left:
  n=min(left,len(block)); os.write(1,block[:n]); left-=n'"#,
             len - 2

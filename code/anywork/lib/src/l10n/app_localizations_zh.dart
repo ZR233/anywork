@@ -3836,6 +3836,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSshStateWaitingForInput => '等待输入';
 
   @override
+  String get settingsSyncStateReconnecting => '正在重新连接';
+
+  @override
   String get settingsSshStateClosing => '断开连接中';
 
   @override

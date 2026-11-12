@@ -206,11 +206,19 @@ where
     F: Fn(Executor) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    both_with_timeout(Duration::from_secs(10), case).await;
+}
+
+async fn both_with_timeout<F, Fut>(budget: Duration, case: F)
+where
+    F: Fn(Executor) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     case(Executor::local().unwrap()).await;
     let (client, server) = tokio::io::duplex(1024 * 1024);
     let owner = tokio::spawn(pl_remote_helper::serve_connection(server));
     let executor = Executor::remote(client).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), case(executor))
+    tokio::time::timeout(budget, case(executor))
         .await
         .expect("remote execution case timed out");
     tokio::time::timeout(Duration::from_secs(5), owner)
@@ -524,7 +532,9 @@ async fn dropping_unread_capture_is_incomplete_even_after_root_exit() {
 
 #[tokio::test]
 async fn http_early_response_survives_infinite_upload_and_returns_stream_credit() {
-    both(|executor| async move {
+    // The batch itself has a 30-second progress deadline; its outer owner must
+    // allow that deadline and final cleanup, rather than cutting it off at ten seconds.
+    both_with_timeout(Duration::from_secs(40), |executor| async move {
         use pl_remote_helper::http::HttpRequest;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -558,7 +568,7 @@ async fn http_early_response_survives_infinite_upload_and_returns_stream_credit(
                 assert_eq!(body, b"end");
             }
         }).await.expect("early responses must release upload owner, credit and admission");
-        peer.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2),peer).await.expect("HTTP peer cleanup timed out").unwrap();
         assert_eq!(executor.command("/bin/true").status().await.unwrap(), ProcessExit::Code(0));
     }).await;
 }

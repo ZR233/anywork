@@ -193,7 +193,23 @@ impl CommandBackend for ExecutorCommandBackend {
                     .ok_or_else(|| exec_error("output path is not UTF-8"))?,
             )
             .map_err(exec_error)?;
-        Ok(CommandOutputTarget::new(target.as_str(), model_file))
+        let stderr_model =
+            crate::workspace::SessionFiles::new(session_id).command_stderr_output(tool_id);
+        let stderr = self
+            .executor
+            .join_path(
+                &self.root,
+                stderr_model
+                    .to_str()
+                    .ok_or_else(|| exec_error("capture path is not UTF-8"))?,
+            )
+            .map_err(exec_error)?;
+        Ok(CommandOutputTarget::new(
+            target.as_str(),
+            model_file,
+            stderr.as_str(),
+            stderr_model,
+        ))
     }
 
     async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {

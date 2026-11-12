@@ -427,7 +427,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
         process_id: "reconnect-tree".into(),
         command: "sleep 60 & child=$!; echo $child > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"; kill $child; wait $child 2>/dev/null; exit 0".into(),
-        cwd: ".".into(), output_target: CommandOutputTarget::new("reconnect.log", "reconnect.log"),
+        cwd:host.files.canonical_path().into(), output_target: CommandOutputTarget::new(format!("{}/reconnect.log",host.files.canonical_path()), "reconnect.log",format!("{}/reconnect.stderr.log",host.files.canonical_path()),"reconnect.stderr.log"),
         capture_limit_bytes: 1024 * 1024,
     }).await?;
     let mut stdout = BufReader::new(tree.take_stdout().expect("command stdout"));

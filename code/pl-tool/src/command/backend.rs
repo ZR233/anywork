@@ -214,14 +214,19 @@ pub struct CommandOutputTarget {
 }
 
 impl CommandOutputTarget {
-    pub fn new(capture_file: impl Into<PathBuf>, model_file: impl Into<PathBuf>) -> Self {
-        let capture_file = capture_file.into();
-        let model_file = model_file.into();
+    /// All four paths are supplied in the selected target's spelling. Deriving a
+    /// remote filename with the desktop's Path::with_file_name would insert native separators.
+    pub fn new(
+        capture_file: impl Into<PathBuf>,
+        model_file: impl Into<PathBuf>,
+        stderr_capture_file: impl Into<PathBuf>,
+        stderr_model_file: impl Into<PathBuf>,
+    ) -> Self {
         Self {
-            stderr_capture_file: capture_file.with_file_name("stderr.log"),
-            stderr_model_file: model_file.with_file_name("stderr.log"),
-            capture_file,
-            model_file,
+            capture_file: capture_file.into(),
+            model_file: model_file.into(),
+            stderr_capture_file: stderr_capture_file.into(),
+            stderr_model_file: stderr_model_file.into(),
         }
     }
     pub fn capture_file(&self) -> &Path {

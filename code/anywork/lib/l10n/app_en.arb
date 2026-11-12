@@ -1992,6 +1992,7 @@
   "settingsSshStateDisconnected": "Disconnected",
   "settingsSshStateConnecting": "Connecting",
   "settingsSshStateWaitingForInput": "Waiting for input",
+  "settingsSyncStateReconnecting": "Reconnecting",
   "settingsSshStateClosing": "Disconnecting",
   "settingsSshStateFailed": "Failed",
   "settingsWorktreeStatePrepared": "Prepared",

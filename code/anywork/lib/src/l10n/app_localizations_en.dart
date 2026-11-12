@@ -4031,6 +4031,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSshStateWaitingForInput => 'Waiting for input';
 
   @override
+  String get settingsSyncStateReconnecting => 'Reconnecting';
+
+  @override
   String get settingsSshStateClosing => 'Disconnecting';
 
   @override
