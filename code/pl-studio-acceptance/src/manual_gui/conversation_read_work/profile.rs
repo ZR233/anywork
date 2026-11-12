@@ -382,23 +382,28 @@ fn run_app(
         }
 
         // Normal product close first. Driver/VM disconnection is not application exit.
-        let mut close = capture_command(&context.workspace.join("code/anywork"));
-        close.args(["--vm-url", vm, "--exit"]);
-        let tool = run_tool(
-            &mut close,
-            &directory,
-            "request-exit",
-            context.interrupt,
-            Duration::from_secs(45),
-            None,
-            Some(&raw_directory),
-        );
-        evidence.errors.extend(
-            tool.errors
-                .iter()
-                .map(|error| format!("{name} requestExit: {error}")),
-        );
-        evidence.exit_request = Some(tool);
+        if let Some(mut close) = record(
+            &mut evidence.errors,
+            "prepare product exit command",
+            capture_command(&context.workspace.join("code/anywork")),
+        ) {
+            close.args(["--vm-url", vm, "--exit"]);
+            let tool = run_tool(
+                &mut close,
+                &directory,
+                "request-exit",
+                context.interrupt,
+                Duration::from_secs(45),
+                None,
+                Some(&raw_directory),
+            );
+            evidence.errors.extend(
+                tool.errors
+                    .iter()
+                    .map(|error| format!("{name} requestExit: {error}")),
+            );
+            evidence.exit_request = Some(tool);
+        }
         if let Some(status) = record(
             &mut evidence.errors,
             "wait for actual GUI OS exit",

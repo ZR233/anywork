@@ -538,8 +538,8 @@ impl OwnedProcess {
         }
         #[cfg(windows)]
         {
-            // The launcher is not created as its own console process group here, so
-            // no portable stop request can be addressed to it. The caller records
+            // Background launchers have no console to receive a targeted event.
+            // The caller records
             // that the request was unavailable instead of pretending it was sent.
             false
         }
@@ -2747,7 +2747,7 @@ fn finish_manual_gui_session(
                 request_app_exit_until(
                     &paths::studio_app_dir(&paths::workspace_root()?),
                     &vm_url,
-                    &log.with_file_name("cleanup-request-exit.log"),
+                    &report.with_file_name("cleanup-request-exit.log"),
                     &cleanup_interrupt,
                     deadline,
                 )?;
@@ -3739,13 +3739,30 @@ fn copy_startup_evidence(source: &Path, target: &Path) -> Result<()> {
 /// Host-side capture against an already-running GUI VM.
 ///
 /// Reuses the app package mapping so native build hooks are not re-entered.
-fn capture_command(app_dir: &Path) -> Command {
-    let mut command = process::path_command(
-        "dart",
-        &["--packages=.dart_tool/package_config.json".into()],
-    );
-    command.current_dir(app_dir).arg("tool/capture_ui.dart");
+fn capture_command(app_dir: &Path) -> Result<Command> {
+    // Use the SDK selected by Flutter pub, not a PATH batch launcher which
+    // re-enters Flutter's SDK maintenance and nested shell/lock machinery.
+    let config_path = app_dir.join(".dart_tool/package_config.json");
+    let config: serde_json::Value = serde_json::from_slice(
+        &fs::read(&config_path)
+            .context("read prepared Flutter package config for host Dart tools")?,
+    )?;
+    let root = config["flutterRoot"]
+        .as_str()
+        .context("prepared package config has no flutterRoot")?;
+    let sdk = reqwest::Url::parse(root)?
+        .to_file_path()
+        .map_err(|()| {
+            anyhow::anyhow!("Flutter package config flutterRoot is not a local file URI")
+        })?
+        .join("bin/cache/dart-sdk/bin")
+        .join(if cfg!(windows) { "dart.exe" } else { "dart" });
+    let mut command = Command::new(sdk);
     command
+        .current_dir(app_dir)
+        .arg("--packages=.dart_tool/package_config.json")
+        .arg("tool/capture_ui.dart");
+    Ok(command)
 }
 
 pub(super) fn capture(
@@ -3759,7 +3776,7 @@ pub(super) fn capture(
     let png = output.join("screenshot.png");
     let log_path = output.join("capture.log");
     let log = File::create(&log_path)?;
-    let mut command = capture_command(app_dir);
+    let mut command = capture_command(app_dir)?;
     command
         .args(["--vm-url", vm_url, "--output"])
         .arg(&png)
@@ -3823,7 +3840,7 @@ fn request_app_exit_until(
     deadline: Instant,
 ) -> Result<()> {
     let log = File::create(log_path)?;
-    let mut command = capture_command(app_dir);
+    let mut command = capture_command(app_dir)?;
     command
         .args(["--vm-url", vm_url, "--exit"])
         .stdout(Stdio::from(log.try_clone()?))
@@ -3839,7 +3856,11 @@ fn request_app_exit_until(
             return Ok(());
         }
         ensure!(interrupt.try_recv().is_err(), "requestExit cancelled");
-        ensure!(Instant::now() < deadline, "requestExit timed out");
+        ensure!(
+            Instant::now() < deadline,
+            "requestExit timed out (helper root status={:?})",
+            capture.exit_status()?
+        );
         thread::sleep(Duration::from_millis(100));
     }
 }

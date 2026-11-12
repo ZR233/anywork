@@ -36,6 +36,9 @@ Windows 启动树由共享进程层的专属 Job 管理，准备取消后以 Job
 EOF／取消仍报告失败。无需手工调用 `taskkill`，也不增加额外启动脚本。
 VM 就绪后的 Windows 失败收尾复用现有产品退出请求，随后确认专属 Job 与退出报告，
 全过程共享原清理期限；无法完成时保留清理错误，不将强制终止称为正常退出。
+宿主截图／退出脚本直接使用 Flutter 已生成的 package config 中 `flutterRoot` 对应的
+Dart SDK 可执行文件和应用 package mapping，不经 PATH 的 `dart.bat` 重入 SDK 启动维护、
+嵌套 shell 或锁等待；配置缺失或不可用时明确失败，先修复应用的 Flutter 依赖准备。
 进程回归可直接运行 `cargo test --locked -p pl-dev-support`，验收阶段衔接使用
 `cargo test --locked -p pl-studio-acceptance windows_cleanup_tests`；这些验证 Windows 工程
 进程生命周期，不能替代官方 Flutter `integration_test` 或真实原生 GUI 的 done／EOF／取消观察。
