@@ -906,7 +906,7 @@ impl ToolPlan {
     pub(crate) fn solo_tool_ids(&self) -> Arc<[String]> {
         self.tools
             .iter()
-            .filter(|(_, tool)| tool.requires_solo_call())
+            .filter(|(_, tool)| tool.nested.is_none() && tool.requires_solo_call())
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>()
             .into()

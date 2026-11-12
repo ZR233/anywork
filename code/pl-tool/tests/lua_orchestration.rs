@@ -50,6 +50,13 @@ impl ModelSession for Projected {
         &mut self,
         request: pl_core::model::ModelRequest,
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        assert!(
+            request
+                .solo_tool_ids
+                .iter()
+                .all(|id| request.tools.iter().any(|tool| &tool.tool_id == id)),
+            "nested scheduling must not refer to an undeclared model tool"
+        );
         self.0
             .prepare(request)
             .await
@@ -285,8 +292,11 @@ async fn real_thread_admits_more_than_256_children_under_ordinary_owner_governan
         )]),
         requests: Default::default(),
     };
-    let thread =
-        ThreadHandle::start("lua-many-children".into(), DynModelSession::new(model)).unwrap();
+    let thread = ThreadHandle::start(
+        "lua-many-children".into(),
+        DynModelSession::new(Projected(model)),
+    )
+    .unwrap();
     let definition = ToolDefinition::json("child", "read", json!({"type":"object"})).unwrap();
     let child = prepare_registration("child", &definition, ToolCallPolicy::DirectOnly)
         .unwrap()
@@ -295,7 +305,9 @@ async fn real_thread_admits_more_than_256_children_under_ordinary_owner_governan
             calls: calls.clone(),
             fail: false,
         }))
-        .nested(true);
+        .with_extension_updates()
+        .nested(false);
+    assert!(child.permits_nesting());
     thread
         .register_tools(vec![lua_registration(), child])
         .await
