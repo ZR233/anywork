@@ -14,8 +14,8 @@ use pl_core::{
     thread::{
         AttemptOutcome, ModelStepLimit, ThreadError, ThreadHandle, TurnInput,
         cold::{
-            ColdStore, ColdStoreError, ColdStoreHandle, StorageFaultKind, StoragePressure,
-            ThreadWrite,
+            ColdStore, ColdStoreError, ColdStoreHandle, StorageAdmissionBackpressure,
+            StorageFaultKind, StoragePressure, ThreadWrite,
         },
         inbox::ThreadMessage,
     },
@@ -37,6 +37,7 @@ struct Store {
     durable: AtomicU64,
     automatic: AtomicBool,
     reject: AtomicBool,
+    backpressure: AtomicBool,
     unavailable: AtomicBool,
     entered: mpsc::Sender<u64>,
     updates: watch::Sender<()>,
@@ -59,6 +60,7 @@ impl Store {
                 durable: AtomicU64::new(0),
                 automatic: AtomicBool::new(false),
                 reject: AtomicBool::new(false),
+                backpressure: AtomicBool::new(false),
                 unavailable: AtomicBool::new(false),
                 entered,
                 updates,
@@ -96,6 +98,11 @@ impl ColdStore for Storage {
     fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
         if self.reject.load(Ordering::SeqCst) {
             return Err(storage_error());
+        }
+        if self.backpressure.load(Ordering::SeqCst) {
+            return Err(ColdStoreError {
+                source: Box::new(StorageAdmissionBackpressure("controlled queue full".into())),
+            });
         }
         let sequence = write.effect.sequence;
         if self.handoff.is_some()
@@ -677,4 +684,116 @@ async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservat
     store.finish_saves();
     within(thread.close()).await.unwrap();
     within(thread.flush()).await.unwrap();
+}
+
+#[tokio::test]
+async fn capacity_backpressure_preserves_close_without_latching_a_failed_save() {
+    let (store, mut calls) = Store::new();
+    let thread = idle_thread(&store).await;
+    let before = thread.snapshot().persistence.admitted_sequence;
+    store.save(before);
+    store.backpressure.store(true, Ordering::SeqCst);
+    within(thread.send_message(message("retained-tail")))
+        .await
+        .unwrap();
+    let error = within(thread.flush()).await.unwrap_err();
+    assert!(matches!(error, ThreadError::Storage(ref source)
+        if source.source.is::<StorageAdmissionBackpressure>()));
+    assert!(
+        calls.try_recv().is_err(),
+        "never certify a smaller admitted prefix"
+    );
+    let snapshot = thread.snapshot();
+    assert!(snapshot.commit_sequence > before);
+    assert!(snapshot.persistence.pressure_paused);
+    assert!(snapshot.persistence.error.is_none());
+    assert!(!snapshot.persistence.resume_required);
+
+    let mut snapshots = thread.subscribe();
+    let closing = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.close().await })
+    };
+    within(async {
+        while snapshots.next().await.unwrap().lifecycle != pl_core::thread::ThreadLifecycle::Closing
+        {
+        }
+    })
+    .await;
+    // The public mailbox stays reachable even while close owes an unadmitted final fact.
+    assert!(matches!(
+        within(thread.flush()).await,
+        Err(ThreadError::Storage(_))
+    ));
+    assert!(!closing.is_finished());
+    store.automatic.store(true, Ordering::SeqCst);
+    store.backpressure.store(false, Ordering::SeqCst);
+    store.updates.send_replace(());
+    within(closing).await.unwrap().unwrap();
+    let snapshot = thread.snapshot();
+    assert_eq!(
+        snapshot.persistence.durable_sequence,
+        snapshot.commit_sequence
+    );
+    assert!(!snapshot.persistence.resume_required);
+    assert!(snapshot.persistence.error.is_none());
+    let writes = store.writes.lock().unwrap();
+    assert!(
+        writes
+            .windows(2)
+            .all(|pair| pair[0].effect.sequence + 1 == pair[1].effect.sequence)
+    );
+    assert_eq!(
+        writes.last().unwrap().effect.sequence,
+        snapshot.commit_sequence
+    );
+}
+
+#[tokio::test]
+async fn capacity_backpressure_holds_model_admission_then_resumes_on_actual_progress() {
+    let (store, _calls) = Store::new();
+    store.backpressure.store(true, Ordering::SeqCst);
+    let (ready, mut receiver) = oneshot::channel();
+    let thread = ThreadHandle::start(
+        "backpressure-admission".into(),
+        DynModelSession::new(WaitingModel(Some(ready))),
+    )
+    .unwrap();
+    within(thread.attach_storage(ColdStoreHandle::new(Storage(store.clone()))))
+        .await
+        .unwrap();
+    let mut snapshots = thread.subscribe();
+    let runner = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn()).await })
+    };
+    let snapshot = within(async {
+        loop {
+            let snapshot = snapshots.next().await.unwrap();
+            if snapshot.persistence.execution_phase
+                == pl_core::thread::cold::StorageExecutionPhase::PausedForStorage
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await;
+    assert!(snapshot.persistence.pressure_paused);
+    assert!(snapshot.persistence.error.is_none());
+    assert!(!snapshot.persistence.resume_required);
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    store.automatic.store(true, Ordering::SeqCst);
+    store.backpressure.store(false, Ordering::SeqCst);
+    store.updates.send_replace(());
+    within(receiver).await.unwrap();
+    assert!(!thread.snapshot().persistence.resume_required);
+    within(thread.interrupt_turn(None)).await.unwrap();
+    assert!(matches!(
+        within(runner).await.unwrap(),
+        Err(ThreadError::Cancelled)
+    ));
+    within(thread.close()).await.unwrap();
 }

@@ -3458,44 +3458,35 @@ impl ColdStore for ThreadStorageSink {
             if let Some(rejection_kind) = rejection_kind {
                 let message =
                     format!("history queue full for Thread {thread_id} at write_seq {sequence}");
-                let new_fault = progress.error.is_none();
-                if new_fault {
-                    progress.fault_generation = progress.fault_generation.saturating_add(1);
-                    progress.retry_requested = false;
-                }
-                progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::QueueFull);
-                progress.error = Some(message.clone());
-                progress.fault_recovered = false;
-                if new_fault {
-                    tracing::warn!(
-                        target: "conversation_work",
-                        operation = "history_admission",
-                        rejection_kind,
-                        thread_id,
-                        write_seq = sequence,
-                        queued_effects = progress.effects.len(),
-                        // Same retained-byte scope as the Thread admission check, not the broader
-                        // pressure gauge that also includes projection/prepared/output residents.
-                        queued_thread_bytes = queued_bytes,
-                        effect_bytes = bytes,
-                        thread_bytes_increment = bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
-                        process_bytes_increment = added,
-                        // Other Threads can change this atomic after reserve refused; this is an
-                        // observation, not the failed compare/update's exact budget value.
-                        process_bytes_observed = self.0.channel.process_bytes.load(Ordering::Acquire),
-                        head = ?progress.effects.front().map(|effect| effect.sequence),
-                        admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
-                        durable = progress.durable,
-                        stage = ?progress.stage.map(HistoryStage::as_str),
-                        fault_generation = progress.fault_generation,
-                        "history admission refused"
-                    );
-                }
+                tracing::debug!(
+                    target: "conversation_work",
+                    operation = "history_admission",
+                    rejection_kind,
+                    thread_id,
+                    write_seq = sequence,
+                    queued_effects = progress.effects.len(),
+                    // Same retained-byte scope as the Thread admission check, not the broader
+                    // pressure gauge that also includes projection/prepared/output residents.
+                    queued_thread_bytes = queued_bytes,
+                    effect_bytes = bytes,
+                    thread_bytes_increment = bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
+                    process_bytes_increment = added,
+                    // Other Threads can change this atomic after reserve refused; this is an
+                    // observation, not the failed compare/update's exact budget value.
+                    process_bytes_observed = self.0.channel.process_bytes.load(Ordering::Acquire),
+                    head = ?progress.effects.front().map(|effect| effect.sequence),
+                    admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
+                    durable = progress.durable,
+                    stage = ?progress.stage.map(HistoryStage::as_str),
+                    fault_generation = progress.fault_generation,
+                    "history admission refused"
+                );
                 drop(index);
                 report(&self.0, &progress);
                 self.0.changed.notify_one();
-                return Err(cold_error(&message));
+                return Err(ColdStoreError {
+                    source: Box::new(pl_core::thread::cold::StorageAdmissionBackpressure(message)),
+                });
             }
             if let Err(error) = self.0.channel.order_index.reserve_boundaries_locked(
                 &mut index,
@@ -3508,16 +3499,22 @@ impl ColdStore for ThreadStorageSink {
                     .process_bytes
                     .fetch_sub(added, Ordering::AcqRel);
                 let message = error.to_string();
+                if error.is::<ExecutionIndexBudgetFull>() {
+                    drop(index);
+                    report(&self.0, &progress);
+                    self.0.changed.notify_one();
+                    return Err(ColdStoreError {
+                        source: Box::new(pl_core::thread::cold::StorageAdmissionBackpressure(
+                            message,
+                        )),
+                    });
+                }
                 if progress.error.is_none() {
                     progress.fault_generation = progress.fault_generation.saturating_add(1);
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(if error.is::<ExecutionIndexBudgetFull>() {
-                    pl_protocol::studio::HistoryFault::QueueFull
-                } else {
-                    pl_protocol::studio::HistoryFault::WriteFailed
-                });
+                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 drop(index);
@@ -8782,7 +8779,7 @@ pub(crate) mod storage_fault_tests {
     /// reservations would be held forever waiting for the queue they themselves block. The rule under
     /// test is the transfer instead — the bytes a reservation covers become the fact's own charge, so
     /// a fully reserved process still hands its facts over — together with the boundaries that stay
-    /// real: an uncovered fact is refused with a typed fault instead of being admitted over budget,
+    /// real: an uncovered fact is refused with typed backpressure instead of being admitted over budget,
     /// the refused fact is handed over unchanged once its Thread's ceiling comes back, and the
     /// process gauge returns to the baseline once everything is durable.
     #[tokio::test]
@@ -8864,15 +8861,17 @@ pub(crate) mod storage_fault_tests {
         // The next continuous fact has no reservation and is refused while there is no headroom and
         // no projection can free any: typed backpressure, nothing dropped, ticket untouched.
         let uncovered = visible_input_ticket(&sink.0.thread.id, 3, "input-uncovered")?;
-        sink.admit(&sink.0.thread.id, uncovered.clone())
+        let error = sink
+            .admit(&sink.0.thread.id, uncovered.clone())
             .expect_err("an unfunded fact cannot be admitted into a full budget");
-        let refused = channel.subscribe().borrow().clone();
-        assert_eq!(
-            refused.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
+        assert!(
+            error
+                .source
+                .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
         );
-        // Both live incarnations observe the same real fault before recovery.
-        // Neither may leave its own coordinator report blocked after it clears.
+        let refused = channel.subscribe().borrow().clone();
+        assert!(refused.fault.is_none() && refused.error.is_none());
+        // Overlapping owners must not invent a fault from the same shared capacity refusal.
         let overlapping =
             ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
 
@@ -8885,8 +8884,7 @@ pub(crate) mod storage_fault_tests {
         }
 
         // The Thread's own projection owner hands the admitted facts over in admission order, which
-        // is what lets the writer save them; then the fixed fault generation is retried and every
-        // fact is durable.
+        // is what lets the writer save them; every fact becomes durable without a fault retry.
         for (index, sink) in sinks.iter().enumerate() {
             let mut projection = live_projection(sink).await?;
             while let Some(write) = sink.0.channel.next_unprojected() {
@@ -8910,12 +8908,11 @@ pub(crate) mod storage_fault_tests {
             )
             .await?;
         }
-        // Force the late-retry ordering: QueueFull allows the writer to commit
-        // the fixed target before the explicit recovery request is accepted.
+        // The original writer drains every fact without an explicit fault-recovery request.
         let mut drained = channel.subscribe();
         await_durable(
             Duration::from_secs(10),
-            "parallel reservations durable before retry",
+            "parallel reservations durable after backpressure",
             async {
                 loop {
                     let status = drained.borrow_and_update().clone();
@@ -8929,29 +8926,11 @@ pub(crate) mod storage_fault_tests {
             || channel_facts(sink),
         )
         .await??;
-        {
-            let progress = lock_progress(&sink.0);
-            assert_eq!(
-                progress.fault,
-                Some(pl_protocol::studio::HistoryFault::QueueFull)
-            );
-            assert_eq!(progress.fault_generation, refused.fault_generation);
-            assert_eq!(progress.fault_target, 3);
-            assert!(progress.published_revision >= progress.fault_target);
-            assert!(!progress.retry_requested);
-        }
-        await_durable(
-            Duration::from_secs(10),
-            "parallel reservations recover already-durable target",
-            store
-                .thread_persistence()
-                .retry_history(&sink.0.thread.id, refused.fault_generation),
-            || channel_facts(sink),
-        )
-        .await??;
+        assert!(lock_progress(&sink.0).fault.is_none());
+        assert_eq!(lock_progress(&sink.0).fault_generation, 0);
         assert!(
             store.thread_persistence().snapshot().error.is_none(),
-            "all live writer reports must reflect the recovered shared fault"
+            "all live writer reports stay healthy after ordinary backpressure"
         );
         for (index, sink) in sinks.iter().enumerate() {
             let target = if index == 0 { 4 } else { 3 };
@@ -9006,10 +8985,15 @@ pub(crate) mod storage_fault_tests {
     }
 
     impl AdmissionRefusals {
-        fn only_event(&self, kind: &str, thread: &str, sequence: u64) -> BTreeMap<String, String> {
+        fn matching_events(
+            &self,
+            kind: &str,
+            thread: &str,
+            sequence: u64,
+        ) -> BTreeMap<String, String> {
             let events = self.0.lock().unwrap();
-            assert_eq!(events.len(), 1, "one refusal must emit exactly one event");
-            let event = events[0].clone();
+            let event = events.first().expect("refusal diagnostic").clone();
+            assert!(events.iter().all(|next| next == &event));
             assert_eq!(event["operation"], "\"history_admission\"");
             assert_eq!(event["rejection_kind"], format!("{kind:?}"));
             assert_eq!(event["thread_id"], format!("{thread:?}"));
@@ -9047,12 +9031,18 @@ pub(crate) mod storage_fault_tests {
                 let capture = AdmissionRefusals::default();
                 tracing::subscriber::with_default(capture.clone(), || {
                     for _ in 0..3 {
-                        assert!(sink.admit(&id, write.clone()).is_err());
-                        assert_eq!(channel.subscribe().borrow().fault_generation, sequence);
+                        let error = sink.admit(&id, write.clone()).unwrap_err();
+                        assert!(
+                            error
+                                .source
+                                .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
+                        );
+                        assert_eq!(channel.subscribe().borrow().fault_generation, 0);
                     }
                 });
-                let event = capture.only_event(kind, &id, sequence);
-                assert_eq!(event["fault_generation"], sequence.to_string());
+                assert_eq!(capture.0.lock().unwrap().len(), 3);
+                let event = capture.matching_events(kind, &id, sequence);
+                assert_eq!(event["fault_generation"], "0");
                 assert_eq!(event["queued_effects"], "0");
                 assert_eq!(
                     event["queued_thread_bytes"],
@@ -9075,10 +9065,7 @@ pub(crate) mod storage_fault_tests {
                     MAX_HISTORY_PROCESS_BYTES
                 );
                 let fault = channel.subscribe().borrow().clone();
-                assert_eq!(
-                    fault.fault,
-                    Some(pl_protocol::studio::HistoryFault::QueueFull)
-                );
+                assert!(fault.fault.is_none() && fault.error.is_none());
                 assert_eq!(fault.admitted_sequence, sequence - 1);
                 assert_eq!(fault.queued_records, 0);
                 channel
@@ -9087,15 +9074,11 @@ pub(crate) mod storage_fault_tests {
                     .store(index_baseline, Ordering::Release);
                 channel.process_bytes.store(baseline, Ordering::Release);
                 sink.admit(&id, write)?;
-                assert!(sink.flush(&id, sequence).await.is_err());
+                let flush = sink.flush(&id, sequence);
+                tokio::pin!(flush);
+                assert!(futures::poll!(&mut flush).is_pending());
                 drop(writer);
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store
-                        .thread_persistence()
-                        .retry_history(&id, fault.fault_generation),
-                )
-                .await??;
+                tokio::time::timeout(Duration::from_secs(5), flush).await??;
                 assert_eq!(store.history(&id).await?.watermark().await?, sequence);
                 let recovered = channel.subscribe().borrow().clone();
                 assert_eq!(recovered.queued_records, 0);
@@ -9187,12 +9170,19 @@ pub(crate) mod storage_fault_tests {
         let capture = AdmissionRefusals::default();
         tracing::subscriber::with_default(capture.clone(), || {
             for _ in 0..3 {
-                sink.admit(id, refused.clone())
+                let error = sink
+                    .admit(id, refused.clone())
                     .expect_err("the first ticket beyond the real record limit must be refused");
-                assert_eq!(channel.subscribe().borrow().fault_generation, 1);
+                assert!(
+                    error
+                        .source
+                        .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
+                );
+                assert_eq!(channel.subscribe().borrow().fault_generation, 0);
             }
         });
-        let event = capture.only_event("slot", id, refused.effect.sequence);
+        assert_eq!(capture.0.lock().unwrap().len(), 3);
+        let event = capture.matching_events("slot", id, refused.effect.sequence);
         assert_eq!(event["queued_effects"], MAX_HISTORY_BATCHES.to_string());
         assert_eq!(event["queued_thread_bytes"], queued_before.to_string());
         assert_eq!(
@@ -9205,10 +9195,7 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(sink.pressure(id).thread_bytes, before.thread_bytes);
         assert_eq!(sink.pressure(id).store_bytes, before.store_bytes);
         let full = channel.subscribe().borrow().clone();
-        assert_eq!(
-            full.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
-        );
+        assert!(full.fault.is_none() && full.error.is_none());
         assert_eq!(full.queued_records, MAX_HISTORY_BATCHES as u64);
         assert!(
             channel.next_unprojected().is_none(),
@@ -9236,10 +9223,6 @@ pub(crate) mod storage_fault_tests {
             .publish_prepared(&sink.0.chat, &mut prepared)
             .await?;
         assert!(channel.prepare(prepared));
-        store
-            .thread_persistence()
-            .retry_history(id, full.fault_generation)
-            .await?;
         sink.flush(id, refused.effect.sequence).await?;
         assert_eq!(
             store.history(id).await?.watermark().await?,

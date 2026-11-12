@@ -1004,7 +1004,8 @@ impl ThreadHandle {
     /// meaning while a Turn is paused, instead of waiting on a Turn that cannot end on its own.
     ///
     /// # Errors
-    /// Returns storage failure, or an unavailable owner that never confirmed a durable close.
+    /// Returns storage failure, temporary admission backpressure for an unhanded tail (without
+    /// certifying a smaller prefix), or an owner that never confirmed a durable close.
     pub async fn flush(&self) -> Result<(), ThreadError> {
         if self.durably_released() {
             return Ok(());
