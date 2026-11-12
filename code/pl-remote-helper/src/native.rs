@@ -326,12 +326,19 @@ fn capture_pipe(
             error,
         }));
     });
+    let (reader, observed) = crate::capture::observe(Box::pin(reader), move || {
+        completion.borrow().clone().unwrap_or(CapturedStream {
+            state: CaptureState::Incomplete,
+            confirmed_bytes: None,
+            error: None,
+        })
+    });
     (
         ChildStdout {
-            io: Box::pin(reader),
+            io: reader,
             lifetime,
             cancel: Some(cancelled),
         },
-        completion,
+        observed,
     )
 }

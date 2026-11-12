@@ -49,11 +49,11 @@ impl From<Reset> for ResetOwner {
 pub(crate) type Trailers = watch::Receiver<Option<Result<http::HeaderMap, String>>>;
 
 pub(crate) struct BodyReader {
-    reader: tokio::io::DuplexStream,
-    flow: FlowControl,
+    reader: Option<tokio::io::DuplexStream>,
+    flow: Option<Arc<ReceiveCredit>>,
     done: Trailers,
     cancel: CancellationToken,
-    reset: ResetOwner,
+    reset: Option<ResetOwner>,
     finished: bool,
     pending_error: Option<String>,
     _permit: Option<Permit>,
@@ -61,8 +61,10 @@ pub(crate) struct BodyReader {
 
 impl Drop for BodyReader {
     fn drop(&mut self) {
-        if !self.finished {
-            self.reset.cancel();
+        if !self.finished
+            && let Some(reset) = &self.reset
+        {
+            reset.cancel();
         }
         self.cancel.cancel();
     }
@@ -74,21 +76,37 @@ impl AsyncRead for BodyReader {
         cx: &mut Context<'_>,
         output: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if self.cancel.is_cancelled() && !self.finished {
+            self.reader.take();
+            return Poll::Ready(Err(io::ErrorKind::Interrupted.into()));
+        }
         if let Some(error) = self.pending_error.take() {
             return Poll::Ready(Err(io::Error::other(error)));
         }
         let before = output.filled().len();
         let capacity = output.remaining();
-        let result = Pin::new(&mut self.reader).poll_read(cx, output);
+        let Some(reader) = self.reader.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let result = Pin::new(reader).poll_read(cx, output);
         if let Poll::Ready(Ok(())) = &result {
             let delivered = output.filled().len() - before;
             if delivered != 0 {
-                if let Err(error) = self.flow.release_capacity(delivered) {
+                if let Err(error) = self
+                    .flow
+                    .as_mut()
+                    .expect("live receive flow")
+                    .release(delivered)
+                {
                     self.pending_error = Some(error.to_string());
                 }
             } else if capacity != 0 {
                 self.finished = true;
                 let terminal = self.done.borrow().clone();
+                self.reader.take();
+                self.flow.take();
+                self.reset.take();
+                self._permit.take();
                 return Poll::Ready(match terminal {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(error)) => Err(io::Error::other(error)),
@@ -103,19 +121,90 @@ impl AsyncRead for BodyReader {
     }
 }
 
+/// Held until the receive pump and its public consumer have both relinquished bytes.
+struct ReceiveCredit(Mutex<FlowControl>);
+impl ReceiveCredit {
+    fn release(&self, bytes: usize) -> Result<(), h2::Error> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release_capacity(bytes)
+    }
+    fn release_remaining(&self) {
+        let mut flow = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let used = flow.used_capacity();
+        if used != 0
+            && let Err(error) = flow.release_capacity(used)
+        {
+            eprintln!("receive credit release after close: {error}");
+        }
+    }
+}
+impl Drop for ReceiveCredit {
+    fn drop(&mut self) {
+        self.release_remaining();
+    }
+}
+
+/// Half-close capability, without the exchange's reset authority.
+pub(crate) struct ReceiveOwner {
+    cancel: CancellationToken,
+    done: Trailers,
+    credit: Arc<ReceiveCredit>,
+}
+impl ReceiveOwner {
+    pub async fn abandon(mut self) {
+        // Disables public reads first; the pump then drops RecvStream before ACK.
+        self.cancel.cancel();
+        let _ = self.done.wait_for(Option::is_some).await;
+        self.credit.release_remaining();
+    }
+}
+impl Drop for ReceiveOwner {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 pub(crate) fn receive(
-    mut body: RecvStream,
+    body: RecvStream,
     reset: ResetOwner,
     tasks: &TaskTracker,
     closing: CancellationToken,
     permit: Option<Permit>,
 ) -> (BodyReader, Trailers) {
-    let flow = body.flow_control().clone();
+    let (reader, done, _) = receive_inner(body, Some(reset), tasks, closing, permit, false);
+    (reader, done)
+}
+
+pub(crate) fn receive_half(
+    body: RecvStream,
+    tasks: &TaskTracker,
+    closing: CancellationToken,
+    permit: Option<Permit>,
+) -> (BodyReader, ReceiveOwner) {
+    let (reader, _, owner) = receive_inner(body, None, tasks, closing, permit, true);
+    (reader, owner.expect("half receive owner"))
+}
+
+fn receive_inner(
+    mut body: RecvStream,
+    reset: Option<ResetOwner>,
+    tasks: &TaskTracker,
+    closing: CancellationToken,
+    permit: Option<Permit>,
+    half: bool,
+) -> (BodyReader, Trailers, Option<ReceiveOwner>) {
+    let flow = Arc::new(ReceiveCredit(Mutex::new(body.flow_control().clone())));
     let (mut writer, reader) = tokio::io::duplex(WINDOW as usize);
     let (send, done) = watch::channel(None);
     let cancel = CancellationToken::new();
     let stopped = cancel.clone();
     let held = permit.clone();
+    let pump_credit = flow.clone();
     tasks.spawn(async move {
         let _permit = held;
         let work = async {
@@ -132,12 +221,21 @@ pub(crate) fn receive(
             _ = stopped.cancelled() => Err(io::ErrorKind::Interrupted.into()),
             _ = closing.cancelled() => Err(io::ErrorKind::BrokenPipe.into()),
         };
+        // Drop all unpolled h2 input before marking this half closed. Polled but
+        // undelivered bytes remain charged to ReceiveCredit until consumer/owner release.
+        drop(body);
+        drop(pump_credit);
         send.send_replace(Some(result.map_err(|error| error.to_string())));
+    });
+    let owner = half.then(|| ReceiveOwner {
+        cancel: cancel.clone(),
+        done: done.clone(),
+        credit: flow.clone(),
     });
     (
         BodyReader {
-            reader,
-            flow,
+            reader: Some(reader),
+            flow: Some(flow),
             done: done.clone(),
             cancel,
             reset,
@@ -146,6 +244,7 @@ pub(crate) fn receive(
             _permit: permit,
         },
         done,
+        owner,
     )
 }
 
@@ -226,4 +325,43 @@ pub(crate) async fn read_descriptor<R: AsyncRead + Unpin, S: serde::de::Deserial
     let mut bytes = vec![0; length];
     reader.read_exact(&mut bytes).await?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
+}
+
+pub(crate) async fn send_shared(
+    stream: &Reset,
+    mut bytes: Bytes,
+    end: bool,
+    cancel: &CancellationToken,
+) -> io::Result<()> {
+    if bytes.is_empty() {
+        if end {
+            stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .send_data(bytes, true)
+                .map_err(io::Error::other)?;
+        }
+        return Ok(());
+    }
+    while !bytes.is_empty() {
+        stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reserve_capacity(bytes.len());
+        let capacity = tokio::select! {
+            _ = cancel.cancelled() => return Err(io::ErrorKind::Interrupted.into()),
+            capacity = futures::future::poll_fn(|cx| stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner).poll_capacity(cx)) => capacity.ok_or(io::ErrorKind::BrokenPipe)?.map_err(io::Error::other)?,
+        };
+        let length = capacity.min(bytes.len());
+        if length == 0 {
+            continue;
+        }
+        let data = bytes.split_to(length);
+        stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send_data(data, end && bytes.is_empty())
+            .map_err(io::Error::other)?;
+    }
+    Ok(())
 }

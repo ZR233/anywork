@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{ExecutionError, Executor, TargetPath, executor::ExecutorBackend};
 
+pub(crate) mod mutate;
 mod patch;
 mod write;
 
@@ -124,7 +125,7 @@ impl FileWriter {
 }
 
 enum DirectorySource {
-    Native(tokio::fs::ReadDir),
+    Native(Box<tokio::fs::ReadDir>),
     Remote(tokio::io::BufReader<FileReader>),
 }
 pub struct DirectoryReader {
@@ -251,7 +252,9 @@ impl FileSystem {
         }
     }
     fn validate(&self, path: &TargetPath) -> Result<(), ExecutionError> {
-        if path.executor == self.executor.id() {
+        if self.executor.is_closed() {
+            Err(ExecutionError::Disconnected("executor is closed".into()))
+        } else if path.executor == self.executor.id() {
             Ok(())
         } else {
             Err(ExecutionError::InvalidInput(
@@ -327,11 +330,11 @@ impl FileSystem {
     pub async fn read_dir(&self, path: &TargetPath) -> Result<DirectoryReader, ExecutionError> {
         self.validate(path)?;
         let source = match &self.executor.inner.backend {
-            ExecutorBackend::Local => DirectorySource::Native(
+            ExecutorBackend::Local => DirectorySource::Native(Box::new(
                 tokio::fs::read_dir(path.as_str())
                     .await
                     .map_err(|error| ExecutionError::io("open directory", error))?,
-            ),
+            )),
             ExecutorBackend::Remote(connection) => {
                 DirectorySource::Remote(tokio::io::BufReader::new(FileReader {
                     io: Box::pin(connection.reader("/fs/read-dir", &path.value).await?),

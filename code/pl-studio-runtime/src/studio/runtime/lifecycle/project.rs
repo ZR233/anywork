@@ -301,30 +301,11 @@ impl StudioRuntime {
     }
 
     async fn local_lsp_host(&self, root: &Path) -> Option<Arc<dyn pl_lsp::host::LspHostBackend>> {
-        #[cfg(target_os = "linux")]
-        {
-            match crate::worker_assets::local_worker(self.helper_source.clone()).await {
-                Ok(worker) => match pl_tool::lsp::LocalLspHostBackend::new(root.to_owned(), worker)
-                {
-                    Ok(host) => Some(Arc::new(host)),
-                    Err(error) => {
-                        tracing::warn!(%error, "LSP host preparation failed");
-                        None
-                    }
-                },
-                Err(error) => pl_tool::lsp::LocalLspHostBackend::unavailable(
-                    root.to_owned(),
-                    format!("LSP supervised worker preparation failed: {error}"),
-                )
-                .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                .ok(),
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = root;
-            None
-        }
+        let root = root.to_str()?;
+        pl_lsp::host::ExecutorLspHost::new(self.thread_factory.local_executor(), root)
+            .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
+            .map_err(|error| tracing::warn!(%error, "LSP host preparation failed"))
+            .ok()
     }
 
     async fn project_record(&self, workspace_id: &str) -> Result<crate::WorkspaceRecord> {

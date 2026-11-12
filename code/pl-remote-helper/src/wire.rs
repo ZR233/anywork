@@ -6,7 +6,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 pub(crate) const RESULT_LIMIT: usize = 8 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -50,7 +50,7 @@ pub(crate) enum Failure {
     InvalidInput(String),
     Io {
         operation: String,
-        kind: String,
+        kind: crate::IoErrorKind,
         raw_os_error: Option<i32>,
     },
     Protocol(String),
@@ -62,10 +62,15 @@ impl From<&ExecutionError> for Failure {
         match error {
             ExecutionError::Io { operation, source } => Self::Io {
                 operation: (*operation).into(),
-                kind: format!("{:?}", source.kind()),
+                kind: source.kind().into(),
                 raw_os_error: source.raw_os_error(),
             },
             ExecutionError::InvalidInput(message) => Self::InvalidInput(message.clone()),
+            ExecutionError::TargetIo(error) => Self::Io {
+                operation: error.operation.clone(),
+                kind: error.kind,
+                raw_os_error: error.raw_os_error,
+            },
             ExecutionError::Cancelled => Self::Cancelled,
             _ => Self::Protocol(error.to_string()),
         }
@@ -79,13 +84,11 @@ impl From<Failure> for ExecutionError {
                 operation,
                 kind,
                 raw_os_error,
-            } => Self::io(
-                "target IO",
-                match raw_os_error {
-                    Some(code) => std::io::Error::from_raw_os_error(code),
-                    None => std::io::Error::other(format!("{operation}: {kind}")),
-                },
-            ),
+            } => Self::TargetIo(crate::TargetIoError {
+                operation,
+                kind,
+                raw_os_error,
+            }),
             Failure::Protocol(message) => Self::Protocol(message),
             Failure::Cancelled => Self::Cancelled,
         }
@@ -107,7 +110,7 @@ impl From<CapturedStream> for CaptureOutcome {
             confirmed_bytes: value.confirmed_bytes,
             error: value.error.map(|source| Failure::Io {
                 operation: "capture".into(),
-                kind: format!("{:?}", source.kind()),
+                kind: source.kind().into(),
                 raw_os_error: source.raw_os_error(),
             }),
         }

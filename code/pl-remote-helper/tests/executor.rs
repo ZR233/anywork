@@ -45,6 +45,15 @@ async fn literal_arguments_and_concurrent_environment_and_directories() {
             .await
             .unwrap_err();
         assert_eq!(failure.knowledge, StartKnowledge::NotStarted);
+        match failure.cause {
+            pl_remote_helper::ExecutionError::Io { source, .. } => {
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound)
+            }
+            pl_remote_helper::ExecutionError::TargetIo(source) => {
+                assert_eq!(source.kind, pl_remote_helper::IoErrorKind::NotFound)
+            }
+            error => panic!("spawn must retain the typed target IO failure: {error}"),
+        }
         assert!(
             executor
                 .command("/bin/true")
@@ -459,4 +468,120 @@ async fn target_side_patch_keeps_ordered_partial_facts_and_rejects_oversized_rep
         assert!(failure.to_string().contains("ReportTooLarge"));
         assert!(!directory.path().join("must-not-exist").exists());
     }).await;
+}
+
+#[tokio::test]
+async fn dropping_unread_capture_is_incomplete_even_after_root_exit() {
+    both(|executor| async move {
+        let directory = tempfile::tempdir().unwrap();
+        let mut child = executor
+            .command("/bin/echo")
+            .arg("unread")
+            .stdout(Stdio::Piped)
+            .stderr(Stdio::Piped)
+            .capture(CaptureSpec {
+                stdout_path: directory.path().join("stdout").to_str().unwrap().into(),
+                stderr_path: directory.path().join("stderr").to_str().unwrap().into(),
+                max_bytes: 1024,
+            })
+            .spawn()
+            .await
+            .unwrap();
+        child.wait().await.unwrap();
+        assert!(futures::poll!(Box::pin(child.finish_capture())).is_pending());
+        drop(child.stdout.take());
+        let mut stderr = Vec::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_end(&mut stderr)
+            .await
+            .unwrap();
+        let capture = child.finish_capture().await.unwrap().unwrap();
+        assert_eq!(capture.stdout.state, CaptureState::Incomplete);
+        assert_eq!(capture.stdout.confirmed_bytes, None);
+        assert_eq!(capture.stderr.state, CaptureState::Complete);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn http_early_response_survives_infinite_upload_and_returns_stream_credit() {
+    both(|executor| async move {
+        use pl_remote_helper::http::HttpRequest;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            for _ in 0..520 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut header = Vec::new();
+                while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut bytes = [0; 1024];
+                    let count = socket.read(&mut bytes).await.unwrap();
+                    assert_ne!(count, 0);
+                    header.extend_from_slice(&bytes[..count]);
+                }
+                socket.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 3\r\nConnection: close\r\n\r\nend").await.unwrap();
+                socket.shutdown().await.unwrap();
+                // Keep the TCP read half alive until the client stops uploading;
+                // dropping a socket with unread input would inject RST and invalidate
+                // the HTTP response independently of the execution transport.
+                let _ = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;
+            }
+        });
+        let http = executor.http();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            for _ in 0..520 {
+                let mut response = http.execute(HttpRequest {
+                    method: "POST".into(), url: format!("http://{address}/early"), headers: vec![], bearer_token_env_var: None,
+                }, Box::pin(tokio::io::repeat(0x80))).await.unwrap();
+                assert_eq!(response.head.status, 413);
+                let mut body = Vec::new();
+                response.body.read_to_end(&mut body).await.unwrap();
+                assert_eq!(body, b"end");
+            }
+        }).await.expect("early responses must release upload owner, credit and admission");
+        peer.await.unwrap();
+        assert_eq!(executor.command("/bin/true").status().await.unwrap(), ProcessExit::Code(0));
+    }).await;
+}
+
+#[tokio::test]
+async fn filesystem_mutations_run_on_target_and_closed_handles_are_terminal() {
+    both(|executor| async move {
+        let directory = tempfile::tempdir().unwrap();
+        let root = executor.path(directory.path().to_str().unwrap()).unwrap();
+        let fs = executor.fs();
+        let source = executor.join_path(&root, "source").unwrap();
+        fs.create_dir(&source, false).await.unwrap();
+        let file = executor.join_path(&source, "line\nbreak.bin").unwrap();
+        let mut writer = fs
+            .write(&file, pl_remote_helper::fs::WriteMode::CreateNew, Some(3))
+            .await
+            .unwrap();
+        writer.write_all(b"\0\xff!").await.unwrap();
+        writer.finish().await.unwrap();
+        let target = executor.join_path(&root, "copy").unwrap();
+        fs.copy_path(&source, &target, false).await.unwrap_err();
+        fs.copy_path(&source, &target, true).await.unwrap();
+        let copied = executor.join_path(&target, "line\nbreak.bin").unwrap();
+        let mut bytes = Vec::new();
+        fs.read(&copied)
+            .await
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"\0\xff!");
+        let renamed = executor.join_path(&root, "renamed").unwrap();
+        fs.rename(&target, &renamed).await.unwrap();
+        fs.remove(&renamed, true).await.unwrap();
+        assert!(fs.metadata(&renamed).await.unwrap().is_none());
+        executor.close().await.unwrap();
+        assert!(fs.read(&file).await.is_err());
+        assert!(fs.create_dir(&target, false).await.is_err());
+        assert!(executor.command("/bin/true").spawn().await.is_err());
+    })
+    .await;
 }

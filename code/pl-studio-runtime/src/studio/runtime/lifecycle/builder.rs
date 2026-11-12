@@ -22,6 +22,7 @@ impl StudioRuntime {
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
     ) -> Result<Self> {
+        let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
         // Resolve the supervised local worker *before* creating any store-derived owner, so a
@@ -112,6 +113,7 @@ impl StudioRuntime {
                 config_runtime: config_runtime.clone(),
                 mcp_connector,
                 lsp_runtime: lsp.clone(),
+                local_executor: local_executor.clone(),
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
@@ -212,8 +214,6 @@ impl StudioRuntime {
             shutdown_run: Default::default(),
             early_exit_issues: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             title_tasks: Default::default(),
-            #[cfg(target_os = "linux")]
-            helper_source,
             profiles_forwarder: Default::default(),
             bot_host: None,
         };

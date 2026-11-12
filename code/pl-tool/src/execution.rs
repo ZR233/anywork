@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
-
-use tokio::process::Command;
 
 /// 通用命令执行请求。
 #[derive(Clone, PartialEq, Eq)]
@@ -61,150 +58,80 @@ pub trait ExecutionBackend: fmt::Debug + Send + Sync {
     ) -> impl Future<Output = std::result::Result<ExecutionOutput, Self::Error>> + Send;
 }
 
-/// 本地进程执行后端。
-#[derive(Debug, Clone, Default)]
-pub struct LocalExecutionBackend;
-
-/// 本地命令失败发生在进程启动前、启动后还是等待超时。
-///
-/// 需要根据副作用边界实施补偿的产品 backend 可使用该分类；普通调用方应继续
-/// 通过 [`ExecutionBackend::run`] 获取稳定的字符串错误。
-#[derive(Debug)]
-pub enum LocalExecutionFailure {
-    BeforeSpawn(String),
-    AfterSpawn(String),
-    TimedOut,
+/// 由装配层绑定执行位置，复用同一公共进程接口。
+#[derive(Debug, Clone)]
+pub struct ExecutorExecutionBackend {
+    executor: Result<pl_remote_helper::Executor, pl_remote_helper::ExecutionError>,
 }
 
-impl fmt::Display for LocalExecutionFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BeforeSpawn(error) | Self::AfterSpawn(error) => formatter.write_str(error),
-            Self::TimedOut => formatter.write_str("command timed out"),
+impl Default for ExecutorExecutionBackend {
+    fn default() -> Self {
+        Self {
+            executor: pl_remote_helper::Executor::local(),
         }
     }
 }
 
-impl LocalExecutionBackend {
-    /// 运行本地进程，并保留失败发生在 spawn 前后的分类信息。
+#[derive(Debug, thiserror::Error)]
+pub enum ExecutionFailure {
+    #[error(transparent)]
+    Spawn(#[from] pl_remote_helper::SpawnError),
+    #[error(transparent)]
+    Execution(#[from] pl_remote_helper::ExecutionError),
+    #[error("command timed out; cleanup is owned by the executor")]
+    TimedOut,
+}
+
+impl ExecutorExecutionBackend {
+    pub fn new(executor: pl_remote_helper::Executor) -> Self {
+        Self {
+            executor: Ok(executor),
+        }
+    }
+
     pub async fn run_classified(
         &self,
         request: ExecutionRequest,
-    ) -> std::result::Result<ExecutionOutput, LocalExecutionFailure> {
-        let mut command = Command::new(&request.program);
-        command.args(&request.args);
-        command.current_dir(&request.cwd);
-        command.envs(&request.env);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        let mut command = pl_remote_helper::process::wrap_background_command(command);
-        let child =
-            pl_remote_helper::process::spawn_background_command(&mut command).map_err(|error| {
-                use pl_remote_helper::process::BackgroundSpawnError;
-                match error {
-                    BackgroundSpawnError::Process(error) => LocalExecutionFailure::BeforeSpawn(
-                        format!("failed to run command: {error}"),
-                    ),
-                    BackgroundSpawnError::Stdio(error) => LocalExecutionFailure::AfterSpawn(
-                        format!("failed to register command stdio: {error}"),
-                    ),
-                }
-            })?;
-        let output = collect_child(child, request.timeout).await?;
+    ) -> Result<ExecutionOutput, ExecutionFailure> {
+        let started = tokio::time::Instant::now();
+        let executor = self
+            .executor
+            .as_ref()
+            .map_err(|cause| ExecutionFailure::Execution(cause.clone()))?;
+        let program = request.program.to_str().ok_or_else(|| {
+            pl_remote_helper::ExecutionError::InvalidInput("program path is not UTF-8".into())
+        })?;
+        let cwd = request.cwd.to_str().ok_or_else(|| {
+            pl_remote_helper::ExecutionError::InvalidInput("working directory is not UTF-8".into())
+        })?;
+        let mut command = executor.command(program);
+        command
+            .args(request.args)
+            .current_dir(cwd)
+            .envs(request.env)
+            .stdout(pl_remote_helper::Stdio::Piped)
+            .stderr(pl_remote_helper::Stdio::Piped);
+        let execute = async {
+            let child = command.spawn().await?;
+            Ok::<_, ExecutionFailure>(child.wait_with_output().await?)
+        };
+        let output = match request.timeout {
+            Some(duration) => tokio::time::timeout_at(started + duration, execute)
+                .await
+                .map_err(|_| ExecutionFailure::TimedOut)??,
+            None => execute.await?,
+        };
         Ok(ExecutionOutput {
             status: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
 }
 
-async fn collect_child(
-    child: pl_remote_helper::process::BackgroundChild,
-    timeout: Option<Duration>,
-) -> Result<std::process::Output, LocalExecutionFailure> {
-    let mut process = child.process;
-    let stdout = child.stdout;
-    let stderr = child.stderr;
-    let output = async move { tokio::join!(read_pipe(stdout), read_pipe(stderr)) };
-    tokio::pin!(output);
-    let timer = async move {
-        match timeout {
-            Some(timeout) => tokio::time::sleep(timeout).await,
-            None => std::future::pending().await,
-        }
-    };
-    tokio::pin!(timer);
-    let mut status = None;
-    let mut streams = None;
-    let mut timed_out = false;
-    let mut termination_error = None;
-    while status.is_none() || streams.is_none() {
-        tokio::select! {
-            result = process.wait(), if status.is_none() => {
-                if result.is_err() { termination_error = process.start_kill().err(); }
-                status = Some(result);
-            }
-            result = &mut output, if streams.is_none() => streams = Some(result),
-            _ = &mut timer, if !timed_out => {
-                timed_out = true;
-                termination_error = process.start_kill().err();
-            }
-        }
-    }
-    let Some(status) = status else {
-        return Err(LocalExecutionFailure::AfterSpawn(
-            "missing process exit".into(),
-        ));
-    };
-    let Some((stdout, stderr)) = streams else {
-        return Err(LocalExecutionFailure::AfterSpawn(
-            "missing output drain".into(),
-        ));
-    };
-    let status = status.map_err(|error| {
-        LocalExecutionFailure::AfterSpawn(format!("process exit wait failed: {error}"))
-    })?;
-    let stdout = stdout.map_err(|error| {
-        LocalExecutionFailure::AfterSpawn(format!("stdout drain failed: {error}"))
-    })?;
-    let stderr = stderr.map_err(|error| {
-        LocalExecutionFailure::AfterSpawn(format!("stderr drain failed: {error}"))
-    })?;
-    if let Some(error) = termination_error {
-        return Err(LocalExecutionFailure::AfterSpawn(format!(
-            "termination request failed before final process settlement: {error}"
-        )));
-    }
-    if timed_out {
-        return Err(LocalExecutionFailure::TimedOut);
-    }
-    Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-async fn read_pipe<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> std::io::Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-    let mut content = Vec::new();
-    if let Some(mut pipe) = pipe {
-        pipe.read_to_end(&mut content).await?;
-    }
-    Ok(content)
-}
-
-impl ExecutionBackend for LocalExecutionBackend {
-    type Error = String;
-
-    async fn run(
-        &self,
-        request: ExecutionRequest,
-    ) -> std::result::Result<ExecutionOutput, Self::Error> {
-        self.run_classified(request)
-            .await
-            .map_err(|error| error.to_string())
+impl ExecutionBackend for ExecutorExecutionBackend {
+    type Error = ExecutionFailure;
+    async fn run(&self, request: ExecutionRequest) -> Result<ExecutionOutput, Self::Error> {
+        self.run_classified(request).await
     }
 }

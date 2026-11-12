@@ -50,10 +50,16 @@ pub enum ExecutionError {
         #[source]
         source: Arc<std::io::Error>,
     },
+    #[error("HTTP request: {0}")]
+    Http(#[source] Arc<reqwest::Error>),
+    #[error(transparent)]
+    TargetIo(#[from] TargetIoError),
     #[error("executor disconnected: {0}")]
     Disconnected(String),
     #[error("executor protocol: {0}")]
     Protocol(String),
+    #[error("executor wire version mismatch: expected {expected}, received {actual}")]
+    ProtocolMismatch { expected: u32, actual: u32 },
     #[error("execution cancelled")]
     Cancelled,
     #[error("output collection failed: {cause}")]
@@ -62,6 +68,59 @@ pub enum ExecutionError {
         #[source]
         cause: Box<ExecutionError>,
     },
+}
+
+/// Target OS codes are diagnostic facts; the desktop must not reinterpret them
+/// through its own `from_raw_os_error` (notably Windows hosts of Linux targets).
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[error("{operation}: target IO ({kind:?}, os={raw_os_error:?})")]
+pub struct TargetIoError {
+    pub operation: String,
+    pub kind: IoErrorKind,
+    pub raw_os_error: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum IoErrorKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    InvalidData,
+    Interrupted,
+    Unsupported,
+    UnexpectedEof,
+    BrokenPipe,
+    TimedOut,
+    WriteZero,
+    WouldBlock,
+    NotADirectory,
+    IsADirectory,
+    DirectoryNotEmpty,
+    Other,
+}
+impl From<std::io::ErrorKind> for IoErrorKind {
+    fn from(kind: std::io::ErrorKind) -> Self {
+        use std::io::ErrorKind as Io;
+        match kind {
+            Io::NotFound => Self::NotFound,
+            Io::PermissionDenied => Self::PermissionDenied,
+            Io::AlreadyExists => Self::AlreadyExists,
+            Io::InvalidInput => Self::InvalidInput,
+            Io::InvalidData => Self::InvalidData,
+            Io::Interrupted => Self::Interrupted,
+            Io::Unsupported => Self::Unsupported,
+            Io::UnexpectedEof => Self::UnexpectedEof,
+            Io::BrokenPipe => Self::BrokenPipe,
+            Io::TimedOut => Self::TimedOut,
+            Io::WriteZero => Self::WriteZero,
+            Io::WouldBlock => Self::WouldBlock,
+            Io::NotADirectory => Self::NotADirectory,
+            Io::IsADirectory => Self::IsADirectory,
+            Io::DirectoryNotEmpty => Self::DirectoryNotEmpty,
+            _ => Self::Other,
+        }
+    }
 }
 
 impl ExecutionError {

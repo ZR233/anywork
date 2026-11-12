@@ -103,6 +103,14 @@ where
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&key);
             });
+        } else if method == http::Method::POST && path == "/http" {
+            tasks.spawn(crate::http::remote::serve(
+                request.into_body(),
+                response,
+                executor.clone(),
+                tasks.clone(),
+                closing.clone(),
+            ));
         } else if method == http::Method::POST && path == "/fs/apply-patch" {
             tasks.spawn(apply_patch(
                 request.into_body(),
@@ -332,6 +340,21 @@ async fn filesystem(
         let bytes = stream::collect(input, stream::DESCRIPTOR_LIMIT)
             .await
             .map_err(|error| ExecutionError::io("filesystem descriptor", error))?;
+        if path == "/fs/mutate" {
+            let request = serde_json::from_slice(&bytes)
+                .map_err(|error| ExecutionError::InvalidInput(error.to_string()))?;
+            // Mutation owns its OS work even when the response consumer cancels.
+            let (send, receive) = tokio::sync::oneshot::channel();
+            let stop = closing.clone();
+            executor.inner.tasks.spawn(async move {
+                let result = crate::fs::mutate::mutate_native(request, stop).await;
+                let _ = send.send(result);
+            });
+            receive
+                .await
+                .map_err(|_| ExecutionError::Disconnected("mutation result is unknown".into()))??;
+            return Ok((Some(b"null".to_vec()), None, None));
+        }
         if path == "/fs/metadata" {
             let request = serde_json::from_slice(&bytes)
                 .map_err(|error| ExecutionError::InvalidInput(error.to_string()))?;
@@ -640,7 +663,7 @@ async fn output_pipe(
     tokio::select! { _ = result => (), _ = closing.cancelled() => () }
 }
 
-async fn reply(
+pub(crate) async fn reply(
     mut response: SendResponse<Bytes>,
     status: http::StatusCode,
     bytes: Vec<u8>,

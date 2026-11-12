@@ -248,6 +248,15 @@ impl RemoteConnection {
             ordinary: Arc::new(Semaphore::new(stream::ORDINARY)),
             control: Arc::new(Semaphore::new(stream::CONTROL)),
         };
+        struct Connecting(Option<CancellationToken>);
+        impl Drop for Connecting {
+            fn drop(&mut self) {
+                if let Some(cancel) = self.0.take() {
+                    cancel.cancel();
+                }
+            }
+        }
+        let mut guard = Connecting(Some(connection.closing.clone()));
         let hello = async {
             let (response, _) = connection.open("POST", "/hello", true).await?;
             let response = response.await.map_err(disconnected)?;
@@ -256,17 +265,19 @@ impl RemoteConnection {
                 .map_err(disconnected)?;
             let hello: wire::Hello = serde_json::from_slice(&bytes).map_err(protocol)?;
             if hello.wire != wire::VERSION {
-                return Err(ExecutionError::Protocol(format!(
-                    "wire version {} does not match {}",
-                    hello.wire,
-                    wire::VERSION
-                )));
+                return Err(ExecutionError::ProtocolMismatch {
+                    expected: wire::VERSION,
+                    actual: hello.wire,
+                });
             }
             Ok(hello)
         }
         .await;
         match hello {
-            Ok(hello) => Ok((connection, hello)),
+            Ok(hello) => {
+                guard.0.take();
+                Ok((connection, hello))
+            }
             Err(error) => {
                 connection.closing.cancel();
                 Err(error)
@@ -284,7 +295,7 @@ impl RemoteConnection {
         )
     }
 
-    async fn permit(&self, count: u32, control: bool) -> Result<Permit, ExecutionError> {
+    pub(crate) async fn permit(&self, count: u32, control: bool) -> Result<Permit, ExecutionError> {
         let semaphore = if control {
             &self.control
         } else {
@@ -296,7 +307,7 @@ impl RemoteConnection {
         }
     }
 
-    async fn open(
+    pub(crate) async fn open(
         &self,
         method: &str,
         path: &str,
@@ -446,26 +457,33 @@ impl RemoteConnection {
                     self.closing.clone(),
                     Some(permit.clone()),
                 );
-                if spec.capture.is_some() {
-                    let (completion, observed) = watch::channel(None);
-                    let closing = self.closing.clone();
-                    let mut trailers = trailers;
-                    self.tasks.spawn(async move {
-                        let outcome = loop {
-                            if let Some(result) = trailers.borrow().clone() { break result; }
-                            tokio::select! {
-                                result = trailers.changed() => { if result.is_err() { break Err("output owner ended".into()); } }
-                                _ = closing.cancelled() => break Err("connection closed".into()),
-                            }
-                        };
-                        let result = outcome.ok().and_then(|headers| headers.get("x-capture").and_then(|value| serde_json::from_slice::<wire::CaptureOutcome>(value.as_bytes()).ok())).map(Into::into)
-                            .unwrap_or(crate::CapturedStream { state: crate::CaptureState::Incomplete, confirmed_bytes: None, error: None });
-                        completion.send_replace(Some(result));
+                let reader: std::pin::Pin<Box<dyn AsyncRead + Send>> = Box::pin(reader);
+                let reader = if spec.capture.is_some() {
+                    let (reader, observed) = crate::capture::observe(reader, move || {
+                        trailers
+                            .borrow()
+                            .clone()
+                            .and_then(Result::ok)
+                            .and_then(|headers| {
+                                headers.get("x-capture").and_then(|value| {
+                                    serde_json::from_slice::<wire::CaptureOutcome>(value.as_bytes())
+                                        .ok()
+                                })
+                            })
+                            .map(Into::into)
+                            .unwrap_or(crate::CapturedStream {
+                                state: crate::CaptureState::Incomplete,
+                                confirmed_bytes: None,
+                                error: None,
+                            })
                     });
                     captures.push(observed);
-                }
+                    reader
+                } else {
+                    reader
+                };
                 let pipe = ChildStdout {
-                    io: Box::pin(reader),
+                    io: reader,
                     lifetime: Some(Arc::new(crate::child::PipeLifetime {
                         notify: Arc::new(tokio::sync::Notify::new()),
                         _executor: command.executor.clone(),
@@ -548,41 +566,13 @@ impl RemoteConnection {
 
 async fn send_shared(
     stream: &Reset,
-    mut bytes: Bytes,
+    bytes: Bytes,
     end: bool,
     cancel: &CancellationToken,
 ) -> Result<(), ExecutionError> {
-    if bytes.is_empty() {
-        if end {
-            stream
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .send_data(bytes, true)
-                .map_err(disconnected)?;
-        }
-        return Ok(());
-    }
-    while !bytes.is_empty() {
-        stream
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .reserve_capacity(bytes.len());
-        let capacity = tokio::select! {
-            _ = cancel.cancelled() => return Err(ExecutionError::Cancelled),
-            capacity = futures::future::poll_fn(|cx| stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner).poll_capacity(cx)) => capacity.ok_or_else(|| ExecutionError::Disconnected("h2 stream closed".into()))?.map_err(disconnected)?,
-        };
-        let length = capacity.min(bytes.len());
-        if length == 0 {
-            continue;
-        }
-        let data = bytes.split_to(length);
-        stream
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .send_data(data, end && bytes.is_empty())
-            .map_err(disconnected)?;
-    }
-    Ok(())
+    stream::send_shared(stream, bytes, end, cancel)
+        .await
+        .map_err(|error| ExecutionError::io("h2 send", error))
 }
 
 fn disconnected(error: impl std::fmt::Display) -> ExecutionError {

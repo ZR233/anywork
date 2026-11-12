@@ -392,7 +392,9 @@ impl StudioThreadFactory {
                 })?,
                 None => tools.with_git(StudioGitBinding {
                     config: git,
-                    backend: Arc::new(pl_tool::execution::LocalExecutionBackend),
+                    backend: Arc::new(pl_tool::execution::ExecutorExecutionBackend::new(
+                        self.services.local_executor.clone(),
+                    )),
                     credentials,
                     kinds: pl_tool::git::GitToolKind::all().to_vec(),
                     authorization: workspace.authorization(),
@@ -484,34 +486,12 @@ impl StudioThreadFactory {
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", "starting");
             let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
                 Some(host) => Some(Arc::new(host.clone())),
-                None => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        match crate::worker_assets::local_worker(helper_source.clone()).await {
-                            Ok(worker) => pl_tool::lsp::LocalLspHostBackend::new(
-                                root.clone(),
-                                worker,
-                            )
-                            .map(|host| {
-                                Some(Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                            })
-                            .unwrap_or_else(|error| {
-                                tracing::warn!(%error, "LSP host preparation failed");
-                                None
-                            }),
-                            Err(error) => pl_tool::lsp::LocalLspHostBackend::unavailable(
-                                root.clone(),
-                                format!("LSP supervised worker preparation failed: {error}"),
-                            )
-                            .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                            .ok(),
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        None
-                    }
-                }
+                None => root.to_str().and_then(|root| {
+                    pl_lsp::host::ExecutorLspHost::new(self.services.local_executor.clone(), root)
+                        .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
+                        .map_err(|error| tracing::warn!(%error, "LSP host preparation failed"))
+                        .ok()
+                }),
             };
             let defaults = remote
                 .is_none()

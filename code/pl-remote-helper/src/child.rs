@@ -185,13 +185,13 @@ impl Child {
         }
     }
     pub async fn start_kill(&mut self) -> Result<(), ExecutionError> {
-        if self.exit.borrow().is_some() {
-            return Ok(());
+        if let Some(exit) = self.exit.borrow().clone() {
+            return exit.map(|_| ());
         }
         let (send, receive) = oneshot::channel();
         if self.kill.send(send).await.is_err() {
-            return if self.exit.borrow().is_some() {
-                Ok(())
+            return if let Some(exit) = self.exit.borrow().clone() {
+                exit.map(|_| ())
             } else {
                 Err(ExecutionError::Protocol(
                     "process control owner ended".into(),

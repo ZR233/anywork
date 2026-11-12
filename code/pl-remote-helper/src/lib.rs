@@ -9,6 +9,7 @@ mod child;
 mod command;
 mod executor;
 pub mod fs;
+pub mod http;
 mod native;
 mod remote;
 mod stdio_server;
@@ -29,7 +30,10 @@ pub enum PatchExecutionError {
 pub use capture::{CaptureResult, CaptureSpec, CaptureState, CapturedStream};
 pub use child::{Child, ChildStderr, ChildStdin, ChildStdout, Output, PartialOutput, ProcessExit};
 pub use command::{Command, Stdio};
-pub use executor::{ExecutionError, Executor, ExecutorId, SpawnError, StartKnowledge, TargetInfo};
+pub use executor::{
+    ExecutionError, Executor, ExecutorId, IoErrorKind, SpawnError, StartKnowledge, TargetInfo,
+    TargetIoError,
+};
 
 pub use pl_protocol::remote::RemoteError;
 

@@ -4571,6 +4571,7 @@ mod storage_fault_tests {
                 config_runtime: config.clone(),
                 mcp_connector: pl_tool::mcp::McpConnector::default(),
                 lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
+                local_executor: pl_remote_helper::Executor::local()?,
                 skills: crate::studio::runtime::SkillCatalogRuntime::new(
                     events.clone(),
                     store.paths().home().join("isolated-observation-skills"),

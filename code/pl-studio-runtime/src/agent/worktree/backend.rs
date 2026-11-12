@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_tool::execution::{
-    ExecutionOutput, ExecutionRequest, LocalExecutionBackend, LocalExecutionFailure,
+    ExecutionFailure, ExecutionOutput, ExecutionRequest, ExecutorExecutionBackend,
 };
 
 const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -192,17 +192,9 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
     ) -> BoxFuture<'a, Result<String, WorktreeError>>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalWorktreeBackend {
-    backend: LocalExecutionBackend,
-}
-
-impl Default for LocalWorktreeBackend {
-    fn default() -> Self {
-        Self {
-            backend: LocalExecutionBackend,
-        }
-    }
+    backend: ExecutorExecutionBackend,
 }
 
 impl LocalWorktreeBackend {
@@ -217,15 +209,19 @@ impl LocalWorktreeBackend {
             .run_classified(request)
             .await
             .map_err(|failure| match failure {
-                LocalExecutionFailure::BeforeSpawn(message) => WorktreeError::GitLaunchFailed {
+                ExecutionFailure::Spawn(error)
+                    if error.knowledge == pl_remote_helper::StartKnowledge::NotStarted =>
+                {
+                    WorktreeError::GitLaunchFailed {
+                        args: arguments,
+                        message: error.to_string(),
+                    }
+                }
+                ExecutionFailure::TimedOut => WorktreeError::GitTimedOut { args: arguments },
+                failure => WorktreeError::GitStatusUnknown {
                     args: arguments,
-                    message,
+                    stderr: failure.to_string(),
                 },
-                LocalExecutionFailure::AfterSpawn(stderr) => WorktreeError::GitStatusUnknown {
-                    args: arguments,
-                    stderr,
-                },
-                LocalExecutionFailure::TimedOut => WorktreeError::GitTimedOut { args: arguments },
             })
     }
 

@@ -22,7 +22,7 @@ use pl_core::{
     },
 };
 use pl_tool::{
-    execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest, LocalExecutionBackend},
+    execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest, ExecutorExecutionBackend},
     git::{GitHostError, GitTool, GitToolKind, GitWorkspaceConfig, NoGitCredentialProvider},
 };
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ async fn execute(
     let tool = GitTool::new(
         kind,
         config.clone(),
-        Arc::new(LocalExecutionBackend),
+        Arc::new(ExecutorExecutionBackend::default()),
         Arc::new(NoGitCredentialProvider),
         definition.clone(),
     );
@@ -378,7 +378,10 @@ impl ExecutionBackend for RecordingLocalBackend {
     type Error = String;
 
     async fn run(&self, request: ExecutionRequest) -> Result<ExecutionOutput, Self::Error> {
-        let output = LocalExecutionBackend.run(request).await?;
+        let output = ExecutorExecutionBackend::default()
+            .run(request)
+            .await
+            .map_err(|error| error.to_string())?;
         self.0.lock().unwrap().push(output.clone());
         Ok(output)
     }
