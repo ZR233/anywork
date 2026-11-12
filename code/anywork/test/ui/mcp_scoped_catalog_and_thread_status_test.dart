@@ -288,12 +288,17 @@ void main() {
       final chrome = tester.widget<ThreadStatusBar>(
         find.byType(ThreadStatusBar),
       );
+      // The speed is readable without hovering; service names stay in the panel.
       expect(
-        find.descendant(
-          of: find.byType(ThreadStatusBar),
-          matching: find.byType(Text),
-        ),
-        findsNothing,
+        tester
+            .widgetList<Text>(
+              find.descendant(
+                of: find.byType(ThreadStatusBar),
+                matching: find.byType(Text),
+              ),
+            )
+            .map((widget) => widget.data),
+        ['150 词元/秒'],
       );
       await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
       await tester.pumpAndSettle();
