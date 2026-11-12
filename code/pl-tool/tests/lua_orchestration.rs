@@ -359,6 +359,8 @@ async fn frozen_sdk_tracks_discovery_without_exposing_nested_schemas_twice() {
         "UNIQUE_CHILD_DESCRIPTION",
         json!({"type":"object"}),
     )
+    .unwrap()
+    .with_output_schema(json!({"type":"object","properties":{"selected":{"type":"integer"}}}))
     .unwrap();
     let child = prepare_registration("child", &definition, ToolCallPolicy::DirectOnly)
         .unwrap()
@@ -400,6 +402,8 @@ async fn frozen_sdk_tracks_discovery_without_exposing_nested_schemas_twice() {
                 .all(|request| request.tools.iter().all(|tool| tool.tool_id != "child"))
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(requests[1].tools.iter().any(|tool| tool.tool_id == "exec"
+            && tool.declaration.content().contains("returns JSON schema:")));
     }
     thread.close().await.unwrap();
 }

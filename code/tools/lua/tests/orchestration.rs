@@ -32,7 +32,10 @@ impl ToolHost for Host {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
         if value == json!("fail") {
-            return Err("deliberate tool failure".into());
+            return Err(pl_tool_lua::CallFailure {
+                message: "deliberate tool failure".into(),
+                output: Some(json!({"hidden":"PRIVATE_FAILURE_RESULT"})),
+            });
         }
         Ok(json!({"name":name,"value":value,"unselected":"PRIVATE_INTERMEDIATE"}))
     }
@@ -69,8 +72,8 @@ async fn selects_results_preserves_json_and_handles_tool_failure() {
     let code = r#"
         local r = tools.read({empty=json.array({}), null=json.null, nested={true, "雪"}})
         local ok, err = pcall(function() tools.read("fail") end)
-        assert(not ok and tostring(err):find("deliberate tool failure",1,true))
-        print({selected=r.value.empty}); return r.value
+        assert(not ok and tostring(err):find("deliberate tool failure",1,true)); assert(err.output.hidden=="PRIVATE_FAILURE_RESULT" and not tostring(err):find("PRIVATE_FAILURE_RESULT",1,true))
+        print({selected=r.value.empty}); return json.decode(json.encode(r.value))
     "#;
     let result = execute(input(code), Host::default(), CancellationToken::new())
         .await
@@ -163,4 +166,25 @@ async fn caller_can_extend_deadline_and_model_output_without_extra_ceiling() {
     assert_eq!(result.error, None);
     assert_eq!(result.output.len(), 70000);
     assert_eq!(result.model_output_bytes, 70000);
+}
+
+#[tokio::test]
+async fn syntax_and_unknown_binding_diagnostics_do_not_admit_calls_or_dump_results() {
+    for (code, hint) in [
+        ("pwd; rg --files", "before any tool started"),
+        ("tools.missing({})", "frozen SDK"),
+        ("tools.read('fail')", "deliberate tool failure"),
+    ] {
+        let host = Host::default();
+        let result = execute(input(code), host.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        let error = result.error.expect("program should fail");
+        assert!(error.contains(hint), "{error}");
+        assert!(!error.contains("PRIVATE_FAILURE_RESULT"));
+        assert_eq!(
+            host.calls.load(Ordering::SeqCst),
+            usize::from(code == "tools.read('fail')")
+        );
+    }
 }

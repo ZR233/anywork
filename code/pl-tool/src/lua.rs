@@ -123,31 +123,44 @@ impl pl_tool_lua::ToolHost for Host {
             OpaquePayload::new("application/json", 1, arguments.to_string())
                 .map_err(|e| e.to_string())?
         };
-        let output = self
+        let outcome = self
             .tasks
             .call_nested(binding.id.clone(), arguments, self.cancellation.clone())
-            .await
-            .map_err(|error| {
-                let mut message = error.to_string();
-                let output = match &error {
-                    pl_core::thread::ThreadError::Tool(error) => {
-                        error.observed_output().and_then(|output| {
-                            if let Err(error) = self.retain_resources(output) {
-                                message.push_str(&format!("; attachment: {error}"));
+            .await;
+        // A completed command's exit status is data the program can inspect and filter.
+        // Core still retains the child's real failed task and original output. Transport,
+        // cancellation, permission, capture and archive failures keep their error semantics.
+        if let Err(pl_core::thread::ThreadError::Tool(error)) = &outcome
+            && matches!(
+                error.source.downcast_ref::<crate::exec::ExecFailure>(),
+                Some(crate::exec::ExecFailure::NonzeroExit { .. })
+            )
+            && let Some(output) = error.observed_output()
+        {
+            self.retain_resources(output)?;
+            return decode_output(output).map_err(Into::into);
+        }
+        let output = outcome.map_err(|error| {
+            let mut message = error.to_string();
+            let output = match &error {
+                pl_core::thread::ThreadError::Tool(error) => {
+                    error.observed_output().and_then(|output| {
+                        if let Err(error) = self.retain_resources(output) {
+                            message.push_str(&format!("; attachment: {error}"));
+                        }
+                        match decode_output(output) {
+                            Ok(value) => Some(value),
+                            Err(error) => {
+                                message.push_str(&format!("; result encoding: {error}"));
+                                None
                             }
-                            match decode_output(output) {
-                                Ok(value) => Some(value),
-                                Err(error) => {
-                                    message.push_str(&format!("; result encoding: {error}"));
-                                    None
-                                }
-                            }
-                        })
-                    }
-                    _ => None,
-                };
-                pl_tool_lua::CallFailure { message, output }
-            })?;
+                        }
+                    })
+                }
+                _ => None,
+            };
+            pl_tool_lua::CallFailure { message, output }
+        })?;
         self.retain_resources(&output)?;
         decode_output(&output).map_err(Into::into)
     }
@@ -156,6 +169,13 @@ impl pl_tool_lua::ToolHost for Host {
 fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
     let payload = output.payload();
     match payload.format() {
+        // MCP outputSchema describes structuredContent. Retain the complete protocol
+        // receipt as the child original; expose its declared structured value to Lua.
+        "pl.tool.mcp-result" => {
+            let value: serde_json::Value =
+                serde_json::from_str(payload.content()).map_err(|error| error.to_string())?;
+            Ok(value.get("structuredContent").cloned().unwrap_or(value))
+        }
         // Task tools deliberately keep complete facts in payload and expose a bounded,
         // cursor-aware receipt. Preserve that authored return contract inside Lua as well.
         "pl.tool.task" | "pl.tool.list-tasks" => {
@@ -178,7 +198,6 @@ fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
         | "pl.tool.todo"
         | "pl.tool.mcp"
         | "pl.tool.mcp-resources"
-        | "pl.tool.mcp-result"
         | "pl.tool.mcp-unarchived"
         | "pl.tool.mcp-resources-unarchived"
         | "pl.tool.file-write"
@@ -331,13 +350,29 @@ pub fn sdk(
                 name,
                 description,
                 input_schema,
+                output_schema,
                 ..
             } => {
-                format!("tools[{name:?}](args) -- {description}\nargs JSON schema: {input_schema}")
+                let mut line = format!(
+                    "tools[{name:?}](args) -- {description}\nargs JSON schema: {input_schema}"
+                );
+                if let Some(output) = output_schema {
+                    line.push_str(&format!("\nreturns JSON schema: {output}"));
+                }
+                line
             }
             ToolSpec::Custom {
-                name, description, ..
-            } => format!("tools[{name:?}](text) -- {description}"),
+                name,
+                description,
+                output_schema,
+                ..
+            } => {
+                let mut line = format!("tools[{name:?}](text) -- {description}");
+                if let Some(output) = output_schema {
+                    line.push_str(&format!("\nreturns JSON schema: {output}"));
+                }
+                line
+            }
             _ => continue,
         };
         tools.insert(id, line);
@@ -361,6 +396,27 @@ pub fn project_catalog(declarations: &[pl_core::model::ModelToolDeclaration]) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_structured_result_matches_its_output_schema_without_the_protocol_wrapper() {
+        use pl_core::{context::OpaquePayload, tool::ToolOutput};
+        let protocol = serde_json::json!({"content":[{"type":"text","text":"not selected"}],"structuredContent":{"count":3},"isError":false});
+        let output = ToolOutput::new(
+            OpaquePayload::new("pl.tool.mcp-result", 1, protocol.to_string()).unwrap(),
+            vec![],
+        );
+        assert_eq!(
+            super::decode_output(&output).unwrap(),
+            serde_json::json!({"count":3})
+        );
+        let protocol =
+            serde_json::json!({"content":[{"type":"text","text":"plain result"}],"isError":false});
+        let output = ToolOutput::new(
+            OpaquePayload::new("pl.tool.mcp-result", 1, protocol.to_string()).unwrap(),
+            vec![],
+        );
+        assert_eq!(super::decode_output(&output).unwrap(), protocol);
+    }
+
     #[test]
     fn selected_output_including_diagnostics_respects_utf8_byte_budget() {
         for maximum in [1, 8, 64, 8192] {

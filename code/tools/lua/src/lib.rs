@@ -13,6 +13,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+const COMMAND_EXAMPLE: &str = "local r = tools.exec_command({command=[=[rg --files]=]}); print({exitCode=r.exitCode, stdout=r.stdout.content, stderr=r.stderr.content})";
 
 struct AdmissionPause(Arc<AtomicUsize>);
 impl AdmissionPause {
@@ -35,7 +36,8 @@ async fn invoke_function(index: usize, function: Function) -> (usize, mlua::Resu
 #[derive(Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecInput {
-    /// Lua source. Call tools.name(args); only print and return enter the conversation.
+    /// Lua 5.4 program. Complete shell example: local r = tools.exec_command({command=[=[rg --files]=]}); print({exitCode=r.exitCode, stdout=r.stdout.content, stderr=r.stderr.content})
+    /// Use Lua tables with key=value. Put shell text inside command; only print/return enter context.
     pub code: String,
     /// Positive total elapsed budget in milliseconds, including tool waits. Default 120000.
     #[serde(default)]
@@ -99,7 +101,7 @@ pub enum ExecError {
 
 pub fn definition(sdk: &str) -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("exec", format!(
-        "Execute Lua 5.4 to orchestrate tools. Call tools.name(args) with Lua tables; asynchronous tools suspend this program automatically. Only print(...) and the returned value enter model context; tables are rendered as JSON. Example: local r = tools.exec_command({{command='rg --files'}}); print(r.stdout.content). Filter intermediate results before printing. Each call has fresh state. Use parallel({{function() ... end, ...}}) for independent work; the host serializes mutations. Failed calls raise Lua errors (pcall returns an error table with message and optional output); completed side effects are never replayed. json.null and json.array preserve JSON null and empty arrays. OS/file/network operations are available only through tools.\nProgram-only tools (these names are not directly callable):\n{sdk}"
+        "Run a Lua 5.4 program in code. Complete shell-call example (replace the command string):\n{COMMAND_EXAMPLE}\n\nLua calls use parentheses and tables with key=value; close the table before the call: tools.name({{key=value}}). Long strings [=[...]=] preserve shell quotes and multiline patch text. tools.exec_command returns a terminal record: exitCode 0 means command success; nonzero exits are returned as data with stdout.content and stderr.content. Check exitCode before dependent actions; use assert(r.exitCode == 0) to stop the program on a failed command.\nOnly print(...) and return enter context; print tables as JSON and select the fields you need. Defaults normally suffice; timeoutMs and maxOutputBytes are positive optional budgets. Child calls suspend automatically until terminal; no polling is needed. Each invocation has fresh state; keep dependent reads, calculations and writes in one program. Use parallel({{function() ... end, ...}}) for independent calls; the host serializes mutations. Tool failures raise errors: pcall catches an error with message and optional output for inspection; completed side effects are retained and never replayed automatically. Lua syntax errors start no tools. MCP calls return structuredContent when provided, otherwise their full content record. json.decode(text) parses JSON, json.encode(value) serializes it; arrays use 1-based Lua indexing and ipairs. json.null and json.array preserve JSON null and empty arrays. OS/file/network operations go through tools.\n\nFrozen Lua SDK (call these names inside code; controls remain separate top-level tools):\n{sdk}"
     ), pl_agent_tool::typed::input_schema_for::<ExecInput>()).expect("static Lua declaration")
 }
 
@@ -190,12 +192,8 @@ async fn run<H: ToolHost>(
                             let value = lua.to_value(&error)?;
                             if let Value::Table(table) = &value {
                                 let meta = lua.create_table()?;
-                                meta.set("__tostring", lua.create_function(|lua, table: mlua::Table| {
-                                    let message: String = table.get("message")?;
-                                    let output: Value = table.get("output")?;
-                                    if output.is_nil() { return Ok(message); }
-                                    let output: serde_json::Value = lua.from_value(output)?;
-                                    Ok(format!("{message}\nObserved output: {output}"))
+                                meta.set("__tostring", lua.create_function(|_, table: mlua::Table| {
+                                    table.get::<String>("message")
                                 })?)?;
                                 table.set_metatable(Some(meta))?;
                             }
@@ -207,8 +205,21 @@ async fn run<H: ToolHost>(
             let wrap: Function = lua.load("return function(call) return function(args) local ok,value=call(args); if not ok then error(value,0) end; return value end end").eval()?;
             tools.set(binding.name, wrap.call::<Function>(callback)?)?;
         }
+        let tools_meta = lua.create_table()?;
+        tools_meta.set("__index", lua.create_function(|_, (_, name): (mlua::Table, String)| -> mlua::Result<Value> {
+            Err(mlua::Error::RuntimeError(format!("tools[{name:?}] is absent from this program's frozen SDK. Use an exact declared name; discover_tools is a separate top-level call, and discovered bindings become available in the next exec.")))
+        })?)?;
+        tools.set_metatable(Some(tools_meta))?;
         globals.set("tools", tools)?;
         let json = lua.create_table()?;
+        json.set("decode", lua.create_function(|lua, text: String| {
+            let value: serde_json::Value = serde_json::from_str(&text).map_err(mlua::Error::external)?;
+            lua.to_value(&value)
+        })?)?;
+        json.set("encode", lua.create_function(|lua, value: Value| {
+            let value: serde_json::Value = lua.from_value(value)?;
+            serde_json::to_string(&value).map_err(mlua::Error::external)
+        })?)?;
         json.set("null", lua.null())?;
         json.set("array", lua.create_function(|lua, table: mlua::Table| { table.set_metatable(Some(lua.array_metatable()))?; Ok(table) })?)?;
         globals.set("json", json)?;
@@ -275,7 +286,11 @@ async fn run<H: ToolHost>(
             .text
             .clone(),
         model_output_bytes: 8192,
-        error: result.err().map(|error| error.to_string()),
+        error: result.err().map(|error| {
+            if matches!(&error, mlua::Error::SyntaxError { .. }) {
+                format!("{error}\nLua parsing failed before any tool started. Complete shell-call example:\n{COMMAND_EXAMPLE}")
+            } else { error.to_string() }
+        }),
     })
 }
 

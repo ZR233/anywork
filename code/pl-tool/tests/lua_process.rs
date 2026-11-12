@@ -130,3 +130,76 @@ async fn deadline_cancellation_and_close_join_real_lua_child_processes() {
         }
     }
 }
+
+#[tokio::test]
+async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let backend = pl_tool::command::LocalCommandBackend::new(root.path())
+        .with_worker_executable(helper::remote_helper_executable());
+    let definition = pl_tool::exec::exec_definition();
+    let command = ThreadExecTool::new(
+        Arc::new(backend),
+        Arc::new(Archive(root.path().join("archive"))),
+        CommandAccess::WorkspaceOnly,
+        definition.clone(),
+    )
+    .registration(
+        prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
+    )
+    .nested(false);
+    let tool = pl_tool::lua::LuaTool::new("");
+    let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(tool))
+        .with_nested_calls()
+        .foreground();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    std::fs::write(root.path().join("unselected-output"), "UNSELECTED_STDOUT").unwrap();
+    let model = host::Calls {
+        calls: [("exec".into(), serde_json::json!({"code": "local r=tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; cat unselected-output; printf 'expected failing test' >&2; exit 7]=]}); assert(r.exitCode==7); return {exitCode=r.exitCode,stderr=r.stderr.content}"}).to_string())].into(),
+        requests: requests.clone(),
+    };
+    let thread = ThreadHandle::start("lua-nonzero".into(), DynModelSession::new(model)).unwrap();
+    thread.register_tools(vec![command, lua]).await.unwrap();
+    thread.run_turn(host::turn("nonzero")).await.unwrap();
+    let effects = thread.effects().await.unwrap();
+    let parent = effects
+        .iter()
+        .flat_map(|effect| effect.tasks.iter())
+        .rev()
+        .find(|t| t.tool_id == "exec")
+        .unwrap();
+    assert_eq!(parent.status, pl_core::thread::task::TaskStatus::Succeeded);
+    let child = effects
+        .iter()
+        .flat_map(|effect| effect.tasks.iter())
+        .rev()
+        .find(|t| t.tool_id == "exec_command")
+        .unwrap();
+    assert_eq!(child.status, pl_core::thread::task::TaskStatus::Failed);
+    assert_eq!(
+        child.parent_call_id.as_deref(),
+        Some(parent.call_id.as_str())
+    );
+    let original = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|d| d.call_id == child.call_id)
+        .unwrap();
+    assert!(
+        original
+            .output
+            .payload()
+            .content()
+            .contains("UNSELECTED_STDOUT")
+    );
+    let model_context =
+        serde_json::to_string(&requests.lock().unwrap().last().unwrap().context).unwrap();
+    assert!(model_context.contains("expected failing test"));
+    assert!(!model_context.contains("UNSELECTED_STDOUT"));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("invocation-count")).unwrap(),
+        "once\n"
+    );
+    thread.close().await.unwrap();
+}

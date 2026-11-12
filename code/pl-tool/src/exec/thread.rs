@@ -281,6 +281,9 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
 /// 上限被终止"与"退出码失败、超时、取消"分开处理，而不必解析诊断文本。
 #[derive(Debug, thiserror::Error)]
 pub enum ExecFailure {
+    /// The process and capture completed; its nonzero status is business output.
+    #[error("command did not complete successfully: Command exited with code {exit_code}")]
+    NonzeroExit { exit_code: i32 },
     #[error(
         "stdin task {task_id} is not a running exec task: status={status:?}, cancelRequested={cancelled}"
     )]
@@ -431,10 +434,26 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 .with_output(output))
             }
             ExecOutcome::Succeeded => Ok(output),
-            ExecOutcome::Failed => Err(ToolError::new(ExecFailure::Process(
-                result.snapshot.message,
-            ))
-            .with_output(output)),
+            ExecOutcome::Failed => {
+                let failure = match snapshot.state.final_result() {
+                    Some(CommandProcessFinalResult::Failed {
+                        failure:
+                            pl_tool_command::process::CommandProcessFailure::Exited {
+                                exit_code: Some(exit_code),
+                            },
+                    }) if *exit_code != 0
+                        && snapshot.supervision_failure.is_none()
+                        && snapshot.output_failure.is_none()
+                        && snapshot.signal.is_none() =>
+                    {
+                        ExecFailure::NonzeroExit {
+                            exit_code: *exit_code,
+                        }
+                    }
+                    _ => ExecFailure::Process(result.snapshot.message),
+                };
+                Err(ToolError::new(failure).with_output(output))
+            }
         }
     }
 }
