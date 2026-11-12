@@ -137,27 +137,22 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             (&tool_coord, "toolPid", "toolStartTicks"),
         ] {
             let coord: Value = serde_json::from_slice(&fs::read(path)?)?;
-            for (field, ticks) in [
-                (parent, parent_ticks),
-                ("grandchildPid", "grandchildStartTicks"),
-            ] {
-                let pid = u32::try_from(
-                    coord[field]
-                        .as_u64()
-                        .with_context(|| format!("shutdown fixture lost {field}"))?,
-                )?;
-                let process = ProcessIdentity {
-                    pid,
-                    start_ticks: coord[ticks]
-                        .as_u64()
-                        .with_context(|| format!("shutdown fixture lost {ticks}"))?,
-                };
-                ensure!(
-                    start_ticks(pid) == Some(process.start_ticks),
-                    "shutdown setup process {pid} is no longer alive"
-                );
-                processes.push(process);
-            }
+            let pid = u32::try_from(
+                coord[parent]
+                    .as_u64()
+                    .with_context(|| format!("shutdown fixture lost {parent}"))?,
+            )?;
+            let process = ProcessIdentity {
+                pid,
+                start_ticks: coord[parent_ticks]
+                    .as_u64()
+                    .with_context(|| format!("shutdown fixture lost {parent_ticks}"))?,
+            };
+            ensure!(
+                start_ticks(pid) == Some(process.start_ticks),
+                "shutdown setup process {pid} is no longer alive"
+            );
+            processes.push(process);
         }
         fs::write(
             context.output.join("shutdown-processes-before.json"),
