@@ -1173,6 +1173,7 @@ impl From<McpServerConfig> for pl_tool::mcp::config::McpServerConfig {
             enabled: value.enabled,
             required: false,
             transport: value.transport.into(),
+            startup_mode: Default::default(),
             command: value.command,
             args: value.args,
             env: value.env,

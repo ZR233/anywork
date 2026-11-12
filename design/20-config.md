@@ -240,7 +240,7 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 - **SSH 服务器作用域（`McpScope::Ssh { ssh_alias }`）**：保存在 `~/.anywork/mcp/ssh/<ssh-key>/<server-key>.toml`，定义该 SSH 服务器的专属 MCP 服务、对同名 Host 服务的覆盖配置或禁用墓碑。
 
 `server-key` 与 `ssh-key` 分别为稳定服务 ID 与 SSH alias 的 SHA-256，由现有路径 owner 生成；文件名不是语义 ID。每份文档必须携带字符串 `id`，仅允许包含 ASCII 字母、数字、`_` 与 `-`，目录条目交付实际文档引用供读取和编辑，调用方不能根据显示名称猜文件路径。文档通过 `kind` 区分三类配置：
-- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），显式声明 `transport`（`stdio` 或 `streamableHttp`）。stdio 必须提供命令，HTTP 必须提供 URL，两类传输字段不能混用；进程参数、环境、HTTP 头、超时和工具过滤等完整字段及默认值见内置 [MCP 配置指南](../code/pl-studio-runtime/assets/skills/studio-config/references/mcp.md)。SSH stdio 的工作目录按远端 POSIX 语义解析：省略时使用实际工作区，相对路径相对于该工作区解析，也可直接使用绝对路径。
+- `kind = "server"`：自定义 MCP 服务（不得占用内置保留 ID），显式声明 `transport`（`stdio` 或 `streamableHttp`）。stdio 必须提供命令，HTTP 必须提供 URL，两类传输字段不能混用；`startup_mode` 可选 `auto`（默认）、`initialize` 或 `discover`，直接选择 SDK 官方启动方式，含义与换代规则见 [09](./09-tool-runtime.md) §9.6。进程参数、环境、HTTP 头、超时和工具过滤等完整字段及默认值见内置 [MCP 配置指南](../code/pl-studio-runtime/assets/skills/studio-config/references/mcp.md)。SSH stdio 的工作目录按远端 POSIX 语义解析：省略时使用实际工作区，相对路径相对于该工作区解析，也可直接使用绝对路径。
 - `kind = "builtin"`：内置服务的启用开关覆盖，`id` 与 `builtin_id` 必须匹配保留身份；只有 stdio 内置服务允许指定工作目录，端点、命令和凭据来源由产品管理。
 - `kind = "disabled"`：仅限 SSH 作用域目录使用的**按服务器禁用墓碑**，显式屏蔽继承自 Host 的同名自定义或内置服务；删除该墓碑文件即可恢复继承 Host 配置。Host 作用域下禁止写入 `kind = "disabled"`。
 
@@ -252,7 +252,7 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 
 设置页的 MCP 标签页按作用域（`Host` 或 `SSH · <alias>`）展示合并后的静态期望配置与单文件诊断，提供单文件 TOML 新建、编辑、删除、按机覆盖、按机禁用与恢复继承操作，不在设置页发起运行时探测连接。真实的 MCP 进程与连接生命周期由每个已激活会话（`Thread`）独占的 `McpRuntime` 持有，工具命名规范化（格式为 `mcp__{server_id}__{tool_name}`，最长 64 字符，超长或冲突时追加稳定哈希后缀）、轮次租约（`McpTurnLease`）与会话状态栏重连契约见 [09](./09-tool-runtime.md) §9.6。
 
-配置文档创建、保存、删除与重载在验证并发布目录后，统一增量应用至受影响的活跃 Thread；文件系统直接编辑仍需显式重载，不新增常驻文件监视器。智能体可调用空参数的 `refresh_mcp` 重载其 Thread 固定环境的有效配置并重新发现工具；SSH 环境同时重读 Host 继承来源，不允许调用者选择其他环境。主动刷新、逐服务结果与后续工具目录生效语义统一见 [09](./09-tool-runtime.md) §9.2、§9.6；文件格式、版本与凭据存储不变。
+配置文档创建、保存、删除与重载在验证并发布目录后，统一增量应用至受影响的活跃 Thread；文件系统直接编辑仍需显式重载，不新增常驻文件监视器。智能体可调用空参数的 `refresh_mcp` 重载其 Thread 固定环境的有效配置并重新发现工具；SSH 环境同时重读 Host 继承来源，不允许调用者选择其他环境。连接故障使用 `reconnect_mcp` 的 `serverId` 显式重建当前 Thread 的指定服务，不修改配置、不重启其他 Thread，不重放业务调用；服务端项目根或调试连接等状态需要重新设置。主动刷新、重连、逐服务结果与后续工具目录生效语义统一见 [09](./09-tool-runtime.md) §9.2、§9.6；文件格式、版本与凭据存储不变。
 
 配置目录所有者也是有效配置授权的唯一发布者：有效配置提交与旧授权失效在同一同步边界完成，快照读取同时返回对应授权；不能在网络操作结束后才补发撤权。Host 变更须使受影响的继承作用域失效，SSH 局部修改不撤销无关作用域；仅文案、诊断或无实质配置变化不制造新权限身份。此授权只存在于进程内，不进入 TOML、模型上下文或持久化凭据，运行时及内核的消费规则见 [09](./09-tool-runtime.md)。
 

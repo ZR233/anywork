@@ -5,8 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use pl_protocol::Result;
-use rmcp::model::ProtocolVersion;
-use rmcp::service::ClientServiceExt;
 use rmcp::transport::async_rw::AsyncRwTransport;
 
 use tokio_util::sync::CancellationToken;
@@ -17,7 +15,7 @@ use crate::remote::{RemoteCommandBackend, RemoteProtocolSpawnRequest};
 use super::stderr_capture::StderrCapture;
 use super::{
     ConnectedMcp, McpConnectRequest, ToolListChangedSink, client_handler, connection_config_error,
-    connection_error, discovery_lifecycle,
+    connection_error, startup_lifecycle,
 };
 
 static NEXT_REMOTE_MCP_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
@@ -87,12 +85,9 @@ pub(super) async fn connect_remote_stdio(
 
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
     let transport = AsyncRwTransport::new_client(stdout, stdin);
-    let handshake = client_handler(
-        &request.server_id,
-        ProtocolVersion::V_2026_07_28,
-        tool_list_changed,
-    )
-    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
+    let handshake = client_handler(&request.server_id, protocol_version, tool_list_changed)
+        .serve_observed(transport, lifecycle);
     let service = tokio::select! {
         biased;
         () = cancel.cancelled() => {

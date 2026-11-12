@@ -17,7 +17,6 @@ use rmcp::model::{
     ClientJsonRpcMessage, ClientRequest, ErrorData, JsonRpcMessage, ProtocolVersion,
     ServerJsonRpcMessage,
 };
-use rmcp::service::ClientServiceExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::common::client_side_sse::{ExponentialBackoff, SseRetryPolicy};
 use rmcp::transport::streamable_http_client::{
@@ -33,7 +32,7 @@ use crate::remote::{RemoteClient, RemoteClientError};
 
 use super::{
     ConnectedMcp, McpConnectRequest, ToolListChangedSink, client_handler, connection_config_error,
-    connection_error, discovery_lifecycle, should_retry_http_with_initialize,
+    connection_error, should_retry_http_with_initialize, startup_lifecycle,
 };
 
 const DEFAULT_MAX_SSE_EVENT_SIZE: usize = 16 * 1024 * 1024;
@@ -86,7 +85,9 @@ pub(super) async fn connect_remote_http(
 
     let mut transport_config = StreamableHttpClientTransportConfig::with_uri(uri.to_string())
         .custom_headers(custom_headers)
-        .reinit_on_expired_session(true);
+        // Replacing a remote MCP session is an explicit owner operation, not a
+        // transparent retry of an accepted request on a new server-side state.
+        .reinit_on_expired_session(false);
     transport_config.retry_config = retry_policy;
     if let Some(token) = request.server.bearer_token.as_deref() {
         transport_config = transport_config.auth_header(token);
@@ -105,12 +106,13 @@ pub(super) async fn connect_remote_http(
 
     let transport =
         StreamableHttpClientTransport::with_client(http_client.clone(), transport_config.clone());
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
     let service = match client_handler(
         &request.server_id,
-        ProtocolVersion::V_2026_07_28,
+        protocol_version,
         tool_list_changed.clone(),
     )
-    .serve_with_lifecycle(transport, discovery_lifecycle())
+    .serve_observed(transport, lifecycle)
     .await
     {
         Ok(service) => service,
@@ -119,7 +121,7 @@ pub(super) async fn connect_remote_http(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_none()
-                && should_retry_http_with_initialize(&discovery_error) =>
+                && should_retry_http_with_initialize(config.startup_mode, &discovery_error) =>
         {
             let transport =
                 StreamableHttpClientTransport::with_client(http_client, transport_config);
@@ -128,7 +130,7 @@ pub(super) async fn connect_remote_http(
                 ProtocolVersion::V_2025_11_25,
                 tool_list_changed,
             )
-            .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
+            .serve_observed(transport, ClientLifecycleMode::Initialize)
             .await
             .map_err(|initialize_error| {
                 connection_error(

@@ -53,6 +53,9 @@ pub struct McpServerConfig {
     pub required: bool,
     #[serde(default, skip_serializing_if = "McpServerTransport::is_default")]
     pub transport: McpServerTransport,
+    /// Selects the SDK's startup handshake without retrying a failed mode.
+    #[serde(default, skip_serializing_if = "McpServerStartupMode::is_default")]
+    pub startup_mode: McpServerStartupMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -121,6 +124,21 @@ pub enum McpServerTransport {
     #[default]
     Stdio,
     StreamableHttp,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum McpServerStartupMode {
+    #[default]
+    Auto,
+    Initialize,
+    Discover,
+}
+
+impl McpServerStartupMode {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl McpServerConfig {
@@ -225,6 +243,7 @@ impl Default for McpServerConfig {
             enabled: true,
             required: false,
             transport: McpServerTransport::Stdio,
+            startup_mode: McpServerStartupMode::Auto,
             command: None,
             args: Vec::new(),
             env: BTreeMap::new(),

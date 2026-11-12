@@ -392,6 +392,9 @@ async fn t10_t11_remote_stdio_passthrough_and_process_lease() -> anyhow::Result<
 struct MockMcpHttpState {
     session_generation: Arc<AtomicUsize>,
     deleted_sessions: Arc<std::sync::Mutex<Vec<String>>>,
+    delete_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    delete_entered: Arc<tokio::sync::Notify>,
+    delete_completed: Arc<AtomicUsize>,
     get_stream_requests: Arc<AtomicUsize>,
     expire_next_call: Arc<std::sync::atomic::AtomicBool>,
     emit_oversized_sse: Arc<std::sync::atomic::AtomicBool>,
@@ -399,8 +402,15 @@ struct MockMcpHttpState {
     list_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
     list_entered: Arc<tokio::sync::Notify>,
     list_requests: Arc<AtomicUsize>,
+    expire_next_list: Arc<std::sync::atomic::AtomicBool>,
     call_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
     call_entered: Arc<tokio::sync::Notify>,
+    call_requests: Arc<AtomicUsize>,
+    call_reply: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    cancel_requests: Arc<AtomicUsize>,
+    cancel_completed: Arc<AtomicUsize>,
+    cancel_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Semaphore>>>>,
+    cancelled: Arc<tokio::sync::Notify>,
 }
 
 async fn handle_mcp_post(
@@ -479,6 +489,9 @@ async fn handle_mcp_post(
         "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
         "tools/list" => {
             state.list_requests.fetch_add(1, Ordering::SeqCst);
+            if state.expire_next_list.swap(false, Ordering::SeqCst) {
+                return (StatusCode::NOT_FOUND, "session expired").into_response();
+            }
             let gate = state.list_gate.lock().unwrap().clone();
             if let Some(gate) = gate {
                 state.list_entered.notify_one();
@@ -515,6 +528,7 @@ async fn handle_mcp_post(
                 .into_response()
         }
         "tools/call" => {
+            state.call_requests.fetch_add(1, Ordering::SeqCst);
             let gate = state.call_gate.lock().unwrap().clone();
             if let Some(gate) = gate {
                 state.call_entered.notify_one();
@@ -548,7 +562,7 @@ async fn handle_mcp_post(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_owned();
-            let reply = serde_json::json!({
+            let mut reply = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
@@ -562,12 +576,27 @@ async fn handle_mcp_post(
                     }]
                 }
             });
+            if let Some(custom) = state.call_reply.lock().unwrap().clone() {
+                reply = custom;
+                reply["jsonrpc"] = serde_json::json!("2.0");
+                reply["id"] = id;
+            }
             (
                 StatusCode::OK,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
                 serde_json::to_vec(&reply).unwrap(),
             )
                 .into_response()
+        }
+        "notifications/cancelled" => {
+            state.cancel_requests.fetch_add(1, Ordering::SeqCst);
+            state.cancelled.notify_one();
+            let gate = state.cancel_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            state.cancel_completed.fetch_add(1, Ordering::SeqCst);
+            StatusCode::ACCEPTED.into_response()
         }
         _ => StatusCode::ACCEPTED.into_response(),
     }
@@ -602,6 +631,11 @@ async fn handle_mcp_get(State(state): State<MockMcpHttpState>) -> Response {
 }
 
 async fn handle_mcp_delete(State(state): State<MockMcpHttpState>, headers: HeaderMap) -> Response {
+    let gate = state.delete_gate.lock().unwrap().clone();
+    if let Some(gate) = gate {
+        state.delete_entered.notify_one();
+        gate.acquire().await.unwrap().forget();
+    }
     if let Some(session) = headers.get("Mcp-Session-Id").and_then(|v| v.to_str().ok()) {
         state
             .deleted_sessions
@@ -609,6 +643,7 @@ async fn handle_mcp_delete(State(state): State<MockMcpHttpState>, headers: Heade
             .unwrap()
             .push(session.to_owned());
     }
+    state.delete_completed.fetch_add(1, Ordering::SeqCst);
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -757,7 +792,8 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
         "upstream mid-body failure must surface as a stream error, not clean EOF"
     );
 
-    // 2. Full Remote Streamable HTTP MCP session via McpConnector (POST JSON, POST SSE, session re-init, DELETE).
+    // 2. Full Remote Streamable HTTP MCP session via McpConnector (POST JSON, POST SSE,
+    // explicit session replacement after expiry, DELETE).
     let mut headers = BTreeMap::new();
     headers.insert("x-custom-header".to_owned(), "custom-val".to_owned());
     let mcp_url = format!("http://{addr}/mcp");
@@ -776,6 +812,7 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
         },
         config: McpServerConfig {
             transport: McpServerTransport::StreamableHttp,
+            startup_mode: Default::default(),
             command: None,
             args: Vec::new(),
             env: BTreeMap::new(),
@@ -796,7 +833,7 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     let session = connector
         .connect(McpConnectRequest {
             server_id: "remote-http".to_owned(),
-            server: config,
+            server: config.clone(),
         })
         .await?;
 
@@ -815,14 +852,32 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(call1_json["custom"], "custom-val");
     assert_eq!(call1_json["auth"], "Bearer secret-token");
 
-    // Trigger 404 session expiration on next call -> rmcp transparently re-initializes session-2!
+    // Expiry must fail the original request without automatic reinitialization or replay.
     state.expire_next_call.store(true, Ordering::SeqCst);
+    assert!(
+        session
+            .call_tool("http_echo".to_owned(), serde_json::json!({}))
+            .await
+            .is_err()
+    );
+    assert_eq!(state.session_generation.load(Ordering::SeqCst), 1);
+    assert_eq!(state.call_requests.load(Ordering::SeqCst), 2);
+    session.close().await?;
+
+    // Only the explicit owner operation starts a new session and a new call.
+    let session = connector
+        .connect(McpConnectRequest {
+            server_id: "remote-http".to_owned(),
+            server: config,
+        })
+        .await?;
     let call2 = session
         .call_tool("http_echo".to_owned(), serde_json::json!({}))
         .await?;
     let call2_json: serde_json::Value =
         serde_json::from_str(call2.content[0].as_text().expect("text").text.as_str())?;
     assert_eq!(call2_json["session"], "session-2");
+    assert_eq!(state.call_requests.load(Ordering::SeqCst), 3);
 
     session.close().await?;
 

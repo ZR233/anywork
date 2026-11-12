@@ -49,7 +49,7 @@ enum RefreshMcpError {
 
 impl TypedTool for RefreshMcpTool {
     const NAME: &'static str = "refresh_mcp";
-    const DESCRIPTION: &'static str = "Reload the calling Thread's fixed MCP configuration scope (including Host inheritance for SSH), apply server configuration differences, and re-list tools over available connections without restarting unchanged servers. Takes an empty object; cannot target another Thread or edit configuration. Reports catalog revision, runtime discovery outcomes and connection state separately from scheduled tool-catalog installation. Connecting, skipped or failed servers are not successful discoveries. Use discover_tools after catalog refresh to inspect available tools; use the Thread reconnect action for transport failures.";
+    const DESCRIPTION: &'static str = "Reload the calling Thread's fixed MCP configuration scope (including Host inheritance for SSH), apply server configuration differences, and re-list tools over available connections without restarting unchanged servers. Takes an empty object; cannot target another Thread or edit configuration. Reports catalog revision, runtime discovery outcomes and connection state separately from scheduled tool-catalog installation. Connecting, skipped or failed servers are not successful discoveries. Use discover_tools after catalog refresh to inspect available tools; use reconnect_mcp with a serverId for transport failures.";
     type Args = RefreshMcpInput;
     type Context = CallContext;
     type Output = ThreadMcpRefreshReceipt;

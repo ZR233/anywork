@@ -21,6 +21,7 @@ impl StudioRuntime {
         config_runtime: ConfigRuntime,
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
+        ssh_config: Option<crate::SshConfigFile>,
     ) -> Result<Self> {
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
@@ -52,7 +53,11 @@ impl StudioRuntime {
 
         let model_performance =
             ModelPerformanceOwner::new(store.clone(), product_events.clone(), owner_epoch.clone());
-        let ssh_manager = std::sync::Arc::new(crate::worker_assets::ssh_manager(&helper_source));
+        let mut ssh_manager = crate::worker_assets::ssh_manager(&helper_source);
+        if let Some(config) = ssh_config {
+            ssh_manager = ssh_manager.with_ssh_config(config);
+        }
+        let ssh_manager = std::sync::Arc::new(ssh_manager);
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;

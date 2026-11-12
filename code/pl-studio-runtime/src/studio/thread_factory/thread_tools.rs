@@ -418,10 +418,10 @@ impl StudioThreadFactory {
             let owner = self
                 .mcp_owner(thread_id)
                 .ok_or(ThreadAssemblyError::Closed)?;
-            tools = tools.with_tools(vec![super::mcp_refresh_tool::registration(
-                self.clone(),
-                &owner,
-            )?]);
+            tools = tools.with_tools(vec![
+                super::mcp_refresh_tool::registration(self.clone(), &owner)?,
+                super::mcp_reconnect_tool::registration(self.clone(), &owner)?,
+            ]);
         }
         let mut skill_catalog = None;
         if config.runtime.tool_capabilities.skills && config.skills.enabled {

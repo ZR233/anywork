@@ -363,8 +363,8 @@ async fn removed_or_disabled_resource_server_revokes_frozen_read_and_aggregate_l
 }
 
 #[tokio::test]
-async fn identical_transport_reset_keeps_frozen_thread_call_on_original_peer() -> anyhow::Result<()>
-{
+async fn identical_transport_reset_rejects_frozen_thread_calls_not_yet_admitted()
+-> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let script =
         stdio::write_python_mcp_server(root.path(), "transport-peer.py", stdio::STDIO_MCP_SCRIPT);
@@ -415,10 +415,21 @@ async fn identical_transport_reset_keeps_frozen_thread_call_on_original_peer() -
         .await?;
     release.notify_one();
     let outcome = running.await?;
+    let effects = thread.effects().await?;
     thread.close().await?;
     drop((original, replacement));
     runtime.shutdown().await?;
     outcome?;
+    assert!(
+        effects
+            .iter()
+            .flat_map(|effect| effect.deliveries.iter())
+            .any(
+                |delivery| matches!(&delivery.outcome, ToolOutcome::Failed(error)
+            if error.source.to_string().contains("unavailable"))
+            ),
+        "a frozen model plan is not an accepted MCP request and must observe reset's admission fence"
+    );
     let requests = requests(root.path(), "a")?;
     let discovery_pids = requests
         .iter()
@@ -426,6 +437,7 @@ async fn identical_transport_reset_keeps_frozen_thread_call_on_original_peer() -
         .map(|request| &request["pid"])
         .collect::<Vec<_>>();
     assert_eq!(discovery_pids.len(), 2);
+    assert_eq!(discovery_pids[0], &original_pid);
     assert_ne!(
         discovery_pids[0], discovery_pids[1],
         "reset must create a real replacement transport"
@@ -434,10 +446,9 @@ async fn identical_transport_reset_keeps_frozen_thread_call_on_original_peer() -
         .iter()
         .filter(|request| request["method"] == "tools/call")
         .collect::<Vec<_>>();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(
-        calls[0]["pid"], original_pid,
-        "the admitted frozen plan must still use its original lease"
+    assert!(
+        calls.is_empty(),
+        "neither old nor replacement peer may receive the rejected call"
     );
     Ok(())
 }

@@ -1,5 +1,5 @@
 //! Configuration-commit/discovery interleaving with an actual stdio peer and Thread.
-use super::{mcp_stdio, owner};
+use super::{binding_host, mcp_stdio, owner};
 use crate::session::NativeResources;
 use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
 use pl_agent_tool::Tool;
@@ -20,9 +20,6 @@ use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-#[path = "../../../../pl-tool/tests/support/binding_host.rs"]
-mod binding_host;
-
 #[derive(Debug)]
 struct NoMedia;
 impl ToolMediaHost for NoMedia {
@@ -35,15 +32,25 @@ impl ToolMediaHost for NoMedia {
 
 #[tokio::test]
 async fn committed_delete_must_not_be_regranted_by_late_refresh() -> anyhow::Result<()> {
-    revoked_refresh(false).await
+    revoked_refresh(false, false).await
 }
 
 #[tokio::test]
 async fn committed_disable_must_not_be_regranted_by_late_refresh() -> anyhow::Result<()> {
-    revoked_refresh(true).await
+    revoked_refresh(true, false).await
 }
 
-async fn revoked_refresh(disable: bool) -> anyhow::Result<()> {
+#[tokio::test]
+async fn committed_delete_must_not_be_regranted_by_late_reconnect() -> anyhow::Result<()> {
+    revoked_refresh(false, true).await
+}
+
+#[tokio::test]
+async fn committed_disable_must_not_be_regranted_by_late_reconnect() -> anyhow::Result<()> {
+    revoked_refresh(true, true).await
+}
+
+async fn revoked_refresh(disable: bool, reconnect: bool) -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
     let fixture = close_factory(&store)?;
@@ -103,7 +110,13 @@ async fn revoked_refresh(disable: bool) -> anyhow::Result<()> {
             let factory = factory.clone();
             let owner = owner.clone();
             tokio::spawn(async move {
-                factory.refresh_mcp_for_owner(&owner, CancellationToken::new()).await
+                if reconnect {
+                    factory.reconnect_mcp_for_owner(&owner, Some("barrier"), CancellationToken::new())
+                        .await.map(|(revision, _, _)| revision)
+                } else {
+                    factory.refresh_mcp_for_owner(&owner, CancellationToken::new())
+                        .await.map(|receipt| receipt.catalog_revision)
+                }
             })
         });
         let (mut barrier, _) = listener.accept().await?;
@@ -147,8 +160,8 @@ async fn revoked_refresh(disable: bool) -> anyhow::Result<()> {
         anyhow::ensure!(late_acquisition.is_err(), "a revoked current generation was exposed as a fresh lease");
         drop(command);
         let superseded = match refresh_result {
-            Ok(receipt) => anyhow::bail!("stale refresh succeeded with catalogRevision={}, current={}",
-                receipt.catalog_revision, committed.snapshot.revision),
+            Ok(revision) => anyhow::bail!("stale MCP command succeeded with catalogRevision={}, current={}",
+                revision, committed.snapshot.revision),
             Err(error) => error,
         };
         anyhow::ensure!(superseded.to_string().contains("superseded"), "unexpected refresh refusal: {superseded}");
@@ -208,7 +221,7 @@ async fn revoked_refresh(disable: bool) -> anyhow::Result<()> {
         let recovered = owner.runtime.acquire_turn_lease().await?;
         anyhow::ensure!(recovered.authorization().is_active() && recovered.tools().len() == 1);
         anyhow::ensure!(!original_authorization.is_active(), "restoration revived the old authority");
-        eprintln!("barrier evidence: disable={disable}, superseded=true, committedRevision={}, stableReceiptRevision={}, revokedLeaseRejected=true, lateRegistrationRejected=true, restoredRevision={}",
+        eprintln!("barrier evidence: reconnect={reconnect}, disable={disable}, superseded=true, committedRevision={}, stableReceiptRevision={}, revokedLeaseRejected=true, lateRegistrationRejected=true, restoredRevision={}",
             committed.snapshot.revision, current.catalog_revision, restored_receipt.catalog_revision);
         Ok::<_, anyhow::Error>(())
     }).await.map_err(anyhow::Error::from).and_then(std::convert::identity);

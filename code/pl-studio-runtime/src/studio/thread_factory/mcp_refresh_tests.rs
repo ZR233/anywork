@@ -5,12 +5,16 @@ use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
 use std::time::Duration;
 #[path = "mcp_refresh_barrier_tests.rs"]
 mod barrier_tests;
+#[path = "../../../../pl-tool/tests/support/binding_host.rs"]
+mod binding_host;
 #[cfg(target_os = "linux")]
 #[path = "../../../../pl-tool/tests/support/helper.rs"]
 mod helper;
 #[expect(dead_code, reason = "shared real stdio protocol fixture")]
 #[path = "../../../../pl-tool/tests/support/mcp_stdio.rs"]
 mod mcp_stdio;
+#[path = "mcp_reconnect_tests.rs"]
+mod reconnect_tests;
 
 fn owner(
     factory: &StudioThreadFactory,

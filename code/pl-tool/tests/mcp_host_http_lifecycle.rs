@@ -13,7 +13,7 @@ use pl_tool::mcp::{
     McpConnectRequest, McpConnector,
     config::{
         EffectiveMcpServerConfig, McpExecutionContext, McpServerMutationPolicy,
-        McpServerSourceKind, McpServerStatusKind,
+        McpServerSourceKind, McpServerStartupMode, McpServerStatusKind,
     },
 };
 use rmcp::model::{DiscoverResult, ProtocolVersion, ServerCapabilities, ToolsCapability};
@@ -110,7 +110,12 @@ async fn cancelled_host_http_bootstrap_releases_json_and_sse_bodies() -> anyhow:
 #[tokio::test]
 async fn host_http_discovery_and_legacy_initialize_keep_roundtrip_and_cleanup() -> anyhow::Result<()>
 {
-    for legacy in [false, true] {
+    for (mode, legacy) in [
+        (McpServerStartupMode::Auto, false),
+        (McpServerStartupMode::Auto, true),
+        (McpServerStartupMode::Initialize, true),
+        (McpServerStartupMode::Discover, false),
+    ] {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let deleted = CancellationToken::new();
         let app = Router::new()
@@ -182,9 +187,11 @@ async fn host_http_discovery_and_legacy_initialize_keep_roundtrip_and_cleanup() 
                 }),
             );
         let (url, stop, server) = serve(app).await?;
+        let mut config = request(format!("{url}/entry"));
+        config.server.config.startup_mode = mode;
         let session = tokio::time::timeout(
             Duration::from_secs(5),
-            McpConnector::default().connect(request(format!("{url}/entry"))),
+            McpConnector::default().connect(config),
         )
         .await??;
         let tools = session.list_tools().await?;
@@ -202,7 +209,18 @@ async fn host_http_discovery_and_legacy_initialize_keep_roundtrip_and_cleanup() 
             "legacy session DELETE must complete before close"
         );
         let methods = methods.lock().unwrap().clone();
-        assert_eq!(methods[0], "server/discover");
+        assert_eq!(
+            methods[0],
+            if mode == McpServerStartupMode::Initialize {
+                "initialize"
+            } else {
+                "server/discover"
+            }
+        );
+        assert_eq!(
+            methods.contains(&"server/discover".to_owned()),
+            mode != McpServerStartupMode::Initialize
+        );
         assert_eq!(methods.contains(&"initialize".to_owned()), legacy);
         assert_eq!(
             methods.contains(&"notifications/initialized".to_owned()),
@@ -210,6 +228,45 @@ async fn host_http_discovery_and_legacy_initialize_keep_roundtrip_and_cleanup() 
         );
         stop.cancel();
         tokio::time::timeout(Duration::from_secs(2), server).await???;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_host_http_startup_failure_never_switches_mode() -> anyhow::Result<()> {
+    for (mode, method) in [
+        (McpServerStartupMode::Initialize, "initialize"),
+        (McpServerStartupMode::Discover, "server/discover"),
+    ] {
+        let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/mcp",
+            post({
+                let methods = methods.clone();
+                move |Json(message): Json<serde_json::Value>| {
+                    let methods = methods.clone();
+                    async move {
+                        methods.lock().unwrap().push(message["method"].clone());
+                        Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": message["id"],
+                            "error": {"code": -32601, "message": "method not found"}
+                        }))
+                    }
+                }
+            }),
+        );
+        let (url, stop, server) = serve(app).await?;
+        let mut config = request(format!("{url}/mcp"));
+        config.server.config.startup_mode = mode;
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            McpConnector::default().connect(config),
+        )
+        .await;
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), server).await???;
+        assert!(matches!(result, Ok(Err(_))), "{mode:?}: {result:?}");
+        assert_eq!(*methods.lock().unwrap(), vec![serde_json::json!(method)]);
     }
     Ok(())
 }

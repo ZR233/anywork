@@ -10,7 +10,10 @@ use pl_protocol::{PureError, Result};
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::*;
-use rmcp::service::{ClientInitializeError, NotificationContext, Peer, RunningService};
+use rmcp::service::{
+    ClientInitializeError, NotificationContext, Peer, PeerRequestOptions, QuitReason,
+    RunningService, RunningServiceCancellationToken, ServiceError,
+};
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, RoleClient};
@@ -22,18 +25,23 @@ use tokio_util::sync::CancellationToken;
 #[cfg(target_os = "linux")]
 use crate::command::LocalWorkerExecutable;
 use crate::command::ManagedCommand;
-use crate::mcp::config::{EffectiveMcpServerConfig, McpExecutionContext, McpServerTransport};
+use crate::mcp::config::{
+    EffectiveMcpServerConfig, McpExecutionContext, McpServerStartupMode, McpServerTransport,
+};
 #[cfg(target_os = "linux")]
-use pl_remote_helper::client::ManagedWorker;
+use pl_remote_helper::client::{ManagedWorker, WorkerControl};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod host_http;
+mod observed_transport;
 pub(crate) mod remote_http;
 mod remote_stdio;
 mod stderr_capture;
 mod stdio_program;
+#[cfg(test)]
+pub(crate) mod tests;
 
 pub use remote_http::RemoteStreamableHttpClient;
 
@@ -54,7 +62,27 @@ pub struct McpConnectRequest {
 ///
 /// Connector 只把 PL 的有效配置投影为 rmcp transport 并启动 client service；
 /// reconcile、generation、健康和权限不属于该边界。
-type ToolListChangedSink = Arc<dyn Fn(String) + Send + Sync>;
+type ToolListChangedSink =
+    Arc<dyn Fn(String, Arc<ConnectionIdentity>, ConnectionEvent) + Send + Sync>;
+
+#[derive(Default)]
+pub(crate) struct ConnectionIdentity {
+    ended: AtomicBool,
+    close_error: std::sync::Mutex<Option<observed_transport::TransportError>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ConnectionEvent {
+    ToolListChanged,
+    Closed,
+}
+
+pub(crate) fn is_connection_failure(error: &ServiceError) -> bool {
+    matches!(
+        error,
+        ServiceError::TransportSend(_) | ServiceError::TransportClosed
+    )
+}
 
 #[derive(Clone, Default)]
 pub struct McpConnector {
@@ -158,7 +186,7 @@ impl McpConnector {
 
     pub(crate) fn with_tool_list_changed(
         mut self,
-        handler: impl Fn(String) + Send + Sync + 'static,
+        handler: impl Fn(String, Arc<ConnectionIdentity>, ConnectionEvent) + Send + Sync + 'static,
     ) -> Self {
         self.tool_list_changed = Some(Arc::new(handler));
         self
@@ -219,11 +247,24 @@ impl McpConnector {
 #[derive(Clone)]
 pub(super) struct McpClientHandler {
     info: ClientConfig,
+    identity: Arc<ConnectionIdentity>,
     server_id: Arc<std::sync::RwLock<String>>,
     tool_list_changed: Arc<std::sync::RwLock<Option<ToolListChangedSink>>>,
 }
 
 impl McpClientHandler {
+    async fn serve_observed<T: rmcp::transport::Transport<RoleClient> + 'static>(
+        self,
+        transport: T,
+        lifecycle: ClientLifecycleMode,
+    ) -> std::result::Result<RunningService<RoleClient, Self>, Box<ClientInitializeError>> {
+        let transport =
+            observed_transport::ObservedTransport::new(transport, self.identity.clone());
+        self.serve_with_lifecycle(transport, lifecycle)
+            .await
+            .map_err(Box::new)
+    }
+
     fn new(
         info: ClientConfig,
         server_id: String,
@@ -231,6 +272,7 @@ impl McpClientHandler {
     ) -> Self {
         Self {
             info,
+            identity: Arc::new(ConnectionIdentity::default()),
             server_id: Arc::new(std::sync::RwLock::new(server_id)),
             tool_list_changed: Arc::new(std::sync::RwLock::new(tool_list_changed)),
         }
@@ -256,9 +298,10 @@ impl ClientHandler for McpClientHandler {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let identity = self.identity.clone();
         async move {
             if let Some(handler) = handler {
-                handler(server_id);
+                handler(server_id, identity, ConnectionEvent::ToolListChanged);
             }
         }
     }
@@ -270,9 +313,10 @@ impl ClientHandler for McpClientHandler {
 /// lease 释放后通过 [`Self::close`] 显式关闭。
 pub struct ConnectedMcp {
     peer: Peer<RoleClient>,
+    pub(crate) identity: Arc<ConnectionIdentity>,
     closing: AtomicBool,
     close_timeout: Duration,
-    owner: RwLock<Option<RunningService<RoleClient, McpClientHandler>>>,
+    owner: RwLock<Option<ServiceOwner>>,
     /// Tool-subscription owner shared with the close task so a subscription that cannot be
     /// confirmed stopped is re-inserted here instead of being dropped while still running.
     tool_subscription: Arc<tokio::sync::Mutex<Option<ToolListSubscription>>>,
@@ -283,7 +327,7 @@ pub struct ConnectedMcp {
     /// Per-child supervisor for a Linux local stdio server. Moved into the close task so
     /// cancellation and full tree reclamation never depend on dropping a pipe.
     #[cfg(target_os = "linux")]
-    stdio_worker: tokio::sync::Mutex<Option<ManagedWorker>>,
+    stdio_worker: tokio::sync::Mutex<Option<WorkerOwner>>,
     /// Linux worker image lease for the local stdio supervisor; keeps the anonymous
     /// executable alive and is moved into the close task with the supervisor.
     #[cfg(target_os = "linux")]
@@ -292,6 +336,17 @@ pub struct ConnectedMcp {
     stdio_command: tokio::sync::Mutex<Option<ManagedCommand>>,
     /// Cancellation token for remote HTTP exchange / SSE streams.
     transport_cancel: Option<CancellationToken>,
+}
+
+struct ServiceOwner {
+    cancel: Option<RunningServiceCancellationToken>,
+    task: tokio::task::JoinHandle<std::result::Result<(), String>>,
+}
+
+#[cfg(target_os = "linux")]
+struct WorkerOwner {
+    control: WorkerControl,
+    task: tokio::task::JoinHandle<std::result::Result<(), String>>,
 }
 
 /// Close bookkeeping shared by every `close()` caller on one [`ConnectedMcp`].
@@ -323,11 +378,58 @@ impl ConnectedMcp {
         )
         .await;
         let tool_subscription = start_tool_list_subscription(&service).await;
+        let identity = service.service().identity.clone();
+        let observed_identity = identity.clone();
+        let handler = service.service().clone();
+        let cancel = service.cancellation_token();
+        // This is the sole waiter of RunningService. Both natural termination and explicit
+        // close use this same owned task; no observer races close for the service handle.
+        let task = tokio::spawn(async move {
+            let result = match service.waiting().await {
+                Ok(QuitReason::Closed | QuitReason::Cancelled) => Ok(()),
+                Ok(QuitReason::JoinError(error)) | Err(error) => {
+                    Err(format!("MCP service task failed: {error}"))
+                }
+                Ok(reason) => Err(format!("MCP service ended unsuccessfully: {reason:?}")),
+            };
+            let close_error = observed_identity
+                .close_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let result = match (result, close_error) {
+                (Ok(()), None) => Ok(()),
+                (Err(message), None) => Err(message),
+                (Ok(()), Some(error)) => Err(format!("MCP transport close failed: {error}")),
+                (Err(message), Some(error)) => {
+                    Err(format!("{message}; MCP transport close failed: {error}"))
+                }
+            };
+            observed_identity.ended.store(true, Ordering::Release);
+            let callback = handler
+                .tool_list_changed
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(callback) = callback {
+                let server_id = handler
+                    .server_id
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                callback(server_id, observed_identity, ConnectionEvent::Closed);
+            }
+            result
+        });
         Self {
             peer,
+            identity,
             closing: AtomicBool::new(false),
             close_timeout,
-            owner: RwLock::new(Some(service)),
+            owner: RwLock::new(Some(ServiceOwner {
+                cancel: Some(cancel),
+                task,
+            })),
             tool_subscription: Arc::new(tokio::sync::Mutex::new(tool_subscription)),
             close: tokio::sync::Mutex::new(CloseProgress {
                 task: None,
@@ -347,12 +449,24 @@ impl ConnectedMcp {
     #[cfg(target_os = "linux")]
     pub(super) async fn from_running_with_stdio_worker(
         service: RunningService<RoleClient, McpClientHandler>,
-        worker: ManagedWorker,
+        mut worker: ManagedWorker,
         worker_owner: Arc<dyn LocalWorkerExecutable>,
         close_timeout: Duration,
     ) -> Self {
         let mut connected = Self::from_running(service, close_timeout).await;
-        *connected.stdio_worker.lock().await = Some(worker);
+        let control = worker.control();
+        let executable = worker_owner.clone();
+        // The supervisor's control protocol must be drained during normal operation:
+        // it holds stdout open until terminal delivery is acknowledged. Waiting only
+        // during close would hide an idle business-process exit from RMCP forever.
+        let task =
+            tokio::spawn(async move {
+                let _executable = executable;
+                worker.wait().await.map(|_| ()).map_err(|error| {
+                    format!("MCP stdio supervisor did not confirm tree exit: {error}")
+                })
+            });
+        *connected.stdio_worker.lock().await = Some(WorkerOwner { control, task });
         connected.worker_owner = Some(worker_owner);
         connected
     }
@@ -382,6 +496,74 @@ impl ConnectedMcp {
         self.peer.clone()
     }
 
+    pub(crate) fn has_ended(&self) -> bool {
+        self.identity.ended.load(Ordering::Acquire) || self.peer.is_transport_closed()
+    }
+
+    pub(crate) async fn request(
+        &self,
+        request: ClientRequest,
+        timeout: Duration,
+    ) -> std::result::Result<ServerResult, ServiceError> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ServiceError::TransportClosed);
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
+        // RMCP's option starts at await_response, not at its bounded channel send.
+        // Tokio mpsc::Sender::send is cancellation-safe: an elapsed enqueue has not
+        // submitted a request. Once it returns a handle, use only the remaining budget
+        // and let RMCP send the request-specific cancellation on response timeout.
+        let mut handle = tokio::time::timeout_at(
+            deadline,
+            self.peer
+                .send_request_with_option(request, PeerRequestOptions::with_timeout(timeout)),
+        )
+        .await
+        .map_err(|_| ServiceError::Timeout { timeout })??;
+        handle.options.timeout =
+            Some(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        // Poll RMCP's response timeout/cancellation first, but do not let waiting for
+        // cancellation delivery or confirmation extend this request's original deadline.
+        // An already queued notification remains owned by the service; dropping this
+        // waiter neither resends it nor confirms remote cancellation or rollback.
+        tokio::time::timeout_at(deadline, handle.await_response())
+            .await
+            .map_err(|_| ServiceError::Timeout { timeout })?
+            .map_err(|error| match error {
+                ServiceError::Timeout { .. } => ServiceError::Timeout { timeout },
+                error => error,
+            })
+    }
+
+    pub(crate) async fn call_tool_timed(
+        &self,
+        name: String,
+        arguments: serde_json::Value,
+        timeout: Duration,
+    ) -> std::result::Result<CallToolResult, ServiceError> {
+        let mut params = CallToolRequestParams::new(name);
+        match arguments {
+            serde_json::Value::Object(arguments) => params.arguments = Some(arguments),
+            serde_json::Value::Null => {}
+            _ => {
+                return Err(ServiceError::McpError(rmcp::ErrorData::invalid_params(
+                    "MCP tool arguments must be a JSON object",
+                    None,
+                )));
+            }
+        }
+        match self
+            .request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                timeout,
+            )
+            .await?
+        {
+            ServerResult::CallToolResult(result) => Ok(result),
+            _ => Err(ServiceError::UnexpectedResponse),
+        }
+    }
+
     /// Whether the server declared the MCP resources capability during discovery.
     pub fn supports_resources(&self) -> bool {
         self.peer
@@ -390,15 +572,20 @@ impl ConnectedMcp {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
-        self.ensure_running("tools/list")?;
+        self.discover_tools()
+            .await
+            .map_err(|error| connection_error("tools/list", error))
+    }
+
+    pub(crate) async fn discover_tools(&self) -> std::result::Result<Vec<Tool>, ServiceError> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ServiceError::TransportClosed);
+        }
         // Runtime discovery must observe the server, not a still-fresh SDK TTL entry.
         // RMCP owns pagination and cache invalidation; clearing also prevents an older
         // in-flight response from repopulating the cache across this discovery boundary.
         self.peer.clear_response_cache().await;
-        self.peer
-            .list_all_tools()
-            .await
-            .map_err(|error| connection_error("tools/list", error))
+        self.peer.list_all_tools().await
     }
 
     pub async fn call_tool(
@@ -567,6 +754,7 @@ async fn start_tool_list_subscription(
     };
     let server_id = service.service().server_id.clone();
     let handler = service.service().tool_list_changed.clone();
+    let identity = service.service().identity.clone();
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
@@ -590,6 +778,8 @@ async fn start_tool_list_subscription(
                                     .read()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .clone(),
+                                identity.clone(),
+                                ConnectionEvent::ToolListChanged,
                             );
                         }
                     }
@@ -672,12 +862,9 @@ async fn connect_stdio_child_process(
     // Use the SDK's framing with the shared native I/O driver and command owner.
     let transport = AsyncRwTransport::new_client(stdout, stdin);
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
-    let handshake = client_handler(
-        &request.server_id,
-        ProtocolVersion::V_2026_07_28,
-        tool_list_changed,
-    )
-    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
+    let handshake = client_handler(&request.server_id, protocol_version, tool_list_changed)
+        .serve_observed(transport, lifecycle);
     let service = tokio::select! {
         biased;
         () = cancel.cancelled() => {
@@ -766,12 +953,9 @@ async fn connect_stdio_supervised(
     };
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
     let transport = AsyncRwTransport::new_client(stdout, stdin);
-    let handshake = client_handler(
-        &request.server_id,
-        ProtocolVersion::V_2026_07_28,
-        tool_list_changed,
-    )
-    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
+    let handshake = client_handler(&request.server_id, protocol_version, tool_list_changed)
+        .serve_observed(transport, lifecycle);
     let service = tokio::select! {
         biased;
         () = cancel.cancelled() => {
@@ -821,11 +1005,11 @@ async fn cancel_and_wait_worker(mut worker: ManagedWorker) {
 /// other independent cleanups.
 async fn close_everything(
     subscription_slot: Arc<tokio::sync::Mutex<Option<ToolListSubscription>>>,
-    service: Option<RunningService<RoleClient, McpClientHandler>>,
+    mut service: Option<ServiceOwner>,
     stdio_command: Option<ManagedCommand>,
     transport_cancel: Option<CancellationToken>,
     close_timeout: Duration,
-    #[cfg(target_os = "linux")] worker: Option<ManagedWorker>,
+    #[cfg(target_os = "linux")] worker: Option<WorkerOwner>,
     #[cfg(target_os = "linux")] executable: Option<Arc<dyn LocalWorkerExecutable>>,
 ) -> std::result::Result<(), String> {
     let mut subscription = subscription_slot.lock().await.take();
@@ -836,8 +1020,8 @@ async fn close_everything(
     if let Some(subscription) = subscription.as_mut() {
         subscription.cancel.cancel();
     }
-    if let Some(service) = service.as_ref() {
-        service.cancellation_token().cancel();
+    if let Some(cancel) = service.as_mut().and_then(|service| service.cancel.take()) {
+        cancel.cancel();
     }
     if let Some(cancel) = transport_cancel.as_ref() {
         cancel.cancel();
@@ -939,14 +1123,12 @@ async fn close_tool_subscription(
 
 /// Owns the rmcp service until its background task terminates; a join error is a real
 /// failure to confirm closure, not a warning. The caller already cancelled the token.
-async fn await_service_close(
-    service: Option<RunningService<RoleClient, McpClientHandler>>,
-) -> std::result::Result<(), String> {
+async fn await_service_close(service: Option<ServiceOwner>) -> std::result::Result<(), String> {
     let Some(service) = service else {
         return Ok(());
     };
-    match service.waiting().await {
-        Ok(_quit_reason) => Ok(()),
+    match service.task.await {
+        Ok(result) => result,
         Err(join_error) => Err(format!("MCP service close task failed: {join_error}")),
     }
 }
@@ -974,19 +1156,27 @@ async fn close_stdio_command(command: Option<ManagedCommand>) -> std::result::Re
 /// when the follow-up seal + wait reclaims the tree, so nothing is silently clean.
 #[cfg(target_os = "linux")]
 async fn close_worker(
-    worker: Option<ManagedWorker>,
+    worker: Option<WorkerOwner>,
     _executable: Option<Arc<dyn LocalWorkerExecutable>>,
 ) -> std::result::Result<(), String> {
-    let Some(mut worker) = worker else {
+    let Some(worker) = worker else {
         return Ok(());
     };
-    let control = worker.control();
-    let cancel_result = control.cancel().await;
+    let control = worker.control;
+    let cancel_result = if worker.task.is_finished() {
+        Ok(())
+    } else {
+        control.cancel().await
+    };
     if cancel_result.is_err() {
         // Seal the lease so cleanup still proceeds even though the cancel request failed.
         control.close();
     }
-    let wait_result = worker.wait().await;
+    let wait_result = worker
+        .task
+        .await
+        .map_err(|error| format!("MCP supervisor observation task failed: {error}"))
+        .and_then(|result| result);
     match (cancel_result, wait_result) {
         (Ok(()), Ok(_termination)) => Ok(()),
         (Err(cancel_error), Ok(_termination)) => Err(format!(
@@ -1023,7 +1213,9 @@ async fn connect_http(
         .collect::<Result<HashMap<_, _>>>()?;
     let mut transport_config = StreamableHttpClientTransportConfig::with_uri(uri.to_string())
         .custom_headers(custom_headers)
-        .reinit_on_expired_session(true);
+        // A new protocol session loses server-owned state. Only explicit reset may
+        // create it; SDK recovery must never replay an already accepted POST.
+        .reinit_on_expired_session(false);
     if let Some(token) = request.server.bearer_token.as_deref() {
         transport_config = transport_config.auth_header(token);
     } else if let Some(env_var) = config.bearer_token_env_var.as_deref() {
@@ -1041,16 +1233,19 @@ async fn connect_http(
     }
     let transport = host_http::transport(transport_config.clone())
         .map_err(|error| connection_error(&request.server_id, error))?;
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
     let service = match client_handler(
         &request.server_id,
-        ProtocolVersion::V_2026_07_28,
+        protocol_version,
         tool_list_changed.clone(),
     )
-    .serve_with_lifecycle(transport, discovery_lifecycle())
+    .serve_observed(transport, lifecycle)
     .await
     {
         Ok(service) => service,
-        Err(discovery_error) if should_retry_http_with_initialize(&discovery_error) => {
+        Err(discovery_error)
+            if should_retry_http_with_initialize(config.startup_mode, &discovery_error) =>
+        {
             // rmcp 会先耗尽 startup SSE，只转发成功 response；传统服务返回的
             // METHOD_NOT_FOUND error 因而表现为关闭 discover response。失败的 worker
             // 不可复用，必须用一个全新的 transport 走标准 initialize。
@@ -1061,7 +1256,7 @@ async fn connect_http(
                 ProtocolVersion::V_2025_11_25,
                 tool_list_changed,
             )
-                .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
+                .serve_observed(transport, ClientLifecycleMode::Initialize)
                 .await
                 .map_err(|initialize_error| {
                     connection_error(
@@ -1077,11 +1272,15 @@ async fn connect_http(
     Ok(ConnectedMcp::from_running(service, close_timeout).await)
 }
 
-fn should_retry_http_with_initialize(error: &ClientInitializeError) -> bool {
-    matches!(
-        error,
-        ClientInitializeError::ConnectionClosed(context) if context == "discover response"
-    )
+fn should_retry_http_with_initialize(
+    mode: McpServerStartupMode,
+    error: &ClientInitializeError,
+) -> bool {
+    mode == McpServerStartupMode::Auto
+        && matches!(
+            error,
+            ClientInitializeError::ConnectionClosed(context) if context == "discover response"
+        )
 }
 
 fn client_info(protocol_version: ProtocolVersion) -> ClientConfig {
@@ -1104,19 +1303,31 @@ fn client_handler(
     )
 }
 
-fn discovery_lifecycle() -> ClientLifecycleMode {
-    ClientLifecycleMode::Auto {
-        preferred_versions: vec![
-            ProtocolVersion::V_2026_07_28,
-            ProtocolVersion::V_2025_11_25,
-            ProtocolVersion::V_2025_06_18,
-            ProtocolVersion::V_2025_03_26,
-            ProtocolVersion::V_2024_11_05,
-        ],
-        // 不支持 `server/discover` 的标准 MCP 服务仍通过传统 initialize
-        // 协商具体版本；只在对端明确返回 METHOD_NOT_FOUND 时走这条路径。
-        legacy_version: Some(ProtocolVersion::V_2025_11_25),
-    }
+fn startup_lifecycle(mode: McpServerStartupMode) -> (ProtocolVersion, ClientLifecycleMode) {
+    let preferred_versions = vec![
+        ProtocolVersion::V_2026_07_28,
+        ProtocolVersion::V_2025_11_25,
+        ProtocolVersion::V_2025_06_18,
+        ProtocolVersion::V_2025_03_26,
+        ProtocolVersion::V_2024_11_05,
+    ];
+    let lifecycle = match mode {
+        McpServerStartupMode::Initialize => ClientLifecycleMode::Initialize,
+        McpServerStartupMode::Discover => ClientLifecycleMode::Discover { preferred_versions },
+        McpServerStartupMode::Auto => ClientLifecycleMode::Auto {
+            preferred_versions,
+            // Preserve the SDK's Auto negotiation for services that did not
+            // explicitly choose a startup mode.
+            legacy_version: Some(ProtocolVersion::V_2025_11_25),
+        },
+    };
+    let protocol_version = match mode {
+        McpServerStartupMode::Initialize => ProtocolVersion::V_2025_11_25,
+        McpServerStartupMode::Auto | McpServerStartupMode::Discover => {
+            ProtocolVersion::V_2026_07_28
+        }
+    };
+    (protocol_version, lifecycle)
 }
 
 fn connection_config_error(server_id: &str, error: &str) -> PureError {

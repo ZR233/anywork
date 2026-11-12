@@ -2,6 +2,10 @@
 
 ## 22.1 架构边界与实例生命周期
 
+原生宿主或受控观察可通过 `StudioRuntimeOptions.ssh_config` 传入既有 `SshConfigFile::at` 句柄；同一文件同时用于服务器目录解析和 OpenSSH 的显式 `-F` 参数，不依赖改变 `HOME` 推断 OpenSSH 会读取哪个文件。省略时保留用户默认配置及 OpenSSH 默认选项行为。该句柄是进程启动依赖，不是新的用户配置文件格式，也不能由模型工具覆盖；目录、认证、辅助进程上传及重连继续由原 `SshManager` 持有。
+
+多个 Thread 可以共享同一 SSH 物理通道与 helper，但各自持有独立的 MCP client、协议会话及 stdio 进程，不能因共用服务器而合并 Dart 项目根或调试状态。短暂断线由原 helper 租约接续原操作；租约过期或 helper 身份更换时，旧 MCP 会话明确失效，由绑定当前工作区的新操作显式重建，不把结果未知的远端 Start 或工具调用重新发送。重建不能静默转到 Host，关闭一个成员也不能关闭其他成员的 MCP 或共享通道。MCP 层的错误分类、重连接口及会话状态重置见 [09](./09-tool-runtime.md#96-mcp-能力声明thread-独占运行时与轮次租约)。
+
 SSH 远程开发是本地运行时的宿主扩展能力，而非第二套远端运行时。Flutter 前端仅调用类型化 Studio 接口并展示权威快照；SSH 服务器管理、连接状态机、远端辅助进程（helper）安装、通信协议、断线重连与远端工具后端均位于 `pl-tool`；`pl-studio-runtime` 仅实现 SQLite 存储、可选系统凭据库与辅助进程随包资产适配器。SSH 服务器配置不属于产品私有数据库数据，其唯一事实源是用户本地的 `~/.ssh/config`（Windows 下为 `%USERPROFILE%\.ssh\config`）。
 
 远端辅助进程（`pl-remote-helper`）是宿主的物理执行底座。每个宿主运行时与 SSH 主机别名拥有独立的辅助进程实例；稳态下仅通过一条 SSH 标准输入输出通道（stdio channel）承载单条 HTTP/2 多路复用连接，所有工作区、命令执行、文件读写与控制操作均作为该连接内的独立流（stream）并发传输。首次平台探测与资产安装通过短期引导进程（bootstrap process）完成并在结束后立即回收；辅助进程的远端本机 IPC 不额外占用 SSH 连接。

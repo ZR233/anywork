@@ -3,8 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
 use pl_protocol::{PureError, Result};
-use rmcp::model::CallToolResult;
+use rmcp::model::*;
+use rmcp::service::ServiceError;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
@@ -13,6 +15,7 @@ use super::RuntimeWorker;
 use super::redaction::McpErrorRedactor;
 use super::tools::serialize_resource_result;
 use crate::mcp::ConnectedMcp;
+use crate::mcp::connector::{ConnectionIdentity, is_connection_failure};
 use crate::mcp::health::McpAvailabilityKind;
 use crate::unix_seconds;
 
@@ -20,7 +23,7 @@ type ResourceSession = (String, Arc<ConnectedMcp>, Duration, McpErrorRedactor);
 
 impl RuntimeWorker {
     pub(super) fn spawn_tool_call(
-        &self,
+        &mut self,
         generation: McpGeneration,
         server_id: String,
         raw_name: String,
@@ -29,40 +32,29 @@ impl RuntimeWorker {
     ) {
         let session = self.session(generation, &server_id);
         let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let result = match session {
-                Ok((session, request_timeout, redactor)) => {
-                    tokio::time::timeout(request_timeout, session.call_tool(raw_name, arguments))
+        if let Some(state) = self.generations.get_mut(&generation) {
+            state.leases += 1;
+        }
+        self.requests.push(
+            async move {
+                let result = match session {
+                    Ok((session, request_timeout, redactor)) => session
+                        .call_tool_timed(raw_name, arguments, request_timeout)
                         .await
-                        .map_err(|_| {
-                            format!(
-                                "request timed out after {} seconds",
-                                request_timeout.as_secs()
-                            )
-                        })
-                        .and_then(|result| {
-                            result.map_err(|error| redactor.redact(error.to_string()))
-                        })
-                        .map_err(|message| {
-                            let _ = commands.send(RuntimeCommand::MarkUnavailable {
-                                generation,
-                                server_id: server_id.clone(),
-                                error: message.clone(),
-                            });
-                            PureError::ToolExecutionFailed {
-                                tool: server_id,
-                                error: message,
-                            }
-                        })
-                }
-                Err(error) => Err(error),
-            };
-            let _ = reply.send(result);
-        });
+                        .map_err(|error| {
+                            request_error(error, &server_id, &session, &redactor, &commands)
+                        }),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+                generation
+            }
+            .boxed(),
+        );
     }
 
     pub(super) fn spawn_resource_query(
-        &self,
+        &mut self,
         generation: McpGeneration,
         server_id: Option<String>,
         operation: ResourceOperation,
@@ -70,10 +62,17 @@ impl RuntimeWorker {
     ) {
         let sessions = self.sessions(generation, server_id.as_deref());
         let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let result = resource_query(sessions, generation, operation, commands).await;
-            let _ = reply.send(result);
-        });
+        if let Some(state) = self.generations.get_mut(&generation) {
+            state.leases += 1;
+        }
+        self.requests.push(
+            async move {
+                let result = resource_query(sessions, operation, commands).await;
+                let _ = reply.send(result);
+                generation
+            }
+            .boxed(),
+        );
     }
 
     fn session(
@@ -160,37 +159,33 @@ impl RuntimeWorker {
 
     pub(super) fn mark_unavailable(
         &mut self,
-        generation: McpGeneration,
+        identity: &Arc<ConnectionIdentity>,
         server_id: &str,
         error: String,
     ) {
-        let failed = self
-            .generations
-            .get(&generation)
-            .and_then(|generation| generation.servers.get(server_id))
-            .and_then(|server| server.session.clone());
+        let mut changed = false;
         for generation in self.generations.values_mut() {
-            for server in generation.servers.values_mut() {
-                let same_session = failed.as_ref().is_some_and(|failed| {
-                    server
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| Arc::ptr_eq(failed, session))
-                });
-                if same_session {
+            if let Some(server) = generation.servers.get_mut(server_id) {
+                let same_session = server
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| Arc::ptr_eq(identity, &session.identity));
+                if same_session && server.availability != McpAvailabilityKind::Unavailable {
                     server.availability = McpAvailabilityKind::Unavailable;
                     server.message = Some(error.clone());
                     server.last_checked_at = Some(unix_seconds());
+                    changed = true;
                 }
             }
         }
-        self.emit_update();
+        if changed {
+            self.emit_update();
+        }
     }
 }
 
 async fn resource_query(
     sessions: Result<Vec<ResourceSession>>,
-    generation: McpGeneration,
     operation: ResourceOperation,
     commands: mpsc::UnboundedSender<RuntimeCommand>,
 ) -> Result<Value> {
@@ -198,46 +193,72 @@ async fn resource_query(
     let explicit = sessions.len() == 1;
     let mut values = Map::new();
     for (server_id, session, request_timeout, redactor) in sessions {
-        let result = tokio::time::timeout(request_timeout, async {
-            match &operation {
-                ResourceOperation::ListResources { cursor } => session
-                    .list_resources(cursor.clone())
-                    .await
-                    .and_then(serialize_resource_result),
-                ResourceOperation::ListResourceTemplates { cursor } => session
-                    .list_resource_templates(cursor.clone())
-                    .await
-                    .and_then(serialize_resource_result),
-                ResourceOperation::ReadResource { uri } => session
-                    .read_resource(uri.clone())
-                    .await
-                    .and_then(serialize_resource_result),
+        let request = match &operation {
+            ResourceOperation::ListResources { cursor } => {
+                ClientRequest::ListResourcesRequest(ListResourcesRequest::with_param(
+                    PaginatedRequestParams::default().with_cursor(cursor.clone()),
+                ))
             }
-        })
-        .await;
-        let value = result
-            .map_err(|_| {
-                format!(
-                    "request timed out after {} seconds",
-                    request_timeout.as_secs()
+            ResourceOperation::ListResourceTemplates { cursor } => {
+                ClientRequest::ListResourceTemplatesRequest(
+                    ListResourceTemplatesRequest::with_param(
+                        PaginatedRequestParams::default().with_cursor(cursor.clone()),
+                    ),
                 )
-            })
-            .and_then(|result| result.map_err(|error| redactor.redact(error.to_string())))
-            .map_err(|message| {
-                let _ = commands.send(RuntimeCommand::MarkUnavailable {
-                    generation,
-                    server_id: server_id.clone(),
-                    error: message.clone(),
-                });
-                PureError::ToolExecutionFailed {
-                    tool: server_id.clone(),
-                    error: message,
-                }
-            })?;
+            }
+            ResourceOperation::ReadResource { uri } => ClientRequest::ReadResourceRequest(
+                ReadResourceRequest::new(ReadResourceRequestParams::new(uri.clone())),
+            ),
+        };
+        let result = session
+            .request(request, request_timeout)
+            .await
+            .map_err(|error| request_error(error, &server_id, &session, &redactor, &commands))?;
+        let value = match (&operation, result) {
+            (
+                ResourceOperation::ListResources { .. },
+                ServerResult::ListResourcesResult(result),
+            ) => serialize_resource_result(result),
+            (
+                ResourceOperation::ListResourceTemplates { .. },
+                ServerResult::ListResourceTemplatesResult(result),
+            ) => serialize_resource_result(result),
+            (ResourceOperation::ReadResource { .. }, ServerResult::ReadResourceResult(result)) => {
+                serialize_resource_result(result)
+            }
+            _ => Err(request_error(
+                ServiceError::UnexpectedResponse,
+                &server_id,
+                &session,
+                &redactor,
+                &commands,
+            )),
+        }?;
         if explicit {
             return Ok(value);
         }
         values.insert(server_id, value);
     }
     Ok(Value::Object(values))
+}
+
+fn request_error(
+    error: ServiceError,
+    server_id: &str,
+    session: &ConnectedMcp,
+    redactor: &McpErrorRedactor,
+    commands: &mpsc::UnboundedSender<RuntimeCommand>,
+) -> PureError {
+    let message = redactor.redact(error.to_string());
+    if is_connection_failure(&error) {
+        let _ = commands.send(RuntimeCommand::MarkUnavailable {
+            identity: session.identity.clone(),
+            server_id: server_id.to_owned(),
+            error: message.clone(),
+        });
+    }
+    PureError::ToolExecutionFailed {
+        tool: server_id.to_owned(),
+        error: message,
+    }
 }

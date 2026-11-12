@@ -332,6 +332,7 @@ impl BuiltinMcpServerDefinition {
             enabled: true,
             required: false,
             transport: self.transport,
+            startup_mode: Default::default(),
             command: self.command.map(ToOwned::to_owned),
             args: self.args.iter().map(|arg| (*arg).to_string()).collect(),
             env,

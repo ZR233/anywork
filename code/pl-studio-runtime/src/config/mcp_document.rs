@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use pl_protocol::{McpScope, PureError, Result};
-use pl_tool::mcp::config::{McpServerConfig, McpServerTransport, validate_mcp_identifier};
+use pl_tool::mcp::config::{
+    McpServerConfig, McpServerStartupMode, McpServerTransport, validate_mcp_identifier,
+};
 use serde::{Deserialize, Serialize};
 
 use super::mcp::{
@@ -43,6 +45,8 @@ struct StdioServerWire {
     #[serde(default, skip_serializing_if = "is_false")]
     required: bool,
     transport: McpServerTransport,
+    #[serde(default, skip_serializing_if = "McpServerStartupMode::is_default")]
+    startup_mode: McpServerStartupMode,
     command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     args: Vec<String>,
@@ -71,6 +75,8 @@ struct StreamableHttpServerWire {
     #[serde(default, skip_serializing_if = "is_false")]
     required: bool,
     transport: McpServerTransport,
+    #[serde(default, skip_serializing_if = "McpServerStartupMode::is_default")]
+    startup_mode: McpServerStartupMode,
     url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bearer_token_env_var: Option<String>,
@@ -226,6 +232,7 @@ impl McpFileV1 {
                             enabled: wire.enabled,
                             required: wire.required,
                             transport: McpServerTransport::Stdio,
+                            startup_mode: wire.startup_mode,
                             command: Some(wire.command),
                             args: wire.args,
                             env: wire.env,
@@ -247,6 +254,7 @@ impl McpFileV1 {
                             enabled: wire.enabled,
                             required: wire.required,
                             transport: McpServerTransport::StreamableHttp,
+                            startup_mode: wire.startup_mode,
                             command: None,
                             args: Vec::new(),
                             env: BTreeMap::new(),
@@ -372,6 +380,7 @@ impl McpFileV1 {
                         enabled: config.enabled,
                         required: config.required,
                         transport: McpServerTransport::Stdio,
+                        startup_mode: config.startup_mode,
                         command: config.command.clone().unwrap_or_default(),
                         args: config.args.clone(),
                         env: config.env.clone(),
@@ -391,6 +400,7 @@ impl McpFileV1 {
                         enabled: config.enabled,
                         required: config.required,
                         transport: McpServerTransport::StreamableHttp,
+                        startup_mode: config.startup_mode,
                         url: config.url.clone().unwrap_or_default(),
                         bearer_token_env_var: config.bearer_token_env_var.clone(),
                         headers: config.headers.clone(),
@@ -506,6 +516,46 @@ pub const ALL_BUILTIN_IDS: [&str; 4] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_mode_round_trips_for_both_transports_and_defaults_to_auto() {
+        for fields in [
+            "transport = \"stdio\"\ncommand = \"mcp-server\"\n",
+            "transport = \"streamableHttp\"\nurl = \"https://example.com/mcp\"\n",
+        ] {
+            let base = format!("schema_version = 1\nid = \"probe\"\nkind = \"server\"\n{fields}");
+            for (mode, expected) in [
+                ("", McpServerStartupMode::Auto),
+                ("auto", McpServerStartupMode::Auto),
+                ("initialize", McpServerStartupMode::Initialize),
+                ("discover", McpServerStartupMode::Discover),
+            ] {
+                let raw = if mode.is_empty() {
+                    base.clone()
+                } else {
+                    format!("{base}startup_mode = \"{mode}\"\n")
+                };
+                let parsed = McpFileV1::parse_and_validate(&raw, &McpScope::Host).unwrap();
+                let McpFileSpecV1::Server(config) = &parsed.spec else {
+                    panic!("expected custom server");
+                };
+                assert_eq!(config.startup_mode, expected);
+                let encoded = parsed.encode().unwrap();
+                assert_eq!(
+                    encoded.contains("startup_mode"),
+                    expected != McpServerStartupMode::Auto
+                );
+                assert_eq!(
+                    parsed,
+                    McpFileV1::parse_and_validate(&encoded, &McpScope::Host).unwrap()
+                );
+            }
+            for enabled in [true, false] {
+                let invalid = format!("{base}enabled = {enabled}\nstartup_mode = \"automatic\"\n");
+                assert!(McpFileV1::parse_and_validate(&invalid, &McpScope::Host).is_err());
+            }
+        }
+    }
 
     #[test]
     fn required_round_trips_for_server_transports_and_builtin() {
