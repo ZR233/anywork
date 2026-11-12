@@ -192,7 +192,7 @@ mod tests {
             fs::write(source.join("data/kernel"), payload)?;
             Ok(source.clone())
         };
-        let fault = ["build", "--debug", "-t", "tool/native_fault_main.dart"];
+        let shutdown = ["build", "--debug", "-t", "tool/native_shutdown_main.dart"];
         let main = [
             "build",
             "--debug",
@@ -200,19 +200,21 @@ mod tests {
             "lib/main.dart",
             "--dart-define=ANYWORK_CAPTURE=true",
         ];
-        let first = owner.native_bundle(&fault, "tools", || build(b"fault entrypoint"))?;
+        let first = owner.native_bundle(&shutdown, "tools", || build(b"shutdown entrypoint"))?;
         let second = owner.native_bundle(&main, "tools", || build(b"capture entrypoint"))?;
         assert_ne!(first, second);
         for _ in 0..2 {
-            owner.native_bundle(&fault, "tools", || panic!("rebuilt fault configuration"))?;
+            owner.native_bundle(&shutdown, "tools", || {
+                panic!("rebuilt shutdown configuration")
+            })?;
             owner.native_bundle(&main, "tools", || panic!("rebuilt main configuration"))?;
         }
         assert_eq!(builds.get(), 2);
-        assert_eq!(fs::read(first.join("data/kernel"))?, b"fault entrypoint");
+        assert_eq!(fs::read(first.join("data/kernel"))?, b"shutdown entrypoint");
         assert_eq!(fs::read(second.join("data/kernel"))?, b"capture entrypoint");
         assert!(
             owner
-                .native_bundle(&fault, "changed tools", || unreachable!())
+                .native_bundle(&shutdown, "changed tools", || unreachable!())
                 .unwrap_err()
                 .to_string()
                 .contains("toolchain changed")
@@ -220,7 +222,7 @@ mod tests {
         fs::write(first.join("data/kernel"), b"tampered")?;
         assert!(
             owner
-                .native_bundle(&fault, "tools", || unreachable!())
+                .native_bundle(&shutdown, "tools", || unreachable!())
                 .unwrap_err()
                 .to_string()
                 .contains("artifact changed")

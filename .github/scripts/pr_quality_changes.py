@@ -129,7 +129,7 @@ _FULL_PREFIXES = (
 _NATIVE_EXACT = frozenset(
     {
         "code/anywork/lib/src/app/studio_host_lifecycle.dart",
-        "code/anywork/tool/native_fault_main.dart",
+        "code/anywork/tool/native_shutdown_main.dart",
     }
 )
 

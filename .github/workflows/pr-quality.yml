@@ -609,13 +609,10 @@ jobs:
           path: |
             ${{ env.NATIVE_TEST_OUTPUT }}/report.json
             ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/report.json
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-*-gui.log
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-launch-*.json
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-native-exit-*.json
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-assembly-*.jsonl
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-stage*
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics.json
-            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/diagnostics/**/anywork-exit-diagnostics.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/fixture.log
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/requests.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-*.json
+            ${{ env.NATIVE_TEST_OUTPUT }}/cases/**/shutdown-gui.log
           if-no-files-found: warn
           retention-days: 7
 
