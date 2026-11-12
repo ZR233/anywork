@@ -3,6 +3,11 @@ template-arb-file: app_en.arb
 output-localization-file: app_localizations.dart
 output-dir: lib/src/l10n
 output-class: AppLocalizations
+# Flutter 3.50 gen-l10n still emits deprecated flutter_localizations delegates.
+# Keep this exemption in generated files only; hand-written code uses material_ui.
+header: |
+  // Flutter 3.50 gen-l10n still emits the SDK's deprecated localization delegates.
+  // ignore_for_file: deprecated_member_use
 nullable-getter: false
 preferred-supported-locales:
   - en

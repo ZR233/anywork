@@ -7,8 +7,8 @@ publish_to: 'none'
 version: 6.38.0 # x-release-please-version
 
 environment:
-  sdk: ^3.13.7
-  flutter: '>=3.47.9'
+  sdk: ^3.14.0
+  flutter: '>=3.50.0'
 
 dependencies:
   anywork_client:
@@ -28,13 +28,9 @@ dependencies:
   desktop_drop: ^0.9.2
   pasteboard: ^0.6.0
   tray_manager: ^0.8.3
-  flutter_svg: ^2.3.3
+  flutter_svg: ^2.3.4
   flutter_chat_core: ^2.9.1
   flutter_chat_ui: ^2.12.0
-  flyer_chat_text_message: ^2.6.1
-  flyer_chat_text_stream_message: ^2.3.1
-  flyer_chat_image_message: ^2.3.1
-  flyer_chat_file_message: ^2.4.1
   multi_split_view: 3.6.2
   vyuh_node_flow: 0.32.0
   pretty_qr_code: 3.6.0
@@ -44,6 +40,14 @@ dependencies:
 dependency_overrides:
   cross_cache:
     path: packages/cross_cache
+  # tray_manager 0.8.3 still constrains these to 0.5.x. The 0.6.0 release
+  # isolates the unsupported standalone runner from ordinary Dart 3.14 imports.
+  # https://github.com/libnativeapi/nativeapi/issues/22
+  nativeapi: 0.6.0
+  nativeapi_flutter: 0.6.0
+  # flutter_chat_ui 2.12.0 uses the unchanged diff/update API; 5.0.0 improves
+  # list diff performance. Message identity remains the unique message id.
+  diffutil_dart: 5.0.0
 dev_dependencies:
   analyzer: 14.7.0
   args: 2.7.0

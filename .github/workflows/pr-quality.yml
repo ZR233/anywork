@@ -641,7 +641,7 @@ jobs:
         if: needs.changes.outputs.windows_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes
@@ -681,7 +681,7 @@ jobs:
         if: needs.changes.outputs.macos_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes
