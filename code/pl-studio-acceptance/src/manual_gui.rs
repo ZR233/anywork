@@ -2707,7 +2707,7 @@ fn finish_manual_gui_session(
         // original group. Always request that group's cooperative stop.
         let stop_requested = gui.request_stop();
         #[cfg(windows)]
-        let stop_requested = if !native_phase {
+        let mut stop_requested = if !native_phase {
             gui.child
                 .terminate()
                 .context("failed to stop GUI preparation Job")?;
@@ -2732,6 +2732,26 @@ fn finish_manual_gui_session(
                 // The first signal may have preceded the native supervisor's
                 // installation. Notify that owner too, without resetting time.
                 gui.request_stop();
+            }
+            #[cfg(windows)]
+            if native_phase
+                && !stop_requested
+                && !gui.tree_exited()?
+                && let Some(log) = startup_log
+                && let Some(vm_url) = vm_service_url(&fs::read_to_string(log)?)
+            {
+                // Background Windows launchers have no console signal target.
+                // Reuse the existing product exit command, under this cleanup
+                // deadline, without consuming the cancelled session's receiver.
+                let (_sender, cleanup_interrupt) = mpsc::channel();
+                request_app_exit_until(
+                    &paths::studio_app_dir(&paths::workspace_root()?),
+                    &vm_url,
+                    &log.with_file_name("cleanup-request-exit.log"),
+                    &cleanup_interrupt,
+                    deadline,
+                )?;
+                stop_requested = true;
             }
             let child_reaped = gui.exit_status()?.is_some();
             #[cfg(any(target_os = "linux", windows))]
@@ -3786,6 +3806,22 @@ pub(super) fn request_app_exit(
     log_path: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
+    request_app_exit_until(
+        app_dir,
+        vm_url,
+        log_path,
+        interrupt,
+        Instant::now() + Duration::from_secs(30),
+    )
+}
+
+fn request_app_exit_until(
+    app_dir: &Path,
+    vm_url: &str,
+    log_path: &Path,
+    interrupt: &mpsc::Receiver<()>,
+    deadline: Instant,
+) -> Result<()> {
     let log = File::create(log_path)?;
     let mut command = capture_command(app_dir);
     command
@@ -3793,9 +3829,8 @@ pub(super) fn request_app_exit(
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let mut capture = OwnedProcess::start(&mut command, false)?;
-    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Some(status) = capture.child.try_wait()? {
+        if let Some(status) = capture.wait_exit(Duration::ZERO)? {
             ensure!(
                 status.success(),
                 "requestExit failed ({status}); see {}",

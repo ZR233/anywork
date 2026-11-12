@@ -34,6 +34,8 @@ GUI 截图或编译通过外推成完整业务/原生行为通过。
 Windows 启动树由共享进程层的专属 Job 管理，准备取消后以 Job 活动进程数为零确认回收；
 外层 Cargo 退出不代表构建后代已退出。进入 native 启动阶段后仍须校验原生退出报告，
 EOF／取消仍报告失败。无需手工调用 `taskkill`，也不增加额外启动脚本。
+VM 就绪后的 Windows 失败收尾复用现有产品退出请求，随后确认专属 Job 与退出报告，
+全过程共享原清理期限；无法完成时保留清理错误，不将强制终止称为正常退出。
 进程回归可直接运行 `cargo test --locked -p pl-dev-support`，验收阶段衔接使用
 `cargo test --locked -p pl-studio-acceptance windows_cleanup_tests`；这些验证 Windows 工程
 进程生命周期，不能替代官方 Flutter `integration_test` 或真实原生 GUI 的 done／EOF／取消观察。
