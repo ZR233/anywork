@@ -29,8 +29,8 @@ void main() {
     final projectBPath = _requiredEnvironment('ANYWORK_THREAD_LSP_PROJECT_B');
     final output = _requiredEnvironment('ANYWORK_THREAD_LSP_OUTPUT');
     final fixture = _requiredEnvironment('ANYWORK_THREAD_LSP_FIXTURE');
+    expect(p.equals(home, p.join(root, 'studio-home')), isTrue);
     for (final entry in {
-      home: 'studio-home',
       projectAPath: 'project-a',
       projectBPath: 'project-b',
       output: 'artifacts',
@@ -41,7 +41,11 @@ void main() {
         FileSystemEntityType.notFound,
       );
     }
-    expect(await sandbox.list().toList(), isEmpty);
+    // The native launcher may already own runtime.lock and its startup log.
+    // Freshness is established by the external owner before launching it.
+    await for (final entry in sandbox.list()) {
+      expect(p.equals(entry.path, home), isTrue);
+    }
     expect(await File(fixture).exists(), isTrue);
     await Directory(home).create();
     final projectA = await Directory(projectAPath).create();
