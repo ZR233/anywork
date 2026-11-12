@@ -354,6 +354,8 @@ Main 揭示区分外层 canonical `ChatMessage` 已挂载、原 controller metad
 内部 `ChatItemView` renderer 已就绪及实际裁剪可见。外层行、connector、内层分别诊断，
 不得把 metadata 加载占位误判成没有行，也不得把占位当成功；沿同一 Scrollable、lease、
 generation 和原期限等待真实 renderer，错误明确失败，不加 sleep、泛重试或放宽命中门槛。
+Main 接纳先于界面帧切换时，实时区域可以暂留同标识片段；揭示只在原 Main Scrollable
+子树定位目标及工作组标题，继续核对原 metadata 和 canonical 行，不借用实时区域的片段或更换滚动实例。
 
 依次读取已完成的独立工具回执时，原 UI 关闭须先证明当前挂载标题的展开态已变为 false，再确认原正文窗口撤销；下一项的 Main 揭示在折叠动画和随后的滚动修正完成后开始。该完成态场景复用 Flutter 官方 `WidgetTester.pumpAndSettle`，只使用原六十秒窗口撤销期限的剩余额度，未收束或框架错误明确失败，不在揭示失败后追加点击或滚动重试，也不以目标卸载代替关闭成功。
 
