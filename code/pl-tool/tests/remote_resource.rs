@@ -101,10 +101,32 @@ async fn helper_directory_removal_retains_effect_and_preserves_neighbor() -> any
 
 #[tokio::test]
 async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
+    verify_receipts_reconnect_and_release(16, 3 * REMOTE_IO_CHUNK_BYTES + 17, Duration::ZERO).await
+}
+
+#[tokio::test]
+#[ignore = "千次工作区、32 MiB 传输与空闲观察，由 Rust Scale Checks 定时或手动运行"]
+async fn helper_receipts_reconnect_and_release_scale() -> anyhow::Result<()> {
+    verify_receipts_reconnect_and_release(1_000, 32 * 1024 * 1024 + 17, Duration::from_secs(15))
+        .await
+}
+
+async fn verify_receipts_reconnect_and_release(
+    workspace_count: usize,
+    transfer_bytes: usize,
+    idle_observation: Duration,
+) -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     receipts::verify(executable).await?;
     let mut helper = support::Helper::start(executable).await?;
-    let outcome = exercise(&mut helper, executable).await;
+    let outcome = exercise(
+        &mut helper,
+        executable,
+        workspace_count,
+        transfer_bytes,
+        idle_observation,
+    )
+    .await;
     let close = helper.close().await;
     outcome?;
     close?;
@@ -128,7 +150,13 @@ async fn helper_receipts_reconnect_and_release() -> anyhow::Result<()> {
     );
     Ok(())
 }
-async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Result<()> {
+async fn exercise(
+    helper: &mut support::Helper,
+    executable: &Path,
+    workspace_count: usize,
+    transfer_bytes: usize,
+    idle_observation: Duration,
+) -> anyhow::Result<()> {
     let initial = support::heartbeat(&helper.client).await?;
     let owner_pid = initial.owner_pid;
     let baseline = support::resources(owner_pid);
@@ -272,7 +300,7 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
     );
 
     // One immutable binary source is transferred in ranges, with a real transport replacement.
-    let payload = (0..(32 * 1024 * 1024 + 17))
+    let payload = (0..transfer_bytes)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
     support::write_file(&helper.client, helper.target("transfer.bin"), &payload).await?;
@@ -328,7 +356,7 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
     );
     drop(payload);
 
-    for index in 0..1000 {
+    for index in 0..workspace_count {
         let path = helper.root.path().join(format!("workspace-{index}"));
         std::fs::create_dir(&path)?;
         let opened = helper
@@ -353,19 +381,22 @@ async fn exercise(helper: &mut support::Helper, executable: &Path) -> anyhow::Re
             )
             .await?;
     }
-    let idle_before = support::resources(owner_pid);
-    let queries_before = support::heartbeat(&helper.client).await?.operation_queries;
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    if !idle_observation.is_zero() {
+        let idle_before = support::resources(owner_pid);
+        let queries_before = support::heartbeat(&helper.client).await?.operation_queries;
+        tokio::time::sleep(idle_observation).await;
+        let final_state = support::heartbeat(&helper.client).await?;
+        ensure!(
+            final_state.operation_queries == queries_before,
+            "normal idle waiting polled operation status"
+        );
+        println!(
+            "{}",
+            serde_json::json!({"scenario":"idle", "seconds":idle_observation.as_secs_f64(), "before":idle_before,
+            "after":support::resources(owner_pid), "businessStatusQueries":final_state.operation_queries-queries_before})
+        );
+    }
     let final_state = support::heartbeat(&helper.client).await?;
-    ensure!(
-        final_state.operation_queries == queries_before,
-        "normal idle waiting polled operation status"
-    );
-    println!(
-        "{}",
-        serde_json::json!({"scenario":"idle", "seconds":15, "before":idle_before,
-        "after":support::resources(owner_pid), "businessStatusQueries":final_state.operation_queries-queries_before})
-    );
     ensure!(
         final_state.workspaces == 1
             && final_state.processes == 0

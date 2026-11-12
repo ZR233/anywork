@@ -27,6 +27,9 @@ hook 所需 GTK 3、X11、Xi 头文件与 C++ 工具统一预装在镜像中；�
 身份核验。它不挂载真实 HOME、Docker socket 或个人凭据，也不需要 GitHub 环境变量。
 工程产物仍写到仓库既有 `target/`、`dist/` 等位置；按运行脚本的用户映射处理宿主
 写权限，不用特权容器解决目录权限问题。不要将镜像发布 token 传给项目构建。
+显式设置 `CARGO_HOME` 时，运行脚本会创建并挂载该专用缓存目录，保持宿主与容器路径一致。
+该目录只用于构建缓存，不应包含个人凭据。CI 将其放在 runner 临时目录，位于 checkout
+之外：`rust-cache` 按路径识别外部依赖，放在 checkout 内会在保存时被误当作工作区源码清理。
 宿主须支持 Linux amd64 容器、可读写的 checkout 挂载、`/proc` 与子进程 subreaper；
 建议以普通开发用户运行脚本，容器使用相同 UID/GID，避免留下 root 所有的产物。
 镜像包含固定版本的 Git 与系统 OpenSSH 客户端，并验证 NUL 分隔的工作树清单及 SSH

@@ -1,0 +1,75 @@
+name: Rust Scale Checks
+
+on:
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
+  # Validate this entrypoint when it changes; ordinary PRs keep bounded cases.
+  pull_request:
+    paths:
+      - '.github/workflows/rust-scale.yml'
+
+permissions: {}
+
+concurrency:
+  group: rust-scale-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux-environment:
+    uses: ./.github/workflows/linux-build-environment.yml
+    permissions:
+      contents: read
+    with:
+      sourceRef: ${{ github.sha }}
+
+  rust-scale:
+    name: Runtime and remote resource scale (Linux)
+    needs: linux-environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_HOME: ${{ runner.temp }}/ci-cargo-home
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+      - name: Build the current-source remote supervisor
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
+      - name: Verify the hundred-thousand-member index
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
+            studio::thread_projection::presentation::tests::hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies \
+            -- --exact --ignored --nocapture
+      - name: Verify both two-thousand-item consumers
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+            export PATH="$PWD/target/debug:$PATH"
+            cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --test runtime_conversation_feed _scale -- --ignored --nocapture
+          '
+      - name: Verify large transfers, resource churn and idle waiting
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+            export PATH="$PWD/target/debug:$PATH"
+            cargo test --locked -p pl-tool --test remote_resource helper_receipts_reconnect_and_release_scale -- --exact --ignored --nocapture
+          '

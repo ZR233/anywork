@@ -741,7 +741,7 @@ async fn write_failure_keeps_its_retry_obligation() -> anyhow::Result<()> {
     let fault = error
         .source
         .downcast_ref::<OutputStorageFault>()
-        .context("真实落盘失败必须仍走可靠存储故障边界")?;
+        .with_context(|| format!("真实落盘失败必须仍走可靠存储故障边界：{error}"))?;
     anyhow::ensure!(
         fault.kind == StorageFaultKind::WriteFailed,
         "写失败必须保持 WriteFailed 类别"
@@ -1356,6 +1356,9 @@ impl ScriptedBehavior {
 
     fn failing_first_append() -> Self {
         Self {
+            // Keep capacity exhaustion out of this storage-failure proof even
+            // when the reader fills a whole buffer before the writer runs.
+            total_bytes: 4096,
             fail_first_append: true,
             ..Self::endless_until_cancelled()
         }
@@ -1711,14 +1714,19 @@ impl tokio::io::AsyncRead for FixedPatternReader {
         if self.remaining == 0 || self.pattern.is_empty() {
             return Poll::Ready(Ok(()));
         }
-        let take = (buffer.remaining() as u64)
-            .min(self.remaining)
-            .min(self.pattern.len() as u64) as usize;
-        let end = (self.offset + take).min(self.pattern.len());
-        buffer.put_slice(&self.pattern[self.offset..end]);
-        let written = end - self.offset;
-        self.offset = (self.offset + written) % self.pattern.len();
-        self.remaining -= written as u64;
+        // Exercise output budgets without turning every pattern byte into a
+        // separate file open/write/flush. Real split UTF-8 has its own test.
+        let take = (buffer.remaining() as u64).min(self.remaining) as usize;
+        for (byte, value) in buffer
+            .initialize_unfilled_to(take)
+            .iter_mut()
+            .zip(self.pattern.iter().cycle().skip(self.offset))
+        {
+            *byte = *value;
+        }
+        buffer.advance(take);
+        self.offset = (self.offset + take) % self.pattern.len();
+        self.remaining -= take as u64;
         Poll::Ready(Ok(()))
     }
 }

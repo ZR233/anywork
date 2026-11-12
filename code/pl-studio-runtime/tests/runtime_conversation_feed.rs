@@ -1395,6 +1395,12 @@ async fn realistic_output_limit_single_item() -> Result<()> {
 
 #[tokio::test]
 async fn realistic_output_limit_many_items() -> Result<()> {
+    observe_realistic_output_limit(200).await
+}
+
+#[tokio::test]
+#[ignore = "两千条输出规模检查，由 Rust Scale Checks 定时或手动运行"]
+async fn realistic_output_limit_many_items_scale() -> Result<()> {
     observe_realistic_output_limit(2_000).await
 }
 
@@ -1840,14 +1846,23 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
 
 #[tokio::test]
 async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Result<()> {
-    const ITEMS: usize = 2_000;
+    observe_many_live_bodies(200).await
+}
+
+#[tokio::test]
+#[ignore = "两千条输出并发正文读取规模检查，由 Rust Scale Checks 定时或手动运行"]
+async fn realistic_output_limit_many_items_reads_bodies_while_running_scale() -> Result<()> {
+    observe_many_live_bodies(2_000).await
+}
+
+async fn observe_many_live_bodies(item_count: usize) -> Result<()> {
     const BYTES: u64 = 256_000;
     let prompt = "realistic-many-live-bodies";
     let env = Environment::new(
         vec![prompt_step(
             prompt,
             0,
-            pl_provider_fixture::gui_streaming_output_reply(ITEMS, 1),
+            pl_provider_fixture::gui_streaming_output_reply(item_count, 1),
         )],
         vec![],
     )
@@ -1973,7 +1988,7 @@ async fn realistic_output_limit_many_items_reads_bodies_while_running() -> Resul
                     *consumed.lock().expect("test read counters poisoned") = (count, bytes);
                 }
                 ensure!(turns.len() == 1 && turns.contains(&turn_id));
-                ensure!(count == ITEMS && bytes == BYTES,
+                ensure!(count == item_count && bytes == BYTES,
                     "many-item body coverage changed: items={count}, bytes={bytes}");
                 ensure!(live_batches >= 2 && live_items >= 2 && live_bytes > 0,
                     "no repeated original-running many-item reads: batches={live_batches}, items={live_items}, bytes={live_bytes}");

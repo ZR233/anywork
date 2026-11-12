@@ -226,7 +226,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      CARGO_HOME: ${{ runner.temp }}/ci-cargo-home
     permissions:
       contents: read
     steps:
@@ -245,29 +245,35 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
-      - name: Check Rust and test the workspace with SQLite enabled
+      - name: Check formatting and isolated dependency contracts
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             cargo fmt --all --check
-            # These isolated selections must run before workspace feature unification.
+            # Run before workspace feature unification.
             cargo test --locked -p pl-agent-tool --no-default-features
             cargo test --locked -p pl-agent-tool --no-default-features --features typed
-            # The workspace run below covers typed+macros and the macro crate.
             cargo test --locked --manifest-path code/pl-agent-tool/fixtures/downstream/Cargo.toml --target-dir target/tool-downstream
             python3 .github/scripts/check_tool_boundaries.py
             cargo test --locked --all-targets --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
             cargo check --locked -p pl-core --no-default-features --all-targets
-            cargo clippy --locked --workspace --all-targets -- -D warnings
-            # Library tests run outside the Flutter bundle and need the
-            # current-source stdio supervisor on the container PATH.
-            cargo build --locked -p pl-remote-helper
+          '
+      - name: Check workspace Clippy
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build the current-source remote supervisor
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
+      - name: Compile workspace tests with SQLite enabled
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked --workspace --features pl-core/sqlite --no-run
+      - name: Run workspace behavior and documentation tests
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PWD/target/debug:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
-            cargo build --locked -p pl-studio-server
           '
+      - name: Build the standalone server
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-server
 
   linux-inputs:
     name: Compile Linux engineering tool and bundled helpers
@@ -279,7 +285,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      CARGO_HOME: ${{ runner.temp }}/ci-cargo-home
     permissions:
       contents: read
     outputs:
@@ -307,7 +313,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
           workspaces: |
@@ -317,7 +323,7 @@ jobs:
         env:
           BUILD_HELPERS: ${{ needs.changes.outputs.remote_helpers }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             cargo build --locked --target-dir target/xtask -p pl-xtask
             if [ "$1" = true ]; then
               PURE_REMOTE_HELPER_BUILDER=zigbuild target/xtask/debug/pl-xtask build-remote-helper --all-targets
@@ -417,7 +423,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      CARGO_HOME: ${{ runner.temp }}/ci-cargo-home
       DESKTOP_TEST_OUTPUT: output/ci-desktop-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -438,7 +444,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
       - name: Restore this run's Linux engineering tool
@@ -473,7 +479,7 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
@@ -532,7 +538,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_HOME: ${{ github.workspace }}/output/ci-cargo-home
+      CARGO_HOME: ${{ runner.temp }}/ci-cargo-home
       NATIVE_TEST_OUTPUT: output/ci-native-linux/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -553,7 +559,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" env CARGO_HOME="${{ env.CARGO_HOME }}" {0}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
       - name: Restore this run's Linux engineering tool
@@ -584,7 +590,7 @@ jobs:
           done
       - name: Run the full native lifecycle suite
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
