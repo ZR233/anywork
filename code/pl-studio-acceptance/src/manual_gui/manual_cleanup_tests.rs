@@ -42,17 +42,18 @@ fn native_launcher_fixture() -> Result<()> {
                 .env(READY, &ready)
                 .kill_on_drop(true)
                 .spawn()?;
-            tokio::select! {
-                status = build.wait() => {
-                    let status = status?;
-                    ensure!(status.success(), "preparation worker failed: {status}");
-                },
-                _ = term.recv() => {
-                    build.wait().await?;
-                    if mode == "boundary-on-cancel" {
-                        print!("{}", super::NATIVE_LAUNCH_BOUNDARY);
-                        std::io::stdout().flush()?;
-                    }
+            if mode == "fail" {
+                let status = build.wait().await?;
+                ensure!(status.success(), "preparation worker failed: {status}");
+            } else {
+                // This fixture publishes its late boundary on cancellation.
+                // The group signal also ends the worker: racing those two
+                // observations with select would randomly skip publication.
+                term.recv().await.context("termination stream ended")?;
+                build.wait().await?;
+                if mode == "boundary-on-cancel" {
+                    print!("{}", super::NATIVE_LAUNCH_BOUNDARY);
+                    std::io::stdout().flush()?;
                 }
             }
             Ok(())
