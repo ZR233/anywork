@@ -773,7 +773,12 @@ async fn invalid_protocol_is_rejected_before_preparation() {
 
 #[tokio::test]
 async fn preparation_errors_and_version_rejections_never_send_lifecycle_requests() {
-    for failure in ["server-version", "prepare", "http-capability"] {
+    for failure in [
+        "server-version",
+        "prepare",
+        "host-preparation",
+        "http-capability",
+    ] {
         let calls = Arc::new(AtomicU64::new(0));
         let callback_calls = calls.clone();
         let mut scenario = Scenario {
@@ -784,6 +789,8 @@ async fn preparation_errors_and_version_rejections_never_send_lifecycle_requests
                         Err(Error::Rpc(
                             RpcError::invalid_params().data("host preparation failed"),
                         ))
+                    } else if failure == "host-preparation" {
+                        Err(Error::Preparation("native helper asset is missing".into()))
                     } else {
                         Ok(OpenSetup {
                             mcp_servers: vec![http_server()],
@@ -809,6 +816,9 @@ async fn preparation_errors_and_version_rejections_never_send_lifecycle_requests
                 error,
                 RpcError::invalid_params().data("host preparation failed")
             ),
+            ("host-preparation", Error::Preparation(message)) => {
+                assert_eq!(message, "native helper asset is missing");
+            }
             (_, error) => panic!("unexpected {failure} result: {error:?}"),
         }
         let exit = harness.join().await;
@@ -816,7 +826,10 @@ async fn preparation_errors_and_version_rejections_never_send_lifecycle_requests
         assert!(peer_lock(&state).opens.is_empty());
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            u64::from(matches!(failure, "prepare" | "http-capability"))
+            u64::from(matches!(
+                failure,
+                "prepare" | "host-preparation" | "http-capability"
+            ))
         );
         assert!(completion_changed(&mut changes).await.is_err());
         assert_eq!(*changes.borrow(), 0);

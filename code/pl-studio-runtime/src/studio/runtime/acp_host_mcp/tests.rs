@@ -190,6 +190,155 @@ fn save_acp_child_profile(fixture: &Fixture) -> Result<()> {
 }
 
 #[tokio::test]
+async fn ipc_calls_original_host_without_an_http_mcp_listener() -> Result<()> {
+    use pl_studio_mcp::{HostInvocation, HostOperation, HostTools, ipc::IpcClient};
+
+    let fixture = Fixture::new("mcp-http").await?;
+    let mut target = None;
+    let mut service = None;
+    let mut client = None;
+    let result = async {
+        let mut open = fixture.open().await?;
+        target = Some(open.target.clone());
+        Fixture::ready(&mut open).await?;
+        let owner = fixture
+            .runtime
+            .sessions
+            .get(&pl_protocol::SessionId::new(
+                open.target.session_id.clone(),
+            )?)
+            .context("published owner")?;
+        let resources = owner
+            .resident_acp(&open.target.thread_id)?
+            .context("ACP resources")?;
+        let identity = fixture
+            .runtime
+            .agent_facility
+            .product_events
+            .agent_execution_identity(&open.target.thread_id)
+            .context("identity")?
+            .0;
+        let profiles = fixture.runtime.config_runtime.agent_profiles_snapshot()?;
+        let host = owner.acp_agent_host(
+            &identity,
+            &resources,
+            &profiles,
+            fixture.runtime.config_runtime.read()?.config.delegation,
+        )?;
+        // This consumes the domain IPC endpoint directly. Production executable
+        // startup is covered by pl-studio-mcp and the real agy journey.
+        let (transport, definition) = HostMcp::start(
+            host,
+            identity.agent_id.clone(),
+            CancellationToken::new(),
+            true,
+            Some(std::path::Path::new("/unused/pl-studio-mcp")),
+        )
+        .await?;
+        ensure!(
+            transport.sessions.is_none() && transport.join.is_none(),
+            "stdio selected an HTTP MCP listener"
+        );
+        service = Some(transport);
+        let schema::McpServer::Stdio(definition) = definition else {
+            anyhow::bail!("expected a standard stdio definition");
+        };
+        let env = |name: &str| {
+            definition
+                .env
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| item.value.clone())
+                .context("missing IPC environment")
+        };
+        client = Some(
+            IpcClient::connect(
+                env(pl_studio_mcp::IPC_ENDPOINT_ENV)?,
+                env(pl_studio_mcp::IPC_CAPABILITY_ENV)?,
+            )
+            .await
+            .context("connect IPC client")?,
+        );
+        let ipc = client.as_ref().unwrap();
+        let catalog = ipc.catalog().await.context("read IPC catalog")?;
+        ensure!(
+            catalog
+                .iter()
+                .any(|tool| tool.operation == HostOperation::ListAgentProfiles),
+            "root directory was not delivered"
+        );
+        let listed = ipc
+            .invoke(
+                HostInvocation {
+                    operation: HostOperation::ListAgents,
+                    arguments: Default::default(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .context("invoke original member list")?;
+        ensure!(
+            !listed.is_error && listed.value.to_string().contains(&open.target.agent_id),
+            "IPC did not read the original member directory"
+        );
+        let profiles = ipc
+            .invoke(
+                HostInvocation {
+                    operation: HostOperation::ListAgentProfiles,
+                    arguments: Default::default(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .context("invoke original profile list")?;
+        ensure!(
+            !profiles.is_error && profiles.value.is_object(),
+            "profile domain query failed"
+        );
+        ensure!(
+            service
+                .as_ref()
+                .unwrap()
+                .observed_counter()
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 2,
+            "domain call count differs"
+        );
+        service.as_mut().unwrap().close().await?;
+        ensure!(
+            ipc.catalog().await.is_err(),
+            "closed instance still accepts IPC"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let mut cleanup = Ok(());
+    if let Some(client) = client {
+        cleanup = client
+            .close()
+            .await
+            .context("join IPC client after server close");
+    }
+    if let Some(mut service) = service
+        && let Err(error) = service.close().await
+    {
+        cleanup = cleanup.and(Err(error));
+    }
+    if let Some(target) = target {
+        match fixture.runtime.close_acp_session(target).await {
+            Ok(close) if close.local_complete => {}
+            Ok(close) => cleanup = cleanup.and(Err(anyhow::anyhow!("ACP cleanup: {close:?}"))),
+            Err(error) => cleanup = cleanup.and(Err(error)),
+        }
+    }
+    let shutdown = fixture.runtime.shutdown_runtime().await;
+    result?;
+    cleanup?;
+    shutdown?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_auth_tools_and_instance_shutdown_are_isolated() -> Result<()> {
     let fixture = Fixture::new("replay").await?;
     let mut target = None;
@@ -224,6 +373,7 @@ async fn http_auth_tools_and_instance_shutdown_are_isolated() -> Result<()> {
             identity.agent_id.clone(),
             CancellationToken::new(),
             true,
+            None,
         )
         .await?;
         services.push(first_service);
@@ -232,6 +382,7 @@ async fn http_auth_tools_and_instance_shutdown_are_isolated() -> Result<()> {
             identity.agent_id.clone(),
             CancellationToken::new(),
             false,
+            None,
         )
         .await?;
         services.push(second_service);
@@ -480,6 +631,7 @@ async fn http_spawn_wait_cancellation_and_service_close_preserve_child_run() -> 
             root_identity.agent_id.clone(),
             CancellationToken::new(),
             true,
+            None,
         )
         .await?;
         host_service = Some(service);

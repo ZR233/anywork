@@ -7,18 +7,17 @@ use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
 use pl_acp::session::{OpenSetup, PrepareOpen, schema};
 use pl_agent_tool::{InputFormat, ToolDefinition};
+use pl_studio_mcp::{
+    HostCatalog, HostError, HostInvocation, HostMcpService, HostOperation, HostResult, HostTool,
+    HostTools, ipc::IpcServer,
+};
 use pl_tool::collaboration::{
     control::{AgentCallContext, ControlError},
     thread::{AgentCloseOptions, AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn},
 };
-use rmcp::{
-    RoleServer, ServerHandler,
-    model::*,
-    service::RequestContext,
-    transport::streamable_http_server::{
-        SessionManager, StreamableHttpServerConfig, StreamableHttpService,
-        session::local::LocalSessionManager,
-    },
+use rmcp::transport::streamable_http_server::{
+    SessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    session::local::LocalSessionManager,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -44,6 +43,7 @@ mod tests;
 #[cfg(test)]
 mod future_sizes {
     use super::*;
+    use rmcp::{RoleServer, ServerHandler, model::CallToolRequestParams, service::RequestContext};
 
     fn bounded<Input, F: std::future::Future + std::marker::Send>(
         name: &str,
@@ -59,13 +59,13 @@ mod future_sizes {
         bounded(
             "Host MCP domain dispatch",
             |(handler, value, context): (&'static Handler, Value, AgentCallContext)| {
-                handler.invoke("anywork_wait_agent", value, context)
+                handler.invoke_domain("anywork_wait_agent", value, context)
             },
         );
         let request = bounded(
             "Host MCP tool request",
             |(handler, request, context): (
-                &'static Handler,
+                &'static HostMcpService<Handler>,
                 CallToolRequestParams,
                 RequestContext<RoleServer>,
             )| handler.call_tool(request, context),
@@ -120,6 +120,7 @@ pub(crate) fn prepare_open(
     config: &ConfigRuntime,
     cwd: &str,
     selection: pl_protocol::DelegationSettings,
+    mcp_source: crate::host_mcp_assets::HostMcpSource,
 ) -> Result<PrepareOpen> {
     let snapshot = config.read()?;
     let profiles = config.agent_profiles_snapshot()?;
@@ -133,25 +134,31 @@ pub(crate) fn prepare_open(
         let host = host.clone();
         let caller = caller.clone();
         let mut instructions = instructions.clone();
+        let mcp_source = mcp_source.clone();
         Box::pin(async move {
             let resources = resources.upgrade().ok_or(pl_acp::session::Error::Closed)?;
-            let mut mcp_servers = Vec::new();
-            if capabilities.mcp_capabilities.http {
-                let definition = resources
-                    .prepare_host_mcp(host, caller, is_root)
-                    .await
-                    .map_err(|_| pl_acp::session::Error::NotReady)?;
-                mcp_servers.push(definition);
-                instructions.push_str(
-                    "\nUse the anywork_ tools for host-managed agent delegation, member queries, \
-                     report waiting, interruption and closing. Agent IDs and profile IDs come from \
-                     these tools. Receipt acceptance is not completion; use anywork_wait_agent \
-                     cursors and retain actual report identities. These tools do not grant recursive \
-                     spawn, Native review/workflow or filesystem restrictions to ACP agents.\n",
-                );
-            }
+            let frontend = if capabilities.mcp_capabilities.http {
+                None
+            } else {
+                Some(
+                    crate::host_mcp_assets::prepare(mcp_source)
+                        .await
+                        .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?,
+                )
+            };
+            let definition = resources
+                .prepare_host_mcp(host, caller, is_root, frontend)
+                .await
+                .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?;
+            instructions.push_str(
+                "\nUse the anywork_ tools for host-managed agent delegation, member queries, \
+                 report waiting, interruption and closing. Agent IDs and profile IDs come from \
+                 these tools. Receipt acceptance is not completion; use anywork_wait_agent \
+                 cursors and retain actual report identities. These tools do not grant recursive \
+                 spawn, Native review/workflow or filesystem restrictions to ACP agents.\n",
+            );
             Ok(OpenSetup {
-                mcp_servers,
+                mcp_servers: vec![definition],
                 instructions: Some(instructions),
             })
         })
@@ -200,7 +207,8 @@ fn instructions(
 pub(crate) struct HostMcp {
     shutdown: CancellationToken,
     join: Option<JoinHandle<std::io::Result<()>>>,
-    sessions: Arc<LocalSessionManager>,
+    sessions: Option<Arc<LocalSessionManager>>,
+    ipc: Option<IpcServer>,
     handlers: TaskTracker,
     observed_calls: Arc<AtomicU64>,
 }
@@ -211,18 +219,10 @@ impl HostMcp {
         caller: pl_protocol::AgentId,
         domain_closed: CancellationToken,
         is_root: bool,
+        frontend: Option<&std::path::Path>,
     ) -> Result<(Self, schema::McpServer)> {
         let tools = declarations(&host, is_root)?;
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-        let address = listener.local_addr()?;
-        let bearer = format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        );
-        let authorization = http::HeaderValue::from_str(&format!("Bearer {bearer}"))?;
         let shutdown = CancellationToken::new();
-        let sessions = Arc::new(LocalSessionManager::default());
         let handlers = TaskTracker::new();
         let observed_calls = Arc::new(AtomicU64::new(0));
         let handler = Handler {
@@ -233,6 +233,39 @@ impl HostMcp {
             observed_calls: observed_calls.clone(),
             _lifetime: handlers.token(),
         };
+        if let Some(command) = frontend {
+            use pl_studio_mcp::{IPC_CAPABILITY_ENV, IPC_ENDPOINT_ENV, STDIO_ARG};
+            let ipc = IpcServer::bind(handler, shutdown.clone()).await?;
+            let definition = schema::McpServer::Stdio(
+                schema::McpServerStdio::new("anywork", command)
+                    .args(vec![STDIO_ARG.into()])
+                    .env(vec![
+                        schema::EnvVariable::new(IPC_ENDPOINT_ENV, ipc.endpoint()),
+                        schema::EnvVariable::new(IPC_CAPABILITY_ENV, ipc.capability()),
+                    ]),
+            );
+            return Ok((
+                Self {
+                    shutdown,
+                    join: None,
+                    sessions: None,
+                    ipc: Some(ipc),
+                    handlers,
+                    observed_calls,
+                },
+                definition,
+            ));
+        }
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let address = listener.local_addr()?;
+        let bearer = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let authorization = http::HeaderValue::from_str(&format!("Bearer {bearer}"))?;
+        let sessions = Arc::new(LocalSessionManager::default());
+        let handler = HostMcpService::new(handler);
         let mut server_config = StreamableHttpServerConfig::default();
         server_config.cancellation_token = shutdown.clone();
         server_config.json_response = true;
@@ -263,16 +296,19 @@ impl HostMcp {
                 .with_graceful_shutdown(stopped.cancelled_owned())
                 .await
         });
+        let endpoint = format!("http://{address}/mcp");
         let definition = schema::McpServer::Http(
-            schema::McpServerHttp::new("anywork", format!("http://{address}/mcp")).headers(vec![
-                schema::HttpHeader::new("Authorization", format!("Bearer {bearer}")),
-            ]),
+            schema::McpServerHttp::new("anywork", endpoint).headers(vec![schema::HttpHeader::new(
+                "Authorization",
+                format!("Bearer {bearer}"),
+            )]),
         );
         Ok((
             Self {
                 shutdown,
                 join: Some(join),
-                sessions,
+                sessions: Some(sessions),
+                ipc: None,
                 handlers,
                 observed_calls,
             },
@@ -284,21 +320,30 @@ impl HostMcp {
         self.observed_calls.clone()
     }
 
-    /// Join actual HTTP execution and handler lifetimes, including rmcp-owned session tasks.
+    /// Join the selected transport and original handler lifetimes in place.
     pub(crate) async fn close(&mut self) -> Result<()> {
         self.shutdown.cancel();
         let mut failure = None;
-        let ids = self
-            .sessions
-            .sessions
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for id in ids {
-            if let Err(error) = self.sessions.close_session(&id).await {
-                failure.get_or_insert_with(|| anyhow::anyhow!(error));
+        if let Some(sessions) = self.sessions.as_ref() {
+            let ids = sessions
+                .sessions
+                .read()
+                .await
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            for id in ids {
+                if let Err(error) = sessions.close_session(&id).await {
+                    failure.get_or_insert_with(|| anyhow::anyhow!(error));
+                }
+            }
+        }
+        if let Some(ipc) = self.ipc.as_mut() {
+            match ipc.close().await {
+                Ok(()) => self.ipc = None,
+                Err(error) => {
+                    failure.get_or_insert_with(|| anyhow::anyhow!(error));
+                }
             }
         }
         if let Some(join) = self.join.as_mut() {
@@ -327,7 +372,7 @@ impl Drop for HostMcp {
 struct Handler {
     host: Arc<AgentHost>,
     caller: pl_protocol::AgentId,
-    tools: Arc<Vec<Tool>>,
+    tools: Arc<HostCatalog>,
     domain_closed: CancellationToken,
     observed_calls: Arc<AtomicU64>,
     // Clones remain alive until rmcp has finished their sessions/requests.
@@ -356,7 +401,7 @@ struct Close {
     force: bool,
 }
 
-fn declarations(host: &AgentHost, is_root: bool) -> Result<Vec<Tool>> {
+fn declarations(host: &AgentHost, is_root: bool) -> Result<HostCatalog> {
     let profiles = host.spawn_profiles();
     let selection = host.delegation();
     let mut definitions = Vec::new();
@@ -402,59 +447,41 @@ fn declarations(host: &AgentHost, is_root: bool) -> Result<Vec<Tool>> {
             let InputFormat::JsonSchema(input) = definition.input() else {
                 anyhow::bail!("Host MCP requires a JSON tool schema")
             };
-            let mut tool = Tool::default();
-            tool.name = format!("anywork_{}", definition.name()).into();
-            tool.description = Some(definition.description().to_owned().into());
-            tool.input_schema = Arc::new(
-                input
+            Ok(HostTool {
+                operation: HostOperation::from_tool_name(&format!("anywork_{}", definition.name()))
+                    .context("unknown host operation declaration")?,
+                description: definition.description().to_owned(),
+                input_schema: input
                     .as_object()
                     .context("tool schema must be an object")?
                     .clone(),
-            );
-            Ok(tool)
+            })
         })
         .collect()
 }
 
-impl ServerHandler for Handler {
-    fn get_info(&self) -> ServerConfig {
-        let mut config = ServerConfig::default();
-        config.capabilities = ServerCapabilities::builder().enable_tools().build();
-        config.instructions = Some("Use anywork_ tools for anywork-managed collaboration. Tool prefixes do not change permissions.".into());
-        config
+impl HostTools for Handler {
+    async fn catalog(&self) -> Result<HostCatalog, HostError> {
+        Ok(self.tools.as_ref().clone())
     }
 
-    async fn list_tools(
+    async fn invoke(
         &self,
-        request: Option<PaginatedRequestParams>,
-        _: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        if request.is_some_and(|request| request.cursor.is_some()) {
-            return Err(ErrorData::invalid_params(
-                "this tool list is not paginated",
-                None,
-            ));
-        }
-        Ok(ListToolsResult {
-            tools: self.tools.as_ref().clone(),
-            ..Default::default()
-        })
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        if !self.tools.iter().any(|tool| tool.name == request.name) {
-            return Err(ErrorData::invalid_params(
-                "tool is not exposed to this instance",
-                None,
-            ));
+        request: HostInvocation,
+        cancellation: CancellationToken,
+    ) -> Result<HostResult, HostError> {
+        if !self
+            .tools
+            .iter()
+            .any(|tool| tool.operation == request.operation)
+        {
+            return Err(HostError::InvalidRequest);
         }
         self.observed_calls.fetch_add(1, Ordering::AcqRel);
-        let arguments = Value::Object(request.arguments.unwrap_or_default());
-        let cancellation = context.ct.child_token();
+        let arguments = Value::Object(request.arguments);
+        // The transport owns the supplied token. Completing a domain call must
+        // retire only its own context, not cancel the IPC stream before its reply.
+        let cancellation = cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
         let context = AgentCallContext {
             caller: self.caller.clone(),
@@ -464,7 +491,8 @@ impl ServerHandler for Handler {
         // Keep the dispatch union's large retirement/cold-activation states on the heap at
         // this transport boundary, rather than inlining them through rmcp's request poll
         // frames. This changes allocation, not operation ownership or cancellation.
-        let invoke = Box::pin(self.invoke(&request.name, arguments, context));
+        let invoke =
+            Box::pin(self.invoke_domain(request.operation.tool_name(), arguments, context));
         let result = tokio::select! {
             result = invoke => result,
             () = self.domain_closed.cancelled() => Err(ControlError::Closed),
@@ -473,13 +501,10 @@ impl ServerHandler for Handler {
             Ok(value) => value,
             Err(error) => (serde_json::json!({ "error": error.to_string() }), true),
         };
-        let mut result = if error {
-            CallToolResult::error(vec![ContentBlock::text(value.to_string())])
-        } else {
-            CallToolResult::success(vec![ContentBlock::text(value.to_string())])
-        };
-        result.structured_content = Some(value);
-        Ok(result.into())
+        Ok(HostResult {
+            value,
+            is_error: error,
+        })
     }
 }
 
@@ -493,7 +518,7 @@ fn encoded(value: impl serde::Serialize) -> Result<(Value, bool), ControlError> 
 }
 
 impl Handler {
-    async fn invoke(
+    async fn invoke_domain(
         &self,
         name: &str,
         arguments: Value,

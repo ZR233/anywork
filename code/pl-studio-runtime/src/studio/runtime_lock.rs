@@ -7,6 +7,7 @@ use fs4::{FileExt, TryLockError};
 use pl_protocol::studio::{StudioError, StudioResult};
 use serde::Serialize;
 
+use crate::host_mcp_assets::HostMcpSource;
 use crate::worker_assets::RemoteHelperSource;
 
 use super::paths::StudioPaths;
@@ -33,6 +34,7 @@ pub struct StudioRuntimeOptions {
     pub studio_home: Option<PathBuf>,
     pub host: StudioHostKind,
     pub helper_source: RemoteHelperSource,
+    pub host_mcp_source: HostMcpSource,
 }
 
 impl StudioRuntimeOptions {
@@ -41,6 +43,7 @@ impl StudioRuntimeOptions {
             studio_home: None,
             host: StudioHostKind::Desktop,
             helper_source: RemoteHelperSource::External,
+            host_mcp_source: HostMcpSource::External,
         }
     }
 
@@ -49,6 +52,7 @@ impl StudioRuntimeOptions {
             studio_home,
             host: StudioHostKind::HttpServer,
             helper_source: RemoteHelperSource::External,
+            host_mcp_source: HostMcpSource::External,
         }
     }
 
@@ -58,6 +62,11 @@ impl StudioRuntimeOptions {
     /// keeps the external installation mode of the constructors above.
     pub fn with_remote_helper_source(mut self, source: RemoteHelperSource) -> Self {
         self.helper_source = source;
+        self
+    }
+
+    pub fn with_host_mcp_source(mut self, source: HostMcpSource) -> Self {
+        self.host_mcp_source = source;
         self
     }
 }
@@ -161,6 +170,7 @@ pub(super) struct ResolvedRuntimeOptions {
     pub paths: StudioPaths,
     pub host: StudioHostKind,
     pub helper_source: RemoteHelperSource,
+    pub host_mcp_source: HostMcpSource,
 }
 
 impl StudioRuntimeOptions {
@@ -171,6 +181,7 @@ impl StudioRuntimeOptions {
             paths,
             host: self.host,
             helper_source: self.helper_source,
+            host_mcp_source: self.host_mcp_source,
         })
     }
 }

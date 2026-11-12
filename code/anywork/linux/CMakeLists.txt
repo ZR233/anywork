@@ -164,6 +164,25 @@ else()
         "'cargo xtask build-remote-helper --all-targets'.")
     endif()
   endforeach()
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(_anywork_host_mcp_target x86_64-unknown-linux-gnu)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(_anywork_host_mcp_target aarch64-unknown-linux-gnu)
+  else()
+    message(FATAL_ERROR "Unsupported Host MCP architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+  set(ANYWORK_HOST_MCP_DIR "$ENV{ANYWORK_HOST_MCP_DIR}")
+  if(NOT IS_ABSOLUTE "${ANYWORK_HOST_MCP_DIR}" OR
+      NOT IS_DIRECTORY "${ANYWORK_HOST_MCP_DIR}")
+    message(FATAL_ERROR
+      "ANYWORK_HOST_MCP_DIR must name an absolute resource directory; "
+      "build through 'cargo xtask build-gui' or 'cargo xtask run-gui'.")
+  endif()
+  foreach(_anywork_mcp_file pl-studio-mcp.zst pl-studio-mcp.metadata.json)
+    if(NOT EXISTS "${ANYWORK_HOST_MCP_DIR}/${_anywork_host_mcp_target}/${_anywork_mcp_file}")
+      message(FATAL_ERROR "Missing Host MCP resource: ${_anywork_mcp_file}; rebuild through xtask.")
+    endif()
+  endforeach()
 endif()
 
 install(CODE "
@@ -183,6 +202,25 @@ install(CODE "
             \"\${_anywork_helpers}/\${_anywork_helper_target}/\${_anywork_helper_file}\"
             \"${INSTALL_BUNDLE_DATA_DIR}/remote-helper/\${_anywork_helper_target}/\${_anywork_helper_file}\")
         endforeach()
+      endforeach()
+    endif()
+  " COMPONENT Runtime)
+
+install(CODE "
+    if(NOT \"\$ENV{ANYWORK_DEMO}\" STREQUAL \"true\")
+      set(_anywork_mcp \"\$ENV{ANYWORK_HOST_MCP_DIR}\")
+      if(NOT IS_ABSOLUTE \"\${_anywork_mcp}\" OR NOT IS_DIRECTORY \"\${_anywork_mcp}\")
+        message(FATAL_ERROR \"ANYWORK_HOST_MCP_DIR is missing at install time; rebuild through xtask.\")
+      endif()
+      file(MAKE_DIRECTORY \"${INSTALL_BUNDLE_DATA_DIR}/host-mcp/${_anywork_host_mcp_target}\")
+      foreach(_anywork_mcp_file pl-studio-mcp.zst pl-studio-mcp.metadata.json)
+        execute_process(COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different
+          \"\${_anywork_mcp}/${_anywork_host_mcp_target}/\${_anywork_mcp_file}\"
+          \"${INSTALL_BUNDLE_DATA_DIR}/host-mcp/${_anywork_host_mcp_target}/\${_anywork_mcp_file}\"
+          RESULT_VARIABLE _anywork_mcp_copy)
+        if(NOT _anywork_mcp_copy EQUAL 0)
+          message(FATAL_ERROR \"Failed to install Host MCP resource: \${_anywork_mcp_file}\")
+        endif()
       endforeach()
     endif()
   " COMPONENT Runtime)

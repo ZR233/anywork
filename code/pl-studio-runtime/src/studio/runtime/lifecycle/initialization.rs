@@ -232,6 +232,7 @@ impl StudioRuntime {
             config,
             resolved.paths.system_skills_dir(),
             resolved.helper_source.clone(),
+            resolved.host_mcp_source.clone(),
         )
         .await;
         let runtime = match assembled {

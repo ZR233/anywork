@@ -244,6 +244,7 @@ pub struct StudioRuntime {
     /// helper 分发走 `ssh_manager`），因此不保留该字段。
     #[cfg(target_os = "linux")]
     helper_source: crate::worker_assets::RemoteHelperSource,
+    host_mcp_source: crate::host_mcp_assets::HostMcpSource,
     /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
     service_stops: lifecycle::shutdown::ServiceStopSlots,
     /// An archive or worktree cleanup owns lifecycle admission through its real terminal commit,

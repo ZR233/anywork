@@ -4120,6 +4120,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-studio-mcp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "h2",
+ "http",
+ "prost",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pl-studio-runtime"
 version = "0.1.0"
 dependencies = [
@@ -4147,6 +4167,7 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-remote-helper",
+ "pl-studio-mcp",
  "pl-tool",
  "pl-trace",
  "process-wrap",

@@ -210,9 +210,17 @@ set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 
 
 ## 28.12 Host MCP 与宿主指令
 
-需要宿主协作的 ACP 实例在真实 initialize 声明 `mcpCapabilities.http` 后，创建实例独占的 rmcp Streamable HTTP 服务，监听 `127.0.0.1:0` 的固定 `/mcp` 路径。仅将已启动服务传入 `session/new`、`session/load` 或 `session/resume` 的 `mcpServers`。未声明 HTTP 能力时不注入无效地址，普通聊天和作为普通 child 的资格不受影响。能力声明、接收配置与真实模型调用分别记录，不因注入成功推断工具实际可用。
+Host MCP 在原领域运行时之上提供传输无关的服务。`AgentHost` / `SessionRuntime` 继续唯一拥有成员、权限、派发、报告、工作区及生命周期；`pl-studio-mcp` 的共享 handler 通过 `HostTools` 端口读取原工具目录并执行领域调用。HTTP 与 stdio 是并列入口，复用同一 handler，不互相转发。
 
-服务的 handler 固定可信调用者、具体运行实例与原 Session 的弱访问入口。成员发布前可以完成协议发现，但业务调用明确返回未就绪；发布后仍逐次校验实例身份、原成员关系与运行资格。每实例随机 bearer 经标准 HTTP headers 传入，域调用前校验；凭据不进入模型内容、工具参数、历史或日志，实例关闭后失效。MCP session header 仅管理传输状态，不能切换成员。每次域调用由宿主生成新的唯一 call ID，MCP request ID 不充当 Native 持久消息 ID。
+initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rmcp Streamable HTTP 服务，监听 `127.0.0.1:0` 的 `/mcp`，handler 在原进程直接调用领域端口。否则准备原实例本地 IPC 端点，并注入 ACP v1 标准 stdio 定义，由 Agent 启动宿主原生 `pl-studio-mcp --stdio`；该程序是正式 MCP server，通过 IPC 调用原运行时，stdio 路径不创建 HTTP MCP listener。HTTP/SSE 为 false 不等于没有 MCP，外层 ACP stdio 与内层 MCP stdio 是独立通道。new/load/resume 共用准备与选择逻辑，resume 仍受其真实能力约束；准备失败明确返回错误。能力声明、接收配置、实际连接与真实工具调用分别核对，不以注入成功推断可用。
+
+领域端口仅交付工具目录和执行调用；`HostOperation` 为现有九项操作的封闭集合，`HostInvocation` 携带操作和参数，`HostResult` 携带结构化结果及业务错误标记。目录由原声明投影，不回解作者侧 `ToolDefinition`，不另写 schema。MCP 握手、request ID、通知和结果封装由各入口的官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
+
+IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝远程连接并限定本机用户的 named pipe，复用锁定 Tokio、h2 与 prost。每个 h2 stream 对应一次目录读取或执行调用，protobuf 外层承载原 JSON 参数/结果；收发上限为 4 MiB，超限明确失败，不截断。h2 负责并发关联、流控、reset 和连接关闭，不新增请求账本、业务 deadline、重放、重连或结果缓存，也不把产品调用塞入 SSH helper 协议。
+
+原实例固定可信 caller、具体运行代次及原 Session 的弱访问入口；成员发布前允许发现、拒绝域调用，发布后逐次校验原资格。HTTP bearer 经标准 header 校验；stdio 只从 `ANYWORK_HOST_IPC_ENDPOINT`、`ANYWORK_HOST_IPC_CAPABILITY` 临时环境取得本地 IPC 端点与每实例随机 capability，不放入 argv。IPC 每次请求验证 capability，连接不能更换调用者；调用参数不能提供可信 caller 或 call ID。真实 call ID 由原运行时生成，MCP/IPC request ID 不充当持久消息 ID。凭据不进入模型内容、参数、持久配置、历史或日志，实例关闭后失效。
+
+桌面安装包分发并校验当前 Linux/Windows/macOS 宿主原生 `pl-studio-mcp`，资源在 `data/host-mcp/<target>/`，由显式 `HostMcpSource` 解析。bundled 缺失或校验不符明确失败，不回退 PATH；非打包入口使用显式 external 来源。复用原工程的摘要、压缩及映像租约能力，传给 Agent 的绝对命令路径必须可跨进程使用，原实例持有映像直至进程树回收。原 SSH helper 的两种 Linux worker 保持独立职责，不代替 MCP 服务程序；不在业务会话下载代理或复制临时凭据到资源包。
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
@@ -220,4 +228,4 @@ set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 
 
 宿主指令要求派发、成员管理、结果等待与关闭使用 `anywork_` 工具。前缀帮助识别，提示词引导选择，两者不构成权限控制。稳定 ACP 没有统一关闭 agent 自带工具的开关；客户端不声明文件或终端能力，只限制由客户端执行的 ACP 方法，不能禁止 agent 自己运行工具。`systemPrompt` 同样不改变工具可用性、MCP 服务、权限或会话配置；具体服务的私有选项不解释成通用禁用策略。
 
-listener、handler 与关闭 join 直接归原 ACP 实例资源，取消等待不转移已受理操作的所有权。关闭顺序遵循 [14](./14-runtime-host.md#142-输入受理与驱动)，旧句柄和旧凭据不能控制重开实例。不建立共享 listener 租约表、持久 cursor 映射、ACP 结果数据库、Native 父伪装或旁路关闭；仅同主机 HTTP，不提供公网、stdio relay 或 experimental MCP-over-ACP。
+listener、handler、IPC 连接驱动和请求任务的 join 直接归原 ACP 实例资源，stdio 程序随原受监督进程树收束。MCP 取消、IPC reset/EOF 只结束等待与尚未受理的调用；原 `AgentOperations` 等 owner 已接管的操作继续由其收束，取消 `wait_agent` 只结束观察。断连可能发生在受理后，不宣称“未执行”，也不重放。关闭顺序遵循 [14](./14-runtime-host.md#142-输入受理与驱动)，部分失败保留原句柄供原流程重试，旧凭据不能控制重开实例。不建立共享 listener 租约表、持久 cursor 映射、ACP 结果数据库、Native 父伪装或旁路关闭；不提供公网或 experimental MCP-over-ACP。

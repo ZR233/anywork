@@ -155,7 +155,19 @@ else()
       "ANYWORK_REMOTE_HELPER_DIR is not a directory: "
       "${ANYWORK_REMOTE_HELPER_DIR}")
   endif()
-  foreach(_anywork_helper_target aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
+  string(TOLOWER "${CMAKE_VS_PLATFORM_NAME}" _anywork_windows_platform)
+  if(_anywork_windows_platform STREQUAL "x64")
+    set(_anywork_host_mcp_target x86_64-pc-windows-msvc)
+  elseif(_anywork_windows_platform STREQUAL "arm64")
+    set(_anywork_host_mcp_target aarch64-pc-windows-msvc)
+  else()
+    message(FATAL_ERROR
+      "Unsupported Host MCP platform: ${CMAKE_VS_PLATFORM_NAME}")
+  endif()
+  set(_anywork_helper_targets
+    aarch64-unknown-linux-musl
+    x86_64-unknown-linux-musl)
+  foreach(_anywork_helper_target IN LISTS _anywork_helper_targets)
     if(NOT EXISTS
         "${ANYWORK_REMOTE_HELPER_DIR}/${_anywork_helper_target}/pl-remote-helper.zst"
         OR NOT EXISTS
@@ -163,7 +175,20 @@ else()
       message(FATAL_ERROR
         "Remote helper resources for ${_anywork_helper_target} are missing under "
         "${ANYWORK_REMOTE_HELPER_DIR}; rebuild with "
-        "'cargo xtask build-remote-helper --all-targets'.")
+        "'cargo xtask build-gui'.")
+    endif()
+  endforeach()
+  set(ANYWORK_HOST_MCP_DIR "$ENV{ANYWORK_HOST_MCP_DIR}")
+  file(TO_CMAKE_PATH "${ANYWORK_HOST_MCP_DIR}" ANYWORK_HOST_MCP_DIR)
+  if(NOT IS_ABSOLUTE "${ANYWORK_HOST_MCP_DIR}" OR
+      NOT IS_DIRECTORY "${ANYWORK_HOST_MCP_DIR}")
+    message(FATAL_ERROR
+      "ANYWORK_HOST_MCP_DIR must name an absolute resource directory; "
+      "build through 'cargo xtask build-gui' or 'cargo xtask run-gui'.")
+  endif()
+  foreach(_anywork_mcp_file pl-studio-mcp.zst pl-studio-mcp.metadata.json)
+    if(NOT EXISTS "${ANYWORK_HOST_MCP_DIR}/${_anywork_host_mcp_target}/${_anywork_mcp_file}")
+      message(FATAL_ERROR "Missing Host MCP resource: ${_anywork_mcp_file}; rebuild through xtask.")
     endif()
   endforeach()
 endif()
@@ -226,13 +251,18 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
   COMPONENT Runtime)
 
 if(NOT "$ENV{ANYWORK_DEMO}" STREQUAL "true")
-  foreach(_anywork_helper_target aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
+  foreach(_anywork_helper_target IN LISTS _anywork_helper_targets)
     install(FILES
         "${ANYWORK_REMOTE_HELPER_DIR}/${_anywork_helper_target}/pl-remote-helper.zst"
         "${ANYWORK_REMOTE_HELPER_DIR}/${_anywork_helper_target}/pl-remote-helper.metadata.json"
       DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/remote-helper/${_anywork_helper_target}"
       COMPONENT Runtime)
   endforeach()
+  install(FILES
+      "${ANYWORK_HOST_MCP_DIR}/${_anywork_host_mcp_target}/pl-studio-mcp.zst"
+      "${ANYWORK_HOST_MCP_DIR}/${_anywork_host_mcp_target}/pl-studio-mcp.metadata.json"
+    DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/host-mcp/${_anywork_host_mcp_target}"
+    COMPONENT Runtime)
 endif()
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

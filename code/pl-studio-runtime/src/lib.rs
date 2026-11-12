@@ -48,6 +48,8 @@ pub use studio::accounts;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub use studio::benchmark;
+mod executable_assets;
+mod host_mcp_assets;
 pub(crate) mod session;
 pub mod thread_assembler;
 mod updater;
@@ -72,6 +74,7 @@ pub use error_mapping::studio_error_from_anyhow;
 pub use first_run::{
     AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
 };
+pub use host_mcp_assets::HostMcpSource;
 pub use protocol::{
     FlushingPersistenceProgress, LspAvailable, LspAvailableActivity, LspBusy, LspChecking,
     LspDisabled, LspIdle, LspIndexing, LspUnavailable, StudioAgentDirectoryData,

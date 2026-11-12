@@ -70,6 +70,8 @@ pub(crate) struct AcpResources {
     owned: Mutex<Owned>,
     obligations: AtomicBool,
     host_mcp: Mutex<Option<HostMcp>>,
+    /// Kept independently of the HTTP listener until the entire ACP process tree is joined.
+    mcp_frontend: std::sync::Mutex<Option<crate::host_mcp_assets::HostMcpAsset>>,
     mcp_injected: AtomicBool,
     mcp_calls: OnceLock<Arc<AtomicU64>>,
     report_delivery: OnceLock<AcpReportDelivery>,
@@ -112,6 +114,7 @@ impl AcpResources {
             }),
             obligations: AtomicBool::new(true),
             host_mcp: Mutex::new(None),
+            mcp_frontend: std::sync::Mutex::new(None),
             mcp_injected: AtomicBool::new(false),
             mcp_calls: OnceLock::new(),
             report_delivery: OnceLock::new(),
@@ -130,6 +133,7 @@ impl AcpResources {
         host: crate::thread_assembler::AgentHost,
         caller: pl_protocol::AgentId,
         is_root: bool,
+        frontend: Option<crate::host_mcp_assets::HostMcpAsset>,
     ) -> Result<pl_acp::session::schema::McpServer> {
         let mut current = self.host_mcp.lock().await;
         ensure!(
@@ -137,10 +141,20 @@ impl AcpResources {
             "ACP Host MCP preparation was closed"
         );
         // No await occurs between server creation and transfer to its registered owner.
-        let (service, definition) =
-            HostMcp::start(host, caller, self.cancellation.clone(), is_root).await?;
+        let (service, definition) = HostMcp::start(
+            host,
+            caller,
+            self.cancellation.clone(),
+            is_root,
+            frontend.as_ref().map(AsRef::as_ref),
+        )
+        .await?;
         let calls = service.observed_counter();
         *current = Some(service);
+        *self
+            .mcp_frontend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = frontend;
         self.mcp_calls
             .set(calls)
             .map_err(|_| anyhow::anyhow!("ACP Host MCP metrics already bound"))?;
@@ -489,6 +503,10 @@ impl AcpResources {
             && owned.report_join.is_none()
             && host_mcp.is_none();
         if local_complete {
+            self.mcp_frontend
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
             owned.usage = None;
             self.obligations.store(false, Ordering::Release);
         }

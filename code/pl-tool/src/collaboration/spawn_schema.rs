@@ -44,11 +44,12 @@ pub(super) fn declaration(
     ))
 }
 
-/// Expose only consequences of the unchanged branches. Their oneOf remains authoritative:
-/// adding this object envelope must neither admit new requests nor exclude a valid branch.
+/// Close the object once, at the envelope. Each branch still rejects every known
+/// field it does not own, without rejecting fields a client adds to its envelope.
+/// The unmodified declaration admits exactly the original closed branches.
 fn top_level_schema(
     template: &Schema,
-    branches: Vec<Schema>,
+    mut branches: Vec<Schema>,
 ) -> Result<Value, AgentSpawnSchemaError> {
     let profile_template = template
         .as_object()
@@ -76,9 +77,10 @@ fn top_level_schema(
         ))?;
         if object.get("type").and_then(Value::as_str) != Some("object")
             || object.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || object.contains_key("patternProperties")
         {
             return Err(AgentSpawnSchemaError::Shape(
-                "spawn branch must reject additional properties",
+                "spawn branch must close explicitly named properties",
             ));
         }
         let fields = object.get("properties").and_then(Value::as_object).ok_or(
@@ -159,6 +161,24 @@ fn top_level_schema(
         Value::Array(profile_ids.into_iter().map(Value::String).collect()),
     );
     properties.insert("profileId".into(), Value::Object(identity));
+    for branch in &mut branches {
+        let object = branch.as_object_mut().ok_or(AgentSpawnSchemaError::Shape(
+            "spawn branch must be an object schema",
+        ))?;
+        object.remove("additionalProperties");
+        let fields = object
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+            .ok_or(AgentSpawnSchemaError::Shape(
+                "spawn branch properties are missing",
+            ))?;
+        // The envelope already rejects names outside this union. A false property
+        // schema rejects the remaining names excluded by the original branch,
+        // including explicit nulls. Do not alter any nested object closure.
+        for name in properties.keys() {
+            fields.entry(name.clone()).or_insert(Value::Bool(false));
+        }
+    }
     Ok(schemars::json_schema!({
         "type": "object",
         "properties": properties,
@@ -254,7 +274,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mixed_spawn_branches_keep_automatic_selection_native_only() {
+    fn mixed_spawn_branches_share_one_closed_envelope_without_relaxing_fields() {
         for mode in [DelegationMode::Automatic, DelegationMode::Profile] {
             let definition = declaration(
                 &[
@@ -268,6 +288,21 @@ mod tests {
                         backend: pl_protocol::AgentBackendKind::Acp,
                         workspace_mode: AgentWorkspaceMode::Directory,
                     },
+                    AgentSpawnProfile {
+                        profile_id: "review".into(),
+                        backend: pl_protocol::AgentBackendKind::Native,
+                        workspace_mode: AgentWorkspaceMode::Review,
+                    },
+                    AgentSpawnProfile {
+                        profile_id: "worktree".into(),
+                        backend: pl_protocol::AgentBackendKind::Native,
+                        workspace_mode: AgentWorkspaceMode::Worktree,
+                    },
+                    AgentSpawnProfile {
+                        profile_id: "unrestricted".into(),
+                        backend: pl_protocol::AgentBackendKind::Native,
+                        workspace_mode: AgentWorkspaceMode::Unrestricted,
+                    },
                 ],
                 mode,
             )
@@ -277,6 +312,22 @@ mod tests {
                 panic!("spawn must declare JSON input");
             };
             let branches = schema["oneOf"].as_array().unwrap();
+            let envelope = schema["properties"].as_object().unwrap();
+            assert_eq!(schema["additionalProperties"], false);
+            assert!(!envelope.contains_key("toolSummary"));
+            for branch in branches {
+                assert!(branch.get("additionalProperties").is_none());
+                let fields = branch["properties"].as_object().unwrap();
+                assert_eq!(
+                    fields.keys().collect::<BTreeSet<_>>(),
+                    envelope.keys().collect::<BTreeSet<_>>()
+                );
+                let id = fields["profileId"]["const"].as_str().unwrap();
+                for field in ["reviewTargetAgentId", "reviewFeedback"] {
+                    assert_eq!(fields[field] == false, id != "review");
+                }
+                assert_eq!(fields["writablePaths"] == false, id != "native");
+            }
             let native = branches
                 .iter()
                 .find(|branch| branch["properties"]["profileId"]["const"] == "native")
@@ -291,12 +342,12 @@ mod tests {
                 "reviewTargetAgentId",
                 "reviewFeedback",
             ] {
-                assert!(
-                    acp["properties"].get(field).is_none(),
-                    "{field} must be rejected"
-                );
+                if envelope.contains_key(field) {
+                    assert_eq!(acp["properties"][field], false, "{field} must be rejected");
+                } else {
+                    assert!(acp["properties"].get(field).is_none());
+                }
             }
-            assert_eq!(acp["additionalProperties"], false);
             assert!(native["properties"].get("writablePaths").is_some());
             assert_eq!(
                 native["properties"].get("modelSelection").is_some(),

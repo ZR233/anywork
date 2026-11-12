@@ -21,6 +21,7 @@ impl StudioRuntime {
         config_runtime: ConfigRuntime,
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
+        host_mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Result<Self> {
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
@@ -129,6 +130,7 @@ impl StudioRuntime {
             store.clone(),
             product_events.clone(),
             acp_workers.clone(),
+            host_mcp_source.clone(),
         );
         let service_config = config_runtime.clone();
         let service_store = store.clone();
@@ -209,6 +211,7 @@ impl StudioRuntime {
             acp_install,
             acp_detection,
             acp_workers,
+            host_mcp_source,
             model_performance,
             updater,
             activation: Default::default(),

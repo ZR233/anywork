@@ -19,7 +19,7 @@ pub(crate) fn build(options: BuildRemoteHelperOptions) -> Result<()> {
     build::build(options)
 }
 
-/// Verifies both helper architectures and stages the compressed bundle resources.
+/// Verifies both SSH architectures and stages resources.
 ///
 /// Returns the staging directory consumed by the desktop CMake install rules.
 pub(crate) fn prepare_bundle_resources(workspace_root: &Path) -> Result<std::path::PathBuf> {
@@ -47,3 +47,7 @@ struct HelperMetadata {
     remote_protocol_version: u32,
     sha256: String,
 }
+
+// Shared stateless build/resource primitives; source selection remains with each owner.
+pub(crate) use assets::{stage_executable_resource, verify_target_image};
+pub(crate) use build::native_binary;

@@ -92,6 +92,8 @@ pub enum Error {
     Busy,
     Stale,
     NotReady,
+    /// Safe preparation diagnostic supplied by the host, never raw peer/configuration data.
+    Preparation(String),
     Closed,
     Unsupported,
     UnsupportedVersion,
@@ -103,6 +105,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Preparation(message) => write!(f, "ACP preparation failed: {message}"),
             Self::Rpc(error) => write!(f, "ACP RPC error ({})", i32::from(error.code)),
             other => write!(f, "ACP {other:?}"),
         }
@@ -514,6 +517,7 @@ impl State {
         self.settle_open(Err(error.clone()));
         let size = match &error {
             Error::Rpc(error) => rpc_error_size(error),
+            Error::Preparation(message) => message.len().saturating_add(256),
             _ => 256,
         };
         self.emit(Event::Failed(error.clone()), Ok(size));
@@ -698,6 +702,7 @@ impl Driver {
                 Event::Failed(error.clone()),
                 Ok(match &error {
                     Error::Rpc(error) => rpc_error_size(error),
+                    Error::Preparation(message) => message.len().saturating_add(256),
                     _ => 256,
                 }),
             );

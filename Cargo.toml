@@ -26,6 +26,7 @@ members = [
     "code/tools/support/media",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
+    "code/pl-studio-mcp",
     "code/pl-studio-acceptance",
     "code/pl-studio-server",
     "code/anywork/rust",
@@ -179,6 +180,7 @@ pl-tool-bots = { path = "code/tools/bots" }
 pl-tool-media-support = { path = "code/tools/support/media" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
+pl-studio-mcp = { path = "code/pl-studio-mcp" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
 pl-studio-server = { path = "code/pl-studio-server" }
 pl-model = { path = "code/pl-model" }

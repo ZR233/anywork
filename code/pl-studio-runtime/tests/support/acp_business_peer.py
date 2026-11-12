@@ -19,9 +19,9 @@ for line in sys.stdin:
     rid=msg['id']
     if method == 'initialize':
         mode=(root / 'mode').read_text()
-        capabilities={'loadSession':True}
-        if mode == 'mcp-http':
-            capabilities['mcpCapabilities']={'http':True}
+        # Ordinary lifecycle cases use HTTP so they do not require the separately
+        # packaged stdio executable. Dedicated stdio cases exercise that transport.
+        capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}}
         result={'protocolVersion':1, 'agentCapabilities':capabilities,
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
     elif method in ['session/new','session/load','session/resume']:

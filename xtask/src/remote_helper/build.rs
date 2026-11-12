@@ -129,20 +129,7 @@ fn build_target(workspace_root: &Path, target: &str, builder: CargoBuilder) -> R
         let linker = discover_linker(target)?;
         command.env(linker_env_name(target), linker);
     }
-    command
-        .current_dir(workspace_root)
-        .args([
-            "--release",
-            "--locked",
-            "--package",
-            "pl-remote-helper",
-            "--target",
-            target,
-        ])
-        .env("CARGO_PROFILE_RELEASE_STRIP", "symbols")
-        .env("CARGO_PROFILE_RELEASE_LTO", "thin")
-        .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
-        .env("CARGO_PROFILE_RELEASE_PANIC", "abort");
+    configure_release_build(&mut command, workspace_root, "pl-remote-helper", target);
     let display = match builder {
         CargoBuilder::Cargo => {
             format!("cargo build --release --locked -p pl-remote-helper --target {target}")
@@ -181,7 +168,7 @@ fn build_target(workspace_root: &Path, target: &str, builder: CargoBuilder) -> R
         .with_context(|| format!("failed to read helper artifact: {}", output.display()))?;
     let digest = hex::encode(Sha256::digest(&bytes));
     let checksum = output.with_extension("sha256");
-    fs::write(&checksum, format!("{digest}  {HELPER_FILE_NAME}\n")).with_context(|| {
+    fs::write(&checksum, format!("{digest}  {}\n", HELPER_FILE_NAME)).with_context(|| {
         format!(
             "failed to write remote helper checksum: {}",
             checksum.display()
@@ -262,4 +249,55 @@ fn helper_executable(workspace_root: &Path, target: &str) -> PathBuf {
         .join(target)
         .join("release")
         .join(HELPER_FILE_NAME)
+}
+
+fn configure_release_build(
+    command: &mut Command,
+    workspace_root: &Path,
+    package: &str,
+    target: &str,
+) {
+    command
+        .current_dir(workspace_root)
+        .args([
+            "--release",
+            "--locked",
+            "--package",
+            package,
+            "--target",
+            target,
+        ])
+        .env("CARGO_PROFILE_RELEASE_STRIP", "symbols")
+        .env("CARGO_PROFILE_RELEASE_LTO", "thin")
+        .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
+        .env("CARGO_PROFILE_RELEASE_PANIC", "abort");
+}
+
+pub(crate) fn native_binary(workspace_root: &Path, package: &str, target: &str) -> Result<PathBuf> {
+    let mut command = Command::new("cargo");
+    command.arg("build").args(["--bin", package]);
+    configure_release_build(&mut command, workspace_root, package, target);
+    run_checked(
+        &mut command,
+        &format!("cargo build --release --locked -p {package} --bin {package} --target {target}"),
+    )?;
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    let target_dir = if target_dir.is_absolute() {
+        target_dir
+    } else {
+        workspace_root.join(target_dir)
+    };
+    let executable = target_dir
+        .join(target)
+        .join("release")
+        .join(format!("{package}{}", std::env::consts::EXE_SUFFIX));
+    if !executable.is_file() {
+        bail!(
+            "native binary build succeeded but artifact is missing: {}",
+            executable.display()
+        );
+    }
+    Ok(executable)
 }

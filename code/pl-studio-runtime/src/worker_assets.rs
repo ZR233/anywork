@@ -8,11 +8,7 @@ use std::{
 
 use pl_tool::remote::{RemoteClientError, RemoteHelperAssets, RemoteHelperTarget, SshManager};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-/// One decompressed helper must stay far below this bound; it only guards against
-/// unbounded decompression of a corrupted or replaced resource.
-const MAX_HELPER_BYTES: usize = 64 * 1024 * 1024;
 const BUNDLED_HELPER_ARCHIVE: &str = "pl-remote-helper.zst";
 const BUNDLED_HELPER_METADATA: &str = "pl-remote-helper.metadata.json";
 
@@ -90,7 +86,11 @@ impl RemoteHelperAssets for BundledHelperAssets {
 /// surface an actionable repair message; there is no fallback to `PATH` or the
 /// network in bundled mode.
 fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u8]>, String> {
-    let directory = root.join(target.triple());
+    load_bundled_target(root, target.triple())
+}
+
+fn load_bundled_target(root: &Path, target: &str) -> Result<Arc<[u8]>, String> {
+    let directory = root.join(target);
     let archive_path = directory.join(BUNDLED_HELPER_ARCHIVE);
     let metadata_path = directory.join(BUNDLED_HELPER_METADATA);
     let archive = fs::read(&archive_path)
@@ -108,12 +108,12 @@ fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u
                 metadata_path.display()
             )
         })?;
-    if metadata.target != target.triple() {
+    if metadata.target != target {
         return Err(format!(
             "bundled helper metadata {} declares target '{}', expected '{}'",
             metadata_path.display(),
             metadata.target,
-            target.triple()
+            target
         ));
     }
     if metadata.worker_protocol_version
@@ -136,21 +136,7 @@ fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u
             pl_protocol::remote::REMOTE_PROTOCOL_VERSION
         ));
     }
-    let executable = zstd::bulk::decompress(&archive, MAX_HELPER_BYTES).map_err(|error| {
-        format!(
-            "decompress bundled helper {}: {error}",
-            archive_path.display()
-        )
-    })?;
-    let digest = hex::encode(Sha256::digest(&executable));
-    if !digest.eq_ignore_ascii_case(&metadata.sha256) {
-        return Err(format!(
-            "bundled helper {} content digest {digest} does not match metadata {}",
-            archive_path.display(),
-            metadata.sha256
-        ));
-    }
-    Ok(Arc::from(executable.into_boxed_slice()))
+    crate::executable_assets::decompress_verified(&archive_path, &archive, &metadata.sha256)
 }
 
 /// Immutable host executable lease retained by session executors, including old generations.
@@ -215,33 +201,10 @@ fn host_helper_target() -> crate::Result<RemoteHelperTarget> {
 /// read-only, so later resource replacements cannot mutate a running image.
 #[cfg(target_os = "linux")]
 fn materialize_anonymous_worker(bytes: &[u8]) -> crate::Result<LocalWorkerAsset> {
-    use std::io::Write;
     use std::os::fd::AsRawFd;
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut file = tempfile::tempfile()
-        .map_err(|error| crate::PureError::ConfigError(format!("create local worker: {error}")))?;
-    file.write_all(bytes)
-        .and_then(|()| file.flush())
-        .map_err(|error| {
-            crate::PureError::ConfigError(format!("materialize local worker: {error}"))
-        })?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o700))
-        .map_err(|error| {
-            crate::PureError::ConfigError(format!("configure local worker permissions: {error}"))
-        })?;
-    // Reopen read-only before releasing the writer, otherwise exec can fail ETXTBSY.
-    // The anonymous inode has no directory entry to leak if the GUI is killed.
-    let image =
-        std::fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|error| {
-            crate::PureError::ConfigError(format!("retain local worker image: {error}"))
-        })?;
-    drop(file);
-    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", image.as_raw_fd()));
-    Ok(LocalWorkerAsset {
-        image: std::sync::Arc::new(image),
-        path,
-    })
+    let image = crate::executable_assets::anonymous_image(bytes)?;
+    let path = PathBuf::from(format!("/proc/self/fd/{}", image.as_raw_fd()));
+    Ok(LocalWorkerAsset { image, path })
 }
 
 #[cfg(target_os = "linux")]

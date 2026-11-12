@@ -4,6 +4,7 @@ use std::ffi::OsString;
 mod cli;
 mod client;
 mod flutter;
+mod host_mcp;
 mod release;
 mod release_bundle;
 mod remote_helper;

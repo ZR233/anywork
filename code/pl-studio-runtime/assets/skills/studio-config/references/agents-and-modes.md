@@ -53,12 +53,27 @@ do not supply `modelSelection`, Native effort, `writablePaths`, structured revie
 Native workflow arguments to an ACP child. New ACP children use the service's default
 session configuration; later configuration changes belong to that session.
 
-ACP callers receive the `anywork_` collaboration tools only when the service advertises
-HTTP MCP support. The host provides an instance-local authenticated loopback MCP server;
-do not add its transient URL or bearer to a user configuration file. Lack of HTTP MCP
-does not disqualify an ordinary ACP child. Tool prefixes and prompt instructions do not
+ACP callers receive the `anywork_` collaboration tools through direct HTTP when advertised,
+or the standard ACP v1 stdio MCP transport otherwise. The host provides the authenticated
+instance-local service. HTTP and stdio share one MCP handler; the native `pl-studio-mcp`
+stdio server calls the original runtime over local IPC, without an HTTP MCP relay.
+Do not persist transient IPC endpoints or capabilities, add them to prompts, or change
+the agent's own MCP settings. Packaged applications must contain the host-native
+`pl-studio-mcp` in `data/host-mcp/<target>/` separately from Linux SSH workers.
+Bundled sources never fall back to PATH; unpackaged entries use an explicit external
+source. HTTP capability alone is not the
+qualification for an ACP child. Tool prefixes and prompt instructions do not
 disable the service's own tools. If the service advertises `systemPrompt`, host
 instructions use its `append` mode; otherwise they accompany user prompt content.
+
+For an unpackaged host using the external source, install the executable from the
+same source revision with `cargo install --path code/pl-studio-mcp --locked` and
+ensure it is on that host process's PATH. The SSH supervisor remains a separate
+`pl-remote-helper` installation. Desktop `build-gui`, `run-gui`, and native tests
+prepare both assets through xtask. `ANYWORK_HOST_MCP_DIR` is an xtask build input,
+not an ACP account setting; `ANYWORK_HOST_IPC_ENDPOINT` and
+`ANYWORK_HOST_IPC_CAPABILITY` are per-instance runtime values. Never copy these
+values into user configuration.
 
 Use the Agents settings save/reload operation after editing and inspect its
 diagnostics and executable catalog. File validity and route availability differ;

@@ -17,6 +17,7 @@ pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
 criterion = { workspace = true, optional = true }
 pl-remote-helper = { workspace = true }
 pl-acp = { workspace = true }
+pl-studio-mcp = { workspace = true }
 pl-model = { workspace = true }
 pl-core = { workspace = true, features = ["sqlite"] }
 pl-tool = { workspace = true }
