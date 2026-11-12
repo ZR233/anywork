@@ -120,7 +120,7 @@ void main() {
     expect(await f.observed.hasHistoricalSource(_source), isTrue);
     expect(f.content.scope.demands, hasLength(2));
     for (final demand in f.content.scope.demands) {
-      expect(demand.maxItems, 1);
+      expect(demand.maxItems, 32);
       expect(demand.maxBytes, 16384);
     }
     for (final handle in f.content.scope.handles) {

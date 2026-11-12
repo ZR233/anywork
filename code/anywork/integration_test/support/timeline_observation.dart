@@ -466,7 +466,11 @@ final class TimelineObservation {
   ) async {
     DisplayMemberWindow window = const LatestDisplayMembers();
     while (true) {
-      final page = await readMemberPage(block.memberReference!, window: window);
+      final page = await readMemberPage(
+        block.memberReference!,
+        window: window,
+        demand: const ReadDemand(maxItems: 32, maxBytes: 16384),
+      );
       if (page.entries.any((head) => head.record.atom.source == source)) {
         return true;
       }
