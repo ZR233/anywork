@@ -111,365 +111,95 @@ impl ProfileEvidence {
 }
 
 pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
-    fn log_offsets(home: &Path) -> Result<Value> {
-        fn visit(root: &Path, directory: &Path, files: &mut Vec<Value>) -> Result<()> {
-            if !directory.exists() {
-                return Ok(());
-            }
-            for entry in fs::read_dir(directory)? {
-                let entry = entry?;
-                let kind = entry.file_type()?;
-                ensure!(!kind.is_symlink(), "diagnostic log contains a symlink");
-                if kind.is_dir() {
-                    visit(root, &entry.path(), files)?;
-                } else {
-                    files.push(json!({
-                        "path": entry.path().strip_prefix(root)?,
-                        "bytes": entry.metadata()?.len(),
-                    }));
-                }
-            }
-            Ok(())
-        }
-        let mut files = Vec::new();
-        visit(home, &home.join("studio/logs"), &mut files)?;
-        Ok(json!(files))
-    }
-    fn validate_catalog(document: &toml::Value, require_standalone: bool) -> Result<()> {
-        ensure!(
-            document["schemaVersion"].as_integer() == Some(2),
-            "unexpected workspace schema"
-        );
-        ensure!(
-            document["revision"].as_integer().is_some_and(|n| n >= 1),
-            "invalid workspace revision"
-        );
-        let table = document
-            .as_table()
-            .context("workspace catalog is not a table")?;
-        ensure!(
-            table
-                .keys()
-                .all(|key| matches!(key.as_str(), "schemaVersion" | "revision" | "workspaces")),
-            "unknown workspace document field"
-        );
-        let entries = document["workspaces"]
-            .as_array()
-            .context("workspace catalog is not an array")?;
-        let mut ids = std::collections::BTreeSet::new();
-        let mut standalone = 0usize;
-        for entry in entries {
-            let entry_table = entry.as_table().context("workspace entry is not a table")?;
-            ensure!(
-                entry_table.keys().all(|key| matches!(
-                    key.as_str(),
-                    "id" | "kind"
-                        | "name"
-                        | "path"
-                        | "sshAlias"
-                        | "createdAt"
-                        | "updatedAt"
-                        | "lastOpenedAt"
-                        | "closed"
-                )),
-                "unknown workspace entry field"
-            );
-            for key in ["id", "name", "path", "kind"] {
-                ensure!(
-                    entry
-                        .get(key)
-                        .and_then(toml::Value::as_str)
-                        .is_some_and(|s| !s.is_empty()),
-                    "invalid workspace {key}"
-                );
-            }
-            ensure!(
-                ids.insert(entry["id"].as_str().unwrap()),
-                "duplicate workspace identity"
-            );
-            ensure!(
-                matches!(entry["kind"].as_str(), Some("project" | "standalone")),
-                "unknown workspace kind"
-            );
-            for key in ["createdAt", "updatedAt"] {
-                ensure!(
-                    entry.get(key).and_then(toml::Value::as_integer).is_some(),
-                    "invalid workspace {key}"
-                );
-            }
-            ensure!(
-                entry
-                    .get("lastOpenedAt")
-                    .is_none_or(|value| value.as_integer().is_some()),
-                "invalid workspace lastOpenedAt"
-            );
-            ensure!(
-                entry
-                    .get("closed")
-                    .is_none_or(|value| value.as_bool().is_some()),
-                "invalid workspace closed"
-            );
-            ensure!(
-                entry
-                    .get("sshAlias")
-                    .is_none_or(|value| value.as_str().is_some()),
-                "invalid workspace sshAlias"
-            );
-            if entry["kind"].as_str() == Some("standalone") {
-                standalone += 1;
-                ensure!(
-                    entry.get("sshAlias").is_none()
-                        && entry.get("closed").and_then(toml::Value::as_bool) != Some(true),
-                    "invalid standalone owner"
-                );
-            }
-        }
-        ensure!(
-            standalone <= 1 && (!require_standalone || standalone == 1),
-            "invalid standalone count"
-        );
-        Ok(())
-    }
-    fn isolate_standalone(context: &ConversationReadWorkScenario<'_>) -> Result<Value> {
-        let path = context.home.join("data/workspaces.toml");
-        let before: toml::Value = toml::from_str(&fs::read_to_string(&path)?)?;
-        validate_catalog(&before, false)?;
-        let mut after = before.clone();
-        let standalone_path = context.working.join("isolated-standalone");
-        fs::create_dir(&standalone_path)?;
-        let standalone_path = standalone_path.canonicalize()?;
-        ensure!(
-            standalone_path.starts_with(context.working.canonicalize()?),
-            "standalone escaped fixture"
-        );
-        let entries = after["workspaces"].as_array_mut().unwrap();
-        let standalone = entries
-            .iter()
-            .position(|entry| entry["kind"].as_str() == Some("standalone"));
-        if let Some(index) = standalone {
-            entries[index]["path"] = toml::Value::String(
-                standalone_path
-                    .to_str()
-                    .context("non-UTF8 standalone path")?
-                    .into(),
-            );
-        } else {
-            // Only the approved synthetic catalog record is read; its old path is never accessed.
-            let template: toml::Value = toml::from_str(&fs::read_to_string(context.workspace.join(
-                "target/manual-gui/1794479224-4132514/environment-Bvov4V/home/data/workspaces.toml"
-            ))?)?;
-            validate_catalog(&template, true)?;
-            let mut entry = template["workspaces"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|entry| entry["kind"].as_str() == Some("standalone"))
-                .context("synthetic standalone template missing")?
-                .clone();
-            ensure!(
-                entry["id"].as_str() == Some("project-66012168ed676-1"),
-                "wrong synthetic template"
-            );
-            entry["path"] = toml::Value::String(
-                standalone_path
-                    .to_str()
-                    .context("non-UTF8 standalone path")?
-                    .into(),
-            );
-            entries.push(entry);
-        }
-        let old_projects: Vec<_> = before["workspaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|entry| entry["kind"].as_str() == Some("project"))
-            .collect();
-        let new_projects: Vec<_> = after["workspaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|entry| entry["kind"].as_str() == Some("project"))
-            .collect();
-        ensure!(
-            old_projects == new_projects,
-            "diagnostic isolation changed project records"
-        );
-        let revision = before["revision"]
-            .as_integer()
-            .unwrap()
-            .checked_add(1)
-            .context("workspace revision overflow")?;
-        after["revision"] = toml::Value::Integer(revision);
-        validate_catalog(&after, true)?;
-        let encoded = toml::to_string(&after)?;
-        ensure!(
-            toml::from_str::<toml::Value>(&encoded)? == after,
-            "workspace TOML roundtrip mismatch"
-        );
-        // All seed runtimes have shut down; only this new fixture catalog is prepared.
-        fs::write(&path, encoded)?;
-        ensure!(
-            toml::from_str::<toml::Value>(&fs::read_to_string(&path)?)? == after,
-            "workspace fixture write mismatch"
-        );
-        Ok(json!({"before": before, "after": after, "diagnosticIsolationVariable": true}))
-    }
-    fn clean_exit(app: &AppEvidence, output: &Path) -> bool {
-        !app.forced_recovery
-            && app.launcher_exit_status.as_deref() == Some("exit status: 0")
-            && app
-                .exit_request
-                .as_ref()
-                .is_some_and(|tool| !tool.forced_recovery && tool.errors.is_empty())
-            && app
-                .probe_process
-                .as_ref()
-                .is_some_and(|tool| !tool.forced_recovery)
-            && require_native_exit(
-                &output.join(format!("profile-{}/native-exit.json", app.name)),
-                app.native_pid,
-            )
-            .is_ok()
-    }
-    let report_path = context.output.join("fresh-seed-diagnostic.json");
-    let mut seeds = Vec::new();
-    let mut applications = Vec::new();
-    let mut errors = Vec::new();
-    let mut evidence = json!({
-        "diagnosticOnly": true,
-        "seededInSameInvocation": true,
-        "formalPerformanceVerdict": "notComputed",
-        "requested": {"cold": 1, "switch": 1},
-        "cold": {"status": "notExecuted"},
-        "switch": {"status": "notExecuted"},
-        "seed": [],
-        "applications": [],
-        "errors": [],
-        "finalized": false,
-    });
-    write_json(&report_path, &evidence)?;
-    write_json(
-        &context.output.join("verdict.json"),
-        &json!({
-            "human_verdict": "diagnostic_only_not_a_performance_verdict",
-            "diagnosticOnly": true,
-            "seededInSameInvocation": true,
-            "executionStatus": "running",
-        }),
-    )?;
+    let mut evidence = ProfileEvidence {
+        finalized: false,
+        source_before: None,
+        source_after: None,
+        environment: None,
+        seeds: Vec::new(),
+        applications: Vec::new(),
+        cold: Group::new("cold"),
+        switches: Group::new("switch"),
+        errors: Vec::new(),
+    };
+    // A seed/startup failure must still leave the full requested sample denominator.
+    evidence.save(context.output)?;
     let primary = (|| -> Result<()> {
-        evidence["sourceBefore"] = identity::source(context, "before")?;
-        evidence["environment"] = identity::environment(context)?;
-        evidence["logOffsetsBeforeSeed"] = log_offsets(context.home)?;
-        write_json(&report_path, &evidence)?;
-        let seeded = seed::run(context, &mut seeds);
-        evidence["seed"] = serde_json::to_value(&seeds)?;
-        evidence["logOffsetsAfterSeed"] = log_offsets(context.home)?;
-        write_json(&report_path, &evidence)?;
-        seeded?;
-        ensure!(seeds.len() == 2, "diagnostic seed count mismatch");
-        let a = seeds[0].thread_id.clone().context("missing seed A")?;
-        let b = seeds[1].thread_id.clone().context("missing seed B")?;
+        evidence.source_before = Some(identity::source(context, "before")?);
+        evidence.environment = Some(identity::environment(context)?);
+        seed::run(context, &mut evidence.seeds)?;
+        evidence.save(context.output)?;
+        let a = evidence.seeds[0]
+            .thread_id
+            .clone()
+            .context("missing seed A")?;
+        let b = evidence.seeds[1]
+            .thread_id
+            .clone()
+            .context("missing seed B")?;
         ensure!(a != b, "profile seeds reused the same Thread");
-        let project = seeds[0]
+        let project = evidence.seeds[0]
             .project_id
             .clone()
             .context("missing seed project")?;
         ensure!(
-            seeds[1].project_id.as_deref() == Some(project.as_str()),
+            evidence.seeds[1].project_id.as_deref() == Some(project.as_str()),
             "profile seeds must belong to the same project"
         );
-        for inventory in evidence["seed"]
-            .as_array()
-            .context("missing seed inventory")?
-        {
-            ensure!(
-                inventory["modelTextItems"].as_u64()
-                    == Some(GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS as u64)
-                    && inventory["normalInputTurns"].as_u64()
-                        == Some(GUI_TIMELINE_READ_PROFILE_SEED_BATCHES as u64)
-                    && inventory["mainItems"]
-                        .as_u64()
-                        .is_some_and(|n| n >= GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS as u64),
-                "fresh seed inventory mismatch"
-            );
-        }
-        evidence["workspaceIsolation"] = isolate_standalone(context)?;
-        evidence["logOffsetsBeforeCold"] = log_offsets(context.home)?;
-        write_json(&report_path, &evidence)?;
-        for mode in ["cold", "switch"] {
+        for index in 0..SAMPLES {
             let mut app = run_app(
                 context,
-                &format!("diagnostic-{mode}"),
-                mode,
+                &format!("cold-{:02}", index + 1),
+                "cold",
                 &a,
                 &b,
                 &project,
                 1,
             );
-            let fixed = require_fixed_artifacts(&applications, &app);
+            let fixed = require_fixed_artifacts(&evidence.applications, &app);
             record(&mut app.errors, "fixed application artifacts", fixed);
-            let closed = clean_exit(&app, context.output);
-            if !closed {
-                app.errors.push("diagnostic application did not close cleanly; no further application will start".into());
-            }
+            admit_samples(&mut evidence.cold, index, 1, &mut app, &a);
             let failed = !app.errors.is_empty();
-            errors.extend(app.errors.iter().cloned());
-            evidence[mode] = json!({"status": if failed { "failed" } else { "observed" }, "closedCleanly": closed});
-            applications.push(app);
-            evidence["applications"] = serde_json::to_value(&applications)?;
-            evidence["errors"] = json!(&errors);
-            evidence[if mode == "cold" {
-                "logOffsetsAfterCold"
-            } else {
-                "logOffsetsAfterSwitch"
-            }] = log_offsets(context.home)?;
-            write_json(&report_path, &evidence)?;
-            ensure!(
-                !failed,
-                "fresh-seed diagnostic {mode} failed; remaining application not executed"
-            );
+            evidence.errors.extend(app.errors.iter().cloned());
+            evidence.applications.push(app);
+            evidence.save(context.output)?;
+            ensure!(!failed, "cold sample {} failed", index + 1);
         }
+        let mut app = run_app(context, "switch", "switch", &a, &b, &project, SAMPLES);
+        let fixed = require_fixed_artifacts(&evidence.applications, &app);
+        record(&mut app.errors, "fixed application artifacts", fixed);
+        admit_samples(&mut evidence.switches, 0, SAMPLES, &mut app, &a);
+        let failed = !app.errors.is_empty();
+        evidence.errors.extend(app.errors.iter().cloned());
+        evidence.applications.push(app);
+        evidence.save(context.output)?;
+        ensure!(!failed, "switch samples failed");
+        ensure!(
+            evidence.cold.summary().meets_target && evidence.switches.summary().meets_target,
+            "complete cold/switch sample distributions did not meet p95 <= 500 ms"
+        );
         Ok(())
     })();
-    record(&mut errors, "fresh-seed diagnostic", primary);
-    evidence["seed"] = serde_json::to_value(&seeds)?;
-    evidence["applications"] = serde_json::to_value(&applications)?;
-    evidence["sourceAfter"] = json!(record(
-        &mut errors,
+    record(&mut evidence.errors, "profile sampling", primary);
+
+    // Even a failed seed or sample gets a final source check and a partial report.
+    evidence.source_after = record(
+        &mut evidence.errors,
         "final source identity",
         identity::source(context, "after"),
-    ));
-    if evidence
-        .get("sourceBefore")
-        .is_some_and(|before| before != &evidence["sourceAfter"])
+    );
+    if let (Some(before), Some(after)) = (&evidence.source_before, &evidence.source_after)
+        && before != after
     {
-        errors.push("source changed during fresh-seed diagnostic".into());
+        evidence
+            .errors
+            .push("source changed during profile sampling".into());
     }
-    evidence["errors"] = json!(&errors);
-    evidence["finalized"] = json!(true);
-    record(
-        &mut errors,
-        "save fresh-seed diagnostic",
-        write_json(&report_path, &evidence),
-    );
-    let verdict = json!({
-        "human_verdict": "diagnostic_only_not_a_performance_verdict",
-        "diagnosticOnly": true,
-        "seededInSameInvocation": true,
-        "executionStatus": if errors.is_empty() { "completed" } else { "failed" },
-        "errors": &errors,
-    });
-    record(
-        &mut errors,
-        "save diagnostic verdict",
-        write_json(&context.output.join("verdict.json"), &verdict),
-    );
-    println!(
-        "diagnostic-only fresh-seed evidence: {}",
-        context.output.display()
-    );
-    require_no_errors(&errors)
+    evidence.finalized = true;
+    let saved = evidence.save(context.output);
+    record(&mut evidence.errors, "save final profile report", saved);
+    println!("native Profile evidence: {}", context.output.display());
+    require_no_errors(&evidence.errors)
 }
 
 fn admit_samples(
@@ -662,23 +392,28 @@ fn run_app(
         }
 
         // Normal product close first. Driver/VM disconnection is not application exit.
-        let mut close = capture_command(&context.workspace.join("code/anywork"));
-        close.args(["--vm-url", vm, "--exit"]);
-        let tool = run_tool(
-            &mut close,
-            &directory,
-            "request-exit",
-            context.interrupt,
-            Duration::from_secs(45),
-            None,
-            Some(&raw_directory),
-        );
-        evidence.errors.extend(
-            tool.errors
-                .iter()
-                .map(|error| format!("{name} requestExit: {error}")),
-        );
-        evidence.exit_request = Some(tool);
+        if let Some(mut close) = record(
+            &mut evidence.errors,
+            "prepare product exit command",
+            capture_command(&context.workspace.join("code/anywork")),
+        ) {
+            close.args(["--vm-url", vm, "--exit"]);
+            let tool = run_tool(
+                &mut close,
+                &directory,
+                "request-exit",
+                context.interrupt,
+                Duration::from_secs(45),
+                None,
+                Some(&raw_directory),
+            );
+            evidence.errors.extend(
+                tool.errors
+                    .iter()
+                    .map(|error| format!("{name} requestExit: {error}")),
+            );
+            evidence.exit_request = Some(tool);
+        }
         if let Some(status) = record(
             &mut evidence.errors,
             "wait for actual GUI OS exit",

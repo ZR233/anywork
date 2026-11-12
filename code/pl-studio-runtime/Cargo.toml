@@ -70,33 +70,9 @@ zeroize = { workspace = true }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 process-wrap = { workspace = true }
 
-[[example]]
-name = "collaboration_observe"
-required-features = ["live-tests"]
-
-[[example]]
-name = "model_observe"
-required-features = ["live-tests"]
-
-[[example]]
-name = "tool_error_observe"
-required-features = ["live-tests"]
-
 [build-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
-
-[[example]]
-name = "context_cache_observe"
-required-features = ["live-tests"]
-
-[[example]]
-name = "context_cache_matrix"
-required-features = ["live-tests"]
-
-[[example]]
-name = "updater_observe"
-required-features = ["live-tests"]
 
 [[bench]]
 name = "statistics_pipeline"

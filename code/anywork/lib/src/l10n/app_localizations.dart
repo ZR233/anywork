@@ -1,3 +1,6 @@
+// Flutter 3.50 gen-l10n still emits the SDK's deprecated localization delegates.
+// ignore_for_file: deprecated_member_use
+
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';

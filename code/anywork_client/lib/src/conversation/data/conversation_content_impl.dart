@@ -47,8 +47,6 @@ final class ConversationContentImpl implements TimelineContent {
   int _retries = 0;
   Timer? _retryTimer;
   Future<CloseReport>? _closing;
-  // Temporary output quota only; no cross-layer diagnostic context.
-  static int _readProfileTimelineOpens = 0;
   @override
   bool get hasDemand => _demand;
   @override
@@ -212,33 +210,10 @@ final class ConversationContentImpl implements TimelineContent {
             'Timeline transport required',
           );
         }
-        a.readProfileTimeline = _readProfileTimelineOpens < 8;
-        if (a.readProfileTimeline) _readProfileTimelineOpens++;
-        final started = a.readProfileTimeline ? developer.Timeline.now : 0;
-        if (a.readProfileTimeline) {
-          print(
-            'READ_PROFILE_STAGE stage=sdk_timeline_open phase=begin '
-            'micros=$started thread=$threadId attempt=${a.id.value} '
-            'content=${identityHashCode(this)} '
-            'maxItems=${(initialDemand ?? a.consumer.demand).maxItems} '
-            'maxBytes=${(initialDemand ?? a.consumer.demand).maxBytes}',
-          );
-        }
-        try {
-          feed = await (transport as TimelineTransport).openTimelineFeed(
-            threadId,
-            demand: initialDemand ?? a.consumer.demand,
-          );
-        } finally {
-          if (a.readProfileTimeline) {
-            final ended = developer.Timeline.now;
-            print(
-              'READ_PROFILE_STAGE stage=sdk_timeline_open phase=end '
-              'micros=$ended thread=$threadId attempt=${a.id.value} '
-              'durationMicros=${ended - started}',
-            );
-          }
-        }
+        feed = await (transport as TimelineTransport).openTimelineFeed(
+          threadId,
+          demand: initialDemand ?? a.consumer.demand,
+        );
       } else {
         feed = await _transport.openConversationFeed(
           threadId,
@@ -319,20 +294,6 @@ final class ConversationContentImpl implements TimelineContent {
     }
     a.received = frame.deliverySequence;
     a.ledger[frame.deliverySequence] = false;
-    final profile =
-        a.readProfileTimeline &&
-        !a.readProfileFirstFrame &&
-        frame.event is ConversationTimelineEvent;
-    final received = profile ? developer.Timeline.now : 0;
-    if (profile) {
-      a.readProfileFirstFrame = true;
-      print(
-        'READ_PROFILE_STAGE stage=sdk_first_timeline phase=enqueue '
-        'micros=$received thread=$threadId attempt=${a.id.value} '
-        'subscription=${feed.subscriptionId} '
-        'delivery=${frame.deliverySequence}',
-      );
-    }
     final work = _enqueue(a, () async {
       if (!_eligible(a, a.consumer)) return;
       switch (frame.event) {
@@ -357,31 +318,7 @@ final class ConversationContentImpl implements TimelineContent {
           }
           await _deliverActivity(a, a.consumer, snapshot);
         case ConversationTimelineEvent(:final batch):
-          final started = profile ? developer.Timeline.now : 0;
-          if (profile) {
-            print(
-              'READ_PROFILE_STAGE stage=sdk_admission phase=begin '
-              'micros=$started thread=$threadId attempt=${a.id.value} '
-              'subscription=${feed.subscriptionId} '
-              'queueWaitMicros=${started - received} '
-              'blocks=${batch.blocks.length} '
-              'liveBlocks=${batch.live?.blocks.length} '
-              'encodedBytes=unavailable',
-            );
-          }
-          try {
-            await _deliverTimeline(a, a.consumer, batch);
-          } finally {
-            if (profile) {
-              final ended = developer.Timeline.now;
-              print(
-                'READ_PROFILE_STAGE stage=sdk_admission phase=end '
-                'micros=$ended thread=$threadId attempt=${a.id.value} '
-                'subscription=${feed.subscriptionId} '
-                'durationMicros=${ended - started}',
-              );
-            }
-          }
+          await _deliverTimeline(a, a.consumer, batch);
         case ConversationFailureEvent() || ConversationClosedEvent():
           throw const ConversationContinuityError('unexpected terminal');
       }
@@ -890,8 +827,6 @@ final class _Attempt {
   Future<void> serial = Future.value();
   bool terminal = false;
   bool hasSet = false;
-  bool readProfileTimeline = false;
-  bool readProfileFirstFrame = false;
   bool retryable = true;
   int through = 0;
   int activityRevision = -1;

@@ -200,7 +200,7 @@ impl ThreadModel {
         let session = ModelSession::default();
         let invocation = ModelInvocationContext::new(session.clone())
             .with_cancellation(Some(request.cancellation.clone()))
-            .with_prompt_cache_key(super::cache::key(&self.runtime, &request.thread_id))
+            .with_prompt_cache_scope(crate::runtime::PromptCacheScope::thread(&request.thread_id))
             .with_trace_metadata(crate::completion::CompletionTraceContext {
                 session_id: request.thread_id.clone(),
                 turn_id: request.turn_id.clone(),

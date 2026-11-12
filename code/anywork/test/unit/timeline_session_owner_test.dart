@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -15,6 +18,9 @@ import 'package:anywork/src/features/conversation/timeline/live_status/live_stat
 
 import '../support/completion_fixtures.dart';
 import '../support/display_fixtures.dart';
+import '../support/pump_client_future.dart';
+import '../support/recording_demo_transport.dart';
+import '../support/test_statistics_feed.dart';
 
 const chatDemand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
@@ -490,6 +496,169 @@ void main() {
     },
   );
 
+  testWidgets(
+    'composer dispatch does not wait for paint and survives display retirement',
+    (tester) async {
+      const threadId = 'thread-main';
+      final transport = _ComposerTransport();
+      final graph = AppGraph(
+        transport: transport,
+        clientId: 'composer-without-paint',
+        statisticsFeed: const TestStatisticsFeedPort(),
+      );
+      final container = ProviderContainer(
+        overrides: [appGraphProvider.overrideWithValue(graph)],
+      );
+      TimelineDisplayLease? display;
+      addTearDown(() async {
+        container.dispose();
+        if (!transport.reply.isCompleted) transport.reply.complete();
+        final released = display?.isMounted == true ? display!.unbind() : null;
+        await pumpClientFuture(
+          tester,
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          'composer without paint teardown',
+        );
+        if (released != null) {
+          await pumpClientFuture(tester, released, 'composer display release');
+        }
+      });
+      await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      graph
+        ..timeline.updateReadDemand(chatDemand)
+        ..setConversationPageVisible(true);
+      await pumpClientFuture(
+        tester,
+        graph.client.directoryCommands.selectThread(threadId),
+        'select composer target',
+      );
+      await pumpClientUntil(
+        tester,
+        () =>
+            graph.timeline.lease(threadId) != null &&
+            graph.client.conversations.session(threadId).state.modelRoute !=
+                null,
+        'composer target ready',
+      );
+      final lease = graph.timeline.lease(threadId)!..bind();
+      display = lease;
+      final owner = graph.client.drafts.existingComposer(threadId)!;
+      owner.updateDraft('dispatch without a frame');
+      final provider = composerViewModelProvider(
+        const ThreadComposerTarget(threadId: threadId),
+      );
+      final observation = container.listen(provider, (_, _) {});
+      await container.pump();
+      expect(
+        container.read(provider).requireValue.input.action.enterSubmits,
+        isTrue,
+      );
+      await graph.timeline.dispatch(threadId, const TimelineEnterHistory());
+      var painted = false;
+      final painting = tester.binding.endOfFrame.then((_) => painted = true);
+
+      container.read(provider.notifier).submit();
+      final echo = owner.submissions.value.single;
+      expect(owner.state.draft, isEmpty);
+      expect(graph.timeline.source.value?.mode, TimelineDisplayMode.live);
+      // Drain command microtasks, not frames: this fails if dispatch awaits paint.
+      await tester.idle();
+      expect(painted, isFalse);
+      expect(transport.inputs.single.inputId, echo.inputId);
+      expect(transport.inputs.single.text, 'dispatch without a frame');
+
+      observation.close();
+      graph.timeline.select(null);
+      await lease.unbind();
+      owner.updateDraft('new draft after retirement');
+      transport.reply.complete();
+      await tester.idle();
+      expect(painted, isFalse);
+      expect(owner.state.draft, 'new draft after retirement');
+      expect(
+        owner.submissions.value.single.phase,
+        ComposerSubmissionPhase.accepted,
+      );
+      await tester.pump();
+      await painting;
+    },
+  );
+
+  testWidgets(
+    'composer display intent is synchronous without advancing a drawing frame',
+    (tester) async {
+      final h = _Harness();
+      await h.openA([_text('a', 1)]);
+      final lease = h.owner.lease('a')!..bind();
+      await h.owner.dispatch('a', const TimelineEnterHistory());
+      await h.a.deliver(
+        _batch([_text('a', 2)], placement: ChatPlacement.append),
+      );
+      final sets = lease.appliedSets;
+      final appends = lease.appliedAppends;
+      final queries = List.of(h.a.scopes);
+      var painted = false;
+      final painting = tester.binding.endOfFrame.then((_) => painted = true);
+
+      h.owner.prepareComposerSubmissionDisplay('a', lease: lease);
+
+      // No pump: hidden applications may never deliver this scheduled frame.
+      expect(painted, isFalse);
+      expect(h.owner.source.value?.mode, TimelineDisplayMode.live);
+      expect(h.owner.source.value?.hasNewOutput, isFalse);
+      expect(h.owner.lease('a'), same(lease));
+      expect(lease.loadedCount, 2);
+      expect(lease.appliedSets, sets);
+      expect(lease.appliedAppends, appends);
+      expect(h.a.scopes, queries);
+      expect(h.a.attaches, 1);
+      expect(h.a.refreshes, 0);
+
+      await tester.pump();
+      await painting;
+      // Unbind detaches the subtree, but release also requires owner retirement.
+      final released = lease.unbind();
+      expect(lease.isMounted, isFalse);
+      expect((await h.owner.close()).complete, isTrue);
+      await released;
+      expect(lease.isReleased, isTrue);
+    },
+  );
+
+  test(
+    'stale composer display intent cannot return a replacement lease to live',
+    () async {
+      final h = _Harness();
+      await h.openA([_text('a', 1)]);
+      final old = h.owner.lease('a')!..bind();
+      h.owner.select(null);
+      h.owner.select('a');
+      await h.a.deliver(_batch([_text('a', 2)]));
+      final current = h.owner.lease('a')!..bind();
+      await h.owner.dispatch('a', const TimelineEnterHistory());
+      final state = h.owner.source.value;
+
+      h.owner.prepareComposerSubmissionDisplay('a', lease: old);
+
+      expect(old.isRetired, isTrue);
+      expect(current, isNot(same(old)));
+      expect(h.owner.lease('a'), same(current));
+      expect(h.owner.source.value, same(state));
+      expect(current.mode, TimelineDisplayMode.history);
+      expect(current.controller.messages.single.id, 'a-2');
+      expect(h.a.attaches, 2);
+      expect(h.a.refreshes, 0);
+      await old.unbind();
+      // The replacement is still active until close retires it.
+      final released = current.unbind();
+      expect(current.isMounted, isFalse);
+      expect((await h.owner.close()).complete, isTrue);
+      await released;
+      expect(old.isReleased, isTrue);
+      expect(current.isReleased, isTrue);
+    },
+  );
+
   test(
     'connection/save notifications perform no historical controller operation',
     () async {
@@ -778,6 +947,26 @@ CompletedEntry _text(String thread, int seq) => completionEntry(
   presentation: MainPresentation.single,
   text: 'body-$seq',
 );
+
+final class _ComposerTransport extends RecordingDemoTransport {
+  final reply = Completer<void>();
+  final inputs = <StudioPromptInput>[];
+
+  @override
+  Future<SubmitPromptReceipt> submitPrompt(
+    String threadId,
+    StudioPromptInput input, {
+    required int expectedModelRouteRevision,
+  }) async {
+    inputs.add(input);
+    await reply.future;
+    return SubmitPromptReceipt(
+      threadId: threadId,
+      inputId: input.inputId,
+      cursor: 1,
+    );
+  }
+}
 
 final class _Harness {
   _Harness({bool viewport = true}) {

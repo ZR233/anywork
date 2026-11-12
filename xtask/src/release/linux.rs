@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DESKTOP: &str = "share/applications/io.github.zr233.anywork.desktop";
-const ICON: &str = "share/icons/hicolor/1024x1024/apps/io.github.zr233.anywork.png";
+const ICON: &str = "share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png";
 const LIBRARIES: [&str; 3] = [
     "lib/libflutter_linux_gtk.so",
     "lib/libpl_studio_bridge.so",

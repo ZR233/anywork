@@ -1,13 +1,10 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart' show ConversationActivityView;
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import '../live_status/live_status_state.dart';
-import '../live_status/live_status_state_machine.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
@@ -19,42 +16,39 @@ import 'timeline_member_atom.dart';
 enum ConversationLiveSection { work, output }
 
 /// 实时展示租约作用域适配器（`implements TimelineCurrentDisplay`）：
-/// 仅负责将 `LiveStatusViewModel`（或无 Provider 单测下的 `LiveStatusStateMachine`）已归约好的
+/// 仅负责将 `LiveStatusViewModel` 已归约好的
 /// 表面与分页结果绑定到原始 `TimelineDisplayLease` 生命周期，管理 `SingleDisplayBlock` 退役通知。
 /// 不在 Widget `build()` 内重复执行阶段吸收、工作组归属筛选或外部状态发布。
 class ConversationCurrentConnector extends StatefulWidget {
   const ConversationCurrentConnector({
-    required this.session,
+    required this.threadId,
+    this.turnId,
+    this.activityId,
     required this.section,
     required this.content,
-    required this.live,
     required this.liveUnit,
     required this.images,
     required this.readAttachment,
     required this.isDisplayActive,
-    this.managedByViewModel = false,
     this.presenting,
     this.workSlice,
     this.onLoadOlder,
     this.onReturnToLatest,
-    this.loadLiveOlder,
     this.registerDisplay,
     this.onExpandedChanged,
     this.now,
     super.key,
-  });
+  }) : assert(section != ConversationLiveSection.work || workSlice != null);
 
-  final ThreadSessionState session;
+  final String threadId;
+  final String? turnId;
+  final String? activityId;
   final ConversationLiveSection section;
   final ConversationContent content;
-  final ValueListenable<LiveDisplayWindow?> live;
   final TimelineDisplayUnit Function(LiveDisplayBlock, bool) liveUnit;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String) readAttachment;
   final bool Function() isDisplayActive;
-
-  /// 为 `true` 时状态已由 `LiveStatusViewModel` 预计算交付，连接器仅消费入参并管理退役生命周期。
-  final bool managedByViewModel;
 
   /// 生产路径由 `LiveStatusViewModel` 预计算交付的底部实时状态栏呈现状态。
   final LiveStatusPresenting? presenting;
@@ -66,8 +60,6 @@ class ConversationCurrentConnector extends StatefulWidget {
   final ValueChanged<String>? onLoadOlder;
   final VoidCallback? onReturnToLatest;
 
-  /// 独立无 Provider 组件测试使用的按需加载回调，由内部同一 `LiveStatusStateMachine` 驱动。
-  final Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
   final VoidCallback Function(TimelineCurrentDisplay)? registerDisplay;
   final ValueChanged<bool>? onExpandedChanged;
   final DateTime Function()? now;
@@ -82,20 +74,14 @@ class _CurrentState extends State<ConversationCurrentConnector>
   final Map<String, ValueNotifier<bool>> _retirements = {};
   VoidCallback? _unregister;
   bool _disposed = false;
-  LiveStatusAggregate? _standaloneAggregate;
-
-  LiveStatusAggregate _ensureStandaloneAggregate() => _standaloneAggregate ??=
-      LiveStatusAggregate.initial(widget.session.threadId);
-
   @override
   bool get isCurrent => mounted && !_disposed && widget.isDisplayActive();
 
   @override
-  String? get turnId => isCurrent ? widget.session.activeTurn?.turnId : null;
+  String? get turnId => isCurrent ? widget.turnId : null;
 
   @override
-  String? get activityId =>
-      isCurrent ? widget.session.activity?.identity : null;
+  String? get activityId => isCurrent ? widget.activityId : null;
 
   @override
   bool get expanded => isCurrent && _members.isNotEmpty;
@@ -115,8 +101,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
   void initState() {
     super.initState();
     _unregister = widget.registerDisplay?.call(this);
-    widget.live.addListener(_onLiveChanged);
-    _reconcile();
+    _synchronizeRetirements();
   }
 
   @override
@@ -125,71 +110,12 @@ class _CurrentState extends State<ConversationCurrentConnector>
     if (!identical(oldWidget.content, widget.content)) {
       throw StateError('Live content cannot change its original lease');
     }
-    if (!identical(oldWidget.live, widget.live)) {
-      throw StateError('Live display cannot replace its admission notifier');
-    }
-    if (oldWidget.managedByViewModel != widget.managedByViewModel) {
-      throw StateError('Live display cannot switch ViewModel ownership mode');
-    }
-    _reconcile();
-  }
-
-  void _onLiveChanged() {
-    if (!mounted || _disposed || widget.managedByViewModel) return;
-    setState(_reconcile);
-  }
-
-  void _reconcile() {
-    if (!widget.managedByViewModel) {
-      final active = isCurrent;
-      final latest = active ? widget.live.value : null;
-      final cut = active && latest != null
-          ? LiveWindowCut(
-              revision: latest.revision,
-              historyThrough: latest.historyThrough,
-              executionPresent: latest.executionPresent,
-              attemptId: widget.content.currentAttemptId,
-              isDisplayActive: true,
-            )
-          : const LiveWindowCut.inactive();
-      final transition = LiveStatusStateMachine.transition(
-        _ensureStandaloneAggregate(),
-        LiveStatusObserved(
-          LiveStatusObservation(
-            cut: cut,
-            storage: widget.session.storage,
-            interactions: widget.session.interactions,
-            businessRefs: widget.session.businessRefs,
-            activeTurnId: widget.session.activeTurn?.turnId,
-            activity: widget.session.activity,
-            latestLive: latest,
-            hasContentOwner: true,
-          ),
-        ),
-      );
-      _standaloneAggregate = transition.state;
-    }
     _synchronizeRetirements();
   }
 
-  LiveStatusPresenting? get _resolvedPresenting {
-    if (widget.managedByViewModel) return widget.presenting;
-    final state = _ensureStandaloneAggregate().barState;
-    return switch (state) {
-      LiveStatusPresenting() => state,
-      LiveStatusDockMasked(:final obscured) => obscured,
-      LiveStatusHidden() => null,
-    };
-  }
-
-  LiveStatusTimelineWorkSlice get _resolvedWorkSlice =>
-      widget.managedByViewModel
-      ? (widget.workSlice ?? LiveStatusTimelineWorkSlice())
-      : _ensureStandaloneAggregate().timelineWork;
-
   void _synchronizeRetirements() {
     final blocks = widget.section == ConversationLiveSection.output
-        ? (_resolvedPresenting?.surface.blocks ?? const <LiveDisplayBlock>[])
+        ? (widget.presenting?.surface.blocks ?? const <LiveDisplayBlock>[])
         : const <LiveDisplayBlock>[];
     final wanted = {
       if (isCurrent)
@@ -208,84 +134,16 @@ class _CurrentState extends State<ConversationCurrentConnector>
   }
 
   void _requestOlder(String before) {
-    if (!isCurrent) return;
-    if (widget.onLoadOlder != null) {
-      widget.onLoadOlder!(before);
-      return;
-    }
-    final read = widget.loadLiveOlder;
-    if (read == null) return;
-    final target = widget.section == ConversationLiveSection.output
-        ? LiveStatusSectionTarget.outputBar
-        : LiveStatusSectionTarget.timelineWork;
-    final transition = LiveStatusStateMachine.transition(
-      _ensureStandaloneAggregate(),
-      LiveStatusLoadOlderRequested(target: target, before: before),
-    );
-    setState(() => _standaloneAggregate = transition.state);
-    for (final effect in transition.effects) {
-      if (effect is ReadOlderLiveWindowEffect) {
-        unawaited(_fetchStandaloneOlder(read, effect));
-      }
-    }
-  }
-
-  Future<void> _fetchStandaloneOlder(
-    Future<LiveDisplayWindow> Function(String) read,
-    ReadOlderLiveWindowEffect effect,
-  ) async {
-    try {
-      final window = await read(effect.before);
-      if (!mounted || _disposed) return;
-      setState(() {
-        _standaloneAggregate = LiveStatusStateMachine.transition(
-          _ensureStandaloneAggregate(),
-          LiveStatusOlderLoaded(
-            target: effect.target,
-            before: effect.before,
-            window: window,
-            cut: effect.cut,
-          ),
-        ).state;
-        _synchronizeRetirements();
-      });
-    } catch (error) {
-      if (!mounted || _disposed) return;
-      setState(() {
-        _standaloneAggregate = LiveStatusStateMachine.transition(
-          _ensureStandaloneAggregate(),
-          LiveStatusOlderFailed(
-            target: effect.target,
-            before: effect.before,
-            error: error,
-            cut: effect.cut,
-          ),
-        ).state;
-      });
-    }
+    if (isCurrent) widget.onLoadOlder?.call(before);
   }
 
   void _returnToLatest() {
-    if (widget.onReturnToLatest != null) {
-      widget.onReturnToLatest!();
-      return;
-    }
-    final target = widget.section == ConversationLiveSection.output
-        ? LiveStatusSectionTarget.outputBar
-        : LiveStatusSectionTarget.timelineWork;
-    setState(() {
-      _standaloneAggregate = LiveStatusStateMachine.transition(
-        _ensureStandaloneAggregate(),
-        LiveStatusReturnToLatestRequested(target: target),
-      ).state;
-      _synchronizeRetirements();
-    });
+    if (isCurrent) widget.onReturnToLatest?.call();
   }
 
   @override
   void dispose() {
     _disposed = true;
-    widget.live.removeListener(_onLiveChanged);
     for (final notifier in _retirements.values) {
       notifier.value = true;
       notifier.dispose();
@@ -300,16 +158,13 @@ class _CurrentState extends State<ConversationCurrentConnector>
   Widget build(BuildContext context) {
     if (!isCurrent) return const SizedBox.shrink();
     if (widget.section == ConversationLiveSection.work) {
-      return _buildWorkSection(_resolvedWorkSlice);
+      return _buildWorkSection(
+        widget.workSlice ?? LiveStatusTimelineWorkSlice(),
+      );
     }
-    final presenting = _resolvedPresenting;
+    final presenting = widget.presenting;
     if (presenting == null) return const SizedBox.shrink();
-    return Offstage(
-      offstage:
-          !widget.managedByViewModel &&
-          _ensureStandaloneAggregate().barState is LiveStatusDockMasked,
-      child: _buildOutputSection(presenting),
-    );
+    return _buildOutputSection(presenting);
   }
 
   Widget _buildWorkSection(LiveStatusTimelineWorkSlice slice) {
@@ -423,7 +278,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
       onExpandedChanged: widget.onExpandedChanged,
       childBuilder: (_) => CompletionRunConnector(
         unit: unit,
-        threadId: widget.session.threadId,
+        threadId: widget.threadId,
         content: widget.content,
         images: widget.images,
         readAttachment: widget.readAttachment,

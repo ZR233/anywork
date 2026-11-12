@@ -233,7 +233,8 @@ final class _Harness {
   int revision = 0;
   bool active = true;
   final live = ValueNotifier<LiveDisplayWindow?>(null);
-  Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
+  ValueChanged<String>? onLoadOlder;
+  LiveStatusAggregate presentation = LiveStatusAggregate.initial('thread');
   void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
     currentWorkId: null,
     revision: ++revision,
@@ -257,24 +258,52 @@ final class _Harness {
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
-        ConversationCurrentConnector(
-          section: ConversationLiveSection.output,
-          key: ObjectKey(content),
-          session: const ThreadSessionState(threadId: 'thread'),
-          content: content,
-          live: live,
-          loadLiveOlder: loadLiveOlder,
-          liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
-            block: block,
-            executionPresent: executionPresent,
-            expansion: TimelineExpansionIntent(),
-          ),
-          images: images,
-          readAttachment: (_) async => Uint8List(0),
-          isDisplayActive: () => active,
-          registerDisplay: (value) {
-            display = value;
-            return () => display = null;
+        ValueListenableBuilder<LiveDisplayWindow?>(
+          valueListenable: live,
+          builder: (_, window, _) {
+            presentation = LiveStatusStateMachine.transition(
+              presentation,
+              LiveStatusObserved(
+                LiveStatusObservation(
+                  cut: window == null
+                      ? const LiveWindowCut.inactive()
+                      : LiveWindowCut(
+                          revision: window.revision,
+                          historyThrough: window.historyThrough,
+                          executionPresent: window.executionPresent,
+                          attemptId: 1,
+                          isDisplayActive: active,
+                        ),
+                  latestLive: window,
+                  hasContentOwner: true,
+                ),
+              ),
+            ).state;
+            final state = presentation.barState;
+            return ConversationCurrentConnector(
+              section: ConversationLiveSection.output,
+              key: ObjectKey(content),
+              threadId: 'thread',
+              content: content,
+              presenting: switch (state) {
+                LiveStatusPresenting() => state,
+                LiveStatusDockMasked(:final obscured) => obscured,
+                LiveStatusHidden() => null,
+              },
+              onLoadOlder: onLoadOlder,
+              liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+                block: block,
+                executionPresent: executionPresent,
+                expansion: TimelineExpansionIntent(),
+              ),
+              images: images,
+              readAttachment: (_) async => Uint8List(0),
+              isDisplayActive: () => active,
+              registerDisplay: (value) {
+                display = value;
+                return () => display = null;
+              },
+            );
           },
         ),
         disableAnimations: disableAnimations,
@@ -405,10 +434,8 @@ void main() {
               );
           final connector = ConversationCurrentConnector(
             section: ConversationLiveSection.output,
-            managedByViewModel: true,
-            session: const ThreadSessionState(threadId: 'thread'),
+            threadId: 'thread',
             content: content,
-            live: live,
             presenting: LiveStatusPresenting(
               surface: projected.surface!,
               effectiveWindow: window,
@@ -1147,14 +1174,32 @@ void main() {
           ],
         );
         var reads = 0;
-        h.loadLiveOlder = (before) async {
+        h.onLoadOlder = (before) {
           expect(before, 'older-cursor');
           reads++;
-          return page;
         };
         h.live.value = latest();
         await tester.pumpWidget(h.host());
         await tester.tap(find.widgetWithText(TextButton, '更早实时片段'));
+        expect(reads, 1);
+        // Supply the ViewModel result explicitly; the component owns no query or reducer.
+        final requested = LiveStatusStateMachine.transition(
+          h.presentation,
+          const LiveStatusLoadOlderRequested(
+            target: LiveStatusSectionTarget.outputBar,
+            before: 'older-cursor',
+          ),
+        ).state;
+        h.presentation = LiveStatusStateMachine.transition(
+          requested,
+          LiveStatusOlderLoaded(
+            target: LiveStatusSectionTarget.outputBar,
+            before: 'older-cursor',
+            window: page,
+            cut: requested.cut,
+          ),
+        ).state;
+        await tester.pumpWidget(h.host());
         await _flush(tester);
         final scope = h.content.scopes.last;
         scope.watches.single.add(_window('older text'));
@@ -1180,8 +1225,8 @@ void main() {
           revision: handoffWithoutRevisionChange ? 7 : 8,
           through: handoffWithoutRevisionChange ? 1 : 0,
         );
-        expect(scope.active, isFalse);
         await tester.pumpWidget(h.host());
+        expect(scope.active, isFalse);
         await _flush(tester);
         expect(find.widgetWithText(TextButton, '最新实时片段'), findsNothing);
         expect(find.text('older text'), findsNothing);
@@ -1322,7 +1367,7 @@ void main() {
   );
 
   testWidgets(
-    'Activity retirement revokes bodies synchronously and a new qualification cannot reuse old IO',
+    'presentation retirement revokes bodies before a new qualification can reuse IO',
     (tester) async {
       final h = _Harness();
       addTearDown(h.dispose);
@@ -1336,6 +1381,7 @@ void main() {
       expect(find.text('旧值'), findsOneWidget);
       final borrowed = h.display!.windows.single;
       h.accept([]);
+      await tester.pumpWidget(h.host());
       expect(old.active, isFalse);
       expect(h.display!.windows, isEmpty);
       expect(borrowed.window, isNull);

@@ -102,7 +102,9 @@ impl ColdStore for Storage {
         {
             let mut account = self.accounting.lock().unwrap();
             account.running_effect_bytes = Some(bytes);
-            if self.reject_first_running && account.running_refusals == 0 {
+            // Mailbox pressure sampling can retry before model preparation now.
+            // Refuse until funding actually exists, rather than merely one attempt.
+            if self.reject_first_running && self.charges.lock().unwrap().is_empty() {
                 account.running_refusals += 1;
                 return Err(ColdStoreError {
                     source: Box::new(std::io::Error::other("controlled first Running refusal")),
@@ -1150,7 +1152,7 @@ async fn durable_member_funding(reject_first_running: bool, content: Vec<Context
             operation.retained() >= resident,
             "the full resident charge must survive durability"
         );
-        assert_eq!(account.running_refusals, usize::from(reject_first_running));
+        assert_eq!(account.running_refusals > 0, reject_first_running);
         for transfer in &account.transfers {
             if transfer.taken > 0 {
                 assert!(

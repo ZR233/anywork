@@ -1,8 +1,7 @@
 import 'dart:async';
-import 'dart:developer' as developer;
 
 import 'package:anywork_client/conversation.dart';
-import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import '../state/chat_item_presentation.dart';
@@ -41,7 +40,6 @@ class _TimelineCanonicalPayloadConnectorState
   bool _scheduled = false;
   TimelineExpansionIntent? _group;
   Object? _groupGeneration;
-  static int _readProfileLoads = 0;
 
   bool get _active =>
       mounted &&
@@ -161,18 +159,6 @@ class _TimelineCanonicalPayloadConnectorState
     final identity = _identity;
     ConversationQueryScope? scope;
     bool eligible() => _active && request == _request && identity == _identity;
-    final call = _readProfileLoads < 32 ? ++_readProfileLoads : 0;
-    final started = call != 0 ? developer.Timeline.now : 0;
-    final profileThreadId = widget.content.threadId;
-    var returnedBytes = -1;
-    if (call != 0) {
-      debugPrint(
-        'READ_PROFILE_STAGE stage=payload_load phase=begin '
-        'micros=$started thread=$profileThreadId '
-        'content=${identityHashCode(widget.content)} item=${item.id} '
-        'request=$request call=$call maxBytes=65536',
-      );
-    }
     try {
       scope = widget.content.openScope(generation: request);
       _scope = scope;
@@ -193,7 +179,6 @@ class _TimelineCanonicalPayloadConnectorState
           reference: reference,
           range: const ContentRange(offset: 0, maxBytes: 64 * 1024),
         );
-        returnedBytes = window.bytes.length;
         if (!eligible()) return;
         if (!window.sealed ||
             window.offset != 0 ||
@@ -227,9 +212,6 @@ class _TimelineCanonicalPayloadConnectorState
         recordId: recordId,
         demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
       );
-      if (entry.atom.payload case InlinePayload(:final bytes)) {
-        returnedBytes = bytes.length;
-      }
       if (!eligible()) return;
       final original = entry.atom;
       if (entry.recordId != recordId ||
@@ -263,16 +245,6 @@ class _TimelineCanonicalPayloadConnectorState
       if (identical(_scope, scope)) _scope = null;
       scope?.retire();
       if (scope != null) unawaited(scope.close());
-      if (call != 0) {
-        final ended = developer.Timeline.now;
-        debugPrint(
-          'READ_PROFILE_STAGE stage=payload_load phase=end '
-          'micros=$ended thread=$profileThreadId '
-          'item=${item.id} request=$request call=$call '
-          'scope=${scope == null ? 0 : identityHashCode(scope)} '
-          'returnedBytes=$returnedBytes durationMicros=${ended - started}',
-        );
-      }
     }
   }
 

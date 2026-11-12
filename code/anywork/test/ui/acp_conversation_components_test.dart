@@ -34,6 +34,75 @@ IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
 }
 
 void main() {
+  testWidgets('ACP 发送中提示仅保留无障碍图标，停止原位切换且错误不丢失', (tester) async {
+    var interrupts = 0;
+    Widget composer(AcpComposerViewState state) => acpTestApp(
+      SizedBox(
+        width: 300,
+        child: AcpConversationComposerView(
+          state: state,
+          onDraftChanged: (_) {},
+          onSubmit: () {},
+          onInterrupt: () => interrupts++,
+          onPickLocalAttachments: (_) async {},
+          onAddRemoteAttachment: (_) async {},
+          onRemoveAttachment: (_) {},
+        ),
+      ),
+    );
+    await tester.pumpWidget(
+      composer(
+        const AcpComposerViewState(
+          threadId: 'thread',
+          submitting: true,
+          blocker: AcpComposerBlocker(kind: AcpComposerBlockerKind.sending),
+          draftError: 'attachment could not be read',
+        ),
+      ),
+    );
+    final primary = find.descendant(
+      of: find.byKey(
+        ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
+      ),
+      matching: find.byType(IconButton),
+    );
+    final button = tester.widget<IconButton>(primary);
+    expect(button.onPressed, isNull);
+    expect(find.text(button.tooltip!), findsNothing);
+    expect(
+      find.semantics.byPredicate(
+        (node) => node.getSemanticsData().tooltip == button.tooltip,
+      ),
+      findsOne,
+    );
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('attachment could not be read'), findsOneWidget);
+    final sendingRect = tester.getRect(primary);
+    await tester.pumpWidget(
+      composer(
+        const AcpComposerViewState(
+          threadId: 'thread',
+          isRunning: true,
+          canInterrupt: true,
+        ),
+      ),
+    );
+    final stop = tester.widget<IconButton>(primary);
+    expect(tester.getRect(primary).size, sendingRect.size);
+    expect(tester.getRect(primary).left, sendingRect.left);
+    expect(find.text(stop.tooltip!), findsNothing);
+    expect(
+      find.semantics.byPredicate(
+        (node) => node.getSemanticsData().tooltip == stop.tooltip,
+      ),
+      findsOne,
+    );
+    await tester.tap(primary);
+    expect(interrupts, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('ACP 异步粘贴与换行沿官方编辑动作更新原草稿', (tester) async {
     final harness = await AcpComponentHarness.create();
     addTearDown(() => harness.close(tester));
@@ -355,7 +424,8 @@ void main() {
     expect((prompt.content.single as AcpTextContentView).text, '从草稿发送');
     expect(draft.state.draft, isEmpty);
     expect(draft.state.submissionRevision, greaterThan(0));
-    expect(find.text('中断'), findsOneWidget);
+    expect(find.text('中断'), findsNothing);
+    expect(find.byTooltip('中断'), findsOneWidget);
   });
 
   testWidgets('配置失败明确显示并保留草稿，不能按旧配置发送', (tester) async {

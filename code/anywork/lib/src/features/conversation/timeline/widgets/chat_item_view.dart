@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -66,8 +65,6 @@ class ChatItemView extends StatefulWidget {
 }
 
 class _ChatItemViewState extends State<ChatItemView> {
-  static int _readProfileBuilds = 0;
-  bool _readProfileBuilt = false;
   ChatItemPresentation get item => widget.item;
   Set<int> get _sensitiveQuestions {
     final input = item.data['userInput'];
@@ -829,15 +826,6 @@ class _ChatItemViewState extends State<ChatItemView> {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
     if (text.trim().isEmpty || clock == null || onLayout == null) return child;
-    if (!_readProfileBuilt && _readProfileBuilds < 32) {
-      _readProfileBuilt = true;
-      _readProfileBuilds++;
-      debugPrint(
-        'READ_PROFILE_STAGE stage=body_build phase=end '
-        'micros=${developer.Timeline.now} item=${item.id} '
-        'view=${identityHashCode(this)}',
-      );
-    }
     return ContentLayoutWitness(
       itemId: item.id,
       monotonicMicros: clock,

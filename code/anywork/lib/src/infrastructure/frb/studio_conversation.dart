@@ -88,8 +88,6 @@ abstract class _FrbConversationDelivery {
   bool _eventsEnded = false;
   bool _listened = false;
   bool _disposed = false;
-  bool _readProfileFirstTimeline = false;
-  static int _readProfileFrames = 0;
   Future<void>? _closing;
   Future<void>? _nativeClosing;
   StreamSubscription<frb_chat_types.BridgeConversationFrame>? _subscription;
@@ -126,20 +124,6 @@ abstract class _FrbConversationDelivery {
       _subscription = _nativeEvents().listen(
         (value) {
           if (_admissionsClosed) return;
-          final profile =
-              !_readProfileFirstTimeline &&
-              value.event is frb_chat_types.BridgeConversationEvent_Timeline &&
-              _readProfileFrames < 8;
-          final started = profile ? developer.Timeline.now : 0;
-          if (profile) {
-            _readProfileFirstTimeline = true;
-            _readProfileFrames++;
-            debugPrint(
-              'READ_PROFILE_STAGE stage=frb_first_timeline phase=begin '
-              'micros=$started thread=$threadId subscription=$subscriptionId '
-              'feed=${identityHashCode(this)}',
-            );
-          }
           try {
             _controller.add(
               ConversationFrame(
@@ -181,15 +165,6 @@ abstract class _FrbConversationDelivery {
             );
           } catch (error, stack) {
             _conversionFailed(error, stack);
-          } finally {
-            if (profile) {
-              final ended = developer.Timeline.now;
-              debugPrint(
-                'READ_PROFILE_STAGE stage=frb_first_timeline phase=end '
-                'micros=$ended thread=$threadId subscription=$subscriptionId '
-                'durationMicros=${ended - started}',
-              );
-            }
           }
         },
         onError: _conversionFailed,

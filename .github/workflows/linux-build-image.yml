@@ -2,6 +2,8 @@ name: Linux Build Image
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'rust-toolchain.toml'
       - 'docker/linux/Dockerfile'

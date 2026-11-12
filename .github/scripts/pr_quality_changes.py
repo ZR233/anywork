@@ -15,6 +15,7 @@ OUTPUT_FLAGS = (
     "release_configuration",
     "rust_checks",
     "linux_environment",
+    "client_checks",
     "flutter_checks",
     "gui_generated",
     "linux_inputs",
@@ -32,6 +33,9 @@ _ZERO_SHA = "0" * 40
 _DOCS_EXACT = frozenset(
     {
         "CHANGELOG.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".editorconfig",
         "LICENSE",
         "README.md",
         "code/anywork/README.md",
@@ -46,42 +50,46 @@ _DOCS_PREFIXES = (
     "site/",
 )
 
-# Collaboration, CI, locks, generators, fixtures and platform runners are never
-# treated as skippable documentation.
+# Shared build inputs can change every consumer. Release metadata and frontend
+# configuration have narrower owners and are classified before these rules.
 _POLICY_EXACT = frozenset(
     {
-        ".editorconfig",
         ".gitattributes",
         ".gitignore",
-        ".release-please-manifest.json",
-        "AGENTS.md",
-        "CLAUDE.md",
         "Cargo.lock",
         "Cargo.toml",
-        "release-please-config.json",
         "rust-toolchain.toml",
-        "rustfmt.toml",
-        "studio-version.txt",
-        "code/anywork/analysis_options.yaml",
-        "code/anywork/build.yaml",
-        "code/anywork/dart_test.yaml",
-        "code/anywork/l10n.yaml",
-        "code/anywork/pubspec.lock",
-        "code/anywork/pubspec.yaml",
-        "code/anywork_client/analysis_options.yaml",
-        "code/anywork_client/pubspec.lock",
-        "code/anywork_client/pubspec.yaml",
+        "code/anywork_previews/analysis_options.yaml",
+        "code/anywork_previews/pubspec.lock",
+        "code/anywork_previews/pubspec.yaml",
     }
 )
 _POLICY_PREFIXES = (
-    ".agents/",
     ".cargo/",
-    ".claude/",
     ".github/",
     "docker/",
     "xtask/",
     "code/pl-provider-fixture/",
-    "code/pl-studio-runtime/assets/",
+)
+
+_RELEASE_EXACT = frozenset(
+    {
+        ".release-please-manifest.json",
+        "release-please-config.json",
+        "studio-version.txt",
+        ".github/workflows/studio-release.yml",
+        ".github/workflows/studio-release-publish.yml",
+        ".github/workflows/macos-release-build.yml",
+        ".github/workflows/rc-build.yml",
+        ".github/workflows/pages.yml",
+    }
+)
+
+_GUI_DEPENDENCIES = frozenset(
+    {"code/anywork/pubspec.yaml", "code/anywork/pubspec.lock"}
+)
+_GUI_GENERATORS = frozenset(
+    {"code/anywork/build.yaml", "code/anywork/l10n.yaml"}
 )
 
 _RUST_EXACT = frozenset(
@@ -110,7 +118,6 @@ _BRIDGE_PREFIXES = (
     "code/anywork/rust/",
     "code/anywork/lib/src/rust/",
     "code/anywork/lib/src/infrastructure/frb/",
-    "code/anywork/test/unit/frb_adapter/",
 )
 
 _FULL_PREFIXES = (
@@ -118,8 +125,6 @@ _FULL_PREFIXES = (
     "code/pl-studio-acceptance/",
     "xtask/",
 )
-
-_SHARED_TEST_DIRS = frozenset({"common", "fixture", "fixtures", "helper", "helpers", "support"})
 
 _NATIVE_EXACT = frozenset(
     {
@@ -141,35 +146,16 @@ def _has_prefix(path: str, prefixes: Iterable[str]) -> bool:
 
 
 def _is_pure_test_path(path: str) -> bool:
-    parts = path.split("/")
-    if (
-        len(parts) < 4
-        or parts[0] != "code"
-        or not parts[1].startswith("pl-")
-        or parts[2] != "tests"
-        or not path.endswith(".rs")
-    ):
+    # Test-local helpers and fixture data have the same consumers as their
+    # enclosing Cargo integration tests. A module named src/tests.rs (or a
+    # src/tests/ directory) has no such meaning without inspecting its cfg.
+    if not _has_prefix(path, ("code/pl-", "code/tools/", "code/anywork/rust/")):
         return False
-    if parts[1] in {"pl-dev-support", "pl-provider-fixture", "pl-studio-acceptance"}:
-        return False
-    return not _is_shared_test_path(path)
-
-
-def _is_shared_test_path(path: str) -> bool:
-    parts = path.split("/")
-    return (
-        len(parts) >= 4
-        and parts[0] == "code"
-        and parts[1].startswith("pl-")
-        and parts[2] == "tests"
-        and (
-            any(part in _SHARED_TEST_DIRS for part in parts[3:-1])
-            or (
-                parts[-1].endswith(".rs")
-                and parts[-1][:-3] in _SHARED_TEST_DIRS
-            )
-        )
-    )
+    package, separator, _ = path.partition("/tests/")
+    root = Path(__file__).resolve().parents[2]
+    # The manifest also identifies nested downstream fixture crates. If the
+    # package was removed, retain the conservative production classification.
+    return bool(separator) and (root / package / "Cargo.toml").is_file()
 
 
 def classify_path(path: str) -> frozenset[str]:
@@ -177,21 +163,57 @@ def classify_path(path: str) -> frozenset[str]:
     path = _posix(path)
     if not path or path.endswith("/"):
         return frozenset({"unknown"})
+    # Repository guidance is not a runtime input. Embedded runtime assets are:
+    # a README or skill under assets/ must retain its Rust production checks.
+    name = path.rsplit("/", 1)[-1]
+    documentation = (
+        path in _DOCS_EXACT
+        or _has_prefix(path, _DOCS_PREFIXES)
+        or (
+            _has_prefix(path, (".agents/", ".claude/"))
+            and path.endswith((".md", ".yml", ".yaml"))
+        )
+        or (
+            path.startswith("code/")
+            and "/assets/" not in path
+            and name in {"README.md", "README.zh-CN.md", "README.en.md"}
+        )
+    )
+    if documentation:
+        return frozenset({"docs"})
+    if path in _RELEASE_EXACT or path.startswith(".github/scripts/studio-"):
+        return frozenset({"release"})
+
     tags: set[str] = set()
-    if path in _DOCS_EXACT or _has_prefix(path, _DOCS_PREFIXES):
-        tags.add("docs")
     if path in _POLICY_EXACT or _has_prefix(path, _POLICY_PREFIXES):
         tags.add("policy")
+    if _has_prefix(path, _FULL_PREFIXES):
+        tags.add("full")
+    pure_test = _is_pure_test_path(path)
     if path in _RUST_EXACT or _has_prefix(path, _RUST_PREFIXES):
         tags.add("rust")
-        if _is_pure_test_path(path):
+        if pure_test or path == "rustfmt.toml":
             tags.add("pure_test")
         else:
             tags.add("rust_production")
-    if path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES):
+    if not pure_test and (path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES)):
         tags.add("bridge")
-    if _has_prefix(path, ("code/anywork/", "code/anywork_client/")):
+    if _has_prefix(path, ("code/anywork/", "code/anywork_previews/")) and not path.startswith(
+        "code/anywork/rust/"
+    ):
         tags.add("flutter")
+    if path.startswith("code/anywork_client/"):
+        tags.add("client")
+        # App consumes the Client API and shared test transports. Individual
+        # Client test entrypoints and analyzer options have no App consumers.
+        if _has_prefix(
+            path, ("code/anywork_client/lib/", "code/anywork_client/test/support/")
+        ) or name in {"pubspec.yaml", "pubspec.lock"}:
+            tags.add("flutter")
+    if path in _GUI_DEPENDENCIES:
+        tags.add("bridge")
+    if path in _GUI_GENERATORS:
+        tags.add("generated")
     if path in _NATIVE_EXACT:
         tags.add("native_exact")
     if path.startswith("code/anywork/linux/"):
@@ -206,10 +228,6 @@ def classify_path(path: str) -> frozenset[str]:
         tags.add("integration")
     if path.startswith("code/anywork/tool/") and path not in _NATIVE_EXACT:
         tags.add("tool")
-    if _has_prefix(path, _FULL_PREFIXES):
-        tags.add("full")
-    if _is_shared_test_path(path):
-        tags.add("full")
     if not tags:
         tags.add("unknown")
     return frozenset(tags)
@@ -241,7 +259,7 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
 
     if "unknown" in tags or "policy" in tags or "full" in tags:
         flags = _full_flags()
-        reason = "unknown path category or non-skippable policy/fixture/skill/CI path"
+        reason = "unknown path category or shared build/fixture/CI input"
         return _finish(flags, event_name=event_name, plan="full", reason=reason)
 
     if tags == {"docs"}:
@@ -257,6 +275,8 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
     flags = _empty_flags()
     if "docs" in tags:
         flags["docs_policy"] = True
+    if "release" in tags:
+        flags["release_configuration"] = True
     if "rust" in tags:
         flags["rust_checks"] = True
         flags["windows_build"] = True
@@ -266,6 +286,10 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
             flags["macos_gui_build"] = True
     if "flutter" in tags:
         flags["flutter_checks"] = True
+    if "client" in tags:
+        flags["client_checks"] = True
+    if "generated" in tags:
+        flags["gui_generated"] = True
     if "bridge" in tags:
         flags["flutter_checks"] = True
         flags["gui_generated"] = True
@@ -310,11 +334,11 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["linux_desktop"] = True
     flags["remote_helpers"] = any(
         flags[name]
-        for name in ("linux_desktop", "linux_native", "windows_build", "macos_build")
+        for name in ("linux_desktop", "linux_native", "windows_gui_build", "macos_gui_build")
     )
     flags["linux_inputs"] = flags["gui_generated"] or flags["remote_helpers"]
     flags["linux_environment"] = (
-        flags["flutter_checks"] or flags["rust_checks"] or flags["linux_inputs"]
+        flags["client_checks"] or flags["flutter_checks"] or flags["rust_checks"] or flags["linux_inputs"]
     )
     plan_name = "+".join(name for name in OUTPUT_FLAGS if flags[name]) or "classified"
     return _finish(
@@ -346,7 +370,7 @@ def _finish(
         ("macos_build", "macos-build"),
     )
     for flag, job in jobs_by_flag:
-        if flags[flag]:
+        if flags[flag] or (flag == "flutter_checks" and flags["client_checks"]):
             required.append(job)
     return {
         **flags,
@@ -363,7 +387,7 @@ def _is_missing_sha(value: str | None) -> bool:
 
 
 def parse_name_status(parts: list[str]) -> list[str] | None:
-    """Return changed paths, or None when a rename/copy cannot be classified."""
+    """Include both sides of moves/copies; reject incomplete or unmerged data."""
     paths: list[str] = []
     index = 0
     while index < len(parts):
@@ -371,12 +395,16 @@ def parse_name_status(parts: list[str]) -> list[str] | None:
         if not status:
             return None
         code = status[0]
-        if code in {"R", "C", "U"}:
+        if code not in {"A", "M", "D", "T", "R", "C"}:
             return None
-        if index + 1 >= len(parts):
+        count = 2 if code in {"R", "C"} else 1
+        if index + count >= len(parts):
             return None
-        paths.append(parts[index + 1])
-        index += 2
+        names = parts[index + 1:index + 1 + count]
+        if not all(names):
+            return None
+        paths.extend(names)
+        index += 1 + count
     return paths
 
 

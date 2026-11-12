@@ -42,7 +42,13 @@ void main() {
       expect(h.lease.scrollController.hasClients, isTrue);
       expect(find.text('冻结的消息'), findsOneWidget);
       expect(find.text('draft.txt'), findsOneWidget);
-      expect(find.text('正在发送'), findsOneWidget);
+      expect(find.text('正在发送'), findsNothing);
+      expect(
+        find.semantics.byPredicate(
+          (node) => node.getSemanticsData().tooltip == '正在发送',
+        ),
+        findsOne,
+      );
       expect(
         find.byKey(const ValueKey('composer-submission:input-pending')),
         findsOneWidget,
@@ -58,7 +64,13 @@ void main() {
         ),
       );
       await _frames(tester);
-      expect(find.text('已收到，等待同步'), findsOneWidget);
+      expect(find.text('已收到，等待同步'), findsNothing);
+      expect(
+        find.semantics.byPredicate(
+          (node) => node.getSemanticsData().tooltip == '已收到，等待同步',
+        ),
+        findsOne,
+      );
 
       h.showSubmission(null);
       await _frames(tester);
@@ -108,12 +120,8 @@ void main() {
           phase: ComposerSubmissionPhase.sending,
         ),
       ]);
-      final preparation = h.owner.prepareComposerSubmissionDisplay(
-        'a',
-        lease: h.lease,
-      );
+      h.owner.prepareComposerSubmissionDisplay('a', lease: h.lease);
       await tester.pump();
-      await preparation;
 
       final submission = find.byKey(
         const ValueKey('composer-submission:input-first-frame'),

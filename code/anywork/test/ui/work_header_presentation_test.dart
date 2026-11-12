@@ -4,7 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_component_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
@@ -1410,24 +1410,6 @@ LiveDisplayBlock _work(
   ),
 );
 
-class _Session extends Fake implements ThreadSessionState {
-  @override
-  String get threadId => 'thread';
-  @override
-  ThreadActivityView? get activity => null;
-  @override
-  StudioTurnView get activeTurn => StudioTurnView(
-    turnId: 'turn',
-    threadId: 'thread',
-    revision: 1,
-    state: const RunningStudioTurnState(
-      startedAt: 1000,
-      activity: StudioTurnActivity.thinking,
-    ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(1000000),
-  );
-}
-
 class _Content extends Fake implements ConversationContent {
   int reads = 0;
   @override
@@ -1481,10 +1463,8 @@ class _LiveHarness {
     Widget section(ConversationLiveSection section) =>
         ConversationCurrentConnector(
           section: section,
-          managedByViewModel: true,
-          session: _Session(),
+          threadId: 'thread',
           content: content,
-          live: live,
           now: now,
           presenting: section == ConversationLiveSection.output
               ? presenting

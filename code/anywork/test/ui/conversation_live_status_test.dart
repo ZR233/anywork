@@ -20,10 +20,11 @@ import '../support/display_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
@@ -907,6 +908,171 @@ void main() {
       expect(next, 1);
     });
 
+    test('compaction 仅接管合格的当前轮次活动原子', () {
+      final activeCompaction = ChatAtom(
+        id: 'compact-1',
+        source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+        sourceOrder: null,
+        kind: ChatAtomKind.compaction,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const ActiveChatAtom(
+          started: null,
+          status: ChatActiveStatus.running,
+        ),
+        startedAt: 200,
+        contents: const [],
+      );
+      LiveDisplayBlock block({
+        DisplayBlockState state = DisplayBlockState.open,
+        ChatAtom? atom,
+        DisplayContentSource contentSource = const CurrentAtom(),
+      }) => LiveDisplayBlock(
+        id: 'compact-1',
+        blockOrder: 1,
+        state: state,
+        source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+        body: SingleDisplayBlock(
+          visibility: SingleVisibility.content,
+          record: DisplayRecord(
+            atom: atom ?? activeCompaction,
+            contentSource: contentSource,
+          ),
+        ),
+      );
+      LiveDisplayWindow window(
+        List<LiveDisplayBlock> blocks, {
+        bool executionPresent = true,
+      }) => LiveDisplayWindow(
+        revision: 1,
+        historyThrough: 0,
+        executionPresent: executionPresent,
+        currentWorkId: null,
+        blocks: blocks,
+      );
+      ExecutionLiveNotice notice({
+        String? turnId = 'turn-1',
+        ConversationActivityKind kind = ConversationActivityKind.compacting,
+        String? errorMessage,
+      }) => ExecutionLiveNotice(
+        ConversationActivityView(
+          identity: 'compaction-status',
+          kind: kind,
+          turnId: turnId,
+          errorMessage: errorMessage,
+        ),
+      );
+      bool owns(LiveDisplayWindow? live, {ExecutionLiveNotice? activity}) =>
+          LiveStatusStateMachine.hasCurrentOutputRenderer(
+            live: live,
+            activeTurnId: 'turn-1',
+            notice: activity ?? notice(),
+          );
+
+      expect(owns(window([block()])), isTrue);
+      expect(owns(window([])), isFalse, reason: '缺少记录时状态提示仍需呈现');
+      expect(
+        owns(window([block()]), activity: notice(turnId: 'turn-2')),
+        isFalse,
+        reason: '不得接管其他轮次的提示',
+      );
+      expect(
+        owns(
+          window([
+            block(
+              atom: ChatAtom(
+                id: 'compact-1',
+                source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                sourceOrder: null,
+                kind: ChatAtomKind.compaction,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const TerminalChatAtom(
+                  started: null,
+                  ended: null,
+                  outcome: ChatTerminalOutcome.completed,
+                ),
+                startedAt: 200,
+                contents: const [],
+              ),
+            ),
+          ]),
+        ),
+        isFalse,
+        reason: '终态原子不再接管实时提示',
+      );
+      expect(
+        owns(
+          window([
+            block(
+              atom: ChatAtom(
+                id: 'compact-1',
+                source: const ForegroundTurnChatSource(turnId: 'turn-2'),
+                sourceOrder: null,
+                kind: ChatAtomKind.compaction,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                startedAt: 200,
+                contents: const [],
+              ),
+            ),
+          ]),
+        ),
+        isFalse,
+        reason: '原子的前台来源必须属于当前轮次',
+      );
+      expect(
+        owns(
+          window([
+            block(contentSource: const FrozenObservation(available: true)),
+          ]),
+        ),
+        isFalse,
+        reason: '冷读记录不接管实时提示',
+      );
+      expect(
+        owns(
+          window([
+            block(
+              atom: ChatAtom(
+                id: 'text-1',
+                source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+                sourceOrder: null,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                contents: const [],
+              ),
+            ),
+          ]),
+        ),
+        isFalse,
+        reason: '仅 compaction 原子可接管压缩提示',
+      );
+      expect(
+        owns(
+          window([block()]),
+          activity: notice(kind: ConversationActivityKind.stopping),
+        ),
+        isFalse,
+        reason: '停止提示始终独立呈现',
+      );
+      expect(
+        owns(window([block()]), activity: notice(errorMessage: '存储失败')),
+        isFalse,
+        reason: '错误提示始终独立呈现',
+      );
+      expect(
+        owns(window([block()], executionPresent: false)),
+        isFalse,
+        reason: '执行缺席时不接管冷读窗口',
+      );
+    });
+
     testWidgets('跨全工况切换固定 Logo 槽与单行文案零抖动，且趴卧猫摆尾连续不归零', (tester) async {
       final harness = _ZeroJitterHarness();
       addTearDown(harness.dispose);
@@ -1359,7 +1525,30 @@ void main() {
                   ),
                 ),
               ],
-              status: null,
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-compacting',
+                revision: 10,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.compacting,
+                summary: '',
+              ),
+            ),
+            (
+              name: 'compacting-without-record',
+              currentWorkId: null,
+              collapsedSingleRow: true,
+              expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
+              expectedTitle: '正在压缩上下文',
+              blocks: const [],
+              status: const ThreadActivityView(
+                threadId: 'thread',
+                identity: 'act-compacting-no-record',
+                revision: 11,
+                turnId: 'turn-1',
+                kind: ThreadActivityKind.compacting,
+                summary: '',
+              ),
             ),
             (
               name: 'stopping',
@@ -1395,6 +1584,13 @@ void main() {
         expect(barFinder, findsOneWidget, reason: stage.name);
         final barRect = tester.getRect(barFinder);
 
+        if (stage.name == 'compacting') {
+          expect(
+            find.descendant(of: barFinder, matching: find.text('正在压缩上下文')),
+            findsOneWidget,
+            reason: '当前 compaction 原子和提示不得形成两行标题',
+          );
+        }
         final indicatorFinder = find.descendant(
           of: barFinder,
           matching: find.byType(TimelineActivityIndicator),
@@ -1451,6 +1647,28 @@ void main() {
           matching: find.text(stage.expectedTitle),
         );
         expect(titleFinder, findsOneWidget, reason: stage.name);
+        if (stage.name == 'compacting') {
+          expect(
+            find.descendant(
+              of: barFinder,
+              matching: find.byType(TimelineCompactingZipIcon),
+            ),
+            findsOneWidget,
+            reason: '当前 compaction 原子与状态提示共用一个拉链指示器',
+          );
+          expect(
+            tester
+                .widget<TimelineActivityClock>(
+                  find.descendant(
+                    of: barFinder,
+                    matching: find.byType(TimelineActivityClock),
+                  ),
+                )
+                .startedAt,
+            200,
+            reason: '去重状态提示不得替代原记录计时',
+          );
+        }
         final titleRect = tester.getRect(titleFinder);
 
         final logoRelative = slotRect.topLeft - barRect.topLeft;
@@ -1565,24 +1783,6 @@ void main() {
   });
 }
 
-class _ZeroJitterSession extends Fake implements ThreadSessionState {
-  @override
-  String get threadId => 'thread';
-  @override
-  ThreadActivityView? get activity => null;
-  @override
-  StudioTurnView get activeTurn => StudioTurnView(
-    turnId: 'turn-1',
-    threadId: 'thread',
-    revision: 1,
-    state: const RunningStudioTurnState(
-      startedAt: 100,
-      activity: StudioTurnActivity.thinking,
-    ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(225000),
-  );
-}
-
 class _ZeroJitterContent extends Fake implements ConversationContent {
   final source = LatestValue<ChatUiState<bool>>(
     const ChatReady('thread', true),
@@ -1635,10 +1835,8 @@ class _ZeroJitterHarness {
     final presenting = aggregate.barState as LiveStatusPresenting;
     Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
       section: s,
-      managedByViewModel: true,
-      session: _ZeroJitterSession(),
+      threadId: 'thread',
       content: content,
-      live: live,
       presenting: s == ConversationLiveSection.output ? presenting : null,
       workSlice: s == ConversationLiveSection.work
           ? aggregate.timelineWork

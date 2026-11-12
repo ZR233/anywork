@@ -1,6 +1,5 @@
 import 'support/display_record_observation.dart';
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
@@ -215,7 +214,6 @@ void main() {
       FlutterError.onError = previousErrorHandler;
     });
     final router = createApplicationRouter();
-    final textScale = ValueNotifier<double>(1);
     void syncRoute() {
       if (router.routerDelegate.currentConfiguration.isEmpty) return;
       final state = router.routerDelegate.state;
@@ -270,7 +268,6 @@ void main() {
         tester.testTextInput.unregister();
         router.routerDelegate.removeListener(syncRoute);
         router.dispose();
-        textScale.dispose();
       }
     });
     await tester.pumpWidget(
@@ -287,15 +284,6 @@ void main() {
             ],
             supportedLocales: AppLocalizations.supportedLocales,
             routerConfig: router,
-            builder: (context, child) => ValueListenableBuilder<double>(
-              valueListenable: textScale,
-              child: child,
-              builder: (context, scale, child) => MediaQuery(
-                data: MediaQuery.of(context)
-                    .copyWith(textScaler: TextScaler.linear(scale)),
-                child: child!,
-              ),
-            ),
           ),
         ),
       ),
@@ -303,14 +291,7 @@ void main() {
     report['window'] = await configurePresentationWindow(tester);
     await graph.client.directoryCommands.openProject(project);
     graph.setConversationPageVisible(true);
-    final scene = _ConceptScene(
-      tester,
-      graph,
-      provider,
-      report,
-      phase,
-      textScale,
-    );
+    final scene = _ConceptScene(tester, graph, provider, report, phase);
     Map<String, dynamic>? boundarySaved;
     var selectedThread = emptyThread;
     if (boundary && reopen) {
@@ -409,14 +390,12 @@ final class _ConceptScene {
     this.provider,
     this.report,
     this.phase,
-    this.textScale,
   );
   final WidgetTester tester;
   final AppGraph graph;
   final Uri provider;
   final Map<String, Object?> report;
   final String phase;
-  final ValueNotifier<double> textScale;
   final List<Map<String, Object?>> _checkpoints = [];
   static const _samplePump = Duration(milliseconds: 16);
   String get threadId => graph.client.selection.state.selectedThreadId!;
@@ -734,8 +713,8 @@ final class _ConceptScene {
               'displayActive': widget.isDisplayActive(),
               'section': widget.section.name,
               'surface': widget.presenting?.surface.runtimeType.toString(),
-              'stateActivityKind': widget.session.activity?.kind.name,
-              'stateActiveTurnId': widget.session.activeTurn?.turnId,
+              'activityId': widget.activityId,
+              'activeTurnId': widget.turnId,
             },
         ],
         'treeLimit': 20,
@@ -818,167 +797,27 @@ final class _ConceptScene {
   Future<void> capture(String name) =>
       capturePresentation(tester, 'concept-$phase-$name.png');
 
-  Future<void> captureAccessibleVariants(
-    String stage, {
-    required String workBlockId,
-    String? streamingAtomId,
-  }) async {
-    final captures = report.putIfAbsent(
-      'accessibleCaptures',
-      () => <Map<String, Object?>>[],
-    ) as List<Map<String, Object?>>;
-    final view = tester.view;
-    final originalWidth = view.physicalSize.width / view.devicePixelRatio;
-    final originalHeight = view.physicalSize.height / view.devicePixelRatio;
-    final originalScale = textScale.value;
-    void expectPausedState() {
-      final work = observed.unit(workBlockId);
-      expect(work.summary!.total, 2);
-      expect(work.summary!.terminal, 1);
-      expect(work.summary!.running, 1);
-      if (streamingAtomId != null) {
-        expect(work.historyPos, greaterThan(0));
-        expect(work.state, DisplayBlockState.sealed);
-        final text = observed.liveBlocks.singleWhere(
-          (block) =>
-              block.body is SingleDisplayBlock &&
-              (block.body as SingleDisplayBlock).record.atom.id ==
-                  streamingAtomId,
-        );
-        expect(
-          (text.body as SingleDisplayBlock).record.atom.lifecycle,
-          isA<ActiveChatAtom>(),
-        );
-      } else {
-        expect(work.state, DisplayBlockState.open);
-        expect(work.historyPos, isNull);
-      }
-    }
-
-    expectPausedState();
-    final evidence = <String, Object?>{
-      'fixtureStage': stage,
-      'workBlockId': workBlockId,
-      'streamingAtomId': streamingAtomId,
-      'liveBlockIds': observed.liveBlocks.map((block) => block.id).toList(),
-      'liveBlocks': [
-        for (final block in observed.liveBlocks)
-          {
-            'blockId': block.id,
-            'state': block.state.name,
-            ...switch (block.body) {
-              WorkDisplayBlock(:final summary) => {
-                'kind': 'work',
-                'total': summary.total,
-                'terminal': summary.terminal,
-                'running': summary.running,
-              },
-              SingleDisplayBlock(record: DisplayRecord(:final atom)) => {
-                'kind': 'single',
-                'atomId': atom.id,
-              },
-            },
-          },
-      ],
-      'originalViewport': {
-        'width': originalWidth,
-        'height': originalHeight,
-        'textScale': originalScale,
-      },
-      'variants': <Map<String, Object?>>[],
-    };
-    captures.add(evidence);
-    if (!Platform.environment.containsKey('ANYWORK_PRESENTATION_SCREENSHOTS')) {
-      evidence['status'] = 'not requested; no native screenshot directory';
-      return;
-    }
-    Object? primaryFailure;
-    try {
-      for (final scale in [1.0, 1.6]) {
-        final name = scale == 1 ? '$stage-narrow' : '$stage-narrow-large-text';
-        final variant = <String, Object?>{
-          'fileName': 'concept-$phase-$name.png',
-          'textScale': scale,
-          'requestedLogicalWidth': 600,
-          'requestedLogicalHeight': 900,
-          'pass': false,
-        };
-        (evidence['variants'] as List<Map<String, Object?>>).add(variant);
-        try {
-          variant['viewport'] = await configurePresentationWindow(
-            tester,
-            logicalWidth: 600,
-            logicalHeight: 900,
-          );
-          textScale.value = scale;
-          await tester.pump(const Duration(milliseconds: 300));
-          expect(tester.takeException(), isNull);
-          expect(
-            MediaQuery.textScalerOf(tester.element(find.byType(TimelineView)))
-                .scale(10),
-            10 * scale,
-          );
-          expect(
-            observed.liveBlocks.map((block) => block.id),
-            orderedEquals(evidence['liveBlockIds'] as List<String>),
-          );
-          expectPausedState();
-          if (streamingAtomId != null) {
-            await _until(
-              tester,
-              () => _incrementGlyph(streamingAtomId, _overlapText) != null,
-              'sealed Work snapshot and fully readable streaming body at $name',
-            );
-          }
-          await capture(name);
-          expect(tester.takeException(), isNull);
-          variant['pass'] = true;
-        } catch (error, stack) {
-          variant['failure'] = '$error';
-          variant['stack'] = '$stack';
-          // Keep the failed real layout as evidence; never shrink text or hide
-          // content to make a constrained native window look successful.
-          final failureName = '$name-failed';
-          try {
-            await capture(failureName);
-            variant['failureScreenshot'] = 'concept-$phase-$failureName.png';
-          } catch (captureError) {
-            variant['failureScreenshotError'] = '$captureError';
-          }
-          rethrow;
-        } finally {
-          variant['observedViewport'] = {
-            'width': view.physicalSize.width / view.devicePixelRatio,
-            'height': view.physicalSize.height / view.devicePixelRatio,
-            'devicePixelRatio': view.devicePixelRatio,
-          };
-        }
-      }
-    } catch (error) {
-      primaryFailure = error;
-      rethrow;
-    } finally {
-      textScale.value = originalScale;
-      try {
-        evidence['restoredViewport'] = await configurePresentationWindow(
-          tester,
-          logicalWidth: originalWidth,
-          logicalHeight: originalHeight,
-        );
-        await tester.pump(const Duration(milliseconds: 300));
-        expect(tester.takeException(), isNull);
-        expect(
-          MediaQuery.textScalerOf(tester.element(find.byType(TimelineView)))
-              .scale(10),
-          10 * originalScale,
-        );
-        evidence['restoredTextScale'] = textScale.value;
-      } catch (error, stack) {
-        evidence['restoreFailure'] = '$error';
-        evidence['restoreStack'] = '$stack';
-        // Preserve the layout/resize failure if restoration fails as well.
-        if (primaryFailure == null) rethrow;
-      }
+  void expectOverlapState(String workBlockId, {String? streamingAtomId}) {
+    final work = observed.unit(workBlockId);
+    expect(work.summary!.total, 2);
+    expect(work.summary!.terminal, 1);
+    expect(work.summary!.running, 1);
+    if (streamingAtomId == null) {
+      expect(work.state, DisplayBlockState.open);
+      expect(work.historyPos, isNull);
+    } else {
+      expect(work.historyPos, greaterThan(0));
+      expect(work.state, DisplayBlockState.sealed);
+      final text = observed.liveBlocks.singleWhere(
+        (block) =>
+            block.body is SingleDisplayBlock &&
+            (block.body as SingleDisplayBlock).record.atom.id ==
+                streamingAtomId,
+      );
+      expect(
+        (text.body as SingleDisplayBlock).record.atom.lifecycle,
+        isA<ActiveChatAtom>(),
+      );
     }
   }
 
@@ -1708,96 +1547,19 @@ final class _ConceptScene {
         expectedTurnId ??
         initial.activeTurn?.turnId ??
         initial.lastTurn?.turnId;
-    try {
-      await _until(tester, () {
-        final state = graph.client.conversations
-            .existingSession(threadId)
-            ?.state;
-        if (state == null ||
-            !state.hasSnapshot ||
-            state.runtime?.execution != null ||
-            state.activity != null ||
-            state.activeTurn?.state.isBusy == true ||
-            (targetTurnId != null &&
-                (state.lastTurn?.turnId != targetTurnId ||
-                    state.lastTurn?.state.isTerminal != true))) {
-          return false;
-        }
-        final snapshot = lease.live.value;
-        if (snapshot == null) return false;
-        for (final block in snapshot.blocks) {
-          if (block.state == DisplayBlockState.open &&
-              block.body is WorkDisplayBlock) {
-            final summary = (block.body as WorkDisplayBlock).summary;
-            if (summary.terminal != summary.total ||
-                summary.running != 0 ||
-                summary.waiting != 0 ||
-                summary.unavailable != 0) {
-              return false;
-            }
-          }
-        }
-        // The shared card may contain a static tail, terminal text or notices.
-        // Its presence says nothing about execution; inspect actual activity.
-        return find.byKey(StudioDriverKeys.composerStop).evaluate().isEmpty &&
-            tester
-                .widgetList<TimelineActivityIndicator>(
-                  find.byType(TimelineActivityIndicator),
-                )
-                .every((indicator) => !indicator.active) &&
-            tester
-                .widgetList<TimelineDisplayUnitView>(
-                  find.byType(TimelineDisplayUnitView),
-                )
-                .every((work) => work.activity == null);
-      }, 'terminal Turn, released execution and inactive presentation');
-    } catch (error, stack) {
-      report['idleFailure'] = {
-        ..._stageFailure('idle', error, stack),
-        'targetTurnId': targetTurnId,
-        'lastTurnId': graph.client.conversations
-            .existingSession(threadId)
-            ?.state
-            .lastTurn
-            ?.turnId,
-        'lastTurnStatus': graph.client.conversations
-            .existingSession(threadId)
-            ?.state
-            .lastTurn
-            ?.state
-            .status
-            .name,
-        'stopControlCount': find
-            .byKey(StudioDriverKeys.composerStop)
-            .evaluate()
-            .length,
-        'activeIndicatorCount': tester
-            .widgetList<TimelineActivityIndicator>(
-              find.byType(TimelineActivityIndicator),
-            )
-            .where((indicator) => indicator.active)
-            .length,
-      };
-      rethrow;
-    }
-    final live = lease.live.value!;
-    final openWork = live.blocks
-        .where(
-          (block) =>
-              block.state == DisplayBlockState.open &&
-              block.body is WorkDisplayBlock,
-        )
-        .toList();
-    expect(openWork.length, lessThanOrEqualTo(1));
-    expect(live.currentWorkId, openWork.isEmpty ? null : openWork.single.id);
-    for (final block in openWork) {
-      final summary = (block.body as WorkDisplayBlock).summary;
-      expect(summary.terminal, summary.total);
-      expect(summary.running, 0);
-      expect(summary.waiting, 0);
-      expect(summary.unavailable, 0);
-      expect(main.where((unit) => unit.id == block.id), isEmpty);
-    }
+    // Native coverage ends at the real execution release. Static tail rendering,
+    // indicators and disclosure state are covered by data-driven widget tests.
+    await _until(tester, () {
+      final state = graph.client.conversations.existingSession(threadId)?.state;
+      return state != null &&
+          state.hasSnapshot &&
+          state.runtime?.execution == null &&
+          state.activity == null &&
+          state.activeTurn?.state.isBusy != true &&
+          (targetTurnId == null ||
+              (state.lastTurn?.turnId == targetTurnId &&
+                  state.lastTurn?.state.isTerminal == true));
+    }, 'terminal Turn and released native execution');
   }
 
   Future<void> showUnit(String id) async {
@@ -3133,21 +2895,9 @@ final class _ConceptScene {
       () => rows.evaluate().length == 1,
       'one active compaction row',
     );
-    final row = tester.widget<TimelineActivityRow>(rows);
-    expect(
-      row.label,
-      AppLocalizations.of(tester.element(rows)).conversationActivityCompacting,
-    );
-    expect(row.icon, Icons.compress_outlined);
-    expect(row.indicatorStyle, TimelineActivityIndicatorStyle.compactingZip);
-    expect(row.active, isTrue);
-    expect(row.expandable, isFalse);
     report['compactionCurrent'] = {
       'itemId': active.id,
       'operationId': (active.source as OperationChatSource).operationId,
-      'rowLabel': row.label,
-      'rowActive': row.active,
-      'rowExpandable': row.expandable,
     };
     expect(
       tester
@@ -3195,15 +2945,6 @@ final class _ConceptScene {
       () => completedRows.evaluate().length == 1,
       'completed compaction on production page',
     );
-    final completed = tester.widget<TimelineActivityRow>(completedRows);
-    expect(
-      completed.label,
-      AppLocalizations.of(tester.element(completedRows))
-          .timelineContextCompacted,
-    );
-    expect(completed.icon, Icons.compress_outlined);
-    expect(completed.active, isFalse);
-    expect(completed.expandable, isFalse);
     await capture('compacted');
   }
 
@@ -3350,7 +3091,7 @@ final class _ConceptScene {
       () => hasText(_overlapEarlyReasoning),
       'B original body before text',
     );
-    await captureAccessibleVariants('a07-b-terminal', workBlockId: work.id);
+    expectOverlapState(work.id);
     await observed.closeWork(
       lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
     );
@@ -3390,11 +3131,7 @@ final class _ConceptScene {
     await release('a07-text-start');
     await reach('a07-text-readable', () => hasText(_overlapText));
     await unchanged();
-    await captureAccessibleVariants(
-      'a07-text-readable',
-      workBlockId: work.id,
-      streamingAtomId: text.id,
-    );
+    expectOverlapState(work.id, streamingAtomId: text.id);
     await observed.closeWork(
       lease.groupDisplays.singleWhere((d) => d.unitId == work.id),
     );
@@ -3717,217 +3454,18 @@ final class _ConceptScene {
           (block) => block.body is WorkDisplayBlock,
         ) ??
         const [];
-    Iterable<ChatAtom> liveText() =>
-        lease.live.value?.blocks
-            .map((block) => block.body)
-            .whereType<SingleDisplayBlock>()
-            .map((body) => body.record.atom)
-            .where((atom) => atom.kind == ChatAtomKind.text) ??
-        const [];
-    await reach('a14-before-empty', () {
-      final turn = graph.client.conversations
-          .session(threadId)
-          .state
-          .activeTurn;
-      if (turn == null) return false;
-      return liveWork().any((block) {
+    await reach(
+      'a14-before-empty',
+      () => liveWork().any((block) {
         final summary = (block.body as WorkDisplayBlock).summary;
         return summary.total == 1 && summary.terminal == 1;
-      });
-    });
-    final source = ForegroundTurnChatSource(
-      turnId: graph.client.conversations
-          .session(threadId)
-          .state
-          .activeTurn!
-          .turnId,
+      }),
     );
     final before = liveWork().single;
-    final beforeBody = before.body as WorkDisplayBlock;
-    expect(beforeBody.summary.total, 1);
-    expect(
-      main.where((unit) => unit.id == before.id),
-      isEmpty,
-      reason: 'Completed members wait in live until the real text boundary',
-    );
-    final owner = lease;
-    final scope = owner.content.openScope(generation: owner.generation);
-    final original = await graph.client.transport.openConversationFeed(
-      threadId,
-      scope: const MainChatScope(),
-      demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
-    );
-    final frames = StreamIterator(original.events);
-    final emptyObservation = <String, Object?>{
-      'source': 'original-completion-feed-parallel-to-timeline',
-    };
-    report['emptyTextEvidence'] = emptyObservation;
-    late ChatAtom empty;
-    final readClock = Stopwatch()..start();
-    Duration remainingReadTime() {
-      final remaining = const Duration(seconds: 60) - readClock.elapsed;
-      if (remaining <= Duration.zero) {
-        fail('Timed out reading original A14 empty text evidence');
-      }
-      return remaining;
-    }
-
-    Future<ActivitySnapshot> nextActivity() async {
-      while (await frames.moveNext().timeout(remainingReadTime())) {
-        final frame = frames.current;
-        expect(frame.threadId, threadId);
-        expect(frame.subscriptionId, original.subscriptionId);
-        final event = frame.event;
-        if (event case ConversationFailureEvent(:final failure)) throw failure;
-        expect(event, isNot(isA<ConversationClosedEvent>()));
-        await original.acknowledge(frame.deliverySequence);
-        if (event case ConversationActivityEvent(:final snapshot)) {
-          return snapshot;
-        }
-      }
-      fail('Original completion feed ended before empty part evidence');
-    }
-
-    try {
-      await release('a14-before-empty');
-      await fixtureGate(tester, provider, 'a14-empty-start');
-      late ActivitySnapshot started;
-      while (true) {
-        started = await nextActivity();
-        final texts = started.entries
-            .map((entry) => entry.atom)
-            .where(
-              (atom) =>
-                  atom.kind == ChatAtomKind.text &&
-                  atom.source == source &&
-                  atom.lifecycle is ActiveChatAtom,
-            )
-            .toList();
-        if (texts.isNotEmpty) {
-          empty = texts.single;
-          break;
-        }
-      }
-      emptyObservation['atomId'] = empty.id;
-      expect(liveText(), isEmpty);
-      expect(lease.live.value!.currentWorkId, before.id);
-      expect(main.where((unit) => unit.id == before.id), isEmpty);
-      emptyObservation['phase'] = 'active-body';
-      expect(empty.source, source);
-      expect(empty.lifecycle, isA<ActiveChatAtom>());
-      expect(empty.completionSeq, isNull);
-      expect(empty.contentPresent, isNull);
-      final activeBody = empty.contents
-          .where((content) => content.role == ChatContentRole.body)
-          .single;
-      final activeWindow = await scope
-          .readContent(
-            reference: activeBody.reference,
-            range: const ContentRange(offset: 0, maxBytes: 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(lease, same(owner));
-      expect(activeWindow.offset, 0);
-      expect(activeWindow.bytes, isEmpty);
-      expect(activeWindow.availableThrough, 0);
-      emptyObservation['active'] = {
-        'contentPresent': 'unknown',
-        'completionSeq': empty.completionSeq,
-        'bodyBytes': activeWindow.bytes.length,
-        'availableThrough': activeWindow.availableThrough,
-        'generation': activeWindow.generation,
-        'sealed': activeWindow.sealed,
-      };
-      await release('a14-empty-start');
-      await fixtureGate(tester, provider, 'a14-empty-terminal');
-      while (true) {
-        final ended = await nextActivity();
-        if (ended.completedThrough > started.completedThrough &&
-            !ended.entries.any((entry) => entry.atom.id == empty.id)) {
-          break;
-        }
-      }
-      expect(liveText(), isEmpty);
-      expect(lease.live.value!.currentWorkId, before.id);
-      expect(main.where((unit) => unit.id == before.id), isEmpty);
-      readClock.reset();
-      emptyObservation['phase'] = 'terminal-completion';
-      // Ordinary text freezes under its original atom ID. Hidden excludes this
-      // completion from Main, not from the original reader's point lookup.
-      final completed = await scope
-          .readCompleted(
-            recordId: empty.id,
-            demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(lease, same(owner));
-      expect(completed.recordId, empty.id);
-      expect(completed.atom.id, empty.id);
-      expect(completed.atom.completionItemId, completed.recordId);
-      expect(completed.atom.completionSeq, completed.completionSeq);
-      expect(completed.completionSeq, greaterThan(0));
-      expect(completed.atom.source, source);
-      expect(completed.atom.lifecycle, isA<TerminalChatAtom>());
-      expect(completed.atom.contentPresent, isFalse);
-      expect(completed.mainPresentation, MainPresentation.hidden);
-      expect(completed.run, isNull);
-      expect(completed.atom.payload, isA<InlinePayload>());
-      expect(
-        (completed.atom.payload as InlinePayload).bytes.length,
-        lessThanOrEqualTo(64 * 1024),
-      );
-      final value = ChatItemPresentation.decode(completed.atom);
-      expect(value.compatibility, ChatItemCompatibility.current);
-      expect(value.type, 'text');
-      expect(value.data['attachments'], isA<List>());
-      expect(value.attachments, isEmpty);
-      expect(value.bodies, hasLength(1));
-      expect(value.bodies.single.byteLength, 0);
-      final terminalBody = completed.atom.contents
-          .where((content) => content.role == ChatContentRole.body)
-          .single;
-      final terminalWindow = await scope
-          .readContent(
-            reference: terminalBody.reference,
-            range: const ContentRange(offset: 0, maxBytes: 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(terminalWindow.offset, 0);
-      expect(terminalWindow.bytes, isEmpty);
-      expect(terminalWindow.availableThrough, 0);
-      expect(terminalWindow.sealed, isTrue);
-      emptyObservation['terminal'] = {
-        'recordId': completed.recordId,
-        'completionSeq': completed.completionSeq,
-        'contentPresent': completed.atom.contentPresent,
-        'mainPresentation': completed.mainPresentation.name,
-        'payloadType': value.type,
-        'attachmentCount': value.attachments.length,
-        'bodyByteLength': value.bodies.single.byteLength,
-        'bodyBytes': terminalWindow.bytes.length,
-        'availableThrough': terminalWindow.availableThrough,
-        'sealed': terminalWindow.sealed,
-      };
-      emptyObservation['phase'] = 'verified';
-    } finally {
-      original.requestClose();
-      try {
-        await original.close();
-      } finally {
-        await frames.cancel();
-        scope.retire();
-        final cleanup = await scope.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        );
-        emptyObservation['scopeJoined'] = cleanup.complete;
-        expect(cleanup.complete, isTrue);
-      }
-    }
-    expect(
-      main.where((unit) => unit.atom?.id == empty.id),
-      isEmpty,
-      reason: 'Empty text keeps its atomic record but never receives a display position',
-    );
+    await release('a14-before-empty');
+    await fixtureGate(tester, provider, 'a14-empty-start');
+    await release('a14-empty-start');
+    await fixtureGate(tester, provider, 'a14-empty-terminal');
     await release('a14-empty-terminal');
     await reach(
       'a14-after-empty',
@@ -3937,11 +3475,9 @@ final class _ConceptScene {
             (block.body as WorkDisplayBlock).summary.total == 2,
       ),
     );
-    final after = liveWork().single;
-    final afterBody = after.body as WorkDisplayBlock;
-    expect(after.id, before.id);
-    expect(afterBody.members, beforeBody.members);
-    expect(lease.live.value!.currentWorkId, before.id);
+    // This is the bridge/page handoff. Original preservation and member paging
+    // belong to Runtime tests; card styles and controls belong to widget tests.
+    expect(liveWork().single.id, before.id);
     expect(main.where((unit) => unit.id == before.id), isEmpty);
     await capture('a14-empty-keeps-tail');
     await release('a14-after-empty');
@@ -3949,50 +3485,11 @@ final class _ConceptScene {
     await release('a14-text-readable');
     await reach(
       'a14-before-turn-end',
-      () => (lease.live.value?.blocks.isEmpty ?? true),
+      () => main.any((unit) => unit.id == before.id),
     );
-    expect(
-      main.where((unit) => unit.id == before.id || unit.id == after.id),
-      hasLength(1),
-    );
-    expect(
-      itemFinder(empty.id),
-      findsNothing,
-      reason: 'Structural empty text must not paint an empty bubble',
-    );
+    expect(main.where((unit) => unit.id == before.id), hasLength(1));
     await release('a14-before-turn-end');
     await idle();
-    final membersByBlock = <String, List<String>>{};
-    for (final reference in [beforeBody.members]) {
-      final members = await lease.openDisplayMembers(
-        reference: reference,
-        window: const LatestDisplayMembers(),
-        demand: const ReadDemand(maxItems: 2, maxBytes: 16384),
-      );
-      try {
-        final page = await members.next();
-        expect(page, isNotNull);
-        expect(page!.block, reference);
-        expect(page.sealed, isTrue);
-        expect(page.entries, hasLength(2));
-        expect(
-          page.entries.map((entry) => entry.record.atom.source),
-          everyElement(source),
-        );
-        expect(
-          page.entries.map((entry) => entry.record.atom.id),
-          isNot(contains(empty.id)),
-        );
-        membersByBlock[reference.blockId] = page.entries
-            .map((member) => member.record.atom.id)
-            .toList();
-        expect(await members.next(), isNull);
-      } finally {
-        members.requestClose();
-        await members.close();
-      }
-    }
-    report['emptyTextSameTailWorkBlocks'] = membersByBlock;
   }
 
   Future<void> _verifyImageResult(

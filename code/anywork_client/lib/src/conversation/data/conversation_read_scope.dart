@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:developer' as developer;
 
 import '../../../conversation_ports.dart';
 import '../../../models.dart';
@@ -41,8 +40,6 @@ final class ConversationReadScope implements TimelineQueryScope {
   bool _retired = false;
   Future<ChatBatch>? _older;
   Future<TimelineBatch>? _timelineOlder;
-  // Temporary per-isolate log quota, not a query limit or identity registry.
-  static int _readProfileReads = 0;
 
   @override
   bool get isActive => !_retired && _isEligible();
@@ -120,41 +117,7 @@ final class ConversationReadScope implements TimelineQueryScope {
   Future<CompletedEntry> readCompleted({
     required String recordId,
     required ReadDemand demand,
-  }) => _run(() async {
-    final call = _readProfileReads < 96 ? ++_readProfileReads : 0;
-    final started = call != 0 ? developer.Timeline.now : 0;
-    var returnedBytes = -1;
-    var result = 'error';
-    if (call != 0) {
-      print(
-        'READ_PROFILE_STAGE stage=sdk_metadata_read phase=begin '
-        'micros=$started thread=$threadId scope=${identityHashCode(this)} '
-        'scopeGeneration=$generation call=$call item=$recordId '
-        'maxItems=${demand.maxItems} maxBytes=${demand.maxBytes}',
-      );
-    }
-    try {
-      final entry = await _reader.readCompleted(
-        recordId: recordId,
-        demand: demand,
-      );
-      if (entry.atom.payload case InlinePayload(:final bytes)) {
-        returnedBytes = bytes.length;
-      }
-      result = 'ok';
-      return entry;
-    } finally {
-      if (call != 0) {
-        final ended = developer.Timeline.now;
-        print(
-          'READ_PROFILE_STAGE stage=sdk_metadata_read phase=end '
-          'micros=$ended thread=$threadId scope=${identityHashCode(this)} '
-          'scopeGeneration=$generation call=$call result=$result '
-          'returnedBytes=$returnedBytes durationMicros=${ended - started}',
-        );
-      }
-    }
-  });
+  }) => _run(() => _reader.readCompleted(recordId: recordId, demand: demand));
 
   @override
   Future<ChatBatch> loadOlder({
@@ -202,40 +165,10 @@ final class ConversationReadScope implements TimelineQueryScope {
   Future<ContentWindow> readContent({
     required ContentRef reference,
     required ContentRange range,
-  }) => _run(() async {
-    final call = _readProfileReads < 96 ? ++_readProfileReads : 0;
-    final started = call != 0 ? developer.Timeline.now : 0;
-    var returnedBytes = -1;
-    var result = 'error';
-    if (call != 0) {
-      print(
-        'READ_PROFILE_STAGE stage=sdk_content_read phase=begin '
-        'micros=$started thread=$threadId scope=${identityHashCode(this)} '
-        'scopeGeneration=$generation call=$call '
-        'reference=${identityHashCode(reference)} '
-        'offset=${range.offset} maxBytes=${range.maxBytes}',
-      );
-    }
-    try {
-      final window = await _reader.readContent(
-        reference: reference,
-        range: range,
-      );
-      returnedBytes = window.bytes.length;
-      result = 'ok';
-      return window;
-    } finally {
-      if (call != 0) {
-        final ended = developer.Timeline.now;
-        print(
-          'READ_PROFILE_STAGE stage=sdk_content_read phase=end '
-          'micros=$ended thread=$threadId scope=${identityHashCode(this)} '
-          'scopeGeneration=$generation call=$call result=$result '
-          'returnedBytes=$returnedBytes durationMicros=${ended - started}',
-        );
-      }
-    }
-  }, resource: reference);
+  }) => _run(
+    () => _reader.readContent(reference: reference, range: range),
+    resource: reference,
+  );
 
   @override
   Future<CurrentCollectionPage> pageCurrent({

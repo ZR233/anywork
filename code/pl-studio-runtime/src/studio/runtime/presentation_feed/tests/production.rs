@@ -348,6 +348,41 @@ async fn v364_empty_text_keeps_the_production_feed_tail_at_max_items_one() -> Re
             work_reference(&cut.live.context("tail after empty completion")?)?,
             original
         );
+        // Empty display content must remain independently readable as an original.
+        // This proof belongs to the production reader, not a Flutter protocol loop.
+        let completion = prepared.completions.first().context("empty original")?;
+        let saved = pl_core::chat::ChatHistory::item(&h.history, &completion.header.item_id)
+            .await?
+            .context("saved empty original")?;
+        assert_eq!(saved, **completion);
+        let entry = feed
+            .reader()
+            .read_completed(&completion.header.item_id, demand(1))
+            .await?;
+        assert_eq!(entry.atom.content_present, Some(false));
+        assert_eq!(
+            entry.main_presentation,
+            pl_protocol::MainPresentation::Hidden
+        );
+        let body = entry
+            .atom
+            .contents
+            .iter()
+            .find(|content| content.role == pl_protocol::ChatContentRole::Body)
+            .context("empty body reference")?;
+        let window = feed
+            .reader()
+            .read_content(
+                &body.reference,
+                pl_protocol::ContentRange {
+                    offset: 0,
+                    max_bytes: 1024,
+                },
+            )
+            .await?;
+        assert!(window.bytes.is_empty());
+        assert_eq!(window.available_through, 0);
+        assert!(window.sealed);
         feed.reader().close().await?;
         feed.close().await?;
         Ok(())

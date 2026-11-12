@@ -8,6 +8,21 @@ mod review_feedback;
 use super::*;
 use pl_provider_fixture::delegation::{LiveState, Scenario};
 
+fn safe_action(line: &str) -> &'static str {
+    match line.split_whitespace().next().unwrap_or("") {
+        "open-project" => "open-project",
+        "create-thread" => "create-thread",
+        "select-model" => "select-model",
+        "send-prompt" => "send-prompt",
+        "inspect-response" => "inspect-response",
+        "stop-turn" => "stop-turn",
+        "open-settings" => "open-settings",
+        "edit-settings" => "edit-settings",
+        "save-settings" => "save-settings",
+        _ => "other",
+    }
+}
+
 pub(super) struct ScenarioContext<'a> {
     pub workspace: &'a Path,
     pub app_dir: &'a Path,

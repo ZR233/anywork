@@ -560,51 +560,40 @@ impl ConversationReader {
         record_id: &str,
         demand: ReadDemand,
     ) -> Result<CompletedEntry> {
-        let probe_started = std::time::Instant::now();
-        tracing::debug!(target: "conversation_work", stage = "read_completed", phase = "begin", thread_id = self.thread_id(),
-            lease_id = self.subscription_id(), max_items = demand.max_items, max_bytes = demand.max_bytes, "temporary read probe");
-        let result: Result<CompletedEntry> = async {
-            let guard = self.resources().await?;
-            let r = guard.as_ref().ok_or_else(cancelled)?;
-            let budget = JsonBudget::new(r.database_id.clone().unwrap_or_default(), String::new());
-            let item = tokio::select! { biased;
-                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-                result = r.session.read_item(core::ChatItemRequest {
-                    epoch: r.session.epoch(), item_id: record_id.into(),
-                    ceiling: None, demand: core_demand(demand)?,
-                }, &budget) => result?,
-            }
-            .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
-            let mut entries = entries(vec![item], &budget.database_id)?;
-            let current = r
-                .source
-                .as_ref()
-                .and_then(|source| source.current_conversation());
-            annotate_sources(
-                &mut entries,
-                &r.history,
-                current
-                    .as_ref()
-                    .map_or(&[], |source| source.current.source_states()),
-                current.as_ref().map_or(self.inner.effect_cut, |source| {
-                    source.current.projection().source_effect_seq
-                }),
-            )
-            .await?;
-            self.ensure()?;
-            let entry = entries.pop().expect("one point-read result");
-            ensure!(
-                serde_json::to_vec(&entry)?.len() <= demand.max_bytes as usize,
-                core::ChatError::InvalidDemand("completed envelope exceeds demand".into())
-            );
-            Ok(entry)
+        let guard = self.resources().await?;
+        let r = guard.as_ref().ok_or_else(cancelled)?;
+        let budget = JsonBudget::new(r.database_id.clone().unwrap_or_default(), String::new());
+        let item = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            result = r.session.read_item(core::ChatItemRequest {
+                epoch: r.session.epoch(), item_id: record_id.into(),
+                ceiling: None, demand: core_demand(demand)?,
+            }, &budget) => result?,
         }
-        .await;
-        tracing::debug!(target: "conversation_work", stage = "read_completed", phase = "end", thread_id = self.thread_id(),
-            lease_id = self.subscription_id(), elapsed_us = probe_started.elapsed().as_micros() as u64,
-            returned_items = usize::from(result.is_ok()),
-            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
-        result
+        .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
+        let mut entries = entries(vec![item], &budget.database_id)?;
+        let current = r
+            .source
+            .as_ref()
+            .and_then(|source| source.current_conversation());
+        annotate_sources(
+            &mut entries,
+            &r.history,
+            current
+                .as_ref()
+                .map_or(&[], |source| source.current.source_states()),
+            current.as_ref().map_or(self.inner.effect_cut, |source| {
+                source.current.projection().source_effect_seq
+            }),
+        )
+        .await?;
+        self.ensure()?;
+        let entry = entries.pop().expect("one point-read result");
+        ensure!(
+            serde_json::to_vec(&entry)?.len() <= demand.max_bytes as usize,
+            core::ChatError::InvalidDemand("completed envelope exceeds demand".into())
+        );
+        Ok(entry)
     }
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
         self.ensure()?;
@@ -769,18 +758,17 @@ impl ConversationReader {
         reference: &ContentRef,
         range: ContentRange,
     ) -> Result<ContentWindow> {
-        let probe_started = std::time::Instant::now();
         tracing::debug!(
             target: "conversation_work",
-            stage = "content_range", phase = "begin",
             thread_id = self.thread_id(),
-            lease_id = self.subscription_id(),
+            trace_id = self.subscription_id(),
             content_range_requests = 1,
+            content_database_id = reference.database_id.as_str(),
+            content_target = ?reference.target,
             content_offset = range.offset,
             content_max_bytes = range.max_bytes,
-            "temporary read probe"
+            "content range started"
         );
-        let result: Result<ContentWindow> = async {
         ensure!(
             range.max_bytes > 0 && range.max_bytes <= CONTENT_WINDOW_MAX_BYTES,
             core::ChatError::InvalidDemand("invalid content range".into())
@@ -919,13 +907,6 @@ impl ConversationReader {
             available_through: window.available_through,
             sealed: window.sealed,
         })
-        }.await;
-        tracing::debug!(target: "conversation_work", stage = "content_range", phase = "end", thread_id = self.thread_id(),
-            lease_id = self.subscription_id(), elapsed_us = probe_started.elapsed().as_micros() as u64,
-            content_offset = range.offset, content_max_bytes = range.max_bytes,
-            returned_bytes = result.as_ref().map_or(0, |window| window.bytes.len()),
-            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
-        result
     }
     pub async fn page_current(
         &self,

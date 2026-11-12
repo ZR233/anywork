@@ -212,23 +212,14 @@ class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
         final lease = timeline.lease(threadId);
         final owner = _client.drafts.existingComposer(threadId);
         if (owner == null) return;
-        _run(
-          () => owner.submit(
-            beforeSubmit: () async {
-              // Observation may disappear without cancelling the submitted input.
-              if (lease == null ||
-                  !lease.isMounted ||
-                  lease.isRetired ||
-                  timeline.lease(threadId) != lease) {
-                return;
-              }
-              await timeline.prepareComposerSubmissionDisplay(
-                threadId,
-                lease: lease,
-              );
-            },
-          ),
-        );
+        _run(() {
+          // Hand off the input before publishing any local display intent.
+          final submission = owner.submit();
+          if (lease != null) {
+            timeline.prepareComposerSubmissionDisplay(threadId, lease: lease);
+          }
+          return submission;
+        });
       case StartComposerTarget(:final workspaceId):
         final owner = _client.drafts.startDraft;
         _run(() async {

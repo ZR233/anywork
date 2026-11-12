@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/timeline/state/patch_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:material_ui/material_ui.dart';

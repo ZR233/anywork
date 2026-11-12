@@ -718,30 +718,15 @@ async fn read_envelope_with(
     expected_schema: u32,
     decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
 ) -> Result<Option<ValidatedEnvelope>> {
-    let probe_started = std::time::Instant::now();
-    tracing::debug!(target: "conversation_work", stage = "checkpoint_fetch", phase = "begin", thread_id, "temporary read probe");
-    let fetched = tx.query_one_raw(statement(
+    let Some(row) = tx.query_one_raw(statement(
         "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
-    )).await;
-    tracing::debug!(target: "conversation_work", stage = "checkpoint_fetch", phase = "end", thread_id,
-        elapsed_us = probe_started.elapsed().as_micros() as u64,
-        outcome = if fetched.is_ok() { "ok" } else { "error" }, "temporary read probe");
-    let Some(row) = fetched? else { return Ok(None) };
+    )).await? else { return Ok(None) };
     let payload: String = row.try_get("", "payload")?;
-    let probe_started = std::time::Instant::now();
-    tracing::debug!(target: "conversation_work", stage = "checkpoint_hash_decode", phase = "begin", thread_id,
-        payload_bytes = payload.len(), "temporary read probe");
-    let decoded = (|| {
-        ensure!(
-            content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-            "checkpoint content hash mismatch"
-        );
-        decode(&payload)
-    })();
-    tracing::debug!(target: "conversation_work", stage = "checkpoint_hash_decode", phase = "end", thread_id,
-        elapsed_us = probe_started.elapsed().as_micros() as u64,
-        outcome = if decoded.is_ok() { "ok" } else { "error" }, "temporary read probe");
-    let checkpoint = decoded?;
+    ensure!(
+        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
+        "checkpoint content hash mismatch"
+    );
+    let checkpoint = decode(&payload)?;
     ensure!(
         checkpoint.thread_id == thread_id
             && checkpoint.schema_version == expected_schema

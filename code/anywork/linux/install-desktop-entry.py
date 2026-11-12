@@ -8,7 +8,7 @@ from pathlib import Path
 def main():
     bundle = Path(__file__).resolve().parent
     executable = bundle / "anywork"
-    icon = bundle / "share/icons/hicolor/1024x1024/apps/io.github.zr233.anywork.png"
+    icon = bundle / "share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png"
     if not executable.is_file() or not icon.is_file():
         raise SystemExit("Run this script from a built anywork bundle.")
     # Desktop Entry string escaping precedes Exec argument unquoting.

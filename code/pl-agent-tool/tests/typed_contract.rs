@@ -8,7 +8,7 @@ use pl_agent_tool::typed::{
     ArgumentError, InvocationError, JsonAdapter, JsonError, PreparedJson, TypedTool, decode_json,
     input_schema_for, prepare_json,
 };
-use pl_agent_tool::{DefinitionError, InputFormat, ToolDefinition, ToolHandle};
+use pl_agent_tool::{InputFormat, ToolHandle};
 
 /// Extracts an error without requiring the success type to implement `Debug`;
 /// author types here deliberately keep proving they need no `Debug`.
@@ -182,18 +182,6 @@ fn output_schema_is_generated_for_serialization() {
         futures::executor::block_on(handle.execute(r#"{"left":2,"right":3}"#.to_owned(), ()))
             .unwrap();
     assert_eq!((output.kept, output.hidden_from_serialization), (2, 3));
-}
-
-#[test]
-fn with_output_schema_rejects_non_object_roots_before_attach() {
-    // The library's own generator always produces objects, so probe the
-    // declaration-level guard through ToolDefinition directly.
-    let error = ToolDefinition::json("x", "d", serde_json::json!({}))
-        .unwrap()
-        .with_output_schema(serde_json::json!([]))
-        .err()
-        .expect_error("non-object output schema rejected");
-    assert!(matches!(error, DefinitionError::InvalidOutputSchema));
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]

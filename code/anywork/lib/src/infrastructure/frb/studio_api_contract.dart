@@ -501,7 +501,6 @@ class FrbStudioTransport
     StudioStartupPhase.loadingBridge,
   );
   static final startupRecovery = ValueNotifier<StartupRecoveryReport?>(null);
-  int _readProfileTimelineOpens = 0;
 
   @override
   Future<RecoveryStateSnapshot> retryRecovery() async {
@@ -2738,50 +2737,13 @@ class FrbStudioTransport
     required ReadDemand demand,
   }) async {
     frb_timeline.BridgeTimelineFeed? timeline;
-    final profile = _readProfileTimelineOpens++ < 8;
-    final started = profile ? developer.Timeline.now : 0;
-    if (profile) {
-      debugPrint(
-        'READ_PROFILE_STAGE stage=frb_open phase=begin '
-        'micros=$started thread=$threadId '
-        'maxItems=${demand.maxItems} maxBytes=${demand.maxBytes}',
+    return _openConversationOwner<FrbTimelineFeed>(threadId, () async {
+      timeline = await frb_timeline.openTimelineFeed(
+        threadId: threadId,
+        initialDemand: _readDemandToFrb(demand),
       );
-    }
-    try {
-      return await _openConversationOwner<FrbTimelineFeed>(threadId, () async {
-        final nativeStarted = profile ? developer.Timeline.now : 0;
-        if (profile) {
-          debugPrint(
-            'READ_PROFILE_STAGE stage=frb_native_open phase=begin '
-            'micros=$nativeStarted thread=$threadId',
-          );
-        }
-        try {
-          timeline = await frb_timeline.openTimelineFeed(
-            threadId: threadId,
-            initialDemand: _readDemandToFrb(demand),
-          );
-        } finally {
-          if (profile) {
-            final ended = developer.Timeline.now;
-            debugPrint(
-              'READ_PROFILE_STAGE stage=frb_native_open phase=end '
-              'micros=$ended thread=$threadId '
-              'durationMicros=${ended - nativeStarted}',
-            );
-          }
-        }
-        return _FrbNativeConversation.timeline(timeline!);
-      }, (_) => FrbTimelineFeed(timeline!));
-    } finally {
-      if (profile) {
-        final ended = developer.Timeline.now;
-        debugPrint(
-          'READ_PROFILE_STAGE stage=frb_open phase=end '
-          'micros=$ended thread=$threadId durationMicros=${ended - started}',
-        );
-      }
-    }
+      return _FrbNativeConversation.timeline(timeline!);
+    }, (_) => FrbTimelineFeed(timeline!));
   }
 
   Future<T> _openConversationOwner<T extends FrbConversationFeed>(
