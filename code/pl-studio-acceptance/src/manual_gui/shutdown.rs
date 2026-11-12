@@ -18,7 +18,7 @@
 //! * `busy`     — a duplicate activates the owner and exits before Flutter;
 //!   the original instance continues and saves.
 //! * `busy-reopen` — reopen the same home and prove that continued turn restored.
-//! * `duplicate`— a repeated exit request, seconds after the first arm, must
+//! * `duplicate`— a repeated exit request during the first pending cleanup must
 //!   stay inside the single budget measured from the first arm.
 //! * `hang`     — the thin native assembly hangs the isolate after arming the
 //!   budget; the native host must force exit code 1 at the 30-second deadline.
@@ -625,6 +625,14 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 interrupt,
                 true,
             )?;
+            wait_stage(
+                "duplicate_exit_repeated",
+                working,
+                &mut gui,
+                &mut fixture,
+                interrupt,
+                EXIT_GRACE,
+            )?;
             let native = wait_native_exit(
                 "duplicate",
                 working,
@@ -641,7 +649,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "subscription-fault assembly closed through the real exit path: {}",
+                    "a repeated request reused the pending subscription-fault cleanup and closed through the real exit path: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -663,6 +671,11 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 native.reclaimed_descendants.is_empty(),
                 "duplicate-exit native exit left a child tree for the harness: {:?}",
                 native.reclaimed_descendants
+            );
+            let diagnostics = read_native_exit_diagnostics(&home_duplicate)?;
+            ensure!(
+                diagnostics["coordinatedFinish"] == true,
+                "duplicate-exit did not finish through the coordinator: {diagnostics}"
             );
             write_sanitized_log(&log, &output.join("shutdown-duplicate-gui.log"))?;
         }

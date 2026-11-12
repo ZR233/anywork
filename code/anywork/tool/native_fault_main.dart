@@ -244,11 +244,16 @@ final class _NativeLifecycleAssembly {
     await _writeObserved(observed, turn);
     await mark(settled);
     await mark(exitRequested);
-    await _requestExit();
+    final exit = _requestExit();
     if (twice) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      await _requestExit();
+      final repeated = _requestExit();
+      if (!identical(exit, repeated)) {
+        throw StateError('Repeated exit did not share the in-flight cleanup');
+      }
+      await mark('duplicate_exit_repeated');
     }
+    await exit;
   }
 
   Future<void> _runBusyHold() async {
