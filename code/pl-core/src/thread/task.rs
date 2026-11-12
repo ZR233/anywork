@@ -45,6 +45,10 @@ pub struct TaskAcknowledgement {
 #[serde(rename_all = "camelCase")]
 pub struct TaskRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<crate::model::ModelToolCall>,
     pub call_id: String,
     pub tool_id: String,
     pub turn_id: String,
@@ -69,6 +73,8 @@ impl Owner {
     pub(super) fn start_task(&mut self, call: &PendingCall) -> Result<(), ThreadError> {
         let record = TaskRecord {
             id: format!("task:{}", call.call.call_id),
+            parent_call_id: call.parent_call_id.clone(),
+            invocation: call.parent_call_id.as_ref().map(|_| call.call.clone()),
             call_id: call.call.call_id.clone(),
             tool_id: call.call.tool_id.clone(),
             turn_id: call.turn_id.clone(),

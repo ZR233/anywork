@@ -1554,6 +1554,8 @@ mod tests {
         state.tasks.insert(
             "background".into(),
             TaskRecord {
+                parent_call_id: None,
+                invocation: None,
                 id: "background".into(),
                 call_id: "background-call".into(),
                 tool_id: "exec".into(),

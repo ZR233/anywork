@@ -38,12 +38,12 @@ use tokio_util::sync::CancellationToken;
 #[ignore = "external SSH; requires PURE_SSH_TEST_SERVER, PURE_SSH_TEST_WORKSPACE, and PURE_REMOTE_HELPER_*"]
 async fn ssh_remote_validation() -> anyhow::Result<()> {
     let scope = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
-        Ok("exec") => "exec",
+        Ok("exec_command") => "exec_command",
         Ok("lsp") => "lsp",
         Ok("full") | Err(std::env::VarError::NotPresent) => "full",
         other => anyhow::bail!("invalid PURE_SSH_TEST_SCOPE: {other:?}"),
     };
-    let exec_only = scope == "exec";
+    let exec_only = scope == "exec_command";
     let host = required("PURE_SSH_TEST_SERVER")?;
     let workspace = required("PURE_SSH_TEST_WORKSPACE")?;
     let aarch64 = std::env::var_os("PURE_REMOTE_HELPER_AARCH64").map(PathBuf::from);
@@ -398,7 +398,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
                 yield_time: Duration::ZERO,
                 max_output_chars: 256,
                 session_id: "budget".into(),
-                tool_id: "exec".into(),
+                tool_id: "exec_command".into(),
                 call_id: "remote-budget".into(),
                 cancellation_token: None,
                 output_observer: None,

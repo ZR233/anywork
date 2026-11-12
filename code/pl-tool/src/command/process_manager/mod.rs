@@ -307,7 +307,7 @@ where
             .checked_add(request.timeout)
             .ok_or_else(|| {
                 tool_error(
-                    "exec",
+                    "exec_command",
                     "timeoutSeconds cannot be represented by this platform",
                 )
             })?;
@@ -331,13 +331,16 @@ where
             .is_some_and(CancellationToken::is_cancelled)
             || self.lifetime.0.is_cancelled()
         {
-            return Err(tool_error("exec", "Task cancelled before admission"));
+            return Err(tool_error(
+                "exec_command",
+                "Task cancelled before admission",
+            ));
         }
         let working_directory = self
             .backend
             .resolve_cwd(request.cwd.as_deref(), request.allow_workspace_escape)
             .await
-            .map_err(|error| tool_error("exec", error))?;
+            .map_err(|error| tool_error("exec_command", error))?;
         let output_target = self
             .backend
             .output_target(
@@ -347,7 +350,7 @@ where
                 &request.command,
             )
             .await
-            .map_err(|error| tool_error("exec", error))?;
+            .map_err(|error| tool_error("exec_command", error))?;
         let mut reservation = self.reserve_start(task_id)?;
         let process_id = reservation.id.clone();
         let capture_limit_bytes = self
@@ -362,7 +365,7 @@ where
             || admitted_at.elapsed() >= request.timeout
         {
             return Err(tool_error(
-                "exec",
+                "exec_command",
                 "Task cancelled or expired before capture preparation",
             ));
         }
@@ -374,13 +377,13 @@ where
                 capture_limit_bytes,
             )
             .await
-            .map_err(|error| tool_error("exec", error))?;
+            .map_err(|error| tool_error("exec_command", error))?;
         // 模型可见字节上限同样在启动时定一次；backend 没声明就是 `None`（既有语义）。
         let model_output_bytes_cap = self.backend.model_output_bytes_cap();
 
         start_control
             .check()
-            .map_err(|error| tool_error("exec", error))?;
+            .map_err(|error| tool_error("exec_command", error))?;
         let child = self
             .backend
             .spawn(CommandSpawnRequest {
@@ -392,7 +395,7 @@ where
                 capture_limit_bytes,
             })
             .await;
-        let mut child = child.map_err(|error| tool_error("exec", error))?;
+        let mut child = child.map_err(|error| tool_error("exec_command", error))?;
         let stdout = child.take_stdout();
         let stderr = child.take_stderr();
         let stdout_open = stdout.is_some();
@@ -458,10 +461,13 @@ where
         let id = match task_id {
             Some(id) => {
                 if !id.starts_with("task-") || id.len() > 256 {
-                    return Err(tool_error("exec", "invalid session task ID"));
+                    return Err(tool_error("exec_command", "invalid session task ID"));
                 }
                 if state.entries.contains_key(id) || state.task_reservations.contains(id) {
-                    return Err(tool_error("exec", "session task already owns a process"));
+                    return Err(tool_error(
+                        "exec_command",
+                        "session task already owns a process",
+                    ));
                 }
                 state.task_reservations.insert(id.to_owned());
                 id.to_owned()
@@ -469,7 +475,7 @@ where
             None => {
                 let id = NEXT_PROCESS_ID
                     .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                    .map_err(|_| tool_error("exec", "process identity exhausted"))?;
+                    .map_err(|_| tool_error("exec_command", "process identity exhausted"))?;
                 format!("proc-{id}")
             }
         };
@@ -523,14 +529,14 @@ where
         self.backend
             .publish_output(&entry.output_target)
             .await
-            .map_err(|error| tool_error("exec", error))?;
+            .map_err(|error| tool_error("exec_command", error))?;
         let (mut snapshot, sizes) = entry.snapshot(max_output_chars).await;
         if snapshot.process_id.is_none() {
             snapshot.output_artifacts = self
                 .backend
                 .collect_output_artifacts(&entry.output_target, sizes)
                 .await
-                .map_err(|error| tool_error("exec", error))?;
+                .map_err(|error| tool_error("exec_command", error))?;
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -44,6 +44,7 @@ pub(super) struct ContinuationTag {
 pub(super) struct Function {
     pub name: Option<String>,
     pub function: Option<Box<Function>>,
+    pub description: Option<String>,
 }
 
 impl Function {
@@ -179,7 +180,25 @@ impl Request {
             .transpose()
     }
     pub fn declared(&self, name: &str) -> bool {
+        self.direct(name)
+            || self.tools.iter().any(|tool| {
+                tool.name() == Some("exec")
+                    && tool.description.as_ref().is_some_and(|description| {
+                        description.contains(&format!("tools[{name:?}]("))
+                    })
+            })
+    }
+
+    fn direct(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool.name() == Some(name))
+    }
+
+    pub(super) fn invocation<'a>(&self, name: &'a str, arguments: Value) -> (&'a str, Value) {
+        if self.direct(name) {
+            (name, arguments)
+        } else {
+            ("exec", crate::lua::arguments(name, &arguments))
+        }
     }
 
     pub fn tool_call_output(
@@ -209,6 +228,12 @@ impl Request {
             ensure!(outputs.is_empty(), "orphan tool output {id}");
             return Ok(None);
         };
+        let (tool, expected_arguments) =
+            if declaration.name.as_deref() == Some("exec") && tool != "exec" {
+                ("exec", crate::lua::arguments(tool, expected_arguments))
+            } else {
+                (tool, expected_arguments.clone())
+            };
         ensure!(
             declaration.name.as_deref() == Some(tool),
             "tool result belongs to the wrong tool"
@@ -221,7 +246,7 @@ impl Request {
         )
         .context("decode tool call declaration arguments")?;
         ensure!(
-            &declared_arguments == expected_arguments,
+            declared_arguments == expected_arguments,
             "tool call arguments changed during history replay"
         );
         let Some(output) = outputs.first() else {

@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 pub mod agent_definitions;
 mod context_replay_recovery;
 pub mod delegation;
+mod lua;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
@@ -422,7 +423,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: "view_image",
                         arguments: json!({"path": "tool-image.png"}).to_string(),
-                    };
+                    }.program("view_image");
                 }
                 if matches!(item_id, "scroll-item-short" | "scroll-item-read-second") {
                     let path = if item_id == "scroll-item-short" {
@@ -440,7 +441,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: TOOL_EXEC_NAME,
                         arguments: realtime_exec_arguments(&command, None),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-medium" {
                     return RealtimeToolCall {
@@ -452,7 +453,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "head -n 12 -- 'scroll-fixture/long-read.txt'"
                         }, None),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-long" {
                     return RealtimeToolCall {
@@ -464,7 +465,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "cat -- 'scroll-fixture/long-read.txt'"
                         }, "maxOutputChars": 40000}).to_string(),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-failed" {
                     return RealtimeToolCall {
@@ -476,7 +477,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "cat -- 'scroll-fixture/missing.txt'"
                         }, None),
-                    };
+                    }.program("exec_command");
                 }
                 if let Some(arguments) = expected_arguments.get(call_id) {
                     return RealtimeToolCall {
@@ -484,7 +485,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: TOOL_EXEC_NAME,
                         arguments: arguments.clone(),
-                    };
+                    }.program("exec_command");
                 }
                 unreachable!("all tool scroll calls are defined above")
             })
@@ -551,11 +552,14 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         .collect();
     let calls: Vec<_> = identities
         .iter()
-        .map(|(item_id, call_id)| RealtimeToolCall {
-            item_id,
-            call_id,
-            name: "stat_path",
-            arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
+        .map(|(item_id, call_id)| {
+            RealtimeToolCall {
+                item_id,
+                call_id,
+                name: "stat_path",
+                arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
+            }
+            .program("stat_path")
         })
         .collect();
     script.add(|step| {
@@ -597,7 +601,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id: "resource-workflow-current",
                         name: "workflow_current",
                         arguments: "{}".into(),
-                    }],
+                    }
+                    .program("workflow_current")],
                 )),
             )
         });
@@ -2253,7 +2258,7 @@ pub fn gui_script() -> Vec<Step> {
                         ]
                     })
                     .to_string(),
-                }],
+                }.program("show_files")],
             )),
         )
         .optional(),
@@ -2985,7 +2990,8 @@ pub fn gui_realtime_script(
                         call_id: "realtime-long-call",
                         name: TOOL_EXEC_NAME,
                         arguments: realtime_exec_arguments(&realtime_long_command(), None),
-                    }],
+                    }
+                    .program("exec_command")],
                 )),
             )
         });
@@ -3015,9 +3021,10 @@ pub fn gui_realtime_script(
         // original prompt: the step matches that exact notice identity and nothing
         // else, and only here does the model report the command complete.
         script.add(|step| {
-            Step::delivery(
+            Step::tool_output(
                 Protocol::ResponsesHttp,
-                realtime_delivery_marker("realtime-long-call"),
+                "realtime-long-call",
+                "\"kind\":\"final\"",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_LONG_DONE_TEXT,
@@ -3037,7 +3044,8 @@ pub fn gui_realtime_script(
                     &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
                     None,
                 ),
-            },
+            }
+            .program("exec_command"),
             RealtimeToolCall {
                 item_id: "realtime-parallel-item-b",
                 call_id: "realtime-parallel-call-b",
@@ -3046,7 +3054,8 @@ pub fn gui_realtime_script(
                     &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
                     None,
                 ),
-            },
+            }
+            .program("exec_command"),
         ];
         let reply = if let Some(stages) = &observers {
             // Prepare the real group window before either command is issued.
@@ -3143,9 +3152,10 @@ pub fn gui_realtime_script(
                 &calls,
             ))
         };
-        Step::delivery(
+        Step::tool_output(
             Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-parallel-call-a"),
+            "realtime-parallel-call-a",
+            "\"kind\":\"final\"",
             step,
             reply,
         )
@@ -3154,9 +3164,10 @@ pub fn gui_realtime_script(
     // actually complete. This is not a fallback for the previous step: it
     // requires the exact receipt identity of the other command.
     script.add(|step| {
-        Step::delivery(
+        Step::tool_output(
             Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-parallel-call-b"),
+            "realtime-parallel-call-b",
+            "\"kind\":\"final\"",
             step,
             Reply::Sse(responses_text(
                 GUI_REALTIME_PARALLEL_DONE_TEXT,
@@ -3172,7 +3183,8 @@ pub fn gui_realtime_script(
                 call_id: "realtime-host-cwd-call",
                 name: TOOL_EXEC_NAME,
                 arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
-            }];
+            }
+            .program("exec_command")];
             let reply = if let Some(stages) = &observers {
                 let events = responses_reasoning_tool_calls(
                     &["realtime host cwd observers ready"],
@@ -3226,9 +3238,10 @@ pub fn gui_realtime_script(
         });
         // Only the committed result of the host-cwd command reaches this step.
         script.add(|step| {
-            Step::delivery(
+            Step::tool_output(
                 Protocol::ResponsesHttp,
-                realtime_delivery_marker("realtime-host-cwd-call"),
+                "realtime-host-cwd-call",
+                "\"kind\":\"final\"",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_HOST_CWD_DONE_TEXT,
@@ -3370,7 +3383,8 @@ pub fn gui_history_fault_script() -> Vec<Step> {
                         // approval and never competes with the storage fault gate
                         // (the fault must hold it back, not an approval prompt).
                         arguments: realtime_exec_arguments(&history_fault_command(), None),
-                    }],
+                    }
+                    .program("exec_command")],
                 ),
             },
         )
@@ -3550,7 +3564,8 @@ pub fn gui_mode_editor_script() -> Vec<Step> {
                 call_id: &call_id,
                 name: "workflow_graph",
                 arguments: "{}".to_string(),
-            }],
+            }
+            .program("workflow_graph")],
         );
         script.add(|step| {
             Step::prompt(
@@ -3606,7 +3621,7 @@ pub fn gui_shutdown_script() -> Vec<Step> {
                     name: TOOL_EXEC_NAME,
                     arguments: json!({"command": shutdown_tool_command(), "timeoutSeconds": 600})
                         .to_string(),
-                }],
+                }.program("exec_command")],
             )),
         )
     });
@@ -3691,6 +3706,19 @@ pub struct RealtimeToolCall<'a> {
     pub arguments: String,
 }
 
+impl RealtimeToolCall<'_> {
+    /// A script's explicit native invocation, delivered through the production Lua entry.
+    pub fn program(self, name: &str) -> Self {
+        let arguments: Value =
+            serde_json::from_str(&self.arguments).expect("fixture JSON arguments");
+        Self {
+            name: "exec",
+            arguments: lua::arguments(name, &arguments).to_string(),
+            ..self
+        }
+    }
+}
+
 fn realtime_title_step(step: usize, title: &str) -> Step {
     Step::prompt(
         Protocol::ResponsesHttp,
@@ -3727,16 +3755,6 @@ fn realtime_wait_arguments(call_ids: &[&str]) -> String {
         "timeoutMs": GUI_REALTIME_WAIT_TIMEOUT_MILLIS,
     })
     .to_string()
-}
-
-/// Strict identity of one background delivery notice.
-///
-/// `pl-core` prefixes the delivered context with `Task <task> for tool <tool>
-/// finished: <status>.`; the task id is derived from the call id. Requiring the
-/// success status keeps a failed command from ever satisfying a completion step,
-/// so the scenario can never report success early.
-fn realtime_delivery_marker(call_id: &str) -> String {
-    format!("Task task:{call_id} for tool {TOOL_EXEC_NAME} finished: Succeeded.")
 }
 
 /// Long-command tool script. Prints one line per `sleep`, so the tool stays in a
@@ -4958,7 +4976,13 @@ fn tool_images_pending(
         }
         previous_result = Some(position);
         let output = result["output"].as_str()?;
-        if output.is_empty() {
+        let selected_receipt = serde_json::from_str::<Value>(output)
+            .ok()
+            .is_some_and(|receipt| {
+                receipt["original"]["contentDigest"].as_str()
+                    == Some(format!("sha256:{}", image.png_sha256).as_str())
+            });
+        if output.is_empty() || selected_receipt {
             let label = format!(
                 "Image from view_image call {}: pl.studio.resource:{}",
                 image.call_id, image.png_sha256

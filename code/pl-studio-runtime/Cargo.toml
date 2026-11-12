@@ -88,3 +88,7 @@ name = "statistics_pipeline"
 harness = false
 test = false
 required-features = ["benchmarks"]
+
+[[example]]
+name = "exec_orchestration_observe"
+required-features = ["live-tests"]

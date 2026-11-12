@@ -213,3 +213,5 @@ business sessions retain their frozen definition after reload, disable or delete
 Local detection only checks help/version; it neither downloads nor logs in and
 does not prove authentication. ACP accounts are not Native model-route candidates.
 Never repair a conflict by deleting migration records, definitions or credentials.
+
+`runtime.tool_capabilities.exec` controls the `exec_command` / `write_stdin` command bindings. Native tools are called through Lua `exec`, which accepts `code`; shell commands use `tools.exec_command({command=...})` inside that program. Disabling command bindings still permits orchestration of other enabled tools. There is no legacy execution-mode switch.

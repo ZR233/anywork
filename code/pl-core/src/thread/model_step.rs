@@ -644,6 +644,10 @@ impl Owner {
                                     turn_id: input.turn_id.clone(),
                                     call: call.clone(),
                                     executor: executor.clone(),
+                                    parent_call_id: None,
+                                    nested_plan: executor
+                                        .may_call_nested()
+                                        .then(|| Arc::new(plan.clone())),
                                 },
                             );
                         }

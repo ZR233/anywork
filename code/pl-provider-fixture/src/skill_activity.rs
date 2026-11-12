@@ -550,7 +550,7 @@ impl Call {
     }
 
     fn exec(slug: &str, command: &str) -> Self {
-        Self::new(slug, "exec", json!({ "command": command }))
+        Self::new(slug, "exec_command", json!({ "command": command }))
     }
 
     fn list(slug: &str) -> Self {
@@ -573,8 +573,8 @@ impl Call {
         Self {
             item_id: format!("{slug}-item"),
             call_id: format!("{slug}-call"),
-            name,
-            arguments: arguments.to_string(),
+            name: "exec",
+            arguments: crate::lua::arguments(name, &arguments).to_string(),
         }
     }
 

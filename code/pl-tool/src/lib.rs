@@ -73,3 +73,4 @@ mod test_fixture_helper;
 #[cfg(test)]
 #[path = "../tests/support/remote.rs"]
 mod test_fixture_remote;
+pub mod lua;

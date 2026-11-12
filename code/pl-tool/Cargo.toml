@@ -12,6 +12,7 @@ docker-tools = []
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
 pl-tool-filesystem = { workspace = true }
 pl-tool-command = { workspace = true }
+pl-tool-lua = { workspace = true }
 pl-tool-git = { workspace = true }
 pl-tool-lsp = { workspace = true }
 pl-tool-mcp = { workspace = true }
@@ -62,6 +63,7 @@ schemars = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+pl-core = { workspace = true, features = ["sqlite"] }
 axum = { workspace = true }
 tracing-subscriber = { workspace = true }
 libc = { workspace = true }

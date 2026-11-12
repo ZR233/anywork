@@ -203,7 +203,7 @@ pub(crate) fn managed_child(
     })
 }
 fn exec_error(error: impl std::fmt::Display) -> PureError {
-    crate::tool_error("exec", error)
+    crate::tool_error("exec_command", error)
 }
 impl CommandBackend for ExecutorCommandBackend {
     type Error = PureError;

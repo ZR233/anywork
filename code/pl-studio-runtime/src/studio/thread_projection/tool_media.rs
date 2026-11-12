@@ -88,7 +88,7 @@ fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, Pro
     let receipt = pl_tool::image::saved_view_image_receipt(delivery.output.payload())
         .map_err(ProjectionError::ToolMedia)?;
     let mut attachments = Vec::new();
-    for content in &delivery.delivered_context {
+    for content in super::tools::delivery_context(delivery) {
         let ContextContent::Opaque { payload } = content else {
             continue;
         };

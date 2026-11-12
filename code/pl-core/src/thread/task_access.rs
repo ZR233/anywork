@@ -25,9 +25,87 @@ pub struct TaskAccess {
     caller: String,
     may_wait: bool,
     may_cancel: bool,
+    nested_catalog: Arc<[NestedToolDeclaration]>,
+    nested_remaining: Arc<std::sync::atomic::AtomicU32>,
 }
 
+/// One frozen program-only binding. The payload is the original host declaration.
+#[derive(Debug, Clone)]
+pub struct NestedToolDeclaration {
+    pub declaration: ModelToolDeclaration,
+    pub parallel: bool,
+}
 impl TaskAccess {
+    pub(crate) fn with_nested_plan(
+        mut self,
+        plan: Option<Arc<crate::tool::opaque::ToolPlan>>,
+    ) -> Self {
+        self.nested_catalog = plan
+            .as_ref()
+            .map(|plan| {
+                plan.nested()
+                    .map(|(_, tool)| NestedToolDeclaration {
+                        declaration: tool.declaration().clone(),
+                        parallel: tool.nested_policy().expect("filtered policy").parallel,
+                    })
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .unwrap_or_else(|| Arc::from([]));
+        self
+    }
+    pub fn nested_tools(&self) -> Vec<NestedToolDeclaration> {
+        self.nested_catalog.to_vec()
+    }
+    /// Dispatches through the original owner. No executor or grant crosses this capability.
+    pub async fn call_nested(
+        &self,
+        tool_id: String,
+        arguments: OpaquePayload,
+        cancellation: CancellationToken,
+    ) -> Result<crate::tool::ToolOutput, ThreadError> {
+        if self.nested_catalog.is_empty() {
+            return Err(ThreadError::ToolPermissionRevoked);
+        }
+        self.nested_remaining
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            )
+            .map_err(|_| ThreadError::TaskAccessExpired)?;
+        let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
+        let (reply, response) = oneshot::channel();
+        commands
+            .send(mailbox::MailboxCommand::InvokeNested {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+    /// Waits for every admitted child to settle, even after the program was cancelled.
+    pub async fn drain_nested(&self) -> Result<(), ThreadError> {
+        let parent = self
+            .caller
+            .strip_prefix("task:")
+            .ok_or(ThreadError::InvalidIdentity)?;
+        let mut snapshots = self.snapshots.clone();
+        loop {
+            if !snapshots.borrow_and_update().tasks.values().any(|task| {
+                task.parent_call_id.as_deref() == Some(parent)
+                    && task.status == task::TaskStatus::Running
+            }) {
+                return Ok(());
+            }
+            snapshots.changed().await.map_err(|_| ThreadError::Closed)?;
+        }
+    }
     pub(super) fn new(
         owner: &Owner,
         caller: &str,
@@ -45,6 +123,8 @@ impl TaskAccess {
             caller: format!("task:{caller}"),
             may_wait: permissions.wait,
             may_cancel: permissions.cancel,
+            nested_catalog: Arc::from([]),
+            nested_remaining: Arc::new(std::sync::atomic::AtomicU32::new(256)),
         }
     }
 

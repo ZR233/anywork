@@ -22,7 +22,8 @@ mod recovery;
 mod subscription;
 pub mod task;
 mod task_access;
-pub use task_access::{TaskAccess, TaskWaitSnapshot};
+pub use task_access::{NestedToolDeclaration, TaskAccess, TaskWaitSnapshot};
+mod nested;
 mod turn;
 #[cfg(feature = "sqlite")]
 pub(crate) mod usage;

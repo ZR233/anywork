@@ -2358,6 +2358,8 @@ pub(super) mod tests {
                 let turn = format!("origin-turn-{index}");
                 let payload = OpaquePayload::text(format!("result-{index}"));
                 let task = TaskRecord {
+                    parent_call_id: None,
+                    invocation: None,
                     id: format!("background-task-{index}"),
                     call_id: call.clone(),
                     tool_id: "exec".into(),
@@ -3115,6 +3117,8 @@ pub(super) mod tests {
         // effect. Start the lexically later call first, in a separate effect,
         // so B -> A terminals are provably not execution-ordinal order.
         let task = |call: &str, sequence| TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: format!("task-{call}"),
             call_id: call.into(),
             tool_id: "exec".into(),

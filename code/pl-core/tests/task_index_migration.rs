@@ -30,6 +30,8 @@ async fn seed_count(count: u64) -> (tempfile::TempDir, SqliteSessionOptions) {
     for sequence in 1..=count {
         let id = format!("call-{sequence}");
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: format!("task:{id}"),
             call_id: id.clone(),
             tool_id: "exec".into(),

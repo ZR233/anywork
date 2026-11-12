@@ -11,6 +11,14 @@ pub(super) enum OutputRetryReply {
 
 #[derive(Debug)]
 pub(super) enum MailboxCommand {
+    InvokeNested {
+        caller: String,
+        executor: crate::tool::opaque::ExecutionAuthority,
+        tool_id: String,
+        arguments: OpaquePayload,
+        cancellation: CancellationToken,
+        reply: oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
+    },
     ContinueInput(
         input::ThreadInput,
         input::InputDriverOptions,
@@ -183,6 +191,9 @@ pub(super) enum MailboxCommand {
 impl Owner {
     pub(super) fn process_mailbox(&mut self, command: MailboxCommand) {
         match command {
+            MailboxCommand::InvokeNested { reply, .. } => {
+                let _ = reply.send(Err(ThreadError::Closed));
+            }
             MailboxCommand::ContinueInput(input, options, reply) => {
                 let _ = reply.send(self.continue_input(input, options));
             }
@@ -611,6 +622,26 @@ impl Owner {
     /// Output repair retains its original retry obligation.
     pub(super) async fn dispatch_mailbox(&mut self, command: MailboxCommand) {
         match command {
+            MailboxCommand::InvokeNested {
+                caller,
+                executor,
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            } => {
+                let result =
+                    Box::pin(self.begin_nested(caller, executor, tool_id, arguments, cancellation))
+                        .await;
+                match result {
+                    Ok(id) => {
+                        self.nested_replies.insert(id, reply);
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
             MailboxCommand::RetryOutputStorage(reply) => {
                 if let Some(finished) = &self.output_retry_finished {
                     let _ = reply.send(OutputRetryReply::Waiting(finished.clone()));

@@ -17,7 +17,18 @@ pub(super) struct ExecutorOwner {
 #[derive(Debug)]
 pub(super) struct ExecutorLease(Arc<ExecutorOwner>);
 
+#[derive(Debug, Clone)]
+pub(super) struct ExecutorIdentity(std::sync::Weak<ExecutorOwner>);
+impl ExecutorIdentity {
+    pub(super) fn matches(&self, lease: &ExecutorLease) -> bool {
+        self.0.ptr_eq(&Arc::downgrade(&lease.0))
+    }
+}
+
 impl ExecutorLease {
+    pub(super) fn identity(&self) -> ExecutorIdentity {
+        ExecutorIdentity(Arc::downgrade(&self.0))
+    }
     pub(super) fn new(executor: RuntimeTool) -> Self {
         Self(Arc::new(ExecutorOwner {
             executor,

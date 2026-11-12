@@ -85,7 +85,8 @@ impl ToolError {
         self
     }
 
-    pub(crate) fn observed_output(&self) -> Option<&ToolOutput> {
+    /// Observed partial output, retained even when execution failed. It grants no control.
+    pub fn observed_output(&self) -> Option<&ToolOutput> {
         self.observed_output.as_deref()
     }
 }
@@ -119,6 +120,10 @@ impl PreparedRegistration {
                 may_wait_tasks: false,
                 may_cancel_tasks: false,
                 scheduling: ToolScheduling::Task,
+                nested: None,
+                may_call_nested: false,
+                nested_catalog_projection: None,
+                top_level_only: false,
             },
         }
     }
@@ -336,10 +341,15 @@ pub(crate) struct FrozenTool {
     may_wait_tasks: bool,
     may_cancel_tasks: bool,
     scheduling: ToolScheduling,
+    nested: Option<NestedToolPolicy>,
+    may_call_nested: bool,
+    nested_catalog_projection: Option<fn(&[ModelToolDeclaration]) -> OpaquePayload>,
+    top_level_only: bool,
 }
 /// Non-owning execution authority; retaining a call capability cannot retain its executor.
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionAuthority {
+    executor: retirement::ExecutorIdentity,
     tool_id: String,
     authorization: Option<ToolAuthorization>,
     execution_policy: Option<super::execution_policy::PolicyIdentity>,
@@ -350,11 +360,17 @@ pub(crate) struct ExecutionAuthority {
     may_wait_tasks: bool,
     may_cancel_tasks: bool,
     solo: bool,
+    nested: Option<NestedToolPolicy>,
+    may_call_nested: bool,
 }
 impl ExecutionAuthority {
+    pub(crate) fn may_call_nested(&self) -> bool {
+        self.may_call_nested
+    }
     pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
         manager.tools.get(&self.tool_id).is_some_and(|current| {
-            authorization_active(self.authorization.as_ref())
+            self.executor.matches(&current.executor)
+                && authorization_active(self.authorization.as_ref())
                 && authorization_active(current.authorization.as_ref())
                 && self.authorization == current.authorization
                 && match (&self.execution_policy, &current.execution_policy) {
@@ -368,12 +384,56 @@ impl ExecutionAuthority {
                 && (!self.may_request_interaction || current.may_request_interaction)
                 && (!self.may_wait_tasks || current.may_wait_tasks)
                 && (!self.may_cancel_tasks || current.may_cancel_tasks)
+                && self.nested == current.nested
+                && (!self.may_call_nested || current.may_call_nested)
                 && (!current.requires_solo_call() || self.solo)
         })
     }
 }
 
+/// Host-selected nested eligibility. Encoding is interpreted by the host, never core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NestedToolPolicy {
+    pub parallel: bool,
+}
+
 impl Registration {
+    /// Makes an ordinary tool program-only. Does not grant execution permission.
+    pub fn nested(mut self, parallel: bool) -> Self {
+        self.binding.nested = Some(NestedToolPolicy { parallel });
+        self
+    }
+    /// Grants a scoped dispatcher, with control tools excluded from its nested surface.
+    pub fn with_nested_calls(mut self) -> Self {
+        self.binding.may_call_nested = true;
+        self
+    }
+    /// Rebuilds only the model declaration from this request's visible nested catalog.
+    pub fn with_nested_catalog(
+        mut self,
+        project: fn(&[ModelToolDeclaration]) -> OpaquePayload,
+    ) -> Self {
+        self.binding.may_call_nested = true;
+        self.binding.nested_catalog_projection = Some(project);
+        self
+    }
+    pub fn nested_parallel(&self) -> bool {
+        self.binding.nested.is_some_and(|policy| policy.parallel)
+    }
+
+    pub fn declaration(&self) -> &ModelToolDeclaration {
+        &self.binding.declaration
+    }
+    pub fn permits_nesting(&self) -> bool {
+        !self.binding.top_level_only
+            && !self.binding.requires_solo_call()
+            && !self.binding.may_call_nested
+    }
+    /// Keeps an asynchronous framework control available directly without forcing Solo scheduling.
+    pub fn top_level_only(mut self) -> Self {
+        self.binding.top_level_only = true;
+        self
+    }
     /// Stable routing identity for host-owned policy and catalog assembly.
     pub fn tool_id(&self) -> &str {
         &self.binding.declaration.tool_id
@@ -476,6 +536,15 @@ impl Registration {
 }
 
 impl FrozenTool {
+    pub(crate) fn declaration(&self) -> &ModelToolDeclaration {
+        &self.declaration
+    }
+    pub(crate) fn may_call_nested(&self) -> bool {
+        self.may_call_nested
+    }
+    pub(crate) fn nested_policy(&self) -> Option<NestedToolPolicy> {
+        self.nested
+    }
     fn authorization_active(&self) -> bool {
         authorization_active(self.authorization.as_ref())
     }
@@ -486,6 +555,7 @@ impl FrozenTool {
 
     pub(crate) fn authority(&self) -> ExecutionAuthority {
         ExecutionAuthority {
+            executor: self.executor.identity(),
             tool_id: self.declaration.tool_id.clone(),
             authorization: self.authorization.clone(),
             execution_policy: self
@@ -499,6 +569,8 @@ impl FrozenTool {
             may_wait_tasks: self.may_wait_tasks,
             may_cancel_tasks: self.may_cancel_tasks,
             solo: self.requires_solo_call(),
+            nested: self.nested,
+            may_call_nested: self.may_call_nested,
         }
     }
 
@@ -777,7 +849,7 @@ impl ToolManager {
     }
 
     pub(crate) fn freeze(&self) -> ToolPlan {
-        ToolPlan {
+        let mut plan = ToolPlan {
             excluded_tool_ids: Default::default(),
             tools: self
                 .tools
@@ -786,7 +858,17 @@ impl ToolManager {
                 .filter(|(id, tool)| !tool.deferred || self.revealed.contains_key(*id))
                 .map(|(id, tool)| (id.clone(), tool.clone()))
                 .collect(),
+        };
+        let catalog = plan
+            .nested()
+            .map(|(_, tool)| tool.declaration.clone())
+            .collect::<Vec<_>>();
+        for tool in plan.tools.values_mut() {
+            if let Some(project) = tool.nested_catalog_projection {
+                tool.declaration.declaration = project(&catalog);
+            }
         }
+        plan
     }
 }
 
@@ -804,7 +886,12 @@ impl ToolPlan {
     }
 
     pub(crate) fn call_mode(&self) -> crate::model::ToolCallMode {
-        if !self.tools.is_empty() && self.tools.values().all(FrozenTool::requires_solo_call) {
+        let mut direct = self
+            .tools
+            .values()
+            .filter(|tool| tool.nested.is_none())
+            .peekable();
+        if direct.peek().is_some() && direct.all(FrozenTool::requires_solo_call) {
             crate::model::ToolCallMode::Sequential
         } else {
             crate::model::ToolCallMode::Parallel
@@ -844,6 +931,9 @@ impl ToolPlan {
                         && previous.may_wait_tasks == next.may_wait_tasks
                         && previous.may_cancel_tasks == next.may_cancel_tasks
                         && previous.scheduling == next.scheduling
+                        && previous.nested == next.nested
+                        && previous.may_call_nested == next.may_call_nested
+                        && previous.top_level_only == next.top_level_only
                 })
             })
     }
@@ -851,11 +941,25 @@ impl ToolPlan {
     pub(crate) fn declarations(&self) -> Arc<[ModelToolDeclaration]> {
         self.tools
             .values()
+            .filter(|tool| tool.nested.is_none())
             .map(|registration| registration.declaration.clone())
             .collect::<Vec<_>>()
             .into()
     }
     pub(crate) fn get(&self, id: &str) -> Option<&FrozenTool> {
-        self.tools.get(id)
+        self.tools.get(id).filter(|tool| tool.nested.is_none())
+    }
+    pub(crate) fn nested(&self) -> impl Iterator<Item = (&String, &FrozenTool)> {
+        self.tools.iter().filter(|(_, tool)| {
+            tool.nested.is_some()
+                && !tool.top_level_only
+                && !tool.requires_solo_call()
+                && !tool.may_call_nested
+        })
+    }
+    pub(crate) fn nested_get(&self, id: &str) -> Option<&FrozenTool> {
+        self.nested()
+            .find(|(key, _)| key.as_str() == id)
+            .map(|(_, tool)| tool)
     }
 }

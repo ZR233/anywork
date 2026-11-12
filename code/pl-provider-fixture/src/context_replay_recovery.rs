@@ -83,7 +83,10 @@ pub fn replay_tool_arguments() -> String {
     } else {
         "printf 'replay-tool-marker\\n'"
     };
-    format!("{{ \"command\" : {} }}", json!(command))
+    format!(
+        "{{ \"code\" : {} }}",
+        crate::lua::arguments("exec_command", &json!({"command":command}))["code"]
+    )
 }
 
 /// Provider output facts, independent of the production request encoder.

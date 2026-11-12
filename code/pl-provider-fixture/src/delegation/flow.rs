@@ -143,6 +143,7 @@ impl<'a> Flow<'a> {
             self.request.declared(tool),
             &format!("required tool {tool} was not declared after discovery"),
         )?;
+        let (tool, arguments) = self.request.invocation(tool, arguments);
         Err(Stop::Call(Box::new(Decision::call(
             label, &id, tool, arguments,
         ))))
@@ -328,7 +329,7 @@ impl<'a> Flow<'a> {
         )?;
         require(
             query.task.task_id == task_id
-                && query.task.tool_id == tool
+                && query.task.tool_id == self.request.invocation(tool, serde_json::Value::Null).0
                 && query.task.status == ToolTaskStatus::Failed
                 && !query.task.cancel_requested,
             "immediate rejection lacks the exact failed task terminal status",

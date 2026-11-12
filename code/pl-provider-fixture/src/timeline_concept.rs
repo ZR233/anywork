@@ -163,7 +163,8 @@ impl Control {
                         call_id: "concept-image-a",
                         name: "view_image",
                         arguments: json!({"path":"concept-image-a.png"}).to_string(),
-                    }],
+                    }
+                    .program("view_image")],
                 )),
                 optional: false,
             },
@@ -288,7 +289,8 @@ impl Control {
                         },
                         None,
                     ),
-                }],
+                }
+                .program("exec_command")],
             );
             Step::prompt(
                 Protocol::ResponsesHttp,
@@ -326,7 +328,8 @@ impl Control {
                                 },
                                 None,
                             ),
-                        },
+                        }
+                        .program("exec_command"),
                         RealtimeToolCall {
                             item_id: "concept-command-b-item",
                             call_id: "concept-command-b",
@@ -339,7 +342,8 @@ impl Control {
                                 },
                                 None,
                             ),
-                        },
+                        }
+                        .program("exec_command"),
                     ],
                 )),
             )
@@ -389,7 +393,7 @@ impl Control {
                 call_id: ["concept-image-a", "concept-image-b", "concept-image-c", "concept-image-failed"][index],
                 name: "view_image",
                 arguments: json!({"path": (["concept-image-a.png", "concept-image-b.png", "concept-image-c.png", "."][index])}).to_string(),
-            }).collect::<Vec<_>>();
+            }.program("view_image")).collect::<Vec<_>>();
             let mut events = vec![json!({"type":"response.created","response":{"id":"concept-images","model":"fixture-model"}})];
             // A bounded ordinary-atom history for real paging/fill observations.
             // It specifies no backend page size, presentation range, page-count
@@ -663,6 +667,10 @@ mod tests {
     use super::*;
     use futures::{Stream, StreamExt};
 
+    fn realtime_completion_call(id: &str) -> String {
+        id.into()
+    }
+
     #[tokio::test]
     async fn realtime_scope_strict_wire_preserves_full_and_focus_steps() {
         for scope in [RealtimeScope::Full, RealtimeScope::StopBackground] {
@@ -674,20 +682,20 @@ mod tests {
                         GUI_REALTIME_REASONING_PROMPT.to_owned(),
                         GUI_REALTIME_LONG_COMMAND_PROMPT.to_owned(),
                         GUI_REALTIME_LONG_COMMAND_PROMPT.to_owned(),
-                        realtime_delivery_marker("realtime-long-call"),
+                        realtime_completion_call("realtime-long-call"),
                     ]);
                 }
                 expected.extend([
                     GUI_REALTIME_PARALLEL_PROMPT.to_owned(),
                     GUI_REALTIME_PARALLEL_PROMPT.to_owned(),
-                    realtime_delivery_marker("realtime-parallel-call-a"),
-                    realtime_delivery_marker("realtime-parallel-call-b"),
+                    realtime_completion_call("realtime-parallel-call-a"),
+                    realtime_completion_call("realtime-parallel-call-b"),
                 ]);
                 if scope == RealtimeScope::Full {
                     expected.extend([
                         GUI_REALTIME_HOST_CWD_PROMPT.to_owned(),
                         GUI_REALTIME_HOST_CWD_PROMPT.to_owned(),
-                        realtime_delivery_marker("realtime-host-cwd-call"),
+                        realtime_completion_call("realtime-host-cwd-call"),
                         GUI_REALTIME_ERROR_PROMPT.to_owned(),
                     ]);
                 }
@@ -709,7 +717,7 @@ mod tests {
                 );
                 for (index, step) in steps.iter().enumerate() {
                     let (RequestMatch::Prompt { step: actual, .. }
-                    | RequestMatch::Delivery { step: actual, .. }) = &step.request
+                    | RequestMatch::ToolOutput { step: actual, .. }) = &step.request
                     else {
                         panic!("unexpected realtime request");
                     };
@@ -724,10 +732,11 @@ mod tests {
                 let client = reqwest::Client::new();
                 let url = format!("{}/responses", fixture.base_url());
                 let send = |text: String| {
-                    client.post(&url).json(&json!({
-                    "model": "fixture-model", "stream": true,
-                    "input": [{"role":"user","content":[{"type":"input_text","text":text}]}],
-                })).send()
+                    let mut input = vec![json!({"role":"user","content":[{"type":"input_text","text":text}]})];
+                    if text.starts_with("realtime-") && text.contains("-call") {
+                        input.push(json!({"type":"function_call_output","call_id":text,"output":"{\"state\":{\"kind\":\"final\"}}"}));
+                    }
+                    client.post(&url).json(&json!({"model":"fixture-model","stream":true,"input":input})).send()
                 };
                 let mut rejected = 0;
                 if scope == RealtimeScope::StopBackground {
@@ -739,8 +748,10 @@ mod tests {
                     assert_eq!(send(title.clone()).await.unwrap().status(), StatusCode::OK);
                 }
                 for (index, text) in expected.iter().enumerate() {
-                    if text == &realtime_delivery_marker("realtime-parallel-call-a") {
-                        let response = send(text.replace("Succeeded", "Failed")).await.unwrap();
+                    if text == &realtime_completion_call("realtime-parallel-call-a") {
+                        let response = send(text.replace("call-a", "call-unrelated"))
+                            .await
+                            .unwrap();
                         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
                         rejected += 1;
                     }
@@ -1030,7 +1041,10 @@ mod tests {
         assert_eq!(calls[1]["call_id"], "concept-image-b");
         assert_eq!(calls[2]["call_id"], "concept-image-c");
         assert_eq!(calls[3]["call_id"], "concept-image-failed");
-        assert_eq!(calls[3]["arguments"], r#"{"path":"."}"#);
+        assert_eq!(
+            calls[3]["arguments"],
+            crate::lua::arguments("view_image", &json!({"path":"."})).to_string()
+        );
         let report = fixture.shutdown().await.unwrap();
         assert_eq!(report.consumed_steps, 1);
         assert_eq!(report.requests.len(), rejection_count + 1);
@@ -1543,7 +1557,11 @@ mod tests {
                 assert_eq!(call["name"], TOOL_EXEC_NAME);
                 assert_eq!(
                     call["arguments"],
-                    realtime_exec_arguments(&realtime_parallel_command(tag, lines), None)
+                    crate::lua::arguments(
+                        "exec_command",
+                        &json!({"command":realtime_parallel_command(tag, lines)})
+                    )
+                    .to_string()
                 );
             }
         }
@@ -1608,8 +1626,7 @@ mod tests {
                 .realtime_script("fixture-host-cwd", scope)
                 .into_iter()
                 .find(|step| {
-                    matches!(&step.request, RequestMatch::Delivery { marker, .. }
-                if marker == &realtime_delivery_marker("realtime-parallel-call-a"))
+                    matches!(&step.request, RequestMatch::ToolOutput { call_id, .. } if call_id == "realtime-parallel-call-a")
                 })
                 .expect("the observer must follow A's real independent delivery");
             let observer = Control {
@@ -1692,7 +1709,11 @@ mod tests {
         assert_eq!(calls[0]["name"], TOOL_EXEC_NAME);
         assert_eq!(
             calls[0]["arguments"],
-            realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd))
+            crate::lua::arguments(
+                "exec_command",
+                &json!({"command":realtime_host_cwd_command(),"cwd":host_cwd})
+            )
+            .to_string()
         );
         assert_eq!(observed[7]["type"], "response.completed");
     }
