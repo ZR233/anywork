@@ -64,6 +64,11 @@ cargo xtask build-gui --check-generated
 `xtask` 不维护工作区锁、不写入依赖指纹，也不改写 `pubspec.lock`；构建使用
 `flutter pub get --enforce-lockfile`，其他生成或运行入口透传 Flutter/Dart 的依赖错误。
 
+`test-project` 的 native 套件继承同次调用的 debug 准备租约；相同 Flutter 构建参数只构建一次，
+完整程序包独立复制并在每次启动前校验，入口或 capture 不同的程序包互不覆盖。
+该准备不供 profile/demo、独立调用或其他 CI 作业消费；失效与损坏直接失败，不能用跳过构建参数替代。
+具体身份、计时与清理边界见[原生 GUI 观察与隔离](../../../design/24-testing.md#243-原生-gui-观察与隔离)。
+
 普通运行和构建不执行生成器或可写格式化。Riverpod、Freezed、本地化或 FRB 的生成与一致性检查入口为：
 
 ```powershell
