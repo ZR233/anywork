@@ -56,7 +56,7 @@ fn value(input: &Value) -> String {
                 match character {
                     '\\' => quoted.push_str("\\\\"),
                     '"' => quoted.push_str("\\\""),
-                    character if character.is_control() && (character as u32) < 256 => {
+                    character if character.is_control() && (character as u32) < 128 => {
                         quoted.push_str(&format!("\\{:03}", character as u32));
                     }
                     character => quoted.push(character),

@@ -349,7 +349,6 @@ pub(crate) struct FrozenTool {
 /// Non-owning execution authority; retaining a call capability cannot retain its executor.
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionAuthority {
-    executor: retirement::ExecutorIdentity,
     tool_id: String,
     authorization: Option<ToolAuthorization>,
     execution_policy: Option<super::execution_policy::PolicyIdentity>,
@@ -369,8 +368,7 @@ impl ExecutionAuthority {
     }
     pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
         manager.tools.get(&self.tool_id).is_some_and(|current| {
-            self.executor.matches(&current.executor)
-                && authorization_active(self.authorization.as_ref())
+            authorization_active(self.authorization.as_ref())
                 && authorization_active(current.authorization.as_ref())
                 && self.authorization == current.authorization
                 && match (&self.execution_policy, &current.execution_policy) {
@@ -555,7 +553,6 @@ impl FrozenTool {
 
     pub(crate) fn authority(&self) -> ExecutionAuthority {
         ExecutionAuthority {
-            executor: self.executor.identity(),
             tool_id: self.declaration.tool_id.clone(),
             authorization: self.authorization.clone(),
             execution_policy: self
