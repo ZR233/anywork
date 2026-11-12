@@ -44,13 +44,13 @@ pub enum WorktreeError {
     Remote {
         operation: &'static str,
         #[source]
-        source: super::RemoteClientError,
+        source: super::SshError,
     },
     #[error("git {}: {}", super::diagnostic::git_operation(.args), super::diagnostic::execution_cause(.source))]
     RemoteExecution {
         args: String,
         #[source]
-        source: super::RemoteExecutionError,
+        source: ExecutionFailure,
     },
     #[error("{operation}: {}", super::diagnostic::download_cause(.source))]
     RemoteDownload {

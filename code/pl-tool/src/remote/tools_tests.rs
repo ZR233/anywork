@@ -41,16 +41,8 @@ fn input(value: serde_json::Value) -> OpaquePayload {
 async fn file_tools_over_real_helper_keep_remote_mutation_semantics() -> anyhow::Result<()> {
     let helper = helper::Helper::start(executable::remote_helper_executable()).await?;
     let result = async {
-        helper.client.request(
-            pl_protocol::remote::RemoteRequest::CloseWorkspace { workspace_id: helper.workspace.clone() },
-            &[],
-        ).await?;
         let root = helper.root.path();
-        let lease = helper.client.open_workspace_lease(
-            root.to_string_lossy().into_owned(), "file-tools".into(),
-            Arc::new(super::super::client::workspace::WorkspaceCache::default()),
-        ).await?;
-        let backend = Arc::new(RemoteWorkspaceFileBackend::new(helper.client.clone(), lease));
+        let backend = Arc::new(helper.files.clone());
         let workspace = ToolWorkspace::new(AgentWorkspace::confined(root, WorkspaceMutability::ReadWrite));
         let mutation = |kind: RemoteMutationKind| RemoteWorkspaceMutationTool::new(
             kind, kind.definition(), backend.clone(), workspace.clone(),
@@ -169,12 +161,7 @@ async fn fail_if_exists_preserves_destination_appearing_before_remote_mutation()
     let helper = helper::Helper::start(executable::remote_helper_executable()).await?;
     let result = async {
         let root = helper.root.path();
-        let lease = helper.client.open_workspace_lease(
-            root.to_string_lossy().into_owned(),
-            "file-collision".into(),
-            Arc::new(super::super::client::workspace::WorkspaceCache::default()),
-        ).await?;
-        let backend = Arc::new(RemoteWorkspaceFileBackend::new(helper.client.clone(), lease));
+        let backend = Arc::new(helper.files.clone());
         let workspace = ToolWorkspace::new(AgentWorkspace::confined(root, WorkspaceMutability::ReadWrite));
         let mut failures = Vec::new();
         for moving in [false, true] {
@@ -226,18 +213,7 @@ async fn copy_and_move_keep_remote_collision_policies() -> anyhow::Result<()> {
     let helper = helper::Helper::start(executable::remote_helper_executable()).await?;
     let result = async {
         let root = helper.root.path();
-        let lease = helper
-            .client
-            .open_workspace_lease(
-                root.to_string_lossy().into_owned(),
-                "file-collision-policies".into(),
-                Arc::new(super::super::client::workspace::WorkspaceCache::default()),
-            )
-            .await?;
-        let backend = Arc::new(RemoteWorkspaceFileBackend::new(
-            helper.client.clone(),
-            lease,
-        ));
+        let backend = Arc::new(helper.files.clone());
         let workspace = ToolWorkspace::new(AgentWorkspace::confined(
             root,
             WorkspaceMutability::ReadWrite,

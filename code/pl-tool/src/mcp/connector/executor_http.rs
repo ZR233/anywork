@@ -1,4 +1,4 @@
-//! Remote Streamable HTTP MCP transport over `RemoteClient::http_exchange`.
+//! MCP HTTP over the same selected executor egress for Host and SSH.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use pl_protocol::Result;
-use pl_protocol::remote::{RemoteHttpHeader, RemoteHttpRequestHead};
+use pl_remote_helper::http::{HttpClient, HttpHeader, HttpRequest};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{
     ClientJsonRpcMessage, ClientRequest, ErrorData, JsonRpcMessage, ProtocolVersion,
@@ -22,14 +22,17 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::common::client_side_sse::{ExponentialBackoff, SseRetryPolicy};
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient,
-    StreamableHttpClientTransportConfig, StreamableHttpError, StreamableHttpPostResponse,
+    StreamableHttpClientTransportConfig, StreamableHttpClientWorker, StreamableHttpError,
+    StreamableHttpPostResponse,
 };
+use rmcp::transport::worker::WorkerTransport;
 use sse_stream::SseByteStream;
 use sse_stream_rmcp::Sse;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-use crate::remote::{RemoteClient, RemoteClientError};
+use pl_remote_helper::ExecutionError;
+use pl_remote_helper::Executor;
 
 use super::{
     ConnectedMcp, McpConnectRequest, ToolListChangedSink, client_handler, connection_config_error,
@@ -54,9 +57,9 @@ const RESERVED_HEADERS: &[&str] = &[
     HEADER_LAST_EVENT_ID,
 ];
 
-pub(super) async fn connect_remote_http(
+pub(super) async fn connect(
     request: McpConnectRequest,
-    remote_client: RemoteClient,
+    remote_client: Executor,
     tool_list_changed: Option<ToolListChangedSink>,
     close_timeout: Duration,
 ) -> Result<ConnectedMcp> {
@@ -78,7 +81,8 @@ pub(super) async fn connect_remote_http(
 
     let fatal_sse_error = Arc::new(Mutex::new(None));
     let transport_cancel = CancellationToken::new();
-    let retry_policy = Arc::new(RemoteSseRetryPolicy {
+    let cancel_on_drop = transport_cancel.clone().drop_guard();
+    let retry_policy = Arc::new(ExecutorSseRetryPolicy {
         inner: ExponentialBackoff::default(),
         fatal_sse_error: fatal_sse_error.clone(),
         cancel: transport_cancel.clone(),
@@ -92,8 +96,8 @@ pub(super) async fn connect_remote_http(
         transport_config = transport_config.auth_header(token);
     }
 
-    let http_client = RemoteStreamableHttpClient {
-        client: remote_client,
+    let http_client = ExecutorStreamableHttpClient {
+        client: remote_client.http(),
         fatal_sse_error: fatal_sse_error.clone(),
         cancel: transport_cancel.clone(),
         bearer_token_env_var: if request.server.bearer_token.is_none() {
@@ -103,8 +107,7 @@ pub(super) async fn connect_remote_http(
         },
     };
 
-    let transport =
-        StreamableHttpClientTransport::with_client(http_client.clone(), transport_config.clone());
+    let transport = transport_for(&http_client, transport_config.clone());
     let service = match client_handler(
         &request.server_id,
         ProtocolVersion::V_2026_07_28,
@@ -121,8 +124,7 @@ pub(super) async fn connect_remote_http(
                 .is_none()
                 && should_retry_http_with_initialize(&discovery_error) =>
         {
-            let transport =
-                StreamableHttpClientTransport::with_client(http_client, transport_config);
+            let transport = transport_for(&http_client, transport_config);
             client_handler(
                 &request.server_id,
                 ProtocolVersion::V_2025_11_25,
@@ -151,20 +153,33 @@ pub(super) async fn connect_remote_http(
         }
     };
 
+    cancel_on_drop.disarm();
     Ok(
         ConnectedMcp::from_running_with_transport_cancel(service, transport_cancel, close_timeout)
             .await,
     )
 }
 
+// Each SDK attempt shares its cancellation token with its HTTP owner. A failed
+// discover attempt closes only itself; a fresh initialize attempt gets a new token.
+fn transport_for(
+    client: &ExecutorStreamableHttpClient,
+    config: StreamableHttpClientTransportConfig,
+) -> StreamableHttpClientTransport<ExecutorStreamableHttpClient> {
+    let mut attempt = client.clone();
+    attempt.cancel = client.cancel.child_token();
+    let cancel = attempt.cancel.clone();
+    WorkerTransport::spawn_with_ct(StreamableHttpClientWorker::new(attempt, config), cancel)
+}
+
 #[derive(Debug)]
-struct RemoteSseRetryPolicy {
+struct ExecutorSseRetryPolicy {
     inner: ExponentialBackoff,
     fatal_sse_error: Arc<Mutex<Option<String>>>,
     cancel: CancellationToken,
 }
 
-impl SseRetryPolicy for RemoteSseRetryPolicy {
+impl SseRetryPolicy for ExecutorSseRetryPolicy {
     fn retry(&self, current_times: usize) -> Option<Duration> {
         if self.cancel.is_cancelled()
             || self
@@ -179,25 +194,25 @@ impl SseRetryPolicy for RemoteSseRetryPolicy {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct RemoteStreamableHttpClient {
-    client: RemoteClient,
+#[derive(Clone)]
+pub struct ExecutorStreamableHttpClient {
+    client: HttpClient,
     fatal_sse_error: Arc<Mutex<Option<String>>>,
     cancel: CancellationToken,
     bearer_token_env_var: Option<String>,
 }
 
-impl RemoteStreamableHttpClient {
-    pub fn new(client: RemoteClient) -> Self {
+impl ExecutorStreamableHttpClient {
+    pub fn new(client: Executor) -> Self {
         Self {
-            client,
+            client: client.http(),
             fatal_sse_error: Arc::new(Mutex::new(None)),
             cancel: CancellationToken::new(),
             bearer_token_env_var: None,
         }
     }
 
-    fn check_fatal_error(&self) -> std::result::Result<(), StreamableHttpError<RemoteClientError>> {
+    fn check_fatal_error(&self) -> std::result::Result<(), StreamableHttpError<ExecutionError>> {
         if let Some(message) = self
             .fatal_sse_error
             .lock()
@@ -209,14 +224,14 @@ impl RemoteStreamableHttpClient {
             ))));
         }
         if self.cancel.is_cancelled() {
-            return Err(StreamableHttpError::Client(RemoteClientError::Cancelled));
+            return Err(StreamableHttpError::Client(ExecutionError::Cancelled));
         }
         Ok(())
     }
 }
 
-impl StreamableHttpClient for RemoteStreamableHttpClient {
-    type Error = RemoteClientError;
+impl StreamableHttpClient for ExecutorStreamableHttpClient {
+    type Error = ExecutionError;
 
     async fn post_message(
         &self,
@@ -249,16 +264,16 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
         self.check_fatal_error()?;
 
         let mut headers = Vec::with_capacity(custom_headers.len() + 4);
-        headers.push(RemoteHttpHeader {
+        headers.push(HttpHeader {
             name: http::header::ACCEPT.as_str().to_owned(),
             value: format!("{EVENT_STREAM_MIME_TYPE}, {JSON_MIME_TYPE}").into_bytes(),
         });
-        headers.push(RemoteHttpHeader {
+        headers.push(HttpHeader {
             name: http::header::CONTENT_TYPE.as_str().to_owned(),
             value: JSON_MIME_TYPE.as_bytes().to_vec(),
         });
         if let Some(auth_header) = auth_header {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: http::header::AUTHORIZATION.as_str().to_owned(),
                 value: format!("Bearer {auth_header}").into_bytes(),
             });
@@ -267,7 +282,7 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
 
         let session_was_attached = session_id.is_some();
         if let Some(session_id) = session_id {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: HEADER_SESSION_ID.to_owned(),
                 value: session_id.as_bytes().to_vec(),
             });
@@ -275,15 +290,16 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
 
         let payload = serde_json::to_vec(&message)?;
         let response = tokio::select! {
-            _ = self.cancel.cancelled() => return Err(StreamableHttpError::Client(RemoteClientError::Cancelled)),
-            res = self.client.http_exchange(
-                RemoteHttpRequestHead {
+            _ = self.cancel.cancelled() => return Err(StreamableHttpError::Client(ExecutionError::Cancelled)),
+            res = exchange(&self.client,
+                HttpRequest {
                     method: "POST".to_owned(),
                     url: uri.to_string(),
                     headers,
                     bearer_token_env_var: self.bearer_token_env_var.clone(),
                 },
                 Bytes::from(payload),
+                self.cancel.clone(),
             ) => res.map_err(StreamableHttpError::Client)?,
         };
 
@@ -409,30 +425,30 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
     ) -> std::result::Result<(), StreamableHttpError<Self::Error>> {
         let mut headers = Vec::with_capacity(custom_headers.len() + 2);
         if let Some(auth_header) = auth_header {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: http::header::AUTHORIZATION.as_str().to_owned(),
                 value: format!("Bearer {auth_header}").into_bytes(),
             });
         }
         append_validated_custom_headers(&mut headers, custom_headers)?;
-        headers.push(RemoteHttpHeader {
+        headers.push(HttpHeader {
             name: HEADER_SESSION_ID.to_owned(),
             value: session_id.as_bytes().to_vec(),
         });
 
-        let response = self
-            .client
-            .http_exchange(
-                RemoteHttpRequestHead {
-                    method: "DELETE".to_owned(),
-                    url: uri.to_string(),
-                    headers,
-                    bearer_token_env_var: self.bearer_token_env_var.clone(),
-                },
-                Bytes::new(),
-            )
-            .await
-            .map_err(StreamableHttpError::Client)?;
+        let response = exchange(
+            &self.client,
+            HttpRequest {
+                method: "DELETE".to_owned(),
+                url: uri.to_string(),
+                headers,
+                bearer_token_env_var: self.bearer_token_env_var.clone(),
+            },
+            Bytes::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(StreamableHttpError::Client)?;
 
         let status = response.status;
         if status == StatusCode::METHOD_NOT_ALLOWED || status.is_success() {
@@ -486,12 +502,12 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
         self.check_fatal_error()?;
 
         let mut headers = Vec::with_capacity(custom_headers.len() + 4);
-        headers.push(RemoteHttpHeader {
+        headers.push(HttpHeader {
             name: http::header::ACCEPT.as_str().to_owned(),
             value: format!("{EVENT_STREAM_MIME_TYPE}, {JSON_MIME_TYPE}").into_bytes(),
         });
         if let Some(auth_header) = auth_header {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: http::header::AUTHORIZATION.as_str().to_owned(),
                 value: format!("Bearer {auth_header}").into_bytes(),
             });
@@ -500,28 +516,29 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
 
         let session_was_attached = session_id.is_some();
         if let Some(session_id) = session_id {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: HEADER_SESSION_ID.to_owned(),
                 value: session_id.as_bytes().to_vec(),
             });
         }
         if let Some(last_event_id) = last_event_id {
-            headers.push(RemoteHttpHeader {
+            headers.push(HttpHeader {
                 name: HEADER_LAST_EVENT_ID.to_owned(),
                 value: last_event_id.into_bytes(),
             });
         }
 
         let response = tokio::select! {
-            _ = self.cancel.cancelled() => return Err(StreamableHttpError::Client(RemoteClientError::Cancelled)),
-            res = self.client.http_exchange(
-                RemoteHttpRequestHead {
+            _ = self.cancel.cancelled() => return Err(StreamableHttpError::Client(ExecutionError::Cancelled)),
+            res = exchange(&self.client,
+                HttpRequest {
                     method: "GET".to_owned(),
                     url: uri.to_string(),
                     headers,
                     bearer_token_env_var: self.bearer_token_env_var.clone(),
                 },
                 Bytes::new(),
+                self.cancel.clone(),
             ) => res.map_err(StreamableHttpError::Client)?,
         };
 
@@ -583,12 +600,12 @@ impl StreamableHttpClient for RemoteStreamableHttpClient {
 }
 
 fn append_validated_custom_headers(
-    out: &mut Vec<RemoteHttpHeader>,
+    out: &mut Vec<HttpHeader>,
     custom_headers: HashMap<HeaderName, HeaderValue>,
-) -> std::result::Result<(), StreamableHttpError<RemoteClientError>> {
+) -> std::result::Result<(), StreamableHttpError<ExecutionError>> {
     for (name, value) in custom_headers {
         validate_custom_header(&name).map_err(StreamableHttpError::ReservedHeaderConflict)?;
-        out.push(RemoteHttpHeader {
+        out.push(HttpHeader {
             name: name.as_str().to_owned(),
             value: value.as_bytes().to_vec(),
         });
@@ -614,7 +631,7 @@ fn validate_custom_header(name: &HeaderName) -> std::result::Result<(), String> 
 
 fn extract_session_id(
     headers: &HeaderMap,
-) -> std::result::Result<Option<String>, StreamableHttpError<RemoteClientError>> {
+) -> std::result::Result<Option<String>, StreamableHttpError<ExecutionError>> {
     let Some(value) = headers.get(HEADER_SESSION_ID) else {
         return Ok(None);
     };
@@ -792,7 +809,7 @@ impl SseEventSizeLimiter {
 }
 
 struct BoundedSseByteStream {
-    inner: BoxStream<'static, std::result::Result<Bytes, RemoteClientError>>,
+    inner: BoxStream<'static, std::result::Result<Bytes, ExecutionError>>,
     limiter: SseEventSizeLimiter,
     fatal_sse_error: Arc<Mutex<Option<String>>>,
     cancel: CancellationToken,
@@ -834,7 +851,7 @@ impl Stream for BoundedSseByteStream {
 }
 
 fn bounded_sse_stream(
-    stream: BoxStream<'static, std::result::Result<Bytes, RemoteClientError>>,
+    stream: BoxStream<'static, std::result::Result<Bytes, ExecutionError>>,
     max_event_size: usize,
     fatal_sse_error: Arc<Mutex<Option<String>>>,
     cancel: CancellationToken,
@@ -864,6 +881,93 @@ fn bounded_sse_stream(
                 })
         })
         .boxed()
+}
+
+pub struct Response {
+    pub status: StatusCode,
+    pub headers: Vec<HttpHeader>,
+    pub body: BoxStream<'static, std::result::Result<Bytes, ExecutionError>>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &self.headers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Response {
+    pub fn header_map(&self) -> std::result::Result<HeaderMap, ExecutionError> {
+        let mut map = HeaderMap::with_capacity(self.headers.len());
+        for header in &self.headers {
+            let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
+                ExecutionError::Protocol(format!(
+                    "invalid remote HTTP response header name '{}': {error}",
+                    header.name
+                ))
+            })?;
+            let value = HeaderValue::from_bytes(&header.value).map_err(|error| {
+                ExecutionError::Protocol(format!(
+                    "invalid remote HTTP response header value for '{}': {error}",
+                    header.name
+                ))
+            })?;
+            map.append(name, value);
+        }
+        Ok(map)
+    }
+
+    pub async fn collect_body(
+        mut self,
+        max_bytes: usize,
+    ) -> std::result::Result<Bytes, ExecutionError> {
+        let mut out = Vec::new();
+        while let Some(chunk) = self.body.next().await {
+            let chunk = chunk?;
+            if out.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(ExecutionError::Protocol(format!(
+                    "HTTP body exceeds {max_bytes} bytes"
+                )));
+            }
+            out.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(out))
+    }
+}
+
+async fn exchange(
+    client: &HttpClient,
+    head: HttpRequest,
+    body: Bytes,
+    cancel: CancellationToken,
+) -> std::result::Result<Response, ExecutionError> {
+    use tokio_util::io::ReaderStream;
+    let response = client.execute(head, body).await?;
+    Ok(Response {
+        status: StatusCode::from_u16(response.head.status)
+            .map_err(|error| ExecutionError::Protocol(error.to_string()))?,
+        headers: response
+            .head
+            .headers
+            .into_iter()
+            .map(|header| HttpHeader {
+                name: header.name,
+                value: header.value,
+            })
+            .collect(),
+        body: futures::stream::try_unfold((ReaderStream::new(response.body),cancel),|(mut reader,cancel)|async move {
+            tokio::select! {
+                _=cancel.cancelled()=>Err(ExecutionError::Cancelled),
+                item=reader.next()=>match item {
+                    None=>Ok(None),
+                    Some(Ok(bytes))=>Ok(Some((bytes,(reader,cancel)))),
+                    Some(Err(error))=>Err(ExecutionError::Io{operation:"HTTP body",source:Arc::new(error)}),
+                }
+            }
+        }).boxed(),
+    })
 }
 
 #[cfg(test)]

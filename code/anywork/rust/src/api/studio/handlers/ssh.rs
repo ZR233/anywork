@@ -145,8 +145,6 @@ fn connection_dto(snapshot: SshConnectionSnapshot) -> SshConnectionSnapshotDto {
         state: String::new(),
         helper_version: None,
         architecture: None,
-        attempt: None,
-        delay_seconds: None,
         error_code: None,
         error_message: None,
     };
@@ -161,14 +159,7 @@ fn connection_dto(snapshot: SshConnectionSnapshot) -> SshConnectionSnapshotDto {
             dto.helper_version = Some(helper_version);
             dto.architecture = Some(architecture);
         }
-        SshConnectionState::Reconnecting {
-            attempt,
-            delay_seconds,
-        } => {
-            dto.state = "reconnecting".to_string();
-            dto.attempt = Some(attempt);
-            dto.delay_seconds = Some(delay_seconds);
-        }
+        SshConnectionState::Closing => dto.state = "closing".to_owned(),
         SshConnectionState::Failed { code, message } => {
             dto.state = "failed".to_string();
             dto.error_code = Some(code);

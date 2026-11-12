@@ -13,6 +13,12 @@ static NEXT_EXECUTOR: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExecutorId(u64);
 
+impl std::fmt::Display for ExecutorId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Non-sensitive facts about the machine which interprets commands and paths.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TargetInfo {
@@ -143,6 +149,7 @@ pub(crate) struct ExecutorInner {
     pub tasks: TaskTracker,
     pub closing: CancellationToken,
     pub backend: ExecutorBackend,
+    pub helper_build: Option<String>,
     pub environment: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 }
 
@@ -182,6 +189,7 @@ impl Executor {
                 tasks: connection.tasks.clone(),
                 closing: connection.closing.clone(),
                 backend: ExecutorBackend::Remote(connection),
+                helper_build: Some(hello.build),
                 environment: Default::default(),
             }),
         })
@@ -203,10 +211,11 @@ impl Executor {
                     arch: std::env::consts::ARCH.into(),
                     initial_directory,
                     home: std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).ok(),
-                    shell: std::env::var(if cfg!(windows) { "COMSPEC" } else { "SHELL" }).ok(),
+                    shell: command_shell(),
                 },
                 tasks: TaskTracker::new(),
                 closing: CancellationToken::new(),
+                helper_build: None,
                 environment: std::env::vars_os().collect(),
             }),
         })
@@ -220,6 +229,13 @@ impl Executor {
     }
     pub fn command(&self, program: impl Into<String>) -> Command {
         Command::new(self.clone(), program.into())
+    }
+
+    pub fn helper_build(&self) -> Option<&str> {
+        self.inner.helper_build.as_deref()
+    }
+    pub async fn closed(&self) {
+        self.inner.closing.cancelled().await;
     }
 
     pub fn is_closed(&self) -> bool {
@@ -238,4 +254,24 @@ impl Executor {
                 )
             })
     }
+}
+
+// The login environment is captured once by the binary. Command construction
+// needs an executable shell supported by the product, independently of SHELL
+// (which may name fish/zsh/tcsh and remains unchanged in the base environment).
+#[cfg(unix)]
+fn command_shell() -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    ["/bin/bash", "/bin/sh"]
+        .into_iter()
+        .find(|path| {
+            std::fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .map(str::to_owned)
+}
+#[cfg(windows)]
+fn command_shell() -> Option<String> {
+    std::env::var("COMSPEC").ok()
 }

@@ -1,17 +1,11 @@
 //! SSH remote helper 的本地管理、协议客户端与工具宿主。
 
 use crate::environment::ExecutionEnvironment;
-pub use pl_protocol::remote::{
-    RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, RemoteHello,
-    RemoteHttpExchangeStart, RemoteHttpHeader, RemoteHttpRequestHead, RemoteHttpResponseHead,
-    RemoteProcessLeaseId, RemoteRequest, RemoteResponse, RemoteSession, RemoteSpawnRequest,
-};
-pub use pl_remote_helper::transport::Bytes;
+pub use bytes::Bytes;
+pub use pl_protocol::remote::{RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode};
 
-mod client;
-mod command;
-mod execution;
-mod http;
+mod error;
+
 mod lsp;
 mod manager;
 pub(crate) mod path;
@@ -20,12 +14,8 @@ mod ssh_config;
 mod tools;
 mod workspace;
 
-pub use client::{
-    RemoteClient, RemoteClientError, RemoteReply, RemoteRequestTiming, SshAuthFailure,
-};
-pub use command::{RemoteCommandBackend, RemoteProtocolSpawnRequest};
-pub use execution::{RemoteExecutionBackend, RemoteExecutionError};
-pub use http::RemoteHttpResponse;
+use crate::command::ExecutorCommandBackend;
+pub use error::{SshAuthFailure, SshError};
 pub use manager::{
     RemoteHelperAssets, RemoteHelperTarget, SshConnectionSnapshot, SshConnectionState, SshManager,
     SshServerProfile,
@@ -49,8 +39,8 @@ pub struct RemoteWorkspaceHost {
     /// Frozen non-secret endpoint of the exact transport that returned this canonical workspace.
     pub profile: std::sync::Arc<SshServerProfile>,
     pub files: RemoteWorkspaceFileBackend,
-    pub commands: RemoteCommandBackend,
-    pub git: RemoteExecutionBackend,
+    pub commands: ExecutorCommandBackend,
+    pub git: crate::execution::ExecutorExecutionBackend,
     pub execution_environment: ExecutionEnvironment,
 }
 

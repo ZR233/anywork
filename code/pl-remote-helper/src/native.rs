@@ -1,3 +1,4 @@
+mod pipes;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -24,6 +25,40 @@ use crate::{
 };
 
 pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
+    let cancelled = command.executor.inner.closing.child_token();
+    let guard = cancelled.clone().drop_guard();
+    let (result, receive) = tokio::sync::oneshot::channel();
+    let owned = command.clone();
+    command.executor.inner.tasks.spawn(async move {
+        let child = spawn_owned(&owned, &cancelled).await;
+        // A cancelled receiver drops the returned Child, which requests termination;
+        // its physical owner has already been registered before this handoff.
+        let _ = result.send(child);
+    });
+    let outcome = receive.await.map_err(|_| SpawnError {
+        knowledge: StartKnowledge::Unknown,
+        cause: ExecutionError::Protocol("native spawn owner ended without a result".into()),
+    });
+    drop(guard);
+    outcome?
+}
+
+async fn spawn_owned(
+    command: &Command,
+    cancelled: &CancellationToken,
+) -> Result<Child, SpawnError> {
+    let check = || {
+        if cancelled.is_cancelled() {
+            Err(SpawnError {
+                knowledge: StartKnowledge::NotStarted,
+                cause: ExecutionError::Cancelled,
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+
     let directory = Path::new(&command.executor.target_info().initial_directory)
         .join(command.cwd.as_deref().unwrap_or("."));
     let program = if command.program.contains(std::path::MAIN_SEPARATOR)
@@ -57,6 +92,7 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
         let stdout = tokio::fs::File::create(resolve_capture(command, &spec.stdout_path))
             .await
             .map_err(not_started)?;
+        check()?;
         let stderr = tokio::fs::File::create(resolve_capture(command, &spec.stderr_path))
             .await
             .map_err(not_started)?;
@@ -64,6 +100,7 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
     } else {
         None
     };
+    check()?;
     let spawned =
         spawn_background_command(&mut wrap_background_command(native)).map_err(|error| {
             let knowledge = match &error {
@@ -82,32 +119,49 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
         let guard = Arc::new(PipeLifetime {
             notify: notify.clone(),
             _executor: command.executor.clone(),
+            _permit: None,
         });
         lifetimes.push(Arc::downgrade(&guard));
         guard
     };
-    let stdin = spawned.stdin.map(|io| ChildStdin {
-        io: Some(Box::pin(io)),
-        lifetime: Some(lifetime()),
+    let mut controls = Vec::new();
+    let stdin = spawned.stdin.map(|io| {
+        let (io, control) = pipes::writer(io, command.executor.inner.closing.clone());
+        controls.push(control);
+        ChildStdin {
+            io: Some(Box::pin(io)),
+            lifetime: Some(lifetime()),
+        }
     });
-    let mut stdout = spawned.stdout.map(|io| ChildStdout {
-        io: Box::pin(io),
-        lifetime: Some(lifetime()),
-        cancel: None,
+    let mut stdout = spawned.stdout.map(|io| {
+        let (io, control) = pipes::reader(io, command.executor.inner.closing.clone());
+        controls.push(control);
+        ChildStdout {
+            io: Box::pin(io),
+            lifetime: Some(lifetime()),
+            cancel: None,
+        }
     });
-    let mut stderr = spawned.stderr.map(|io| ChildStdout {
-        io: Box::pin(io),
-        lifetime: Some(lifetime()),
-        cancel: None,
+    let mut stderr = spawned.stderr.map(|io| {
+        let (io, control) = pipes::reader(io, command.executor.inner.closing.clone());
+        controls.push(control);
+        ChildStdout {
+            io: Box::pin(io),
+            lifetime: Some(lifetime()),
+            cancel: None,
+        }
     });
     let cancellation = CancellationToken::new();
     let capture = capture.map(|(out_file, err_file, budget)| {
+        let capture_fault = CancellationToken::new();
         let (out, out_done) = capture_pipe(
             stdout.take().expect("validated piped stdout"),
             out_file,
             budget.clone(),
             cancellation.clone(),
             &command.executor.inner.tasks,
+            command.executor.inner.closing.clone(),
+            capture_fault.clone(),
         );
         let (err, err_done) = capture_pipe(
             stderr.take().expect("validated piped stderr"),
@@ -115,6 +169,8 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
             budget,
             cancellation.clone(),
             &command.executor.inner.tasks,
+            command.executor.inner.closing.clone(),
+            capture_fault,
         );
         stdout = Some(out);
         stderr = Some(err);
@@ -129,8 +185,11 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
         cancellation.clone(),
         closing,
         exit_send,
-        lifetimes,
-        notify,
+        PipeOwners {
+            lifetimes,
+            notify,
+            controls,
+        },
     ));
     Ok(Child {
         stdin,
@@ -161,17 +220,23 @@ fn stdio(value: Option<Stdio>) -> std::process::Stdio {
     }
 }
 
+struct PipeOwners {
+    lifetimes: Vec<Weak<PipeLifetime>>,
+    notify: Arc<Notify>,
+    controls: Vec<pipes::Control>,
+}
+
 async fn own_process(
     mut process: Box<dyn ChildWrapper>,
     mut requests: mpsc::Receiver<KillRequest>,
     cancellation: CancellationToken,
     closing: CancellationToken,
     exit: watch::Sender<Option<Result<ProcessExit, ExecutionError>>>,
-    lifetimes: Vec<Weak<PipeLifetime>>,
-    notify: Arc<Notify>,
+    pipes: PipeOwners,
 ) {
     let mut stopping = false;
     let mut control_open = true;
+    let mut io_closed = false;
     let outcome = loop {
         tokio::select! {
             result = root_wait(process.as_mut()) => break result,
@@ -185,18 +250,44 @@ async fn own_process(
                 else { stopping = true; control_open = false; }
             }
             _ = cancellation.cancelled(), if !stopping => { stopping = true; let _ = kill_running(process.as_mut()); }
-            _ = closing.cancelled(), if !stopping => { stopping = true; let _ = kill_running(process.as_mut()); }
+            _ = closing.cancelled(), if !io_closed => {
+                io_closed=true;
+                for control in &pipes.controls {control.close();}
+                if !stopping {stopping=true;let _=kill_running(process.as_mut());}
+            }
         }
     };
+    let wait_failed = outcome.is_err();
     exit.send_replace(Some(outcome));
+    if wait_failed {
+        for control in &pipes.controls {
+            control.close();
+        }
+        // A wait error is not proof of reaping. Retain the physical owner and
+        // retry only cleanup observation, without overwriting the first failure.
+        loop {
+            let _ = kill_running(process.as_mut());
+            if root_wait(process.as_mut()).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
     requests.close();
     while let Some(request) = requests.recv().await {
         let _ = request.send(Ok(()));
     }
     // Windows' job guard must outlive tail output held by a descendant. On Unix,
     // retaining the wrapper never sends a signal after the root has been reaped.
-    while lifetimes.iter().any(|guard| guard.strong_count() != 0) {
-        notify.notified().await;
+    while pipes
+        .lifetimes
+        .iter()
+        .any(|guard| guard.strong_count() != 0)
+    {
+        tokio::select! {
+            _=pipes.notify.notified()=>{},
+            _=closing.cancelled()=>{for control in &pipes.controls {control.close();}break;}
+        }
     }
     drop(process);
 }
@@ -263,6 +354,8 @@ fn capture_pipe(
     budget: Arc<AtomicU64>,
     cancellation: CancellationToken,
     tasks: &tokio_util::task::TaskTracker,
+    closing: CancellationToken,
+    capture_fault: CancellationToken,
 ) -> (ChildStdout, CaptureCompletion) {
     let (writer, reader) = tokio::io::duplex(64 * 1024);
     let (done, completion) = watch::channel(None);
@@ -275,11 +368,13 @@ fn capture_pipe(
         let mut count = 0;
         let mut state = CaptureState::Complete;
         let result: std::io::Result<()> = async {
-            let mut bytes = [0; 64 * 1024];
+            let mut bytes = vec![0; 64 * 1024];
             loop {
                 let length = tokio::select! {
                     biased;
                     _ = stop.cancelled() => { state = CaptureState::Incomplete; break; }
+                    _ = closing.cancelled() => { state = CaptureState::Incomplete; break; }
+                    _ = capture_fault.cancelled() => { state = CaptureState::Incomplete; break; }
                     result = input.read(&mut bytes) => result?,
                 };
                 if length == 0 {
@@ -306,9 +401,11 @@ fn capture_pipe(
                 }
                 tokio::select! {
                     _ = stop.cancelled() => { state = CaptureState::Incomplete; break; }
+                    _ = closing.cancelled() => { state = CaptureState::Incomplete; break; }
                     result = writer.write_all(&bytes[..accepted]) => result?,
                 }
                 if accepted < length {
+                    capture_fault.cancel();
                     break;
                 }
             }
@@ -319,6 +416,7 @@ fn capture_pipe(
         if error.is_some() {
             state = CaptureState::IoFailed;
             cancellation.cancel();
+            capture_fault.cancel();
         }
         done.send_replace(Some(CapturedStream {
             state,

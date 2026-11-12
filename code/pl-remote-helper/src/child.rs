@@ -52,6 +52,7 @@ pub struct Output {
 pub(crate) struct PipeLifetime {
     pub notify: Arc<tokio::sync::Notify>,
     pub _executor: Executor,
+    pub _permit: Option<crate::stream::Permit>,
 }
 impl Drop for PipeLifetime {
     fn drop(&mut self) {

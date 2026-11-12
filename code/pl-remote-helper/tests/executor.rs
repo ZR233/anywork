@@ -293,19 +293,33 @@ async fn unread_eos_readers_keep_admission_and_bulk_drop_restores_capacity() {
     let (client, server) = tokio::io::duplex(1024 * 1024);
     let owner = tokio::spawn(pl_remote_helper::serve_connection(server));
     let executor = Executor::remote(client).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let empty = directory.path().join("empty");
+    tokio::fs::write(&empty, b"").await.unwrap();
+    let path = executor.path(empty.to_str().unwrap()).unwrap();
+    let mut live = executor
+        .command("/bin/sleep")
+        .arg("60")
+        .spawn()
+        .await
+        .unwrap();
     let mut readers = Vec::new();
-    for _ in 0..120 {
-        let mut child = executor
-            .command("/bin/echo")
-            .arg("held")
-            .stdout(Stdio::Piped)
-            .spawn()
-            .await
-            .unwrap();
-        child.wait().await.unwrap();
-        readers.push(child.stdout.take().unwrap());
+    for _ in 0..239 {
+        readers.push(executor.fs().read(&path).await.unwrap());
     }
-    let mut command = executor.command("/bin/echo");
+    let mut command = executor.command("/bin/true");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), command.spawn())
+            .await
+            .is_err(),
+        "unread EOS readers must retain all ordinary admission"
+    );
+    tokio::time::timeout(Duration::from_secs(5), live.kill())
+        .await
+        .unwrap()
+        .unwrap();
+    // Killing the root released one ordinary permit; a piped command still
+    // needs a two-stream bundle, so the unconsumed readers must keep it waiting.
     command.stdout(Stdio::Piped);
     let mut pending = Box::pin(command.spawn());
     assert!(futures::poll!(&mut pending).is_pending());
@@ -317,6 +331,8 @@ async fn unread_eos_readers_keep_admission_and_bulk_drop_restores_capacity() {
     child.wait().await.unwrap();
     drop(child);
     drop(command);
+    drop(live);
+    executor.close().await.unwrap();
     drop(executor);
     tokio::time::timeout(Duration::from_secs(5), owner)
         .await
@@ -578,10 +594,92 @@ async fn filesystem_mutations_run_on_target_and_closed_handles_are_terminal() {
         fs.rename(&target, &renamed).await.unwrap();
         fs.remove(&renamed, true).await.unwrap();
         assert!(fs.metadata(&renamed).await.unwrap().is_none());
+        // A destination hardlink must not truncate the source inode. The same
+        // atomic publisher also keeps source permissions on the copied entry.
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        tokio::fs::set_permissions(file.as_str(), std::fs::Permissions::from_mode(0o640))
+            .await
+            .unwrap();
+        let hardlink = executor.join_path(&root, "hardlink").unwrap();
+        tokio::fs::hard_link(file.as_str(), hardlink.as_str())
+            .await
+            .unwrap();
+        fs.copy_path(&file, &hardlink, false).await.unwrap();
+        assert_eq!(tokio::fs::read(file.as_str()).await.unwrap(), b"\0\xff!");
+        assert_eq!(
+            tokio::fs::read(hardlink.as_str()).await.unwrap(),
+            b"\0\xff!"
+        );
+        assert_ne!(
+            tokio::fs::metadata(file.as_str()).await.unwrap().ino(),
+            tokio::fs::metadata(hardlink.as_str()).await.unwrap().ino()
+        );
+        assert_eq!(
+            tokio::fs::metadata(hardlink.as_str())
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
         executor.close().await.unwrap();
         assert!(fs.read(&file).await.is_err());
         assert!(fs.create_dir(&target, false).await.is_err());
         assert!(executor.command("/bin/true").spawn().await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn executor_close_reclaims_native_pipes_even_when_public_handles_are_unpolled() {
+    both(|executor| async move {
+        let mut child = executor
+            .command("/bin/sh")
+            .args(["-c", "exec 3<&0; cat <&3 & exit 9"])
+            .stdin(Stdio::Piped)
+            .stdout(Stdio::Piped)
+            .spawn()
+            .await
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = child.stdout.take().unwrap();
+        assert_eq!(child.wait().await.unwrap(), ProcessExit::Code(9));
+        executor.close().await.unwrap();
+        let mut bytes = [0; 8];
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), output.read(&mut bytes))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(input.write_all(b"closed").await.is_err());
+        assert_eq!(child.wait().await.unwrap(), ProcessExit::Code(9));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn non_utf8_directory_names_fail_without_closing_the_connection() {
+    use std::os::unix::ffi::OsStringExt;
+    both(|executor| async move {
+        let directory = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            directory
+                .path()
+                .join(std::ffi::OsString::from_vec(vec![0xff])),
+            b"private",
+        )
+        .await
+        .unwrap();
+        let path = executor.path(directory.path().to_str().unwrap()).unwrap();
+        let mut reader = executor.fs().read_dir(&path).await.unwrap();
+        let error = reader.next().await.unwrap_err();
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+        assert_eq!(
+            executor.command("/bin/true").status().await.unwrap(),
+            ProcessExit::Code(0)
+        );
     })
     .await;
 }

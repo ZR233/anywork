@@ -28,8 +28,10 @@ impl FileSystem {
             ExecutorBackend::Local => {
                 let (send, receive) = oneshot::channel();
                 let executor = self.executor.clone();
+                let cancel = executor.inner.closing.child_token();
+                let _cancel = cancel.clone().drop_guard();
                 self.executor.inner.tasks.spawn(async move {
-                    let result = mutate_native(request, executor.inner.closing.clone()).await;
+                    let result = mutate_native(request, executor, cancel).await;
                     let _ = send.send(result);
                 });
                 receive.await.map_err(|_| {
@@ -93,8 +95,12 @@ impl FileSystem {
 
 pub(crate) async fn mutate_native(
     request: Mutation,
+    executor: Executor,
     cancel: CancellationToken,
 ) -> Result<(), ExecutionError> {
+    if cancel.is_cancelled() {
+        return Err(ExecutionError::Cancelled);
+    }
     let result = match request {
         Mutation::CreateDir { path, recursive } => {
             if recursive {
@@ -107,6 +113,9 @@ pub(crate) async fn mutate_native(
             let metadata = tokio::fs::symlink_metadata(&path)
                 .await
                 .map_err(|error| ExecutionError::io("remove metadata", error))?;
+            if cancel.is_cancelled() {
+                return Err(ExecutionError::Cancelled);
+            }
             if metadata.is_dir() && !metadata.is_symlink() {
                 if recursive {
                     tokio::fs::remove_dir_all(path).await
@@ -122,7 +131,7 @@ pub(crate) async fn mutate_native(
             source,
             target,
             recursive,
-        } => return copy(source, target, recursive, cancel).await,
+        } => return copy(source, target, recursive, executor, cancel).await,
     };
     result.map_err(|error| ExecutionError::io("filesystem mutation", error))
 }
@@ -131,6 +140,7 @@ async fn copy(
     source: String,
     target: String,
     recursive: bool,
+    executor: Executor,
     cancel: CancellationToken,
 ) -> Result<(), ExecutionError> {
     let metadata = tokio::fs::symlink_metadata(&source)
@@ -163,17 +173,46 @@ async fn copy(
             ));
         }
     }
-    let mut pending = vec![(
+    let mut pending = Some((
         std::path::PathBuf::from(source),
         std::path::PathBuf::from(target),
-    )];
-    while let Some((source, target)) = pending.pop() {
+    ));
+    let mut directories: Vec<(tokio::fs::ReadDir, std::path::PathBuf)> = Vec::new();
+    loop {
         if cancel.is_cancelled() {
             return Err(ExecutionError::Cancelled);
         }
+        let (source, target) = if let Some(entry) = pending.take() {
+            entry
+        } else {
+            let Some((reader, target)) = directories.last_mut() else {
+                break;
+            };
+            match reader
+                .next_entry()
+                .await
+                .map_err(|error| ExecutionError::io("copy directory entry", error))?
+            {
+                Some(entry) => (entry.path(), target.join(entry.file_name())),
+                None => {
+                    directories.pop();
+                    continue;
+                }
+            }
+        };
         let metadata = tokio::fs::symlink_metadata(&source)
             .await
             .map_err(|error| ExecutionError::io("copy metadata", error))?;
+        match tokio::fs::symlink_metadata(&target).await {
+            Ok(metadata) if metadata.is_symlink() => {
+                return Err(ExecutionError::InvalidInput(
+                    "copy does not follow destination symbolic links".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ExecutionError::io("copy target metadata", error)),
+        }
         if metadata.is_symlink() {
             return Err(ExecutionError::InvalidInput(
                 "copy does not follow symbolic links".into(),
@@ -183,20 +222,39 @@ async fn copy(
             tokio::fs::create_dir_all(&target)
                 .await
                 .map_err(|error| ExecutionError::io("copy directory", error))?;
-            let mut entries = tokio::fs::read_dir(&source)
+            let entries = tokio::fs::read_dir(&source)
                 .await
                 .map_err(|error| ExecutionError::io("copy directory", error))?;
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .map_err(|error| ExecutionError::io("copy directory entry", error))?
-            {
-                pending.push((entry.path(), target.join(entry.file_name())));
-            }
+            directories.push((entries, target));
         } else if metadata.is_file() {
-            tokio::fs::copy(source, target)
+            // Reuse the same atomic publisher instead of truncating a destination
+            // inode which may also be a hardlink to the source.
+            let mut source = tokio::fs::File::open(source)
+                .await
+                .map_err(|error| ExecutionError::io("copy source", error))?;
+            let permissions = source
+                .metadata()
+                .await
+                .map_err(|error| ExecutionError::io("copy source metadata", error))?
+                .permissions();
+            let path = target
+                .into_os_string()
+                .into_string()
+                .map_err(|_| ExecutionError::InvalidInput("copy target is not UTF-8".into()))?;
+            let mut writer = super::write::open(
+                executor.clone(),
+                WriteDescriptor {
+                    path,
+                    mode: WriteMode::ReplaceAtomic,
+                    expected_len: None,
+                },
+                Some(permissions),
+            )
+            .await?;
+            tokio::io::copy(&mut source, &mut writer)
                 .await
                 .map_err(|error| ExecutionError::io("copy file", error))?;
+            writer.finish().await?;
         } else {
             return Err(ExecutionError::InvalidInput(
                 "copy requires a regular file or directory".into(),

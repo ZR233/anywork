@@ -5,8 +5,8 @@ use pl_protocol::Result;
 use serde::{Deserialize, Serialize};
 
 use super::{SessionFiles, path_safety};
-use crate::remote::RemoteClientError;
 use crate::remote::RemoteWorkspaceFileBackend;
+use crate::remote::SshError;
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 
 /// Uses an already frozen physical binding. It never discovers or reconnects an endpoint.
@@ -22,7 +22,7 @@ pub enum SessionRemovalError {
     #[error("{0}")]
     Local(#[from] path_safety::PathSafetyError),
     #[error("{0}")]
-    Remote(#[from] RemoteClientError),
+    Remote(#[from] SshError),
 }
 
 impl SessionRemovalError {
@@ -32,10 +32,11 @@ impl SessionRemovalError {
                 removal_started, ..
             }) => !removal_started,
             Self::Local(_) => true,
-            Self::Remote(RemoteClientError::Cancelled) => true,
-            Self::Remote(RemoteClientError::Remote { removal_effect, .. }) => {
-                *removal_effect == Some(pl_protocol::remote::RemoteRemovalEffect::NotStarted)
-            }
+            Self::Remote(SshError::Cancelled) => true,
+            Self::Remote(SshError::Remote {
+                code: pl_protocol::remote::RemoteErrorCode::WorkspaceEscape,
+                ..
+            }) => true,
             Self::Remote(_) => false,
         }
     }
@@ -45,9 +46,7 @@ impl SessionRemovalError {
             Self::Local(path_safety::PathSafetyError::Io { source, .. }) => {
                 source.kind() == std::io::ErrorKind::NotFound
             }
-            Self::Remote(RemoteClientError::Remote { code, .. }) => {
-                *code == pl_protocol::remote::RemoteErrorCode::PathNotFound
-            }
+            Self::Remote(error) => error.is_not_found(),
             _ => false,
         }
     }

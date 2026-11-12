@@ -47,7 +47,7 @@ impl crate::remote::RemoteConnection {
         self.tasks.spawn(async move {
             let _permit = held;
             let upload = async {
-                let mut bytes = [0; stream::WINDOW as usize];
+                let mut bytes = vec![0; stream::WINDOW as usize];
                 loop {
                     let count = input.read(&mut bytes).await?;
                     if count == 0 { return stream::send_shared(&sender, Bytes::new(), true, &closing).await; }
@@ -154,7 +154,7 @@ pub(crate) async fn serve(
     let operation: io::Result<()> = async {
         let descriptor = stream::encode_descriptor(&response_body.head)?;
         stream::send(&mut output, descriptor.into(), false, &closing).await?;
-        let mut bytes = [0; stream::WINDOW as usize];
+        let mut bytes = vec![0; stream::WINDOW as usize];
         loop {
             let count = tokio::select! {
                 result = response_body.body.read(&mut bytes) => result?,

@@ -1485,7 +1485,7 @@
   "settingsSshStateDisconnected": "未连接",
   "settingsSshStateConnecting": "连接中",
   "settingsSshStateWaitingForInput": "等待输入",
-  "settingsSshStateReconnecting": "重新连接中",
+  "settingsSshStateClosing": "断开连接中",
   "settingsSshStateFailed": "连接失败",
   "settingsWorktreeStatePrepared": "已准备",
   "settingsWorktreeStateActive": "已绑定",

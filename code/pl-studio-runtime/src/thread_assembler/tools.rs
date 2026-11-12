@@ -17,6 +17,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub enum StudioCommandBinding {
     Local {
+        executor: pl_remote_helper::Executor,
         workspace: pl_tool::workspace::ToolWorkspace,
         environment: pl_tool::environment::ExecutionEnvironment,
         child_environment: std::collections::BTreeMap<String, String>,
@@ -30,37 +31,23 @@ pub enum StudioCommandBinding {
 
 /// Physical command controllers remain unique per Thread across catalog refreshes.
 #[derive(Debug, Clone)]
-pub(crate) enum StudioCommandProcesses {
-    Local(Arc<pl_tool::command::CommandProcessManager<pl_tool::command::LocalCommandBackend>>),
-    Remote(Arc<pl_tool::command::CommandProcessManager<pl_tool::remote::RemoteCommandBackend>>),
-}
+pub(crate) struct StudioCommandProcesses(
+    Arc<pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>>,
+);
 #[derive(Debug, Clone)]
-pub(crate) enum WeakCommandProcesses {
-    Local(
-        std::sync::Weak<
-            pl_tool::command::CommandProcessManager<pl_tool::command::LocalCommandBackend>,
-        >,
-    ),
-    Remote(
-        std::sync::Weak<
-            pl_tool::command::CommandProcessManager<pl_tool::remote::RemoteCommandBackend>,
-        >,
-    ),
-}
+pub(crate) struct WeakCommandProcesses(
+    std::sync::Weak<
+        pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>,
+    >,
+);
 impl StudioCommandProcesses {
     pub(crate) fn downgrade(&self) -> WeakCommandProcesses {
-        match self {
-            Self::Local(manager) => WeakCommandProcesses::Local(Arc::downgrade(manager)),
-            Self::Remote(manager) => WeakCommandProcesses::Remote(Arc::downgrade(manager)),
-        }
+        WeakCommandProcesses(Arc::downgrade(&self.0))
     }
 }
 impl WeakCommandProcesses {
     pub(crate) fn upgrade(&self) -> Option<StudioCommandProcesses> {
-        match self {
-            Self::Local(manager) => manager.upgrade().map(StudioCommandProcesses::Local),
-            Self::Remote(manager) => manager.upgrade().map(StudioCommandProcesses::Remote),
-        }
+        self.0.upgrade().map(StudioCommandProcesses)
     }
 }
 
@@ -156,10 +143,6 @@ impl StudioThreadTools {
         options: StudioWorkspaceTools,
         mut commands: Option<StudioCommandProcesses>,
     ) -> Result<Self, ThreadAssemblyError> {
-        // The local worker exists only on Linux; other platforms drop the field
-        // via `..` so it never becomes an unused binding.
-        #[cfg(target_os = "linux")]
-        let helper_source = options.helper_source.clone();
         let StudioWorkspaceTools {
             binding,
             store,
@@ -170,6 +153,7 @@ impl StudioThreadTools {
         let mut registrations = Vec::new();
         match binding {
             StudioCommandBinding::Local {
+                executor,
                 workspace,
                 environment,
                 child_environment,
@@ -185,29 +169,17 @@ impl StudioThreadTools {
                         &stdin_definition,
                         ToolCallPolicy::DirectOnly,
                     )?;
-                    let processes = match &commands {
-                        Some(StudioCommandProcesses::Local(processes)) => processes.clone(),
-                        Some(StudioCommandProcesses::Remote(_)) => {
-                            return Err(ThreadAssemblyError::Identity(
-                                "physical command binding changed; reactivate this Thread".into(),
-                            ));
-                        }
-                        None => {
-                            let backend = pl_tool::command::LocalCommandBackend::new(
-                                workspace.root().to_path_buf(),
-                            )
-                            .with_execution_environment(environment)
-                            .with_child_environment(child_environment);
-                            #[cfg(target_os = "linux")]
-                            let backend = backend.with_worker_executable(
-                                crate::worker_assets::local_worker(helper_source).await?,
-                            );
-                            Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                                backend,
-                            )))
-                        }
-                    };
-                    commands = Some(StudioCommandProcesses::Local(processes.clone()));
+                    let backend = pl_tool::command::ExecutorCommandBackend::new(
+                        executor,
+                        workspace.root().to_str().ok_or_else(|| {
+                            ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
+                        })?,
+                        environment,
+                    )
+                    .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
+                    .with_child_environment(child_environment);
+                    let processes = command_processes(&commands, backend)?;
+                    commands = Some(StudioCommandProcesses(processes.clone()));
                     registrations.extend(
                         ThreadExecTool::from_process_manager(
                             processes,
@@ -246,18 +218,8 @@ impl StudioThreadTools {
                     )?;
                     let archive = store
                         .remote_command_archive(Arc::new(host.files.clone()), host_scratch.clone());
-                    let processes = match &commands {
-                        Some(StudioCommandProcesses::Remote(processes)) => processes.clone(),
-                        Some(StudioCommandProcesses::Local(_)) => {
-                            return Err(ThreadAssemblyError::Identity(
-                                "physical command binding changed; reactivate this Thread".into(),
-                            ));
-                        }
-                        None => Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                            host.commands.clone(),
-                        ))),
-                    };
-                    commands = Some(StudioCommandProcesses::Remote(processes.clone()));
+                    let processes = command_processes(&commands, host.commands.clone())?;
+                    commands = Some(StudioCommandProcesses(processes.clone()));
                     registrations.extend(
                         ThreadExecTool::from_process_manager(
                             processes,
@@ -768,4 +730,22 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
             .with_authorization(authorization),
     );
     Ok(tools)
+}
+
+fn command_processes(
+    existing: &Option<StudioCommandProcesses>,
+    backend: pl_tool::command::ExecutorCommandBackend,
+) -> Result<
+    Arc<pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>>,
+    ThreadAssemblyError,
+> {
+    match existing {
+        Some(existing) if existing.0.backend().is_same_binding(&backend) => Ok(existing.0.clone()),
+        Some(_) => Err(ThreadAssemblyError::Identity(
+            "physical execution binding changed; reactivate this Thread".into(),
+        )),
+        None => Ok(Arc::new(pl_tool::command::CommandProcessManager::new(
+            Arc::new(backend),
+        ))),
+    }
 }

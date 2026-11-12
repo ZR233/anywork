@@ -19,6 +19,36 @@ pub(crate) mod remote;
 
 pub type HttpInput = Pin<Box<dyn AsyncRead + Send>>;
 
+/// Known immutable bytes can be replayed by reqwest for an allowed redirect.
+/// Streaming readers remain single-use and are never buffered for replay.
+pub enum HttpUpload {
+    Bytes(Bytes),
+    Stream(HttpInput),
+}
+impl From<Bytes> for HttpUpload {
+    fn from(value: Bytes) -> Self {
+        Self::Bytes(value)
+    }
+}
+impl<T: AsyncRead + Send + 'static> From<Pin<Box<T>>> for HttpUpload {
+    fn from(value: Pin<Box<T>>) -> Self {
+        Self::Stream(value)
+    }
+}
+impl From<HttpInput> for HttpUpload {
+    fn from(value: HttpInput) -> Self {
+        Self::Stream(value)
+    }
+}
+impl HttpUpload {
+    fn into_reader(self) -> HttpInput {
+        match self {
+            Self::Bytes(bytes) => Box::pin(std::io::Cursor::new(bytes)),
+            Self::Stream(reader) => reader,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RedirectPolicy {
     None,
@@ -126,8 +156,9 @@ impl HttpClient {
     pub async fn execute(
         &self,
         request: HttpRequest,
-        body: HttpInput,
+        body: impl Into<HttpUpload> + Send,
     ) -> Result<HttpResponse, ExecutionError> {
+        let body = body.into();
         if self.executor.is_closed() {
             return Err(ExecutionError::Disconnected("executor is closed".into()));
         }
@@ -141,7 +172,7 @@ impl HttpClient {
                             request,
                             redirect: self.redirect,
                         },
-                        body,
+                        body.into_reader(),
                     )
                     .await
             }
@@ -150,7 +181,7 @@ impl HttpClient {
     async fn execute_native(
         &self,
         request: HttpRequest,
-        body: HttpInput,
+        body: HttpUpload,
     ) -> Result<HttpResponse, ExecutionError> {
         let url = reqwest::Url::parse(&request.url)
             .map_err(|_| ExecutionError::InvalidInput("invalid HTTP URL".into()))?;
@@ -211,14 +242,19 @@ impl HttpClient {
             })
             .await?;
         let cancel = CancellationToken::new();
-        let input = CancelReader {
-            reader: body,
-            cancel: Box::pin(cancel.clone().cancelled_owned()),
-            closing: Box::pin(self.executor.inner.closing.clone().cancelled_owned()),
+        let body = match body {
+            HttpUpload::Bytes(bytes) => reqwest::Body::from(bytes),
+            HttpUpload::Stream(reader) => {
+                reqwest::Body::wrap_stream(ReaderStream::new(CancelReader {
+                    reader,
+                    cancel: Box::pin(cancel.clone().cancelled_owned()),
+                    closing: Box::pin(self.executor.inner.closing.clone().cancelled_owned()),
+                }))
+            }
         };
         let response = tokio::select! {
             _ = self.executor.inner.closing.cancelled() => return Err(ExecutionError::Disconnected("executor is closed".into())),
-            response = client.request(method, url).headers(headers).body(reqwest::Body::wrap_stream(ReaderStream::new(input))).send() => response.map_err(http_error)?,
+            response = client.request(method, url).headers(headers).body(body).send() => response.map_err(http_error)?,
         };
         let head = HttpResponseHead {
             status: response.status().as_u16(),
@@ -255,7 +291,7 @@ impl AsyncRead for CancelReader {
     }
 }
 fn http_error(error: reqwest::Error) -> ExecutionError {
-    ExecutionError::Http(Arc::new(error))
+    ExecutionError::Http(Arc::new(error.without_url()))
 }
 
 pub(crate) fn header_map(

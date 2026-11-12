@@ -1,5 +1,5 @@
 //! Worktree-specific safe failure facts, not a general-purpose secret sanitizer.
-use super::{RemoteClientError, RemoteDownloadError, RemoteExecutionError, WorktreeError};
+use super::{ExecutionFailure, RemoteDownloadError, SshError, WorktreeError};
 
 impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
@@ -61,71 +61,67 @@ impl WorktreeError {
 /// Preserve the transfer phase and typed cause without reflecting paths or arbitrary helper text.
 pub(super) fn download_cause(error: &RemoteDownloadError) -> String {
     match error {
-        RemoteDownloadError::Path(_) => "remote file path invalid or outside workspace".into(),
-        RemoteDownloadError::Read { offset, source } => {
-            format!("remote file read at byte {offset}: {}", remote_code(source))
-        }
-        RemoteDownloadError::Inconsistent { offset } => {
-            format!("remote file transfer range or checksum inconsistent at byte {offset}")
-        }
-        RemoteDownloadError::Response(_) => {
-            "remote file transfer: unexpected helper response (details withheld)".into()
-        }
-        RemoteDownloadError::Write { offset, source } => format!(
-            "remote file buffer at byte {offset}: filesystem {:?}; os_code={:?}",
+        RemoteDownloadError::Path(source) => remote_code(source),
+        RemoteDownloadError::Open(source) => execution_error(source),
+        RemoteDownloadError::Io(source) => format!(
+            "file transfer IO {:?}; os={:?}",
             source.kind(),
             source.raw_os_error()
         ),
-        RemoteDownloadError::TooLarge { total, limit } => {
-            format!("remote file transfer size limit exceeded; bytes={total}; limit={limit}")
+        RemoteDownloadError::TooLarge { limit } => format!("file transfer exceeds {limit} bytes"),
+        RemoteDownloadError::Incomplete => "file transfer incomplete".into(),
+    }
+}
+pub(super) fn execution_cause(error: &ExecutionFailure) -> String {
+    match error {
+        ExecutionFailure::Spawn(source) => format!(
+            "spawn {:?}: {}",
+            source.knowledge,
+            execution_error(&source.cause)
+        ),
+        ExecutionFailure::Execution(source) => execution_error(source),
+        ExecutionFailure::TimedOut => "command timed out; cleanup is owned by the executor".into(),
+    }
+}
+fn execution_error(error: &pl_remote_helper::ExecutionError) -> String {
+    use pl_remote_helper::ExecutionError;
+    match error {
+        ExecutionError::Io { source, .. } => {
+            format!("IO {:?}; os={:?}", source.kind(), source.raw_os_error())
         }
+        ExecutionError::TargetIo(source) => {
+            format!("target IO {:?}; os={:?}", source.kind, source.raw_os_error)
+        }
+        ExecutionError::InvalidInput(_) => "invalid execution input".into(),
+        ExecutionError::Disconnected(_) => "execution disconnected; result may be unknown".into(),
+        ExecutionError::Protocol(_) | ExecutionError::ProtocolMismatch { .. } => {
+            "execution protocol failure".into()
+        }
+        ExecutionError::Cancelled => "execution cancelled".into(),
+        ExecutionError::CollectFailed { cause, .. } => {
+            format!("output incomplete: {}", execution_error(cause))
+        }
+        ExecutionError::Http(_) => "HTTP egress failed".into(),
     }
 }
 
-/// Render the one upstream execution error tree without reflecting arbitrary transport text.
-pub(super) fn execution_cause(error: &RemoteExecutionError) -> String {
+pub(super) fn remote_code(error: &SshError) -> String {
     match error {
-        RemoteExecutionError::WorkingDirectory => {
-            "remote working directory invalid or outside workspace".into()
-        }
-        RemoteExecutionError::Spawn { source } => format!("remote spawn: {}", remote_code(source)),
-        RemoteExecutionError::OutputMissing => {
-            "remote output acquisition: output stream missing".into()
-        }
-        RemoteExecutionError::UnexpectedCapture => {
-            "remote output collection: unexpected capture receipt".into()
-        }
-        RemoteExecutionError::Read { source } => format!(
-            "remote output read: {:?}; os_code={:?}",
-            source.kind(),
-            source.raw_os_error()
+        SshError::HostIo(error) => format!(
+            "SSH host IO {:?}; os={:?}",
+            error.kind(),
+            error.raw_os_error()
         ),
-        RemoteExecutionError::Wait { .. } => {
-            "remote wait: cause unknown (upstream provides only unstructured text)".into()
+        SshError::Removal(error) => {
+            format!("removal outcome unconfirmed: {}", execution_error(error))
         }
-        RemoteExecutionError::TimedOut {
-            settlement_error: None,
-        } => "remote timeout; process exit and output drain completed".into(),
-        RemoteExecutionError::TimedOut {
-            settlement_error: Some(error),
-        } => format!(
-            "remote timeout; process/output settlement failed: {}",
-            execution_cause(error)
-        ),
-    }
-}
-
-pub(super) fn remote_code(error: &RemoteClientError) -> String {
-    match error {
-        RemoteClientError::ManagerClosing => "SSH ManagerClosing".into(),
-        RemoteClientError::Disconnected => "SSH Disconnected".into(),
-        RemoteClientError::HeartbeatTimeout => "SSH HeartbeatTimeout".into(),
-        RemoteClientError::Cancelled => "SSH Cancelled before admission".into(),
-        RemoteClientError::AuthenticationFailed(_) => "SSH AuthenticationFailed".into(),
-        RemoteClientError::Protocol(_) => {
-            "SSH Protocol failure (unclassified details withheld)".into()
-        }
-        RemoteClientError::Remote { code, .. } => format!("remote helper {code:?}"),
+        SshError::Execution(error) => execution_error(error),
+        SshError::ManagerClosing => "SSH ManagerClosing".into(),
+        SshError::Disconnected => "SSH Disconnected".into(),
+        SshError::Cancelled => "SSH Cancelled before admission".into(),
+        SshError::AuthenticationFailed(_) => "SSH AuthenticationFailed".into(),
+        SshError::Protocol(_) => "SSH Protocol failure (unclassified details withheld)".into(),
+        SshError::Remote { code, .. } => format!("remote helper {code:?}"),
     }
 }
 

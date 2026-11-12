@@ -1142,9 +1142,7 @@ mod ssh_tests {
         }
         let error = outcome?.expect_err("transport loss is not PathNotFound or archive success");
         assert!(
-            error
-                .downcast_ref::<pl_tool::remote::RemoteClientError>()
-                .is_some(),
+            error.downcast_ref::<pl_tool::remote::SshError>().is_some(),
             "the original transport error must survive the archive boundary"
         );
         assert!(!member.execution_cleaned && !member.host_cleaned);

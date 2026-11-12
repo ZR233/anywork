@@ -336,6 +336,8 @@ async fn filesystem(
     executor: Executor,
     closing: CancellationToken,
 ) {
+    let cancelled = closing.child_token();
+    let _cancel = cancelled.clone().drop_guard();
     let prepare = async {
         let bytes = stream::collect(input, stream::DESCRIPTOR_LIMIT)
             .await
@@ -345,9 +347,10 @@ async fn filesystem(
                 .map_err(|error| ExecutionError::InvalidInput(error.to_string()))?;
             // Mutation owns its OS work even when the response consumer cancels.
             let (send, receive) = tokio::sync::oneshot::channel();
-            let stop = closing.clone();
+            let stop = cancelled.clone();
+            let owner = executor.clone();
             executor.inner.tasks.spawn(async move {
-                let result = crate::fs::mutate::mutate_native(request, stop).await;
+                let result = crate::fs::mutate::mutate_native(request, owner, stop).await;
                 let _ = send.send(result);
             });
             receive
@@ -403,7 +406,7 @@ async fn filesystem(
     };
     let result: Result<(), ExecutionError> = async {
         if let Some(mut file) = file {
-            let mut bytes = [0; stream::WINDOW as usize];
+            let mut bytes = vec![0; stream::WINDOW as usize];
             loop {
                 let length = tokio::select! {
                     result = file.read(&mut bytes) => result.map_err(|error| ExecutionError::io("file stream", error))?,
@@ -424,10 +427,23 @@ async fn filesystem(
         }
         Ok(())
     }.await;
-    if result.is_ok() {
-        let _ = output.send_data(Bytes::new(), true);
-    } else {
-        output.send_reset(h2::Reason::INTERNAL_ERROR);
+    match result {
+        Ok(()) => {
+            let _ = output.send_data(Bytes::new(), true);
+        }
+        Err(error) => {
+            let bytes =
+                serde_json::to_vec(&wire::Failure::from(&error)).expect("failure serializes");
+            if bytes.len() <= wire::RESULT_LIMIT
+                && let Ok(value) = http::HeaderValue::from_bytes(&bytes)
+            {
+                let mut trailers = http::HeaderMap::new();
+                trailers.insert("x-executor-error", value);
+                let _ = output.send_trailers(trailers);
+            } else {
+                output.send_reset(h2::Reason::INTERNAL_ERROR);
+            }
+        }
     }
 }
 
@@ -623,7 +639,7 @@ async fn output_pipe(
         return;
     };
     let result = async {
-        let mut bytes = [0; stream::WINDOW as usize];
+        let mut bytes = vec![0; stream::WINDOW as usize];
         loop {
             let length = tokio::select! {
                 result = reader.read(&mut bytes) => result?,

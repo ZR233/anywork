@@ -124,17 +124,17 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             let opened = manager
                 .open_workspace_host("validation", path.clone())
                 .await?;
-            let identity = opened.files.workspace_id().to_owned();
+            let identity = opened.files.executor().id();
             drop(opened);
             let reopened = manager.open_workspace_host("validation", path).await?;
             anyhow::ensure!(
-                reopened.files.workspace_id() != identity,
-                "workspace cache permanently retained its last user"
+                reopened.files.executor().id() == identity,
+                "workspaces on the same connection must share its executor"
             );
             drop(reopened);
         }
         files.remove_path("leases".into(), None, true).await?;
-        println!("workspace leases: 50 distinct open/drop/reopen cycles PASS");
+        println!("workspace bindings: 50 open/drop/reopen cycles on one executor PASS");
         remote_manager::verify_single_business_channel("multiple-workspaces")?;
     }
     files.create_directory("nested".to_string(), None).await?;
@@ -258,12 +258,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         .await?;
     anyhow::ensure!(eof.state.final_result().is_some());
     let receipt = eof.input_receipt.as_ref().expect("EOF input receipt");
-    anyhow::ensure!(
-        receipt.accepted_bytes == 24
-            && receipt
-                .remote_confirmed_bytes
-                .is_some_and(|bytes| bytes <= 24)
-    );
+    anyhow::ensure!(receipt.accepted_bytes == 24);
     anyhow::ensure!(
         files
             .read_text(WorkspaceFileReadRequest {
@@ -273,7 +268,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             .await?
             == "中文🌙\nfinite input\n"
     );
-    println!("SSH raw dual-stream and finite EOF receipt: {receipt:?}");
+    println!("SSH raw dual-stream and finite input observation: {receipt:?}");
 
     if exec_only {
         for cancelled in [false, true] {
@@ -334,7 +329,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         }
         manager.disconnect_server("validation").await?;
         println!(
-            "SSH_EXEC_CONTRACT_ACCEPTANCE=PASS: raw dual streams, stdin ACK/EOF, timeout and cancellation"
+            "SSH_EXEC_CONTRACT_ACCEPTANCE=PASS: raw dual streams, stdin EOF, timeout and cancellation"
         );
         return Ok(());
     }
@@ -397,18 +392,16 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let limit = budget
         .output_limit_exceeded()
         .expect("remote manager must return typed capacity termination");
-    let usage = budget.capture_usage.expect("final producer receipt");
+    let capture = budget.capture.as_ref().expect("target capture result");
+    anyhow::ensure!(capture.confirmed_total() == Some(pl_tool::command::MAX_CAPTURE_BYTES));
+
     let disk = files
         .stat(WorkspaceFileStatRequest {
             path: budget.capture_file.to_string_lossy().into_owned(),
             cwd: None,
         })
         .await?;
-    anyhow::ensure!(
-        limit.charged_bytes == usage.charged_bytes && Some(usage.charged_bytes) == disk.len
-    );
-    anyhow::ensure!(usage.charged_bytes <= usage.limit_bytes && usage.refused_bytes > 0);
-    anyhow::ensure!(budget.capture_repair().is_none());
+    anyhow::ensure!(disk.len == capture.stdout.confirmed_bytes);
     println!("remote capacity termination={limit:?}, disk={:?}", disk.len);
 
     // Git/worktree 没有归档读者，直传结果不应继承 exec 的磁盘额度。
@@ -573,7 +566,9 @@ async fn validate_session_capture_layout(
     use pl_tool::workspace::{
         AgentWorkspace, POOL_GITIGNORE, SessionFiles, prepare_session_files, prepare_worktree_pool,
     };
-    let capture = capture.to_string_lossy().replace('\\', "/");
+    let capture = capture.to_str().expect("UTF-8 capture");
+    let prefix = format!("{}/", files.canonical_path().trim_end_matches('/'));
+    let capture = capture.strip_prefix(&prefix).unwrap_or(capture);
     anyhow::ensure!(
         capture.starts_with(".anywork/sessions/") && capture.ends_with("/stdout.log"),
         "remote capture must use session commands layout: {capture}"
@@ -646,7 +641,7 @@ async fn validate_session_capture_layout(
     anyhow::ensure!(
         workspace
             .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
-            .is_err()
+            .is_ok()
     );
     let empty =
         AgentWorkspace::directory("/remote", Some(Vec::new())).with_session_id("validation");
@@ -668,6 +663,14 @@ async fn validate_session_capture_layout(
     anyhow::ensure!(
         empty
             .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
+            .is_ok()
+    );
+    // The current scratch allowance is this Thread's entire temp directory,
+    // including command capture. Another Thread's temp remains outside the grant.
+    let neighbor = SessionFiles::new("neighbor");
+    anyhow::ensure!(
+        empty
+            .ensure_relative_path_writable(None, &neighbor.commands().join("x").to_string_lossy())
             .is_err()
     );
     concurrent_remote_pool_ignore(files).await?;
@@ -764,7 +767,7 @@ impl WorkspaceFileBackend for RacingRemoteIgnore {
 }
 
 async fn validate_git(
-    backend: &pl_tool::remote::RemoteExecutionBackend,
+    backend: &pl_tool::execution::ExecutorExecutionBackend,
     files: &pl_tool::remote::RemoteWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     assert_eq!(
@@ -1012,7 +1015,7 @@ root = "{workspaceRoot}/init"
 }
 
 async fn run_remote(
-    backend: &pl_tool::remote::RemoteExecutionBackend,
+    backend: &pl_tool::execution::ExecutorExecutionBackend,
     command: Vec<String>,
 ) -> anyhow::Result<pl_tool::execution::ExecutionOutput> {
     let (program, args) = command

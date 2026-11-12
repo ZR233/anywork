@@ -5,7 +5,6 @@ pub(super) struct CommandInput {
     pub(super) writer: Option<CommandWriter>,
     pub(super) accepted_bytes: u64,
     pub(super) close_state: crate::command::StdinCloseState,
-    pub(super) progress: Option<tokio::sync::watch::Receiver<crate::command::CommandInputProgress>>,
 }
 
 pub use pl_tool_command::process::{CommandInputOutcome, CommandInputReceipt};
@@ -27,8 +26,6 @@ impl<B: CommandBackend> CommandProcessManager<B> {
         use crate::command::StdinCloseState;
         let mut receipt = CommandInputReceipt {
             accepted_bytes: 0,
-            remote_confirmed_bytes: None,
-            delivery_pending: false,
             close_state: None,
             outcome: CommandInputOutcome::Complete,
             detail: None,
@@ -39,7 +36,6 @@ impl<B: CommandBackend> CommandProcessManager<B> {
             input = entry.stdin.lock() => Some(input),
         };
         if let Some(mut input) = locked {
-            let begin = input.accepted_bytes;
             receipt.close_state = Some(input.close_state);
             let bytes = request.chars.as_bytes();
             if !bytes.is_empty()
@@ -82,11 +78,7 @@ impl<B: CommandBackend> CommandProcessManager<B> {
                 {
                     if request.close_stdin {
                         input.writer.take();
-                        input.close_state = if input.progress.is_some() {
-                            StdinCloseState::Closing
-                        } else {
-                            StdinCloseState::Closed
-                        };
+                        input.close_state = StdinCloseState::Closed;
                     } else if let Some(writer) = input.writer.as_mut() {
                         tokio::select! {
                             biased;
@@ -96,51 +88,7 @@ impl<B: CommandBackend> CommandProcessManager<B> {
                         }
                     }
                 }
-                let end = begin.saturating_add(receipt.accepted_bytes);
-                let close_requested =
-                    request.close_stdin && input.close_state != StdinCloseState::Open;
-                let known_close_state = input.close_state;
-                if let Some(progress) = input.progress.as_mut() {
-                    loop {
-                        let observed = progress.borrow_and_update().clone();
-                        receipt.remote_confirmed_bytes = Some(
-                            observed
-                                .confirmed_bytes
-                                .saturating_sub(begin)
-                                .min(receipt.accepted_bytes),
-                        );
-                        receipt.delivery_pending = (receipt.accepted_bytes > 0
-                            && observed.confirmed_bytes < end)
-                            || (close_requested && observed.close_state != StdinCloseState::Closed);
-                        receipt.close_state = Some(
-                            if known_close_state == StdinCloseState::Closing
-                                && observed.close_state == StdinCloseState::Open
-                            {
-                                StdinCloseState::Closing
-                            } else {
-                                observed.close_state
-                            },
-                        );
-                        if let Some(error) = observed.failure {
-                            receipt.outcome = CommandInputOutcome::Partial;
-                            receipt.detail = Some(error);
-                            break;
-                        }
-                        if !receipt.delivery_pending
-                            || !matches!(receipt.outcome, CommandInputOutcome::Complete)
-                        {
-                            break;
-                        }
-                        tokio::select! {
-                            biased;
-                            _ = request.cancellation.cancelled() => { receipt.outcome = CommandInputOutcome::Cancelled; break; },
-                            _ = entry.input_stopped.cancelled() => { receipt.outcome = CommandInputOutcome::Partial; receipt.detail = Some("target exited before all input acknowledgements were observed".into()); break; },
-                            changed = progress.changed() => { if changed.is_err() { receipt.outcome = CommandInputOutcome::Partial; receipt.detail = Some("remote input confirmation channel closed".into()); break; } },
-                        }
-                    }
-                } else {
-                    receipt.close_state = Some(input.close_state);
-                }
+                receipt.close_state = Some(input.close_state);
                 if let Some(state) = receipt.close_state {
                     input.close_state = state;
                 }

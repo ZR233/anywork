@@ -10277,14 +10277,9 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
-    /// The archive duty a real command capture owes after its append failed.
-    ///
-    /// It re-materializes the accepted chunk through the real local backend and then archives the
-    /// fragment with the real content-addressed store, so the reference the retry names is a genuine
-    /// durable resource and not a stand-in.
+    /// Archive retry for an already complete capture, using the real content-addressed store.
     #[derive(Debug)]
-    struct CaptureRepairObligation {
-        backend: pl_tool::command::LocalCommandBackend,
+    struct CaptureArchiveObligation {
         archive: crate::resource_store::FileResourceStore,
         capture_file: std::path::PathBuf,
         call_id: String,
@@ -10293,27 +10288,13 @@ pub(crate) mod storage_fault_tests {
         retries: Arc<AtomicUsize>,
     }
 
-    impl pl_core::thread::cold::OutputRetryObligation for CaptureRepairObligation {
+    impl pl_core::thread::cold::OutputRetryObligation for CaptureArchiveObligation {
         fn identity(&self) -> String {
             self.capture_file.display().to_string()
         }
         fn retry(&self) -> pl_core::thread::cold::OutputRetryFuture<'_> {
             Box::pin(async move {
                 self.retries.fetch_add(1, Ordering::SeqCst);
-                // The real backend truncates the fragment back to its committed offset and re-appends
-                // exactly the accepted chunk with the same framing a successful append would produce,
-                // so a repeated retry reproduces the same bytes instead of appending them twice.
-                pl_tool::command::CommandBackend::repair_output_chunk(
-                    &self.backend,
-                    &self.capture_file,
-                    pl_tool::command::CommandCaptureStream::Stdout,
-                    self.committed_len,
-                    &self.pending,
-                )
-                .await
-                .map_err(|error| pl_core::thread::cold::ColdStoreError {
-                    source: Box::new(std::io::Error::other(error.to_string())),
-                })?;
                 let reference = self
                     .archive
                     .retain_command_capture(&self.capture_file)
@@ -10340,20 +10321,19 @@ pub(crate) mod storage_fault_tests {
         }
     }
 
-    /// A command whose capture append really failed, so its archive still owes the accepted bytes.
+    /// A completed capture whose desktop archive failed, retaining the confirmed source.
     #[derive(Debug)]
-    struct FailedAppendCaptureTool {
+    struct FailedArchiveTool {
         definition: ToolDefinition,
-        backend: pl_tool::command::LocalCommandBackend,
         archive: crate::resource_store::FileResourceStore,
         capture_file: std::path::PathBuf,
         committed_len: u64,
         pending: Vec<u8>,
         retries: Arc<AtomicUsize>,
-        created: Arc<Mutex<Vec<Arc<CaptureRepairObligation>>>>,
+        created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>>,
     }
 
-    impl Tool for FailedAppendCaptureTool {
+    impl Tool for FailedArchiveTool {
         type Input = OpaquePayload;
         type Context = CallContext;
         type Output = ToolOutput;
@@ -10368,8 +10348,7 @@ pub(crate) mod storage_fault_tests {
             input: OpaquePayload,
             context: CallContext,
         ) -> Result<ToolOutput, ToolError> {
-            let obligation = Arc::new(CaptureRepairObligation {
-                backend: self.backend.clone(),
+            let obligation = Arc::new(CaptureArchiveObligation {
                 archive: self.archive.clone(),
                 capture_file: self.capture_file.clone(),
                 call_id: context.call_id.clone(),
@@ -10379,7 +10358,7 @@ pub(crate) mod storage_fault_tests {
             });
             self.created.lock().unwrap().push(obligation.clone());
             let source = pl_core::thread::cold::ColdStoreError {
-                source: Box::new(std::io::Error::other("capture append failed")),
+                source: Box::new(std::io::Error::other("capture archive failed")),
             };
             let fault = pl_core::thread::cold::OutputStorageFault::new(
                 pl_core::thread::cold::StorageFaultKind::WriteFailed,
@@ -10522,14 +10501,9 @@ pub(crate) mod storage_fault_tests {
 
     /// The reference a repaired capture stored reaches the durable tool result, not just memory.
     ///
-    /// The append failed after the fragment already held a partial write, so the retry must repair
-    /// the fragment through the real local backend before archiving it: the archived bytes are the
-    /// accepted content, verbatim and without duplication. The writer must then record that reference
-    /// on the tool identity it was committed under — on the projected item *and* on the delivery
-    /// history keeps — so the UI and a cold reopen can both locate the complete output, and the pause
-    /// must stay closed until the archive really landed.
+    /// A retry archives the same confirmed bytes and attaches its durable reference exactly once.
     #[tokio::test]
-    async fn a_repaired_capture_reference_reaches_the_durable_tool_result() -> Result<()> {
+    async fn a_confirmed_capture_archive_retry_reaches_the_durable_tool_result() -> Result<()> {
         use pl_core::context::ResourceReader;
         use pl_core::thread::cold::OutputRetryObligation as _;
 
@@ -10537,30 +10511,24 @@ pub(crate) mod storage_fault_tests {
         let resources_root = temp.path().join("resources");
         std::fs::create_dir_all(&resources_root)?;
         let archive = crate::resource_store::FileResourceStore::new(resources_root);
-        let backend = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
 
         let capture_file = temp.path().join("capture.fragment");
         let committed = b"accepted line one\n".to_vec();
         let pending = b"accepted line two".to_vec();
-        // The failed append left the fragment short of the bytes already accepted and published live:
-        // a few bytes of the pending chunk were written, without their framing and without the rest.
-        let mut partial = committed.clone();
-        partial.extend_from_slice(&pending[..4]);
-        std::fs::write(&capture_file, &partial)?;
         let mut expected = committed.clone();
         expected.extend_from_slice(&pending);
+        std::fs::write(&capture_file, &expected)?;
 
         let retries = Arc::new(AtomicUsize::new(0));
-        let created: Arc<Mutex<Vec<Arc<CaptureRepairObligation>>>> =
+        let created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>> =
             Arc::new(Mutex::new(Vec::new()));
         let thread =
             ThreadHandle::start("archive-repair".into(), DynModelSession::new(CaptureModel))?;
         thread
             .register_tools(vec![
                 Registration::prepare("capture".into(), OpaquePayload::text("Tool capture"))?
-                    .attach(ToolHandle::new(FailedAppendCaptureTool {
+                    .attach(ToolHandle::new(FailedArchiveTool {
                         definition: ToolDefinition::text("capture", "Tool capture")?,
-                        backend,
                         archive: archive.clone(),
                         capture_file: capture_file.clone(),
                         committed_len: committed.len() as u64,
@@ -10870,544 +10838,10 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(
             std::fs::read(&capture_file)?,
             expected,
-            "repeating the repair reproduces the fragment instead of duplicating the chunk"
+            "repeating archive retention preserves the confirmed source bytes"
         );
         assert_eq!(retries.load(Ordering::SeqCst), 2);
         thread.close().await?;
-        Ok(())
-    }
-
-    /// Re-materializes a whole multi-chunk capture plan through the real local backend, then archives
-    /// the fragment: the same shape core retries for a failed command capture.
-    #[derive(Debug)]
-    struct CapturePlanObligation {
-        backend: pl_tool::command::LocalCommandBackend,
-        archive: crate::resource_store::FileResourceStore,
-        capture_file: std::path::PathBuf,
-        call_id: String,
-        plan: pl_tool::command::CaptureRepair,
-        retries: Arc<AtomicUsize>,
-    }
-
-    impl pl_core::thread::cold::OutputRetryObligation for CapturePlanObligation {
-        fn identity(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn retry(&self) -> pl_core::thread::cold::OutputRetryFuture<'_> {
-            Box::pin(async move {
-                self.retries.fetch_add(1, Ordering::SeqCst);
-                // Replay the plan in acceptance order: one truncation back to the backend-confirmed
-                // offset, then every accepted chunk re-appended with its own framing.
-                let mut confirmed = self.plan.confirmed;
-                for chunk in &self.plan.chunks {
-                    let capture = match chunk.stream {
-                        pl_tool::command::CommandCaptureStream::Stdout => self.capture_file.clone(),
-                        pl_tool::command::CommandCaptureStream::Stderr => {
-                            self.capture_file.with_file_name("stderr.log")
-                        }
-                    };
-                    let committed_len = pl_tool::command::CommandBackend::repair_output_chunk(
-                        &self.backend,
-                        &capture,
-                        chunk.stream,
-                        confirmed.get(chunk.stream),
-                        &chunk.pending,
-                    )
-                    .await
-                    .map_err(|error| {
-                        pl_core::thread::cold::ColdStoreError {
-                            source: Box::new(std::io::Error::other(error.to_string())),
-                        }
-                    })?;
-                    confirmed.set(chunk.stream, committed_len);
-                }
-                let reference = self
-                    .archive
-                    .retain_command_capture(&self.capture_file)
-                    .await
-                    .map_err(|error| pl_core::thread::cold::ColdStoreError {
-                        source: Box::new(error),
-                    })?;
-                Ok(pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(
-                    pl_core::thread::cold::OutputRepair {
-                        call_id: self.call_id.clone(),
-                        reference,
-                    },
-                ))
-            })
-        }
-        fn received_bytes(&self) -> u64 {
-            self.plan.confirmed.total()
-        }
-        fn location(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn kind(&self) -> pl_core::thread::cold::StorageFaultKind {
-            pl_core::thread::cold::StorageFaultKind::WriteFailed
-        }
-    }
-
-    /// Two streams' accepted chunks survive one reader's partial capture write.
-    ///
-    /// The first stdout append failed after writing part of its chunk, and the stderr reader had
-    /// already accepted (and published) a chunk. Both must be re-materialized verbatim, once, in
-    /// acceptance order: the second append must not land past the fault, and a repeated retry must not
-    /// duplicate or truncate either chunk. The archived reference must read back the whole fragment.
-    #[tokio::test]
-    async fn a_two_stream_capture_repair_replays_every_accepted_chunk_once() -> Result<()> {
-        use pl_core::context::ResourceReader;
-        use pl_core::thread::cold::OutputRetryObligation as _;
-
-        let temp = tempfile::tempdir()?;
-        let resources_root = temp.path().join("resources");
-        std::fs::create_dir_all(&resources_root)?;
-        let archive = crate::resource_store::FileResourceStore::new(resources_root);
-        let backend = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
-
-        // The committed offset comes from the real backend's confirmed writes, not a hand-computed or
-        // swallowed fragment length: prepare the header, then append the chunk the capture already
-        // stored. That returned length is exactly what a repair truncates back to.
-        let target = pl_tool::command::CommandBackend::output_target(
-            &backend,
-            "session",
-            "exec",
-            "capture-2",
-            "capture",
-        )
-        .await?;
-        pl_tool::command::CommandBackend::prepare_output(
-            &backend,
-            &target,
-            "capture",
-            "/tmp",
-            pl_tool::command::MAX_CAPTURE_BYTES,
-        )
-        .await?;
-        let capture_file = target.capture_file().to_path_buf();
-        let committed = b"committed line\n".to_vec();
-        let committed_len = pl_tool::command::CommandBackend::append_output_chunk(
-            &backend,
-            &target,
-            pl_tool::command::CommandCaptureStream::Stdout,
-            &committed,
-        )
-        .await?;
-        let committed_prefix = std::fs::read(&capture_file)?;
-        assert_eq!(
-            committed_len,
-            committed_prefix.len() as u64,
-            "the repair offset is the backend-confirmed fragment length"
-        );
-
-        let stdout_pending = b"first failed stdout chunk".to_vec();
-        let stderr_pending = b"second stream accepted chunk".to_vec();
-        // The failed append left its framing and a few bytes of its chunk past the confirmed offset;
-        // the stderr chunk was accepted and published before the fault, so it is still owed.
-        {
-            use std::io::Write as _;
-            let mut fragment = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&capture_file)?;
-            fragment.write_all(b"=== STDOUT ===\n")?;
-            fragment.write_all(&stdout_pending[..7])?;
-        }
-
-        let expected = {
-            let mut expected = committed_prefix;
-            expected.extend_from_slice(&stdout_pending);
-            expected
-        };
-
-        let retries = Arc::new(AtomicUsize::new(0));
-        let obligation = Arc::new(CapturePlanObligation {
-            backend,
-            archive: archive.clone(),
-            capture_file: capture_file.clone(),
-            call_id: "capture-2".to_owned(),
-            plan: pl_tool::command::CaptureRepair {
-                confirmed: pl_tool::command::CommandCaptureOffsets {
-                    stdout: committed_len,
-                    stderr: 0,
-                },
-                chunks: vec![
-                    pl_tool::command::CaptureRepairChunk {
-                        stream: pl_tool::command::CommandCaptureStream::Stdout,
-                        pending: Arc::from(stdout_pending.clone()),
-                    },
-                    pl_tool::command::CaptureRepairChunk {
-                        stream: pl_tool::command::CommandCaptureStream::Stderr,
-                        pending: Arc::from(stderr_pending.clone()),
-                    },
-                ],
-            },
-            retries: retries.clone(),
-        });
-
-        let first = obligation.retry().await?;
-        assert_eq!(
-            std::fs::read(capture_file.with_file_name("stderr.log"))?,
-            stderr_pending
-        );
-        let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(first) = first else {
-            anyhow::bail!("the repair must name the stored reference");
-        };
-        assert_eq!(
-            std::fs::read(&capture_file)?,
-            expected,
-            "the retry stores both accepted chunks verbatim, in order, without the partial write"
-        );
-        let stored =
-            ResourceReader::read(&archive, first.reference.clone(), CancellationToken::new())
-                .await?;
-        assert_eq!(
-            stored.as_ref(),
-            expected.as_slice(),
-            "the archived reference reads back the whole accepted fragment"
-        );
-
-        let again = obligation.retry().await?;
-        let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(again) = again else {
-            anyhow::bail!("the repeated retry must name the same stored reference");
-        };
-        assert_eq!(again.reference, first.reference);
-        assert_eq!(
-            std::fs::read(&capture_file)?,
-            expected,
-            "the repeated retry reproduces the same fragment instead of duplicating a chunk"
-        );
-        assert_eq!(retries.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    use pl_tool::command::CommandBackend as _;
-
-    /// A command backend whose capture append is held and then failed, over in-memory IO.
-    ///
-    /// The read/repair and header capabilities delegate to a real [`pl_tool::command::LocalCommandBackend`],
-    /// but `spawn` hands back a [`pl_tool::command::ManagedCommand`] over duplex pipes the test feeds
-    /// directly, and `append_output_chunk` waits for a gate and then fails like a real disk write error.
-    /// That makes the operation's single writer task — not a hand-made plan — the thing that observes the
-    /// fault.
-    struct ScriptedCaptureBackend {
-        inner: pl_tool::command::LocalCommandBackend,
-        stdout: std::sync::Mutex<Option<pl_tool::command::CommandReader>>,
-        stderr: std::sync::Mutex<Option<pl_tool::command::CommandReader>>,
-        exit: Arc<Notify>,
-        gate: Arc<Notify>,
-    }
-
-    impl std::fmt::Debug for ScriptedCaptureBackend {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter
-                .debug_struct("ScriptedCaptureBackend")
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl pl_tool::command::CommandBackend for ScriptedCaptureBackend {
-        type Error = pl_protocol::PureError;
-
-        fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
-            self.inner.capture_ownership()
-        }
-        fn capture_storage_cost(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            stream: pl_tool::command::CommandCaptureStream,
-            chunk: &[u8],
-        ) -> u64 {
-            self.inner.capture_storage_cost(target, stream, chunk)
-        }
-
-        async fn resolve_cwd(
-            &self,
-            cwd: Option<&std::path::Path>,
-            allow_workspace_escape: bool,
-        ) -> Result<String, Self::Error> {
-            self.inner.resolve_cwd(cwd, allow_workspace_escape).await
-        }
-
-        async fn output_target(
-            &self,
-            session_id: &str,
-            tool_id: &str,
-            call_id: &str,
-            command: &str,
-        ) -> Result<pl_tool::command::CommandOutputTarget, Self::Error> {
-            self.inner
-                .output_target(session_id, tool_id, call_id, command)
-                .await
-        }
-
-        async fn spawn(
-            &self,
-            _request: pl_tool::command::CommandSpawnRequest,
-        ) -> Result<pl_tool::command::ManagedCommand, Self::Error> {
-            let stdout = self.stdout.lock().expect("stdout reader").take();
-            let stderr = self.stderr.lock().expect("stderr reader").take();
-            let exit = self.exit.clone();
-            Ok(pl_tool::command::ManagedCommand::new(
-                None,
-                pl_tool::command::CommandIo {
-                    stdin: None,
-                    stdout,
-                    stderr,
-                },
-                move |_cancellation| async move {
-                    exit.notified().await;
-                    Ok(pl_tool::command::CommandExit {
-                        supervision_failure: None,
-                        signal: None,
-                        capture_failure: None,
-                        exit_code: Some(0),
-                        capture: None,
-                    })
-                },
-            ))
-        }
-
-        async fn prepare_output(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            command: &str,
-            working_directory: &str,
-            capture_limit_bytes: u64,
-        ) -> Result<u64, Self::Error> {
-            self.inner
-                .prepare_output(target, command, working_directory, capture_limit_bytes)
-                .await
-        }
-
-        async fn append_output_chunk(
-            &self,
-            _target: &pl_tool::command::CommandOutputTarget,
-            _stream: pl_tool::command::CommandCaptureStream,
-            _chunk: &[u8],
-        ) -> Result<u64, Self::Error> {
-            // Hold the operation's single writer until the test has confirmed both streams' accepted
-            // chunks, then fail the append the way a real capture write error would.
-            self.gate.notified().await;
-            Err(pl_protocol::PureError::ToolExecutionFailed {
-                tool: "exec".to_owned(),
-                error: "capture append failed".to_owned(),
-            })
-        }
-
-        async fn repair_output_chunk(
-            &self,
-            capture_file: &std::path::Path,
-            stream: pl_tool::command::CommandCaptureStream,
-            committed_len: u64,
-            chunk: &[u8],
-        ) -> Result<u64, Self::Error> {
-            self.inner
-                .repair_output_chunk(capture_file, stream, committed_len, chunk)
-                .await
-        }
-
-        async fn publish_output(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-        ) -> Result<(), Self::Error> {
-            self.inner.publish_output(target).await
-        }
-
-        async fn collect_output_artifacts(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            sizes: pl_tool::command::CommandOutputSizes,
-        ) -> Result<Vec<serde_json::Value>, Self::Error> {
-            self.inner.collect_output_artifacts(target, sizes).await
-        }
-    }
-
-    /// Signals once both command streams have published an accepted chunk.
-    #[derive(Debug, Default)]
-    struct BothStreamsSeen {
-        stdout: AtomicUsize,
-        stderr: AtomicUsize,
-        both: Notify,
-    }
-
-    impl pl_tool::command::CommandOutputObserver for BothStreamsSeen {
-        fn output_chunk(
-            &self,
-            stream: pl_tool::command::CommandOutputStream,
-            chunk: &[u8],
-            _revision: u64,
-        ) {
-            let counter = match stream {
-                pl_tool::command::CommandOutputStream::Stdout => &self.stdout,
-                pl_tool::command::CommandOutputStream::Stderr => &self.stderr,
-            };
-            counter.fetch_add(chunk.len().max(1), Ordering::SeqCst);
-            if self.stdout.load(Ordering::SeqCst) > 0 && self.stderr.load(Ordering::SeqCst) > 0 {
-                self.both.notify_one();
-            }
-        }
-    }
-
-    /// The real command lifecycle retains and replays a two-stream capture fault.
-    ///
-    /// This drives the operation, not a hand-made plan: both readers accept *and publish* a chunk from
-    /// their stream, the operation's single writer is held until then and only then fails its append,
-    /// and the scripted process then exits. So the retained repair plan must hold both streams' accepted
-    /// chunks, the terminal result must not be a success, and replaying the plan through the real local
-    /// backend must archive exactly those bytes under one reference that reads back whole.
-    #[tokio::test]
-    async fn a_two_stream_capture_fault_is_retained_and_replayed_by_the_lifecycle() -> Result<()> {
-        use pl_core::context::ResourceReader;
-
-        let temp = tempfile::tempdir()?;
-        let resources_root = temp.path().join("resources");
-        std::fs::create_dir_all(&resources_root)?;
-        let archive = crate::resource_store::FileResourceStore::new(resources_root);
-
-        let (mut stdout_writer, stdout_reader) = tokio::io::duplex(1024);
-        let (mut stderr_writer, stderr_reader) = tokio::io::duplex(1024);
-        let gate = Arc::new(Notify::new());
-        let exit = Arc::new(Notify::new());
-        let backend = ScriptedCaptureBackend {
-            inner: pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf()),
-            stdout: std::sync::Mutex::new(Some(
-                Box::pin(stdout_reader) as pl_tool::command::CommandReader
-            )),
-            stderr: std::sync::Mutex::new(Some(
-                Box::pin(stderr_reader) as pl_tool::command::CommandReader
-            )),
-            exit: exit.clone(),
-            gate: gate.clone(),
-        };
-        let manager = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-            backend,
-        )));
-
-        let seen = Arc::new(BothStreamsSeen::default());
-        let observer: Arc<dyn pl_tool::command::CommandOutputObserver> = seen.clone();
-        let request = pl_tool::command::CommandStartRequest {
-            command: "scripted".to_owned(),
-            cwd: Some(temp.path().to_path_buf()),
-            allow_workspace_escape: false,
-            timeout: Duration::from_secs(30),
-            yield_time: Duration::ZERO,
-            max_output_chars: 4096,
-            session_id: "two-stream-lifecycle".to_owned(),
-            tool_id: "task-two-stream-lifecycle".to_owned(),
-            call_id: "task-two-stream-lifecycle".to_owned(),
-            cancellation_token: None,
-            output_observer: Some(observer),
-        };
-        let runner = {
-            let manager = manager.clone();
-            tokio::spawn(
-                async move { manager.run_task("task-two-stream-lifecycle", request).await },
-            )
-        };
-
-        tokio::io::AsyncWriteExt::write_all(&mut stdout_writer, b"OUT-1\n").await?;
-        tokio::io::AsyncWriteExt::write_all(&mut stderr_writer, b"ERR-1\n").await?;
-        tokio::time::timeout(Duration::from_secs(30), seen.both.notified())
-            .await
-            .context("both streams should have published an accepted chunk")?;
-
-        // Both accepted chunks are queued in the one plan; now let the held append fail for real, then
-        // close the streams and exit the scripted process so the operation settles.
-        gate.notify_one();
-        drop(stdout_writer);
-        drop(stderr_writer);
-        exit.notify_one();
-
-        let snapshot = match tokio::time::timeout(Duration::from_secs(30), runner).await {
-            Ok(Ok(Ok(snapshot))) => snapshot,
-            Ok(Ok(Err(error))) => {
-                anyhow::bail!("the operation returned an error instead of a snapshot: {error}")
-            }
-            Ok(Err(error)) => anyhow::bail!("the operation task failed: {error}"),
-            Err(_) => {
-                anyhow::bail!("the operation never settled: the capture writer did not drain")
-            }
-        };
-
-        assert!(
-            matches!(
-                &snapshot.output_failure,
-                Some(pl_tool::command::CommandCaptureFailure::Write { .. })
-            ),
-            "the real append failure must surface as a typed capture write failure: {:?}",
-            snapshot.output_failure
-        );
-        assert!(
-            snapshot.state.final_result().is_some(),
-            "the snapshot is only returned once the operation settled"
-        );
-        assert!(
-            !matches!(
-                snapshot.state.final_result(),
-                Some(pl_tool::command::CommandProcessFinalResult::Succeeded { .. })
-            ),
-            "a capture write failure must never be reported as a successful command"
-        );
-
-        let plan = snapshot
-            .capture_repair()
-            .cloned()
-            .context("both accepted chunks must stay owed after the failed append")?;
-        assert_eq!(
-            plan.chunks.len(),
-            2,
-            "both streams' accepted chunks are retained"
-        );
-        assert!(
-            plan.chunks.iter().any(|chunk| {
-                chunk.stream == pl_tool::command::CommandCaptureStream::Stdout
-                    && &chunk.pending[..] == b"OUT-1\n".as_slice()
-            }),
-            "the stdout chunk is retained verbatim"
-        );
-        assert!(
-            plan.chunks.iter().any(|chunk| {
-                chunk.stream == pl_tool::command::CommandCaptureStream::Stderr
-                    && &chunk.pending[..] == b"ERR-1\n".as_slice()
-            }),
-            "the stderr chunk is retained verbatim"
-        );
-
-        // Replay the plan through the real local backend and archive it: the stored reference must read
-        // back exactly the accepted bytes, in acceptance order, with the failed append left off.
-        let real = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
-        let mut confirmed = plan.confirmed;
-        for chunk in &plan.chunks {
-            let capture = match chunk.stream {
-                pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
-                pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
-            };
-            let committed_len = real
-                .repair_output_chunk(
-                    capture,
-                    chunk.stream,
-                    confirmed.get(chunk.stream),
-                    &chunk.pending,
-                )
-                .await?;
-            confirmed.set(chunk.stream, committed_len);
-        }
-        let reference = archive
-            .retain_command_capture(&snapshot.capture_file)
-            .await?;
-        let stored = ResourceReader::read(&archive, reference, CancellationToken::new()).await?;
-        let stored = String::from_utf8_lossy(stored.as_ref());
-        assert!(
-            stored.contains("OUT-1"),
-            "the archive keeps the stdout chunk: {stored}"
-        );
-        let stderr_reference = archive
-            .retain_command_capture(&snapshot.stderr_capture_file)
-            .await?;
-        let stderr =
-            ResourceReader::read(&archive, stderr_reference, CancellationToken::new()).await?;
-        assert_eq!(stderr.as_ref(), b"ERR-1\n");
-        assert_eq!(stored.as_ref(), "OUT-1\n");
-
         Ok(())
     }
 }

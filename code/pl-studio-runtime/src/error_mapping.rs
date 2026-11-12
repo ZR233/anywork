@@ -250,7 +250,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     {
         return studio_error;
     }
-    if let Some(error) = error.downcast_ref::<pl_tool::remote::RemoteClientError>() {
+    if let Some(error) = error.downcast_ref::<pl_tool::remote::SshError>() {
         return remote_client_error(error);
     }
     if let Some(error) = error.downcast_ref::<crate::McpDocumentError>() {
@@ -287,11 +287,11 @@ fn mcp_document_error(error: &crate::McpDocumentError) -> StudioError {
     }
 }
 
-fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioError {
-    use pl_tool::remote::RemoteClientError;
+fn remote_client_error(error: &pl_tool::remote::SshError) -> StudioError {
+    use pl_tool::remote::SshError;
 
     match error {
-        RemoteClientError::AuthenticationFailed(failure) => {
+        SshError::AuthenticationFailed(failure) => {
             let mut details = serde_json::json!({
                 "sshErrorKind": "authenticationFailed",
             });
@@ -305,16 +305,28 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
             )
             .with_details(details)
         }
-        RemoteClientError::Disconnected
-        | RemoteClientError::HeartbeatTimeout
-        | RemoteClientError::Cancelled
-        | RemoteClientError::ManagerClosing => {
+        SshError::HostIo(error) => StudioError::new(
+            StudioErrorCode::Unavailable,
+            format!("SSH 宿主资源访问失败：{:?}", error.kind()),
+            true,
+        ),
+        SshError::Removal(_) => StudioError::new(
+            StudioErrorCode::Unavailable,
+            "删除结果未确认，已保留清理责任",
+            true,
+        ),
+        SshError::Execution(_) => StudioError::new(
+            StudioErrorCode::Unavailable,
+            "执行器操作失败，已保留现有结果",
+            true,
+        ),
+        SshError::Disconnected | SshError::Cancelled | SshError::ManagerClosing => {
             StudioError::new(StudioErrorCode::Unavailable, error.to_string(), true)
         }
-        RemoteClientError::Protocol(reason) => {
+        SshError::Protocol(reason) => {
             StudioError::new(StudioErrorCode::InvalidArgument, reason.clone(), false)
         }
-        RemoteClientError::Remote { code, message, .. } => StudioError::new(
+        SshError::Remote { code, message, .. } => StudioError::new(
             StudioErrorCode::Unavailable,
             format!("{code:?}: {message}"),
             false,

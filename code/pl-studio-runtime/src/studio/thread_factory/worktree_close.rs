@@ -327,14 +327,18 @@ impl StudioThreadFactory {
 pub(in crate::studio) fn removal_definitely_refused(
     error: &crate::agent::worktree::WorktreeError,
 ) -> bool {
-    use crate::agent::worktree::{RemoteExecutionError, WorktreeError};
+    use crate::agent::worktree::{ExecutionFailure, WorktreeError};
     match error {
         WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {
             args.starts_with("worktree remove ")
         }
         WorktreeError::RemoteExecution {
             args,
-            source: RemoteExecutionError::WorkingDirectory,
+            source:
+                ExecutionFailure::Spawn(pl_remote_helper::SpawnError {
+                    knowledge: pl_remote_helper::StartKnowledge::NotStarted,
+                    ..
+                }),
         } => args.starts_with("worktree remove "),
         _ => false,
     }

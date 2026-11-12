@@ -152,7 +152,12 @@ impl pl_tool::exec::CommandOutputArchive for LocalCommandOutputArchive {
         snapshot: &pl_tool::command::CommandOutputSnapshot,
         stream: pl_tool::command::CommandCaptureStream,
     ) -> Result<ResourceReference, pl_core::tool::opaque::ToolError> {
-        if snapshot.capture_offsets.total() > MAX_COMMAND_ARCHIVE_BYTES {
+        if snapshot
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.confirmed_total())
+            .is_some_and(|total| total > MAX_COMMAND_ARCHIVE_BYTES)
+        {
             return Err(retention_failure(ResourceStoreError::TooLarge {
                 limit: MAX_COMMAND_ARCHIVE_BYTES,
             }));
@@ -162,7 +167,9 @@ impl pl_tool::exec::CommandOutputArchive for LocalCommandOutputArchive {
             pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
         }
         .clone();
-        let confirmed = snapshot.capture_offsets.get(stream);
+        let confirmed = snapshot
+            .confirmed_bytes(stream)
+            .ok_or_else(|| pl_core::tool::opaque::ToolError::new(ResourceStoreError::Identity))?;
         let root = self.0.root.clone();
         tokio::task::spawn_blocking(move || {
             let file = File::open(&path).map_err(|source| ResourceStoreError::Io {

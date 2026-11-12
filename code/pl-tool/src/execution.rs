@@ -16,23 +16,11 @@ pub struct ExecutionRequest {
 
 impl fmt::Debug for ExecutionRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let env = self
-            .env
-            .keys()
-            .map(|key| {
-                let value = if key.contains("TOKEN") || key.contains("PASSWORD") {
-                    "[redacted]"
-                } else {
-                    self.env.get(key).map(String::as_str).unwrap_or_default()
-                };
-                (key, value)
-            })
-            .collect::<BTreeMap<_, _>>();
         f.debug_struct("ExecutionRequest")
             .field("program", &self.program)
-            .field("args", &self.args)
+            .field("argument_count", &self.args.len())
             .field("cwd", &self.cwd)
-            .field("env", &env)
+            .field("environment_keys", &self.env.keys().collect::<Vec<_>>())
             .field("timeout", &self.timeout)
             .finish()
     }

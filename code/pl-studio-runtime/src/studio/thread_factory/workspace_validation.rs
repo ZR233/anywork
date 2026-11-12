@@ -31,7 +31,7 @@ pub(crate) enum ReviewWorkspaceError {
     #[error("review worktree verification failed")]
     Worktree(#[source] Box<WorktreeError>),
     #[error("review SSH workspace verification failed")]
-    Remote(#[from] pl_tool::remote::RemoteClientError),
+    Remote(#[from] pl_tool::remote::SshError),
     #[error("review workspace filesystem verification failed")]
     Io(#[from] std::io::Error),
 }
@@ -49,11 +49,7 @@ impl ReviewWorkspaceError {
             ) => false,
             Self::Unconfirmed(_) | Self::Assembly(_) => true,
             Self::Io(error) => error.kind() != std::io::ErrorKind::NotFound,
-            Self::Remote(pl_tool::remote::RemoteClientError::Remote {
-                code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
-                ..
-            }) => false,
-            Self::Remote(_) => true,
+            Self::Remote(error) => !error.is_not_found(),
             Self::Worktree(error) => match error.as_ref() {
                 WorktreeError::Missing
                 | WorktreeError::IdentityMismatch(_)
@@ -61,14 +57,7 @@ impl ReviewWorkspaceError {
                 WorktreeError::LocalIo { source, .. } => {
                     source.kind() != std::io::ErrorKind::NotFound
                 }
-                WorktreeError::Remote {
-                    source:
-                        pl_tool::remote::RemoteClientError::Remote {
-                            code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
-                            ..
-                        },
-                    ..
-                } => false,
+                WorktreeError::Remote { source, .. } => !source.is_not_found(),
                 _ => true,
             },
         }

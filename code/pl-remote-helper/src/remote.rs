@@ -26,15 +26,36 @@ pub(crate) struct RemoteConnection {
     control: Arc<Semaphore>,
 }
 
-struct SpawnGuard(Vec<Reset>);
+#[derive(Default)]
+struct SpawnGuard {
+    streams: Vec<Reset>,
+    permits: Vec<Permit>,
+}
+impl SpawnGuard {
+    fn new(stream: Reset, permit: Permit) -> Self {
+        Self {
+            streams: vec![stream],
+            permits: vec![permit],
+        }
+    }
+    fn track(&mut self, stream: Reset, permit: Permit) {
+        self.streams.push(stream);
+        self.permits.push(permit);
+    }
+    fn disarm(&mut self) {
+        self.streams.clear();
+        self.permits.clear();
+    }
+}
 impl Drop for SpawnGuard {
     fn drop(&mut self) {
-        for stream in &self.0 {
+        for stream in &self.streams {
             stream
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .send_reset(h2::Reason::CANCEL);
         }
+        self.disarm();
     }
 }
 
@@ -49,10 +70,10 @@ impl RemoteConnection {
         }
         let descriptor = stream::encode_descriptor(&cwd)
             .map_err(|error| ExecutionError::io("patch descriptor", error))?;
-        let _permit = self.permit(1, false).await?;
+        let permit = self.permit(1, false).await?;
         let (response, send) = self.open("POST", "/fs/apply-patch", false).await?;
         let send = Arc::new(Mutex::new(send));
-        let mut guard = SpawnGuard(vec![send.clone()]);
+        let mut guard = SpawnGuard::new(send.clone(), permit.clone());
         send_shared(&send, descriptor.into(), false, &self.closing).await?;
         send_shared(
             &send,
@@ -72,7 +93,7 @@ impl RemoteConnection {
                 .into());
         }
         let result = serde_json::from_slice(&bytes).map_err(protocol)?;
-        guard.0.clear();
+        guard.disarm();
         Ok(result)
     }
 
@@ -86,7 +107,7 @@ impl RemoteConnection {
         let permit = self.permit(1, false).await?;
         let (response, send) = self.open("POST", "/fs/write", false).await?;
         let send = Arc::new(Mutex::new(send));
-        let mut guard = SpawnGuard(vec![send.clone()]);
+        let mut guard = SpawnGuard::new(send.clone(), permit.clone());
         send_shared(&send, bytes.into(), false, &self.closing).await?;
         let (mut input, output) = tokio::io::duplex(stream::WINDOW as usize);
         let (finish, commit) = tokio::sync::oneshot::channel();
@@ -101,7 +122,7 @@ impl RemoteConnection {
             let _owner = owner;
             let operation = async {
                 let upload = async {
-                    let mut bytes = [0; stream::WINDOW as usize];
+                    let mut bytes = vec![0; stream::WINDOW as usize];
                     loop {
                         let length = input
                             .read(&mut bytes)
@@ -144,7 +165,7 @@ impl RemoteConnection {
                 _ = connection.closing.cancelled() => Err(connection.failure()),
             };
             if outcome.is_ok() {
-                guard.0.clear();
+                guard.disarm();
             }
             let _ = result.send(outcome);
         });
@@ -173,7 +194,7 @@ impl RemoteConnection {
         let permit = self.permit(1, false).await?;
         let (response, send) = self.open("POST", path, false).await?;
         let send = Arc::new(Mutex::new(send));
-        let guard = SpawnGuard(vec![send.clone()]);
+        let guard = SpawnGuard::new(send.clone(), permit.clone());
         send_shared(&send, bytes.into(), true, &self.closing).await?;
         let response = response.await.map_err(disconnected)?;
         if !response.status().is_success() {
@@ -197,7 +218,7 @@ impl RemoteConnection {
             .await
             .map_err(disconnected)?;
         let result = serde_json::from_slice(&bytes).map_err(protocol)?;
-        guard.0.clear();
+        guard.disarm();
         Ok(result)
     }
 
@@ -214,7 +235,7 @@ impl RemoteConnection {
             self.closing.clone(),
             Some(permit),
         );
-        guard.0.clear();
+        guard.disarm();
         Ok(reader)
     }
 
@@ -362,13 +383,17 @@ impl RemoteConnection {
         permit: Permit,
         knowledge: &mut StartKnowledge,
     ) -> Result<Child, ExecutionError> {
+        // Admission is atomic for the bundle, then each physical stream owns
+        // its own permit until its public IO, pump and flow references end.
+        let mut permits = Arc::try_unwrap(permit).expect("fresh process admission owner");
+        let main_permit = Arc::new(permits.split(1).expect("main stream admission"));
         let (main_response, main) = self.open("POST", "/process/spawn", false).await?;
         *knowledge = StartKnowledge::Unknown;
         let key = main.stream_id().as_u32();
-        let mut guard = SpawnGuard(Vec::new());
+        let mut guard = SpawnGuard::default();
         // Register reset ownership before the first cancellable body write.
         let main = Arc::new(Mutex::new(main));
-        guard.0.push(main.clone());
+        guard.track(main.clone(), main_permit.clone());
         send_shared(&main, bytes.into(), true, &self.closing).await?;
         let mut pipes = Vec::new();
         for (name, stdio, method, end) in [
@@ -381,8 +406,9 @@ impl RemoteConnection {
                     .open(method, &format!("/process/{key}/{name}"), end)
                     .await?;
                 let send = Arc::new(Mutex::new(send));
-                guard.0.push(send.clone());
-                pipes.push((name, response, send));
+                let permit = Arc::new(permits.split(1).expect("pipe admission"));
+                guard.track(send.clone(), permit.clone());
+                pipes.push((name, response, send, permit));
             }
         }
         let response = main_response.await.map_err(disconnected)?;
@@ -405,7 +431,7 @@ impl RemoteConnection {
         let mut stdout = None;
         let mut stderr = None;
         let mut captures = Vec::new();
-        for (name, response, send) in pipes {
+        for (name, response, send, permit) in pipes {
             let response = response.await.map_err(disconnected)?;
             if !response.status().is_success() {
                 return Err(ExecutionError::Protocol(
@@ -421,7 +447,7 @@ impl RemoteConnection {
                     let _owner = owner;
                     let _permit = held;
                     let upload = async {
-                        let mut bytes = [0; stream::WINDOW as usize];
+                        let mut bytes = vec![0; stream::WINDOW as usize];
                         loop {
                             let length = input
                                 .read(&mut bytes)
@@ -447,7 +473,11 @@ impl RemoteConnection {
                 });
                 stdin = Some(ChildStdin {
                     io: Some(Box::pin(writer)),
-                    lifetime: None,
+                    lifetime: Some(Arc::new(crate::child::PipeLifetime {
+                        notify: Arc::new(tokio::sync::Notify::new()),
+                        _executor: command.executor.clone(),
+                        _permit: Some(permit),
+                    })),
                 });
             } else {
                 let (reader, trailers) = stream::receive(
@@ -487,6 +517,7 @@ impl RemoteConnection {
                     lifetime: Some(Arc::new(crate::child::PipeLifetime {
                         notify: Arc::new(tokio::sync::Notify::new()),
                         _executor: command.executor.clone(),
+                        _permit: None,
                     })),
                     cancel: None,
                 };
@@ -512,7 +543,7 @@ impl RemoteConnection {
         let stopped = cancellation.clone();
         let connection = self.clone();
         self.tasks.spawn(async move {
-            let _permit = permit;
+            let _permit = main_permit;
             let result = async {
                 let exit = async {
                     let bytes = stream::collect(response.into_body(), wire::RESULT_LIMIT).await.map_err(disconnected)?;
@@ -534,7 +565,7 @@ impl RemoteConnection {
             }.await;
             exit_send.send_replace(Some(result));
         });
-        guard.0.clear();
+        guard.disarm();
         Ok(Child {
             stdin,
             stdout,

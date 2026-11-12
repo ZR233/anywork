@@ -324,6 +324,7 @@ impl StudioThreadFactory {
                 workspace: workspace.clone(),
             },
             None => StudioCommandBinding::Local {
+                executor: self.services.local_executor.clone(),
                 workspace: workspace.clone(),
                 environment: environment.clone(),
                 child_environment,

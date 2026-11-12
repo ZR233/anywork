@@ -525,10 +525,7 @@ impl StudioRuntime {
                     };
                     let host = match opened {
                         Ok(host) => host,
-                        Err(pl_tool::remote::RemoteClientError::Remote {
-                            code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
-                            ..
-                        }) => {
+                        Err(error) if error.is_not_found() => {
                             operation.members[index].execution_deleted = true;
                             operation.changed()?;
                             return self.store.save_thread_delete(operation).await;
@@ -701,7 +698,7 @@ fn deletion_reason(error: &anyhow::Error) -> &'static str {
         "decode"
     } else if error
         .chain()
-        .any(|source| source.is::<pl_tool::remote::RemoteClientError>())
+        .any(|source| source.is::<pl_tool::remote::SshError>())
     {
         "remote"
     } else if error
@@ -771,7 +768,7 @@ fn deletion_error(
         public.clone()
     } else if let Some(source) = error
         .chain()
-        .find_map(|source| source.downcast_ref::<pl_tool::remote::RemoteClientError>())
+        .find_map(|source| source.downcast_ref::<pl_tool::remote::SshError>())
     {
         crate::error_mapping::studio_error_from_anyhow_ref(&anyhow::Error::new(source.clone()))
     } else if let Some(source) = error
@@ -920,7 +917,7 @@ mod error_tests {
             public.details.as_ref().unwrap()["reason"],
             "syntheticPermission"
         );
-        let remote = pl_tool::remote::RemoteClientError::AuthenticationFailed(
+        let remote = pl_tool::remote::SshError::AuthenticationFailed(
             pl_tool::remote::SshAuthFailure::new("fixture denied", vec![]),
         );
         let error = anyhow::Error::new(pl_tool::workspace::SessionRemovalError::Remote(remote))

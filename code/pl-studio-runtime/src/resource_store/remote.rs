@@ -41,12 +41,19 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
         snapshot: &pl_tool::command::CommandOutputSnapshot,
         stream: pl_tool::command::CommandCaptureStream,
     ) -> Result<ResourceReference, ToolError> {
-        if snapshot.capture_offsets.total() > MAX_COMMAND_ARCHIVE_BYTES {
+        if snapshot
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.confirmed_total())
+            .is_some_and(|total| total > MAX_COMMAND_ARCHIVE_BYTES)
+        {
             return Err(retention_failure(ResourceStoreError::TooLarge {
                 limit: MAX_COMMAND_ARCHIVE_BYTES,
             }));
         }
-        let confirmed = snapshot.capture_offsets.get(stream);
+        let confirmed = snapshot
+            .confirmed_bytes(stream)
+            .ok_or_else(|| pl_core::tool::opaque::ToolError::new(ResourceStoreError::Identity))?;
         let path = match stream {
             pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
             pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
@@ -96,7 +103,7 @@ impl CommandOutputArchive for RemoteCommandOutputArchive {
 fn remote_download_failure(error: pl_tool::remote::RemoteDownloadError) -> ToolError {
     use pl_tool::remote::RemoteDownloadError;
     match error {
-        RemoteDownloadError::Write { source, .. } => retention_io_fault(source),
+        RemoteDownloadError::Io(source) => retention_io_fault(source),
         other => ToolError::new(other),
     }
 }

@@ -7221,11 +7221,11 @@ abstract class AppLocalizations {
   /// **'Waiting for input'**
   String get settingsSshStateWaitingForInput;
 
-  /// No description provided for @settingsSshStateReconnecting.
+  /// No description provided for @settingsSshStateClosing.
   ///
   /// In en, this message translates to:
-  /// **'Reconnecting'**
-  String get settingsSshStateReconnecting;
+  /// **'Disconnecting'**
+  String get settingsSshStateClosing;
 
   /// No description provided for @settingsSshStateFailed.
   ///

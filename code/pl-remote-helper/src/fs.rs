@@ -245,7 +245,7 @@ impl FileSystem {
             expected_len,
         };
         match &self.executor.inner.backend {
-            ExecutorBackend::Local => write::open(self.executor.clone(), descriptor).await,
+            ExecutorBackend::Local => write::open(self.executor.clone(), descriptor, None).await,
             ExecutorBackend::Remote(connection) => {
                 connection.writer(self.executor.clone(), descriptor).await
             }

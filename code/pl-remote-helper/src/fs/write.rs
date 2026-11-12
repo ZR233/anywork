@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) async fn open(
     executor: Executor,
     descriptor: WriteDescriptor,
+    permissions: Option<std::fs::Permissions>,
 ) -> Result<FileWriter, ExecutionError> {
     let (mut input, output) = tokio::io::duplex(crate::stream::WINDOW as usize);
     let (ready, prepared) = oneshot::channel();
@@ -20,7 +21,7 @@ pub(super) async fn open(
     let owner = executor.clone();
     executor.inner.tasks.spawn(async move {
         let closing = owner.inner.closing.clone();
-        let prepared = prepare(&descriptor).await;
+        let prepared = prepare(&descriptor, permissions).await;
         let (mut file, temporary) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -33,7 +34,7 @@ pub(super) async fn open(
         }
         let operation = async {
             let mut length = 0_u64;
-            let mut bytes = [0; crate::stream::WINDOW as usize];
+            let mut bytes = vec![0; crate::stream::WINDOW as usize];
             loop {
                 let count = input
                     .read(&mut bytes)
@@ -136,6 +137,7 @@ pub(super) async fn open(
 
 async fn prepare(
     descriptor: &WriteDescriptor,
+    permissions: Option<std::fs::Permissions>,
 ) -> Result<(tokio::fs::File, Option<tempfile::TempPath>), ExecutionError> {
     if descriptor.mode == WriteMode::Append {
         let file = tokio::fs::OpenOptions::new()
@@ -156,13 +158,17 @@ async fn prepare(
         let temporary = tempfile::Builder::new()
             .prefix(".anywork-write-")
             .tempfile_in(parent)?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() => temporary
-                .as_file()
-                .set_permissions(metadata.permissions())?,
-            Ok(_) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error),
+        if let Some(permissions) = permissions {
+            temporary.as_file().set_permissions(permissions)?;
+        } else {
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() => temporary
+                    .as_file()
+                    .set_permissions(metadata.permissions())?,
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error),
+            }
         }
         Ok::<_, io::Error>(temporary.into_parts())
     })

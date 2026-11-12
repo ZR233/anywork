@@ -43,12 +43,16 @@ impl std::fmt::Display for SshAuthFailure {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum RemoteClientError {
+pub enum SshError {
+    #[error("SSH host IO: {0}")]
+    HostIo(#[source] std::sync::Arc<io::Error>),
+    #[error(transparent)]
+    Execution(#[from] pl_remote_helper::ExecutionError),
+    #[error("removal result is unconfirmed: {0}")]
+    Removal(#[source] pl_remote_helper::ExecutionError),
     /// The host has sealed SSH connection admission for shutdown.
     #[error("SSH manager is closing")]
     ManagerClosing,
-    #[error("helper heartbeat response timed out after 15 seconds")]
-    HeartbeatTimeout,
     #[error("remoteDisconnected")]
     Disconnected,
     #[error("remote operation cancelled before admission")]
@@ -62,12 +66,25 @@ pub enum RemoteClientError {
     Remote {
         code: pl_protocol::remote::RemoteErrorCode,
         message: String,
-        removal_effect: Option<pl_protocol::remote::RemoteRemovalEffect>,
     },
 }
 
-impl From<io::Error> for RemoteClientError {
+impl From<io::Error> for SshError {
     fn from(error: io::Error) -> Self {
-        Self::Protocol(error.to_string())
+        Self::HostIo(std::sync::Arc::new(error))
+    }
+}
+
+impl SshError {
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Self::Execution(pl_remote_helper::ExecutionError::TargetIo(error)) => {
+                error.kind == pl_remote_helper::IoErrorKind::NotFound
+            }
+            Self::Execution(pl_remote_helper::ExecutionError::Io { source, .. }) => {
+                source.kind() == std::io::ErrorKind::NotFound
+            }
+            _ => false,
+        }
     }
 }

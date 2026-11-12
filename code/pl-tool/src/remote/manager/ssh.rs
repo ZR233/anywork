@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use tokio::process::Command;
 
 use super::SshServerProfile;
-use crate::remote::{RemoteClientError, SshAuthFailure};
+use crate::remote::{SshAuthFailure, SshError};
 use pl_remote_helper::process::wrap_parent_bound_command;
 
 const SSH_ASKPASS_SECRET_ENV: &str = "ANYWORK_SSH_ASKPASS_SECRET";
@@ -52,22 +52,22 @@ pub(super) fn auth_failure(diagnostic: &str) -> SshAuthFailure {
     SshAuthFailure::new(diagnostic.trim(), parse_ssh_auth_methods(diagnostic))
 }
 
-pub(super) fn classify_ssh_stderr(prefix: &str, stderr: &str) -> RemoteClientError {
+pub(super) fn classify_ssh_stderr(prefix: &str, stderr: &str) -> SshError {
     let trimmed = stderr.trim();
     if is_ssh_auth_failure(trimmed) {
-        RemoteClientError::AuthenticationFailed(auth_failure(trimmed))
+        SshError::AuthenticationFailed(auth_failure(trimmed))
     } else {
-        RemoteClientError::Protocol(format!("{prefix}: {trimmed}"))
+        SshError::Protocol(format!("{prefix}: {trimmed}"))
     }
 }
 
-fn write_ssh_askpass_script(dir: &Path) -> Result<std::path::PathBuf, RemoteClientError> {
+fn write_ssh_askpass_script(dir: &Path) -> Result<std::path::PathBuf, SshError> {
     #[cfg(windows)]
     {
         let script_path = dir.join("anywork-ssh-askpass.cmd");
         let content = format!("@echo off\r\necho %{SSH_ASKPASS_SECRET_ENV}%\r\n");
         std::fs::write(&script_path, content).map_err(|error| {
-            RemoteClientError::Protocol(format!("failed to write ssh askpass script: {error}"))
+            SshError::Protocol(format!("failed to write ssh askpass script: {error}"))
         })?;
         Ok(script_path)
     }
@@ -77,11 +77,11 @@ fn write_ssh_askpass_script(dir: &Path) -> Result<std::path::PathBuf, RemoteClie
         let script_path = dir.join("anywork-ssh-askpass.sh");
         let content = format!("#!/bin/sh\nprintf '%s\\n' \"${SSH_ASKPASS_SECRET_ENV}\"\n");
         std::fs::write(&script_path, content).map_err(|error| {
-            RemoteClientError::Protocol(format!("failed to write ssh askpass script: {error}"))
+            SshError::Protocol(format!("failed to write ssh askpass script: {error}"))
         })?;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)).map_err(
             |error| {
-                RemoteClientError::Protocol(format!(
+                SshError::Protocol(format!(
                     "failed to set ssh askpass script permissions: {error}"
                 ))
             },
@@ -90,7 +90,7 @@ fn write_ssh_askpass_script(dir: &Path) -> Result<std::path::PathBuf, RemoteClie
     }
 }
 
-pub(super) fn validate_profile(profile: &SshServerProfile) -> Result<(), RemoteClientError> {
+pub(super) fn validate_profile(profile: &SshServerProfile) -> Result<(), SshError> {
     super::super::ssh_config::validate_alias(&profile.alias)?;
     for (field, value) in [
         ("hostName", profile.host_name.as_str()),
@@ -100,13 +100,11 @@ pub(super) fn validate_profile(profile: &SshServerProfile) -> Result<(), RemoteC
             || value.chars().any(char::is_control)
             || (matches!(field, "hostName" | "username") && value.starts_with('-'))
         {
-            return Err(RemoteClientError::Protocol(format!(
-                "SSH server {field} is invalid"
-            )));
+            return Err(SshError::Protocol(format!("SSH server {field} is invalid")));
         }
     }
     if profile.port == 0 {
-        return Err(RemoteClientError::Protocol(
+        return Err(SshError::Protocol(
             "SSH server port must be greater than zero".to_string(),
         ));
     }
@@ -117,27 +115,18 @@ pub(super) async fn ssh_command(
     profile: &SshServerProfile,
     ssh_config: &super::super::ssh_config::SshConfigFile,
     password: Option<&str>,
-) -> Result<PreparedSshCommand, RemoteClientError> {
+) -> Result<PreparedSshCommand, SshError> {
     let mut command = Command::new("ssh");
     command
         .arg("-T")
         // SSH 进程只承载 stdio 协议，不需要 X11；显式关闭可避免用户 ssh
         // 配置中的 ForwardX11 设置向远端注入图形会话并产生 xauth 警告。
         .arg("-x")
-        .args([
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-        ]);
+        .args(["-o", "ConnectTimeout=15"]);
     let askpass_dir = match password.filter(|secret| !secret.is_empty()) {
         Some(secret) => {
             let temp_dir = tempfile::tempdir().map_err(|error| {
-                RemoteClientError::Protocol(format!(
-                    "failed to create ssh askpass directory: {error}"
-                ))
+                SshError::Protocol(format!("failed to create ssh askpass directory: {error}"))
             })?;
             let script_path = write_ssh_askpass_script(temp_dir.path())?;
             command
@@ -180,7 +169,7 @@ pub(super) async fn run_ssh_capture(
     ssh_config: &super::super::ssh_config::SshConfigFile,
     password: Option<&str>,
     remote_command: &str,
-) -> Result<String, RemoteClientError> {
+) -> Result<String, SshError> {
     let mut prepared = ssh_command(profile, ssh_config, password).await?;
     prepared
         .command
@@ -198,7 +187,7 @@ pub(super) async fn run_ssh_capture(
         return Err(classify_ssh_stderr("ssh command failed", &stderr));
     }
     String::from_utf8(output.stdout)
-        .map_err(|error| RemoteClientError::Protocol(format!("ssh output is not UTF-8: {error}")))
+        .map_err(|error| SshError::Protocol(format!("ssh output is not UTF-8: {error}")))
 }
 
 /// Owns the child through bounded timeout cleanup. Dropping the caller also
@@ -208,7 +197,7 @@ pub(super) async fn run_bounded_ssh(
     input: Option<&[u8]>,
     stage: &'static str,
     timeout: std::time::Duration,
-) -> Result<std::process::Output, RemoteClientError> {
+) -> Result<std::process::Output, SshError> {
     use tokio::io::AsyncWriteExt;
     command
         .command_mut()
@@ -219,9 +208,8 @@ pub(super) async fn run_bounded_ssh(
         })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let child = pl_remote_helper::process::spawn_background_command(command).map_err(|error| {
-        RemoteClientError::Protocol(format!("SSH {stage} spawn failed: {error}"))
-    })?;
+    let child = pl_remote_helper::process::spawn_background_command(command)
+        .map_err(|error| SshError::Protocol(format!("SSH {stage} spawn failed: {error}")))?;
     let mut process = child.process;
     let stdout = child.stdout;
     let stderr = child.stderr;
@@ -257,11 +245,11 @@ pub(super) async fn run_bounded_ssh(
             terminate_ssh_child(&mut process, stage)
                 .await
                 .map_err(|error| {
-                    RemoteClientError::Protocol(format!(
+                    SshError::Protocol(format!(
                         "SSH {stage} cleanup failed after {reason}: {error}"
                     ))
                 })?;
-            Err(RemoteClientError::Protocol(format!("SSH {stage} {reason}")))
+            Err(SshError::Protocol(format!("SSH {stage} {reason}")))
         }
     }
 }
@@ -271,14 +259,12 @@ pub(super) async fn run_bounded_ssh(
 pub(super) async fn terminate_ssh_child(
     child: &mut Box<dyn ChildWrapper>,
     stage: &str,
-) -> Result<(), RemoteClientError> {
+) -> Result<(), SshError> {
     let termination = child.start_kill();
     tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
         .await
-        .map_err(|_| RemoteClientError::Protocol(format!("SSH {stage} cleanup timed out")))?
-        .map_err(|error| {
-            RemoteClientError::Protocol(format!("failed to reap SSH {stage}: {error}"))
-        })?;
+        .map_err(|_| SshError::Protocol(format!("SSH {stage} cleanup timed out")))?
+        .map_err(|error| SshError::Protocol(format!("failed to reap SSH {stage}: {error}")))?;
     if let Err(error) = termination {
         tracing::debug!(%stage, %error, "SSH termination request failed, but the process exited");
     }
@@ -302,16 +288,4 @@ async fn capture_bounded<R: tokio::io::AsyncRead + Unpin>(
         }
         retained.extend_from_slice(&buffer[..count.min(limit.saturating_sub(retained.len()))]);
     }
-}
-
-pub(super) async fn initialization_diagnostic(
-    stderr: Option<pl_remote_helper::process::BackgroundStderr>,
-) -> Result<String, RemoteClientError> {
-    use tokio::io::AsyncReadExt;
-    let Some(stderr) = stderr else {
-        return Ok(String::new());
-    };
-    let mut bytes = Vec::new();
-    stderr.take(4096).read_to_end(&mut bytes).await?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }

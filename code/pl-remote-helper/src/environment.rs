@@ -37,10 +37,6 @@ pub(super) enum EnvironmentError {
     InvalidSnapshot,
 }
 
-pub(super) fn bootstrap() -> Result<(), EnvironmentError> {
-    bootstrap_mode("--serve")
-}
-
 pub(super) fn bootstrap_mode(mode: &str) -> Result<(), EnvironmentError> {
     // Resolve NSS before constructing Tokio: the lookup may perform blocking IO.
     let shell = shell::detect()?;

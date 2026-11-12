@@ -14,5 +14,6 @@ pub use manager::{
     WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
     WorktreeRetirementRequest,
 };
-pub use pl_tool::remote::{RemoteClientError, RemoteDownloadError, RemoteExecutionError};
+pub use pl_tool::execution::ExecutionFailure;
+pub use pl_tool::remote::{RemoteDownloadError, SshError};
 pub use remote::RemoteWorktreeBackend;

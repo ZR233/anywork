@@ -108,7 +108,18 @@ impl AsyncRead for BodyReader {
                 self.reset.take();
                 self._permit.take();
                 return Poll::Ready(match terminal {
-                    Some(Ok(_)) => Ok(()),
+                    Some(Ok(trailers)) => match trailers.get("x-executor-error") {
+                        Some(failure) => Err(
+                            match serde_json::from_slice::<crate::wire::Failure>(failure.as_bytes())
+                            {
+                                Ok(failure) => {
+                                    io::Error::other(crate::ExecutionError::from(failure))
+                                }
+                                Err(error) => io::Error::new(io::ErrorKind::InvalidData, error),
+                            },
+                        ),
+                        None => Ok(()),
+                    },
                     Some(Err(error)) => Err(io::Error::other(error)),
                     None => Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
