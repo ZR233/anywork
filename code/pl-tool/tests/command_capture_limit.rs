@@ -11,7 +11,9 @@ use pl_tool::workspace_file::{
     WorkspaceFileRemoveRequest, WorkspaceFileStat, WorkspaceFileStatRequest,
     WorkspaceFileWriteRequest,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+#[cfg(unix)]
+use std::time::Duration;
+use std::{path::PathBuf, sync::Arc};
 #[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 #[tokio::test]
