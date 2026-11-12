@@ -793,7 +793,7 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
         fixture_config("fixture", "lease.jsonl"),
     )
     .await?;
-    let lease = registry
+    let _lease = registry
         .acquire_workspace(root.path(), Some(host), None)
         .await?;
     let observed: anyhow::Result<()> = async {
@@ -815,7 +815,9 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
             "re-materialized worker leases are not new execution hosts"
         );
         let mut updates = registry.subscribe();
-        lease.refresh_configuration(Some(next_host), None).await?;
+        let _second_user = registry
+            .acquire_workspace(root.path(), Some(next_host), None)
+            .await?;
         anyhow::ensure!(
             next_dropped.load(Ordering::Acquire),
             "the unused replacement lease must release without disturbing the active owner"
