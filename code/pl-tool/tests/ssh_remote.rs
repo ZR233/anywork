@@ -20,7 +20,8 @@ use pl_tool::workspace_file::{
     WorkspaceFileWriteRequest,
 };
 
-use pl_tool::remote::{RemoteSkillProvider, SshConnectionState, SshManager, SshServerProfile};
+use pl_tool::remote::{SshConnectionState, SshManager, SshServerProfile};
+use pl_tool::skill::ExecutorSkillProvider;
 
 use pl_lsp::host::LspHostBackend;
 use pl_lsp::query::{LspQuery, LspQueryOperation};
@@ -885,7 +886,7 @@ async fn validate_skills(
         })
         .await?;
     let registry = SkillRegistry::new();
-    let _registration = registry.register(Arc::new(RemoteSkillProvider::new(files)?))?;
+    let _registration = registry.register(Arc::new(ExecutorSkillProvider::new(files)?))?;
     let catalog = registry
         .discover(SkillProviderRequest {
             workspace_root: PathBuf::from("remote-validation"),

@@ -8,7 +8,6 @@ mod error;
 
 mod manager;
 pub(crate) mod path;
-mod skill;
 mod ssh_config;
 
 use crate::command::ExecutorCommandBackend;
@@ -19,7 +18,6 @@ pub use manager::{
     SshServerProfile,
 };
 pub use path::{RemotePathError, normalize_remote_absolute_path};
-pub use skill::RemoteSkillProvider;
 pub use ssh_config::{
     SshConfigEntry, SshConfigFile, allocate_alias, sanitize_alias_base, validate_alias,
 };

@@ -74,7 +74,11 @@ impl StudioRuntime {
         let thread_modes = config_runtime.thread_mode_manager();
         let mcp_connector = McpConnector::default().with_executor(local_executor.clone());
         let lsp = pl_lsp::runtime::LspRuntimeRegistry::new();
-        let skills = SkillCatalogRuntime::new(product_events.clone(), system_skills_dir);
+        let skills = SkillCatalogRuntime::new(
+            product_events.clone(),
+            system_skills_dir,
+            local_executor.clone(),
+        );
         let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_factory = crate::studio::thread_factory::StudioThreadFactory::new(
             crate::studio::thread_factory::StudioThreadServices {
