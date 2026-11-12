@@ -20,7 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chatgpt_scene_transport.dart';
 import '../support/pump_client_future.dart';
-import '../../integration_test/support/observed.dart';
+import '../support/observed.dart';
 
 void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
@@ -105,6 +105,19 @@ void main() {
         expect(finder, findsOneWidget, reason: key);
         await tester.ensureVisible(finder);
         await tester.pump();
+        // Details uses MaterialPage, which slides in from the right. Vertical
+        // ensureVisible cannot wait for that translation, and tapping while the
+        // center is still off-stage is fatal in this suite.
+        final hitTestable = finder.hitTestable();
+        for (var frame = 0; frame < 128; frame++) {
+          if (hitTestable.evaluate().isNotEmpty) break;
+          if (frame == 127) {
+            fail(
+              '$key was never hit-testable; center=${tester.getCenter(finder)}',
+            );
+          }
+          await tester.pump(const Duration(milliseconds: 16));
+        }
         await tester.tap(finder);
         if (duplicate) await tester.tap(finder);
         await tester.pump();
