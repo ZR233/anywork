@@ -8,13 +8,12 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../state/content_reference_identity.dart';
-import '../view_models/timeline_view_model.dart';
+import '../view_models/plan_document_view_model.dart';
 import '../views/plan_detail_view.dart';
 export '../views/plan_detail_view.dart'
     show PlanDetailStatus, planDetailStatusFromRuntime;
 import '../widgets/timeline_markdown.dart';
-import 'plan_document_connector.dart';
+import '../widgets/timeline_content_range_view.dart';
 import 'timeline_media_connector.dart';
 
 class PlanDetailConnector extends ConsumerWidget {
@@ -39,7 +38,10 @@ class PlanDetailConnector extends ConsumerWidget {
     final conversations = ref.read(anyworkClientProvider).conversations;
     final session = conversations.existingSession(threadId);
     final content = session?.content;
-    ref.watch(timelineViewModelProvider(threadId));
+    final documentState = ref.watch(planDocumentViewModelProvider(threadId));
+    final documentModel = ref.read(
+      planDocumentViewModelProvider(threadId).notifier,
+    );
     final plan = state.businessRefs?.plan;
     final document = plan?.document;
     bool current() =>
@@ -57,40 +59,62 @@ class PlanDetailConnector extends ConsumerWidget {
       fullWidth: fullWidth,
       body: document == null
           ? null
-          : content == null
-          ? Text(context.l10n.planDocumentNotReady)
-          : PlanDocumentConnector(
-              key: ValueKey((
-                content,
-                content.currentAttemptId,
-                contentReferenceIdentity(document),
-              )),
-              content: content,
-              reference: document,
-              isCurrent: current,
-              documentBuilder: (text) => TimelineMarkdown(
-                key: StudioDriverKeys.planDetailsMarkdown,
-                id: identity,
-                text: text,
-                isSafeLink: (url) => safeExternalWebUrl(url) != null,
-                onLink: (raw) {
-                  final url = safeExternalWebUrl(raw);
-                  if (url == null || !current()) return;
-                  unawaited(
-                    ref.read(externalUrlLauncherProvider)(url).catchError((
-                      Object error,
-                    ) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(error.toString())),
-                        );
-                      }
-                    }),
-                  );
-                },
-                imageBuilder: (_, url) =>
-                    TimelineRemoteImageConnector(url: url),
-              ),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (!documentState.canRead && documentState.error == null)
+                  Text(context.l10n.planDocumentNotReady),
+                if (documentState.error != null)
+                  TextButton(
+                    key: const ValueKey('plan-document-retry'),
+                    onPressed: documentState.loading
+                        ? null
+                        : documentModel.retry,
+                    child: Text(context.l10n.runtimeFatalRetry),
+                  ),
+                TimelineContentRangeView(
+                  itemId: 'plan-document',
+                  contentKey: 'plan.document',
+                  label: context.l10n.interactionPlanDetailsTitle,
+                  disclosed: true,
+                  loading: documentState.loading,
+                  active: documentState.canRead,
+                  canRead: true,
+                  window: documentState.window,
+                  error: documentState.error,
+                  onExpansionChanged: (_) {},
+                  onNext: documentModel.next,
+                  onCopy: documentModel.copy,
+                  witness: (text, child) => text.isEmpty
+                      ? child
+                      : TimelineMarkdown(
+                          key: StudioDriverKeys.planDetailsMarkdown,
+                          id: identity,
+                          text: text,
+                          isSafeLink: (url) => safeExternalWebUrl(url) != null,
+                          onLink: (raw) {
+                            final url = safeExternalWebUrl(raw);
+                            if (url == null || !current()) return;
+                            unawaited(
+                              ref
+                                  .read(externalUrlLauncherProvider)(url)
+                                  .catchError((Object error) {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                            SnackBar(
+                                              content: Text(error.toString()),
+                                            ),
+                                          );
+                                    }
+                                  }),
+                            );
+                          },
+                          imageBuilder: (_, url) =>
+                              TimelineRemoteImageConnector(url: url),
+                        ),
+                ),
+              ],
             ),
     );
   }
