@@ -3419,15 +3419,25 @@ impl ColdStore for ThreadStorageSink {
             let added = bytes
                 .saturating_add(PENDING_AGE_METADATA_BYTES)
                 .saturating_sub(covered);
-            if progress.effects.len() >= MAX_HISTORY_BATCHES
-                || queued_bytes
-                    .checked_add(bytes.saturating_add(PENDING_AGE_METADATA_BYTES))
-                    .is_none_or(|total| total > MAX_HISTORY_THREAD_BYTES)
-                || (added > 0 && !self.0.channel.reserve(added))
+            // Preserve the admission checks' short-circuit order. In particular, never reserve
+            // process bytes when an earlier limit refuses the ticket, or reserve twice for logging.
+            let rejection_kind = if progress.effects.len() >= MAX_HISTORY_BATCHES {
+                Some("slot")
+            } else if queued_bytes
+                .checked_add(bytes.saturating_add(PENDING_AGE_METADATA_BYTES))
+                .is_none_or(|total| total > MAX_HISTORY_THREAD_BYTES)
             {
+                Some("thread_bytes")
+            } else if added > 0 && !self.0.channel.reserve(added) {
+                Some("process_budget")
+            } else {
+                None
+            };
+            if let Some(rejection_kind) = rejection_kind {
                 let message =
                     format!("history queue full for Thread {thread_id} at write_seq {sequence}");
-                if progress.error.is_none() {
+                let new_fault = progress.error.is_none();
+                if new_fault {
                     progress.fault_generation = progress.fault_generation.saturating_add(1);
                     progress.retry_requested = false;
                 }
@@ -3435,6 +3445,31 @@ impl ColdStore for ThreadStorageSink {
                 progress.fault = Some(pl_protocol::studio::HistoryFault::QueueFull);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
+                if new_fault {
+                    tracing::warn!(
+                        target: "conversation_work",
+                        operation = "history_admission",
+                        rejection_kind,
+                        thread_id,
+                        write_seq = sequence,
+                        queued_effects = progress.effects.len(),
+                        // Same retained-byte scope as the Thread admission check, not the broader
+                        // pressure gauge that also includes projection/prepared/output residents.
+                        queued_thread_bytes = queued_bytes,
+                        effect_bytes = bytes,
+                        thread_bytes_increment = bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
+                        process_bytes_increment = added,
+                        // Other Threads can change this atomic after reserve refused; this is an
+                        // observation, not the failed compare/update's exact budget value.
+                        process_bytes_observed = self.0.channel.process_bytes.load(Ordering::Acquire),
+                        head = ?progress.effects.front().map(|effect| effect.sequence),
+                        admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
+                        durable = progress.durable,
+                        stage = ?progress.stage.map(HistoryStage::as_str),
+                        fault_generation = progress.fault_generation,
+                        "history admission refused"
+                    );
+                }
                 drop(index);
                 report(&self.0, &progress);
                 self.0.changed.notify_one();
@@ -8914,36 +8949,137 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
+    #[derive(Clone, Default)]
+    struct AdmissionRefusals(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    #[derive(Default)]
+    struct AdmissionFields(BTreeMap<String, String>);
+
+    impl tracing::field::Visit for AdmissionFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    impl tracing::Subscriber for AdmissionRefusals {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == "conversation_work"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = AdmissionFields::default();
+            event.record(&mut fields);
+            if fields.0.contains_key("rejection_kind") {
+                self.0.lock().unwrap().push(fields.0);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    impl AdmissionRefusals {
+        fn only_event(&self, kind: &str, thread: &str, sequence: u64) -> BTreeMap<String, String> {
+            let events = self.0.lock().unwrap();
+            assert_eq!(events.len(), 1, "one refusal must emit exactly one event");
+            let event = events[0].clone();
+            assert_eq!(event["operation"], "\"history_admission\"");
+            assert_eq!(event["rejection_kind"], format!("{kind:?}"));
+            assert_eq!(event["thread_id"], format!("{thread:?}"));
+            assert_eq!(event["write_seq"], sequence.to_string());
+            assert!(!format!("{event:?}").contains("SYNTHETIC-PRIVATE-CHECKPOINT"));
+            eprintln!("HISTORY_ADMISSION_REFUSAL {event:?}");
+            event
+        }
+    }
+
     #[tokio::test]
     async fn queue_pressure_keeps_the_original_ticket_until_retry_and_commit() -> Result<()> {
-        let (_temp, store, sink) = sink("queue-pressure").await?;
-        let write = ticket("queue-pressure", 1);
-        sink.0
-            .channel
-            .process_bytes
-            .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-        assert!(sink.admit("queue-pressure", write.clone()).is_err());
-        let fault = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            fault.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
-        );
-        assert_eq!(fault.admitted_sequence, 0);
-        assert_eq!(fault.queued_records, 0);
-        sink.0.channel.process_bytes.store(0, Ordering::Release);
-        sink.admit("queue-pressure", write)?;
-        assert!(sink.flush("queue-pressure", 1).await.is_err());
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("queue-pressure", fault.fault_generation),
-        )
-        .await??;
-        assert_eq!(store.history("queue-pressure").await?.watermark().await?, 1);
-        let recovered = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(recovered.queued_records, 0);
-        assert_eq!(recovered.fault, None);
+        for kind in ["thread_bytes", "process_budget"] {
+            let id = format!("queue-pressure-{kind}");
+            let (_temp, store, sink) = sink(&id).await?;
+            let channel = &sink.0.channel;
+            for sequence in 1..=2 {
+                let writer = channel.step_lock.lock().await;
+                let mut write = ticket(&id, sequence);
+                write.checkpoint.state.persistence.error =
+                    Some("SYNTHETIC-PRIVATE-CHECKPOINT".to_owned());
+                let baseline = channel.process_bytes.load(Ordering::Acquire);
+                let index_baseline = channel.order_index.retained_bytes();
+                // Supply only occupied-budget environment, never replace the production classifier.
+                // Both limits are full in the Thread case to pin the original short-circuit priority.
+                if kind == "thread_bytes" {
+                    channel
+                        .order_index
+                        .bytes
+                        .store(MAX_HISTORY_THREAD_BYTES, Ordering::Release);
+                }
+                channel
+                    .process_bytes
+                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+                let capture = AdmissionRefusals::default();
+                tracing::subscriber::with_default(capture.clone(), || {
+                    for _ in 0..3 {
+                        assert!(sink.admit(&id, write.clone()).is_err());
+                        assert_eq!(channel.subscribe().borrow().fault_generation, sequence);
+                    }
+                });
+                let event = capture.only_event(kind, &id, sequence);
+                assert_eq!(event["fault_generation"], sequence.to_string());
+                assert_eq!(event["queued_effects"], "0");
+                assert_eq!(
+                    event["queued_thread_bytes"],
+                    if kind == "thread_bytes" {
+                        MAX_HISTORY_THREAD_BYTES
+                    } else {
+                        index_baseline
+                    }
+                    .to_string()
+                );
+                assert_eq!(
+                    event["process_bytes_observed"],
+                    MAX_HISTORY_PROCESS_BYTES.to_string()
+                );
+                let increment = encoded_bytes(&write.effect) + PENDING_AGE_METADATA_BYTES;
+                assert_eq!(event["thread_bytes_increment"], increment.to_string());
+                assert_eq!(event["process_bytes_increment"], increment.to_string());
+                assert_eq!(
+                    channel.process_bytes.load(Ordering::Acquire),
+                    MAX_HISTORY_PROCESS_BYTES
+                );
+                let fault = channel.subscribe().borrow().clone();
+                assert_eq!(
+                    fault.fault,
+                    Some(pl_protocol::studio::HistoryFault::QueueFull)
+                );
+                assert_eq!(fault.admitted_sequence, sequence - 1);
+                assert_eq!(fault.queued_records, 0);
+                channel
+                    .order_index
+                    .bytes
+                    .store(index_baseline, Ordering::Release);
+                channel.process_bytes.store(baseline, Ordering::Release);
+                sink.admit(&id, write)?;
+                assert!(sink.flush(&id, sequence).await.is_err());
+                drop(writer);
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    store
+                        .thread_persistence()
+                        .retry_history(&id, fault.fault_generation),
+                )
+                .await??;
+                assert_eq!(store.history(&id).await?.watermark().await?, sequence);
+                let recovered = channel.subscribe().borrow().clone();
+                assert_eq!(recovered.queued_records, 0);
+                assert_eq!(recovered.fault, None);
+                assert_eq!(channel.process_bytes.load(Ordering::Acquire), baseline);
+            }
+            channel.stop_and_join().await?;
+        }
         Ok(())
     }
 
@@ -9017,8 +9153,33 @@ pub(crate) mod storage_fault_tests {
             assert!(channel.prepare(prepared));
         }
         let refused = ticket(id, MAX_HISTORY_BATCHES as u64 + 1);
-        sink.admit(id, refused.clone())
-            .expect_err("the first ticket beyond the real record limit must be refused");
+        let before = sink.pressure(id);
+        let queued_before = {
+            let progress = lock_progress(&sink.0);
+            progress.effect_bytes
+                + progress.queue_metadata_bytes
+                + channel.order_index.retained_bytes()
+        };
+        let capture = AdmissionRefusals::default();
+        tracing::subscriber::with_default(capture.clone(), || {
+            for _ in 0..3 {
+                sink.admit(id, refused.clone())
+                    .expect_err("the first ticket beyond the real record limit must be refused");
+                assert_eq!(channel.subscribe().borrow().fault_generation, 1);
+            }
+        });
+        let event = capture.only_event("slot", id, refused.effect.sequence);
+        assert_eq!(event["queued_effects"], MAX_HISTORY_BATCHES.to_string());
+        assert_eq!(event["queued_thread_bytes"], queued_before.to_string());
+        assert_eq!(
+            event["process_bytes_observed"],
+            before.store_bytes.to_string()
+        );
+        let increment = encoded_bytes(&refused.effect) + PENDING_AGE_METADATA_BYTES;
+        assert_eq!(event["thread_bytes_increment"], increment.to_string());
+        assert_eq!(event["process_bytes_increment"], increment.to_string());
+        assert_eq!(sink.pressure(id).thread_bytes, before.thread_bytes);
+        assert_eq!(sink.pressure(id).store_bytes, before.store_bytes);
         let full = channel.subscribe().borrow().clone();
         assert_eq!(
             full.fault,

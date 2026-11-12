@@ -474,7 +474,15 @@ impl HistoryStore {
         if !tokio::fs::try_exists(&self.state.path).await? {
             return Ok(false);
         }
-        let db = connect_read_only(&self.state.path).await?;
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "readonly_connect", role = "preparation_probe", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+        let connected = connect_read_only(&self.state.path).await;
+        tracing::debug!(target: "conversation_work", stage = "readonly_connect", role = "preparation_probe", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if connected.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        let db = connected?;
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "preparation_classify", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
         let result = async {
             let (_, version) = validate_existing_identity(&db, &self.state.thread_id).await?;
             if version < HISTORY_SCHEMA_VERSION {
@@ -483,6 +491,9 @@ impl HistoryStore {
             schema::needs_content_preparation(&db, &self.state.thread_id).await
         }
         .await;
+        tracing::debug!(target: "conversation_work", stage = "preparation_classify", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
         let close = db.close().await;
         match (result, close) {
             (Ok(needs_preparation), Ok(())) => Ok(needs_preparation),
@@ -534,10 +545,27 @@ impl HistoryStore {
             .state
             .reader
             .get_or_try_init(|| async {
-                let db = connect_read_only(&self.state.path).await?;
-                schema::validate_identity_collations(&db).await?;
-                let (database_id, schema_version) =
-                    validate_existing(&db, &self.state.thread_id).await?;
+                let probe_started = std::time::Instant::now();
+                tracing::debug!(target: "conversation_work", stage = "readonly_connect", role = "reader_pool", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+                let connected = connect_read_only(&self.state.path).await;
+                tracing::debug!(target: "conversation_work", stage = "readonly_connect", role = "reader_pool", phase = "end", thread_id = self.state.thread_id,
+                    elapsed_us = probe_started.elapsed().as_micros() as u64,
+                    outcome = if connected.is_ok() { "ok" } else { "error" }, "temporary read probe");
+                let db = connected?;
+                let probe_started = std::time::Instant::now();
+                tracing::debug!(target: "conversation_work", stage = "identity_collations", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+                let validated = schema::validate_identity_collations(&db).await;
+                tracing::debug!(target: "conversation_work", stage = "identity_collations", phase = "end", thread_id = self.state.thread_id,
+                    elapsed_us = probe_started.elapsed().as_micros() as u64,
+                    outcome = if validated.is_ok() { "ok" } else { "error" }, "temporary read probe");
+                validated?;
+                let probe_started = std::time::Instant::now();
+                tracing::debug!(target: "conversation_work", stage = "validate_existing", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+                let validated = validate_existing(&db, &self.state.thread_id).await;
+                tracing::debug!(target: "conversation_work", stage = "validate_existing", phase = "end", thread_id = self.state.thread_id,
+                    elapsed_us = probe_started.elapsed().as_micros() as u64,
+                    outcome = if validated.is_ok() { "ok" } else { "error" }, "temporary read probe");
+                let (database_id, schema_version) = validated?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
                     db,
                     database_id,
@@ -1128,11 +1156,21 @@ impl HistoryStore {
     /// Only a supported old format enters the existing content migration barrier.
     /// Current-format reads still pass the ordinary read-only identity/schema gate.
     pub(crate) async fn prepare_conversation_read(&self) -> Result<()> {
-        if self.conversation_read_needs_preparation().await? {
-            self.prepare_history_access().await?;
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "prepare_read", phase = "begin", thread_id = self.state.thread_id,
+            reader_cached = self.state.reader.get().is_some(), "temporary read probe");
+        let result = async {
+            if self.conversation_read_needs_preparation().await? {
+                self.prepare_history_access().await?;
+            }
+            self.reader().await?;
+            Ok(())
         }
-        self.reader().await?;
-        Ok(())
+        .await;
+        tracing::debug!(target: "conversation_work", stage = "prepare_read", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 
     /// Only a committed hidden disposition can discharge a pruned input without a timeline row.
@@ -1588,11 +1626,20 @@ impl HistoryStore {
     /// The saved envelope is the same transaction's usage authority. Absence does not create
     /// history, seed usage, or install execution.
     pub(in crate::studio) async fn cold_state_facet(&self) -> Result<Option<ColdStateFacet>> {
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "cold_state", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+        let result = async {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx).await?;
+        let current_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "cold_current", role = "state", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+        let current = conversation::completed::cold(&tx).await;
+        tracing::debug!(target: "conversation_work", stage = "cold_current", role = "state", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = current_started.elapsed().as_micros() as u64,
+            outcome = if current.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        let current = current?;
         let model_route = checkpoint::read_model_route_head(&tx).await?;
         let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
         let saved_state = checkpoint::read_state_envelope(&tx, &self.state.thread_id)
@@ -1605,17 +1652,31 @@ impl HistoryStore {
             terminal_turn,
             saved_state,
         }))
+        }.await;
+        tracing::debug!(target: "conversation_work", stage = "cold_state", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 
     /// Presentation read qualification without completion bodies, State replay or execution.
     pub(in crate::studio) async fn cold_presentation_baseline(
         &self,
     ) -> Result<Option<ColdConversation>> {
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "cold_presentation", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+        let result = async {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx).await?;
+        let current_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "cold_current", role = "presentation", phase = "begin", thread_id = self.state.thread_id, "temporary read probe");
+        let current = conversation::completed::cold(&tx).await;
+        tracing::debug!(target: "conversation_work", stage = "cold_current", role = "presentation", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = current_started.elapsed().as_micros() as u64,
+            outcome = if current.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        let current = current?;
         let head = conversation::latest_append_seq(&tx).await?;
         tx.commit().await?;
         Ok(Some(ColdConversation {
@@ -1628,6 +1689,11 @@ impl HistoryStore {
                 exhausted: true,
             },
         }))
+        }.await;
+        tracing::debug!(target: "conversation_work", stage = "cold_presentation", phase = "end", thread_id = self.state.thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 
     /// Same domain-head projection as State, from one fresh SQLite read transaction.

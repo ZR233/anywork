@@ -551,6 +551,280 @@ async fn v364_normal_turn_completion_and_owner_retirement_preserve_the_durable_r
 }
 
 #[tokio::test]
+async fn cold_resting_member_snapshot_seals_observation_without_freezing_work() -> Result<()> {
+    use pl_core::chat::{ChatError, ChatHistory};
+    use pl_protocol::{
+        DisplayBlockState,
+        studio::{StudioError, StudioErrorReason},
+    };
+
+    let env = Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let started = h
+            .effect(
+                vec![start("resting-one", true), start("resting-two", true)],
+                vec![],
+            )
+            .await?;
+        persist(&h, &started).await?;
+        let completed = h
+            .effect(
+                vec![],
+                vec![
+                    finish("resting-one", true, "saved one")?,
+                    finish("resting-two", true, "saved two")?,
+                ],
+            )
+            .await?;
+        persist(&h, &completed).await?;
+        let expected = completed
+            .display
+            .as_ref()
+            .context("terminal display")?
+            .members
+            .iter()
+            .map(|member| member.head.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(expected.len(), 2);
+        let finished = h.finish_successfully().await?;
+        persist(&h, &finished).await?;
+        let before = h.history.display_recovery().await?.context("saved tail")?;
+        assert_eq!(before.open.len(), 1);
+        assert!(!before.open[0].sealed);
+        assert_eq!(
+            (before.open[0].next_member, before.open[0].unfinished),
+            (2, 0)
+        );
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .retire(&h.source);
+
+        let mut feed = env
+            .runtime
+            .open_timeline_feed(&h.thread.id, demand(1))
+            .await?;
+        let live = timeline(&mut feed)
+            .await?
+            .live
+            .context("saved-only live tail")?;
+        assert!(!live.execution_present);
+        assert_eq!(live.blocks[0].state, DisplayBlockState::Open);
+        let reference = work_reference(&live)?;
+        let reader = feed.reader().clone();
+        let mut latest = reader
+            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+            .await?;
+        let page = latest.next().await?.context("fixed cold member page")?;
+        assert!(
+            page.sealed,
+            "a saved-only bounded observation must seal before its finite EOF"
+        );
+        assert_eq!(page.revision, before.open[0].revision);
+        assert_eq!(page.entries, [expected[1].clone()]);
+        assert_eq!(page.before, Some(2));
+        assert!(latest.next().await?.is_none());
+        let mut older = reader
+            .open_display_members(
+                reference.clone(),
+                DisplayMemberWindow::Before { member_order: 2 },
+                demand(1),
+            )
+            .await?;
+        let prefix = older.next().await?.context("fixed cold prefix")?;
+        assert!(prefix.sealed);
+        assert_eq!(prefix.entries, [expected[0].clone()]);
+        assert!(prefix.before.is_none());
+        assert!(older.next().await?.is_none());
+        older.close().await?;
+        let after = h
+            .history
+            .display_recovery()
+            .await?
+            .context("unchanged saved tail")?;
+        assert_eq!(
+            after.open, before.open,
+            "observing a fixed page must not freeze its business block"
+        );
+        assert_eq!(
+            (after.effect, after.published),
+            (before.effect, before.published)
+        );
+        for original in completed.completions.iter() {
+            assert_eq!(
+                ChatHistory::item(&h.history, &original.header.item_id)
+                    .await?
+                    .context("saved original")?,
+                **original
+            );
+        }
+        assert!(
+            env.runtime
+                .session_of(&h.thread.id)
+                .and_then(|session| session.observed_thread(&h.thread.id))
+                .is_none()
+        );
+
+        let mut wrong_database = reference.clone();
+        wrong_database.database_id.push_str("-stale");
+        let stale = reader
+            .open_display_members(wrong_database, DisplayMemberWindow::Latest, demand(1))
+            .await
+            .err()
+            .context("wrong database must be rejected")?;
+        assert!(matches!(
+            stale.downcast_ref::<ChatError>(),
+            Some(ChatError::StaleContent)
+        ));
+        let mut cancelled = reader
+            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+            .await?;
+        cancelled.request_close();
+        assert!(matches!(
+            cancelled
+                .next()
+                .await
+                .expect_err("cancelled snapshot must not become EOF")
+                .downcast_ref::<ChatError>(),
+            Some(ChatError::Cancelled)
+        ));
+        cancelled.close().await?;
+        let mut missing_reference = reference.clone();
+        missing_reference.block_id = "missing-snapshot".into();
+        let mut missing = reader
+            .open_display_members(missing_reference, DisplayMemberWindow::Latest, demand(1))
+            .await?;
+        assert!(
+            missing.next().await.is_err(),
+            "a missing first page is not a fixed empty snapshot"
+        );
+        missing.close().await?;
+
+        let mut captured_cold = reader
+            .open_display_members(reference, DisplayMemberWindow::Latest, demand(1))
+            .await?;
+        env.runtime
+            .thread_observations
+            .observation_slot(&h.thread.id)
+            .install(h.source.clone());
+        let changed = captured_cold
+            .next()
+            .await
+            .expect_err("a new source invalidates a cold qualification");
+        assert_eq!(
+            changed
+                .downcast_ref::<StudioError>()
+                .context("typed continuity error")?
+                .reason(),
+            Some(StudioErrorReason::ConversationResyncRequired.label())
+        );
+        captured_cold.close().await?;
+        let changed = latest
+            .next()
+            .await
+            .expect_err("even fixed EOF must recheck the original source epoch");
+        assert_eq!(
+            changed
+                .downcast_ref::<StudioError>()
+                .context("typed continuity error after EOF")?
+                .reason(),
+            Some(StudioErrorReason::ConversationResyncRequired.label())
+        );
+        latest.close().await?;
+        reader.close().await?;
+        feed.close().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn hot_terminal_members_watch_until_business_seal_with_unfinished_observation() -> Result<()>
+{
+    use pl_protocol::DisplayContentSource;
+
+    let env = Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let done = h
+            .effect(
+                vec![start("terminal", true)],
+                vec![finish("terminal", true, "already finished")?],
+            )
+            .await?;
+        persist(&h, &done).await?;
+        let mut feed = env
+            .runtime
+            .open_timeline_feed(&h.thread.id, demand(1))
+            .await?;
+        let reference = work_reference(&timeline(&mut feed).await?.live.context("hot tail")?)?;
+        let reader = feed.reader().clone();
+        let mut members = reader
+            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+            .await?;
+        let first = members.next().await?.context("terminal open page")?;
+        assert!(!first.sealed);
+        assert_eq!(first.entries.len(), 1);
+        assert!(matches!(
+            first.entries[0].record.atom.lifecycle,
+            ChatAtomLifecycle::Terminal { .. }
+        ));
+        {
+            let waiting = members.next();
+            tokio::pin!(waiting);
+            assert!(
+                matches!(poll!(&mut waiting), Poll::Pending),
+                "all-terminal open Work must keep watching"
+            );
+            let later = h.effect(vec![start("still-running", true)], vec![]).await?;
+            persist(&h, &later).await?;
+            let updated = waiting
+                .await?
+                .context("new member on the same hot observation")?;
+            assert_eq!(updated.block, reference);
+            assert!(!updated.sealed);
+            assert_eq!(updated.entries.len(), 2);
+            assert_eq!(updated.entries[0], first.entries[0]);
+            assert_eq!(updated.entries[1].member_order, 2);
+        }
+        let text = h.effect(vec![start("boundary", false)], vec![]).await?;
+        persist(&h, &text).await?;
+        let visible = h.content_available(vec![start("boundary", false)]).await?;
+        persist(&h, &visible).await?;
+        let frozen = members
+            .next()
+            .await?
+            .context("business seal publishes a final snapshot")?;
+        assert!(frozen.sealed);
+        assert!(frozen.revision > first.revision);
+        assert_eq!(frozen.entries.len(), 2);
+        assert!(matches!(
+            frozen.entries[1].record.atom.lifecycle,
+            ChatAtomLifecycle::Active { .. }
+        ));
+        assert!(matches!(
+            frozen.entries[1].record.content_source,
+            DisplayContentSource::FrozenObservation {
+                available: true,
+                ..
+            }
+        ));
+        assert!(
+            members.next().await?.is_none(),
+            "business-sealed snapshot finishes despite an unfinished observation"
+        );
+        members.close().await?;
+        reader.close().await?;
+        feed.close().await?;
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
+#[tokio::test]
 async fn v364_applied_bad_original_reference_is_rejected_on_member_read_without_rebuilding()
 -> Result<()> {
     use sea_orm::{ConnectionTrait, Database};

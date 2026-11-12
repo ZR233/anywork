@@ -234,45 +234,57 @@ impl ConversationReader {
     }
 
     pub(super) async fn initial_timeline(&self, demand: ReadDemand) -> Result<TimelineBatch> {
-        demand.validate(1)?;
-        let n = demand.max_items as usize;
-        let cut = self.capture_display(None, n + 1, None, n + 1).await?;
-        self.bind_presentation_ceiling(cut.published)?;
-        let tokens = self.presentation_tokens().await?;
-        let heads = self.history_heads(&cut, cut.published, None, n).await?;
-        // Reserve the exact Set envelope and one newest historical head before selecting live.
-        let reserve = TimelineBatch {
-            presentation_version: pl_protocol::PRESENTATION_VERSION,
-            placement: ChatPlacement::Set,
-            blocks: heads.last().cloned().into_iter().collect(),
-            before: heads
-                .last()
-                .filter(|h| h.history_pos > 1)
-                .map(|h| tokens.before(cut.published, h.history_pos))
-                .transpose()?,
-            from_pos: None,
-            through_pos: cut.published,
-            live: None,
-        };
-        let bytes = (demand.max_bytes as usize)
-            .checked_sub(encoded_size(&reserve)?.saturating_sub(4))
-            .ok_or_else(too_small)?;
-        let live = self.cut_live(
-            &cut,
-            ReadDemand {
-                max_bytes: bytes as u32,
-                ..demand
-            },
-            &tokens,
-        )?;
-        self.pack_history(
-            ChatPlacement::Set,
-            heads,
-            cut.published,
-            Some(live),
-            demand,
-            &tokens,
-        )
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "timeline_set", phase = "begin", thread_id = self.thread_id(),
+            lease_id = self.subscription_id(), max_items = demand.max_items, max_bytes = demand.max_bytes, "temporary read probe");
+        let result: Result<TimelineBatch> = async {
+            demand.validate(1)?;
+            let n = demand.max_items as usize;
+            let cut = self.capture_display(None, n + 1, None, n + 1).await?;
+            self.bind_presentation_ceiling(cut.published)?;
+            let tokens = self.presentation_tokens().await?;
+            let heads = self.history_heads(&cut, cut.published, None, n).await?;
+            // Reserve the exact Set envelope and one newest historical head before selecting live.
+            let reserve = TimelineBatch {
+                presentation_version: pl_protocol::PRESENTATION_VERSION,
+                placement: ChatPlacement::Set,
+                blocks: heads.last().cloned().into_iter().collect(),
+                before: heads
+                    .last()
+                    .filter(|h| h.history_pos > 1)
+                    .map(|h| tokens.before(cut.published, h.history_pos))
+                    .transpose()?,
+                from_pos: None,
+                through_pos: cut.published,
+                live: None,
+            };
+            let bytes = (demand.max_bytes as usize)
+                .checked_sub(encoded_size(&reserve)?.saturating_sub(4))
+                .ok_or_else(too_small)?;
+            let live = self.cut_live(
+                &cut,
+                ReadDemand {
+                    max_bytes: bytes as u32,
+                    ..demand
+                },
+                &tokens,
+            )?;
+            self.pack_history(
+                ChatPlacement::Set,
+                heads,
+                cut.published,
+                Some(live),
+                demand,
+                &tokens,
+            )
+        }
+        .await;
+        tracing::debug!(target: "conversation_work", stage = "timeline_set", phase = "end", thread_id = self.thread_id(),
+            lease_id = self.subscription_id(), elapsed_us = probe_started.elapsed().as_micros() as u64,
+            returned_heads = result.as_ref().map_or(0, |batch| batch.blocks.len()),
+            returned_live_heads = result.as_ref().map_or(0, |batch| batch.live.as_ref().map_or(0, |live| live.blocks.len())),
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 
     pub async fn load_timeline_older(
@@ -410,6 +422,7 @@ impl ConversationReader {
         reference: &DisplayBlockRef,
         window: DisplayMemberWindow,
         demand: ReadDemand,
+        fixed_snapshot: bool,
         delivered: Option<(u64, bool)>,
         #[cfg(test)] cut_barrier: &mut Option<DisplayMemberReadBarrier>,
     ) -> Result<Option<DisplayMemberPage>> {
@@ -433,10 +446,9 @@ impl ConversationReader {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let header = owner.member_cut(&reference.block_id, before, 0);
-            if header
-                .as_ref()
-                .is_some_and(|cut| delivered == Some((cut.header.revision, cut.header.sealed)))
-            {
+            if header.as_ref().is_some_and(|cut| {
+                delivered == Some((cut.header.revision, fixed_snapshot || cut.header.sealed))
+            }) {
                 return Ok(None);
             }
             owner.member_cut(&reference.block_id, before, demand.max_items as usize + 1)
@@ -503,7 +515,8 @@ impl ConversationReader {
                 }
             }
         };
-        let stamp = (header.revision, header.sealed);
+        // A cold window is fixed by its original short read, without freezing the business block.
+        let stamp = (header.revision, fixed_snapshot || header.sealed);
         if delivered == Some(stamp) {
             return Ok(None);
         }
@@ -557,6 +570,7 @@ impl DisplayMembers {
                     &self.reference,
                     self.window,
                     self.demand,
+                    self.observation.is_fixed_snapshot(),
                     self.delivered,
                     #[cfg(test)]
                     &mut self.cut_barrier,

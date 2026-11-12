@@ -37,21 +37,32 @@ impl StudioRuntime {
         thread_id: &str,
         demand: ReadDemand,
     ) -> Result<TimelineFeed> {
-        let shared = self
-            .open_feed_resources(thread_id, pl_protocol::ChatScope::Main, demand, false)
-            .await?;
-        // Progress registration already exists before this original read lease captures P0.
-        let initial = shared.reader().initial_timeline(demand).await?;
-        let through = initial.through_pos;
-        let last_live = initial.live.clone();
-        Ok(TimelineFeed {
-            shared,
-            initial: Some(initial),
-            delivery: TimelineDelivery::new(through),
-            demand,
-            seen_serial: 0,
-            last_live,
-        })
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "timeline_open", phase = "begin", thread_id,
+            max_items = demand.max_items, max_bytes = demand.max_bytes, "temporary read probe");
+        let result: Result<TimelineFeed> = async {
+            let shared = self
+                .open_feed_resources(thread_id, pl_protocol::ChatScope::Main, demand, false)
+                .await?;
+            // Progress registration already exists before this original read lease captures P0.
+            let initial = shared.reader().initial_timeline(demand).await?;
+            let through = initial.through_pos;
+            let last_live = initial.live.clone();
+            Ok(TimelineFeed {
+                shared,
+                initial: Some(initial),
+                delivery: TimelineDelivery::new(through),
+                demand,
+                seen_serial: 0,
+                last_live,
+            })
+        }
+        .await;
+        tracing::debug!(target: "conversation_work", stage = "timeline_open", phase = "end", thread_id,
+            lease_id = result.as_ref().ok().map(|feed| feed.subscription_id()).unwrap_or(""),
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 }
 

@@ -560,40 +560,51 @@ impl ConversationReader {
         record_id: &str,
         demand: ReadDemand,
     ) -> Result<CompletedEntry> {
-        let guard = self.resources().await?;
-        let r = guard.as_ref().ok_or_else(cancelled)?;
-        let budget = JsonBudget::new(r.database_id.clone().unwrap_or_default(), String::new());
-        let item = tokio::select! { biased;
-            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-            result = r.session.read_item(core::ChatItemRequest {
-                epoch: r.session.epoch(), item_id: record_id.into(),
-                ceiling: None, demand: core_demand(demand)?,
-            }, &budget) => result?,
-        }
-        .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
-        let mut entries = entries(vec![item], &budget.database_id)?;
-        let current = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
-        annotate_sources(
-            &mut entries,
-            &r.history,
-            current
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "read_completed", phase = "begin", thread_id = self.thread_id(),
+            lease_id = self.subscription_id(), max_items = demand.max_items, max_bytes = demand.max_bytes, "temporary read probe");
+        let result: Result<CompletedEntry> = async {
+            let guard = self.resources().await?;
+            let r = guard.as_ref().ok_or_else(cancelled)?;
+            let budget = JsonBudget::new(r.database_id.clone().unwrap_or_default(), String::new());
+            let item = tokio::select! { biased;
+                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+                result = r.session.read_item(core::ChatItemRequest {
+                    epoch: r.session.epoch(), item_id: record_id.into(),
+                    ceiling: None, demand: core_demand(demand)?,
+                }, &budget) => result?,
+            }
+            .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
+            let mut entries = entries(vec![item], &budget.database_id)?;
+            let current = r
+                .source
                 .as_ref()
-                .map_or(&[], |source| source.current.source_states()),
-            current.as_ref().map_or(self.inner.effect_cut, |source| {
-                source.current.projection().source_effect_seq
-            }),
-        )
-        .await?;
-        self.ensure()?;
-        let entry = entries.pop().expect("one point-read result");
-        ensure!(
-            serde_json::to_vec(&entry)?.len() <= demand.max_bytes as usize,
-            core::ChatError::InvalidDemand("completed envelope exceeds demand".into())
-        );
-        Ok(entry)
+                .and_then(|source| source.current_conversation());
+            annotate_sources(
+                &mut entries,
+                &r.history,
+                current
+                    .as_ref()
+                    .map_or(&[], |source| source.current.source_states()),
+                current.as_ref().map_or(self.inner.effect_cut, |source| {
+                    source.current.projection().source_effect_seq
+                }),
+            )
+            .await?;
+            self.ensure()?;
+            let entry = entries.pop().expect("one point-read result");
+            ensure!(
+                serde_json::to_vec(&entry)?.len() <= demand.max_bytes as usize,
+                core::ChatError::InvalidDemand("completed envelope exceeds demand".into())
+            );
+            Ok(entry)
+        }
+        .await;
+        tracing::debug!(target: "conversation_work", stage = "read_completed", phase = "end", thread_id = self.thread_id(),
+            lease_id = self.subscription_id(), elapsed_us = probe_started.elapsed().as_micros() as u64,
+            returned_items = usize::from(result.is_ok()),
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
     pub(super) fn finish_batch(&self, batch: ChatBatch, demand: ReadDemand) -> Result<ChatBatch> {
         self.ensure()?;
@@ -758,17 +769,18 @@ impl ConversationReader {
         reference: &ContentRef,
         range: ContentRange,
     ) -> Result<ContentWindow> {
+        let probe_started = std::time::Instant::now();
         tracing::debug!(
             target: "conversation_work",
+            stage = "content_range", phase = "begin",
             thread_id = self.thread_id(),
-            trace_id = self.subscription_id(),
+            lease_id = self.subscription_id(),
             content_range_requests = 1,
-            content_database_id = reference.database_id.as_str(),
-            content_target = ?reference.target,
             content_offset = range.offset,
             content_max_bytes = range.max_bytes,
-            "content range started"
+            "temporary read probe"
         );
+        let result: Result<ContentWindow> = async {
         ensure!(
             range.max_bytes > 0 && range.max_bytes <= CONTENT_WINDOW_MAX_BYTES,
             core::ChatError::InvalidDemand("invalid content range".into())
@@ -832,15 +844,6 @@ impl ConversationReader {
             {
                 let content = content.content();
                 let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
-                tracing::debug!(
-                    target: "conversation_work",
-                    thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                    content_bytes = bytes.as_bytes().len(),
-                    content_database_id = reference.database_id.as_str(),
-                    content_target = ?reference.target,
-                    content_offset = range.offset,
-                    "content range completed"
-                );
                 self.ensure()?;
                 return Ok(ContentWindow {
                     offset: range.offset,
@@ -875,15 +878,6 @@ impl ConversationReader {
                         .ok_or_else(stale)?;
                     let data = core::ContentData::Bytes(entry.payload.clone());
                     let bytes = data.range(range.offset, range.max_bytes as usize)?;
-                    tracing::debug!(
-                        target: "conversation_work",
-                        thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                        content_bytes = bytes.as_bytes().len(),
-                        content_database_id = reference.database_id.as_str(),
-                        content_target = ?reference.target,
-                        content_offset = range.offset,
-                        "content range completed"
-                    );
                     self.ensure()?;
                     return Ok(ContentWindow {
                         offset: range.offset,
@@ -918,15 +912,6 @@ impl ConversationReader {
             })
             .await?;
         self.ensure()?;
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id = self.thread_id(), trace_id = self.subscription_id(),
-            content_bytes = window.bytes.as_bytes().len(),
-            content_database_id = reference.database_id.as_str(),
-            content_target = ?reference.target,
-            content_offset = range.offset,
-            "content range completed"
-        );
         Ok(ContentWindow {
             offset: window.offset,
             bytes: window.bytes.as_bytes().to_vec(),
@@ -934,6 +919,13 @@ impl ConversationReader {
             available_through: window.available_through,
             sealed: window.sealed,
         })
+        }.await;
+        tracing::debug!(target: "conversation_work", stage = "content_range", phase = "end", thread_id = self.thread_id(),
+            lease_id = self.subscription_id(), elapsed_us = probe_started.elapsed().as_micros() as u64,
+            content_offset = range.offset, content_max_bytes = range.max_bytes,
+            returned_bytes = result.as_ref().map_or(0, |window| window.bytes.len()),
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
     pub async fn page_current(
         &self,
@@ -1084,6 +1076,8 @@ impl ContentWatch {
 pub(super) struct ReadObservation {
     pub(super) reader: ConversationReader,
     changed: Option<watch::Receiver<u64>>,
+    /// Fixed at registration; dropping a live watch during close/seal cannot grant this status.
+    fixed_snapshot: bool,
     slot_changed: watch::Receiver<u64>,
     initial: bool,
     cancel: CancellationToken,
@@ -1094,9 +1088,11 @@ impl ReadObservation {
     pub(super) fn new(reader: ConversationReader, changed: Option<watch::Receiver<u64>>) -> Self {
         let (_, slot_changed) = reader.inner.slot.capture();
         let cancel = reader.inner.cancel.child_token();
+        let fixed_snapshot = changed.is_none();
         Self {
             reader,
             changed,
+            fixed_snapshot,
             slot_changed,
             initial: true,
             cancel,
@@ -1104,6 +1100,9 @@ impl ReadObservation {
     }
     pub(super) fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+    pub(super) fn is_fixed_snapshot(&self) -> bool {
+        self.fixed_snapshot
     }
     pub(super) fn request_close(&self) {
         self.cancel.cancel();

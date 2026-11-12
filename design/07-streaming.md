@@ -84,7 +84,7 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 | `POST /timeline/older` | before、demand | Prepend TimelineBatch |
 | `POST /timeline/live-older` | before、demand | LiveDisplayWindow |
 | `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
-| `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，sealed 后结束观察 |
+| `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，本次页观察 sealed 后结束；冷 saved-only 页固定后结束不代表业务块封组，见 [26.7](./26-timeline-content.md#267-内容成员窗口与资源) |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |

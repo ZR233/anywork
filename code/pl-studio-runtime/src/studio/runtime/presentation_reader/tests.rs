@@ -1,5 +1,6 @@
 use super::*;
 use crate::studio::runtime::conversation_reader::ReadObservation;
+use anyhow::Context as _;
 use futures::poll;
 use pl_protocol::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatScope, ChatSourceId,
@@ -526,10 +527,31 @@ async fn display_cursors_and_observation_reuse_real_reader_qualification() -> Re
 
         let (changes, changed) = watch::channel(0);
         let mut sealed = ReadObservation::new(a1.reader().clone(), Some(changed));
+        assert!(!sealed.is_fixed_snapshot());
         assert!(sealed.next().await?);
         sealed.seal();
+        assert!(
+            !sealed.is_fixed_snapshot(),
+            "closing a hot watch does not make it a cold snapshot"
+        );
         assert_eq!(changes.receiver_count(), 0);
         assert!(!sealed.next().await?);
+
+        let (changes, changed) = watch::channel(0);
+        let mut interrupted = ReadObservation::new(a1.reader().clone(), Some(changed));
+        assert!(interrupted.next().await?);
+        drop(changes);
+        let lost = interrupted
+            .next()
+            .await
+            .expect_err("a hot watch cannot end as a successful fixed EOF");
+        assert_eq!(
+            lost.downcast_ref::<pl_protocol::studio::StudioError>()
+                .context("typed watch discontinuity")?
+                .reason(),
+            Some(pl_protocol::studio::StudioErrorReason::ConversationResyncRequired.label())
+        );
+        assert!(!interrupted.is_fixed_snapshot());
 
         a1.reader().close().await?;
         let mut a2 = env

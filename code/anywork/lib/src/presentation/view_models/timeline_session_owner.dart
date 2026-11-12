@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
+import 'package:flutter/foundation.dart'
+    show Key, ValueKey, ValueNotifier, debugPrint;
 import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
@@ -419,6 +421,9 @@ final class TimelineSessionOwner {
   String? _selectionTarget;
   int _visibleSelectionId = 0;
   int? _selectionStartedMicros;
+  int _readProfileSelections = 0;
+  int _readProfileSets = 0;
+  int _readProfileLayoutAnchors = 0;
 
   int get monotonicMicros => _layoutClock.elapsedMicroseconds;
 
@@ -428,6 +433,15 @@ final class TimelineSessionOwner {
     _selectionTarget = threadId;
     _visibleSelectionId++;
     _selectionStartedMicros = threadId == null ? null : monotonicMicros;
+    if (threadId != null && _readProfileSelections++ < 8) {
+      debugPrint(
+        'READ_PROFILE_STAGE stage=selection_anchor phase=begin '
+        'micros=${developer.Timeline.now} thread=$threadId '
+        'selection=$_visibleSelectionId owner=${identityHashCode(this)} '
+        'ownerNowMicros=$monotonicMicros '
+        'selectionStartedMicros=$_selectionStartedMicros',
+      );
+    }
   }
 
   /// Receives a timestamp captured after a real nonempty content subtree completed layout.
@@ -460,6 +474,17 @@ final class TimelineSessionOwner {
       selectionStartedMicros: started,
       layoutCompletedMicros: layoutCompletedMicros,
     );
+    if (_readProfileLayoutAnchors++ < 8) {
+      debugPrint(
+        'READ_PROFILE_STAGE stage=layout_anchor phase=end '
+        'micros=${developer.Timeline.now} thread=${lease.threadId} '
+        'selection=$selectionId generation=${lease.generation} '
+        'lease=${identityHashCode(lease)} item=$itemId '
+        'ownerNowMicros=$monotonicMicros '
+        'selectionStartedMicros=$started '
+        'layoutCompletedMicros=$layoutCompletedMicros',
+      );
+    }
   }
 
   /// Updated from the actual viewport before the first consumer is attached.
@@ -704,6 +729,8 @@ final class TimelineSessionOwner {
     TimelineBatch batch,
     LiveDisplayWindow live,
   ) async {
+    final profile = _readProfileSets++ < 8;
+    final started = profile ? developer.Timeline.now : 0;
     final next = TimelineDisplayLease(
       threadId: session.threadId,
       generation: ++_generation,
@@ -716,6 +743,17 @@ final class TimelineSessionOwner {
           ? _selectionStartedMicros
           : null,
     );
+    if (profile) {
+      debugPrint(
+        'READ_PROFILE_STAGE stage=display_set phase=begin '
+        'micros=$started thread=${session.threadId} '
+        'selection=${next.selectionId} generation=${next.generation} '
+        'lease=${identityHashCode(next)} '
+        'content=${identityHashCode(session.content)} '
+        'blocks=${batch.blocks.length} liveBlocks=${live.blocks.length} '
+        'encodedBytes=unavailable',
+      );
+    }
     _preparingDisplays.add(next);
     try {
       final presentation = next._presentation!;
@@ -743,6 +781,15 @@ final class TimelineSessionOwner {
     _olderInFlight = null;
     if (previous != null) _retire(previous);
     _publishState(isLoadingOlder: false, olderError: null, hasNewOutput: false);
+    if (profile) {
+      final ended = developer.Timeline.now;
+      debugPrint(
+        'READ_PROFILE_STAGE stage=display_set phase=end milestone=lease_publish '
+        'micros=$ended thread=${session.threadId} '
+        'selection=${next.selectionId} generation=${next.generation} '
+        'lease=${identityHashCode(next)} durationMicros=${ended - started}',
+      );
+    }
   }
 
   void _markPresentedInputs(String threadId, TimelineBatch batch) {

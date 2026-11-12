@@ -1702,17 +1702,84 @@ final class _ConceptScene {
     return resumed;
   }
 
-  Future<void> idle() async {
-    await _until(
-      tester,
-      () =>
-          find.byKey(StudioDriverKeys.composerStop).evaluate().isEmpty &&
-          find
-              .byKey(const ValueKey('conversation-activity'))
-              .evaluate()
-              .isEmpty,
-      'idle without a running strip; a resting tail may remain',
-    );
+  Future<void> idle({String? expectedTurnId}) async {
+    final initial = graph.client.conversations.existingSession(threadId)!.state;
+    final targetTurnId =
+        expectedTurnId ??
+        initial.activeTurn?.turnId ??
+        initial.lastTurn?.turnId;
+    try {
+      await _until(tester, () {
+        final state = graph.client.conversations
+            .existingSession(threadId)
+            ?.state;
+        if (state == null ||
+            !state.hasSnapshot ||
+            state.runtime?.execution != null ||
+            state.activity != null ||
+            state.activeTurn?.state.isBusy == true ||
+            (targetTurnId != null &&
+                (state.lastTurn?.turnId != targetTurnId ||
+                    state.lastTurn?.state.isTerminal != true))) {
+          return false;
+        }
+        final snapshot = lease.live.value;
+        if (snapshot == null) return false;
+        for (final block in snapshot.blocks) {
+          if (block.state == DisplayBlockState.open &&
+              block.body is WorkDisplayBlock) {
+            final summary = (block.body as WorkDisplayBlock).summary;
+            if (summary.terminal != summary.total ||
+                summary.running != 0 ||
+                summary.waiting != 0 ||
+                summary.unavailable != 0) {
+              return false;
+            }
+          }
+        }
+        // The shared card may contain a static tail, terminal text or notices.
+        // Its presence says nothing about execution; inspect actual activity.
+        return find.byKey(StudioDriverKeys.composerStop).evaluate().isEmpty &&
+            tester
+                .widgetList<TimelineActivityIndicator>(
+                  find.byType(TimelineActivityIndicator),
+                )
+                .every((indicator) => !indicator.active) &&
+            tester
+                .widgetList<TimelineDisplayUnitView>(
+                  find.byType(TimelineDisplayUnitView),
+                )
+                .every((work) => work.activity == null);
+      }, 'terminal Turn, released execution and inactive presentation');
+    } catch (error, stack) {
+      report['idleFailure'] = {
+        ..._stageFailure('idle', error, stack),
+        'targetTurnId': targetTurnId,
+        'lastTurnId': graph.client.conversations
+            .existingSession(threadId)
+            ?.state
+            .lastTurn
+            ?.turnId,
+        'lastTurnStatus': graph.client.conversations
+            .existingSession(threadId)
+            ?.state
+            .lastTurn
+            ?.state
+            .status
+            .name,
+        'stopControlCount': find
+            .byKey(StudioDriverKeys.composerStop)
+            .evaluate()
+            .length,
+        'activeIndicatorCount': tester
+            .widgetList<TimelineActivityIndicator>(
+              find.byType(TimelineActivityIndicator),
+            )
+            .where((indicator) => indicator.active)
+            .length,
+      };
+      rethrow;
+    }
     final live = lease.live.value!;
     final openWork = live.blocks
         .where(
@@ -1728,6 +1795,7 @@ final class _ConceptScene {
       expect(summary.terminal, summary.total);
       expect(summary.running, 0);
       expect(summary.waiting, 0);
+      expect(summary.unavailable, 0);
       expect(main.where((unit) => unit.id == block.id), isEmpty);
     }
   }
@@ -3516,7 +3584,7 @@ final class _ConceptScene {
       lease.groupDisplays.singleWhere((d) => d.unitId == lateEnd.unit.id),
     );
     await release('a07-reasoning-terminal');
-    await idle();
+    await idle(expectedTurnId: source.turnId);
     await unchanged();
     final endUnit = observed.unit(lateEnd.unit.id);
     expect(endUnit.historyPos, isNull);

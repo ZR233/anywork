@@ -160,7 +160,11 @@ plan=None 为真无计划；Some/document=None 为有计划无文档。interacti
 
 listContents/readContent/readAttachment/watchContent/pageCurrent 沿原 reader、权限、范围和短读租约。大正文按 offset 读取，不先拼全文再截取。ContentRef 绑定库/资格和 ItemPayload/Body；原执行内容向完成原件的 ContentBlock 移交不复制全文，追加不换 generation、替换才换。边界派生观察使用独立命名空间并共享 immutable chunks，不覆盖 canonical atom 内容；CurrentAtom→FrozenObservation 可更换内容引用，稳定不变的是所属块/行身份。普通内容窗口保留 offset、bytes、generation、availableThrough、sealed。
 
-DisplayMemberWindow 为 Latest 或 Before{member_order}。DisplayMemberPage 携块引用、revision、sealed、有界轻量 entries 与 before。句柄首次 next 返回当前页，后续在该块成员结构/状态或封存资格改变时返回完整最新页；单个在途 next，接纳后再取。交付身份为 `(revision, sealed)`：封存若仅改变资格，可接同 revision 的封存页；若捕获改变了记录或内容引用，须推进 revision。普通重复、版本倒退及封存后新数据仍是错误。token 不触发成员列表重读；切换窗口替换观察，不拼不同 revision 的可变页。sealed 表示显示快照不变，不等于全部 terminal；固定页不保持无用 watch。
+DisplayMemberWindow 为 Latest 或 Before{member_order}。DisplayMemberPage 携块引用、revision、sealed、有界轻量 entries 与 before。句柄首次 next 返回当前页，后续在该块成员结构/状态或封存资格改变时返回完整最新页；单个在途 next，接纳后再取。交付身份为 `(revision, sealed)`：封存若仅改变资格，可接同 revision 的封存页；若捕获改变了记录或内容引用，须推进 revision。普通重复、版本倒退及封存后新数据仍是错误。token 不触发成员列表重读；切换窗口替换观察，不拼不同 revision 的可变页。
+
+成员页的 sealed 只表示**本次有界观察的快照不再变化**，不同于 DisplayHeader.sealed 的业务块冻结事实，也不等于全部成员 terminal。冷 saved-only 源没有成员变化订阅，首次 next 在原短读事务内取得该窗口的一致切面，以 sealed 页交付，之后正常 EOF；不为读取明细激活执行、促 flush、封组或分配 history_pos。该切面在首次查询时形成，不承诺句柄创建时已固定全组，也不把多个 Before 窗口拼成跨 revision 的事务快照。原数据库身份、读取权限、source epoch、取消和资格复核仍适用；新执行源安装后，旧冷读取资格失效，不悄悄升级为热观察。
+
+热源中业务块仍开放时，即使全部成员已 terminal，也继续原成员订阅，后续工作仍可更新该窗口；真实业务边界冻结块后交付 sealed 页，即使其中有未终态的 FrozenObservation。正常 EOF 前必须交付一张 sealed 页；首页缺失、未固定的热观察意外结束和资格失效仍是错误，不能以任意 EOF 充当完成。固定页不保持无用 watch，页封存或 EOF 都不能反向改写业务块小头。
 
 DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始/结束事实引用和类型化内容来源：CurrentAtom、FrozenObservation、CompletedOriginal。CurrentAtom 只用于开放行；FrozenObservation 绑定本库、本块/行及 sealed 内容命名空间，缺失旧切面明确 Unavailable，不回退最新内容；CompletedOriginal 使用真实 completion_id。同组开始/结束可同一行，跨组必须新 member_key；同一行实时到历史 ref/key 不变。组总数来自头，不用窗口长度覆盖。展开意图由 display lease 按 block_id 保存，不依赖跨父 Widget 移动自动保留 State。
 

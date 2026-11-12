@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/statistics.dart';
@@ -133,6 +134,10 @@ class AppGraph {
   DirectoryObservation<ThreadMetadataFrame>? _backendDemand;
   Observation? _backendObservation;
   String? _backendThreadId;
+  // Temporary read-profile output bounds; no product state or clock ownership.
+  int _readProfileBackendCalls = 0;
+  int _readProfileVisibleCalls = 0;
+  int? _readProfileBackendStarted;
   bool _conversationPageVisible = false;
   String? _routeThreadId;
   bool _hostVisible = true;
@@ -192,6 +197,16 @@ class AppGraph {
       // Backend discovery is part of visible-selection latency. Capture the
       // intent before its asynchronous directory demand, including a cache miss.
       timeline.noteVisibleSelection(target);
+      _readProfileBackendStarted =
+          target != null && _readProfileBackendCalls++ < 8
+          ? developer.Timeline.now
+          : null;
+      if (_readProfileBackendStarted case final started?) {
+        debugPrint(
+          'READ_PROFILE_STAGE stage=backend_directory phase=begin '
+          'micros=$started thread=$target',
+        );
+      }
       _releaseBackendDemand();
       if (target != null) {
         _backendThreadId = target;
@@ -203,6 +218,15 @@ class AppGraph {
       }
     }
     final backend = _backendDemand?.state.value.frame?.row?.backend;
+    if (backend != null && _readProfileBackendStarted != null) {
+      final ended = developer.Timeline.now;
+      debugPrint(
+        'READ_PROFILE_STAGE stage=backend_directory phase=end '
+        'micros=$ended thread=$target '
+        'durationMicros=${ended - _readProfileBackendStarted!}',
+      );
+      _readProfileBackendStarted = null;
+    }
     if (target != null && backend is! NativeAgentBackendView) {
       conversations.setVisibleThread(null);
       if (backend != null) timeline.noteVisibleSelection(null);
@@ -224,7 +248,26 @@ class AppGraph {
     if (conversations.existingSession(target)?.state.workspace != null) {
       client.drafts.composer(target);
     }
-    if (target == _conversationTarget) conversations.setVisibleThread(target);
+    if (target == _conversationTarget) {
+      final profile =
+          target != conversations.visibleThreadId.value &&
+          _readProfileVisibleCalls++ < 8;
+      final started = profile ? developer.Timeline.now : 0;
+      if (profile) {
+        debugPrint(
+          'READ_PROFILE_STAGE stage=set_visible phase=begin '
+          'micros=$started thread=$target',
+        );
+      }
+      conversations.setVisibleThread(target);
+      if (profile) {
+        final ended = developer.Timeline.now;
+        debugPrint(
+          'READ_PROFILE_STAGE stage=set_visible phase=end '
+          'micros=$ended thread=$target durationMicros=${ended - started}',
+        );
+      }
+    }
   }
 
   void _releaseBackendDemand() {

@@ -80,11 +80,16 @@ impl StudioStore {
         workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
+        let probe_started = std::time::Instant::now();
+        tracing::debug!(target: "conversation_work", stage = "history_handle", phase = "begin", thread_id, "temporary read probe");
+        let result = async {
         let _admission = self.history_admission.read().await;
         self.ensure_delete_read_allowed(thread_id).await?;
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
+            tracing::debug!(target: "conversation_work", stage = "history_handle", phase = "cache_hit", thread_id, "temporary read probe");
             return Ok(shared);
         }
+        tracing::debug!(target: "conversation_work", stage = "history_handle", phase = "cache_miss", thread_id, "temporary read probe");
         let opened = HistoryStore::open(
             &self
                 .session_paths(workspace_id, thread_id)?
@@ -95,6 +100,11 @@ impl StudioStore {
         Ok(self
             .thread_persistence
             .install_shared_history(thread_id, &opened))
+        }.await;
+        tracing::debug!(target: "conversation_work", stage = "history_handle", phase = "end", thread_id,
+            elapsed_us = probe_started.elapsed().as_micros() as u64,
+            outcome = if result.is_ok() { "ok" } else { "error" }, "temporary read probe");
+        result
     }
 
     /// One session per live Thread, shared by the writer and every content reader.

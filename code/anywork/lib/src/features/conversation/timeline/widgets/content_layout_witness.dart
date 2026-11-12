@@ -1,3 +1,6 @@
+import 'dart:developer' as developer;
+
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -64,6 +67,7 @@ class _ContentLayoutRender extends RenderProxyBox {
   _LayoutCandidate? _candidate;
   Object? _revealRequest;
   bool _reported = false;
+  static int _readProfileLayouts = 0;
 
   void update(
     String itemId,
@@ -89,9 +93,15 @@ class _ContentLayoutRender extends RenderProxyBox {
 
   @override
   void performLayout() {
+    final profileStarted = !_reported && _readProfileLayouts < 32
+        ? developer.Timeline.now
+        : null;
     super.performLayout();
     if (_reported) return;
     final candidate = _LayoutCandidate(_clock());
+    final profileCompleted = profileStarted == null
+        ? null
+        : developer.Timeline.now;
     _candidate = candidate;
     final itemId = _itemId;
     final onLayout = _onLayout;
@@ -109,6 +119,23 @@ class _ContentLayoutRender extends RenderProxyBox {
       _removeCompositionCallback?.call();
       _removeCompositionCallback = null;
       onLayout(itemId, candidate.completedMicros);
+      if (profileStarted != null &&
+          profileCompleted != null &&
+          _readProfileLayouts < 32) {
+        _readProfileLayouts++;
+        debugPrint(
+          'READ_PROFILE_STAGE stage=body_layout phase=begin '
+          'micros=$profileStarted item=$itemId render=${identityHashCode(this)}',
+        );
+        debugPrint(
+          'READ_PROFILE_STAGE stage=body_layout phase=end '
+          'micros=$profileCompleted item=$itemId '
+          'render=${identityHashCode(this)} '
+          'durationMicros=${profileCompleted - profileStarted} '
+          'observedMicros=${developer.Timeline.now} '
+          'layoutCompletedMicros=${candidate.completedMicros}',
+        );
+      }
     });
   }
 

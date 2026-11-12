@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
@@ -58,6 +60,7 @@ class _TimelineContentRangeConnectorState
   VoidCallback? _unregisterDisplay;
   TimelineExpansionIntent? _group;
   Object? _groupGeneration;
+  static int _readProfileLoads = 0;
   bool get _groupActive =>
       _group == null ||
       _group!.bodyActive && identical(_groupGeneration, _group!.bodyGeneration);
@@ -181,11 +184,23 @@ class _TimelineContentRangeConnectorState
       _error = null;
     });
     _unregisterDisplay ??= widget.registerDisplay?.call(this);
+    final call = _readProfileLoads < 32 ? ++_readProfileLoads : 0;
+    final started = call != 0 ? developer.Timeline.now : 0;
+    final profileItemId = widget.itemId;
+    var returnedBytes = -1;
+    if (call != 0) {
+      debugPrint(
+        'READ_PROFILE_STAGE stage=body_load phase=begin '
+        'micros=$started item=$profileItemId request=$request call=$call '
+        'reference=${identityHashCode(reference)} offset=$offset maxBytes=65536',
+      );
+    }
     try {
       final value = await read(
         reference,
         ContentRange(offset: offset, maxBytes: 64 * 1024),
       );
+      returnedBytes = value.bytes.length;
       if (!eligible()) return;
       setState(() => _window = value);
     } catch (error) {
@@ -193,6 +208,14 @@ class _TimelineContentRangeConnectorState
       setState(() => _error = error);
     } finally {
       if (eligible()) setState(() => _loading = false);
+      if (call != 0) {
+        final ended = developer.Timeline.now;
+        debugPrint(
+          'READ_PROFILE_STAGE stage=body_load phase=end '
+          'micros=$ended item=$profileItemId request=$request call=$call '
+          'returnedBytes=$returnedBytes durationMicros=${ended - started}',
+        );
+      }
     }
   }
 
