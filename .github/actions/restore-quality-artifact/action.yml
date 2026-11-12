@@ -14,10 +14,10 @@ inputs:
     description: Producer source commit.
     required: true
   workspace:
-    description: Tool compilation workspace (tools only).
+    description: Compilation workspace (tool and test inputs).
     default: ''
   environment:
-    description: Tool compilation image identity (tools only).
+    description: Compilation image identity (tool and test inputs).
     default: ''
 runs:
   using: composite

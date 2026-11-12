@@ -409,7 +409,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           mkdir -p output/ci-test-inputs
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" \
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             python3 .github/scripts/pr_quality_handoff.py pack-tests \
             --archive output/ci-test-inputs/quality.tar.gz --source-sha "$SOURCE_SHA" \
             --environment "$LINUX_BUILD_IMAGE" | tee -a "$GITHUB_OUTPUT"
@@ -544,7 +544,9 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" \
+            ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
@@ -664,7 +666,9 @@ jobs:
           done
       - name: Run the full native lifecycle suite
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" \
+            ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \

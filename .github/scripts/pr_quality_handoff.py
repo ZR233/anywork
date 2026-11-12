@@ -88,8 +88,8 @@ def _test_identity(workspace: Path, source_sha: str, environment: str) -> dict:
         "environment": environment,
         "run": os.environ["GITHUB_RUN_ID"],
         "profile": "dev",
-        "rustc": subprocess.check_output(["rustc", "-vV"], text=True).strip(),
-        "cargo": subprocess.check_output(["cargo", "-V"], text=True).strip(),
+        "rustc": subprocess.check_output(["rustc", "-vV"], cwd=workspace, text=True).strip(),
+        "cargo": subprocess.check_output(["cargo", "-V"], cwd=workspace, text=True).strip(),
         "configuration": _build_configuration(),
         "artifacts": {
             name: _file_sha256(workspace / relative)
