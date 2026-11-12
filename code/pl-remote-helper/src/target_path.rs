@@ -103,8 +103,13 @@ impl Executor {
                     "Windows remote targets are unsupported".into(),
                 ));
             }
-            std::path::Path::new(&self.target_info().initial_directory)
-                .join(path)
+            let joined = std::path::Path::new(&self.target_info().initial_directory).join(path);
+            // Windows canonicalize returns verbatim paths. Use the workspace's
+            // existing checked simplifier so Git's regular spelling and native
+            // FS replies bind the same location; reserved/ambiguous paths retain
+            // their verbatim form. This branch never parses a Linux target path.
+            dunce::simplified(&joined)
+                .to_owned()
                 .into_os_string()
                 .into_string()
                 .map_err(|_| ExecutionError::InvalidInput("target path is not UTF-8".into()))?

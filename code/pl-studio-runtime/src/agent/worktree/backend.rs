@@ -282,21 +282,15 @@ impl WorktreeBackend for ExecutorWorktreeBackend {
                     operation: "canonicalize Git common directory",
                     source: source.into(),
                 })?;
-            if self
-                .executor
-                .relative_path(&common, &canonical)
-                .map_err(|source| WorktreeError::Target {
-                    operation: "compare Git common directory",
-                    source: source.into(),
-                })?
-                .as_deref()
-                != Some(".")
-            {
+            // Compare with the same Git identity rules as the owning manager.
+            // Windows Git identity is case folded, while the physical file view
+            // must retain the canonical target spelling returned by the OS.
+            if resolved_git_path(common.as_str(), "") != resolved_git_path(canonical.as_str(), "") {
                 return Err(WorktreeError::IdentityMismatch(
                     "Git common directory changed physical identity".into(),
                 ));
             }
-            let files = self.files(common.as_str())?;
+            let files = self.files(canonical.as_str())?;
             let backlink = self
                 .executor
                 .join_path(

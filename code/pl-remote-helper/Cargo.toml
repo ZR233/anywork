@@ -8,6 +8,7 @@ license.workspace = true
 h2 = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
+dunce = { workspace = true }
 futures = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 serde = { workspace = true }

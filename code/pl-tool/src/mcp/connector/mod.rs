@@ -326,7 +326,7 @@ impl ConnectedMcp {
             .map_err(|error| connection_error("resources/read", error))
     }
 
-    /// 幂等、限时关闭 rmcp service、tool 订阅及其 transport owner，并确认整棵进程树已回收。
+    /// 幂等、限时关闭 rmcp service、tool 订阅及其 transport owner，并确认协议 owner 与受管根进程退出。
     ///
     /// 关闭任务独占订阅、service 与具体执行器的 Child，先终止 stdio 进程再释放协议输入；超时不代表停止，任务被保留（owner 随任务结束或
     /// 进程终止回收），而不是静默 clean。只有确认全部 owner 已释放才缓存终态结果供
