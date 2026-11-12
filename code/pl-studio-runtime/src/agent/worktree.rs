@@ -15,5 +15,6 @@ pub use manager::{
     WorktreeRetirementRequest,
 };
 pub use pl_tool::execution::ExecutionFailure;
-pub use pl_tool::remote::{RemoteDownloadError, SshError};
+pub use pl_tool::remote::SshError;
+pub use pl_tool::workspace_file::WorkspaceDownloadError;
 pub use remote::RemoteWorktreeBackend;

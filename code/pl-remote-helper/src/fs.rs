@@ -14,6 +14,7 @@ use crate::{ExecutionError, Executor, TargetPath, executor::ExecutorBackend};
 pub(crate) mod mutate;
 mod patch;
 mod read;
+mod rename;
 mod write;
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,12 @@ pub struct DirectoryEntry {
     pub is_dir: bool,
     pub is_symlink: bool,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PathCollision {
+    FailIfExists,
+    Overwrite,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WriteMode {
     ReplaceAtomic,
@@ -414,7 +421,7 @@ async fn metadata_io(request: MetadataRequest) -> Result<MetadataResponse, Execu
         Ok(metadata) => Ok(MetadataResponse::Metadata(Some(Metadata {
             is_file: metadata.is_file(),
             is_dir: metadata.is_dir(),
-            is_symlink: metadata.is_symlink(),
+            is_symlink: is_link_boundary(&metadata),
             len: metadata.len(),
             readonly: metadata.permissions().readonly(),
             modified_at: metadata
@@ -428,4 +435,17 @@ async fn metadata_io(request: MetadataRequest) -> Result<MetadataResponse, Execu
         }
         Err(error) => Err(ExecutionError::io("metadata", error)),
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn is_link_boundary(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.is_symlink()
+        || metadata.file_attributes()
+            & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
+            != 0
+}
+#[cfg(not(windows))]
+pub(crate) fn is_link_boundary(metadata: &std::fs::Metadata) -> bool {
+    metadata.is_symlink()
 }

@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use pl_tool::remote::RemoteWorkspaceFileBackend;
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{
     FileSystemSkillProvider, SkillDirectorySource, SkillProvider, SkillProviderRegistration,
     SkillRegistry, resolve_local_readonly_skill_sources,
 };
+use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
 
 /// 远端 workspace 本地只读目录集合的稳定 Provider ID。
 pub(super) const REMOTE_LOCAL_PROVIDER_ID: &str = "remote-local-skills";
@@ -21,7 +21,7 @@ pub(super) const REMOTE_LOCAL_PROVIDER_ID: &str = "remote-local-skills";
 pub(super) fn remote_workspace_registry(
     config: &SkillsConfig,
     system_skills_dir: Option<&Path>,
-    remote_backend: Arc<RemoteWorkspaceFileBackend>,
+    remote_backend: Arc<ExecutorWorkspaceFileBackend>,
 ) -> Result<(SkillRegistry, Vec<Arc<SkillProviderRegistration>>)> {
     let remote_provider = Arc::new(pl_tool::remote::RemoteSkillProvider::new(remote_backend)?);
     let local_sources = remote_local_sources(config, system_skills_dir)?;

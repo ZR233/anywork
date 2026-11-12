@@ -746,7 +746,7 @@ async fn prepare_repository_worktree_pool(
                     "worktree pool transport changed before preparation",
                 ));
             }
-            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+            let backend = pl_tool::workspace_file::ExecutorWorkspaceFileBackend::local(
                 repository_root.to_path_buf(),
                 false,
             )

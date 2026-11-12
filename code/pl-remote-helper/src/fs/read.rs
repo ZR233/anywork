@@ -177,11 +177,20 @@ async fn next_entry(entries: &mut tokio::fs::ReadDir) -> DirectoryResult {
         .file_type()
         .await
         .map_err(|error| ExecutionError::io("directory entry type", error))?;
+    #[cfg(windows)]
+    let is_symlink = super::is_link_boundary(
+        &entry
+            .metadata()
+            .await
+            .map_err(|error| ExecutionError::io("directory entry metadata", error))?,
+    );
+    #[cfg(not(windows))]
+    let is_symlink = kind.is_symlink();
     Ok(Some(DirectoryEntry {
         name,
         path,
         is_file: kind.is_file(),
         is_dir: kind.is_dir(),
-        is_symlink: kind.is_symlink(),
+        is_symlink,
     }))
 }

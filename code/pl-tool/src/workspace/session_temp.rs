@@ -4,51 +4,26 @@ use std::path::{Component, Path, PathBuf};
 use pl_protocol::Result;
 use serde::{Deserialize, Serialize};
 
-use super::{SessionFiles, path_safety};
-use crate::remote::RemoteWorkspaceFileBackend;
-use crate::remote::SshError;
+use super::SessionFiles;
+use crate::workspace_file::{ExecutorWorkspaceFileBackend, WorkspaceFileError};
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 
 /// Uses an already frozen physical binding. It never discovers or reconnects an endpoint.
 #[derive(Debug)]
-pub enum SessionTempBackend<'a> {
-    Local(&'a Path),
-    Ssh(&'a RemoteWorkspaceFileBackend),
+pub struct SessionTempBackend {
+    files: ExecutorWorkspaceFileBackend,
 }
 
-/// Keeps the actual deletion boundary visible to lifecycle retry ownership.
+/// Retains the physical removal boundary independently of the connection manager.
 #[derive(Debug, thiserror::Error)]
-pub enum SessionRemovalError {
-    #[error("{0}")]
-    Local(#[from] path_safety::PathSafetyError),
-    #[error("{0}")]
-    Remote(#[from] SshError),
-}
-
+#[error(transparent)]
+pub struct SessionRemovalError(#[from] WorkspaceFileError);
 impl SessionRemovalError {
     pub fn definitely_not_started(&self) -> bool {
-        match self {
-            Self::Local(path_safety::PathSafetyError::Io {
-                removal_started, ..
-            }) => !removal_started,
-            Self::Local(_) => true,
-            Self::Remote(SshError::Cancelled) => true,
-            Self::Remote(SshError::Remote {
-                code: pl_protocol::remote::RemoteErrorCode::WorkspaceEscape,
-                ..
-            }) => true,
-            Self::Remote(_) => false,
-        }
+        !matches!(self.0, WorkspaceFileError::Removal(_))
     }
-
     fn is_absent(&self) -> bool {
-        match self {
-            Self::Local(path_safety::PathSafetyError::Io { source, .. }) => {
-                source.kind() == std::io::ErrorKind::NotFound
-            }
-            Self::Remote(error) => error.is_not_found(),
-            _ => false,
-        }
+        self.0.is_not_found()
     }
 }
 
@@ -93,7 +68,38 @@ impl MigrationMove {
     }
 }
 
-impl SessionTempBackend<'_> {
+impl SessionTempBackend {
+    pub fn new(files: &ExecutorWorkspaceFileBackend) -> Self {
+        Self {
+            files: files.clone(),
+        }
+    }
+    pub async fn local(root: &Path) -> Result<Self> {
+        let executor = pl_remote_helper::Executor::local().map_err(failure)?;
+        let root = executor
+            .path(
+                root.to_str()
+                    .ok_or_else(|| failure("workspace path is not UTF-8"))?,
+            )
+            .map_err(failure)?;
+        let mut ancestor = Some(root.clone());
+        while let Some(path) = ancestor {
+            if executor
+                .fs()
+                .symlink_metadata(&path)
+                .await
+                .map_err(failure)?
+                .is_some_and(|metadata| metadata.is_symlink)
+            {
+                return Err(failure("workspace root crosses a link or reparse point"));
+            }
+            ancestor = executor.parent_path(&path).map_err(failure)?;
+        }
+        Ok(Self {
+            files: ExecutorWorkspaceFileBackend::new(executor, root.as_str()).map_err(failure)?,
+        })
+    }
+
     /// Converts only this explicitly bound Thread. A durable intent precedes every move.
     /// Old virtual environments remain at their original path; new ones are created on demand.
     pub async fn migrate(&self, files: &SessionFiles) -> Result<()> {
@@ -200,18 +206,21 @@ impl SessionTempBackend<'_> {
     }
 
     async fn remove_dedicated(&self, path: &Path) -> std::result::Result<(), SessionRemovalError> {
-        let result = match self {
-            Self::Local(root) => {
-                let anchor = root.ancestors().last().unwrap_or(root);
-                path_safety::remove_dir_all_no_follow_async(anchor, &root.join(path))
-                    .await
-                    .map_err(SessionRemovalError::Local)
-            }
-            Self::Ssh(backend) => backend
-                .remove_path(posix(path), None, true)
-                .await
-                .map_err(SessionRemovalError::Remote),
-        };
+        if self
+            .files
+            .inspect_path(posix(path), None)
+            .await?
+            .is_some_and(|metadata| !metadata.is_dir)
+        {
+            return Err(
+                WorkspaceFileError::Policy("session removal requires a directory".into()).into(),
+            );
+        }
+        let result = self
+            .files
+            .remove_path(posix(path), None, true)
+            .await
+            .map_err(SessionRemovalError::from);
         match result {
             Err(error) if error.is_absent() => Ok(()),
             result => result,
@@ -219,187 +228,64 @@ impl SessionTempBackend<'_> {
     }
 
     async fn exists(&self, path: &Path) -> Result<bool> {
-        match self {
-            Self::Local(root) => {
-                let anchor = root
-                    .ancestors()
-                    .last()
-                    .ok_or_else(|| failure("missing workspace root"))?;
-                path_safety::validate_path_for_write_async(anchor, root)
-                    .await
-                    .map_err(failure)?;
-                let path = root.join(path);
-                path_safety::validate_path_for_write_async(root, &path)
-                    .await
-                    .map_err(failure)?;
-                Ok(path_safety::metadata_if_real_async(&path)
-                    .await
-                    .map_err(failure)?
-                    .is_some())
-            }
-            Self::Ssh(backend) => {
-                // Stat resolves links, so inspect each directory entry before asking for stat.
-                let mut parent = PathBuf::new();
-                for component in path.components() {
-                    let Component::Normal(name) = component else {
-                        return Err(failure("session path is not relative"));
-                    };
-                    let mut entries = backend
-                        .open_directory(if parent.as_os_str().is_empty() {
-                            ".".into()
-                        } else {
-                            posix(&parent)
-                        })
-                        .await?;
-                    let mut found = false;
-                    while let Some(entry) = entries.next().await? {
-                        if entry.name == name.to_string_lossy() {
-                            if entry.is_symlink {
-                                return Err(failure("session path crosses a symbolic link"));
-                            }
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        // Only a typed PathNotFound may establish absence; listing is not enough.
-                        let candidate = parent.join(name);
-                        return match backend
-                            .stat_optional(posix(&candidate), None)
-                            .await
-                            .map_err(failure)?
-                        {
-                            None => Ok(false),
-                            Some(_) => {
-                                Err(failure("session directory changed while inspecting links"))
-                            }
-                        };
-                    }
-                    parent.push(name);
-                }
-                backend
-                    .stat_optional(posix(path), None)
-                    .await
-                    .map(|value| value.is_some())
-                    .map_err(failure)
-            }
-        }
+        self.files
+            .inspect_path(posix(path), None)
+            .await
+            .map(|value| value.is_some())
+            .map_err(failure)
     }
-
     async fn entries(&self, path: &Path) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        match self {
-            Self::Local(root) => {
-                let mut entries = tokio::fs::read_dir(root.join(path))
-                    .await
-                    .map_err(failure)?;
-                while let Some(entry) = entries.next_entry().await.map_err(failure)? {
-                    let name = entry
-                        .file_name()
-                        .into_string()
-                        .map_err(|_| failure("non-UTF8 legacy session path"))?;
-                    if name != ".venv"
-                        && path_safety::is_link_or_reparse(
-                            &tokio::fs::symlink_metadata(entry.path())
-                                .await
-                                .map_err(failure)?,
-                        )
-                    {
-                        return Err(failure("legacy session contains a link or reparse point"));
-                    }
-                    names.push(name);
-                }
+        let mut entries = self.files.open_directory(posix(path)).await?;
+        while let Some(entry) = entries.next().await? {
+            // Existing virtual environments stay in place even when their internal links
+            // are valid; every migrated entry itself must be an owned real directory/file.
+            if entry.name != ".venv" && entry.is_symlink {
+                return Err(failure("legacy session contains a link or reparse point"));
             }
-            Self::Ssh(backend) => {
-                let mut entries = backend.open_directory(posix(path)).await?;
-                while let Some(entry) = entries.next().await? {
-                    if entry.is_symlink {
-                        return Err(failure("legacy session contains a symbolic link"));
-                    }
-                    names.push(entry.name);
-                }
-            }
+            names.push(entry.name);
         }
         names.sort();
         Ok(names)
     }
-
     async fn require_directory(&self, path: &Path) -> Result<()> {
-        let is_directory = match self {
-            Self::Local(root) => tokio::fs::symlink_metadata(root.join(path))
-                .await
-                .map_err(failure)?
-                .is_dir(),
-            Self::Ssh(backend) => backend
-                .stat_optional(posix(path), None)
-                .await
-                .map_err(failure)?
-                .is_some_and(|stat| stat.is_dir),
-        };
-        if !is_directory {
-            return Err(failure(format!(
-                "legacy session directory has unexpected type: {}",
-                path.display()
-            )));
+        if !self
+            .files
+            .inspect_path(posix(path), None)
+            .await
+            .map_err(failure)?
+            .is_some_and(|stat| stat.is_dir)
+        {
+            return Err(failure("legacy session directory has unexpected type"));
         }
         Ok(())
     }
-
     async fn read(&self, path: &Path) -> Result<Vec<u8>> {
-        match self {
-            Self::Local(root) => tokio::fs::read(root.join(path)).await.map_err(failure),
-            Self::Ssh(backend) => backend
-                .read_text(WorkspaceFileReadRequest {
-                    path: posix(path),
-                    cwd: None,
-                })
-                .await
-                .map(String::into_bytes),
-        }
+        self.files
+            .read_text(WorkspaceFileReadRequest {
+                path: posix(path),
+                cwd: None,
+            })
+            .await
+            .map(String::into_bytes)
     }
-
     async fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        // Reject linked ancestors before atomic publication too.
-        self.exists(path).await?;
-        match self {
-            Self::Local(root) => {
-                let path = root.join(path);
-                let bytes = bytes.to_vec();
-                tokio::task::spawn_blocking(move || super::write_file_atomically(&path, &bytes))
-                    .await
-                    .map_err(failure)?
-                    .map_err(failure)
-            }
-            Self::Ssh(backend) => backend.write_bytes_atomic(posix(path), None, bytes).await,
-        }
+        self.files
+            .write_bytes_atomic(posix(path), None, bytes)
+            .await
     }
-
     async fn create(&self, path: &Path) -> Result<()> {
-        self.exists(path).await?;
-        match self {
-            Self::Local(root) => tokio::fs::create_dir_all(root.join(path))
-                .await
-                .map_err(failure),
-            Self::Ssh(backend) => backend.create_directory(posix(path), None).await,
-        }
+        self.files.create_directory(posix(path), None).await
     }
-
     async fn move_entry(&self, source: &Path, target: &Path) -> Result<()> {
-        match self {
-            Self::Local(root) => {
-                let source = root.join(source);
-                let target = root.join(target);
-                tokio::task::spawn_blocking(move || super::move_owned_path(&source, &target))
-                    .await
-                    .map_err(failure)?
-                    .map_err(failure)
-            }
-            Self::Ssh(backend) => {
-                backend
-                    .rename_path(posix(source), posix(target), None)
-                    .await
-            }
-        }
+        self.files
+            .rename_path(
+                posix(source),
+                posix(target),
+                None,
+                pl_tool_filesystem::PathCollision::FailIfExists,
+            )
+            .await
     }
 }
 
@@ -435,7 +321,9 @@ mod tests {
                 }
             }
             let started = std::time::Instant::now();
-            SessionTempBackend::Local(root)
+            SessionTempBackend::local(root)
+                .await
+                .unwrap()
                 .remove_session(&files)
                 .await
                 .unwrap();
@@ -476,7 +364,7 @@ mod tests {
         put(root, neighbor.temp().join("active"), b"neighbor");
         put(root, "user-file", b"user");
 
-        let backend = SessionTempBackend::Local(root);
+        let backend = SessionTempBackend::local(root).await.unwrap();
         backend.migrate(&files).await.unwrap();
         assert_eq!(
             std::fs::read(root.join(files.scratch()).join("probe.py")).unwrap(),
@@ -514,7 +402,7 @@ mod tests {
             assert_eq!(std::fs::read(root.join(path)).unwrap(), bytes);
         }
         let physical =
-            crate::workspace_file::LocalWorkspaceFileBackend::new(root.to_owned(), false)
+            crate::workspace_file::ExecutorWorkspaceFileBackend::local(root.to_owned(), false)
                 .await
                 .unwrap();
         super::super::prepare_session_files(&physical, &files)
@@ -540,7 +428,7 @@ mod tests {
         let files = SessionFiles::new("thread");
         put(root, files.root().join("scratch/probe"), b"source");
         put(root, files.temp().join("probe"), b"target");
-        let backend = SessionTempBackend::Local(root);
+        let backend = SessionTempBackend::local(root).await.unwrap();
         assert!(backend.migrate(&files).await.is_err());
         assert_eq!(
             std::fs::read(root.join(files.temp()).join("probe")).unwrap(),
@@ -603,7 +491,7 @@ mod tests {
         put(outside.path(), "important", b"keep");
         std::fs::create_dir_all(root.join(files.root())).unwrap();
         symlink(outside.path(), root.join(files.temp())).unwrap();
-        let backend = SessionTempBackend::Local(root);
+        let backend = SessionTempBackend::local(root).await.unwrap();
         assert!(backend.remove(&files).await.is_err());
         std::fs::remove_file(root.join(files.temp())).unwrap();
         std::fs::create_dir_all(root.join(files.temp())).unwrap();
@@ -645,7 +533,7 @@ mod tests {
         put(root, first.temp().join("removable"), b"temp");
         put(root, files.temp(), b"wrong kind");
         put(root, files.artifacts().join("delivery"), b"keep");
-        let backend = SessionTempBackend::Local(root);
+        let backend = SessionTempBackend::local(root).await.unwrap();
         backend.remove(&first).await.unwrap();
         assert!(backend.remove(&files).await.is_err());
         assert!(!root.join(first.temp()).exists());

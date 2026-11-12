@@ -496,7 +496,7 @@ impl StudioRuntime {
                     self.remove_bound_execution_session(
                         operation,
                         index,
-                        SessionTempBackend::Local(Path::new(&identity.root)),
+                        SessionTempBackend::local(Path::new(&identity.root)).await?,
                     )
                     .await?;
                 }
@@ -546,7 +546,7 @@ impl StudioRuntime {
                     self.remove_bound_execution_session(
                         operation,
                         index,
-                        SessionTempBackend::Ssh(&host.files),
+                        SessionTempBackend::new(&host.files),
                     )
                     .await?;
                 }
@@ -561,7 +561,7 @@ impl StudioRuntime {
         &self,
         operation: &mut ThreadDeleteOperation,
         index: usize,
-        backend: SessionTempBackend<'_>,
+        backend: SessionTempBackend,
     ) -> Result<()> {
         let files = SessionFiles::new(&operation.members[index].identity.thread_id);
         if operation.members[index].execution_removal_started {
@@ -920,8 +920,7 @@ mod error_tests {
         let remote = pl_tool::remote::SshError::AuthenticationFailed(
             pl_tool::remote::SshAuthFailure::new("fixture denied", vec![]),
         );
-        let error = anyhow::Error::new(pl_tool::workspace::SessionRemovalError::Remote(remote))
-            .context(DeleteStage("删除执行端目录"));
+        let error = anyhow::Error::new(remote).context(DeleteStage("删除执行端目录"));
         let public = deletion_error(&error, "删除执行端目录", "fixture-root");
         assert_eq!(public.code, StudioErrorCode::PermissionDenied);
         assert_eq!(

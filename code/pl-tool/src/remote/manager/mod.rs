@@ -1,11 +1,10 @@
 //! One explicit OpenSSH connection owns one foreground executor.
+use crate::workspace_file::ExecutorWorkspaceFileBackend;
 mod asset;
 mod connection;
 mod shutdown;
 mod ssh;
-use super::{
-    RemoteWorkspaceFileBackend, RemoteWorkspaceHost, SshConfigEntry, SshConfigFile, SshError,
-};
+use super::{RemoteWorkspaceHost, SshConfigEntry, SshConfigFile, SshError};
 use asset::file_helper_assets;
 pub use asset::{RemoteHelperAssets, RemoteHelperTarget};
 use pl_remote_helper::{Executor, ExecutorId};
@@ -94,6 +93,7 @@ struct BrowseCursor {
     alias: String,
     executor: ExecutorId,
     path: String,
+    parent: Option<String>,
     reader: Mutex<BrowseReader>,
     stop: CancellationToken,
 }
@@ -409,7 +409,7 @@ impl SshManager {
         &self,
         alias: &str,
         path: String,
-    ) -> Result<RemoteWorkspaceFileBackend, SshError> {
+    ) -> Result<ExecutorWorkspaceFileBackend, SshError> {
         Ok(self.open_workspace_host(alias, path).await?.files)
     }
     pub async fn open_workspace_host(
@@ -425,7 +425,7 @@ impl SshManager {
     pub async fn open_workspace_host_on_connection(
         &self,
         alias: &str,
-        frozen: &RemoteWorkspaceFileBackend,
+        frozen: &ExecutorWorkspaceFileBackend,
         path: String,
     ) -> Result<RemoteWorkspaceHost, SshError> {
         let _admitted = self.admit_connection().await?;
@@ -456,7 +456,7 @@ impl SshManager {
         let environment = execution_environment(executor.target_info())?;
         Ok(RemoteWorkspaceHost {
             profile: connection.profile.clone(),
-            files: RemoteWorkspaceFileBackend::new(executor.clone(), root.as_str())?,
+            files: ExecutorWorkspaceFileBackend::new(executor.clone(), root.as_str())?,
             commands: crate::command::ExecutorCommandBackend::new(
                 executor.clone(),
                 root.as_str(),
@@ -512,6 +512,10 @@ impl SshManager {
                 alias: alias.into(),
                 executor: connection.executor.id(),
                 path: target.as_str().into(),
+                parent: connection
+                    .executor
+                    .parent_path(&target)?
+                    .map(|path| path.as_str().into()),
                 reader: Mutex::new(BrowseReader {
                     reader: Some(reader),
                     pending: None,
@@ -569,7 +573,7 @@ impl SshManager {
             None
         };
         Ok(pl_protocol::remote::RemoteDirectoryListing {
-            parent: (state.path != "/").then(|| super::workspace::parent(&state.path).into()),
+            parent: state.parent.clone(),
             path: state.path.clone(),
             entries,
             next_cursor,

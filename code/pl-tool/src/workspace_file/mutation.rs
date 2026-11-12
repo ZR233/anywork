@@ -1,5 +1,5 @@
-//! SSH transport/policy adaptation for the same independent filesystem tools.
-use super::RemoteWorkspaceFileBackend;
+//! Target-independent policy adaptation for the independent filesystem tools.
+use crate::workspace_file::{ExecutorWorkspaceFileBackend, WorkspaceFileBackend};
 use crate::{tool_error, workspace::ToolWorkspace};
 use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
@@ -14,22 +14,22 @@ use pl_tool_filesystem::{MutationBackend, MutationError, PathCollision};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct RemoteWorkspaceMutationTool {
+pub struct WorkspaceMutationTool {
     definition: pl_agent_tool::ToolDefinition,
-    kind: RemoteMutationKind,
-    backend: Arc<RemoteWorkspaceFileBackend>,
+    kind: WorkspaceMutationKind,
+    backend: Arc<ExecutorWorkspaceFileBackend>,
     workspace: ToolWorkspace,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum RemoteMutationKind {
+pub enum WorkspaceMutationKind {
     CreateDirectory,
     Delete,
     Copy,
     Move,
 }
 
-impl RemoteMutationKind {
+impl WorkspaceMutationKind {
     pub fn all() -> &'static [Self] {
         &[Self::CreateDirectory, Self::Delete, Self::Copy, Self::Move]
     }
@@ -42,50 +42,36 @@ impl RemoteMutationKind {
         }
     }
     pub fn definition(self) -> pl_agent_tool::ToolDefinition {
-        let definition = match self {
+        match self {
             Self::CreateDirectory => {
-                pl_tool_filesystem::create_directory::definition::<RemoteMutationCapability>()
+                pl_tool_filesystem::create_directory::definition::<ExecutorMutationCapability>()
             }
             Self::Delete => {
-                pl_tool_filesystem::delete_path::definition::<RemoteMutationCapability>()
+                pl_tool_filesystem::delete_path::definition::<ExecutorMutationCapability>()
             }
-            Self::Copy => pl_tool_filesystem::copy_path::definition::<RemoteMutationCapability>(),
-            Self::Move => pl_tool_filesystem::move_path::definition::<RemoteMutationCapability>(),
-        };
-        // Retain transport-specific model guidance; the domain owns the schema.
-        let description = match self {
-            Self::CreateDirectory => "Create a directory inside the workspace.",
-            Self::Delete => {
-                "Delete a workspace file, empty directory, or recursive directory using an explicit mode."
-            }
-            Self::Copy => "Copy a file inside the workspace.",
-            Self::Move => "Move or rename a file or directory inside the workspace.",
-        };
-        let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
-            unreachable!("file mutations have JSON input");
-        };
-        pl_agent_tool::ToolDefinition::json(definition.name(), description, schema.clone())
-            .expect("static file mutation definition")
+            Self::Copy => pl_tool_filesystem::copy_path::definition::<ExecutorMutationCapability>(),
+            Self::Move => pl_tool_filesystem::move_path::definition::<ExecutorMutationCapability>(),
+        }
     }
 }
 
-impl RemoteWorkspaceMutationTool {
+impl WorkspaceMutationTool {
     pub fn new(
-        kind: RemoteMutationKind,
+        kind: WorkspaceMutationKind,
         definition: pl_agent_tool::ToolDefinition,
-        backend: Arc<RemoteWorkspaceFileBackend>,
+        backend: Arc<ExecutorWorkspaceFileBackend>,
         workspace: ToolWorkspace,
     ) -> Self {
         Self {
             definition,
             kind,
-            backend,
+            backend: Arc::new(backend.as_ref().clone().with_workspace(workspace.clone())),
             workspace,
         }
     }
 }
 
-impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
+impl pl_agent_tool::Tool for WorkspaceMutationTool {
     type Input = OpaquePayload;
     type Context = CallContext;
     type Output = ToolOutput;
@@ -105,14 +91,24 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
         self.workspace
             .ensure_workspace_writable()
             .map_err(ToolError::new)?;
-        let _guard = self.workspace.write_lock().await;
-        let backend = RemoteMutationCapability {
-            backend: self.backend.clone(),
+        let _guard = tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled)),
+            guard = self.workspace.write_lock() => guard,
+        };
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
+        }
+        let granted = self.backend.for_grant(&context.grant);
+        let backend = ExecutorMutationCapability {
+            backend: granted
+                .map(Arc::new)
+                .unwrap_or_else(|| self.backend.clone()),
             workspace: self.workspace.clone(),
             tool: self.kind.name(),
         };
         let text = match self.kind {
-            RemoteMutationKind::CreateDirectory => {
+            WorkspaceMutationKind::CreateDirectory => {
                 pl_tool_filesystem::create_directory::CreateDirectoryTool::new()
                     .execute(
                         decode_json(input.content()).map_err(ToolError::new)?,
@@ -121,27 +117,27 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
                     .await
                     .map_err(ToolError::new)?
             }
-            RemoteMutationKind::Delete => pl_tool_filesystem::delete_path::DeletePathTool::new()
+            WorkspaceMutationKind::Delete => pl_tool_filesystem::delete_path::DeletePathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,
                 )
                 .await
-                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
-            RemoteMutationKind::Copy => pl_tool_filesystem::copy_path::CopyPathTool::new()
+                .map_err(|error| mutation_error(self.kind.name(), error))?,
+            WorkspaceMutationKind::Copy => pl_tool_filesystem::copy_path::CopyPathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,
                 )
                 .await
-                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
-            RemoteMutationKind::Move => pl_tool_filesystem::move_path::MovePathTool::new()
+                .map_err(|error| mutation_error(self.kind.name(), error))?,
+            WorkspaceMutationKind::Move => pl_tool_filesystem::move_path::MovePathTool::new()
                 .execute(
                     decode_json(input.content()).map_err(ToolError::new)?,
                     backend,
                 )
                 .await
-                .map_err(|error| remote_mutation_error(self.kind.name(), error))?,
+                .map_err(|error| mutation_error(self.kind.name(), error))?,
         };
         Ok(ToolOutput::new(
             OpaquePayload::text(text.clone()),
@@ -150,7 +146,7 @@ impl pl_agent_tool::Tool for RemoteWorkspaceMutationTool {
     }
 }
 
-fn remote_mutation_error(tool: &str, error: MutationError<PureError>) -> ToolError {
+fn mutation_error(tool: &str, error: MutationError<PureError>) -> ToolError {
     ToolError::new(match error {
         MutationError::Backend(error) => error,
         MutationError::RequiresDirectory => tool_error(tool, "delete mode requires a directory"),
@@ -159,46 +155,35 @@ fn remote_mutation_error(tool: &str, error: MutationError<PureError>) -> ToolErr
     })
 }
 
-struct RemoteMutationCapability {
-    backend: Arc<RemoteWorkspaceFileBackend>,
+struct ExecutorMutationCapability {
+    backend: Arc<ExecutorWorkspaceFileBackend>,
     workspace: ToolWorkspace,
     tool: &'static str,
 }
 
-impl RemoteMutationCapability {
+impl ExecutorMutationCapability {
     async fn stat(&self, path: &str) -> Result<Option<crate::workspace_file::WorkspaceFileStat>> {
         self.backend
-            .stat_optional(path.to_string(), None)
+            .inspect_path(path.to_string(), None)
             .await
-            .map_err(super::workspace::remote_file_error)
-    }
-    async fn replace_destination(&self, path: &str) -> Result<()> {
-        if let Some(target) = self.stat(path).await? {
-            self.backend
-                .remove_path(path.to_string(), None, target.is_dir)
-                .await
-                .map_err(super::workspace::remote_file_error)?;
-        }
-        Ok(())
-    }
-    async fn prepare_destination(&self, path: &str, collision: PathCollision) -> Result<()> {
-        match collision {
-            PathCollision::FailIfExists => {
-                if self.stat(path).await?.is_some() {
-                    return Err(tool_error(self.tool, "destination already exists"));
-                }
-                Ok(())
-            }
-            PathCollision::Overwrite => self.replace_destination(path).await,
-        }
+            .map_err(crate::workspace_file::file_error)
     }
 }
-impl MutationBackend for RemoteMutationCapability {
+impl MutationBackend for ExecutorMutationCapability {
     type Error = PureError;
     type Path = String;
     async fn resolve_existing(&self, path: &str) -> Result<String> {
         if self.tool == "delete_path" || self.tool == "move_path" {
-            self.workspace.ensure_relative_path_writable(None, path)?;
+            let target = self
+                .backend
+                .path_request(path.into(), None)
+                .map_err(crate::workspace_file::file_error)?;
+            let target = self
+                .backend
+                .bound(target, true)
+                .await
+                .map_err(crate::workspace_file::file_error)?;
+            self.backend.ensure_writable(&target).await?;
         }
         self.stat(path).await?.ok_or_else(|| {
             tool_error(
@@ -213,11 +198,20 @@ impl MutationBackend for RemoteMutationCapability {
         Ok(path.to_string())
     }
     async fn resolve_for_write(&self, path: &str) -> Result<String> {
-        self.workspace.ensure_relative_path_writable(None, path)?;
+        let target = self
+            .backend
+            .path_request(path.into(), None)
+            .map_err(crate::workspace_file::file_error)?;
+        let target = self
+            .backend
+            .bound(target, true)
+            .await
+            .map_err(crate::workspace_file::file_error)?;
+        self.backend.ensure_writable(&target).await?;
         Ok(path.to_string())
     }
-    fn ensure_writable(&self, path: &String) -> Result<()> {
-        self.workspace.ensure_relative_path_writable(None, path)
+    fn ensure_writable(&self, _path: &String) -> Result<()> {
+        self.workspace.ensure_workspace_writable()
     }
     fn display_path(&self, path: &String) -> String {
         path.clone()
@@ -241,32 +235,27 @@ impl MutationBackend for RemoteMutationCapability {
         self.backend
             .remove_path(path.clone(), None, false)
             .await
-            .map_err(super::workspace::remote_file_error)
+            .map_err(crate::workspace_file::file_error)
     }
     async fn remove_directory(&self, path: &String, recursive: bool) -> Result<()> {
         self.backend
             .remove_path(path.clone(), None, recursive)
             .await
-            .map_err(super::workspace::remote_file_error)
+            .map_err(crate::workspace_file::file_error)
     }
     async fn copy(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
         let recursive = self.is_directory(from).await?;
-        // The helper's copy/rename protocol has no atomic no-clobber flag:
-        // recheck here, never delete for FailIfExists, and retain that known
-        // check-to-operation race rather than claim exclusion across clients.
-        self.prepare_destination(to, collision).await?;
         self.backend
-            .copy_path(from.clone(), to.clone(), None, recursive)
+            .copy_path(from.clone(), to.clone(), None, recursive, collision)
             .await
     }
     async fn rename(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
-        self.prepare_destination(to, collision).await?;
         self.backend
-            .rename_path(from.clone(), to.clone(), None)
+            .rename_path(from.clone(), to.clone(), None, collision)
             .await
     }
 }
 
 #[cfg(test)]
-#[path = "tools_tests.rs"]
+#[path = "mutation_tests.rs"]
 mod tests;

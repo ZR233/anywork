@@ -228,9 +228,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo xtask test-project --suite desktop --set smoke
   ```
 
-- Linux 外部 helper 模式需要与源码匹配的生产 worker 位于 PATH，可用
-  `cargo install --path code/pl-remote-helper --locked` 安装或更新。
-  桌面 xtask 构建将 worker 作为 Flutter bundle 资源分发，不嵌入 bridge；两种宿主均不使用裸 shell 后备路径。
+- 本地命令、MCP、LSP 与 ACP 通过 `pl-remote-helper` library 的 native Executor 创建业务进程，不要求 PATH 中存在监督 worker。SSH 使用与源码匹配的前台 `pl-remote-helper --stdio` server；桌面 xtask 将远端 server 资产作为 Flutter bundle 资源分发，不嵌入 bridge，不使用其他传输后备路径。
 
 - 不默认启用 `--all-features`。性能与真实外部服务观察按明确目标和授权显式选择，不将费用、凭据或机器敏感采样带入普通检查；不保留专项实验 example、永久截图脚本或第二套业务运行时。
 - 真实模型与 GUI 观察遵循统一实验方法，按边界选择载体；模拟通过不等于真实供应商兼容，人工结论独立记录，默认为待评审。

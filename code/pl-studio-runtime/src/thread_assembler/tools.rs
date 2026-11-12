@@ -15,18 +15,10 @@ use std::sync::Arc;
 
 /// Explicit physical command binding chosen from the current product configuration.
 #[derive(Debug)]
-pub enum StudioCommandBinding {
-    Local {
-        executor: pl_remote_helper::Executor,
-        workspace: pl_tool::workspace::ToolWorkspace,
-        environment: pl_tool::environment::ExecutionEnvironment,
-        child_environment: std::collections::BTreeMap<String, String>,
-        access: CommandAccess,
-    },
-    Remote {
-        host: pl_tool::remote::RemoteWorkspaceHost,
-        workspace: pl_tool::workspace::ToolWorkspace,
-    },
+pub struct StudioCommandBinding {
+    pub commands: pl_tool::command::ExecutorCommandBackend,
+    pub workspace: pl_tool::workspace::ToolWorkspace,
+    pub access: CommandAccess,
 }
 
 /// Physical command controllers remain unique per Thread across catalog refreshes.
@@ -151,119 +143,67 @@ impl StudioThreadTools {
             ..
         } = options;
         let mut registrations = Vec::new();
-        match binding {
-            StudioCommandBinding::Local {
-                executor,
+        let StudioCommandBinding {
+            commands: backend,
+            workspace,
+            access,
+        } = binding;
+        let execution = backend.binding();
+        let files = Arc::new(
+            pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
+                execution.executor,
+                execution.root.as_str(),
+            )
+            .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
+            .with_workspace(workspace.clone()),
+        );
+        if capabilities.exec {
+            let exec_definition = ThreadBuiltin::Exec.declaration();
+            let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
+            let exec = prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
+            let stdin =
+                prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)?;
+            let archive = store.command_archive(files.clone(), host_scratch);
+            let processes = command_processes(&commands, backend)?;
+            commands = Some(StudioCommandProcesses(processes.clone()));
+            registrations.extend(
+                ThreadExecTool::from_process_manager(
+                    processes,
+                    Arc::new(archive),
+                    access,
+                    exec_definition,
+                )
+                .registrations(exec, stdin, stdin_definition),
+            );
+        }
+        if capabilities.workspace_files {
+            for &kind in pl_tool::workspace_file::WorkspaceMutationKind::all() {
+                let definition = kind.definition();
+                let prepared = prepare_registration(
+                    definition.name(),
+                    &definition,
+                    ToolCallPolicy::DirectOnly,
+                )?;
+                let tool = pl_tool::workspace_file::WorkspaceMutationTool::new(
+                    kind,
+                    definition,
+                    files.clone(),
+                    workspace.clone(),
+                );
+                registrations.push(
+                    prepared
+                        .attach(ToolHandle::new(tool))
+                        .with_presentation_contract(ToolPresentationContract::new(
+                            mutation_presentation_contract(kind),
+                        ))
+                        .with_authorization(workspace.authorization()),
+                );
+            }
+            registrations.extend(file_tools(
+                files,
                 workspace,
-                environment,
-                child_environment,
-                access,
-            } => {
-                if capabilities.exec {
-                    let exec_definition = ThreadBuiltin::Exec.declaration();
-                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-                    let exec =
-                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
-                    let stdin = prepare_registration(
-                        "write_stdin",
-                        &stdin_definition,
-                        ToolCallPolicy::DirectOnly,
-                    )?;
-                    let backend = pl_tool::command::ExecutorCommandBackend::new(
-                        executor,
-                        workspace.root().to_str().ok_or_else(|| {
-                            ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
-                        })?,
-                        environment,
-                    )
-                    .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
-                    .with_child_environment(child_environment);
-                    let processes = command_processes(&commands, backend)?;
-                    commands = Some(StudioCommandProcesses(processes.clone()));
-                    registrations.extend(
-                        ThreadExecTool::from_process_manager(
-                            processes,
-                            Arc::new(store.local_command_archive()),
-                            access,
-                            exec_definition,
-                        )
-                        .registrations(exec, stdin, stdin_definition),
-                    );
-                }
-                if capabilities.workspace_files {
-                    let files = Arc::new(
-                        pl_tool::workspace_file::LocalWorkspaceFileBackend::confined(
-                            workspace.clone(),
-                        )
-                        .await?,
-                    );
-                    registrations.extend(local_mutation_tools(workspace.clone())?);
-                    registrations.extend(file_tools(
-                        files,
-                        workspace,
-                        Arc::new(super::media::MediaHost(store.clone())),
-                    )?);
-                }
-            }
-            StudioCommandBinding::Remote { host, workspace } => {
-                if capabilities.exec {
-                    let exec_definition = ThreadBuiltin::Exec.declaration();
-                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-                    let exec =
-                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
-                    let stdin = prepare_registration(
-                        "write_stdin",
-                        &stdin_definition,
-                        ToolCallPolicy::DirectOnly,
-                    )?;
-                    let archive = store
-                        .remote_command_archive(Arc::new(host.files.clone()), host_scratch.clone());
-                    let processes = command_processes(&commands, host.commands.clone())?;
-                    commands = Some(StudioCommandProcesses(processes.clone()));
-                    registrations.extend(
-                        ThreadExecTool::from_process_manager(
-                            processes,
-                            Arc::new(archive),
-                            CommandAccess::WorkspaceOnly,
-                            exec_definition,
-                        )
-                        .registrations(exec, stdin, stdin_definition),
-                    );
-                }
-                if capabilities.workspace_files {
-                    for &kind in pl_tool::remote::RemoteMutationKind::all() {
-                        let definition = kind.definition();
-                        let prepared = prepare_registration(
-                            definition.name(),
-                            &definition,
-                            ToolCallPolicy::DirectOnly,
-                        )?;
-                        let tool = pl_tool::remote::RemoteWorkspaceMutationTool::new(
-                            kind,
-                            definition,
-                            Arc::new(host.files.clone()),
-                            workspace.clone(),
-                        );
-                        registrations.push(
-                            prepared
-                                .attach(ToolHandle::new(tool))
-                                .with_presentation_contract(ToolPresentationContract::new(
-                                    remote_mutation_presentation_contract(kind),
-                                ))
-                                .with_authorization(workspace.authorization()),
-                        );
-                    }
-                    let files = pl_tool::workspace_file::WorkspacePolicyBackend::new(
-                        Arc::new(host.files.clone()),
-                        workspace.clone(),
-                    );
-                    registrations.extend(file_tools(
-                        Arc::new(files),
-                        workspace,
-                        Arc::new(super::media::MediaHost(store.clone())),
-                    )?);
-                }
-            }
+                Arc::new(super::media::MediaHost(store.clone())),
+            )?);
         }
         if capabilities.ask_user {
             let ask_user = prepare_native_tool::<pl_tool::ask_user::AskUserTool>()?;
@@ -587,69 +527,17 @@ impl StudioThreadTools {
     }
 }
 
-fn remote_mutation_presentation_contract(
-    kind: pl_tool::remote::RemoteMutationKind,
+fn mutation_presentation_contract(
+    kind: pl_tool::workspace_file::WorkspaceMutationKind,
 ) -> &'static str {
     match kind {
-        pl_tool::remote::RemoteMutationKind::CreateDirectory => "builtin.create_directory@1",
-        pl_tool::remote::RemoteMutationKind::Delete => "builtin.delete_path@1",
-        pl_tool::remote::RemoteMutationKind::Copy => "builtin.copy_path@1",
-        pl_tool::remote::RemoteMutationKind::Move => "builtin.move_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::CreateDirectory => {
+            "builtin.create_directory@1"
+        }
+        pl_tool::workspace_file::WorkspaceMutationKind::Delete => "builtin.delete_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::Copy => "builtin.copy_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::Move => "builtin.move_path@1",
     }
-}
-
-fn local_mutation_tools(
-    workspace: pl_tool::workspace::ToolWorkspace,
-) -> Result<Vec<Registration>, ThreadAssemblyError> {
-    use pl_tool::file::{CopyPathTool, CreateDirectoryTool, DeletePathTool, MovePathTool};
-    let authority = workspace.authorization();
-    let create = prepare_native_tool::<CreateDirectoryTool>()?;
-    let create_registration = prepare_registration(
-        "create_directory",
-        create.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    let delete = prepare_native_tool::<DeletePathTool>()?;
-    let delete_registration = prepare_registration(
-        "delete_path",
-        delete.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    let copy = prepare_native_tool::<CopyPathTool>()?;
-    let copy_registration =
-        prepare_registration("copy_path", copy.definition(), ToolCallPolicy::DirectOnly)?;
-    let move_path = prepare_native_tool::<MovePathTool>()?;
-    let move_registration = prepare_registration(
-        "move_path",
-        move_path.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    Ok(vec![
-        create_registration
-            .attach(ToolHandle::new(
-                create.attach(CreateDirectoryTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.create_directory@1"))
-            .with_authorization(authority.clone()),
-        delete_registration
-            .attach(ToolHandle::new(
-                delete.attach(DeletePathTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.delete_path@1"))
-            .with_authorization(authority.clone()),
-        copy_registration
-            .attach(ToolHandle::new(
-                copy.attach(CopyPathTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.copy_path@1"))
-            .with_authorization(authority.clone()),
-        move_registration
-            .attach(ToolHandle::new(
-                move_path.attach(MovePathTool::new(workspace)),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.move_path@1"))
-            .with_authorization(authority),
-    ])
 }
 
 fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(

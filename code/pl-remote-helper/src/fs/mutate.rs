@@ -14,11 +14,13 @@ pub(crate) enum Mutation {
     Rename {
         source: String,
         target: String,
+        collision: PathCollision,
     },
     Copy {
         source: String,
         target: String,
         recursive: bool,
+        collision: PathCollision,
     },
 }
 
@@ -66,21 +68,24 @@ impl FileSystem {
         &self,
         source: &TargetPath,
         target: &TargetPath,
+        collision: PathCollision,
     ) -> Result<(), ExecutionError> {
         self.validate(source)?;
         self.validate(target)?;
         self.mutate(Mutation::Rename {
             source: source.value.clone(),
             target: target.value.clone(),
+            collision,
         })
         .await
     }
-    /// Copies on this execution machine. Recursive copy rejects symlinks.
+    /// Copies on this execution machine without traversing source links. Overwrite merges directories.
     pub async fn copy_path(
         &self,
         source: &TargetPath,
         target: &TargetPath,
         recursive: bool,
+        collision: PathCollision,
     ) -> Result<(), ExecutionError> {
         self.validate(source)?;
         self.validate(target)?;
@@ -88,6 +93,7 @@ impl FileSystem {
             source: source.value.clone(),
             target: target.value.clone(),
             recursive,
+            collision,
         })
         .await
     }
@@ -116,7 +122,7 @@ pub(crate) async fn mutate_native(
             if cancel.is_cancelled() {
                 return Err(ExecutionError::Cancelled);
             }
-            if metadata.is_dir() && !metadata.is_symlink() {
+            if metadata.is_dir() && !super::is_link_boundary(&metadata) {
                 if recursive {
                     tokio::fs::remove_dir_all(path).await
                 } else {
@@ -126,12 +132,24 @@ pub(crate) async fn mutate_native(
                 tokio::fs::remove_file(path).await
             }
         }
-        Mutation::Rename { source, target } => tokio::fs::rename(source, target).await,
+        Mutation::Rename {
+            source,
+            target,
+            collision,
+        } => {
+            super::rename::rename(
+                std::path::Path::new(&source),
+                std::path::Path::new(&target),
+                collision,
+            )
+            .await
+        }
         Mutation::Copy {
             source,
             target,
             recursive,
-        } => return copy(source, target, recursive, executor, cancel).await,
+            collision,
+        } => return copy(source, target, recursive, collision, executor, cancel).await,
     };
     result.map_err(|error| ExecutionError::io("filesystem mutation", error))
 }
@@ -140,13 +158,19 @@ async fn copy(
     source: String,
     target: String,
     recursive: bool,
+    collision: PathCollision,
     executor: Executor,
     cancel: CancellationToken,
 ) -> Result<(), ExecutionError> {
+    if source == target {
+        return Err(ExecutionError::InvalidInput(
+            "cannot copy a path onto itself".into(),
+        ));
+    }
     let metadata = tokio::fs::symlink_metadata(&source)
         .await
         .map_err(|error| ExecutionError::io("copy metadata", error))?;
-    if metadata.is_dir() {
+    if metadata.is_dir() && !super::is_link_boundary(&metadata) {
         if !recursive {
             return Err(ExecutionError::InvalidInput(
                 "directory copy requires recursive=true".into(),
@@ -171,6 +195,21 @@ async fn copy(
             return Err(ExecutionError::InvalidInput(
                 "cannot copy a directory into itself".into(),
             ));
+        }
+    }
+    if !super::is_link_boundary(&metadata) {
+        let canonical_source = tokio::fs::canonicalize(&source)
+            .await
+            .map_err(|error| ExecutionError::io("copy source", error))?;
+        match tokio::fs::canonicalize(&target).await {
+            Ok(target) if target == canonical_source => {
+                return Err(ExecutionError::InvalidInput(
+                    "cannot copy a path onto itself".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ExecutionError::io("copy target", error)),
         }
     }
     let mut pending = Some((
@@ -200,11 +239,20 @@ async fn copy(
                 }
             }
         };
+        if source.to_str().is_none() || target.to_str().is_none() {
+            return Err(ExecutionError::InvalidInput(
+                "copy entry path is not UTF-8".into(),
+            ));
+        }
         let metadata = tokio::fs::symlink_metadata(&source)
             .await
             .map_err(|error| ExecutionError::io("copy metadata", error))?;
         match tokio::fs::symlink_metadata(&target).await {
-            Ok(metadata) if metadata.is_symlink() => {
+            Ok(target_metadata)
+                if metadata.is_dir()
+                    && !super::is_link_boundary(&metadata)
+                    && super::is_link_boundary(&target_metadata) =>
+            {
                 return Err(ExecutionError::InvalidInput(
                     "copy does not follow destination symbolic links".into(),
                 ));
@@ -213,15 +261,24 @@ async fn copy(
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(ExecutionError::io("copy target metadata", error)),
         }
-        if metadata.is_symlink() {
-            return Err(ExecutionError::InvalidInput(
-                "copy does not follow symbolic links".into(),
-            ));
-        }
-        if metadata.is_dir() {
-            tokio::fs::create_dir_all(&target)
-                .await
-                .map_err(|error| ExecutionError::io("copy directory", error))?;
+        if super::is_link_boundary(&metadata) {
+            copy_link(&source, &target, &metadata, collision, &cancel).await?;
+        } else if metadata.is_dir() {
+            match tokio::fs::create_dir(&target).await {
+                Ok(()) => {}
+                Err(error)
+                    if collision == PathCollision::Overwrite
+                        && error.kind() == io::ErrorKind::AlreadyExists =>
+                {
+                    let target_metadata = tokio::fs::symlink_metadata(&target)
+                        .await
+                        .map_err(|error| ExecutionError::io("copy directory metadata", error))?;
+                    if !target_metadata.is_dir() || super::is_link_boundary(&target_metadata) {
+                        return Err(ExecutionError::io("copy directory", error));
+                    }
+                }
+                Err(error) => return Err(ExecutionError::io("copy directory", error)),
+            }
             let entries = tokio::fs::read_dir(&source)
                 .await
                 .map_err(|error| ExecutionError::io("copy directory", error))?;
@@ -245,7 +302,11 @@ async fn copy(
                 executor.clone(),
                 WriteDescriptor {
                     path,
-                    mode: WriteMode::ReplaceAtomic,
+                    mode: if collision == PathCollision::FailIfExists {
+                        WriteMode::CreateNew
+                    } else {
+                        WriteMode::ReplaceAtomic
+                    },
                     expected_len: None,
                 },
                 Some(permissions),
@@ -254,6 +315,9 @@ async fn copy(
             tokio::io::copy(&mut source, &mut writer)
                 .await
                 .map_err(|error| ExecutionError::io("copy file", error))?;
+            if cancel.is_cancelled() {
+                return Err(ExecutionError::Cancelled);
+            }
             writer.finish().await?;
         } else {
             return Err(ExecutionError::InvalidInput(
@@ -261,5 +325,56 @@ async fn copy(
             ));
         }
     }
+    Ok(())
+}
+
+async fn copy_link(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    metadata: &std::fs::Metadata,
+    collision: PathCollision,
+    cancel: &CancellationToken,
+) -> Result<(), ExecutionError> {
+    if !metadata.is_symlink() {
+        return Err(ExecutionError::InvalidInput(
+            "copy of non-symlink reparse points is unsupported".into(),
+        ));
+    }
+    let link = tokio::fs::read_link(source)
+        .await
+        .map_err(|error| ExecutionError::io("copy link", error))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| ExecutionError::InvalidInput("copy target has no parent".into()))?
+        .to_owned();
+    let metadata = metadata.clone();
+    let target = target.to_owned();
+    let temporary = tokio::task::spawn_blocking(move || -> io::Result<_> {
+        let directory = tempfile::tempdir_in(parent)?;
+        let staged = directory.path().join("link");
+        #[cfg(unix)]
+        {
+            let _ = metadata;
+            std::os::unix::fs::symlink(link, &staged)?;
+        }
+        #[cfg(windows)]
+        if metadata.is_dir() {
+            std::os::windows::fs::symlink_dir(link, &staged)?;
+        } else {
+            std::os::windows::fs::symlink_file(link, &staged)?;
+        }
+        Ok((directory, staged))
+    })
+    .await
+    .map_err(|error| ExecutionError::io("copy link task", io::Error::other(error)))?
+    .map_err(|error| ExecutionError::io("copy link", error))?;
+    if cancel.is_cancelled() {
+        return Err(ExecutionError::Cancelled);
+    }
+    super::rename::rename(&temporary.1, &target, collision)
+        .await
+        .map_err(|error| ExecutionError::io("publish copied link", error))?;
+    // The private staging directory owns only this operation's link.
+    drop(temporary);
     Ok(())
 }

@@ -11,10 +11,9 @@ mod manager;
 pub(crate) mod path;
 mod skill;
 mod ssh_config;
-mod tools;
-mod workspace;
 
 use crate::command::ExecutorCommandBackend;
+use crate::workspace_file::ExecutorWorkspaceFileBackend;
 pub use error::{SshAuthFailure, SshError};
 pub use manager::{
     RemoteHelperAssets, RemoteHelperTarget, SshConnectionSnapshot, SshConnectionState, SshManager,
@@ -25,11 +24,6 @@ pub use skill::RemoteSkillProvider;
 pub use ssh_config::{
     SshConfigEntry, SshConfigFile, allocate_alias, sanitize_alias_base, validate_alias,
 };
-pub use tools::{RemoteMutationKind, RemoteWorkspaceMutationTool};
-pub use workspace::{
-    RemoteDirectoryReader, RemoteDownloadError, RemoteWorkspaceFileBackend,
-    load_remote_workspace_instructions,
-};
 
 /// 一个远端 workspace 的本地后端集合。
 ///
@@ -38,7 +32,7 @@ pub use workspace::{
 pub struct RemoteWorkspaceHost {
     /// Frozen non-secret endpoint of the exact transport that returned this canonical workspace.
     pub profile: std::sync::Arc<SshServerProfile>,
-    pub files: RemoteWorkspaceFileBackend,
+    pub files: ExecutorWorkspaceFileBackend,
     pub commands: ExecutorCommandBackend,
     pub git: crate::execution::ExecutorExecutionBackend,
     pub execution_environment: ExecutionEnvironment,

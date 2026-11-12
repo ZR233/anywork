@@ -168,6 +168,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             "nested/copied.txt".to_string(),
             None,
             false,
+            pl_tool_filesystem::PathCollision::FailIfExists,
         )
         .await?;
     files
@@ -175,6 +176,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             "nested/copied.txt".to_string(),
             "nested/moved.txt".to_string(),
             None,
+            pl_tool_filesystem::PathCollision::FailIfExists,
         )
         .await?;
     let processes = CommandProcessManager::new(Arc::new(host.commands.clone()));
@@ -325,7 +327,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             } else {
                 result.state.is_timed_out()
             });
-            anyhow::ensure!(files.stat_optional(marker.into(), None).await?.is_none());
+            anyhow::ensure!(files.inspect_path(marker.into(), None).await?.is_none());
         }
         manager.disconnect_server("validation").await?;
         println!(
@@ -544,7 +546,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         "streamed.bin",
     ] {
         if reconnected_files
-            .stat_optional(path.to_string(), None)
+            .inspect_path(path.to_string(), None)
             .await?
             .is_some()
         {
@@ -560,7 +562,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 }
 
 async fn validate_session_capture_layout(
-    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
     capture: &std::path::Path,
 ) -> anyhow::Result<()> {
     use pl_tool::workspace::{
@@ -577,7 +579,7 @@ async fn validate_session_capture_layout(
     let alpha = SessionFiles::new("validation");
     anyhow::ensure!(capture.contains(alpha.thread_key()));
     if files
-        .stat_optional(".anywork/sessions/.gitignore".into(), None)
+        .inspect_path(".anywork/sessions/.gitignore".into(), None)
         .await?
         .is_none()
     {
@@ -679,7 +681,7 @@ async fn validate_session_capture_layout(
 }
 
 async fn concurrent_remote_pool_ignore(
-    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     use pl_tool::workspace::{POOL_GITIGNORE, prepare_worktree_pool};
     use tokio::sync::Barrier;
@@ -720,7 +722,7 @@ async fn concurrent_remote_pool_ignore(
 
 #[derive(Debug, Clone)]
 struct RacingRemoteIgnore {
-    inner: pl_tool::remote::RemoteWorkspaceFileBackend,
+    inner: pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
     barrier: Arc<tokio::sync::Barrier>,
     ignore_path: String,
 }
@@ -768,7 +770,7 @@ impl WorkspaceFileBackend for RacingRemoteIgnore {
 
 async fn validate_git(
     backend: &pl_tool::execution::ExecutorExecutionBackend,
-    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     assert_eq!(
         run_remote(
@@ -810,7 +812,7 @@ async fn validate_git(
 }
 
 async fn validate_skills(
-    files: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
+    files: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
 ) -> anyhow::Result<()> {
     files
         .create_directory(".agents/skills/remote".to_string(), None)
@@ -869,7 +871,7 @@ async fn validate_skills(
 }
 
 async fn validate_image_bytes(
-    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     let png = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
@@ -893,7 +895,7 @@ async fn validate_image_bytes(
 
 async fn validate_lsp_backend(
     host: pl_tool::remote::RemoteWorkspaceHost,
-    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     let server = r#"import json
 import os

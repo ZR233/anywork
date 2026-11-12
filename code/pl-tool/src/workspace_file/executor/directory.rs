@@ -1,32 +1,28 @@
 use super::*;
 use futures::{StreamExt, stream::BoxStream};
 
-pub(in crate::remote) type RemoteWalkEntries = BoxStream<'static, Result<RemoteWalkEntry>>;
-pub(in crate::remote) struct RemoteWalkEntry {
-    pub(in crate::remote) path: String,
-    pub(in crate::remote) is_dir: bool,
+pub(crate) type WorkspaceWalkEntries = BoxStream<'static, Result<WorkspaceWalkEntry>>;
+pub(crate) struct WorkspaceWalkEntry {
+    pub(crate) path: String,
+    pub(crate) is_dir: bool,
 }
 #[derive(Debug)]
-pub struct RemoteDirectoryReader {
+pub struct WorkspaceDirectoryReader {
     reader: pl_remote_helper::fs::DirectoryReader,
-    root: String,
+    executor: Executor,
+    root: TargetPath,
 }
-impl RemoteDirectoryReader {
+impl WorkspaceDirectoryReader {
     pub async fn next(&mut self) -> Result<Option<pl_protocol::remote::RemoteDirectoryEntry>> {
-        let Some(entry) = self
-            .reader
-            .next()
-            .await
-            .map_err(|error| remote_file_error(error.into()))?
-        else {
+        let Some(entry) = self.reader.next().await.map_err(file_error)? else {
             return Ok(None);
         };
-        let path = entry
-            .path
-            .strip_prefix(self.root.trim_end_matches('/'))
-            .and_then(|path| path.strip_prefix('/'))
-            .ok_or_else(|| tool_error("file", "directory entry is outside workspace"))?
-            .to_owned();
+        let target = self.executor.path(&entry.path).map_err(file_error)?;
+        let path = self
+            .executor
+            .relative_path(&self.root, &target)
+            .map_err(file_error)?
+            .ok_or_else(|| tool_error("file", "directory entry is outside workspace"))?;
         Ok(Some(pl_protocol::remote::RemoteDirectoryEntry {
             name: entry.name,
             path,
@@ -35,27 +31,25 @@ impl RemoteDirectoryReader {
         }))
     }
 }
-impl RemoteWorkspaceFileBackend {
-    pub async fn open_directory(&self, path: String) -> Result<RemoteDirectoryReader> {
+impl ExecutorWorkspaceFileBackend {
+    pub async fn open_directory(&self, path: String) -> Result<WorkspaceDirectoryReader> {
         let path = self
-            .bound(
-                self.path_request(path, None).map_err(remote_file_error)?,
-                true,
-            )
+            .bound(self.path_request(path, None).map_err(file_error)?, true)
             .await
-            .map_err(remote_file_error)?;
+            .map_err(file_error)?;
         let reader = self
             .executor
             .fs()
             .read_dir(&path)
             .await
-            .map_err(|error| remote_file_error(error.into()))?;
-        Ok(RemoteDirectoryReader {
+            .map_err(file_error)?;
+        Ok(WorkspaceDirectoryReader {
             reader,
-            root: self.root.as_str().into(),
+            root: self.root.clone(),
+            executor: self.executor.clone(),
         })
     }
-    pub(in crate::remote) async fn walk(&self, path: String) -> Result<RemoteWalkEntries> {
+    pub(crate) async fn walk(&self, path: String) -> Result<WorkspaceWalkEntries> {
         let root = self.open_directory(path).await?;
         let backend = self.clone();
         Ok(futures::stream::try_unfold(
@@ -81,7 +75,7 @@ impl RemoteWorkspaceFileBackend {
                     }
                     let pending = entry.is_directory.then(|| entry.path.clone());
                     return Ok(Some((
-                        RemoteWalkEntry {
+                        WorkspaceWalkEntry {
                             path: entry.path,
                             is_dir: entry.is_directory,
                         },

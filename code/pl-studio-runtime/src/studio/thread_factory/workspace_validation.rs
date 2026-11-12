@@ -680,9 +680,14 @@ impl StudioThreadFactory {
             .as_ref()
             .and_then(|binding| binding.remote.as_ref())
         {
-            let stat = remote.files.stat_optional(".".into(), None).await?.ok_or(
-                ReviewWorkspaceError::Invalid("frozen SSH workspace is missing"),
-            )?;
+            let stat = remote
+                .files
+                .inspect_path(".".into(), None)
+                .await
+                .map_err(pl_tool::remote::SshError::from)?
+                .ok_or(ReviewWorkspaceError::Invalid(
+                    "frozen SSH workspace is missing",
+                ))?;
             if !stat.is_dir
                 || !same_workspace_path(remote.files.canonical_path(), &assignment.root, true)
             {

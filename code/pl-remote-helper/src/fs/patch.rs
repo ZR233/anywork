@@ -15,7 +15,9 @@ struct NativePatch {
 
 impl PatchPathDisplay for NativePatch {
     fn display_path(&self, path: &Path) -> String {
-        path.to_str()
+        path.strip_prefix(self.cwd.as_str())
+            .unwrap_or(path)
+            .to_str()
             .expect("all patch paths were validated as UTF-8")
             .to_owned()
     }

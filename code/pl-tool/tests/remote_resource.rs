@@ -51,7 +51,13 @@ async fn workspace_binding_preserves_neighbors_and_cannot_recover_closed_handles
             })
             .await?;
         files
-            .copy_path("owned".into(), "copied".into(), None, true)
+            .copy_path(
+                "owned".into(),
+                "copied".into(),
+                None,
+                true,
+                pl_tool_filesystem::PathCollision::FailIfExists,
+            )
             .await?;
         assert_eq!(
             files

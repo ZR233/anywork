@@ -88,3 +88,17 @@ impl SshError {
         }
     }
 }
+
+impl From<crate::workspace_file::WorkspaceFileError> for SshError {
+    fn from(error: crate::workspace_file::WorkspaceFileError) -> Self {
+        use crate::workspace_file::WorkspaceFileError;
+        match error {
+            WorkspaceFileError::Execution(error) => Self::Execution(error),
+            WorkspaceFileError::Removal(error) => Self::Removal(error),
+            WorkspaceFileError::Policy(message) => Self::Remote {
+                code: pl_protocol::remote::RemoteErrorCode::WorkspaceEscape,
+                message,
+            },
+        }
+    }
+}

@@ -53,7 +53,7 @@ impl LspHostBackend for RemoteWorkspaceHost {
 }
 
 pub(crate) async fn resolve_lsp_query_path(
-    files: &super::RemoteWorkspaceFileBackend,
+    files: &super::ExecutorWorkspaceFileBackend,
     path: &Path,
     operation: pl_lsp::query::LspQueryOperation,
 ) -> pl_protocol::Result<PathBuf> {
@@ -62,9 +62,9 @@ pub(crate) async fn resolve_lsp_query_path(
     let mut candidate = relative.as_str();
     loop {
         if let Some(stat) = files
-            .stat_optional(candidate.to_owned(), None)
+            .inspect_path(candidate.to_owned(), None)
             .await
-            .map_err(super::workspace::remote_file_error)?
+            .map_err(crate::workspace_file::file_error)?
         {
             if operation.requires_file() && !stat.is_file {
                 return Err(crate::tool_error(

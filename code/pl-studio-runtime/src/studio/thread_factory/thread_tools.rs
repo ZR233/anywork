@@ -318,34 +318,38 @@ impl StudioThreadFactory {
         } else {
             Default::default()
         };
-        let binding = match &remote {
-            Some(host) => StudioCommandBinding::Remote {
-                host: host.clone(),
-                workspace: workspace.clone(),
-            },
-            None => StudioCommandBinding::Local {
-                executor: self.services.local_executor.clone(),
-                workspace: workspace.clone(),
-                environment: environment.clone(),
-                child_environment,
-                access: match config.runtime.permission_mode {
-                    crate::approval::PermissionMode::FullAccess
-                        if workspace.workspace().boundary().allows_host_paths() =>
-                    {
-                        pl_tool::exec::CommandAccess::HostGranted
-                    }
-                    crate::approval::PermissionMode::AutoReview
-                    | crate::approval::PermissionMode::RequestApproval
-                        if workspace.workspace().boundary().allows_host_paths() =>
-                    {
-                        pl_tool::exec::CommandAccess::HostApproval
-                    }
-                    crate::approval::PermissionMode::FullAccess
-                    | crate::approval::PermissionMode::AutoReview
-                    | crate::approval::PermissionMode::RequestApproval => {
-                        pl_tool::exec::CommandAccess::WorkspaceOnly
-                    }
-                },
+        let executor = remote
+            .as_ref()
+            .map(|host| host.files.executor().clone())
+            .unwrap_or_else(|| self.services.local_executor.clone());
+        let binding = StudioCommandBinding {
+            commands: pl_tool::command::ExecutorCommandBackend::new(
+                executor,
+                workspace.root().to_str().ok_or_else(|| {
+                    ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
+                })?,
+                environment.clone(),
+            )
+            .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
+            .with_child_environment(child_environment),
+            workspace: workspace.clone(),
+            access: match config.runtime.permission_mode {
+                crate::approval::PermissionMode::FullAccess
+                    if workspace.workspace().boundary().allows_host_paths() =>
+                {
+                    pl_tool::exec::CommandAccess::HostGranted
+                }
+                crate::approval::PermissionMode::AutoReview
+                | crate::approval::PermissionMode::RequestApproval
+                    if workspace.workspace().boundary().allows_host_paths() =>
+                {
+                    pl_tool::exec::CommandAccess::HostApproval
+                }
+                crate::approval::PermissionMode::FullAccess
+                | crate::approval::PermissionMode::AutoReview
+                | crate::approval::PermissionMode::RequestApproval => {
+                    pl_tool::exec::CommandAccess::WorkspaceOnly
+                }
             },
         };
         let commands = match &preparation {

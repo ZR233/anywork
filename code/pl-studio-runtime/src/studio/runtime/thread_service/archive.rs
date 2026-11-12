@@ -1044,7 +1044,7 @@ async fn clean_execution_temp(
     let files = SessionFiles::new(&member.thread_id);
     match &member.execution.endpoint {
         WorkspaceEndpoint::Local => {
-            let backend = SessionTempBackend::Local(Path::new(&member.execution.root));
+            let backend = SessionTempBackend::local(Path::new(&member.execution.root)).await?;
             backend.migrate(&files).await?;
             backend.remove(&files).await?;
         }
@@ -1067,7 +1067,7 @@ async fn clean_execution_temp(
                     && host.files.canonical_path() == member.execution.root,
                 "archive SSH endpoint or canonical root changed"
             );
-            let backend = SessionTempBackend::Ssh(&host.files);
+            let backend = SessionTempBackend::new(&host.files);
             backend.migrate(&files).await?;
             backend.remove(&files).await?;
         }

@@ -73,7 +73,7 @@ pub(super) async fn prepare_bound_session_files(
     }
     match remote {
         Some(host) => {
-            pl_tool::workspace::SessionTempBackend::Ssh(&host.files)
+            pl_tool::workspace::SessionTempBackend::new(&host.files)
                 .migrate(&files)
                 .await
                 .map_err(|error| resource_error("migrate remote Thread temp files", error))?;
@@ -82,11 +82,12 @@ pub(super) async fn prepare_bound_session_files(
                 .map_err(|error| resource_error("prepare remote Thread session files", error))
         }
         None => {
-            pl_tool::workspace::SessionTempBackend::Local(workspace.root())
+            pl_tool::workspace::SessionTempBackend::local(workspace.root())
+                .await?
                 .migrate(&files)
                 .await
                 .map_err(|error| resource_error("migrate local Thread temp files", error))?;
-            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+            let backend = pl_tool::workspace_file::ExecutorWorkspaceFileBackend::local(
                 workspace.root().to_path_buf(),
                 false,
             )

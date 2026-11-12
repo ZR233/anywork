@@ -56,7 +56,7 @@ pub enum WorktreeError {
     RemoteDownload {
         operation: &'static str,
         #[source]
-        source: super::RemoteDownloadError,
+        source: super::WorkspaceDownloadError,
     },
     #[error("{operation}: remote file operation failed")]
     RemoteFile {

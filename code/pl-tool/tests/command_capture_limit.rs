@@ -1,8 +1,10 @@
 //! Product capture uses actual executor processes; layout checks retain the existing ownership cases.
 use anyhow::Context as _;
+use pl_tool::command::{CommandBackend, ExecutorCommandBackend};
+#[cfg(unix)]
 use pl_tool::command::{
-    CommandBackend, CommandCaptureState, CommandCaptureStream, CommandProcessManager,
-    CommandStartRequest, ExecutorCommandBackend, MAX_CAPTURE_BYTES,
+    CommandCaptureState, CommandCaptureStream, CommandProcessManager, CommandStartRequest,
+    MAX_CAPTURE_BYTES,
 };
 use pl_tool::workspace_file::{
     WorkspaceFileBackend, WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest,
@@ -10,6 +12,7 @@ use pl_tool::workspace_file::{
     WorkspaceFileWriteRequest,
 };
 use std::{path::PathBuf, sync::Arc, time::Duration};
+#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 #[tokio::test]
 async fn session_files_layout_and_directory_policy() -> anyhow::Result<()> {
@@ -24,7 +27,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         AgentWorkspace, POOL_GITIGNORE, SessionFiles, ToolPathPolicy, WorkspaceMutability,
         prepare_session_files, prepare_worktree_pool,
     };
-    use pl_tool::workspace_file::LocalWorkspaceFileBackend;
+    use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
     use sha2::{Digest, Sha256};
 
     let root = tempfile::tempdir()?;
@@ -54,7 +57,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     anyhow::ensure!(model == files.command_output(&call));
     anyhow::ensure!(!model.starts_with("target/pure"));
 
-    let backend = LocalWorkspaceFileBackend::new(root.path().to_path_buf(), false).await?;
+    let backend = ExecutorWorkspaceFileBackend::local(root.path().to_path_buf(), false).await?;
     let ignore_path = root.path().join(".anywork/sessions/.gitignore");
     std::fs::create_dir_all(ignore_path.parent().unwrap())?;
     std::fs::write(&ignore_path, b"keep-me\n")?;
@@ -201,7 +204,7 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
     std::fs::write(&sentinel, b"target-sentinel\n")?;
     let dir_root = root.path().join("dir-ignore-root");
     std::fs::create_dir_all(dir_root.join(".anywork/sessions/.gitignore"))?;
-    let dir_backend = LocalWorkspaceFileBackend::new(dir_root.clone(), false).await?;
+    let dir_backend = ExecutorWorkspaceFileBackend::local(dir_root.clone(), false).await?;
     anyhow::ensure!(
         pl_tool::workspace::prepare_session_files(&dir_backend, &files)
             .await
@@ -215,7 +218,8 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         let linked_root = root.path().join("linked-ignore");
         std::fs::create_dir_all(linked_root.join(".anywork/sessions"))?;
         std::os::unix::fs::symlink("/tmp", linked_root.join(".anywork/sessions/.gitignore"))?;
-        let linked_backend = LocalWorkspaceFileBackend::new(linked_root.clone(), false).await?;
+        let linked_backend =
+            ExecutorWorkspaceFileBackend::local(linked_root.clone(), false).await?;
         anyhow::ensure!(
             pl_tool::workspace::prepare_session_files(&linked_backend, &files)
                 .await
@@ -235,12 +239,12 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
 
 async fn concurrent_pool_ignore_create_is_idempotent() -> anyhow::Result<()> {
     use pl_tool::workspace::{POOL_GITIGNORE, SessionFiles, prepare_session_files};
-    use pl_tool::workspace_file::LocalWorkspaceFileBackend;
+    use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
     use tokio::sync::Barrier;
 
     let root = tempfile::tempdir()?;
     let files = SessionFiles::new("race-thread");
-    let inner = LocalWorkspaceFileBackend::new(root.path().to_path_buf(), false).await?;
+    let inner = ExecutorWorkspaceFileBackend::local(root.path().to_path_buf(), false).await?;
     let barrier = Arc::new(Barrier::new(2));
     let left = RacingIgnoreBackend {
         inner: inner.clone(),
@@ -315,6 +319,7 @@ where
     }
 }
 
+#[cfg(unix)]
 fn request(command: String, key: &str) -> CommandStartRequest {
     CommandStartRequest {
         command,

@@ -74,7 +74,7 @@ impl SkillCatalogRuntime {
         root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+        remote: Option<Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>>,
     ) -> Result<Arc<pl_tool::skill::FrozenSkillCatalog>> {
         let request = pl_tool::skill::SkillProviderRequest {
             workspace_root: root.to_owned(),
@@ -118,7 +118,7 @@ impl SkillCatalogRuntime {
         &self,
         config: &SkillsConfig,
         system_skills_dir: Option<&Path>,
-        remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
+        remote_backend: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
     ) -> Result<(SkillRegistry, Vec<Arc<SkillProviderRegistration>>)> {
         remote::remote_workspace_registry(config, system_skills_dir, remote_backend)
     }

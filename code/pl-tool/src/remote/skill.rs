@@ -14,7 +14,7 @@ use crate::skill::{
 };
 use crate::workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest};
 
-use super::RemoteWorkspaceFileBackend;
+use crate::workspace_file::ExecutorWorkspaceFileBackend;
 
 const REMOTE_SKILL_PROVIDER_ID: &str = "remote-workspace";
 
@@ -22,12 +22,12 @@ const REMOTE_SKILL_PROVIDER_ID: &str = "remote-workspace";
 #[derive(Debug)]
 pub struct RemoteSkillProvider {
     id: SkillProviderId,
-    backend: Arc<RemoteWorkspaceFileBackend>,
+    backend: Arc<ExecutorWorkspaceFileBackend>,
 }
 
 impl RemoteSkillProvider {
     /// 创建绑定到一个已打开远端 workspace 的 Skill provider。
-    pub fn new(backend: Arc<RemoteWorkspaceFileBackend>) -> Result<Self> {
+    pub fn new(backend: Arc<ExecutorWorkspaceFileBackend>) -> Result<Self> {
         Ok(Self {
             id: SkillProviderId::new(REMOTE_SKILL_PROVIDER_ID)?,
             backend,
@@ -53,9 +53,9 @@ impl SkillProvider for RemoteSkillProvider {
             let root = request.config.project_dir.clone();
             if self
                 .backend
-                .stat_optional(root.clone(), None)
+                .inspect_path(root.clone(), None)
                 .await
-                .map_err(super::workspace::remote_file_error)?
+                .map_err(crate::workspace_file::file_error)?
                 .is_none()
             {
                 return Ok(SkillProviderObservation {

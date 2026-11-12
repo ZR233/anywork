@@ -1,5 +1,5 @@
 //! Worktree-specific safe failure facts, not a general-purpose secret sanitizer.
-use super::{ExecutionFailure, RemoteDownloadError, SshError, WorktreeError};
+use super::{ExecutionFailure, SshError, WorkspaceDownloadError, WorktreeError};
 
 impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
@@ -59,17 +59,29 @@ impl WorktreeError {
 }
 
 /// Preserve the transfer phase and typed cause without reflecting paths or arbitrary helper text.
-pub(super) fn download_cause(error: &RemoteDownloadError) -> String {
+pub(super) fn download_cause(error: &WorkspaceDownloadError) -> String {
     match error {
-        RemoteDownloadError::Path(source) => remote_code(source),
-        RemoteDownloadError::Open(source) => execution_error(source),
-        RemoteDownloadError::Io(source) => format!(
+        WorkspaceDownloadError::Path(source) => match source {
+            pl_tool::workspace_file::WorkspaceFileError::Execution(source) => {
+                execution_error(source)
+            }
+            pl_tool::workspace_file::WorkspaceFileError::Removal(source) => {
+                format!("removal unconfirmed: {}", execution_error(source))
+            }
+            pl_tool::workspace_file::WorkspaceFileError::Policy(_) => {
+                "workspace path policy rejected".into()
+            }
+        },
+        WorkspaceDownloadError::Open(source) => execution_error(source),
+        WorkspaceDownloadError::Io(source) | WorkspaceDownloadError::Read(source) => format!(
             "file transfer IO {:?}; os={:?}",
             source.kind(),
             source.raw_os_error()
         ),
-        RemoteDownloadError::TooLarge { limit } => format!("file transfer exceeds {limit} bytes"),
-        RemoteDownloadError::Incomplete => "file transfer incomplete".into(),
+        WorkspaceDownloadError::TooLarge { limit } => {
+            format!("file transfer exceeds {limit} bytes")
+        }
+        WorkspaceDownloadError::Incomplete => "file transfer incomplete".into(),
     }
 }
 pub(super) fn execution_cause(error: &ExecutionFailure) -> String {

@@ -105,9 +105,12 @@ impl ExecutorCommandBackend {
         }
         Ok(())
     }
-    fn workspace_files(&self) -> crate::remote::RemoteWorkspaceFileBackend {
-        crate::remote::RemoteWorkspaceFileBackend::new(self.executor.clone(), self.root.as_str())
-            .expect("existing target path")
+    fn workspace_files(&self) -> crate::workspace_file::ExecutorWorkspaceFileBackend {
+        crate::workspace_file::ExecutorWorkspaceFileBackend::new(
+            self.executor.clone(),
+            self.root.as_str(),
+        )
+        .expect("existing target path")
     }
     async fn spawn_controlled(
         &self,
@@ -255,17 +258,8 @@ impl CommandBackend for ExecutorCommandBackend {
         _working_directory: &str,
         _capture_limit_bytes: u64,
     ) -> Result<()> {
-        if self.environment.transport == crate::environment::ExecutionTransport::Ssh {
-            crate::workspace::prepare_command_capture(&self.workspace_files(), target.model_file())
-                .await?;
-        } else {
-            let files = crate::workspace_file::LocalWorkspaceFileBackend::new(
-                self.root.as_str().into(),
-                false,
-            )
+        crate::workspace::prepare_command_capture(&self.workspace_files(), target.model_file())
             .await?;
-            crate::workspace::prepare_command_capture(&files, target.model_file()).await?;
-        }
         // The remote helper owns the capture beside the remote workspace and streams it to the live
         // observer; there is no local fragment, so the local committed length starts at zero.
         Ok(())

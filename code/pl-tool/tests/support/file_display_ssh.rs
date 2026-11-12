@@ -7,14 +7,13 @@ use pl_core::{
     model::{DynModelSession, ToolPresentationContract},
     thread::ThreadHandle,
 };
+use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
 use pl_tool::{
     binding::{ToolCallPolicy, prepare_native_tool, prepare_registration},
     file_display::{
         FileDisplayOrigin, FileDisplayResult, ThreadShowFilesTool, saved_file_display_receipt,
     },
-    remote::{
-        RemoteWorkspaceFileBackend, SshConfigFile, SshConnectionState, SshManager, SshServerProfile,
-    },
+    remote::{SshConfigFile, SshConnectionState, SshManager, SshServerProfile},
     workspace_file::{WorkspaceFileBackend, WorkspaceFileReadRequest, WorkspaceFileWriteRequest},
 };
 use std::{
@@ -146,7 +145,7 @@ async fn show_files_archives_real_ssh_originals_and_releases_connection() -> Res
         #[cfg(target_os = "linux")]
         ensure!(active_children.len() == 1, "expected one production SSH business connection: {active_children:?}");
         let parent = manager.open_workspace_host("show-files-external", parent_path.clone()).await?;
-        ensure!(parent.files.stat_optional(fixture.clone(), None).await?.is_none(),
+        ensure!(parent.files.inspect_path(fixture.clone(), None).await?.is_none(),
             "generated fixture path already exists; refusing to reuse it");
         parent.files.create_directory(fixture.clone(), None).await?;
         created = true;
@@ -161,7 +160,7 @@ async fn show_files_archives_real_ssh_originals_and_releases_connection() -> Res
             }).await?;
             ensure!(owner == nonce, "fixture ownership marker differs; cleanup refused");
             parent.files.remove_path(fixture.clone(), None, true).await?;
-            ensure!(parent.files.stat_optional(fixture.clone(), None).await?.is_none(),
+            ensure!(parent.files.inspect_path(fixture.clone(), None).await?.is_none(),
                 "remote fixture still exists after acknowledged removal");
             println!("{}", serde_json::json!({"remoteFixture":remote_path, "markerVerified":true, "removed":true}));
             Ok::<_, anyhow::Error>(())
@@ -218,7 +217,8 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
         files.write_bytes_atomic(name.into(), None, bytes).await?;
     }
     let media = Arc::new(Media::default());
-    let prepared = prepare_native_tool::<ThreadShowFilesTool<RemoteWorkspaceFileBackend, Media>>()?;
+    let prepared =
+        prepare_native_tool::<ThreadShowFilesTool<ExecutorWorkspaceFileBackend, Media>>()?;
     let registration = prepare_registration(
         "show_files",
         prepared.definition(),

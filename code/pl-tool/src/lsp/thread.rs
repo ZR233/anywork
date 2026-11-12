@@ -19,7 +19,7 @@ pub enum LspPathBinding {
     Local(ToolWorkspace),
     Remote {
         workspace: ToolWorkspace,
-        files: Arc<crate::remote::RemoteWorkspaceFileBackend>,
+        files: Arc<crate::workspace_file::ExecutorWorkspaceFileBackend>,
     },
 }
 

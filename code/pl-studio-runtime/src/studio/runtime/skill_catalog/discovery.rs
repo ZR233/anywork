@@ -19,7 +19,7 @@ use super::{SkillCatalogRuntime, SkillsStateData, SkillsStateSnapshot};
 /// 一次显式发现的 provider 来源。
 enum DiscoverySource {
     Local,
-    Remote(Arc<pl_tool::remote::RemoteWorkspaceFileBackend>),
+    Remote(Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>),
 }
 
 impl SkillCatalogRuntime {
@@ -49,7 +49,7 @@ impl SkillCatalogRuntime {
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
+        remote_backend: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
     ) -> Result<SkillsStateSnapshot> {
         self.discover_from_source(
             workspace_id,
@@ -88,7 +88,7 @@ impl SkillCatalogRuntime {
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+        remote: Option<Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>>,
     ) -> Result<Option<(Arc<FrozenSkillCatalog>, SkillDiscoverySources)>> {
         let source = remote.map_or(DiscoverySource::Local, DiscoverySource::Remote);
         let (snapshot, sources) = self

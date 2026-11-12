@@ -3,11 +3,11 @@
 use anyhow::Context;
 use pl_remote_helper::Executor;
 use pl_tool::command::ExecutorCommandBackend;
-use pl_tool::remote::RemoteWorkspaceFileBackend;
+use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
 use std::{path::Path, process::Stdio, time::Duration};
 pub struct Helper {
     pub executor: Executor,
-    pub files: RemoteWorkspaceFileBackend,
+    pub files: ExecutorWorkspaceFileBackend,
     pub root: tempfile::TempDir,
     relay: tokio::process::Child,
     stderr: tokio::task::JoinHandle<std::io::Result<u64>>,
@@ -32,7 +32,7 @@ impl Helper {
             relay.stdin.take().context("stdin")?,
         ))
         .await?;
-        let files = RemoteWorkspaceFileBackend::new(
+        let files = ExecutorWorkspaceFileBackend::new(
             executor.clone(),
             root.path().to_str().context("UTF-8 root")?,
         )?;

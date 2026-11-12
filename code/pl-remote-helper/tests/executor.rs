@@ -589,8 +589,22 @@ async fn filesystem_mutations_run_on_target_and_closed_handles_are_terminal() {
         writer.write_all(b"\0\xff!").await.unwrap();
         writer.finish().await.unwrap();
         let target = executor.join_path(&root, "copy").unwrap();
-        fs.copy_path(&source, &target, false).await.unwrap_err();
-        fs.copy_path(&source, &target, true).await.unwrap();
+        fs.copy_path(
+            &source,
+            &target,
+            false,
+            pl_remote_helper::fs::PathCollision::Overwrite,
+        )
+        .await
+        .unwrap_err();
+        fs.copy_path(
+            &source,
+            &target,
+            true,
+            pl_remote_helper::fs::PathCollision::Overwrite,
+        )
+        .await
+        .unwrap();
         let copied = executor.join_path(&target, "line\nbreak.bin").unwrap();
         let mut bytes = Vec::new();
         fs.read(&copied)
@@ -600,8 +614,61 @@ async fn filesystem_mutations_run_on_target_and_closed_handles_are_terminal() {
             .await
             .unwrap();
         assert_eq!(bytes, b"\0\xff!");
+        use pl_remote_helper::fs::PathCollision;
+        let keep = executor.join_path(&target, "keep").unwrap();
+        tokio::fs::write(keep.as_str(), b"unrelated").await.unwrap();
+        let link = executor.join_path(&source, "external-link").unwrap();
+        std::os::unix::fs::symlink("../../not-traversed", link.as_str()).unwrap();
+        fs.copy_path(&source, &target, true, PathCollision::Overwrite)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(keep.as_str()).await.unwrap(), b"unrelated");
+        let copied_link = executor.join_path(&target, "external-link").unwrap();
+        assert_eq!(
+            tokio::fs::read_link(copied_link.as_str()).await.unwrap(),
+            std::path::Path::new("../../not-traversed")
+        );
+        assert!(
+            fs.copy_path(&source, &target, true, PathCollision::FailIfExists)
+                .await
+                .is_err()
+        );
+        assert!(
+            fs.copy_path(&source, &source, true, PathCollision::Overwrite)
+                .await
+                .is_err()
+        );
+        assert!(
+            fs.copy_path(
+                &source,
+                &executor.join_path(&source, "nested").unwrap(),
+                true,
+                PathCollision::Overwrite
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            fs.rename(&file, &keep, PathCollision::FailIfExists)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(file.as_str()).await.unwrap(), b"\0\xff!");
+        assert_eq!(tokio::fs::read(keep.as_str()).await.unwrap(), b"unrelated");
+        assert!(
+            fs.copy_path(&file, &keep, false, PathCollision::FailIfExists)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(keep.as_str()).await.unwrap(), b"unrelated");
         let renamed = executor.join_path(&root, "renamed").unwrap();
-        fs.rename(&target, &renamed).await.unwrap();
+        fs.rename(
+            &target,
+            &renamed,
+            pl_remote_helper::fs::PathCollision::FailIfExists,
+        )
+        .await
+        .unwrap();
         fs.remove(&renamed, true).await.unwrap();
         assert!(fs.metadata(&renamed).await.unwrap().is_none());
         // A destination hardlink must not truncate the source inode. The same
@@ -614,7 +681,14 @@ async fn filesystem_mutations_run_on_target_and_closed_handles_are_terminal() {
         tokio::fs::hard_link(file.as_str(), hardlink.as_str())
             .await
             .unwrap();
-        fs.copy_path(&file, &hardlink, false).await.unwrap();
+        fs.copy_path(
+            &file,
+            &hardlink,
+            false,
+            pl_remote_helper::fs::PathCollision::Overwrite,
+        )
+        .await
+        .unwrap();
         assert_eq!(tokio::fs::read(file.as_str()).await.unwrap(), b"\0\xff!");
         assert_eq!(
             tokio::fs::read(hardlink.as_str()).await.unwrap(),

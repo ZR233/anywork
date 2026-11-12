@@ -143,16 +143,11 @@ impl StudioThreadFactory {
                     "execution cleanup endpoint or canonical container changed"
                 );
                 let path = source.to_string_lossy().into_owned();
-                if host
-                    .files
-                    .stat_optional(path.clone(), None)
-                    .await?
-                    .is_some()
-                {
+                if host.files.inspect_path(path.clone(), None).await?.is_some() {
                     host.files.remove_path(path.clone(), None, true).await?;
                 }
                 ensure!(
-                    host.files.stat_optional(path, None).await?.is_none(),
+                    host.files.inspect_path(path, None).await?.is_none(),
                     "execution files remain after cleanup for {id}"
                 );
             }

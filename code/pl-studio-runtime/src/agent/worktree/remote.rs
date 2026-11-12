@@ -53,7 +53,7 @@ struct SshRemoteWorktreeTransport {
     ssh_manager: Arc<SshManager>,
     server_id: String,
     repo_root: String,
-    frozen: Option<pl_tool::remote::RemoteWorkspaceFileBackend>,
+    frozen: Option<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
     profile: SshServerProfile,
     require_canonical_root: bool,
 }
@@ -184,12 +184,12 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
             self.host()
                 .await?
                 .files
-                .stat_optional(relative_path, None)
+                .inspect_path(relative_path, None)
                 .await
                 .map(|stat| stat.is_some())
                 .map_err(|source| WorktreeError::Remote {
                     operation: "remote stat worktree path",
-                    source,
+                    source: source.into(),
                 })
         }
         .boxed()
@@ -239,7 +239,7 @@ impl RemoteWorktreeBackend {
         ssh_manager: Arc<SshManager>,
         profile: SshServerProfile,
         repo_root: PathBuf,
-        frozen: pl_tool::remote::RemoteWorkspaceFileBackend,
+        frozen: pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
         require_canonical_root: bool,
     ) -> Result<Self, WorktreeError> {
         let repo_root = remote_path(&repo_root)?;
