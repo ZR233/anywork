@@ -753,3 +753,11 @@ history19→20 在上述已发布迁移之后追加具名步骤，保全旧块/�
 ### 唯一尾组与 schema21
 
 追加具名迁移 m20261112_000001_visible_tail_workgroups，从 schema20 到21、内部 DisplayHeader v3；旧已发布迁移及 Applied 语义不变。同事务检查全库创建顺序最后一块，仅合法的最后未 sealed、history_pos=NULL Work 可续接；其余旧开放块保全为只读 legacy 快照，未知切面明确 unavailable，不用未来结果回填。保留原件/ID/member_key/内容引用及已发布位置，只从原前缀追加新位置，故障完整回滚。正常 restore 严格唯一尾组，Applied 后坏结构/引用明确拒绝、不修库重建。开放尾组可耐久并跨重开继续，全 Terminal 尾组无需加载全部成员。按每批变动位置释放已提交 terminal 行和正文引用，保留小头、计数、下一位置、未结束关联与未保存责任；原事实准入/位置水位保证清理后幂等，不建永久去重缓存、不每次 COMMIT 扫组。原件、内容、checkpoint 与展示增量仍归唯一 writer 同事务，RAM 发布不等待 COMMIT。source_key 仅保留段首诊断，成员验证各自身份。具体迁移资格与可见边界见 [26](./26-timeline-content.md)。
+
+### 保存停滞阶段与只读隔离
+
+执行历史读取不促写，单页使用原只读池短事务，不借 writer、不激活目标或把 flush 移到补查。公开固定目标 flush 的 Owner 同步准备/调用者等待职责见 [15](./15-session-storage.md)；本地接纳确认不等于磁盘提交，保存压力可暂停新增业务，但不阻断取消、成员回复和安全关闭。
+
+原 HistoryChannel 看门狗覆盖最老未保存队首：尚未 prepared 为 projection_prepare，已准备未提交为 writer_queue，真实 SQL 在途为 sql_commit。复用现役 NO_PROGRESS_WINDOW、HistoryFault::NoProgress、故障代次和 pressure；队列为空不报保存停滞，只有队首前进/真实阶段转换重置单调时钟，普通通知、后来入队和查询不重置。prepared_through 只表示连续准备前缀，不取最大序号掩盖缺口。既有明确 Storage 错误不被覆盖，触发后保留材料、预算、writer 所有权和显式恢复义务，唤醒固定目标等待报错；SQL 未退出不能报告已取消或释放资源。
+
+诊断在原模块 span 记录可获得的 thread/execution/request/generation、stage/单调起点、head/admitted/prepared/durable、flush_target、pending_count/bytes、fault_kind/error_source 和脱敏有限原因链。未知保持 None，不用汇总最小水位或 0 伪造；不新增全局可变监控表、writer、消息总线、队列容量或超时配置。结构修复及确定性交错不等于已定位 Windows 原现场首因，网络等待与本地确认等待分别取证。

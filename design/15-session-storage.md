@@ -295,6 +295,8 @@ Runtime 执行顺序索引由现有 `HistoryChannel` 强持有并显式注入实
 
 history_items、history_turns、输入身份、工具交付和 checkpoint 保留执行恢复及子智能体审查职责。其内部按 ordinal/write_seq/身份读取不得作为第二 Timeline 正文源；仍有独立执行消费者的查询保留其真实领域名称，不以转发别名维持旧 UI API。数据表和载荷升级只能在 [17](./17-studio-storage.md) 的正式迁移 preparation 内完成，正常 reader 不解码旧格式或自动清库。
 
+`read_agent_session` 只读取原 `HistoryStore::agent_page` 中已提交的执行历史，尚未保存内容可能不在本页；不保证实时完整，不在读取前后、下一页或错误重试中促发 flush，也不激活执行、恢复、SSH 或模型。原 detail/order、条目形状、祖先权限与 cursor 目标/ceiling/through/anchor 校验保持。单页水位、ceiling 和内容使用同一短读事务；cursor 沿既有 ordinal keyset 冻结读取范围，不承诺多次请求持有同一个数据库事务或旧修订版本。throughSequence 表达该保存读取范围，空页不证明执行已结束。原调用 cancellation 贯通只读 Future，取消释放事务及读取资格，真实错误不吞成空页，不 spawn 后台补查或建立 RAM/SQLite 合并器。
+
 ### 可靠计量投影与缺口来源
 
 同一提交的模型回执在准备边界提取为绑定 Thread、效应序号和调用身份的不可变计量事实，供实时累计、可靠累计、按用途费用及统计交接复用，不为每个消费者重新解析完整正文。可靠历史事务成功后直接返回已提交的轻量计量结果与材料变化；正常提交不紧接着回读完整检查点，恢复时仍从权威存储读取。
@@ -332,7 +334,9 @@ PRAGMA busy_timeout = 5000;
 
 会话关闭流程先封闭准入并收束当前在途工作，随后提交真实的终态副作用；对话历史与最终检查点在同一事务中到达固定写入水位后，方可释放会话所有者。若持久化保存失败，会话保持 `Closing` 状态并留存所有者、未保存事实与重试入口。会话数据库连接与写入任务按需创建，当会话处于空闲状态且无活跃订阅、无在途执行、无待保存数据时自动释放。
 
-会话关闭（`close`）与显式刷盘（`flush`）两项控制命令在“会话所有者正在运行轮次或因存储背压暂停在轮次内部”时同样保证可达：`close` 在投递关闭命令前先触发中断信号（取消在途模型与工具调用，并唤醒处于存储安全间隙的等待），使当前轮次安全收束，随后由所有者外层循环处理关闭命令，确保最终固定水位保存不会因背压暂停而死锁；显式 `flush` 则通过会话所有者的**有界邮箱（mailbox）**投递（与显式恢复继续共用同一可达路径），因为暂停中的轮次仅在存储安全间隙服务邮箱，若将 `flush` 放入仅在空闲时轮询的外层命令队列，就会陷入“等待那个正等着被刷盘的轮次自己结束”的死锁。`flush` 的等待目标在所有者处理该邮箱请求时固定为当时的已接纳水位（`admitted` sequence），后续新准入的提交不会推远本次屏障；`flush` 仅负责推进落盘，不启动新工作，也不解除存储暂停。
+会话关闭与显式 flush 在运行中及存储暂停期间均保持可达。公开 `ThreadHandle::flush` 保留原签名和关闭耐久证明，经原有界 mailbox 由 Owner 同步 `prepare_flush`：拒绝永久删除，尝试原 pending 准入并检查真实 cold_error，固定 admitted_sequence=N，立即回复私有 `ColdFlushTicket`。AlreadySatisfied 沿原无存储/已满足语义；Pending 只携原 store、thread、N 和永久删除 token。调用者 Future 独立等待原 store.flush 到 N，不借 `&mut Owner` 等 I/O，不 spawn 独立确认任务或存 waiter 列表；N+1 不推远目标，drop 等待不取消 writer 或删除事实，错误不冒充成功。
+
+Owner 在运行中等待和空闲位置复用原 pressure 通知折叠真实 durable/error，并释放已耐久 effect 窗口；进入等待前订阅，关闭 receiver 退役不忙循环，无通知后端沿原安全点刷新。副作用前保存、受理续接及最终关闭保存屏障仍固定目标，并通过原可服务成员/控制/保存通知的等待入口收束，不复制 select 循环。close 先触发原中断再 join，分别报告执行结束、保存与资源关闭；存储永久失败保留未保存事实/所有者，不抬高退出预算或假报耐久。RetryOutputStorage 保持真实归档重试，不作为公开 flush 的转发路径。故障代次、resume_required 和显式恢复证明不因一次 flush 成功而撤销。
 
 ## 15.9 冷恢复与格式演进
 
