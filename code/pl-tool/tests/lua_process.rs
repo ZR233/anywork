@@ -17,6 +17,277 @@ use pl_tool::{
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+/// Explicit provider call identities keep scripted receipt queries reproducible, while all
+/// scheduling, task queries, waits, cancellation and commands remain production.
+struct LifecycleModel {
+    calls: std::collections::VecDeque<pl_core::model::ModelToolCall>,
+    requests: Arc<std::sync::Mutex<Vec<pl_core::model::ModelRequest>>>,
+}
+
+impl pl_core::model::ModelSession for LifecycleModel {
+    async fn prepare(
+        &mut self,
+        request: pl_core::model::ModelRequest,
+    ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let calls = self.calls.pop_front().into_iter().collect();
+        Ok(pl_core::model::PreparedModelCall::new(async move {
+            Ok(pl_core::model::ModelStepOutput {
+                turn_action: Default::default(),
+                attempt_id: request.attempt_id,
+                base_context_revision: request.context.revision,
+                content: vec![],
+                tool_calls: calls,
+                private_context: None,
+                usage: Default::default(),
+            })
+        }))
+    }
+
+    async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_lifecycle() {
+    use pl_core::thread::task::TaskStatus;
+    use pl_tool::task_control::{TaskControlKind, TaskControlTool};
+    use serde_json::json;
+
+    let root = tempfile::tempdir().unwrap();
+    let definition = pl_tool::exec::exec_definition();
+    let backend = pl_tool::command::LocalCommandBackend::new(root.path())
+        .with_worker_executable(helper::remote_helper_executable());
+    let command = ThreadExecTool::new(
+        Arc::new(backend),
+        Arc::new(Archive(root.path().join("archive"))),
+        CommandAccess::WorkspaceOnly,
+        definition.clone(),
+    )
+    .registration(
+        prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
+    )
+    .nested(false);
+    let lua = pl_tool::lua::LuaTool::new("");
+    let lua = prepare_registration("exec", lua.definition(), ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(lua))
+        .with_nested_calls()
+        .foreground_coexisting();
+    let list = pl_tool::task_control::ListTasksTool::declaration();
+    let list = prepare_registration("list_tool_tasks", &list, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(
+            pl_tool::binding::prepare_native_tool::<pl_tool::task_control::ListTasksTool>()
+                .unwrap()
+                .attach(pl_tool::task_control::ListTasksTool),
+        ))
+        .nested(true);
+    let query = pl_tool::task_control::query_definition();
+    let query = TaskControlTool::new(TaskControlKind::Query, query.clone())
+        .registration(
+            prepare_registration("get_tool_task", &query, ToolCallPolicy::DirectOnly).unwrap(),
+        )
+        .nested(true);
+    let sleep = pl_tool::session::SleepTool::declaration();
+    let sleep = prepare_registration("sleep", &sleep, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(
+            pl_tool::binding::prepare_native_tool::<pl_tool::session::SleepTool>()
+                .unwrap()
+                .attach(pl_tool::session::SleepTool),
+        ))
+        .top_level_only();
+    let mut registrations = vec![command, lua, list, query, sleep];
+    for (kind, definition) in [
+        (
+            TaskControlKind::Wait,
+            pl_tool::task_control::wait_definition(),
+        ),
+        (
+            TaskControlKind::Cancel,
+            pl_tool::task_control::cancel_definition(),
+        ),
+    ] {
+        let prepared =
+            prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)
+                .unwrap();
+        registrations.push(TaskControlTool::new(kind, definition).registration(prepared));
+    }
+    let script = [
+        (
+            "slow-program",
+            "exec",
+            json!({"code": "local r=tools.exec_command({command=[=[echo $$ > business.pid; printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done; printf 'finished\\n']=],timeoutSeconds=15}); assert(r.exitCode==0); return {taskId=r.taskId,stdout=r.stdout.content}", "timeoutMs":20000}),
+        ),
+        (
+            "query-process",
+            "exec",
+            json!({"code": "local found; for _,t in ipairs(tools.list_tool_tasks({})) do if t.toolId=='exec_command' then found=t end end; assert(found and found.status=='succeeded'); local q=tools.get_tool_task({taskId=found.taskId,resultCursor=0}); local r=json.decode(q.result.content); assert(r.exitCode==0 and r.stdout.content=='ready\\nfinished\\n'); return {taskId=q.task.taskId,status=q.task.status,exitCode=r.exitCode}"}),
+        ),
+        ("timer", "sleep", json!({"durationMs":60000})),
+        (
+            "query-pending",
+            "exec",
+            json!({"code":"local q=tools.get_tool_task({taskId='task:timer'}); assert(q.task.status=='running'); return q.task"}),
+        ),
+        (
+            "wait-timeout",
+            "wait",
+            json!({"taskIds":["task:timer"],"timeoutMs":10}),
+        ),
+        (
+            "cancel-timer",
+            "cancel_tool_task",
+            json!({"taskId":"task:timer"}),
+        ),
+        (
+            "wait-cancelled",
+            "wait",
+            json!({"taskIds":["task:timer"],"timeoutMs":1000}),
+        ),
+        (
+            "query-terminal",
+            "exec",
+            json!({"code":"local q=tools.get_tool_task({taskId='task:timer',resultCursor=0}); assert(q.task.status=='cancelled'); return q.task"}),
+        ),
+    ];
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = LifecycleModel {
+        calls: script
+            .into_iter()
+            .map(|(id, tool, arguments)| pl_core::model::ModelToolCall {
+                call_id: id.into(),
+                tool_id: tool.into(),
+                arguments: pl_core::context::OpaquePayload::new(
+                    "application/json",
+                    1,
+                    arguments.to_string(),
+                )
+                .unwrap(),
+                rejection: None,
+                presentation_contract: None,
+            })
+            .collect(),
+        requests: requests.clone(),
+    };
+    let thread =
+        ThreadHandle::start("lua-process-observe".into(), DynModelSession::new(model)).unwrap();
+    thread.register_tools(registrations).await.unwrap();
+    let mut input = host::turn("observe");
+    input.max_model_steps = pl_core::thread::ModelStepLimit::Limited(10.try_into().unwrap());
+    let runner = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.run_turn(input).await }
+    });
+    let pid = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(text) = tokio::fs::read_to_string(root.path().join("business.pid")).await
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Cross the ordinary one-second background delivery window. The Lua invocation still owns
+    // this command and waits, while the public Thread snapshot remains responsive and accurate.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let running = thread.snapshot();
+    assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+    let process = running
+        .tasks
+        .values()
+        .find(|t| t.tool_id == "exec_command" && t.status == TaskStatus::Running)
+        .unwrap();
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "Lua must not hand off a premature command receipt"
+    );
+    let wait_cancellation = tokio_util::sync::CancellationToken::new();
+    let pending_wait = tokio::spawn({
+        let thread = thread.clone();
+        let id = process.id.clone();
+        let cancellation = wait_cancellation.clone();
+        async move { thread.wait_task(&id, cancellation).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!pending_wait.is_finished());
+    wait_cancellation.cancel();
+    assert!(matches!(
+        pending_wait.await.unwrap(),
+        Err(pl_core::thread::ThreadError::Cancelled)
+    ));
+    assert_eq!(
+        thread.snapshot().tasks[&process.id].status,
+        TaskStatus::Running
+    );
+    assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+    tokio::fs::write(root.path().join("release"), b"finish")
+        .await
+        .unwrap();
+    let terminal = tokio::time::timeout(
+        Duration::from_secs(10),
+        thread.wait_task(&process.id, tokio_util::sync::CancellationToken::new()),
+    )
+    .await
+    .expect("releasing the real process must wake the original task waiter")
+    .unwrap();
+    let terminal: serde_json::Value =
+        serde_json::from_str(terminal.output.payload().content()).unwrap();
+    assert_eq!(terminal["exitCode"], 0);
+    tokio::time::timeout(Duration::from_secs(15), runner)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    let deliveries = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .collect::<Vec<_>>();
+    let timed_out = deliveries
+        .iter()
+        .find(|d| d.call_id == "wait-timeout")
+        .unwrap();
+    let result: serde_json::Value =
+        serde_json::from_str(timed_out.output.payload().content()).unwrap();
+    assert_eq!(result["timedOut"], true);
+    assert_eq!(
+        result["tasks"][0]["status"], "running",
+        "wait timeout must not cancel its task"
+    );
+    let cancelled = deliveries
+        .iter()
+        .find(|d| d.call_id == "wait-cancelled")
+        .unwrap();
+    let result: serde_json::Value =
+        serde_json::from_str(cancelled.output.payload().content()).unwrap();
+    assert_eq!(result["timedOut"], false);
+    assert_eq!(result["tasks"][0]["status"], "cancelled");
+    assert!(
+        thread
+            .snapshot()
+            .tasks
+            .values()
+            .all(|t| t.status != TaskStatus::Running)
+    );
+    assert!(
+        thread
+            .snapshot()
+            .tasks
+            .values()
+            .filter(|t| t.tool_id == "exec")
+            .all(|t| t.status == TaskStatus::Succeeded)
+    );
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    thread.close().await.unwrap();
+}
+
 #[derive(Debug)]
 struct Archive(PathBuf);
 impl CommandOutputArchive for Archive {
