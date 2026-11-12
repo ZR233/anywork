@@ -52,6 +52,9 @@ rustup 安装其 channel、profile、components 和 targets，不另设 `RUST_VE
 不能临时安装后继续使用错误镜像。
 
 非 Rust 工具的固定版本和下载摘要集中在 `versions.env`。基础镜像固定 digest。
+当前 Flutter 基线为 stable 3.50.0，随附 Dart 3.14.0；Windows/macOS CI 与发布构建
+使用同一 Flutter 版本。升级时同步应用的 SDK 约束与 Pub 锁文件，并从 Flutter 官方
+release metadata 核对 Linux SDK 的 SHA-256。
 Flutter 与 Rust 使用独立制作阶段，避免升级 Rust 时无理由重复下载 Flutter。
 Flutter SDK 自用的工具依赖及其原生配置随镜像交付，供非 root 用户读取；这不包含本项目的
 pub 依赖缓存，也不引用镜像制作者的 `/root` 私有目录。
