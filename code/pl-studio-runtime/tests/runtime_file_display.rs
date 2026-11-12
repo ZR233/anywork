@@ -2,14 +2,13 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_core::{context::ContextContent, thread::ToolDelivery};
+use pl_core::context::ContextContent;
 use pl_protocol::{
     ChatScope, ContentRange, MainPresentation, PayloadData, ReadDemand, ThreadWorkspaceMode,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
 use pl_tool::file_display::{FileDisplayOrigin, FileDisplayResult, saved_file_display_receipt};
-use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use serde_json::json;
 
 async fn public_artifact(
@@ -43,6 +42,9 @@ async fn public_artifact(
             "fixture unexpectedly requires paging"
         );
         for entry in batch.entries {
+            if entry.main_presentation != MainPresentation::Single {
+                continue;
+            }
             let atom = entry.atom;
             let bytes = match atom.payload.context("sealed atom")? {
                 PayloadData::Inline { bytes } => bytes,
@@ -64,7 +66,11 @@ async fn public_artifact(
                 }
             };
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if value["type"] != "tool" || value["data"]["invocation"]["callId"] != "display-call" {
+            if value["type"] != "tool"
+                || !value["data"]["invocation"]["callId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("display-call:nested:"))
+            {
                 continue;
             }
             ensure!(atom.turn_id.as_deref() == Some(turn));
@@ -128,43 +134,54 @@ async fn public_artifact(
         })
 }
 
-async fn delivery(home: &std::path::Path, thread: &str, call: &str) -> Result<ToolDelivery> {
-    let saved = support::saved(home, thread).await?;
-    let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
-    let row = db
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
-            [call.into()],
-        ))
-        .await?
-        .context("original committed file delivery")?;
-    let result = serde_json::from_str(&row.try_get::<String>("", "delivery_payload")?)?;
-    db.close().await?;
-    Ok(result)
+fn show_files_reply(call: &str, arguments: serde_json::Value) -> pl_provider_fixture::Reply {
+    let encoded = pl_provider_fixture::RealtimeToolCall {
+        item_id: call,
+        call_id: call,
+        name: "show_files",
+        arguments: arguments.to_string(),
+    }
+    .program("show_files");
+    let mut input: serde_json::Value = serde_json::from_str(&encoded.arguments).unwrap();
+    let invocation = input["code"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("return ")
+        .unwrap();
+    input["code"] =
+        format!("local r={invocation}; return {{caption=r.caption, id=r.files[1].resource.id}}")
+            .into();
+    support::tool_reply("exec", call, input)
 }
 
 #[tokio::test]
 async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()> {
     const BYTES: &[u8] = b"private original file contents\n";
+    const UNSELECTED: &[u8] = b"unselected original file contents\n";
     let digest = pl_core::context::content_hash(BYTES);
     let id = format!(
         "{RESOURCE_ID_PREFIX}{}",
         digest.strip_prefix("sha256:").context("digest")?
+    );
+    let unselected_id = format!(
+        "{RESOURCE_ID_PREFIX}{}",
+        pl_core::context::content_hash(UNSELECTED)
+            .strip_prefix("sha256:")
+            .context("digest")?
     );
     let mut env = support::Environment::new(
         vec![
             support::prompt_step(
                 "display",
                 0,
-                support::tool_reply(
-                    "show_files",
+                show_files_reply(
                     "display-call",
                     json!({
                         "caption":"  selected files  ", "files":[
                             {"kind":"workspace","path":"report.txt"},
                             {"kind":"workspace","path":"missing.txt"},
-                            {"kind":"workspace","path":"report-copy.txt"}
+                            {"kind":"workspace","path":"report-copy.txt"},
+                            {"kind":"workspace","path":"unselected.txt"}
                         ]
                     }),
                 ),
@@ -173,13 +190,13 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
             support::prompt_step(
                 "again",
                 2,
-                support::tool_reply(
-                    "show_files",
+                show_files_reply(
                     "archive-call",
                     json!({
                         "files":[
                             {"kind":"attachment","attachmentId":id},
-                            {"kind":"attachment","attachmentId":"pl.studio.resource:unreferenced"}
+                            {"kind":"attachment","attachmentId":"pl.studio.resource:unreferenced"},
+                            {"kind":"attachment","attachmentId":unselected_id}
                         ]
                     }),
                 ),
@@ -192,6 +209,7 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
     let result = async {
         std::fs::write(env.repo.join("report.txt"), BYTES)?;
         std::fs::write(env.repo.join("report-copy.txt"), BYTES)?;
+        std::fs::write(env.repo.join("unselected.txt"), UNSELECTED)?;
         let started = env.start(ThreadWorkspaceMode::Local, "display").await?;
         let thread = started.thread.id;
         let turn = support::completed_prompt(&env.runtime, &thread, "display").await?;
@@ -199,24 +217,27 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let requests = env.root_provider.recorded();
         let tool_names: Vec<_> = requests[0].body["tools"].as_array().context("catalog")?
             .iter().filter_map(|tool| tool["name"].as_str()).collect();
-        ensure!(tool_names.iter().any(|name| name.ends_with("show_files")));
+        ensure!(!tool_names.iter().any(|name| name.ends_with("show_files")));
+        ensure!(requests[0].body["tools"].as_array().context("catalog")?.iter().any(|tool| tool["name"]=="exec" && tool["description"].as_str().is_some_and(|text| text.contains("tools[\"show_files\"]"))));
         ensure!(!tool_names.iter().any(|name| name.ends_with("show_image")));
         let summary = support::tool_output(&env.root_provider, "display-call")?;
         ensure!(!summary.contains(std::str::from_utf8(BYTES)?.trim()));
         ensure!(!summary.contains(&env.repo.to_string_lossy().to_string()));
+        ensure!(!summary.contains(&unselected_id), "unselected resource capability reached model context");
         // Destroy the original paths before closing and cold reading the actual archived bytes.
         std::fs::remove_file(env.repo.join("report.txt"))?;
         std::fs::remove_file(env.repo.join("report-copy.txt"))?;
+        std::fs::remove_file(env.repo.join("unselected.txt"))?;
         let calls_before_read = env.root_provider.recorded().len();
         env.restart().await?;
         ensure!(public_artifact(&env.runtime, &thread, &turn.id).await? == live_artifact,
             "cold read changed the original display artifact");
         ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
         ensure!(env.root_provider.recorded().len() == calls_before_read, "cold read re-executed model/tool");
-        let original = delivery(&env.home, &thread, "display-call").await?;
+        let original = support::nested_delivery(&env.home, &thread, "display-call").await?;
         ensure!(original.delivered_context.iter().all(|content| !matches!(content, ContextContent::Opaque { .. })));
         let receipt = saved_file_display_receipt(original.output.payload())?.context("file receipt")?;
-        ensure!(receipt.caption.as_deref() == Some("selected files") && receipt.files.len() == 3);
+        ensure!(receipt.caption.as_deref() == Some("selected files") && receipt.files.len() == 4);
         ensure!(matches!(&receipt.files[0], FileDisplayResult::Ready { resource, filename, origin:FileDisplayOrigin::Local { path }, .. }
             if resource.id() == id && filename == "report.txt" && std::path::Path::new(path).is_absolute()));
         ensure!(matches!(&receipt.files[1], FileDisplayResult::Failed { filename, .. } if filename == "missing.txt"));
@@ -232,11 +253,12 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         }).await?;
         support::completed_prompt(&env.runtime, &thread, "again").await?;
         env.restart().await?;
-        let selected = delivery(&env.home, &thread, "archive-call").await?;
+        let selected = support::nested_delivery(&env.home, &thread, "archive-call").await?;
         let selected = saved_file_display_receipt(selected.output.payload())?.context("archive receipt")?;
         ensure!(matches!(&selected.files[0], FileDisplayResult::Ready { resource, filename, .. }
             if resource.id() == id && filename == "report.txt"));
         ensure!(matches!(&selected.files[1], FileDisplayResult::Failed { .. }));
+        ensure!(matches!(&selected.files[2], FileDisplayResult::Failed { .. }), "hidden child receipt granted an unselected resource");
         ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
         ensure!(env.runtime.read_thread_attachment(thread, "pl.studio.resource:unreferenced".into()).await.is_err());
         Ok(())

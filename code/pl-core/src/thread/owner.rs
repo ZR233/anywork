@@ -22,6 +22,7 @@ pub(super) struct NestedScope {
     pub plan: Arc<crate::tool::opaque::ToolPlan>,
     pub context: crate::context::ContextSnapshot,
     pub model_projection: Option<OpaquePayload>,
+    pub invocations: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 pub(super) struct PendingEffect {

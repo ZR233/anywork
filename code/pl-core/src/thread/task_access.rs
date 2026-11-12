@@ -26,7 +26,7 @@ pub struct TaskAccess {
     may_wait: bool,
     may_cancel: bool,
     nested_catalog: Arc<[NestedToolDeclaration]>,
-    nested_remaining: Arc<std::sync::atomic::AtomicU32>,
+    pub(super) nested_invocations: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// One frozen program-only binding. The payload is the original host declaration.
@@ -57,6 +57,14 @@ impl TaskAccess {
     pub fn nested_tools(&self) -> Vec<NestedToolDeclaration> {
         self.nested_catalog.to_vec()
     }
+    /// Owner-assigned identities of this invocation's admitted children, in submission order.
+    /// This derived index contains no executors or grants.
+    pub fn nested_call_ids(&self) -> Vec<String> {
+        self.nested_invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
     /// Dispatches through the original owner. No executor or grant crosses this capability.
     pub async fn call_nested(
         &self,
@@ -67,13 +75,6 @@ impl TaskAccess {
         if self.nested_catalog.is_empty() {
             return Err(ThreadError::ToolPermissionRevoked);
         }
-        self.nested_remaining
-            .try_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |n| n.checked_sub(1),
-            )
-            .map_err(|_| ThreadError::TaskAccessExpired)?;
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
@@ -124,7 +125,7 @@ impl TaskAccess {
             may_wait: permissions.wait,
             may_cancel: permissions.cancel,
             nested_catalog: Arc::from([]),
-            nested_remaining: Arc::new(std::sync::atomic::AtomicU32::new(256)),
+            nested_invocations: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 

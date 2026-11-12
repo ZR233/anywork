@@ -34,7 +34,7 @@ pub(crate) fn invocation(body: &Value, name: &str, input: &Value) -> (String, St
         .into_iter()
         .flatten()
         .any(|tool| tool.get("function").unwrap_or(tool)["name"] == name);
-    if direct {
+    if direct || !catalogue(body).iter().any(|binding| binding == name) {
         (name.into(), input.to_string())
     } else {
         ("exec".into(), arguments(name, input).to_string())

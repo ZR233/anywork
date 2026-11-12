@@ -17,6 +17,33 @@ use tokio_util::sync::CancellationToken;
 
 pub use pl_tool_lua::ExecInput;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Receipt<'a> {
+    #[serde(flatten)]
+    execution: &'a pl_tool_lua::ExecOutput,
+    nested_call_ids: Vec<String>,
+}
+
+/// Reads owner-assigned child identities retained in the original Lua receipt.
+pub fn saved_nested_call_ids(payload: &OpaquePayload) -> Result<Option<Vec<String>>, ToolError> {
+    if payload.format() != "pl.tool.lua" {
+        return Ok(None);
+    }
+    if payload.version() != 1 {
+        return Err(ToolError::new(std::io::Error::other(
+            "unsupported Lua receipt version",
+        )));
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Children {
+        nested_call_ids: Vec<String>,
+    }
+    let children: Children = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    Ok(Some(children.nested_call_ids))
+}
+
 #[derive(Debug)]
 pub struct LuaTool {
     definition: ToolDefinition,
@@ -42,15 +69,11 @@ struct Host {
 }
 
 impl Host {
-    fn retain_media(&self, output: &ToolOutput) -> Result<(), String> {
+    fn retain_resources(&self, output: &ToolOutput) -> Result<(), String> {
         let mut media = Vec::new();
         for part in output.context() {
             let retain = match part {
-                ContextContent::Resource { reference } => {
-                    reference.media_type().starts_with("image/")
-                        || reference.media_type().starts_with("audio/")
-                        || reference.media_type().starts_with("video/")
-                }
+                ContextContent::Resource { .. } => true,
                 ContextContent::Opaque { payload } => pl_model::runtime::decode_attachment(payload)
                     .map_err(|error| error.to_string())?
                     .is_some(),
@@ -109,7 +132,7 @@ impl pl_tool_lua::ToolHost for Host {
                 let output = match &error {
                     pl_core::thread::ThreadError::Tool(error) => {
                         error.observed_output().and_then(|output| {
-                            if let Err(error) = self.retain_media(output) {
+                            if let Err(error) = self.retain_resources(output) {
                                 message.push_str(&format!("; attachment: {error}"));
                             }
                             match decode_output(output) {
@@ -125,7 +148,7 @@ impl pl_tool_lua::ToolHost for Host {
                 };
                 pl_tool_lua::CallFailure { message, output }
             })?;
-        self.retain_media(&output)?;
+        self.retain_resources(&output)?;
         decode_output(&output).map_err(Into::into)
     }
 }
@@ -133,6 +156,19 @@ impl pl_tool_lua::ToolHost for Host {
 fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
     let payload = output.payload();
     match payload.format() {
+        // Task tools deliberately keep complete facts in payload and expose a bounded,
+        // cursor-aware receipt. Preserve that authored return contract inside Lua as well.
+        "pl.tool.task" | "pl.tool.list-tasks" => {
+            let text = output
+                .context()
+                .iter()
+                .find_map(|part| match part {
+                    ContextContent::Text { text } => Some(text),
+                    _ => None,
+                })
+                .ok_or("task result has no declared JSON receipt")?;
+            serde_json::from_str(text).map_err(|error| error.to_string())
+        }
         "application/json"
         | "pl.tool.exec"
         | "pl.tool.stdin"
@@ -150,7 +186,6 @@ fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
         | "pl.tool.skill-view"
         | "pl.tool.skill-mutation"
         | "pl.tool.web-search"
-        | "pl.tool.list-tasks"
         | "pl.tool.task-result"
         | "pl.tool.files"
         | "pl.tool.image"
@@ -247,18 +282,32 @@ impl Tool for LuaTool {
         let payload = OpaquePayload::new(
             "pl.tool.lua",
             1,
-            serde_json::to_string(&result).map_err(ToolError::new)?,
+            serde_json::to_string(&Receipt {
+                execution: &result,
+                nested_call_ids: tasks.nested_call_ids(),
+            })
+            .map_err(ToolError::new)?,
         )
         .map_err(ToolError::new)?;
         let text = selected_text(&result);
+        let selected_resources: Vec<_> = resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|part| match part {
+                ContextContent::Resource { reference } => {
+                    text.contains(reference.id())
+                        || reference.media_type().starts_with("image/")
+                        || reference.media_type().starts_with("audio/")
+                        || reference.media_type().starts_with("video/")
+                }
+                ContextContent::Opaque { .. } => true,
+                _ => false,
+            })
+            .cloned()
+            .collect();
         let mut content = vec![ContextContent::Text { text: text.into() }];
-        content.extend(
-            resources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .cloned(),
-        );
+        content.extend(selected_resources);
         let output = ToolOutput::new(payload, content);
         match result.error {
             Some(_) => Err(ToolError::new(std::io::Error::other(

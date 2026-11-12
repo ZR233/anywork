@@ -19,7 +19,9 @@ use pl_studio_runtime::{
     StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
 };
 use serde_json::json;
-use support::{Environment, prompt_step, receipt, text_reply, tool_output, tool_reply};
+use support::{
+    Environment, program_reply, prompt_step, receipt, text_reply, tool_output, tool_reply,
+};
 
 const TOOL: &str = "mcp__fixture__inspect_env";
 const ATTEMPTS: usize = 16;
@@ -74,7 +76,7 @@ fn script() -> Vec<Step> {
         &mut steps,
         "empty-discovery",
         "refresh_mcp",
-        tool_reply("refresh_mcp", "empty-refresh", json!({})),
+        program_reply("refresh_mcp", "empty-refresh", json!({})),
     );
     after(
         &mut steps,
@@ -85,7 +87,7 @@ fn script() -> Vec<Step> {
     steps.push(prompt_step(
         "invalid",
         steps.len(),
-        tool_reply(
+        program_reply(
             "refresh_mcp",
             "invalid-refresh",
             json!({"threadId":"another-thread"}),
@@ -103,14 +105,14 @@ fn script() -> Vec<Step> {
         steps.push(prompt_step(
             &call,
             steps.len(),
-            tool_reply(TOOL, &call, json!({"mode":"success"})),
+            program_reply(TOOL, &call, json!({"mode":"success"})),
         ));
         after(&mut steps, &call, phase, text_reply("MCP called", &call));
         if phase == "created" {
             steps.push(prompt_step(
                 "refresh-live",
                 steps.len(),
-                tool_reply("refresh_mcp", "live-refresh", json!({})),
+                program_reply("refresh_mcp", "live-refresh", json!({})),
             ));
             after(
                 &mut steps,
@@ -123,7 +125,7 @@ fn script() -> Vec<Step> {
     steps.push(prompt_step(
         "refresh-disk",
         steps.len(),
-        tool_reply("refresh_mcp", "disk-refresh", json!({})),
+        program_reply("refresh_mcp", "disk-refresh", json!({})),
     ));
     after(
         &mut steps,
@@ -136,7 +138,7 @@ fn script() -> Vec<Step> {
     steps.push(prompt_step(
         "call-reloaded",
         steps.len(),
-        tool_reply(TOOL, "call-reloaded", json!({"mode":"success"})),
+        program_reply(TOOL, "call-reloaded", json!({"mode":"success"})),
     ));
     after(
         &mut steps,
@@ -222,7 +224,11 @@ async fn catalog(env: &Environment, id: &str, phase: &str, present: bool) -> Res
                 .and_then(|request| request.body["tools"].as_array())
                 .is_some_and(|tools| {
                     tools.iter().any(|tool| {
-                        tool["name"] == TOOL && tool["parameters"]["description"] == phase
+                        tool["name"] == "exec"
+                            && tool["description"].as_str().is_some_and(|sdk| {
+                                sdk.contains(&format!("tools[{TOOL:?}](args)"))
+                                    && sdk.contains(&format!("\"description\":{phase:?}"))
+                            })
                     })
                 });
         if ids.iter().any(|name| name == TOOL) == present && schema_installed {

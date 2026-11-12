@@ -14,7 +14,7 @@ use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
-use support::{Environment, held_reply, prompt_step, reached, tool_reply};
+use support::{Environment, held_reply, program_reply, prompt_step, reached};
 
 const PROMPT: &str = "read a skill, then hold the next model response";
 const CALL: &str = "live-skill-load-call";
@@ -131,7 +131,10 @@ async fn live_members(feed: &mut ConversationFeed) -> Result<BTreeMap<String, Va
     // captured Set and consume the original feed's ordered Appends while the next model is held.
     let arrived = tokio::time::timeout(DEADLINE, async {
         while !members.values().any(|payload| {
-            payload["type"] == "tool" && payload["data"]["invocation"]["callId"] == CALL
+            payload["type"] == "tool"
+                && payload["data"]["invocation"]["callId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(&format!("{CALL}:nested:")))
         }) || !members.values().any(|payload| payload["type"] == "skill")
         {
             let append = chat(feed).await?;
@@ -174,7 +177,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             prompt_step(
                 PROMPT,
                 0,
-                tool_reply("skill_view", CALL, serde_json::json!({"name": SKILL})),
+                program_reply("skill_view", CALL, serde_json::json!({"name": SKILL})),
             ),
             Step::tool_output(
                 Protocol::ResponsesHttp,
@@ -229,14 +232,17 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             .with_context(|| format!("Main feed close: {main_closed:?}"))?;
         main_closed?;
         let scope = ChatScope::Children { parent_id };
-        let expected_output = support::tool_output(&env.root_provider, CALL)?;
+        let original = support::nested_delivery(&env.home, thread_id, CALL).await?;
+        let expected_output = original.output.context().iter().find_map(|part| match part {
+            pl_core::context::ContextContent::Text { text } => Some(text.as_ref()), _ => None,
+        }).context("original child text")?;
 
         let mut feed = env.runtime.open_conversation_feed(thread_id, scope.clone(), demand()).await
             .context("open the original active Turn's Children")?;
         let observed = async {
             let members = live_members(&mut feed).await?;
             let tools = members.iter().filter(|(_, payload)| {
-                payload["type"] == "tool" && payload["data"]["invocation"]["callId"] == CALL
+                payload["type"] == "tool" && payload["data"]["invocation"]["callId"].as_str().is_some_and(|id| id.starts_with(&format!("{CALL}:nested:")))
             }).collect::<Vec<_>>();
             ensure!(tools.len() == 1, "original completed tool was not publicly readable");
             let (tool_id, tool) = tools[0];

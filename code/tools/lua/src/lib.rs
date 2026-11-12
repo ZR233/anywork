@@ -1,16 +1,35 @@
 //! Bounded Lua orchestration. Hosts retain all tool admission and side-effect ownership.
-use futures::{StreamExt, stream};
+use futures::{StreamExt, stream::FuturesUnordered};
 use mlua::{Function, HookTriggers, Lua, LuaSerdeExt, StdLib, Value, VmState};
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
-pub const MAX_MODEL_BYTES: usize = 64 * 1024;
+
+struct AdmissionPause(Arc<AtomicUsize>);
+impl AdmissionPause {
+    fn new(admission: &Arc<AtomicUsize>) -> Self {
+        admission.fetch_add(1, Ordering::AcqRel);
+        Self(admission.clone())
+    }
+}
+impl Drop for AdmissionPause {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+async fn invoke_function(index: usize, function: Function) -> (usize, mlua::Result<Value>) {
+    (index, function.call_async::<Value>(()).await)
+}
 
 #[pl_agent_tool::tool_args]
 #[derive(Clone)]
@@ -18,10 +37,10 @@ pub const MAX_MODEL_BYTES: usize = 64 * 1024;
 pub struct ExecInput {
     /// Lua source. Call tools.name(args); only print and return enter the conversation.
     pub code: String,
-    /// Total elapsed budget, including tool waits. Default 120000, maximum 600000.
+    /// Positive total elapsed budget in milliseconds, including tool waits. Default 120000.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// UTF-8 model output budget. Default 8192, maximum 65536. Full output is retained separately.
+    /// Positive UTF-8 model output budget. Default 8192. Full output is retained separately.
     #[serde(default)]
     pub max_output_bytes: Option<usize>,
 }
@@ -91,15 +110,16 @@ pub async fn execute<H: ToolHost>(
 ) -> Result<ExecOutput, ExecError> {
     let timeout = input.timeout_ms.unwrap_or(120_000);
     let maximum = input.max_output_bytes.unwrap_or(8192);
-    if input.code.trim().is_empty()
-        || !(1..=600_000).contains(&timeout)
-        || !(1..=MAX_MODEL_BYTES).contains(&maximum)
-    {
+    if input.code.trim().is_empty() || timeout == 0 || maximum == 0 {
         return Err(ExecError::InvalidInput(
-            "code must be nonblank; timeoutMs must be 1..600000 and maxOutputBytes 1..65536".into(),
+            "code must be nonblank; timeoutMs and maxOutputBytes must be positive".into(),
         ));
     }
-    let deadline = Instant::now() + Duration::from_millis(timeout);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(timeout))
+        .ok_or_else(|| {
+            ExecError::InvalidInput("timeoutMs exceeds the system clock range".into())
+        })?;
     let guard = cancellation.clone().drop_guard();
     let output = tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -138,23 +158,31 @@ async fn run<H: ToolHost>(
     .map_err(|e| ExecError::Worker(e.to_string()))?;
     let result: mlua::Result<()> = async {
         let globals = lua.globals();
-        for name in ["dofile", "loadfile", "load", "collectgarbage"] { globals.set(name, Value::Nil)?; }
+        for name in ["dofile", "loadfile", "load"] { globals.set(name, Value::Nil)?; }
         let tools = lua.create_table()?;
         let gate = Arc::new(tokio::sync::RwLock::new(()));
+        let permits = Arc::new(tokio::sync::Semaphore::new(4));
+        let admission = Arc::new(AtomicUsize::new(0));
         for binding in host.bindings() {
             let host = host.clone();
             let gate = gate.clone();
+            let permits = permits.clone();
+            let admission = admission.clone();
             let name = binding.name.clone();
             let callback = lua.create_async_function(move |lua, value: Value| {
                 let host = host.clone(); let gate = gate.clone(); let name = name.clone();
+                let permits = permits.clone(); let admission = admission.clone();
                 async move {
+                    let _permit = permits.acquire().await.map_err(mlua::Error::external)?;
                     let arguments = lua.from_value(value)?;
                     let result = if binding.parallel {
                         let _guard = gate.read().await;
-                        host.call(name, arguments).await
+                        if admission.load(Ordering::Acquire) != 0 { Err("parallel batch stopped after an unhandled error".into()) }
+                        else { host.call(name, arguments).await }
                     } else {
                         let _guard = gate.write().await;
-                        host.call(name, arguments).await
+                        if admission.load(Ordering::Acquire) != 0 { Err("parallel batch stopped after an unhandled error".into()) }
+                        else { host.call(name, arguments).await }
                     };
                     match result {
                         Ok(value) => Ok((true, lua.to_value(&value)?)),
@@ -184,13 +212,33 @@ async fn run<H: ToolHost>(
         json.set("null", lua.null())?;
         json.set("array", lua.create_function(|lua, table: mlua::Table| { table.set_metatable(Some(lua.array_metatable()))?; Ok(table) })?)?;
         globals.set("json", json)?;
-        globals.set("parallel", lua.create_async_function(|lua, functions: Vec<Function>| async move {
-            let results = stream::iter(functions.into_iter().map(|f| async move { f.call_async::<Value>(()).await })).buffered(4).collect::<Vec<_>>().await;
+        globals.set("parallel", lua.create_async_function(move |lua, functions: Vec<Function>| {
+            let admission = admission.clone();
+            async move {
+            let mut values = vec![None; functions.len()];
+            let mut queued = functions.into_iter().enumerate();
+            let mut running = FuturesUnordered::new();
+            for (index, function) in queued.by_ref().take(4) { running.push(invoke_function(index, function)); }
+            let mut failure = None;
+            let mut pause = None;
+            while let Some((index, result)) = running.next().await {
+                match result {
+                    Ok(value) => values[index] = Some(value),
+                    Err(error) if failure.is_none() => {
+                        pause = Some(AdmissionPause::new(&admission));
+                        failure = Some(error);
+                    }
+                    Err(_) => {},
+                }
+                if failure.is_none() && let Some((index, function)) = queued.next() { running.push(invoke_function(index, function)); }
+            }
+            drop(pause);
+            if let Some(error) = failure { return Err(error); }
             let table = lua.create_table()?;
             table.set_metatable(Some(lua.array_metatable()))?;
-            for (i, result) in results.into_iter().enumerate() { table.set(i + 1, result?)?; }
+            for (i, value) in values.into_iter().enumerate() { table.set(i + 1, value.expect("all functions completed without failure"))?; }
             Ok(table)
-        })?)?;
+        }})?)?;
         let print_logs = logs.clone();
         globals.set("print", lua.create_function(move |lua, values: mlua::MultiValue| {
             let tostring: Function = lua.globals().get("tostring")?;
@@ -227,14 +275,7 @@ async fn run<H: ToolHost>(
             .text
             .clone(),
         model_output_bytes: 8192,
-        error: result.err().map(|e| {
-            let message = e.to_string();
-            let mut end = message.len().min(4096);
-            while !message.is_char_boundary(end) {
-                end -= 1;
-            }
-            message[..end].to_owned()
-        }),
+        error: result.err().map(|error| error.to_string()),
     })
 }
 
@@ -248,8 +289,8 @@ fn append(logs: &Mutex<Capture>, text: &str) -> mlua::Result<()> {
     let mut logs = logs
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Count both the result JSON string and its opaque-payload escaping. Reserve room for
-    // the bounded model view, diagnostics and framework envelope before accepting bytes.
+    // Account JSON escaping in the retained receipt. The owner independently accounts
+    // the complete delivery against its existing reliable-output quota.
     let cost = text
         .bytes()
         .map(|byte| match byte {
@@ -259,7 +300,7 @@ fn append(logs: &Mutex<Capture>, text: &str) -> mlua::Result<()> {
             _ => 1,
         })
         .sum::<usize>();
-    let limit = MAX_CAPTURE_BYTES - MAX_MODEL_BYTES * 8 - 16 * 1024;
+    let limit = MAX_CAPTURE_BYTES;
     if logs.encoded_bytes.saturating_add(cost) > limit {
         return Err(mlua::Error::external("Lua output capture limit exceeded"));
     }

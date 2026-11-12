@@ -26,6 +26,24 @@ struct Child {
     fail: bool,
 }
 
+#[derive(Debug)]
+struct Policy {
+    denied: bool,
+}
+impl pl_core::tool::execution_policy::ExecutionPolicy for Policy {
+    async fn authorize(
+        &self,
+        _input: &OpaquePayload,
+        _context: &CallContext,
+    ) -> Result<pl_core::tool::execution_policy::ExecutionGrant, ToolError> {
+        if self.denied {
+            Err(ToolError::new(std::io::Error::other("host policy denied")))
+        } else {
+            Ok(Default::default())
+        }
+    }
+}
+
 struct Projected(host::Calls);
 impl ModelSession for Projected {
     async fn prepare(
@@ -95,7 +113,8 @@ impl Tool for Child {
 
 #[tokio::test]
 async fn real_thread_retains_nested_originals_without_putting_them_into_model_history() {
-    for fail in [false, true] {
+    for (fail, denied) in [(false, false), (true, false), (false, true)] {
+        let expected_calls = if denied { 0 } else { 3 };
         let directory = tempfile::tempdir().unwrap();
         let options = pl_core::persistence::SqliteSessionOptions {
             path: directory.path().join("history.sqlite"),
@@ -105,8 +124,8 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let code = if fail {
-            "local ok,err=pcall(function() parallel({function() return tools.child({n=7}) end,function() return tools.child({n=7}) end,function() return tools.child({n=7}) end}) end); assert(not ok); return 'handled'"
+        let code = if fail || denied {
+            "local function child() local ok,err=pcall(function() return tools.child({n=7}) end); assert(not ok); return tostring(err) end; parallel({child,child,child}); return 'handled'"
         } else {
             "local r=parallel({function() return tools.child({n=7}) end,function() return tools.child({n=7}) end,function() return tools.child({n=7}) end}); return r[1].selected"
         };
@@ -136,6 +155,9 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
                 calls: calls.clone(),
                 fail,
             }))
+            .with_execution_policy(pl_core::tool::execution_policy::ExecutionPolicyHandle::new(
+                Policy { denied },
+            ))
             .nested(true);
         let tool = pl_tool::lua::LuaTool::new("tools.child({n=integer}) returns {selected,hidden}");
         let exec = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
@@ -168,13 +190,11 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             matches!(&child.target,ToolDeliveryTarget::Nested{parent_call_id} if parent_call_id==&parent.call_id)
         );
         assert!(child.delivered_context.is_empty());
-        assert!(
-            child
-                .output
-                .payload()
-                .content()
-                .contains("PRIVATE_INTERMEDIATE")
-        );
+        assert!(child.output.payload().content().contains(if denied {
+            "host policy denied"
+        } else {
+            "PRIVATE_INTERMEDIATE"
+        }));
         let call_id = child.call_id.clone();
         let serialized = serde_json::to_string(
             &requests
@@ -186,7 +206,7 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         )
         .unwrap();
         assert!(!serialized.contains("PRIVATE_INTERMEDIATE"));
-        assert!(serialized.contains("LUA_IMAGE"));
+        assert_eq!(serialized.contains("LUA_IMAGE"), !denied);
         assert_eq!(
             deliveries
                 .iter()
@@ -194,7 +214,7 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
                 .count(),
             3
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
         thread.flush().await.unwrap();
         let checkpoint = thread.checkpoint(0).unwrap();
         thread.close().await.unwrap();
@@ -218,11 +238,15 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
                 .output
                 .payload()
                 .content()
-                .contains("PRIVATE_INTERMEDIATE")
+                .contains(if denied {
+                    "host policy denied"
+                } else {
+                    "PRIVATE_INTERMEDIATE"
+                })
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            3,
+            expected_calls,
             "cold reads must not replay tools"
         );
         let resumed =
@@ -235,7 +259,7 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         resumed.close().await.unwrap();
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            3,
+            expected_calls,
             "restoring the owner must not replay child commands"
         );
         reopened.shutdown().await.unwrap();
@@ -249,6 +273,36 @@ fn lua_registration() -> pl_core::tool::opaque::Registration {
         .attach(ToolHandle::new(tool))
         .with_nested_catalog(pl_tool::lua::project_catalog)
         .foreground()
+}
+
+#[tokio::test]
+async fn real_thread_admits_more_than_256_children_under_ordinary_owner_governance() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = host::Calls {
+        calls: std::collections::VecDeque::from([(
+            "exec".into(),
+            json!({"code":"for i=1,257 do tools.child({n=7}) end; return 'done'"}).to_string(),
+        )]),
+        requests: Default::default(),
+    };
+    let thread =
+        ThreadHandle::start("lua-many-children".into(), DynModelSession::new(model)).unwrap();
+    let definition = ToolDefinition::json("child", "read", json!({"type":"object"})).unwrap();
+    let child = prepare_registration("child", &definition, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(Child {
+            definition,
+            calls: calls.clone(),
+            fail: false,
+        }))
+        .nested(true);
+    thread
+        .register_tools(vec![lua_registration(), child])
+        .await
+        .unwrap();
+    thread.run_turn(host::turn("many-children")).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 257);
+    thread.close().await.unwrap();
 }
 
 struct Reveal {
@@ -373,7 +427,7 @@ impl Tool for Gate {
 #[tokio::test]
 async fn revocation_during_a_program_prevents_the_next_frozen_child_and_close_joins_running_children()
  {
-    for close in [false, true] {
+    for mode in 0..3 {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -425,14 +479,21 @@ async fn revocation_during_a_program_prevents_the_next_frozen_child_and_close_jo
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
             .unwrap();
-        if close {
+        if mode == 2 {
             tokio::time::timeout(std::time::Duration::from_secs(5), thread.close())
                 .await
                 .expect("close must join the VM and child")
                 .unwrap();
             assert!(runner.await.unwrap().is_err());
         } else {
-            authority.revoke();
+            if mode == 0 {
+                authority.revoke();
+            } else {
+                thread
+                    .register_tools(vec![lua_registration()])
+                    .await
+                    .unwrap();
+            }
             release.notify_one();
             tokio::time::timeout(std::time::Duration::from_secs(5), runner)
                 .await

@@ -101,6 +101,8 @@ impl Owner {
             };
         self.task_tokens
             .insert(format!("task:{}", call.call.call_id), cancellation.clone());
+        let tasks =
+            TaskAccess::new(self, &id, &call.executor).with_nested_plan(call.nested_plan.clone());
         if let Some(plan) = &call.nested_plan {
             self.nested_plans.insert(
                 format!("task:{id}"),
@@ -108,6 +110,7 @@ impl Owner {
                     plan: plan.clone(),
                     context: call.context.clone(),
                     model_projection: call.model_projection.clone(),
+                    invocations: tasks.nested_invocations.clone(),
                 },
             );
         }
@@ -119,10 +122,7 @@ impl Owner {
             context: call.context.clone(),
             history_fence: self.state.commit_sequence,
             model_projection: call.model_projection.clone(),
-            tasks: Some(
-                TaskAccess::new(self, &id, &call.executor)
-                    .with_nested_plan(call.nested_plan.clone()),
-            ),
+            tasks: Some(tasks),
             thread_id: self.id.clone(),
             turn_id: call.turn_id.clone(),
             call_id: id,

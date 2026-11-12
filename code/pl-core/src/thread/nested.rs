@@ -31,6 +31,7 @@ impl Owner {
             .clone();
         let context = scope.context.clone();
         let model_projection = scope.model_projection.clone();
+        let invocations = scope.invocations.clone();
         if cancellation.is_cancelled() {
             return Err(ThreadError::ToolPermissionRevoked);
         }
@@ -74,6 +75,10 @@ impl Owner {
         );
         match self.begin_tool_execution(id.clone(), cancellation) {
             Ok(execution) => {
+                invocations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(id.clone());
                 self.background.push(execution);
                 Ok(id)
             }
