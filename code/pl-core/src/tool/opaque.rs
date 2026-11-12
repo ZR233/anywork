@@ -423,9 +423,7 @@ impl Registration {
         &self.binding.declaration
     }
     pub fn permits_nesting(&self) -> bool {
-        !self.binding.top_level_only
-            && !self.binding.requires_solo_call()
-            && !self.binding.may_call_nested
+        self.binding.permits_nesting()
     }
     /// Keeps an asynchronous framework control available directly without forcing Solo scheduling.
     pub fn top_level_only(mut self) -> Self {
@@ -534,6 +532,16 @@ impl Registration {
 }
 
 impl FrozenTool {
+    fn permits_nesting(&self) -> bool {
+        !self.top_level_only
+            && self.scheduling != ToolScheduling::ForegroundSolo
+            && !self.may_end_turn
+            && !self.may_reveal_tools
+            && !self.may_request_interaction
+            && !self.may_wait_tasks
+            && !self.may_cancel_tasks
+            && !self.may_call_nested
+    }
     pub(crate) fn declaration(&self) -> &ModelToolDeclaration {
         &self.declaration
     }
@@ -947,12 +955,9 @@ impl ToolPlan {
         self.tools.get(id).filter(|tool| tool.nested.is_none())
     }
     pub(crate) fn nested(&self) -> impl Iterator<Item = (&String, &FrozenTool)> {
-        self.tools.iter().filter(|(_, tool)| {
-            tool.nested.is_some()
-                && !tool.top_level_only
-                && !tool.requires_solo_call()
-                && !tool.may_call_nested
-        })
+        self.tools
+            .iter()
+            .filter(|(_, tool)| tool.nested.is_some() && tool.permits_nesting())
     }
     pub(crate) fn nested_get(&self, id: &str) -> Option<&FrozenTool> {
         self.nested()

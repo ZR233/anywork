@@ -69,4 +69,4 @@
 
 可用 `cargo run --locked -p pl-studio-runtime --features live-tests --example exec_orchestration_observe -- MANIFEST.json` 运行观察入口；manifest 指定新的 `home`、`workspace`、`output`、`prompt_file`、Responses 网关 `base_url` 和 `timeout_seconds`，凭据由 `PILOT_MODEL_API_KEY` 环境变量提供。此入口为隔离观察创建配置，目录必须是专用实验目录。不要指向用户现有 Studio home。
 
-后续修正保留了相同协议，补齐文件资源重选的父子来源、程序级并发上限及未处理失败后停止派发的行为，并迁移桌面验收。按用户要求删除额外的 256 次子调用门限、600 秒超时上限、64 KiB 展示上限和 4 KiB 错误原件截断，恢复 Lua 自带垃圾回收入口。默认期限和展示预算不变，调用方可传正值调整；VM 内存、并发及可靠保存配额继续生效。上表是修正前精确提交的测量，不冒充后续提交的性能结果。
+后续修正保留了相同协议，补齐文件资源重选的父子来源、程序级并发上限及未处理失败后停止派发的行为，并迁移桌面验收。按用户要求删除额外的 256 次子调用门限、600 秒超时上限、64 KiB 展示上限和 4 KiB 错误原件截断，恢复 Lua 自带垃圾回收入口，并允许技能读取在原 owner 的 CAS 管理下串行嵌套。默认期限和展示预算不变，调用方可传正值调整；VM 内存、并发及可靠保存配额继续生效。上表是修正前精确提交的测量，不冒充后续提交的性能结果。
