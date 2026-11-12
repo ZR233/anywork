@@ -119,6 +119,14 @@ Linux 的合成用户 home 同时提供独立的标准 XDG Documents 配置，�
 
 工作组标题的阶段映射、失败成员不改变组状态、时长文案、图标、单行省略和窄窗布局由 `work_header_presentation_test.dart` 在受控生产组件上证明。`timeline-concept` 的原生检查点只核对实际工作组标题已挂载且非空，保留各场景的完整数据、正文读取、展开、保存与重开断言，不在每个检查点重算标题投影或重复逐像素比较。
 
+组件测试与原生旅程按行为分工，避免为展示组合重复运行完整桌面流程：
+
+- ACP 配置在途、权限、草稿、后台会话和中断完成交接由 `test/ui/acp_workspace_lifecycle_test.dart` 使用真实 Client 与生产组件证明；原生 `acp_conversation` 只保留真实窗口尺寸传递、控件可交互及关闭检查。中断通过既有控件标识操作图标按钮，不查找不存在的可见文本。
+- 侧栏拖动边界、双击复位、无障碍动作和窄窗大字抽屉由 `sidebar_shell_layout_test.dart` 证明；原生侧栏保留一次宽度修改经真实桥接保存，以及项目、会话操作的实际结果。
+- 时间线宽度和字号、压缩状态、合成预览复用 `work_header_presentation_test.dart`、`conversation_live_status_test.dart`；问答详情的滚动、展开及敏感内容呈现复用 `business_reference_views_test.dart`、`timeline_question_receipt_test.dart`；输入区布局复用 `composer_complete_layout_test.dart`。原生场景继续验证实际资源引用、请求、活动状态、历史、保存和重开，不再重复布局矩阵或合成预览截图。
+
+迁移后的组件测试使用现有双队列等待工具收束 Client 任务，保留卸载、订阅关闭和错误传播；`test/ui` 的依赖闭包检查继续拒绝间接引入 FRB。不以增加超时、固定等待或减少业务断言换取通过。
+
 `timeline-history` 的功能阶段与 `question-history` 通过官方原生测试运行；`realtime-presentation` 在独立隔离实例中复用既有 realtime 严格对端，证明普通实时呈现，不与另一个消费者共享该脚本。原 realtime 的 FRB credit、host cwd、窗口几何，以及 Plan 的多生命周期静默恢复保留各自专项证据；迁移后的普通呈现测试不能冒充这些专项通过。
 
 `realtime-presentation` 原生用例的首字等待与正文可读观察复用严格对端的显式闸门：活动栏布局后才放出首个文本增量，原正文窗口读取并布局后才允许后续增量和完成。闸门只控制外部供应商，不提供产品状态；手动观察仍使用原有节奏，自动检查不依赖短暂流窗口或截图耗时。
