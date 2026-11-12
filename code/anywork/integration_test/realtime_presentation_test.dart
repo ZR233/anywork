@@ -926,10 +926,13 @@ final class _RealtimeScene {
       generation: prepared.generation,
     );
     try {
-      final window = await scope.readContent(
-        reference: summary.reference,
-        range: const ContentRange(offset: 0, maxBytes: 4096),
-      );
+      final window = await scope
+          .watchContent(
+            reference: summary.reference,
+            range: const ContentRange(offset: 0, maxBytes: 4096),
+          )
+          .first
+          .timeout(remaining());
       expect(utf8.decode(window.bytes), contains(_backgroundResultReasoning));
     } finally {
       expect((await scope.close()).complete, isTrue);
@@ -950,7 +953,7 @@ final class _RealtimeScene {
     evidence.addAll({
       'stage': 'native result and active foreground content verified',
       'executionId': state.runtime?.execution?.id,
-      'foregroundSummaryRead': true,
+      'foregroundSummaryObserved': true,
       'backgroundCompletionId': atom.completionItemId,
       'backgroundAndForegroundShareWork': block.id == prepared.display.unitId,
     });
