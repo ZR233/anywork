@@ -35,9 +35,15 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   final _errors = <String, String>{};
   void Function()? _closeRetention;
   bool _refreshScheduled = false;
+  final _displayObservations = <void Function()>{};
 
   @override
   FutureOr<StartedItemsState> build(String threadId) {
+    ref.onDispose(() {
+      for (final release in _displayObservations.toList()) {
+        release();
+      }
+    });
     // Listen without invalidating this command owner. A canonical provider may
     // rebuild while an operation is pending and the menu has no listeners.
     ref.listen(threadSessionStoreProvider(threadId), (previous, next) {
@@ -52,7 +58,46 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
     return _project();
   }
 
-  void refreshObservedLsp() => _scheduleRefresh();
+  /// Visibility borrows this VM's observation without extending the business
+  /// lease. Source updates do not rebuild the owner of admitted commands.
+  void Function() observeServices() {
+    final client = ref.read(anyworkClientProvider);
+    final lease = client.channels.acquireThreadLsp(threadId);
+    final retention = ref.keepAlive();
+    Observation? observation;
+    var released = false;
+    void release() {
+      if (released) return;
+      released = true;
+      observation?.cancel();
+      _displayObservations.remove(release);
+      unawaited(
+        lease.release().catchError((Object error) {
+          client.resourceFailure.publish(
+            UnresolvedResource(
+              owner: 'thread-lsp-popover:$threadId',
+              attemptId: const AttemptId(0),
+              reason: error,
+            ),
+          );
+        }),
+      );
+      retention.close();
+    }
+
+    _displayObservations.add(release);
+    try {
+      observation = client
+          .existingThreadLsp(threadId)!
+          .source
+          .watch((_) => _scheduleRefresh());
+      _scheduleRefresh();
+      return release;
+    } catch (_) {
+      release();
+      rethrow;
+    }
+  }
 
   void _scheduleRefresh() {
     if (_refreshScheduled) return;
@@ -148,8 +193,9 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
     final client = ref.read(anyworkClientProvider);
     final snapshot = client.existingThreadLsp(threadId)?.state.value;
     final bindingId = snapshot?.bindingId;
-    if (bindingId == null)
+    if (bindingId == null) {
       return Future.error(StateError('No active LSP binding'));
+    }
     return _run('lsp:$bindingId:$serverId', () async {
       await client.directoryCommands.resetThreadLspServer(
         threadId: threadId,

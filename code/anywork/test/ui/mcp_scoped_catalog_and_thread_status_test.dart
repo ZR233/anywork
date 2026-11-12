@@ -343,7 +343,6 @@ void main() {
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      print('DIAG initial popover closed');
       final mainBaselinesBeforeReopen = transport.threadLspMainBaselineCount;
       transport.setThreadLspSnapshot(
         ThreadLspStateSnapshot(
@@ -364,9 +363,6 @@ void main() {
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
-      print(
-        'DIAG first reopen baseline count ${transport.threadLspMainBaselineCount}',
-      );
       await pumpClientUntil(
         tester,
         () =>
@@ -384,7 +380,6 @@ void main() {
                 .any((server) => server.id == 'dart'),
         'new thread LSP baseline accepted after popover reopen',
       );
-      print('DIAG first reopen accepted');
 
       expect(
         find.byKey(StudioDriverKeys.mcpServerRow('postgres_prod')),
@@ -519,16 +514,12 @@ void main() {
       // admitted reconnect; reopening still reflects the same pending command.
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      print('DIAG pending MCP popover closed');
       final mainBaselinesBeforePendingReopen =
           transport.threadLspMainBaselineCount;
       transport.emitMcp(transport.mcpSnapshot);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
       await tester.pump();
-      print(
-        'DIAG second reopen baseline wait start ${transport.threadLspMainBaselineCount}',
-      );
       await pumpClientUntil(
         tester,
         () =>
@@ -536,8 +527,6 @@ void main() {
             mainBaselinesBeforePendingReopen,
         'thread LSP observation re-established after pending MCP reopen',
       );
-      print('DIAG second reopen baseline accepted');
-      print('DIAG before pending MCP button check');
       expect(
         tester
             .widget<IconButton>(
@@ -549,11 +538,9 @@ void main() {
             .onPressed,
         isNull,
       );
-      print('DIAG before complete MCP gate');
       expect(transport.reconnectCalls, hasLength(1));
       transport.reconnectGate!.completeError(StateError('reconnect rejected'));
       await tester.pumpAndSettle();
-      print('DIAG after MCP gate settled');
       expect(
         container
             .read(startedItemsViewModelProvider('thread-main'))
@@ -577,7 +564,6 @@ void main() {
         find.byKey(StudioDriverKeys.mcpResetServer('dcgm_metrics')),
       );
       await tester.pumpAndSettle();
-      print('DIAG after second MCP reset');
       expect(transport.reconnectCalls, [
         (threadId: 'thread-main', serverId: 'dcgm_metrics'),
         (threadId: 'thread-main', serverId: 'dcgm_metrics'),
@@ -586,7 +572,6 @@ void main() {
       // Reconnect all MCP servers on this Thread.
       await tester.tap(find.byKey(StudioDriverKeys.mcpResetAll));
       await tester.pumpAndSettle();
-      print('DIAG after MCP reset all');
       expect(transport.reconnectCalls, [
         (threadId: 'thread-main', serverId: 'dcgm_metrics'),
         (threadId: 'thread-main', serverId: 'dcgm_metrics'),
@@ -603,7 +588,6 @@ void main() {
       transport.lspResetGate = Completer<ThreadLspStateSnapshot>();
       await tester.tap(find.byKey(StudioDriverKeys.lspResetServer('dart')));
       await tester.pump();
-      print('DIAG after LSP reset admitted');
       transport.emitThreadLsp(
         ThreadLspStateSnapshot(
           threadId: 'thread-main',
@@ -617,7 +601,6 @@ void main() {
         StateError('late result from retired binding'),
       );
       await tester.pumpAndSettle();
-      print('DIAG after late LSP result');
       expect(
         container
             .read(startedItemsViewModelProvider('thread-main'))
@@ -631,11 +614,9 @@ void main() {
       );
       transport.lspResetGate = null;
 
-      print('DIAG before rejected LSP reset');
       transport.lspResetGate = Completer<ThreadLspStateSnapshot>();
       await tester.tap(find.byKey(StudioDriverKeys.lspResetServer('dart')));
       await tester.pump();
-      print('DIAG rejected LSP reset pending');
       expect(
         container
             .read(startedItemsViewModelProvider('thread-main'))
@@ -665,7 +646,6 @@ void main() {
         StateError('LSP reconnect rejected'),
       );
       await tester.pumpAndSettle();
-      print('DIAG rejected LSP reset settled');
       expect(
         container
             .read(startedItemsViewModelProvider('thread-main'))
@@ -762,7 +742,11 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await tester.pumpWidget(const SizedBox.shrink());
-      await otherLspLease.release();
+      await pumpClientFuture(
+        tester,
+        otherLspLease.release(),
+        'other thread LSP observation released',
+      );
       container.dispose();
       final report = await pumpClientFuture(
         tester,

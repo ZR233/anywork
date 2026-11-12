@@ -49,12 +49,12 @@ impl StudioRuntime {
                 .pause_after_thread_snapshot_for_test(&servers)
                 .await;
             let _commit = self.external_runtimes.lsp_state.thread_commit().await;
-            let expected = (
-                &binding.incarnation,
-                captured_binding_id.as_deref(),
-                Some(endpoint.as_str()),
-                root.as_deref(),
-            );
+            let expected = crate::studio::thread_factory::LspProjectionBinding {
+                incarnation: &binding.incarnation,
+                binding_id: captured_binding_id.as_deref(),
+                endpoint: Some(endpoint.as_str()),
+                root: root.as_deref(),
+            };
             let published_thread_id = thread_id.clone();
             let published_binding_id = captured_binding_id.clone();
             self.thread_factory

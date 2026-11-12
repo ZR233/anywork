@@ -29,6 +29,13 @@ pub(in crate::studio) use tool_bindings::RefreshedToolBinding;
 use crate::studio::{ProductEventBus, StudioStore};
 use std::sync::Arc;
 
+pub(crate) struct LspProjectionBinding<'a> {
+    pub incarnation: &'a Arc<()>,
+    pub binding_id: Option<&'a str>,
+    pub endpoint: Option<&'a str>,
+    pub root: Option<&'a std::path::Path>,
+}
+
 /// Existing service owners, shared by lease; no mutable Thread/session state lives here.
 #[derive(Clone)]
 pub(in crate::studio) struct StudioThreadServices {
@@ -97,12 +104,7 @@ impl StudioThreadFactory {
     pub(crate) fn commit_lsp_projection<R>(
         &self,
         thread_id: &str,
-        captured: Option<(
-            &Arc<()>,
-            Option<&str>,
-            Option<&str>,
-            Option<&std::path::Path>,
-        )>,
+        captured: Option<LspProjectionBinding<'_>>,
         commit: impl FnOnce(bool) -> R,
     ) -> Option<R> {
         let Some(scope) = self.resource_scope(thread_id) else {
@@ -115,9 +117,12 @@ impl StudioThreadFactory {
         let Some(binding) = bindings.as_ref() else {
             return captured.is_none().then(|| commit(false));
         };
-        let Some((incarnation, binding_id, endpoint, root)) = captured else {
-            return None;
-        };
+        let LspProjectionBinding {
+            incarnation,
+            binding_id,
+            endpoint,
+            root,
+        } = captured?;
         if !Arc::ptr_eq(&binding.incarnation, incarnation)
             || binding.lsp_binding_id.as_deref() != binding_id
         {

@@ -2,13 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:anywork_client/studio_client.dart'
-    show AttemptId, DomainSyncPhase, DomainSyncStatus, UnresolvedResource;
+    show DomainSyncPhase, DomainSyncStatus;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'started_items_state.dart';
 import 'status_view.dart';
@@ -119,30 +118,9 @@ class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
   }
 
   void _attachLspObservation(String threadId) {
-    final client = ref.read(anyworkClientProvider);
-    final lease = client.channels.acquireThreadLsp(threadId);
-    final source = client.existingThreadLsp(threadId)!.source;
-    final observation = source.watch((_) {
-      if (mounted) {
-        ref
-            .read(startedItemsViewModelProvider(threadId).notifier)
-            .refreshObservedLsp();
-      }
-    });
-    _releaseLspObservation = () {
-      observation.cancel();
-      unawaited(
-        lease.release().catchError((Object error) {
-          client.resourceFailure.publish(
-            UnresolvedResource(
-              owner: 'thread-lsp-popover:$threadId',
-              attemptId: const AttemptId(0),
-              reason: error,
-            ),
-          );
-        }),
-      );
-    };
+    _releaseLspObservation = ref
+        .read(startedItemsViewModelProvider(threadId).notifier)
+        .observeServices();
   }
 
   @override

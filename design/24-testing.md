@@ -97,6 +97,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 
 普通功能集成验证操作后的可观察结果，不给宿主调度增加性能门槛。双击等有输入时序要求的手势使用官方 [`PointerEventRecord`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/handlePointerEventRecord.html) 发送有效事件：首次按下满足最小间隔后，将首次释放与第二次点击放在同一事件包内，再核对真实界面与持久化结果，不要求 CI 两次异步调度之间的墙钟时间小于双击窗口。重新解码的不可变事实按完整业务字段比较；局部作用域、订阅等资源所有权仍按真实身份核对。测试层级遵循 Flutter 的[测试分层建议](https://docs.flutter.dev/testing/overview)，已有单元或组件测试能完整证明的规则不重复提升到原生桌面测试。
 
+会话语言服务的原生用例使用 `cargo xtask test-project --suite desktop --case thread_lsp_status`。运行器通过现有隔离验收工具的 `thread-lsp-status` 场景自动准备全新 home、两个同名服务的项目目录和 `pl-provider-fixture`，不依赖会话临时脚本。界面状态、弹窗观察生命周期和重载交互由生产组件的视图模型及 Widget 测试证明；原生用例仅验证真实 Rust／FRB／Client 的主题与命令往返、会话绑定、另一项目进程不变与关闭回收，不重复界面断言或截图；证据保存在该次输出的 `thread-lsp-artifacts/`。当前进程身份核验仅覆盖 Linux。
+
 ### 24.1.3 时间线呈现与官方集成测试
 
 人工实验统一按 [24.1.4](#2414-官方无头工具与界面设计对齐) 选择最轻载体并取证。

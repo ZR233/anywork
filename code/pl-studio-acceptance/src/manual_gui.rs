@@ -17,6 +17,7 @@ mod realtime_presentation;
 mod shutdown;
 mod sidebar_query;
 mod skill_activity;
+mod thread_lsp_status;
 mod timeline_concept;
 mod timeline_history_20k;
 mod wait_events;
@@ -68,7 +69,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
     /// `wait-events`, `conversation-read-work`, `question-history`,
-    /// `realtime-presentation` and `sidebar-query` are automatic desktop runners;
+    /// `realtime-presentation`, `sidebar-query` and `thread-lsp-status` are automatic desktop runners;
     /// `shutdown` covers native lifecycle and second-instance behavior.
     /// ACP native acceptance uses the official Flutter integration_test
     /// suites directly; see design/28-acp.md.
@@ -174,8 +175,10 @@ fn validate_realtime_focus(options: &ManualGuiOptions) -> Result<()> {
 }
 
 fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
-    if matches!(value, "realtime-presentation" | "sidebar-query")
-        || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
+    if matches!(
+        value,
+        "realtime-presentation" | "sidebar-query" | "thread-lsp-status"
+    ) || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
     {
         Ok(value.to_owned())
     } else {
@@ -833,12 +836,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "wait-events"
                     | "conversation-read-work"
                     | "sidebar-query"
+                    | "thread-lsp-status"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
          timeline-concept, timeline-boundary, media-handoff, message-submission, stress-body-large, wait-events, conversation-read-work, \
-         sidebar-query and the delegation scenes"
+         sidebar-query, thread-lsp-status and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.preset == "timeline-history",
@@ -984,6 +988,29 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 (Err(error), Ok(())) => Err(error),
                 (Err(error), Err(retain_error)) => Err(error.context(format!(
                     "retaining the failed conversation-read environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
+    if options.preset == "thread-lsp-status" {
+        ensure!(
+            cfg!(target_os = "linux"),
+            "Thread LSP integration requires Linux"
+        );
+        let working = tempfile::Builder::new()
+            .prefix("environment-")
+            .tempdir_in(&output)?;
+        let result = thread_lsp_status::run(&workspace, working.path(), &output, &interrupt_rx);
+        if options.retain_environment || result.is_err() {
+            let home = working.path().join("sandbox/studio-home");
+            let retained = keep_isolated_environment(working, &home, &output, None);
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the Thread LSP environment also failed: {retain_error:#}"
                 ))),
             };
         }
@@ -6674,6 +6701,7 @@ mod scenario_cli_tests {
             "timeline-concept",
             "timeline-boundary",
             "sidebar-query",
+            "thread-lsp-status",
         ] {
             let options = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])
                 .expect("supported native presentation scenario");

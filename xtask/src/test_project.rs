@@ -241,6 +241,7 @@ fn desktop_harness_preset(id: &str) -> Option<&'static str> {
         "timeline_presentation" => Some("timeline-history"),
         "timeline_concept" => Some("timeline-concept"),
         "sidebar" => Some("sidebar-query"),
+        "thread_lsp_status" => Some("thread-lsp-status"),
         _ => None,
     }
 }
@@ -284,6 +285,16 @@ fn desktop_env_ready(id: &str) -> bool {
                 && env_present("ANYWORK_SIDEBAR_ARTIFACTS")
         }
         "acp_real_login" => env_present("ANYWORK_ACP_ACCEPTANCE"),
+        "thread_lsp_status" => [
+            "ANYWORK_HOME",
+            "ANYWORK_THREAD_LSP_SANDBOX",
+            "ANYWORK_THREAD_LSP_PROJECT_A",
+            "ANYWORK_THREAD_LSP_PROJECT_B",
+            "ANYWORK_THREAD_LSP_OUTPUT",
+            "ANYWORK_THREAD_LSP_FIXTURE",
+        ]
+        .into_iter()
+        .all(env_present),
         "chatgpt_real_login" => env_present("ANYWORK_CHATGPT_ACCEPTANCE"),
         "acp_agy_conversation" => std::env::var("ANYWORK_AGY_LIVE").is_ok_and(|value| value == "1"),
         _ => true,
