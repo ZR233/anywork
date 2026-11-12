@@ -1088,7 +1088,7 @@ root = "{workspaceRoot}/init"
             vec![
                 "sh".into(),
                 "-c".into(),
-                "printf 'server_pid=%s rss_kib=' \"$PPID\"; ps -o rss= -p \"$PPID\"".into(),
+                "printf 'server_pid=%s rss_kib=' \"$PPID\"; ps -o rss= -p \"$PPID\"; sed -n '/VmHWM/p' /proc/\"$PPID\"/status".into(),
             ],
         )
         .await
