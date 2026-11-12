@@ -18,13 +18,15 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 20;
+const HISTORY_SCHEMA_VERSION: i64 = 21;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
 
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
+#[cfg(test)]
+mod agent_session_tests;
 #[cfg(test)]
 mod business_refs_tests;
 #[cfg(test)]
@@ -127,6 +129,15 @@ struct HistoryStoreState {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    #[cfg(test)]
+    agent_page_gate: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    agent_page_before_transaction: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 /// Bounded singleton baselines owned only by one physical effect transaction.
@@ -308,6 +319,10 @@ impl HistoryStore {
                 completion_read_gate: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 state_read_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                agent_page_gate: tokio::sync::Mutex::new(None),
+                #[cfg(test)]
+                agent_page_before_transaction: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -2106,6 +2121,10 @@ impl HistoryStore {
         Ok(pl_protocol::ThreadTurnPage { next_cursor, turns })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the existing ordinal keyset parameters explicit alongside request cancellation"
+    )]
     pub(crate) async fn agent_page(
         &self,
         descending: bool,
@@ -2114,59 +2133,82 @@ impl HistoryStore {
         ceiling: Option<u64>,
         through: Option<u64>,
         limit: usize,
+        cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(u64, u64, Vec<ThreadItem>, bool)> {
-        // 行上限与探测行必须用同一份 limit：早先的写法按调用方 limit 比较 `has_more`，却把
-        // SQL LIMIT 截到 51，limit > 50 时会返回 51 条却宣称“没有更多”。这里先收敛 limit，再
-        // 多取一行作为“确实还有匹配条目”的证据。
-        let limit = limit.clamp(1, AGENT_PAGE_ROW_LIMIT);
-        let Some(connection) = self.reader().await? else {
-            // 缺失历史库：空窗口，且读操作绝不创建它。
-            return Ok((0, 0, Vec::new(), false));
-        };
-        let watermark = connection_watermark(connection).await?;
-        if let Some(through) = through {
-            ensure!(
-                through <= watermark,
-                "agent session cursor is ahead of durable history"
-            );
-        }
-        let ceiling = match ceiling {
-            Some(ceiling) => ceiling,
-            None => {
-                let row = connection
-                    .db
-                    .query_one_raw(statement(
-                        "SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM history_items",
-                        vec![],
-                    ))
-                    .await?
-                    .context("history ceiling query returned no row")?;
-                u64::try_from(row.try_get::<i64>("", "ordinal")?)?
+        let read = async {
+            // 行上限与探测行必须用同一份 limit：早先的写法按调用方 limit 比较 `has_more`，却把
+            // SQL LIMIT 截到 51，limit > 50 时会返回 51 条却宣称“没有更多”。这里先收敛 limit，再
+            // 多取一行作为“确实还有匹配条目”的证据。
+            let limit = limit.clamp(1, AGENT_PAGE_ROW_LIMIT);
+            let Some(connection) = self.reader().await? else {
+                // 缺失历史库：空窗口，且读操作绝不创建它。
+                return Ok((0, 0, Vec::new(), false));
+            };
+            // The first SELECT fixes this page's SQLite snapshot. All range metadata and content
+            // belong to it; a continuation still uses its original ordinal keyset, not a long transaction.
+            #[cfg(test)]
+            if let Some(entered) = self.state.agent_page_before_transaction.lock().await.take() {
+                let _ = entered.send(());
             }
+            let tx = connection.db.begin().await?;
+            let watermark = u64::try_from(applied_write_seq(&tx).await?)
+                .context("negative history write sequence")?;
+            #[cfg(test)]
+            if let Some((entered, release)) = self.state.agent_page_gate.lock().await.take() {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
+            if let Some(through) = through {
+                ensure!(
+                    through <= watermark,
+                    "agent session cursor is ahead of durable history"
+                );
+            }
+            let ceiling = match ceiling {
+                Some(ceiling) => ceiling,
+                None => {
+                    let row = tx
+                        .query_one_raw(statement(
+                            "SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM history_items",
+                            vec![],
+                        ))
+                        .await?
+                        .context("history ceiling query returned no row")?;
+                    u64::try_from(row.try_get::<i64>("", "ordinal")?)?
+                }
+            };
+            let mut predicates = vec!["ordinal <= ?"];
+            let mut values = vec![integer(ceiling)?.into()];
+            if let Some(anchor) = anchor {
+                predicates.push(if descending {
+                    "ordinal < ?"
+                } else {
+                    "ordinal > ?"
+                });
+                values.push(integer(anchor)?.into());
+            }
+            if text_only {
+                predicates.push("kind = 'text'");
+            }
+            values.push(integer(limit + 1)?.into());
+            let sql = format!(
+                "SELECT payload FROM history_items WHERE {} ORDER BY ordinal {} LIMIT ?",
+                predicates.join(" AND "),
+                if descending { "DESC" } else { "ASC" }
+            );
+            let mut items = query_items(&tx, &sql, values).await?;
+            let has_more = items.len() > limit;
+            items.truncate(limit);
+            tx.commit().await?;
+            Ok((watermark, ceiling, items, has_more))
         };
-        let mut predicates = vec!["ordinal <= ?"];
-        let mut values = vec![integer(ceiling)?.into()];
-        if let Some(anchor) = anchor {
-            predicates.push(if descending {
-                "ordinal < ?"
-            } else {
-                "ordinal > ?"
-            });
-            values.push(integer(anchor)?.into());
+        // Dropping the read future releases its initialization/acquisition wait and transaction.
+        // The driver owns rollback/connection cleanup; cancellation is not a hard SQL abort.
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(pl_core::thread::ThreadError::Cancelled.into()),
+            result = read => result,
         }
-        if text_only {
-            predicates.push("kind = 'text'");
-        }
-        values.push(integer(limit + 1)?.into());
-        let sql = format!(
-            "SELECT payload FROM history_items WHERE {} ORDER BY ordinal {} LIMIT ?",
-            predicates.join(" AND "),
-            if descending { "DESC" } else { "ASC" }
-        );
-        let mut items = query_items(&connection.db, &sql, values).await?;
-        let has_more = items.len() > limit;
-        items.truncate(limit);
-        Ok((watermark, ceiling, items, has_more))
     }
 
     /// Reads one committed timeline item by its durable identity.
@@ -2842,7 +2884,7 @@ async fn turn_page_entry(
 }
 
 async fn query_items(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     sql: &str,
     values: Vec<Value>,
 ) -> Result<Vec<ThreadItem>> {

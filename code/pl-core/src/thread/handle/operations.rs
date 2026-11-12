@@ -208,6 +208,8 @@ impl ThreadHandle {
             verified_recovery_generation: None,
             local_fault: None,
             output_obligations: Default::default(),
+            output_retry_finished: None,
+            pressure_watch_closed: false,
             pending_output_repairs: Default::default(),
             satisfied_output_obligations: Default::default(),
             output_backpressure: false,
@@ -977,12 +979,17 @@ impl ThreadHandle {
     /// [`ThreadError::StorageRecoveryUnverified`] when the attached backend cannot own the
     /// obligation, or [`ThreadError::Closed`] when the owner is gone.
     pub async fn retry_output_storage(&self) -> Result<(), ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::RetryOutputStorage(reply))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
+        loop {
+            let (reply, response) = oneshot::channel();
+            self.mailbox
+                .send(super::mailbox::MailboxCommand::RetryOutputStorage(reply))
+                .await
+                .map_err(|_| ThreadError::Closed)?;
+            match response.await.map_err(|_| ThreadError::Closed)? {
+                super::mailbox::OutputRetryReply::Finished(result) => return result,
+                super::mailbox::OutputRetryReply::Waiting(finished) => finished.cancelled().await,
+            }
+        }
     }
 
     /// Retries pending admissions and waits for durability without rolling back runtime facts.
@@ -1018,7 +1025,7 @@ impl ThreadHandle {
             return self.settled_flush();
         }
         match response.await {
-            Ok(result) => result,
+            Ok(result) => result?.wait().await,
             Err(_) => self.settled_flush(),
         }
     }

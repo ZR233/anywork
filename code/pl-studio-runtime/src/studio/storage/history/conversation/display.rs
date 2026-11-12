@@ -17,6 +17,7 @@ pub(in crate::studio) struct DisplayRecovery {
 pub(in crate::studio) struct StoredDisplayCut {
     pub published: u64,
     pub effect: u64,
+    pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
 }
 
@@ -38,9 +39,9 @@ pub(in crate::studio) async fn watermarks(db: &impl ConnectionTrait) -> Result<(
     ))
 }
 
-fn validate_header(header: &DisplayHeader) -> Result<()> {
+pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeader) -> Result<()> {
     ensure!(
-        header.version == 2 && header.block_order > 0 && !header.id.is_empty(),
+        header.version == 3 && header.block_order > 0 && !header.id.is_empty(),
         "invalid display header"
     );
     if let Some(pos) = header.history_pos {
@@ -52,7 +53,7 @@ fn validate_header(header: &DisplayHeader) -> Result<()> {
             "published display header is not ready"
         );
     }
-    if let DisplayBlockBody::Single { record } = &header.body {
+    if let DisplayBlockBody::Single { record, .. } = &header.body {
         ensure!(
             !matches!(record.atom.payload, Some(PayloadData::Inline { .. })),
             "display header retains inline completion payload"
@@ -130,6 +131,55 @@ fn completion_id(record: &pl_protocol::DisplayRecord) -> Option<&str> {
     }
 }
 
+fn validate_original(atom: &pl_protocol::ChatAtom, original: &pl_protocol::ChatAtom) -> Result<()> {
+    ensure!(
+        atom.id == original.id
+            && atom.source == original.source
+            && atom.kind == original.kind
+            && atom.lifecycle == original.lifecycle
+            && atom.tool == original.tool,
+        "display original ownership differs; original history preserved"
+    );
+    Ok(())
+}
+
+async fn validate_original_references(
+    db: &impl ConnectionTrait,
+    members: &[DisplayMemberWrite],
+) -> Result<()> {
+    let ids = members
+        .iter()
+        .filter_map(|member| completion_id(&member.head.record))
+        .collect::<std::collections::BTreeSet<_>>();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT item_id,metadata FROM conversation_items WHERE item_id IN ({placeholders})"
+            ),
+            ids.iter().map(|id| (*id).into()).collect(),
+        ))
+        .await?;
+    let mut originals = std::collections::HashMap::new();
+    for row in rows {
+        let atom: pl_protocol::ChatAtom =
+            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+        originals.insert(row.try_get::<String>("", "item_id")?, atom);
+    }
+    for member in members {
+        if let Some(id) = completion_id(&member.head.record) {
+            let original = originals
+                .get(id)
+                .context("display original reference is missing; original history preserved")?;
+            validate_original(&member.head.record.atom, original)?;
+        }
+    }
+    Ok(())
+}
+
 const HEAD: &str = "block_id,source_key,block_order,history_pos,sealed,updated_effect,header";
 const MEMBER: &str = "block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata";
 const RECEIPT: &str = "studio.display-delta:v2";
@@ -191,6 +241,7 @@ pub(in crate::studio) async fn apply(
         "display prefix lacks frozen heads"
     );
     let mut previously_sealed = std::collections::BTreeSet::new();
+    let mut owners = std::collections::HashMap::new();
     for write in &delta.blocks {
         let h = &write.header;
         validate_header(h)?;
@@ -243,6 +294,13 @@ pub(in crate::studio) async fn apply(
             )).await?;
         }
     }
+    for write in &delta.blocks {
+        owners.insert(
+            write.header.id.clone(),
+            (write.header.sealed, delta.effect_seq),
+        );
+    }
+    let mut originals = std::collections::HashMap::new();
     for member in &delta.members {
         ensure!(
             member.head.member_order > 0
@@ -264,29 +322,41 @@ pub(in crate::studio) async fn apply(
                 ),
             "invalid lightweight display member"
         );
-        let owner = db
-            .query_one_raw(statement(
+        if !owners.contains_key(&member.block_id) {
+            let owner = db.query_one_raw(statement(
                 "SELECT sealed,updated_effect FROM conversation_display_blocks WHERE block_id=?",
                 vec![member.block_id.clone().into()],
             ))
             .await?
             .context("display member has no owner")?;
+            owners.insert(
+                member.block_id.clone(),
+                (
+                    owner.try_get::<i64>("", "sealed")? == 1,
+                    u64::try_from(owner.try_get::<i64>("", "updated_effect")?)?,
+                ),
+            );
+        }
+        let (sealed, updated_effect) = owners[&member.block_id];
         ensure!(
             !previously_sealed.contains(&member.block_id)
-                && (owner.try_get::<i64>("", "sealed")? == 0
-                    || owner.try_get::<i64>("", "updated_effect")? == integer(delta.effect_seq)?),
+                && (!sealed || updated_effect == delta.effect_seq),
             "sealed block rejects member updates"
         );
         if let Some(completion) = completion_id(&member.head.record) {
-            ensure!(
-                db.query_one_raw(statement(
-                    "SELECT 1 FROM conversation_items WHERE item_id=?",
-                    vec![completion.into()]
-                ))
-                .await?
-                .is_some(),
-                "display member references missing original completion"
-            );
+            if !originals.contains_key(completion) {
+                let row = db
+                    .query_one_raw(statement(
+                        "SELECT metadata FROM conversation_items WHERE item_id=?",
+                        vec![completion.into()],
+                    ))
+                    .await?
+                    .context("display member references missing original completion")?;
+                let original: pl_protocol::ChatAtom =
+                    serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
+                originals.insert(completion.to_owned(), original);
+            }
+            validate_original(&member.head.record.atom, &originals[completion])?;
         }
         let existing = db
             .query_one_raw(statement(
@@ -330,7 +400,7 @@ pub(in crate::studio) async fn apply(
             removed.history_pos.is_none()
                 && removed.skip_display
                 && removed.unfinished == 0
-                && matches!(&removed.body, DisplayBlockBody::Single { record }
+                && matches!(&removed.body, DisplayBlockBody::Single { record, .. }
                 if record.atom.kind == pl_protocol::ChatAtomKind::Text && record.atom.content_present == Some(false)
                 && matches!(record.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal { .. })),
             "RemoveEmpty requires reliable empty terminal text"
@@ -349,7 +419,7 @@ pub(in crate::studio) async fn apply(
                     && old.source == removed.source
                     && old.block_order == removed.block_order
                     && matches!((&old.body, &removed.body),
-                        (DisplayBlockBody::Single { record: before }, DisplayBlockBody::Single { record: after })
+                        (DisplayBlockBody::Single { record: before, .. }, DisplayBlockBody::Single { record: after, .. })
                         if before.atom.id == after.atom.id && before.atom.kind == pl_protocol::ChatAtomKind::Text
                             && before.atom.content_present != Some(true)),
                 "cannot remove a published display"
@@ -548,15 +618,25 @@ impl super::super::HistoryStore {
         ensure!(connection.database_id == database, "stale display database");
         let tx = connection.db.begin().await?;
         let (published, effect) = watermarks(&tx).await?;
-        let open = open_heads(&tx, before_order, limit)
+        let open: Vec<_> = open_heads(&tx, before_order, limit)
             .await?
             .into_iter()
             .map(Arc::new)
             .collect();
+        let current_work_id = if before_order.is_none() {
+            open.iter()
+                .find(|header| {
+                    !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. })
+                })
+                .map(|header| header.id.clone())
+        } else {
+            None
+        };
         tx.commit().await?;
         Ok(StoredDisplayCut {
             published,
             effect,
+            current_work_id,
             open,
         })
     }
@@ -646,6 +726,7 @@ impl super::super::HistoryStore {
             .context("display block reference is missing")?;
         let header = Arc::new(decode_header(&row)?);
         let entries = member_page(&tx, block_id, before, limit).await?;
+        validate_original_references(&tx, &entries).await?;
         let upper = header
             .next_member
             .min(before.unwrap_or(u64::MAX).saturating_sub(1));

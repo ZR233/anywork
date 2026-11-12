@@ -307,11 +307,14 @@ impl ColdStore for GatedStore {
     }
 
     async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.active && self.failure == Failure::Admission {
             return Err(storage_error());
         }
         if (1..=sequence).all(|number| state.accepted.contains(&number)) {
+            state.durable = state.durable.max(sequence);
+            drop(state);
+            self.notify();
             Ok(())
         } else {
             Err(storage_error())
@@ -505,7 +508,10 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
     store.repair();
     thread.flush().await.unwrap();
     assert_eq!(executions.lock().unwrap().len(), 2);
-    assert!(thread.snapshot().persistence.durable_sequence >= pending.commit_sequence);
+    await_snapshot(&thread, |snapshot| {
+        snapshot.persistence.durable_sequence >= pending.commit_sequence
+    })
+    .await;
     thread.close().await.unwrap();
 }
 
@@ -592,7 +598,11 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
     assert_eq!(requests.lock().unwrap().len(), 2);
     assert_eq!(*executions.lock().unwrap(), ["first-write".to_string()]);
     within(thread.flush()).await.unwrap();
-    let snapshot = thread.snapshot();
+    // The caller owns flush completion; the owner folds the backend's real receipt separately.
+    let snapshot = await_snapshot(&thread, |snapshot| {
+        snapshot.persistence.durable_sequence >= snapshot.commit_sequence
+    })
+    .await;
     assert_eq!(
         snapshot.persistence.execution_phase,
         StorageExecutionPhase::Running
@@ -1103,7 +1113,117 @@ impl OutputRetryObligation for ScriptedObligation {
 /// A producer that could not store its capture reports the owed re-save through its typed fault.
 #[derive(Debug)]
 struct ObligationFaultTool {
-    obligation: Arc<ScriptedObligation>,
+    obligation: Arc<dyn OutputRetryObligation>,
+}
+
+#[derive(Debug)]
+struct BlockingObligation {
+    entered: tokio_util::sync::CancellationToken,
+    release: tokio_util::sync::CancellationToken,
+    attempts: AtomicUsize,
+    stored: AtomicUsize,
+}
+
+impl OutputRetryObligation for BlockingObligation {
+    fn identity(&self) -> String {
+        "blocked-archive".into()
+    }
+
+    fn retry(&self) -> OutputRetryFuture<'_> {
+        Box::pin(async {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            self.entered.cancel();
+            self.release.cancelled().await;
+            self.stored.fetch_add(1, Ordering::SeqCst);
+            Ok(OutputRetryOutcome::Stored)
+        })
+    }
+
+    fn received_bytes(&self) -> u64 {
+        7
+    }
+
+    fn location(&self) -> String {
+        "blocked-archive".into()
+    }
+
+    fn kind(&self) -> StorageFaultKind {
+        StorageFaultKind::WriteFailed
+    }
+}
+
+#[tokio::test]
+async fn blocked_archive_retry_keeps_control_reachable_and_serializes_overlapping_retries() {
+    use futures::FutureExt;
+    let store = GatedStore::new(Failure::Admission);
+    store.state.lock().unwrap().armed = false;
+    let (model, _requests) = ScriptedModel::new(&["store"]);
+    let thread =
+        ThreadHandle::start("blocked-archive".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store))
+        .await
+        .unwrap();
+    let obligation = Arc::new(BlockingObligation {
+        entered: Default::default(),
+        release: Default::default(),
+        attempts: AtomicUsize::new(0),
+        stored: AtomicUsize::new(0),
+    });
+    thread
+        .register_tools(vec![
+            Registration::prepare("store".into(), OpaquePayload::text("Tool store"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(
+                    ObligationFaultTool {
+                        obligation: obligation.clone(),
+                    },
+                )),
+        ])
+        .await
+        .unwrap();
+    let runner = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("blocked-archive")).await })
+    };
+    paused(&thread).await;
+    let first = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.retry_output_storage().await })
+    };
+    within(obligation.entered.cancelled()).await;
+    let second = thread.retry_output_storage();
+    tokio::pin!(second);
+    assert!(second.as_mut().now_or_never().is_none());
+    // FIFO processing of this marker proves the overlapping retry reached the original owner.
+    within(thread.send_message(pl_core::thread::inbox::ThreadMessage {
+        id: "retry-marker".into(),
+        source_id: "test".into(),
+        kind: Default::default(),
+        payload: OpaquePayload::text("marker"),
+        context: Vec::new(),
+    }))
+    .await
+    .unwrap();
+    assert!(second.as_mut().now_or_never().is_none());
+    let execution = thread.snapshot().execution.as_ref().unwrap().id.clone();
+    assert!(within(thread.interrupt_execution(execution)).await.unwrap());
+    assert_eq!(obligation.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(obligation.stored.load(Ordering::SeqCst), 0);
+    assert_eq!(thread.snapshot().persistence.output_obligations.len(), 1);
+    first.abort();
+    assert!(within(first).await.unwrap_err().is_cancelled());
+    obligation.release.cancel();
+    within(second).await.unwrap();
+    assert_eq!(obligation.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(obligation.stored.load(Ordering::SeqCst), 1);
+    assert!(thread.snapshot().persistence.output_obligations.is_empty());
+    assert!(thread.snapshot().persistence.resume_required);
+    assert!(matches!(
+        within(runner).await.unwrap(),
+        Err(ThreadError::Cancelled)
+    ));
+    within(thread.close()).await.unwrap();
 }
 
 impl pl_agent_tool::Tool for ObligationFaultTool {

@@ -289,7 +289,7 @@ impl ModelSession for MemberModel {
                 use futures::FutureExt;
                 assert!(
                     sender
-                        .submit(0, "item".into(), payload)
+                        .submit(0, "item".into(), payload, None)
                         .now_or_never()
                         .is_none()
                 );
@@ -299,16 +299,17 @@ impl ModelSession for MemberModel {
                         u32::from(matches!(ending, Ending::InvalidGeneration)),
                         "item".into(),
                         payload.clone(),
+                        None,
                     )
                     .await
                     .map_err(model_error)?;
                 sender
-                    .submit(0, "item".into(), payload)
+                    .submit(0, "item".into(), payload, None)
                     .await
                     .map_err(model_error)?;
                 if let Some(duplicate) = duplicate {
                     sender
-                        .submit(0, "item".into(), duplicate)
+                        .submit(0, "item".into(), duplicate, None)
                         .await
                         .map_err(model_error)?;
                 }
@@ -322,7 +323,7 @@ impl ModelSession for MemberModel {
             if matches!(ending, Ending::Conflict) {
                 assert!(matches!(
                     sender
-                        .submit(0, "item".into(), OpaquePayload::text("changed"))
+                        .submit(0, "item".into(), OpaquePayload::text("changed"), None)
                         .await,
                     Err(ModelMemberError::Rejected(_))
                 ));
@@ -381,13 +382,13 @@ impl ModelSession for StartingModel {
             let sender = request.members.as_ref().unwrap();
             if queued {
                 use futures::FutureExt;
-                assert!(sender.start(0, identity).now_or_never().is_none());
+                assert!(sender.start(0, identity, None).now_or_never().is_none());
                 return Err(model_error(std::io::Error::other(
                     "return with occupied slot",
                 )));
             }
             sender
-                .start(0, identity.clone())
+                .start(0, identity.clone(), None)
                 .await
                 .map_err(model_error)?;
             let mut enriched = identity;
@@ -395,7 +396,7 @@ impl ModelSession for StartingModel {
                 part.output_index = Some(7);
             }
             sender
-                .start(0, enriched.clone())
+                .start(0, enriched.clone(), None)
                 .await
                 .map_err(model_error)?;
             if conflict {
@@ -403,24 +404,29 @@ impl ModelSession for StartingModel {
                     part.output_index = Some(8);
                 }
                 return sender
-                    .start(0, enriched)
+                    .start(0, enriched, None)
                     .await
                     .map(|()| unreachable!("conflicting start cannot be admitted"))
                     .map_err(model_error);
             }
             if content {
                 sender
-                    .content_available(0, enriched.clone())
+                    .content_available(0, enriched.clone(), None)
                     .await
                     .map_err(model_error)?;
                 sender
-                    .content_available(0, enriched)
+                    .content_available(0, enriched, None)
                     .await
                     .map_err(model_error)?;
             }
             if complete {
                 sender
-                    .submit(0, "starting-item".into(), OpaquePayload::text("ended"))
+                    .submit(
+                        0,
+                        "starting-item".into(),
+                        OpaquePayload::text("ended"),
+                        None,
+                    )
                     .await
                     .map_err(model_error)?;
             }
@@ -647,7 +653,7 @@ impl ModelSession for ContentModel {
             let mut identity = starting_identity();
             if !matches!(ending, ContentEnding::MissingStart) {
                 sender
-                    .start(0, identity.clone())
+                    .start(0, identity.clone(), None)
                     .await
                     .map_err(model_error)?;
             }
@@ -658,14 +664,14 @@ impl ModelSession for ContentModel {
                 use futures::FutureExt;
                 assert!(
                     sender
-                        .content_available(0, identity)
+                        .content_available(0, identity, None)
                         .now_or_never()
                         .is_none()
                 );
             } else {
                 let generation = u32::from(matches!(ending, ContentEnding::WrongGeneration));
                 sender
-                    .content_available(generation, identity.clone())
+                    .content_available(generation, identity.clone(), None)
                     .await
                     .map_err(model_error)?;
                 if matches!(ending, ContentEnding::Conflict) {
@@ -673,14 +679,14 @@ impl ModelSession for ContentModel {
                         part.output_index = Some(4);
                     }
                     sender
-                        .content_available(0, identity.clone())
+                        .content_available(0, identity.clone(), None)
                         .await
                         .map_err(model_error)?;
                     if let ObservedPartIdentity::Provider(part) = &mut identity {
                         part.output_index = Some(5);
                     }
                     sender
-                        .content_available(0, identity)
+                        .content_available(0, identity, None)
                         .await
                         .map_err(model_error)?;
                     panic!("contradictory content identity must be rejected");
@@ -987,7 +993,7 @@ async fn exercise(ending: Ending) {
     assert!(
         matches!(
             sender
-                .submit(0, "late".into(), OpaquePayload::text("late"))
+                .submit(0, "late".into(), OpaquePayload::text("late"), None)
                 .await,
             Err(ModelMemberError::Closed)
         ),

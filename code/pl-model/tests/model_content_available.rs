@@ -1,10 +1,19 @@
 //! Reliable first-content facts through the real SSE decoder, collector and Core owner.
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use pl_core::{
     context::ContextContent,
     model::{ModelFactory, ObservedPartIdentity},
-    thread::{AttemptOutcome, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput},
+    thread::{
+        AttemptOutcome, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput,
+        cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+    },
 };
 use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
@@ -391,4 +400,112 @@ async fn content_available_preserves_before_and_after_first_byte_failure_and_can
             fixture.shutdown().await.unwrap();
         }
     }
+}
+
+#[derive(Debug)]
+struct CancelMemberStore {
+    cancellation: tokio_util::sync::CancellationToken,
+    after_content: AtomicBool,
+    cancelled_charges: AtomicUsize,
+    writes: Mutex<Vec<ThreadWrite>>,
+}
+
+#[derive(Debug)]
+struct CancelMemberStorage(Arc<CancelMemberStore>);
+
+impl ColdStore for CancelMemberStorage {
+    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+        if !write.effect.model_member_content_available.is_empty() {
+            self.0.after_content.store(true, Ordering::SeqCst);
+        }
+        self.0.writes.lock().unwrap().push(write);
+        Ok(())
+    }
+
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        // The owner already acknowledged first content. Cancel the outer invocation during the
+        // next retention charge; the runtime cooperatively propagates that signal to its collector.
+        if self.0.after_content.swap(false, Ordering::SeqCst) {
+            self.0.cancelled_charges.fetch_add(1, Ordering::SeqCst);
+            self.0.cancellation.cancel();
+        }
+        Ok(())
+    }
+
+    async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_completed_member_handoff_preserves_full_item_in_original_failure() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        PROMPT,
+        0,
+        Reply::Sse(vec![
+            created(),
+            completed(vec![json!({
+                "id":"part","type":"reasoning","status":"completed",
+                "summary":[],
+                "content":[{"type":"reasoning_text","text":"complete unsent reasoning"}]
+            })]),
+        ]),
+    )])
+    .await
+    .unwrap();
+    let thread = thread(&fixture).await;
+    let input = input();
+    let store = Arc::new(CancelMemberStore {
+        cancellation: input.cancellation.clone(),
+        after_content: AtomicBool::new(false),
+        cancelled_charges: AtomicUsize::new(0),
+        writes: Mutex::new(Vec::new()),
+    });
+    thread
+        .attach_storage(ColdStoreHandle::new(CancelMemberStorage(store.clone())))
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), thread.run_turn(input))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(store.cancelled_charges.load(Ordering::SeqCst), 1);
+    {
+        let writes = store.writes.lock().unwrap();
+        assert_eq!(
+            writes
+                .iter()
+                .map(|write| write.effect.model_member_content_available.len())
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .map(|write| write.effect.model_members.len())
+                .sum::<usize>(),
+            1,
+            "the original sent fact must receive one real reply"
+        );
+        let terminal = writes
+            .iter()
+            .filter_map(|write| write.effect.attempt.as_ref())
+            .next_back()
+            .unwrap();
+        let AttemptOutcome::Cancelled { result: Err(error) } = &terminal.outcome else {
+            panic!("pre-send cancellation must preserve its original typed outcome");
+        };
+        let failure = model_failure_receipt(error).unwrap().unwrap();
+        assert_eq!(failure.presentation_items.len(), 1);
+        assert_eq!(failure.presentation_items[0].provider_item_id, "part");
+        assert_eq!(
+            failure.presentation_items[0].parts[0].text,
+            "complete unsent reasoning"
+        );
+    }
+    thread.close().await.unwrap();
+    fixture.shutdown().await.unwrap();
 }

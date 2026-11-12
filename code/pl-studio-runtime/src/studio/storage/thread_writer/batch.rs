@@ -224,9 +224,46 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
         .collect();
     let database_started = Instant::now();
     let prepared_elapsed_us = database_started.duration_since(started).as_micros() as u64;
+    lock_progress(inner).enter_stage(Some(HistoryStage::SqlCommit), database_started);
+    #[cfg(not(test))]
     let committed = history.commit_checkpoint_effects(&commits).await;
+    #[cfg(test)]
+    let committed = {
+        // Observe a real pending HistoryStore call. Tests may hold SQLite's write lock; this
+        // hook neither substitutes persistence nor pretends that dropping a future cancels SQL.
+        let commit = history.commit_checkpoint_effects(&commits);
+        tokio::pin!(commit);
+        std::future::poll_fn(|cx| {
+            let polled = commit.as_mut().poll(cx);
+            if polled.is_pending()
+                && let Some(entered) = inner
+                    .channel
+                    .sql_pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            {
+                let _ = entered.send(());
+            }
+            polled
+        })
+        .await
+    };
     let database_elapsed_us = database_started.elapsed().as_micros() as u64;
-    lock_progress(inner).saving_revision = 0;
+    {
+        let mut progress = lock_progress(inner);
+        if let Err(error) = &committed {
+            inner.channel.diagnose(
+                &progress,
+                Instant::now(),
+                "history_store",
+                pl_protocol::studio::HistoryFault::WriteFailed,
+                &safe_error_reasons(error),
+            );
+        }
+        progress.saving_revision = 0;
+        progress.enter_stage(Some(HistoryStage::WriterQueue), Instant::now());
+    }
     if committed.is_err() {
         tracing::debug!(
             target: "conversation_work",

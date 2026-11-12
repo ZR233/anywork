@@ -291,7 +291,7 @@ void main() {
       ),
     );
     final live = LiveDisplayWindow(
-      currentWorkId: 'work',
+      currentWorkId: null,
       revision: 1,
       historyThrough: 1,
       executionPresent: true,

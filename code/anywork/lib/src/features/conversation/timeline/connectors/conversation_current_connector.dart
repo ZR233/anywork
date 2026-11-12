@@ -348,7 +348,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
         !hasPagingControls) {
       return const SizedBox.shrink();
     }
-    final children = <Widget>[
+    final leading = <Widget>[
       if (surface.standaloneNotices.isNotEmpty)
         ConversationRealtimeNotices(notices: surface.standaloneNotices),
       ..._pagingWidgets(
@@ -356,6 +356,8 @@ class _CurrentState extends State<ConversationCurrentConnector>
         olderCursor: window?.older,
         wrap: (child) => child,
       ),
+    ];
+    final children = <Widget>[
       if (window != null)
         for (final block in surface.blocks)
           switch (block.body) {
@@ -386,7 +388,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
             ),
           },
     ];
-    return ConversationActivityBar(children: children);
+    return ConversationActivityBar(leading: leading, children: children);
   }
 
   List<Widget> _pagingWidgets({

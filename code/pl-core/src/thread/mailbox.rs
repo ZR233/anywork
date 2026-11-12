@@ -2,6 +2,14 @@
 use super::*;
 
 #[derive(Debug)]
+pub(super) enum OutputRetryReply {
+    Finished(Result<(), ThreadError>),
+    /// Another original retry still owns the I/O. Re-enter this same bounded mailbox after it
+    /// settles, preserving serial retry semantics without retaining a list of reply waiters.
+    Waiting(CancellationToken),
+}
+
+#[derive(Debug)]
 pub(super) enum MailboxCommand {
     ContinueInput(
         input::ThreadInput,
@@ -130,7 +138,7 @@ pub(super) enum MailboxCommand {
     /// Turn, so it travels this mailbox. It only clears the obligation; the generation, backend
     /// verdict and durability fence are still verified by the explicit resume, so this is an
     /// idempotent retry rather than a release.
-    RetryOutputStorage(oneshot::Sender<Result<(), ThreadError>>),
+    RetryOutputStorage(oneshot::Sender<OutputRetryReply>),
     /// Makes every already-published fact durable, keeping the target fixed at request time.
     ///
     /// An explicit flush must reach an owner that is already *inside* a running or paused Turn, so
@@ -138,7 +146,7 @@ pub(super) enum MailboxCommand {
     /// paused Turn only services this mailbox, and a flush waiting on the outer channel there would
     /// wait for a Turn that cannot end on its own. The target is the admitted watermark this owner
     /// has when it handles the request, so a later admission never extends the barrier.
-    Flush(oneshot::Sender<Result<(), ThreadError>>),
+    Flush(oneshot::Sender<Result<cold::ColdFlushTicket, ThreadError>>),
     ToolCancelTask {
         caller: String,
         authorization: Option<crate::tool::opaque::ToolAuthorization>,
@@ -567,27 +575,36 @@ impl Owner {
             } => {
                 let _ = reply.send(self.wake_accepted_message(&id, sequence, options));
             }
+            MailboxCommand::Flush(reply) => {
+                let result = self.prepare_flush();
+                let _ = reply.send(result);
+            }
             // Handled by `dispatch_mailbox`, which is the only place that may await the machine.
-            MailboxCommand::Flush(reply) | MailboxCommand::RetryOutputStorage(reply) => {
-                let _ = reply.send(Err(ThreadError::Closed));
+            MailboxCommand::RetryOutputStorage(reply) => {
+                let _ = reply.send(OutputRetryReply::Finished(Err(ThreadError::Closed)));
             }
         }
     }
 
     /// Services one mailbox command, awaiting the ones that need the machine.
     ///
-    /// An explicit flush is the only command that has to run the (async) durability barrier, and it
-    /// must be reachable from inside a running or paused Turn — the very place a sync handler cannot
-    /// await. Everything else stays synchronous, so the common path costs no extra state machine.
+    /// Public flush only prepares a fixed ticket synchronously. The caller owns its disk wait.
+    /// Output repair retains its original retry obligation.
     pub(super) async fn dispatch_mailbox(&mut self, command: MailboxCommand) {
         match command {
-            MailboxCommand::Flush(reply) => {
-                let result = self.flush_cold().await;
-                let _ = reply.send(result);
-            }
             MailboxCommand::RetryOutputStorage(reply) => {
-                let result = self.retry_output_obligation().await;
-                let _ = reply.send(result);
+                if let Some(finished) = &self.output_retry_finished {
+                    let _ = reply.send(OutputRetryReply::Waiting(finished.clone()));
+                    return;
+                }
+                let finished = CancellationToken::new();
+                let _completion = finished.clone().drop_guard();
+                self.output_retry_finished = Some(finished);
+                // A retry may service this same dispatcher while its I/O is in flight. The single
+                // completion signal above keeps a second request from re-entering the obligation.
+                let result = Box::pin(self.retry_output_obligation()).await;
+                self.output_retry_finished = None;
+                let _ = reply.send(OutputRetryReply::Finished(result));
             }
             other => self.process_mailbox(other),
         }
@@ -611,6 +628,17 @@ impl Owner {
             }
         };
         tokio::pin!(cancelled);
+        // Establish the watch before polling the operation. Notifications are wake-ups; only the
+        // backend's real receipt can advance durability and release the effect window.
+        let mut pressure_updates = self.subscribe_pressure();
+        // subscribe considers its current value seen. Re-sample after registration so a receipt or
+        // fault arriving since the last admission cannot disappear into that initial seen value.
+        self.admit_cold();
+        self.refresh_storage_pressure();
+        if self.cold_error.is_some() {
+            self.state.persistence.resume_required = true;
+        }
+        self.publish_snapshot();
         loop {
             tokio::select! {
                 result = &mut operation => return result,
@@ -622,6 +650,23 @@ impl Owner {
                 } => self.admit_model_member(admission),
                 () = &mut cancelled, if !cancellation_observed => {
                     cancellation_observed = true;
+                    self.publish_snapshot();
+                },
+                update = async {
+                    match pressure_updates.as_mut() {
+                        Some(update) => update.changed().await.is_ok(),
+                        None => std::future::pending::<bool>().await,
+                    }
+                } => {
+                    if !update {
+                        pressure_updates = None;
+                        self.pressure_watch_closed = true;
+                    }
+                    self.admit_cold();
+                    self.refresh_storage_pressure();
+                    if self.cold_error.is_some() {
+                        self.state.persistence.resume_required = true;
+                    }
                     self.publish_snapshot();
                 },
                 () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),

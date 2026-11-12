@@ -3210,6 +3210,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeShutdownReport dco_decode_bridge_shutdown_report(dynamic raw);
 
   @protected
+  BridgeSingleVisibility dco_decode_bridge_single_visibility(dynamic raw);
+
+  @protected
   BridgeSkillSearchResult dco_decode_bridge_skill_search_result(dynamic raw);
 
   @protected
@@ -8788,6 +8791,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeShutdownReport sse_decode_bridge_shutdown_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeSingleVisibility sse_decode_bridge_single_visibility(
     SseDeserializer deserializer,
   );
 
@@ -15437,6 +15445,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_shutdown_report(
     BridgeShutdownReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_single_visibility(
+    BridgeSingleVisibility self,
     SseSerializer serializer,
   );
 

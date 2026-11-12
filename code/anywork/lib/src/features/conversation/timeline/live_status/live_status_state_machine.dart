@@ -320,7 +320,7 @@ abstract final class LiveStatusStateMachine {
       for (final block
           in effectiveOutputWindow?.blocks ?? const <LiveDisplayBlock>[])
         if (block.body is SingleDisplayBlock) block,
-      if (tail != null) tail,
+      ?tail,
     ];
 
     final hasPagingControls =

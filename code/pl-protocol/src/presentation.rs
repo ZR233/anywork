@@ -8,7 +8,7 @@ use crate::{
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
-pub const PRESENTATION_VERSION: u32 = 2;
+pub const PRESENTATION_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,7 +33,7 @@ pub struct WorkSummary {
     /// First member creation's reliable effect time, in Unix seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
-    /// Wall elapsed milliseconds observed at the last reliable header update; final in history.
+    /// A proven display interval. Long-lived open tails do not use wall elapsed time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
     pub started_at: Option<i64>,
@@ -57,7 +57,15 @@ pub enum DisplayBlockBody {
     },
     Single {
         record: Box<DisplayRecord>,
+        visibility: SingleVisibility,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SingleVisibility {
+    Content,
+    FinalEmptyAfterContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -118,6 +126,7 @@ pub struct LiveDisplayWindow {
     pub revision: u64,
     pub history_through: u64,
     pub execution_present: bool,
+    pub current_work_id: Option<String>,
     pub blocks: Vec<LiveDisplayBlock>,
     pub older: Option<String>,
 }
@@ -171,12 +180,19 @@ impl TimelineBatch {
         });
         let live_valid = self.live.as_ref().is_none_or(|live| {
             let mut order = 0;
+            let mut current = live.blocks.iter().filter(|block| {
+                block.state == DisplayBlockState::Open
+                    && matches!(block.body, DisplayBlockBody::Work { .. })
+            });
+            let current_id = current.next().map(|block| block.id.as_str());
             live.history_through == self.through_pos
                 && live.blocks.iter().all(|block| {
                     let ordered = block.block_order > order;
                     order = block.block_order;
                     ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
                 })
+                && live.current_work_id.as_deref() == current_id
+                && current.next().is_none()
         });
         if !placement_valid || !blocks_valid || !live_valid || self.through_pos > i64::MAX as u64 {
             return Err(StudioError::new(
@@ -334,6 +350,7 @@ mod tests {
             revision: 2,
             history_through: 1,
             execution_present: true,
+            current_work_id: None,
             blocks: vec![],
             older: None,
         });
@@ -359,6 +376,7 @@ mod tests {
                 revision: 2,
                 history_through: 1,
                 execution_present: true,
+                current_work_id: None,
                 blocks: vec![LiveDisplayBlock {
                     id: "g1".into(),
                     block_order: 1,
@@ -370,5 +388,44 @@ mod tests {
             }),
         };
         assert!(batch.validate().is_err());
+    }
+
+    #[test]
+    fn canonical_current_work_requires_one_matching_open_work_and_version_three() {
+        let mut batch = TimelineBatch {
+            presentation_version: PRESENTATION_VERSION,
+            placement: ChatPlacement::Set,
+            blocks: vec![],
+            before: None,
+            from_pos: None,
+            through_pos: 0,
+            live: Some(LiveDisplayWindow {
+                revision: 1,
+                history_through: 0,
+                execution_present: false,
+                current_work_id: Some("tail".into()),
+                older: None,
+                blocks: vec![LiveDisplayBlock {
+                    id: "tail".into(),
+                    block_order: 1,
+                    source: None,
+                    body: work("tail"),
+                    state: DisplayBlockState::Open,
+                }],
+            }),
+        };
+        assert!(batch.validate().is_ok());
+        batch.presentation_version = 2;
+        assert!(batch.validate().is_err());
+        batch.presentation_version = PRESENTATION_VERSION;
+        batch.live.as_mut().unwrap().current_work_id = None;
+        assert!(batch.validate().is_err());
+        batch.live.as_mut().unwrap().current_work_id = Some("another".into());
+        assert!(batch.validate().is_err());
+        batch.live.as_mut().unwrap().current_work_id = Some("tail".into());
+        batch.live.as_mut().unwrap().blocks[0].state = DisplayBlockState::Sealed;
+        assert!(batch.validate().is_err());
+        batch.live.as_mut().unwrap().current_work_id = None;
+        assert!(batch.validate().is_ok());
     }
 }

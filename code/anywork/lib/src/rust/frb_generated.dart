@@ -17275,6 +17275,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 1:
         return BridgeDisplayBlockBody_Single(
           record: dco_decode_box_bridge_display_record(raw[1]),
+          visibility: dco_decode_bridge_single_visibility(raw[2]),
         );
       default:
         throw Exception("unreachable");
@@ -17726,14 +17727,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeLiveDisplayWindow dco_decode_bridge_live_display_window(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeLiveDisplayWindow(
       revision: dco_decode_u_64(arr[0]),
       historyThrough: dco_decode_u_64(arr[1]),
       executionPresent: dco_decode_bool(arr[2]),
-      blocks: dco_decode_list_bridge_live_display_block(arr[3]),
-      older: dco_decode_opt_String(arr[4]),
+      currentWorkId: dco_decode_opt_String(arr[3]),
+      blocks: dco_decode_list_bridge_live_display_block(arr[4]),
+      older: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -19815,6 +19817,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       issues: dco_decode_list_bridge_shutdown_issue(arr[1]),
       persistence: dco_decode_bridge_pending_persistence(arr[2]),
     );
+  }
+
+  @protected
+  BridgeSingleVisibility dco_decode_bridge_single_visibility(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeSingleVisibility.values[raw as int];
   }
 
   @protected
@@ -33766,7 +33774,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
       case 1:
         var var_record = sse_decode_box_bridge_display_record(deserializer);
-        return BridgeDisplayBlockBody_Single(record: var_record);
+        var var_visibility = sse_decode_bridge_single_visibility(deserializer);
+        return BridgeDisplayBlockBody_Single(
+          record: var_record,
+          visibility: var_visibility,
+        );
       default:
         throw UnimplementedError('');
     }
@@ -34311,12 +34323,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_revision = sse_decode_u_64(deserializer);
     var var_historyThrough = sse_decode_u_64(deserializer);
     var var_executionPresent = sse_decode_bool(deserializer);
+    var var_currentWorkId = sse_decode_opt_String(deserializer);
     var var_blocks = sse_decode_list_bridge_live_display_block(deserializer);
     var var_older = sse_decode_opt_String(deserializer);
     return BridgeLiveDisplayWindow(
       revision: var_revision,
       historyThrough: var_historyThrough,
       executionPresent: var_executionPresent,
+      currentWorkId: var_currentWorkId,
       blocks: var_blocks,
       older: var_older,
     );
@@ -36953,6 +36967,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       issues: var_issues,
       persistence: var_persistence,
     );
+  }
+
+  @protected
+  BridgeSingleVisibility sse_decode_bridge_single_visibility(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeSingleVisibility.values[inner];
   }
 
   @protected
@@ -51874,9 +51897,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_i_32(0, serializer);
         sse_encode_box_bridge_work_summary(summary, serializer);
         sse_encode_box_autoadd_bridge_display_block_ref(members, serializer);
-      case BridgeDisplayBlockBody_Single(record: final record):
+      case BridgeDisplayBlockBody_Single(
+        record: final record,
+        visibility: final visibility,
+      ):
         sse_encode_i_32(1, serializer);
         sse_encode_box_bridge_display_record(record, serializer);
+        sse_encode_bridge_single_visibility(visibility, serializer);
     }
   }
 
@@ -52309,6 +52336,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.revision, serializer);
     sse_encode_u_64(self.historyThrough, serializer);
     sse_encode_bool(self.executionPresent, serializer);
+    sse_encode_opt_String(self.currentWorkId, serializer);
     sse_encode_list_bridge_live_display_block(self.blocks, serializer);
     sse_encode_opt_String(self.older, serializer);
   }
@@ -54387,6 +54415,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_shutdown_outcome(self.outcome, serializer);
     sse_encode_list_bridge_shutdown_issue(self.issues, serializer);
     sse_encode_bridge_pending_persistence(self.persistence, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_single_visibility(
+    BridgeSingleVisibility self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

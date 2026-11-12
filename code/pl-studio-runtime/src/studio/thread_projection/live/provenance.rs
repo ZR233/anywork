@@ -36,6 +36,7 @@ fn member_base(effect: &ThreadEffectBatch) -> Result<usize, ProjectionError> {
         effect.inbox.len(),
         effect.context_compactions.len(),
         effect.model_member_starts.len(),
+        effect.model_member_content_available.len(),
     ])
 }
 
@@ -51,6 +52,51 @@ fn turn_outcome(state: &pl_core::thread::TurnState) -> Option<ChatTerminalOutcom
 }
 
 impl LiveProjection {
+    pub(super) fn text_visibility(
+        &self,
+        effect: &ThreadEffectBatch,
+    ) -> Result<Arc<[super::super::presentation::TextVisible]>, ProjectionError> {
+        let mut visible = Vec::new();
+        for (index, member) in effect.model_member_content_available.iter().enumerate() {
+            let (id, _, _) = observation_start(
+                &member.attempt_id,
+                member.generation,
+                &member.identity,
+                &ThreadContentLifecycle::streaming(),
+            )
+            .ok_or_else(|| {
+                ProjectionError::UnsupportedOutput("invalid content-available identity".into())
+            })?;
+            let atom = self.atom_starts.get(&id).ok_or_else(|| {
+                ProjectionError::History("content-available member has no admitted start".into())
+            })?;
+            if atom.turn_id.as_deref() != Some(member.turn_id.as_str())
+                || atom.attempt_id.as_deref() != Some(member.attempt_id.as_str())
+            {
+                return Err(ProjectionError::History(
+                    "content-available ownership differs from start".into(),
+                ));
+            }
+            if atom.kind == ChatAtomKind::Text {
+                visible.push(super::super::presentation::TextVisible {
+                    atom: atom.clone(),
+                    at: position(
+                        effect,
+                        slots(&[
+                            1,
+                            effect.inputs.len(),
+                            effect.inbox.len(),
+                            effect.context_compactions.len(),
+                            effect.model_member_starts.len(),
+                            index,
+                        ])?,
+                    )?,
+                });
+            }
+        }
+        Ok(visible.into())
+    }
+
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
         &mut self,

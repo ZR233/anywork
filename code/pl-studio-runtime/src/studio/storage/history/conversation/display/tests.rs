@@ -12,6 +12,7 @@ async fn observation_chunks_rollback_and_replay_with_the_original_display_transa
     let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
     super::super::super::schema::display_snapshots::upgrade(&db).await?;
     super::super::super::schema::display_observations::upgrade(&db).await?;
+    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -71,6 +72,7 @@ async fn observation_chunks_rollback_and_replay_with_the_original_display_transa
     let mut body = atom.clone();
     body.id = "new-body".into();
     body.kind = ChatAtomKind::Text;
+    body.content_present = Some(true);
     body.contents.clear();
     body.lifecycle = ChatAtomLifecycle::Active {
         started: Some(ChatFactPosition {
@@ -164,13 +166,15 @@ async fn observation_chunks_rollback_and_replay_with_the_original_display_transa
 }
 
 #[tokio::test]
-async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result<()> {
+async fn visible_text_final_empty_is_atomic_and_keeps_the_frozen_boundary_on_cold_read()
+-> Result<()> {
     use pl_protocol::{
         ChatAtomKind, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
     };
     let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
     super::super::super::schema::display_snapshots::upgrade(&db).await?;
     crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
+    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -188,6 +192,8 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
         turn_id: "turn".into(),
     };
     started.completion_item_id = None;
+    started.content_present = Some(true);
+    started.finished_at = None;
     started.lifecycle = ChatAtomLifecycle::Active {
         started: Some(ChatFactPosition {
             effect_seq: 1,
@@ -205,6 +211,7 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
     let mut ended = started;
     ended.completion_item_id = Some("empty-text".into());
     ended.content_present = Some(false);
+    ended.finished_at = Some(20);
     ended.lifecycle = ChatAtomLifecycle::Terminal {
         started: Some(ChatFactPosition {
             effect_seq: 1,
@@ -226,11 +233,11 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
         crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
     let original = Arc::new(ChatItem::complete(draft, 1, None));
     let finish = owner.prepare(2, 20, &[ended], &[], std::slice::from_ref(&original))?;
-    assert_eq!(finish.remove_empty.len(), 1);
-    assert_eq!(finish.published_through, 0);
+    assert!(finish.remove_empty.is_empty());
+    assert_eq!(finish.published_through, 1);
     db.execute_unprepared(
-        "CREATE TRIGGER reject_empty_delete BEFORE DELETE ON conversation_display_blocks
-        BEGIN SELECT RAISE(ABORT,'empty deletion rejection'); END;",
+        "CREATE TRIGGER reject_empty_finish BEFORE UPDATE ON conversation_display_blocks
+        BEGIN SELECT RAISE(ABORT,'final empty update rejection'); END;",
     )
     .await?;
     let tx = db.begin().await?;
@@ -240,7 +247,7 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
     assert!(super::super::read_item(&db, "empty-text").await?.is_none());
     assert_eq!(member_page(&db, &block_id, None, 8).await?.len(), 1);
     assert_eq!(recovery(&db).await?.open.len(), 1);
-    db.execute_unprepared("DROP TRIGGER reject_empty_delete")
+    db.execute_unprepared("DROP TRIGGER reject_empty_finish")
         .await?;
     let tx = db.begin().await?;
     super::super::append_records(&tx, [original.as_ref()], true).await?;
@@ -250,9 +257,18 @@ async fn empty_text_removal_is_atomic_and_never_revives_on_cold_read() -> Result
     tx.commit().await?;
     verify(&db, &finish).await?;
     assert!(super::super::read_item(&db, "empty-text").await?.is_some());
-    assert!(history_heads(&db, 1, None, 8).await?.is_empty());
+    let heads = history_heads(&db, 1, None, 8).await?;
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].id, block_id);
+    assert!(matches!(
+        heads[0].body,
+        DisplayBlockBody::Single {
+            visibility: pl_protocol::SingleVisibility::FinalEmptyAfterContent,
+            ..
+        }
+    ));
     assert!(recovery(&db).await?.open.is_empty());
-    assert!(member_page(&db, &block_id, None, 8).await.is_err());
+    assert_eq!(member_page(&db, &block_id, None, 8).await?.len(), 1);
     Ok(())
 }
 
@@ -263,6 +279,7 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
     super::super::super::schema::display_snapshots::upgrade(&db).await?;
     crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
+    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -317,7 +334,7 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     let delta = owner.prepare(1, 10, &[atom], &[ended], std::slice::from_ref(&item))?;
     assert!(
         matches!(&delta.blocks[0].header.body, DisplayBlockBody::Work { summary, .. }
-        if summary.created_at == Some(10) && summary.elapsed_ms == Some(0))
+        if summary.created_at == Some(10) && summary.elapsed_ms.is_none())
     );
     db.execute_unprepared("CREATE TRIGGER reject_display BEFORE INSERT ON conversation_display_members BEGIN SELECT RAISE(ABORT,'display rejection'); END;").await?;
     let tx = db.begin().await?;
@@ -336,7 +353,7 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     tx.commit().await?;
     verify(&db, &delta).await?; // Lost local acknowledgement: no rewrite/recalculation.
     apply(&db, &delta).await?;
-    let heads = history_heads(&db, 1, None, 8).await?;
+    let heads = open_heads(&db, None, 8).await?;
     assert_eq!(heads[0].body, delta.blocks[0].header.body);
     let mut wrong_time = delta.as_ref().clone();
     let header = Arc::make_mut(&mut wrong_time.blocks[0].header);
@@ -347,19 +364,19 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     summary.elapsed_ms = Some(1000);
     assert!(verify(&db, &wrong_time).await.is_err());
     let mut contradictory = delta.as_ref().clone();
-    contradictory.published_through = 0;
+    contradictory.published_through = 1;
     assert!(verify(&db, &contradictory).await.is_err());
-    assert_eq!(watermarks(&db).await?, (1, 1));
+    assert_eq!(watermarks(&db).await?, (0, 1));
     // Snapshot reads are independent of original payload tables.
     db.execute_unprepared("ALTER TABLE conversation_items RENAME TO originals_not_available")
         .await?;
-    assert_eq!(history_heads(&db, 1, None, 8).await?.len(), 1);
+    assert_eq!(open_heads(&db, None, 8).await?.len(), 1);
     assert_eq!(
         member_page(&db, &delta.blocks[0].header.id, None, 8)
             .await?
             .len(),
         1
     );
-    assert!(recovery(&db).await?.open.is_empty());
+    assert_eq!(recovery(&db).await?.open.len(), 1);
     Ok(())
 }

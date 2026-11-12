@@ -29,8 +29,13 @@ class ConversationRealtimeNotices extends StatelessWidget {
 
 /// 实时区唯一外壳。生产连接层和官方预览传入同一套纯呈现组件。
 class ConversationActivityBar extends StatelessWidget {
-  const ConversationActivityBar({required this.children, super.key});
+  const ConversationActivityBar({
+    required this.children,
+    this.leading = const [],
+    super.key,
+  });
   final List<Widget> children;
+  final List<Widget> leading;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -67,8 +72,26 @@ class ConversationActivityBar extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        if (leading.isNotEmpty)
+                          Flexible(
+                            key: const ObjectKey(ConversationActivityBar),
+                            fit: FlexFit.loose,
+                            child: SingleChildScrollView(
+                              primary: false,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: leading,
+                              ),
+                            ),
+                          ),
                         for (final child in children)
-                          Flexible(fit: FlexFit.loose, child: child),
+                          Flexible(
+                            key: child.key,
+                            flex: 3,
+                            fit: FlexFit.loose,
+                            child: child,
+                          ),
                       ],
                     ),
                   ),

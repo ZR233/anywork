@@ -465,6 +465,8 @@ final class ConversationContentImpl implements TimelineContent {
           (batch.placement == ChatPlacement.set ||
               incoming.revision >= (a.live?.revision ?? -1));
       var order = 0;
+      var openWorkCount = 0;
+      String? openWorkId;
       for (final block in incoming.blocks) {
         valid =
             valid &&
@@ -472,17 +474,14 @@ final class ConversationContentImpl implements TimelineContent {
             ids.add(block.id) &&
             block.blockOrder > order;
         order = block.blockOrder;
+        if (block.state == DisplayBlockState.open &&
+            block.body is WorkDisplayBlock) {
+          openWorkCount++;
+          openWorkId = block.id;
+        }
       }
-      final currentWorkId = incoming.currentWorkId;
       valid =
-          valid &&
-          (currentWorkId == null ||
-              incoming.blocks.any(
-                (block) =>
-                    block.id == currentWorkId &&
-                    block.state == DisplayBlockState.open &&
-                    block.body is WorkDisplayBlock,
-              ));
+          valid && openWorkCount <= 1 && incoming.currentWorkId == openWorkId;
     }
     if (!valid) {
       throw const ConversationContinuityError('invalid Timeline batch');

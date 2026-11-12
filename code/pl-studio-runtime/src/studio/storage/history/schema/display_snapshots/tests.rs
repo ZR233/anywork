@@ -78,7 +78,7 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
     let (_dir, db) = fixture().await?;
     let original = seed(&db).await?;
     migrate(&db).await?;
-    assert_eq!(version(&db).await?, 20);
+    assert_eq!(version(&db).await?, 21);
     let rows = db
         .query_all_raw(statement(
             "SELECT seq,item_id,metadata,payload FROM conversation_items ORDER BY seq",
@@ -131,7 +131,7 @@ async fn nonempty_v18_is_preserved_and_reopens_directly_from_frozen_snapshots() 
         Some(pl_protocol::PayloadData::Deferred { .. })
     ));
     db.execute_unprepared("CREATE TRIGGER no_rewrite BEFORE UPDATE ON conversation_items BEGIN SELECT RAISE(ABORT,'must not rebuild'); END;").await?;
-    super::super::display_observations::validate(&db).await?;
+    super::super::visible_tail_workgroups::validate(&db).await?;
     assert_eq!(
         conversation::display::history_heads(&db, 3, None, 8).await?,
         history

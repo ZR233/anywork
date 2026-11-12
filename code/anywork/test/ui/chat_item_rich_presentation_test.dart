@@ -134,7 +134,7 @@ void main() {
       await _show(tester, item);
       expect(find.text('该输出的最终内容为空'), findsOneWidget);
       expect(find.text('内容状态未知'), findsNothing);
-      expect(find.byType(TimelineContentConnector), findsNothing);
+      expect(find.byType(TimelineContentRangeConnector), findsNothing);
       expect(unit.historyPos, 7);
     },
   );

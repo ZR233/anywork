@@ -262,6 +262,7 @@ void main() {
           threadId: 'thread',
           identity: 'background-tool',
           revision: 1,
+          turnId: null,
           kind: ThreadActivityKind.runningTool,
           summary: '后台命令仍在运行',
         ),

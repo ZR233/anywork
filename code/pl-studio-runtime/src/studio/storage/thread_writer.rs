@@ -49,6 +49,8 @@ mod batch;
 mod batch_tests;
 #[cfg(feature = "benchmarks")]
 pub(crate) mod benchmark;
+#[cfg(test)]
+mod watchdog_tests;
 #[cfg(feature = "benchmarks")]
 use super::calls::observation::Metric as BenchMetric;
 
@@ -1011,6 +1013,23 @@ struct QueuedEffect {
     prepared_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryStage {
+    ProjectionPrepare,
+    WriterQueue,
+    SqlCommit,
+}
+
+impl HistoryStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectionPrepare => "projection_prepare",
+            Self::WriterQueue => "writer_queue",
+            Self::SqlCommit => "sql_commit",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Progress {
     stopped: bool,
@@ -1083,16 +1102,45 @@ struct Progress {
     fault_recovered: bool,
     fault_target: u64,
     retry_requested: bool,
+    /// The oldest undurable obligation's actual stage, shared with the existing watchdog.
+    stage: Option<HistoryStage>,
     last_progress_at: Option<Instant>,
     /// Actual accepted output, separate from each operation's upper bound.
     operation_output: BTreeMap<String, OperationOutput>,
 }
 
 impl Progress {
-    fn has_writable_head(&self) -> bool {
-        self.effects
-            .front()
-            .is_some_and(|queued| queued.prepared.is_some())
+    fn enter_stage(&mut self, stage: Option<HistoryStage>, now: Instant) {
+        if self.stage != stage {
+            self.stage = stage;
+            self.last_progress_at = stage.map(|_| now);
+        }
+    }
+
+    fn refresh_head_stage(&mut self, now: Instant) {
+        // Admissions and projection handoffs cannot end an outstanding SQL call.
+        if self.stage == Some(HistoryStage::SqlCommit) {
+            return;
+        }
+        let stage = self.effects.front().map(|head| {
+            if head.prepared.is_some() {
+                HistoryStage::WriterQueue
+            } else {
+                HistoryStage::ProjectionPrepare
+            }
+        });
+        self.enter_stage(stage, now);
+    }
+
+    fn prepared_through(&self) -> u64 {
+        let mut through = self.durable;
+        for effect in &self.effects {
+            if effect.prepared.is_none() || through.checked_add(1) != Some(effect.sequence) {
+                break;
+            }
+            through = effect.sequence;
+        }
+        through
     }
     /// Locate a sequence in the continuous original queue without scanning it.
     fn queue_offset(&self, sequence: u64) -> Option<usize> {
@@ -1212,6 +1260,8 @@ pub(crate) struct HistoryChannel {
     >,
     #[cfg(test)]
     resident_gate: Mutex<Option<MaterializeGate>>,
+    #[cfg(test)]
+    sql_pending: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     #[cfg(test)]
     delivery_admission_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     progress: Mutex<Progress>,
@@ -1635,6 +1685,8 @@ impl HistoryChannel {
             #[cfg(test)]
             resident_gate: Mutex::new(None),
             #[cfg(test)]
+            sql_pending: Mutex::new(None),
+            #[cfg(test)]
             delivery_admission_entered: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
             changed: Arc::new(tokio::sync::Notify::new()),
@@ -1930,10 +1982,8 @@ impl HistoryChannel {
         progress.prepared_bytes = progress.prepared_bytes.saturating_add(bytes);
         progress.effects[index].prepared_bytes = bytes;
         progress.effects[index].prepared = Some(prepared);
-        progress.handoff = progress.handoff.max(sequence);
-        if progress.has_writable_head() {
-            progress.last_progress_at.get_or_insert_with(Instant::now);
-        }
+        progress.handoff = sequence;
+        progress.refresh_head_stage(Instant::now());
         #[cfg(test)]
         self.pause_resident_commit();
         self.commit_residents(&progress, &order_index);
@@ -2010,6 +2060,13 @@ impl HistoryChannel {
             progress.fault_recovered = false;
             progress.saving_revision = 0;
             if published {
+                self.diagnose(
+                    &progress,
+                    Instant::now(),
+                    "projection_prepare",
+                    pl_protocol::studio::HistoryFault::WriteFailed,
+                    &["projection_failed"],
+                );
                 self.report(&progress);
             }
             published
@@ -2214,15 +2271,19 @@ impl HistoryChannel {
     }
 
     fn detect_stall(&self) {
+        self.detect_stall_at(Instant::now());
+    }
+
+    fn detect_stall_at(&self, now: Instant) {
         let mut progress = self
             .progress
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if progress.error.is_some()
-            || !progress.has_writable_head()
+            || progress.effects.is_empty()
             || !progress
                 .last_progress_at
-                .is_some_and(|last| last.elapsed() >= NO_PROGRESS_WINDOW)
+                .is_some_and(|last| now.saturating_duration_since(last) >= NO_PROGRESS_WINDOW)
         {
             return;
         }
@@ -2235,7 +2296,58 @@ impl HistoryChannel {
         progress.error = Some("history writer made no progress with queued facts".to_owned());
         progress.fault_recovered = false;
         progress.retry_requested = false;
+        self.diagnose(
+            &progress,
+            now,
+            "watchdog",
+            pl_protocol::studio::HistoryFault::NoProgress,
+            &["no_progress"],
+        );
         self.report(&progress);
+    }
+
+    /// Log only identities, counters and bounded reason categories. Raw error Display/source
+    /// strings may contain provider responses, paths or credentials and never enter this event.
+    fn diagnose(
+        &self,
+        progress: &Progress,
+        now: Instant,
+        source: &str,
+        kind: pl_protocol::studio::HistoryFault,
+        reasons: &[&str],
+    ) {
+        let head = progress.effects.front();
+        let execution_id = head
+            .and_then(|effect| effect.write.checkpoint.state.execution.as_ref())
+            .map(|execution| execution.id.as_str());
+        // The reliable queue carries execution identity, not live provider request/generation
+        // metadata. Attempt IDs and the execution counter cannot substitute for those identities.
+        tracing::warn!(
+            target: "conversation_work",
+            operation = "history_persistence",
+            thread_id = ?head.map(|effect| effect.write.checkpoint.thread_id.as_str()),
+            execution_id = ?execution_id,
+            request_id = ?Option::<&str>::None,
+            generation = ?Option::<u32>::None,
+            effect = ?head.map(|effect| effect.sequence),
+            stage = ?progress.stage.map(HistoryStage::as_str),
+            stage_started_at = ?progress.last_progress_at,
+            stage_elapsed_ms = ?progress.last_progress_at.map(|started|
+                now.saturating_duration_since(started).as_millis().min(u128::from(u64::MAX)) as u64),
+            head = ?head.map(|effect| effect.sequence),
+            admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
+            prepared_through = progress.prepared_through(),
+            durable = progress.durable,
+            flush_target = ?(progress.flush_target > progress.durable).then_some(progress.flush_target),
+            pending_count = progress.effects.len(),
+            pending_bytes = progress.effect_bytes.saturating_add(progress.queue_metadata_bytes)
+                .saturating_add(progress.prepared_bytes),
+            fault_kind = ?kind,
+            fault_generation = progress.fault_generation,
+            error_source = source,
+            reason_chain = ?reasons,
+            "history persistence stalled or failed"
+        );
     }
 }
 
@@ -2653,7 +2765,7 @@ impl ThreadStorageSink {
                     }
                     Ok(Step::Idle) => {
                         // Upstream preparation and delivery capacity are event-driven.
-                        // The existing watchdog owns writable-prefix stall detection.
+                        // The existing watchdog owns oldest-undurable stage detection.
                         tokio::select! {
                             () = inner.changed.notified() => {}
                             () = accounting_retry_due(&inner) => {}
@@ -2680,7 +2792,7 @@ impl ThreadStorageSink {
                                 .map_or(pl_protocol::studio::HistoryFault::WriteFailed, |typed| {
                                     typed.kind
                                 });
-                            record_error(&inner, kind, message);
+                            record_error(&inner, kind, message, &safe_error_reasons(&error));
                             retrying_since = None;
                         } else {
                             note_absorbed_conflict(&inner);
@@ -2712,11 +2824,9 @@ async fn step(inner: &Inner) -> Result<Step> {
     let _single_writer = inner.channel.step_lock.lock().await;
     {
         let mut progress = lock_progress(inner);
-        // An explicit retry may arrive after QueueFull's fixed fence already
-        // committed. Settle it even when no later effect can trigger a commit.
-        if progress.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
-            && clear_recovered_fault(&mut progress)
-        {
+        // An explicit retry can arrive after an outstanding SQL call completed the fault's
+        // fixed fence. Settle it even when no later effect can trigger a commit.
+        if clear_recovered_fault(&mut progress) {
             report(inner, &progress);
         }
         // Another attached writer may have failed while this worker waited for step_lock.
@@ -2783,7 +2893,10 @@ async fn step(inner: &Inner) -> Result<Step> {
         progress.durable = committed.sequence;
     }
     progress.in_flight = None;
-    progress.last_progress_at = progress.has_writable_head().then(Instant::now);
+    // Advancing the queue head is progress even when the next head has the same stage.
+    progress.stage = None;
+    progress.last_progress_at = None;
+    progress.refresh_head_stage(Instant::now());
     #[cfg(test)]
     let sequence = progress.durable;
     inner.channel.commit_residents(&progress, &index);
@@ -3006,7 +3119,12 @@ fn frozen_route_revision(snapshot: &ThreadSnapshot) -> Option<u64> {
         .map(|(record, _)| record.revision)
 }
 
-fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message: String) {
+fn record_error(
+    inner: &Inner,
+    kind: pl_protocol::studio::HistoryFault,
+    message: String,
+    reasons: &[&str],
+) {
     {
         let mut progress = lock_progress(inner);
         progress.fault_generation = progress.fault_generation.saturating_add(1);
@@ -3022,9 +3140,46 @@ fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message:
         // for retry, and the metric must not keep reporting it as actively saving.
         progress.saving_revision = 0;
         progress.in_flight_bytes = 0;
+        inner.channel.diagnose(
+            &progress,
+            Instant::now(),
+            if kind == pl_protocol::studio::HistoryFault::BlobFailed {
+                "blob_fence"
+            } else {
+                "history_writer"
+            },
+            kind,
+            reasons,
+        );
         report(inner, &progress);
     }
     inner.changed.notify_one();
+}
+
+fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
+    error
+        .chain()
+        .take(4)
+        .map(|cause| {
+            if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+                match io.kind() {
+                    std::io::ErrorKind::NotFound => "io_not_found",
+                    std::io::ErrorKind::PermissionDenied => "io_permission_denied",
+                    std::io::ErrorKind::TimedOut => "io_timed_out",
+                    std::io::ErrorKind::Interrupted => "io_interrupted",
+                    _ => "io_error",
+                }
+            } else if cause.is::<sea_orm::DbErr>() {
+                "database_error"
+            } else if cause.is::<sqlx::Error>() {
+                "sql_driver_error"
+            } else if cause.is::<ClassifiedWriteError>() {
+                "classified_history_error"
+            } else {
+                "redacted_error"
+            }
+        })
+        .collect()
 }
 
 /// Keeps the observable metrics honest while one retryable conflict is absorbed.
@@ -3070,6 +3225,7 @@ impl ColdStore for ThreadStorageSink {
                     pl_protocol::studio::HistoryFault::WriteFailed
                 },
                 error.to_string(),
+                &safe_error_reasons(error),
             );
         } else {
             let progress = lock_progress(&self.0);
@@ -3198,6 +3354,7 @@ impl ColdStore for ThreadStorageSink {
                 &self.0,
                 pl_protocol::studio::HistoryFault::WriteFailed,
                 "Thread persistence ticket mismatch".to_owned(),
+                &["ticket_mismatch"],
             );
             return Err(ColdStoreError {
                 source: Box::new(std::io::Error::other("Thread persistence ticket mismatch")),
@@ -3318,15 +3475,17 @@ impl ColdStore for ThreadStorageSink {
                     output.transferred += taken;
                 }
             }
+            let admitted_at = Instant::now();
             progress.effects.push_back(QueuedEffect {
                 sequence,
-                admitted_at: Instant::now(),
+                admitted_at,
                 write: Arc::new(write.clone()),
                 bytes,
                 // The projection owner takes this entry over from the same queue, in this order.
                 prepared: None,
                 prepared_bytes: 0,
             });
+            progress.refresh_head_stage(admitted_at);
             progress.effect_bytes += bytes;
             progress.admit_saved_at(write.checkpoint.saved_at);
             self.0.channel.commit_residents(&progress, &index);
@@ -6045,7 +6204,10 @@ pub(crate) mod storage_fault_tests {
         let lease = sink.0.channel.step_lock.lock().await;
         let first = visible_input_ticket(id, 1, "first")?;
         sink.admit(id, first.clone())?;
-        assert!(lock_progress(&sink.0).last_progress_at.is_none());
+        assert_eq!(
+            lock_progress(&sink.0).stage,
+            Some(HistoryStage::ProjectionPrepare)
+        );
         sink.0.channel.detect_stall();
         assert!(sink.0.channel.subscribe().borrow().fault.is_none());
         let mut prepared = projection
@@ -6064,13 +6226,21 @@ pub(crate) mod storage_fault_tests {
             .await?;
         projection.publish_prepared(&chat, &mut prepared).await?;
         assert!(sink.0.channel.prepare(prepared));
+        assert_eq!(
+            lock_progress(&sink.0).stage,
+            Some(HistoryStage::WriterQueue)
+        );
         assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
+        let retained = sink.pressure(id).thread_bytes;
         sink.0.channel.detect_stall();
         let failed = sink.0.channel.subscribe().borrow().clone();
         assert_eq!(
             failed.fault,
             Some(pl_protocol::studio::HistoryFault::NoProgress)
         );
+        assert_eq!(lock_progress(&sink.0).prepared_through(), 2);
+        assert_eq!(sink.pressure(id).thread_bytes, retained);
+        assert!(sink.flush(id, 2).await.is_err());
         sink.0.channel.detect_stall();
         assert_eq!(
             sink.0.channel.subscribe().borrow().fault_generation,

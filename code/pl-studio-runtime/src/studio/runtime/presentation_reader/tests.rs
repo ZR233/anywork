@@ -83,9 +83,15 @@ fn member(order: u64) -> DisplayMemberHead {
 #[test]
 fn live_pages_are_newest_first_selected_but_delivered_in_original_order() -> Result<()> {
     let heads: Vec<_> = (1..=5).map(head).collect();
-    let page = live_window(10, 4, true, heads.iter().rev(), demand(2), |boundary| {
-        Ok(format!("qualified:{boundary}"))
-    })?;
+    let page = live_window(
+        10,
+        4,
+        true,
+        None,
+        heads.iter().rev(),
+        demand(2),
+        |boundary| Ok(format!("qualified:{boundary}")),
+    )?;
     assert_eq!(
         page.blocks
             .iter()
@@ -98,6 +104,7 @@ fn live_pages_are_newest_first_selected_but_delivered_in_original_order() -> Res
         10,
         4,
         true,
+        None,
         heads.iter().rev().filter(|head| head.block_order < 4),
         demand(2),
         |boundary| Ok(format!("qualified:{boundary}")),
@@ -110,11 +117,76 @@ fn live_pages_are_newest_first_selected_but_delivered_in_original_order() -> Res
         [2, 3]
     );
     assert_eq!(next.older.as_deref(), Some("qualified:2"));
-    let last = live_window(10, 4, true, heads[..1].iter().rev(), demand(1), |_| {
-        anyhow::bail!("a complete last page must not request a cursor")
-    })?;
+    let last = live_window(
+        10,
+        4,
+        true,
+        None,
+        heads[..1].iter().rev(),
+        demand(1),
+        |_| anyhow::bail!("a complete last page must not request a cursor"),
+    )?;
     assert_eq!(last.blocks[0].block_order, 1);
     assert!(last.older.is_none());
+    Ok(())
+}
+
+#[test]
+fn current_work_cannot_be_omitted_by_a_latest_window_item_or_byte_budget() -> Result<()> {
+    let mut heads = [head(1), head(2)];
+    heads[0].state = DisplayBlockState::Sealed;
+    let latest = live_window(
+        3,
+        0,
+        false,
+        Some(heads[1].id.clone()),
+        heads.iter().rev(),
+        demand(1),
+        |at| Ok(format!("before:{at}")),
+    )?;
+    assert_eq!(latest.current_work_id.as_deref(), Some("block-2"));
+    assert_eq!(latest.blocks.len(), 1);
+    assert_eq!(latest.blocks[0].id, "block-2");
+    let bytes = encoded_size(&latest)? as u32;
+    let too_small = ReadDemand {
+        max_items: 1,
+        max_bytes: bytes - 1,
+    };
+    assert!(
+        live_window(
+            3,
+            0,
+            false,
+            Some(heads[1].id.clone()),
+            heads.iter().rev(),
+            too_small,
+            |at| Ok(format!("before:{at}"))
+        )
+        .is_err()
+    );
+    assert!(
+        live_window(
+            3,
+            0,
+            false,
+            Some(heads[0].id.clone()),
+            heads.iter().rev(),
+            demand(1),
+            |at| Ok(format!("before:{at}"))
+        )
+        .is_err()
+    );
+    let older = live_window(
+        3,
+        0,
+        false,
+        None,
+        heads[..1].iter().rev(),
+        demand(1),
+        |_| anyhow::bail!("complete old page"),
+    )?;
+    assert!(older.current_work_id.is_none());
+    assert_eq!(older.blocks[0].id, "block-1");
     Ok(())
 }
 
@@ -123,7 +195,7 @@ fn byte_budget_includes_utf8_and_continuation_without_rejecting_complete_small_l
 {
     let mut heads = [head(1), head(2)];
     heads[1].id = "显示头".repeat(40);
-    let complete = live_window(1, 0, true, heads.iter().rev(), demand(2), |_| {
+    let complete = live_window(1, 0, true, None, heads.iter().rev(), demand(2), |_| {
         Ok("cursor".repeat(1000))
     })?;
     let exact_bytes = encoded_size(&complete)? as u32;
@@ -132,7 +204,7 @@ fn byte_budget_includes_utf8_and_continuation_without_rejecting_complete_small_l
         max_bytes: exact_bytes,
     };
     assert_eq!(
-        live_window(1, 0, true, heads.iter().rev(), exact, |_| {
+        live_window(1, 0, true, None, heads.iter().rev(), exact, |_| {
             Ok("cursor".repeat(1000))
         })?,
         complete
@@ -142,7 +214,7 @@ fn byte_budget_includes_utf8_and_continuation_without_rejecting_complete_small_l
         ..exact
     };
     assert!(
-        live_window(1, 0, true, heads.iter().rev(), undersized, |_| Ok(
+        live_window(1, 0, true, None, heads.iter().rev(), undersized, |_| Ok(
             "c".into()
         ))
         .is_err()
@@ -212,6 +284,180 @@ fn member_windows_preserve_stable_orders_and_real_terminal_without_body() -> Res
         .is_err()
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn v364_member_cut_survives_commit_confirm_cleanup_before_its_sqlite_read() -> Result<()> {
+    use crate::{
+        runtime_test_support::Environment,
+        studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
+    };
+    use anyhow::Context as _;
+    use tokio::sync::oneshot;
+
+    let env = Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let mut h = Harness::new(&env).await?;
+        let saved = h
+            .effect(
+                vec![start("saved-prefix", true)],
+                vec![finish("saved-prefix", true, "durable prefix")?],
+            )
+            .await?;
+        let saved_member = saved.display.as_ref().context("saved display")?.members[0]
+            .head
+            .clone();
+        h.save(&saved).await?;
+        h.projection.presentation().lock().unwrap().confirm(saved.sequence);
+        drop(saved);
+
+        let pending = h
+            .effect(
+                vec![start("terminal-overlay", true)],
+                vec![finish("terminal-overlay", true, "pending terminal body")?],
+            )
+            .await?;
+        let delta = pending.display.as_ref().context("pending display")?;
+        let pending_member = delta.members[0].head.clone();
+        let terminal_row = Arc::downgrade(&delta.members[0]);
+        let original_payload = Arc::downgrade(&pending.completions[0].payload);
+        let original_contents = Arc::downgrade(&pending.completions[0].contents);
+        let reference = DisplayBlockRef {
+            database_id: h.history.conversation_database_id().await?.context("database")?,
+            block_id: delta.blocks[0].header.id.clone(),
+        };
+        let mut feed = env.runtime.open_timeline_feed(&h.thread.id, demand(1)).await?;
+        let reader = feed.reader().clone();
+        let cut = reader.capture_display(None, 1, None, 0).await?;
+        assert_eq!((cut.published, cut.durable), (0, 0));
+        assert_eq!(h.session.durable_seq(), 1);
+        assert_eq!(cut.current_work_id.as_deref(), Some(reference.block_id.as_str()));
+        let captured_revision = cut.open[0].revision;
+        let captured_head = Arc::downgrade(&cut.open[0]);
+        assert!(matches!(
+            &cut.open[0].body,
+            DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (2, 2)
+        ));
+        assert_eq!(
+            h.projection.presentation().lock().unwrap().resident_member_count(),
+            1,
+            "saved prefix is sparse; only the unsaved terminal overlay is resident"
+        );
+
+        let mut members = reader
+            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+            .await?;
+        let (entered, captured) = oneshot::channel();
+        let (resume, released) = oneshot::channel();
+        members.cut_barrier = Some(DisplayMemberReadBarrier { entered, resume: released });
+        let old_page = {
+            let reading = members.next();
+            tokio::pin!(reading);
+            tokio::time::timeout(crate::runtime_test_support::integration_test_deadline()?, async {
+                tokio::select! {
+                    reached = captured => reached.context("member cut was not reached"),
+                    result = &mut reading => anyhow::bail!("member read completed before its cut barrier: {result:?}"),
+                }
+            })
+            .await??;
+
+            // The production writer COMMIT completes before either owner confirms or read resumes.
+            h.save(&pending).await?;
+            assert_eq!(h.session.durable_seq(), 2);
+            h.projection.presentation().lock().unwrap().confirm(pending.sequence);
+            drop(pending);
+            assert_eq!(
+                h.projection.presentation().lock().unwrap().resident_member_count(),
+                0,
+                "confirm releases the open tail's durable terminal row without waiting for the query"
+            );
+            assert_eq!(terminal_row.strong_count(), 1, "only the in-flight read cut owns this row");
+            assert!(original_payload.upgrade().is_none(), "durable original payload is no longer resident");
+            assert!(original_contents.upgrade().is_none(), "durable original bodies are no longer resident");
+
+            // Advance the very same tail again. The paused read must not adopt this newer head/row.
+            let newer = h
+                .effect(
+                    vec![start("after-cut", true)],
+                    vec![finish("after-cut", true, "newer than the captured cut")?],
+                )
+                .await?;
+            let newer_member = newer.display.as_ref().context("newer display")?.members[0]
+                .head
+                .clone();
+            assert_eq!(newer.display.as_ref().unwrap().blocks[0].header.id, reference.block_id);
+            h.save(&newer).await?;
+            h.projection.presentation().lock().unwrap().confirm(newer.sequence);
+            drop(newer);
+            assert_eq!((cut.published, cut.durable), (0, 0));
+            assert!(matches!(
+                &cut.open[0].body,
+                DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (2, 2)
+            ));
+            drop(cut);
+            assert_eq!(captured_head.strong_count(), 1, "the actual query retains its captured head");
+            resume.send(()).map_err(|_| anyhow::anyhow!("paused read dropped before release"))?;
+            let old_page = tokio::time::timeout(
+                crate::runtime_test_support::integration_test_deadline()?,
+                reading,
+            )
+            .await??
+            .context("captured member page")?;
+            (old_page, newer_member)
+        };
+        let (old_page, newer_member) = old_page;
+        assert_eq!(old_page.block, reference);
+        assert_eq!(old_page.revision, captured_revision);
+        assert!(!old_page.sealed);
+        assert_eq!(old_page.entries, [saved_member.clone(), pending_member.clone()]);
+        assert!(old_page.before.is_none());
+        assert!(terminal_row.upgrade().is_none(), "completed query drops its last overlay reference");
+        assert!(captured_head.upgrade().is_none(), "completed query drops its old header reference");
+        members.close().await?;
+        drop(members);
+
+        let latest_cut = reader.capture_display(None, 1, None, 0).await?;
+        assert_eq!(latest_cut.current_work_id.as_deref(), Some(reference.block_id.as_str()));
+        assert!(matches!(
+            &latest_cut.open[0].body,
+            DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (3, 3)
+        ));
+        assert!(!latest_cut.open[0].sealed);
+        assert_eq!(
+            h.projection.presentation().lock().unwrap().resident_member_count(),
+            0
+        );
+        let mut latest = reader
+            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+            .await?;
+        let newest = latest.next().await?.context("latest member page")?;
+        assert_eq!(newest.revision, latest_cut.open[0].revision);
+        assert!(newest.revision > captured_revision);
+        assert_eq!(newest.entries, [pending_member, newer_member]);
+        let mut older = reader
+            .open_display_members(
+                reference,
+                DisplayMemberWindow::Before { member_order: newest.before.context("older prefix")? },
+                demand(2),
+            )
+            .await?;
+        let prefix = older.next().await?.context("saved prefix page")?;
+        assert_eq!(prefix.entries, [saved_member]);
+        assert!(prefix.before.is_none());
+        assert_eq!(
+            prefix.entries.iter().chain(&newest.entries)
+                .map(|member| member.member_order).collect::<Vec<_>>(),
+            [1, 2, 3],
+            "the captured overlay's stable key/order is neither lost nor duplicated after cleanup"
+        );
+        older.close().await?;
+        latest.close().await?;
+        reader.close().await?;
+        feed.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 #[tokio::test]

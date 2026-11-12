@@ -1,18 +1,21 @@
 //! Incremental display ownership. Only reliable, admitted facts enter this fold.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ChatItem};
+#[cfg(test)]
+use pl_protocol::ChatSourceState;
 use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatDeliveryKind,
-    ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
-    ContentRef, ContentTarget, DisplayBlock, DisplayBlockBody, DisplayBlockRef,
-    DisplayContentSource, DisplayMemberHead, DisplayRecord, PayloadData,
+    ChatFactPosition, ChatSourceId, ChatTerminalOutcome, ContentRef, ContentTarget, DisplayBlock,
+    DisplayBlockBody, DisplayBlockRef, DisplayContentSource, DisplayMemberHead, DisplayRecord,
+    PayloadData, SingleVisibility,
 };
 use serde::{Deserialize, Serialize};
+mod observations;
 
 #[cfg(test)]
 mod cost;
@@ -33,6 +36,7 @@ pub(in crate::studio) struct DisplayHeader {
     pub block_order: u64,
     pub history_pos: Option<u64>,
     pub boundary: Option<ChatFactPosition>,
+    pub first_content_at: Option<ChatFactPosition>,
     pub sealed: bool,
     pub unfinished: u64,
     pub next_member: u64,
@@ -139,10 +143,20 @@ impl PreparedDisplayDelta {
     }
 }
 
-#[derive(Default)]
-struct SourceLane {
-    open_work: Option<u64>,
-    pending_order: VecDeque<u64>,
+/// A reliable ContentAvailable phase, distinct from the atom's real start.
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::studio) struct TextVisible {
+    pub atom: ChatAtom,
+    pub at: ChatFactPosition,
+}
+
+pub(in crate::studio) type ObservationPlan =
+    BTreeMap<String, (ChatFactPosition, DisplayMemberWrite)>;
+
+pub(in crate::studio) struct DisplayInput<'a> {
+    pub facts: &'a [ChatAtom],
+    pub visible: &'a [TextVisible],
+    pub observations: Option<&'a ObservationPlan>,
 }
 
 /// An explicitly bounded capture from one short owner lock.
@@ -150,6 +164,7 @@ pub(in crate::studio) struct PresentationCut {
     pub published: u64,
     pub durable: u64,
     pub revision: u64,
+    pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
     pub pending: Vec<Arc<DisplayBlock>>,
 }
@@ -163,17 +178,19 @@ pub(in crate::studio) struct DisplayMemberCut {
 #[derive(Default)]
 pub(in crate::studio) struct PresentationState {
     database: String,
-    lanes: HashMap<ChatSourceId, SourceLane>,
+    open_work: Option<u64>,
     blocks: PresentationMap<u64, Arc<DisplayHeader>>,
     frozen_headers: PresentationMap<u64, Arc<DisplayHeader>>,
     sparse: BTreeSet<u64>,
     retired: BTreeMap<u64, (u64, u64)>, // history_pos -> (effect, block_order)
     by_id: HashMap<String, u64>,
     members: PresentationMap<(u64, u64), Arc<DisplayMemberWrite>>,
-    member_locations: HashMap<String, (u64, u64)>,
-    location_keys: HashMap<u64, BTreeSet<String>>,
+    current_work_rows: HashMap<String, (u64, u64)>,
+    open_texts: HashMap<String, (u64, u64)>,
     unfinished_members: BTreeSet<(u64, u64)>,
     observations: BTreeMap<ChatContentKey, (u64, Arc<ChatContent>)>,
+    observation_batches: BTreeMap<u64, Vec<ChatContentKey>>,
+    terminal_batches: BTreeMap<u64, Vec<(u64, u64)>>,
     pending: BTreeMap<u64, Arc<DisplayBlock>>,
     published: u64,
     durable: u64,
@@ -276,8 +293,7 @@ pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
                 | ChatAtomKind::ToolCall
                 | ChatAtomKind::FileChange
                 | ChatAtomKind::Skill
-        ) && matches!(atom.source, ChatSourceId::ForegroundTurn { .. })
-            && atom.delivery != ChatDeliveryKind::Independent)
+        ) && atom.delivery != ChatDeliveryKind::Independent)
 }
 
 fn hidden(atom: &ChatAtom) -> bool {
@@ -295,15 +311,83 @@ fn evidence(atom: &ChatAtom) -> Option<ChatFactPosition> {
     }
 }
 
+fn independently_visible_text(atom: &ChatAtom) -> Option<ChatFactPosition> {
+    // Inbox eligibility was proved by accepted_inbox_draft, not by text or a source-id prefix.
+    // Unlike model starts, its nonempty original is already public at reliable admission.
+    if atom.kind != ChatAtomKind::Text
+        || !matches!(atom.source, ChatSourceId::InboxMessage { .. })
+        || atom.delivery != ChatDeliveryKind::Independent
+        || atom.content_present != Some(true)
+        || atom.completion_item_id.is_none()
+    {
+        return None;
+    }
+    match atom.lifecycle {
+        ChatAtomLifecycle::Terminal {
+            ended: Some(at),
+            outcome: ChatTerminalOutcome::Completed,
+            ..
+        } => Some(at),
+        _ => None,
+    }
+}
+
+enum DisplayOperation<'a> {
+    Atom(&'a ChatAtom),
+    TextVisible(&'a TextVisible),
+}
+
+fn operations<'a>(facts: &'a [ChatAtom], visible: &'a [TextVisible]) -> Vec<DisplayOperation<'a>> {
+    let mut result = facts
+        .iter()
+        .map(DisplayOperation::Atom)
+        .chain(visible.iter().map(DisplayOperation::TextVisible))
+        .collect::<Vec<_>>();
+    result.sort_by_key(|op| match op {
+        DisplayOperation::Atom(atom) => (evidence(atom), 0),
+        DisplayOperation::TextVisible(text) => (Some(text.at), 1),
+    });
+    result
+}
+
+fn block_identity(database: &str, atom: &ChatAtom, key: &str) -> Result<String> {
+    Ok(serde_json::to_string(&(
+        "display-v3",
+        database,
+        &atom.source,
+        evidence(atom),
+        key,
+    ))?)
+}
+
 fn bytes<T: Serialize>(value: &T) -> Result<u64> {
     Ok(serde_json::to_vec(value)?.len() as u64 + 192)
 }
 
 impl PresentationState {
+    fn admitted(&self, atom: &ChatAtom) -> bool {
+        match atom.lifecycle {
+            ChatAtomLifecycle::Terminal {
+                ended: Some(at), ..
+            } => at.effect_seq > self.applied_effect || self.accepts_update(atom),
+            ChatAtomLifecycle::Active {
+                started: Some(at), ..
+            } if at.effect_seq <= self.applied_effect => self.accepts_update(atom),
+            _ => true,
+        }
+    }
+
+    fn location(&self, key: &str) -> Option<(u64, u64)> {
+        self.current_work_rows
+            .get(key)
+            .or_else(|| self.open_texts.get(key))
+            .copied()
+    }
+
     pub fn accepts_update(&self, atom: &ChatAtom) -> bool {
         member_key(atom)
             .ok()
-            .is_some_and(|key| self.member_locations.contains_key(&key))
+            .is_some_and(|key| self.location(&key).is_some())
     }
     pub fn observation_content(&self, key: &ChatContentKey) -> Option<Arc<ChatContent>> {
         self.observations
@@ -367,6 +451,7 @@ impl PresentationState {
             published: self.published,
             durable: self.durable,
             revision: self.revision,
+            current_work_id: self.open_work.map(|order| self.blocks[&order].id.clone()),
             open,
             pending: self
                 .pending
@@ -422,14 +507,13 @@ impl PresentationState {
         self.applied_effect = effect;
         for header in headers {
             ensure!(
-                header.history_pos.is_none() && header.version == 2,
+                header.history_pos.is_none() && header.version == 3,
                 "invalid open display header"
             );
-            let lane = self.lanes.entry(header.source.clone()).or_default();
-            lane.pending_order.push_back(header.block_order);
             if !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. }) {
                 ensure!(
-                    lane.open_work.replace(header.block_order).is_none(),
+                    self.open_work.replace(header.block_order).is_none()
+                        && header.block_order == next_order,
                     "multiple open work blocks"
                 );
             }
@@ -443,6 +527,10 @@ impl PresentationState {
                 !member.terminal,
                 "restore requested terminal display member"
             );
+            ensure!(
+                member.association_key == member_key(&member.head.record.atom)?,
+                "restored member association differs from its own source or responsibility"
+            );
             let order = *self
                 .by_id
                 .get(&member.block_id)
@@ -452,14 +540,19 @@ impl PresentationState {
                 "sealed block cannot restore update qualification"
             );
             self.retained += bytes(&member)?;
-            self.location_keys
-                .entry(order)
-                .or_default()
-                .insert(member.association_key.clone());
             self.unfinished_members
                 .insert((order, member.head.member_order));
+            let locations = if matches!(self.blocks[&order].body, DisplayBlockBody::Work { .. }) {
+                &mut self.current_work_rows
+            } else {
+                ensure!(
+                    self.blocks[&order].first_content_at.is_some() || self.blocks[&order].legacy,
+                    "visible Text has no content evidence"
+                );
+                &mut self.open_texts
+            };
             ensure!(
-                self.member_locations
+                locations
                     .insert(
                         member.association_key.clone(),
                         (order, member.head.member_order)
@@ -474,16 +567,45 @@ impl PresentationState {
     }
 
     pub fn confirm(&mut self, effect: u64) {
-        self.observations.retain(|_, (at, content)| {
-            if *at <= effect {
-                self.retained = self
-                    .retained
-                    .saturating_sub(content.data.len() as u64 + 192);
-                false
-            } else {
-                true
+        while self
+            .observation_batches
+            .first_key_value()
+            .is_some_and(|(at, _)| *at <= effect)
+        {
+            let (_, keys) = self
+                .observation_batches
+                .pop_first()
+                .expect("confirmed batch");
+            for key in keys {
+                if let Some((_, content)) = self.observations.remove(&key) {
+                    self.retained = self
+                        .retained
+                        .saturating_sub(content.data.len() as u64 + 192);
+                }
             }
-        });
+        }
+        while self
+            .terminal_batches
+            .first_key_value()
+            .is_some_and(|(at, _)| *at <= effect)
+        {
+            let (_, positions) = self.terminal_batches.pop_first().expect("confirmed batch");
+            for position in positions {
+                if let Some(member) = self.members.remove(&position) {
+                    debug_assert!(member.terminal);
+                    if self.current_work_rows.get(&member.association_key) == Some(&position) {
+                        self.current_work_rows.remove(&member.association_key);
+                    }
+                    if self.open_texts.get(&member.association_key) == Some(&position) {
+                        self.open_texts.remove(&member.association_key);
+                    }
+                    self.sparse.insert(position.0);
+                    self.retained = self
+                        .retained
+                        .saturating_sub(bytes(member.as_ref()).unwrap_or(u64::MAX));
+                }
+            }
+        }
         while let Some((&pos, &(at, order))) = self.retired.first_key_value() {
             if at > effect {
                 break;
@@ -491,7 +613,6 @@ impl PresentationState {
             self.retired.remove(&pos);
             self.frozen_headers.remove(&order);
             self.sparse.remove(&order);
-            self.location_keys.remove(&order);
             if let Some(block) = self.pending.remove(&pos) {
                 self.by_id.remove(&block.id);
             }
@@ -503,8 +624,11 @@ impl PresentationState {
             for key in keys {
                 self.unfinished_members.remove(&key);
                 if let Some(member) = self.members.remove(&key) {
-                    if self.member_locations.get(&member.association_key) == Some(&key) {
-                        self.member_locations.remove(&member.association_key);
+                    if self.current_work_rows.get(&member.association_key) == Some(&key) {
+                        self.current_work_rows.remove(&member.association_key);
+                    }
+                    if self.open_texts.get(&member.association_key) == Some(&key) {
+                        self.open_texts.remove(&member.association_key);
                     }
                     self.retained = self
                         .retained
@@ -520,68 +644,142 @@ impl PresentationState {
         &self,
         effect: u64,
         facts: &[ChatAtom],
-        sources: &[ChatSourceState],
-    ) -> Result<BTreeMap<String, (ChatFactPosition, DisplayMemberWrite)>> {
-        let mut boundaries: BTreeMap<ChatSourceId, Vec<ChatFactPosition>> = BTreeMap::new();
-        for atom in facts.iter().filter(|atom| !work(atom) && !hidden(atom)) {
-            if !self.member_locations.contains_key(&member_key(atom)?)
-                && let Some(at) = evidence(atom)
+        visible: &[TextVisible],
+    ) -> Result<ObservationPlan> {
+        let has_boundary = visible.iter().any(|text| {
+            text.at.effect_seq > self.applied_effect
+                && member_key(&text.atom).is_ok_and(|key| !self.open_texts.contains_key(&key))
+        }) || facts.iter().any(|atom| {
+            (atom.kind != ChatAtomKind::Text || independently_visible_text(atom).is_some())
+                && !work(atom)
+                && !hidden(atom)
+                && self.admitted(atom)
+        });
+        if !has_boundary {
+            return Ok(BTreeMap::new());
+        }
+        // One effect-local terminal index. A later terminal never supplies an earlier cut.
+        let mut terminals = HashMap::new();
+        for atom in facts {
+            if let ChatAtomLifecycle::Terminal {
+                ended: Some(at), ..
+            } = atom.lifecycle
             {
-                boundaries.entry(atom.source.clone()).or_default().push(at);
+                terminals
+                    .entry(member_key(atom)?)
+                    .and_modify(|old: &mut ChatFactPosition| *old = (*old).min(at))
+                    .or_insert(at);
             }
         }
-        for source in sources
-            .iter()
-            .filter(|source| matches!(source.lifecycle, ChatSourceLifecycle::Ended { .. }))
-        {
-            if let Some(at) = source.ended {
-                boundaries
-                    .entry(source.source.clone())
-                    .or_default()
-                    .push(at);
-            }
-        }
-        for positions in boundaries.values_mut() {
-            positions.sort_unstable();
-        }
-        let terminal_before = |atom: &ChatAtom, boundary| {
-            facts.iter().any(|end| {
-            end.id == atom.id && end.source == atom.source
-                && matches!(end.lifecycle, ChatAtomLifecycle::Terminal { ended: Some(at), .. } if at <= boundary)
-        })
-        };
+        let mut group = self.open_work.map(|order| {
+            let header = &self.blocks[&order];
+            (header.id.clone(), header.next_member)
+        });
+        let mut original_group = self.open_work;
+        let mut rows: HashMap<String, DisplayMemberWrite> = HashMap::new();
+        let mut seen_singles = BTreeSet::new();
         let mut requests = BTreeMap::new();
-        for (source, positions) in &boundaries {
-            let first = positions[0];
-            if let Some(order) = self.lanes.get(source).and_then(|lane| lane.open_work) {
+        for op in operations(facts, visible) {
+            let boundary = match op {
+                DisplayOperation::Atom(atom) if hidden(atom) || !self.admitted(atom) => continue,
+                DisplayOperation::Atom(atom) if work(atom) => {
+                    let key = member_key(atom)?;
+                    if group.is_none() {
+                        group = Some((block_identity(&self.database, atom, &key)?, 0));
+                    }
+                    let (id, next) = group.as_mut().expect("current Work");
+                    let previous = rows.get(&key).or_else(|| {
+                        original_group.and_then(|_| {
+                            self.current_work_rows
+                                .get(&key)
+                                .and_then(|position| self.members.get(position))
+                                .map(Arc::as_ref)
+                        })
+                    });
+                    let (member_order, row_key, start) = if let Some(previous) = previous {
+                        (
+                            previous.head.member_order,
+                            previous.head.member_key.clone(),
+                            previous.head.record.start_fact,
+                        )
+                    } else {
+                        *next = next
+                            .checked_add(1)
+                            .context("display member order exhausted")?;
+                        (
+                            *next,
+                            display_member_key(id, atom)?,
+                            match atom.lifecycle {
+                                ChatAtomLifecycle::Active { started, .. } => started,
+                                _ => None,
+                            },
+                        )
+                    };
+                    rows.insert(
+                        key.clone(),
+                        DisplayMemberWrite {
+                            block_id: id.clone(),
+                            association_key: key,
+                            terminal: matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
+                            head: DisplayMemberHead {
+                                member_key: row_key,
+                                member_order,
+                                record: record(atom.clone(), start),
+                            },
+                        },
+                    );
+                    continue;
+                }
+                DisplayOperation::Atom(atom)
+                    if atom.kind == ChatAtomKind::Text
+                        && independently_visible_text(atom).is_none() =>
+                {
+                    continue;
+                }
+                DisplayOperation::Atom(atom) => {
+                    let key = member_key(atom)?;
+                    if self.location(&key).is_some() || !seen_singles.insert(key) {
+                        continue;
+                    }
+                    let Some(at) = evidence(atom) else { continue };
+                    at
+                }
+                DisplayOperation::TextVisible(text) => {
+                    let key = member_key(&text.atom)?;
+                    if text.at.effect_seq <= self.applied_effect
+                        || self.open_texts.contains_key(&key)
+                        || !seen_singles.insert(key)
+                    {
+                        continue;
+                    }
+                    text.at
+                }
+            };
+            if let Some(order) = original_group.take() {
                 for position in self
                     .unfinished_members
                     .range((order, 0)..=(order, u64::MAX))
                 {
                     let member = &self.members[position];
-                    if !terminal_before(&member.head.record.atom, first) {
+                    if terminals
+                        .get(&member.association_key)
+                        .is_none_or(|end| *end > boundary)
+                    {
                         requests.insert(
                             member.association_key.clone(),
-                            (first, member.as_ref().clone()),
+                            (boundary, member.as_ref().clone()),
                         );
                     }
                 }
             }
-            for atom in facts.iter().filter(|atom| atom.source == *source && work(atom)
-                && matches!(atom.lifecycle, ChatAtomLifecycle::Active { started: Some(at), .. } if at.effect_seq == effect)) {
-                let key = member_key(atom)?;
-                if requests.contains_key(&key) { continue; }
-                let Some(at) = evidence(atom) else { continue };
-                if let Some(boundary) = positions.iter().copied().find(|boundary| *boundary >= at)
-                    && !terminal_before(atom, boundary) {
-                    requests.insert(key.clone(), (boundary, DisplayMemberWrite {
-                        block_id: String::new(), association_key: key, terminal: false,
-                        head: DisplayMemberHead { member_key: String::new(), member_order: 0,
-                            record: record(atom.clone(), Some(at)) },
-                    }));
+            for (key, row) in rows.drain() {
+                if !row.terminal && terminals.get(&key).is_none_or(|end| *end > boundary) {
+                    requests.entry(key).or_insert((boundary, row));
                 }
             }
+            group = None;
         }
+        let _ = effect;
         Ok(requests)
     }
 
@@ -613,6 +811,7 @@ impl PresentationState {
         )
     }
 
+    #[cfg(test)]
     pub fn prepare_capturing(
         &mut self,
         effect: u64,
@@ -620,60 +819,88 @@ impl PresentationState {
         facts: &[ChatAtom],
         sources: &[ChatSourceState],
         completions: &[Arc<ChatItem>],
+        capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+    ) -> Result<Arc<PreparedDisplayDelta>> {
+        // Synthetic display facts in these unit tests carry their content phase in this batch;
+        // the atom's real start remains independent. Production always supplies Core evidence.
+        let visible = facts
+            .iter()
+            .filter(|atom| {
+                atom.kind == ChatAtomKind::Text
+                    && atom.content_present == Some(true)
+                    && matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+            })
+            .map(|atom| TextVisible {
+                atom: atom.clone(),
+                at: ChatFactPosition {
+                    effect_seq: effect,
+                    suborder: evidence(atom).map_or(0, |at| at.suborder),
+                },
+            })
+            .collect::<Vec<_>>();
+        let _ = sources;
+        self.prepare_visible(
+            effect,
+            committed_at,
+            DisplayInput {
+                facts,
+                visible: &visible,
+                observations: None,
+            },
+            completions,
+            capture,
+        )
+    }
+
+    pub fn prepare_visible(
+        &mut self,
+        effect: u64,
+        committed_at: i64,
+        input: DisplayInput<'_>,
+        completions: &[Arc<ChatItem>],
         mut capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
     ) -> Result<Arc<PreparedDisplayDelta>> {
         ensure!(
             effect > self.applied_effect,
             "display effect already folded"
         );
+        let DisplayInput {
+            facts,
+            visible,
+            observations,
+        } = input;
+        for text in visible {
+            ensure!(
+                text.atom.kind == ChatAtomKind::Text && text.at.effect_seq == effect,
+                "TextVisible does not belong to this admitted effect"
+            );
+        }
         // Resolve every fallible observation before modifying this fold. A missing
         // owner/body fails the original retained effect, which can retry unchanged.
         let mut captured = HashMap::new();
-        for (key, (_, member)) in self.observation_requests(effect, facts, sources)? {
-            captured.insert(key, capture(&member)?);
-        }
-        for input in captured.values() {
-            let atom = &input.atom;
-            let material = &input.contents;
-            crate::studio::runtime::chat_item::validate_observation(
-                &input.state,
-                atom,
-                &input.thread_id,
-            )?;
-            ensure!(
-                matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }),
-                "boundary observation is not active"
-            );
-            for body in &atom.contents {
-                let ContentTarget::Body { owner, key } = &body.reference.target else {
-                    anyhow::bail!("boundary observation is not a Body reference");
-                };
-                let owner = crate::studio::conversation_identity::content_owner_key(owner)?;
-                ensure!(
-                    material
-                        .iter()
-                        .any(|content| content.descriptor.key.owner == owner
-                            && content.descriptor.key.key == *key),
-                    "boundary observation lost its immutable body"
-                );
-            }
-            ensure!(
-                !matches!(atom.payload, Some(PayloadData::Deferred { .. })),
-                "boundary public payload must be captured, not a mutable reference"
-            );
-        }
-        let mut capture = |member: &DisplayMemberWrite| {
-            captured
-                .get(&member.association_key)
-                .cloned()
-                .context("boundary observation was not prepared")
+        let planned;
+        let requests = if let Some(requests) = observations {
+            requests
+        } else {
+            planned = self.observation_requests(effect, facts, visible)?;
+            &planned
         };
+        for (key, (at, member)) in requests {
+            let input = capture(member)?;
+            captured.insert(
+                key.clone(),
+                observations::prepare(&self.database, member, input, *at, committed_at)?,
+            );
+        }
         let completed = completions
             .iter()
             .map(|item| (item.header.item_id.as_str(), item))
             .collect::<HashMap<_, _>>();
         let mut atoms = Vec::with_capacity(facts.len());
         for fact in facts {
+            if !self.admitted(fact) {
+                continue;
+            }
             ensure!(
                 !matches!(fact.lifecycle, ChatAtomLifecycle::Terminal { .. })
                     || fact.completion_item_id.is_some()
@@ -709,8 +936,8 @@ impl PresentationState {
             }
             let key = member_key(atom)?;
             let previous = checked.get(&key).or_else(|| {
-                self.member_locations
-                    .get(&key)
+                self.location(&key)
+                    .as_ref()
                     .and_then(|p| self.members.get(p))
                     .map(|m| &m.head.record.atom)
             });
@@ -725,17 +952,47 @@ impl PresentationState {
             }
             checked.insert(key, atom.clone());
         }
+        let mut thoughts = HashMap::new();
+        for atom in &atoms {
+            if let Some(thought) = completed_thinking_summary(atom, &completed)? {
+                thoughts.insert(member_key(atom)?, thought);
+            }
+        }
         let mut touched = BTreeSet::new();
         let mut changed_members = BTreeMap::new();
         let mut remove_empty = Vec::new();
         let mut published = BTreeMap::new();
         let mut contents = Vec::new();
-        for atom in atoms {
+        let mut seen_singles = BTreeSet::new();
+        for operation in operations(&atoms, visible) {
+            let (atom, first_content_at) = match operation {
+                DisplayOperation::Atom(atom) => (atom.clone(), independently_visible_text(atom)),
+                DisplayOperation::TextVisible(text) => {
+                    let key = member_key(&text.atom)?;
+                    if text.at.effect_seq <= self.applied_effect
+                        || self.open_texts.contains_key(&key)
+                    {
+                        continue;
+                    }
+                    ensure!(
+                        text.atom.kind == ChatAtomKind::Text,
+                        "content phase is not Text"
+                    );
+                    (
+                        lightweight(text.atom.clone(), &self.database),
+                        Some(text.at),
+                    )
+                }
+            };
             if hidden(&atom) {
                 continue;
             }
             let key = member_key(&atom)?;
-            if let Some(position) = self.member_locations.get(&key).copied() {
+            let location = self.location(&key);
+            if atom.kind == ChatAtomKind::Text && first_content_at.is_none() && location.is_none() {
+                continue;
+            }
+            if let Some(position) = location {
                 let previous = self
                     .members
                     .get(&position)
@@ -753,9 +1010,9 @@ impl PresentationState {
                 ensure!(!header.sealed, "sealed display member is not updatable");
                 update_summary(&mut header, Some(&previous.head.record.atom), &atom)?;
                 if let DisplayBlockBody::Work { summary, .. } = &mut header.body
-                    && let Some(thought) = completed_thinking_summary(&atom, &completed)?
+                    && let Some(thought) = thoughts.get(&key)
                 {
-                    summary.thinking_summary = Some(thought);
+                    summary.thinking_summary = Some(thought.clone());
                 }
                 let next_record = record(atom.clone(), previous.head.record.start_fact);
                 let member = Arc::new(DisplayMemberWrite {
@@ -776,32 +1033,38 @@ impl PresentationState {
                     .saturating_sub(bytes(previous.as_ref())?)
                     .saturating_add(bytes(member.as_ref())?);
                 self.members.insert(position, member.clone());
-                changed_members.insert(position, member);
-                if let DisplayBlockBody::Single { record } = &mut header.body {
+                changed_members.insert(position, member.clone());
+                if let DisplayBlockBody::Single { record, .. } = &mut header.body {
                     **record = next_record;
+                }
+                if matches!(header.body, DisplayBlockBody::Single { .. }) && member.terminal {
+                    self.open_texts.remove(&key);
                 }
                 self.replace_header(header, committed_at, &mut touched)?;
             } else {
                 let order = if work(&atom) {
-                    if let Some(order) =
-                        self.lanes.get(&atom.source).and_then(|lane| lane.open_work)
-                    {
+                    if let Some(order) = self.open_work {
                         order
                     } else {
                         self.create(&atom, &key, true, committed_at, &mut touched)?
                     }
                 } else {
-                    // TextStarted is already admitted. Independent inputs/background results have
-                    // their own typed lane, and never close a foreground lane.
-                    self.boundary(
-                        (&atom.source, evidence(&atom)),
+                    if !seen_singles.insert(key.clone()) {
+                        continue;
+                    }
+                    self.seal_open_work(
+                        first_content_at.or_else(|| evidence(&atom)),
                         (effect, committed_at),
                         &mut touched,
                         &mut changed_members,
                         &mut contents,
-                        &mut capture,
+                        &mut captured,
                     )?;
-                    self.create(&atom, &key, false, committed_at, &mut touched)?
+                    let order = self.create(&atom, &key, false, committed_at, &mut touched)?;
+                    let mut header = self.blocks[&order].as_ref().clone();
+                    header.first_content_at = first_content_at;
+                    self.replace_header(header, committed_at, &mut touched)?;
+                    order
                 };
                 let mut header = self.blocks[&order].as_ref().clone();
                 header.next_member = header
@@ -810,9 +1073,9 @@ impl PresentationState {
                     .context("display member order exhausted")?;
                 update_summary(&mut header, None, &atom)?;
                 if let DisplayBlockBody::Work { summary, .. } = &mut header.body
-                    && let Some(thought) = completed_thinking_summary(&atom, &completed)?
+                    && let Some(thought) = thoughts.get(&key)
                 {
-                    summary.thinking_summary = Some(thought);
+                    summary.thinking_summary = Some(thought.clone());
                 }
                 let member = Arc::new(DisplayMemberWrite {
                     block_id: header.id.clone(),
@@ -825,6 +1088,11 @@ impl PresentationState {
                             atom.clone(),
                             match atom.lifecycle {
                                 ChatAtomLifecycle::Active { started, .. } => started,
+                                ChatAtomLifecycle::Terminal { started, .. }
+                                    if first_content_at.is_some() =>
+                                {
+                                    started
+                                }
                                 ChatAtomLifecycle::Terminal { .. } => None,
                             },
                         ),
@@ -832,11 +1100,11 @@ impl PresentationState {
                 });
                 let position = (order, header.next_member);
                 self.retained = self.retained.saturating_add(bytes(member.as_ref())?);
-                self.location_keys
-                    .entry(order)
-                    .or_default()
-                    .insert(key.clone());
-                self.member_locations.insert(key, position);
+                if work(&atom) {
+                    self.current_work_rows.insert(key, position);
+                } else if !member.terminal {
+                    self.open_texts.insert(key, position);
+                }
                 if !member.terminal {
                     self.unfinished_members.insert(position);
                 }
@@ -845,32 +1113,19 @@ impl PresentationState {
                 self.replace_header(header, committed_at, &mut touched)?;
             }
             self.drain(
-                &atom.source,
                 (effect, committed_at),
                 &mut touched,
                 &mut published,
                 &mut remove_empty,
             )?;
         }
-        for source in sources {
-            if matches!(source.lifecycle, ChatSourceLifecycle::Ended { .. }) {
-                self.boundary(
-                    (&source.source, source.ended),
-                    (effect, committed_at),
-                    &mut touched,
-                    &mut changed_members,
-                    &mut contents,
-                    &mut capture,
-                )?;
-                self.drain(
-                    &source.source,
-                    (effect, committed_at),
-                    &mut touched,
-                    &mut published,
-                    &mut remove_empty,
-                )?;
-            }
-        }
+        self.terminal_batches.insert(
+            effect,
+            changed_members
+                .iter()
+                .filter_map(|(position, member)| member.terminal.then_some(*position))
+                .collect(),
+        );
         let mut blocks = Vec::with_capacity(touched.len());
         for order in touched {
             if let Some(header) = self.blocks.get(&order) {
@@ -959,31 +1214,24 @@ impl PresentationState {
             .checked_add(1)
             .filter(|value| *value <= i64::MAX as u64)
             .context("display block order exhausted")?;
-        let id = serde_json::to_string(&(
-            "display-v2",
-            &self.database,
-            &atom.source,
-            evidence(atom),
-            key,
-        ))?;
+        let id = block_identity(&self.database, atom, key)?;
         ensure!(
             !self.by_id.contains_key(&id),
             "display block identity reused"
         );
         let order = self.next_order;
-        let lane = self.lanes.entry(atom.source.clone()).or_default();
-        lane.pending_order.push_back(order);
         if is_work {
-            lane.open_work = Some(order);
+            self.open_work = Some(order);
         }
         let header = DisplayHeader {
-            version: 2,
+            version: 3,
             legacy: false,
             id: id.clone(),
             source: atom.source.clone(),
             block_order: order,
             history_pos: None,
             boundary: None,
+            first_content_at: None,
             sealed: false,
             unfinished: 0,
             next_member: 0,
@@ -1004,6 +1252,7 @@ impl PresentationState {
                 }
             } else {
                 DisplayBlockBody::Single {
+                    visibility: SingleVisibility::Content,
                     record: Box::new(record(
                         atom.clone(),
                         match atom.lifecycle {
@@ -1019,23 +1268,19 @@ impl PresentationState {
         Ok(order)
     }
 
-    fn boundary(
+    fn seal_open_work(
         &mut self,
-        (source, at): (&ChatSourceId, Option<ChatFactPosition>),
+        at: Option<ChatFactPosition>,
         (effect, committed_at): (u64, i64),
         touched: &mut BTreeSet<u64>,
         changed_members: &mut BTreeMap<(u64, u64), Arc<DisplayMemberWrite>>,
         contents: &mut Vec<Arc<ChatContent>>,
-        capture: &mut impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+        captured: &mut HashMap<String, observations::PreparedObservation>,
     ) -> Result<()> {
         let Some(at) = at else {
             return Ok(());
         };
-        if let Some(order) = self
-            .lanes
-            .get_mut(source)
-            .and_then(|lane| lane.open_work.take())
-        {
+        if let Some(order) = self.open_work.take() {
             let mut header = self.blocks[&order].as_ref().clone();
             // Capture immutable material before revoking membership. No database or
             // completion collection is consulted at this boundary.
@@ -1046,87 +1291,20 @@ impl PresentationState {
                 .collect::<Vec<_>>();
             for (position, previous) in positions {
                 if !previous.terminal {
-                    let input = capture(&previous)?;
-                    let mut atom = input.atom;
-                    let material = input.contents;
+                    let prepared = captured
+                        .remove(&previous.association_key)
+                        .context("boundary observation was not prepared")?;
+                    let member = prepared.member;
                     ensure!(
-                        atom.id == previous.head.record.atom.id && atom.source == header.source,
-                        "boundary capture changed member ownership"
+                        member.block_id == header.id
+                            && member.head.member_key == previous.head.member_key,
+                        "prepared boundary display identity differs"
                     );
-                    update_summary(&mut header, Some(&previous.head.record.atom), &atom)?;
-                    let owner = pl_protocol::ContentOwner::DisplayObservation {
-                        block_id: header.id.clone(),
-                        member_key: previous.head.member_key.clone(),
-                    };
-                    let owner_key =
-                        crate::studio::conversation_identity::content_owner_key(&owner)?;
-                    let mut captured = BTreeMap::new();
-                    for content in material {
-                        let mut value = content.as_ref().clone();
-                        let key = value.descriptor.key.key.clone();
-                        value.descriptor.key.owner = owner_key.clone();
-                        let value = Arc::new(value);
-                        captured.insert(key, value);
-                    }
-                    for body in &mut atom.contents {
-                        let ContentTarget::Body { key, .. } = &body.reference.target else {
-                            anyhow::bail!("boundary body is not owned content");
-                        };
-                        ensure!(
-                            captured.contains_key(key),
-                            "boundary content cut is missing {key}"
-                        );
-                        body.reference.target = ContentTarget::Body {
-                            owner: owner.clone(),
-                            key: key.clone(),
-                        };
-                    }
-                    atom.payload = Some(PayloadData::Inline {
-                        bytes: crate::studio::runtime::chat_item::observation_payload(
-                            &input.state,
-                            &atom,
-                            &captured.values().cloned().collect::<Vec<_>>(),
-                            crate::studio::runtime::chat_item::ObservationStamp {
-                                thread_id: &input.thread_id,
-                                database_id: &self.database,
-                                owner: &owner,
-                                boundary: at,
-                                captured_at: committed_at,
-                            },
-                        )?,
-                    });
-                    if let Some(PayloadData::Inline { bytes }) = atom.payload.take() {
-                        let key = "display.payload".to_owned();
-                        let content = Arc::new(ChatContent {
-                            descriptor: pl_core::chat::ContentDescriptor {
-                                key: ChatContentKey {
-                                    owner: owner_key,
-                                    key: key.clone(),
-                                },
-                                byte_length: bytes.len() as u64,
-                                generation: 1,
-                                media_type: Some("application/json".into()),
-                            },
-                            data: pl_core::chat::ContentData::Bytes(bytes.into()),
-                        });
-                        atom.payload = Some(PayloadData::Deferred {
-                            reference: ContentRef {
-                                database_id: self.database.clone(),
-                                target: ContentTarget::Body {
-                                    owner,
-                                    key: key.clone(),
-                                },
-                            },
-                            byte_length: content.descriptor.byte_length,
-                        });
-                        captured.insert(key, content);
-                    }
-                    let mut member = previous.as_ref().clone();
-                    member.head.record.atom = atom;
-                    member.head.record.content_source = DisplayContentSource::FrozenObservation {
-                        captured_at: Some(committed_at),
-                        available: true,
-                    };
+                    update_summary(
+                        &mut header,
+                        Some(&previous.head.record.atom),
+                        &member.head.record.atom,
+                    )?;
                     if let DisplayBlockBody::Work { summary, .. } = &mut header.body
                         && member.head.record.atom.kind == ChatAtomKind::Reasoning
                     {
@@ -1140,9 +1318,7 @@ impl PresentationState {
                             .find(|body| body.role == ChatContentRole::ReasoningSummary)
                             .or_else(|| member.head.record.atom.contents.last())
                             .map(|body| body.reference.clone());
-                        if let Some(thought) =
-                            material_summary(&member.head.record.atom, &captured)?
-                        {
+                        if let Some(thought) = prepared.thinking_summary {
                             summary.thinking_summary = Some(thought);
                         }
                     }
@@ -1153,26 +1329,25 @@ impl PresentationState {
                     self.retained = self
                         .retained
                         .saturating_sub(bytes(previous.as_ref())?)
-                        .saturating_add(bytes(&member)?);
-                    let member = Arc::new(member);
+                        .saturating_add(bytes(member.as_ref())?);
                     self.members.insert(position, member.clone());
                     changed_members.insert(position, member);
-                    for content in captured.into_values() {
+                    for content in prepared.contents {
                         self.retained = self
                             .retained
                             .saturating_add(content.data.len() as u64 + 192);
                         self.observations
                             .insert(content.descriptor.key.clone(), (effect, content.clone()));
+                        self.observation_batches
+                            .entry(effect)
+                            .or_default()
+                            .push(content.descriptor.key.clone());
                         contents.push(content);
                     }
                 }
                 self.unfinished_members.remove(&position);
             }
-            if let Some(keys) = self.location_keys.remove(&order) {
-                for key in keys {
-                    self.member_locations.remove(&key);
-                }
-            }
+            self.current_work_rows.clear();
             header.boundary = Some(at);
             header.sealed = true;
             self.replace_header(header, committed_at, touched)?;
@@ -1182,33 +1357,24 @@ impl PresentationState {
 
     fn drain(
         &mut self,
-        source: &ChatSourceId,
         (effect, _committed_at): (u64, i64),
         touched: &mut BTreeSet<u64>,
         published: &mut BTreeMap<u64, (Arc<DisplayHeader>, Arc<DisplayBlock>)>,
         remove_empty: &mut Vec<Arc<DisplayHeader>>,
     ) -> Result<()> {
-        while let Some(order) = self
-            .lanes
-            .get(source)
-            .and_then(|lane| lane.pending_order.front())
-            .copied()
-        {
+        loop {
+            let order = self.blocks.range(..).next().map(|(order, _)| *order);
+            let Some(order) = order else { break };
             let header = &self.blocks[&order];
             if !header.sealed {
                 break;
             }
             let mut header = header.as_ref().clone();
-            self.lanes
-                .get_mut(source)
-                .expect("lane exists")
-                .pending_order
-                .pop_front();
             self.blocks.remove(&order);
             self.retained = self.retained.saturating_sub(bytes(&header)?);
             if header.skip_display {
                 ensure!(
-                    matches!(&header.body, DisplayBlockBody::Single { record }
+                    matches!(&header.body, DisplayBlockBody::Single { record, .. }
                     if record.atom.content_present == Some(false) && record.atom.kind == ChatAtomKind::Text),
                     "only proven empty text may be removed"
                 );
@@ -1220,7 +1386,7 @@ impl PresentationState {
                     .collect::<Vec<_>>();
                 for key in keys {
                     let member = self.members.remove(&key).expect("captured member");
-                    self.member_locations.remove(&member.association_key);
+                    self.open_texts.remove(&member.association_key);
                     self.retained = self.retained.saturating_sub(bytes(member.as_ref())?);
                 }
                 remove_empty.push(Arc::new(header));
@@ -1244,19 +1410,16 @@ impl PresentationState {
                 .checked_add(1)
                 .context("display revision exhausted")?;
         }
-        if self
-            .lanes
-            .get(source)
-            .is_some_and(|lane| lane.pending_order.is_empty() && lane.open_work.is_none())
-        {
-            self.lanes.remove(source);
-        }
         Ok(())
     }
 }
 
 fn observe_elapsed(header: &mut DisplayHeader, committed_at: i64) {
     if let DisplayBlockBody::Work { summary, .. } = &mut header.body {
+        if header.version == 3 {
+            summary.elapsed_ms = None;
+            return;
+        }
         summary.elapsed_ms = summary
             .created_at
             .and_then(|created| committed_at.checked_sub(created))
@@ -1368,17 +1531,25 @@ fn update_summary(
     }
     let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
         let start = match &header.body {
-            DisplayBlockBody::Single { record } => record.start_fact,
+            DisplayBlockBody::Single { record, .. } => record.start_fact,
             _ => None,
         };
         header.body = DisplayBlockBody::Single {
             record: Box::new(record(atom.clone(), start)),
+            visibility: if terminal
+                && header.first_content_at.is_some()
+                && atom.kind == ChatAtomKind::Text
+                && atom.content_present == Some(false)
+            {
+                SingleVisibility::FinalEmptyAfterContent
+            } else {
+                SingleVisibility::Content
+            },
         };
         if terminal {
             header.boundary = evidence(atom);
             header.sealed = true;
-            header.skip_display =
-                atom.kind == ChatAtomKind::Text && atom.content_present == Some(false);
+            header.skip_display = false;
         }
         return Ok(());
     };

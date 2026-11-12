@@ -199,10 +199,16 @@ async fn complete(
     id: &str,
     reasoning: bool,
     text: &str,
+    cancellation: &CancellationToken,
 ) -> Result<()> {
     script.operation(format!("terminal {id}"));
     members
-        .submit(0, id.into(), receipt(id, reasoning, text)?)
+        .submit(
+            0,
+            id.into(),
+            receipt(id, reasoning, text)?,
+            Some(cancellation),
+        )
         .await
         .with_context(|| format!("canonical terminal {id}"))?;
     script.acknowledged();
@@ -213,10 +219,11 @@ async fn start(
     members: &ModelMemberSender,
     id: &str,
     reasoning: bool,
+    cancellation: &CancellationToken,
 ) -> Result<()> {
     script.operation(format!("start {id}"));
     members
-        .start(0, identity(id, reasoning))
+        .start(0, identity(id, reasoning), Some(cancellation))
         .await
         .with_context(|| format!("canonical start {id}"))?;
     script.acknowledged();
@@ -224,33 +231,58 @@ async fn start(
 }
 async fn emit(script: &Script, request: &ModelRequest) -> Result<()> {
     let members = request.members.as_ref().context("real Core member port")?;
-    start(script, members, R, true).await?;
+    let cancellation = &request.cancellation;
+    start(script, members, R, true, cancellation).await?;
     for index in 0..PREFIX_MEMBERS {
         ensure!(!request.cancellation.is_cancelled(), "A34 model cancelled");
         let id = format!("a34-prefix-{index:04}");
-        start(script, members, &id, true).await?;
-        complete(script, members, &id, true, &format!("prefix body {index}")).await?;
+        start(script, members, &id, true, cancellation).await?;
+        complete(
+            script,
+            members,
+            &id,
+            true,
+            &format!("prefix body {index}"),
+            cancellation,
+        )
+        .await?;
         if index + 1 == WINDOW {
             script
                 .boundary(Stage::FirstWindow, &request.cancellation)
                 .await?;
         }
     }
-    start(script, members, T, false).await?;
-    complete(script, members, T, false, TEXT).await?;
-    start(script, members, U, true).await?;
+    start(script, members, T, false, cancellation).await?;
+    complete(script, members, T, false, TEXT, cancellation).await?;
+    start(script, members, U, true, cancellation).await?;
     script.boundary(Stage::Cut, &request.cancellation).await?;
     for index in 0..SUFFIX_MEMBERS {
         ensure!(!request.cancellation.is_cancelled(), "A34 model cancelled");
         let id = format!("a34-suffix-{index:04}");
-        start(script, members, &id, true).await?;
-        complete(script, members, &id, true, &format!("suffix body {index}")).await?;
+        start(script, members, &id, true, cancellation).await?;
+        complete(
+            script,
+            members,
+            &id,
+            true,
+            &format!("suffix body {index}"),
+            cancellation,
+        )
+        .await?;
     }
-    complete(script, members, R, true, "R ended after T").await?;
+    complete(script, members, R, true, "R ended after T", cancellation).await?;
     script
         .boundary(Stage::SuffixReady, &request.cancellation)
         .await?;
-    complete(script, members, U, true, "U ended after backlog").await?;
+    complete(
+        script,
+        members,
+        U,
+        true,
+        "U ended after backlog",
+        cancellation,
+    )
+    .await?;
     Ok(())
 }
 

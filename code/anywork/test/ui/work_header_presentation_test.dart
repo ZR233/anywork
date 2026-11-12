@@ -70,6 +70,11 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
       ),
     );
 
+Finder _workTitle(Finder header) => find.descendant(
+  of: header,
+  matching: find.byKey(const ValueKey('work-header-title')),
+);
+
 void main() {
   testWidgets('#364 terminal cold tail is Resting, not Unrestored', (
     tester,
@@ -365,7 +370,8 @@ void main() {
           await tester.pump(const Duration(milliseconds: 32));
           expect(tester.takeException(), isNull);
         }
-        await tester.pumpAndSettle();
+        // The real activity indicator intentionally keeps animating.
+        await tester.pump(const Duration(milliseconds: 300));
         expect(reads, greaterThan(0));
         final workFinder = find.byType(CompletionRunView);
         final viewport = find.descendant(
@@ -406,14 +412,14 @@ void main() {
         final last = find.text('成员 11');
         expect(last.hitTestable(), findsNothing);
         await tester.dragUntilVisible(last, scrollable, const Offset(0, -80));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(position.pixels, greaterThan(0));
         expect(last.hitTestable(), findsOneWidget);
         expect(header.hitTestable(), findsOneWidget);
         await tester.tap(header);
         await tester.pump(const Duration(milliseconds: 32));
         expect(tester.takeException(), isNull);
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('成员 11'), findsNothing);
         expect(expanded, [true, false]);
         expect(
@@ -783,13 +789,7 @@ void main() {
       final header1 = find.byKey(
         const ValueKey('completion-run-header:work-1'),
       );
-      expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
-        '思考中',
-      );
+      expect(timelineGroupTitleText(tester, _workTitle(header1)), '思考中');
       final baselineBarSize = tester.getRect(barFinder).size;
 
       // 2. Streaming first Markdown thinking summary: replaces 思考中, renders
@@ -807,7 +807,7 @@ void main() {
         ),
       ];
       await tester.pumpWidget(h.host());
-      final titleA = timelineGroupTitleFinder(tester, header1);
+      final titleA = _workTitle(header1);
       expect(tester.widget(titleA), isA<TimelineReasoningSummary>());
       expect(
         timelineGroupTitleText(tester, titleA),
@@ -868,10 +868,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
       );
       expect(find.text('cargo flutter test'), findsNothing);
@@ -911,10 +908,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
       );
       expect(
@@ -948,10 +942,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '复核 Timeline 封存契约',
       );
       expect(
@@ -1001,10 +992,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '工作了 2 分 5 秒',
       );
       expect(
@@ -1018,10 +1006,7 @@ void main() {
         const ValueKey('completion-run-header:work-2'),
       );
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header2),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header2)),
         'cargo flutter analyze',
       );
       expect(h.content.reads, 0);
@@ -1041,6 +1026,10 @@ void main() {
                 id: 'live-md',
                 location: WorkDisplayLocation.live,
                 executionPresent: true,
+                activity: const ConversationActivityView(
+                  identity: 'live-md-thinking',
+                  kind: ConversationActivityKind.thinking,
+                ),
                 initiallyExpanded: false,
                 summary: _summary(
                   createdAt: null,
@@ -1069,7 +1058,7 @@ void main() {
       final liveHeader = find.byKey(
         const ValueKey('completion-run-header:live-md'),
       );
-      final liveTitle = timelineGroupTitleFinder(tester, liveHeader);
+      final liveTitle = _workTitle(liveHeader);
       expect(
         timelineGroupTitleText(tester, liveTitle),
         '检查 LiveStatusBar 与 设计文档 契约',
@@ -1093,10 +1082,7 @@ void main() {
         const ValueKey('completion-run-header:history-md'),
       );
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, historyHeader),
-        ),
+        timelineGroupTitleText(tester, _workTitle(historyHeader)),
         '工作了 2 分 5 秒',
       );
       await tester.pumpWidget(const SizedBox());

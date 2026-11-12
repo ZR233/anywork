@@ -7,9 +7,12 @@ import 'package:anywork/src/features/conversation/timeline/connectors/conversati
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
@@ -291,126 +294,277 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
-  testWidgets(
-    '#364 Active-Resting-Active preserves the expanded tail and original member/content owners',
-    (tester) async {
-      final content = _Content();
-      final images = TimelineImageResources(threadId: 'thread');
-      final handle = _FreezeMembers();
-      final expansion = TimelineExpansionIntent()..expanded = true;
-      const reference = DisplayBlockRef(
-        databaseId: 'database',
-        blockId: 'tail',
-      );
-      var opens = 0;
-      expansion.openDisplayMembers = (_, _, _) async {
-        opens++;
-        return handle;
-      };
-      addTearDown(() {
-        expansion.retire();
-        images.release();
-      });
-      var now = DateTime.fromMillisecondsSinceEpoch(1000000);
-      Widget scene(bool active) {
-        final unit = TimelineDisplayUnit.live(
-          block: const LiveDisplayBlock(
-            id: 'tail',
-            blockOrder: 1,
-            state: DisplayBlockState.open,
-            body: WorkDisplayBlock(
-              members: reference,
-              summary: WorkSummary(
-                total: 1,
-                terminal: 0,
-                running: 1,
-                waiting: 0,
-                failed: 0,
-                cancelled: 0,
-                transferred: 0,
-                unavailable: 0,
-                createdAt: 1000,
-              ),
-            ),
-          ),
-          executionPresent: true,
-          expansion: expansion,
+  for (final bounded in [true, false]) {
+    testWidgets(
+      '#364 small ${bounded ? 'bounded' : '45-percent'} dock scrolls notices and pagers without replacing the expanded tail owners',
+      (tester) async {
+        final content = _Content();
+        final images = TimelineImageResources(threadId: 'thread');
+        final handle = _FreezeMembers();
+        final expansion = TimelineExpansionIntent()..expanded = true;
+        const reference = DisplayBlockRef(
+          databaseId: 'database',
+          blockId: 'tail',
         );
-        return _host(
-          TimelineDisplayUnitView(
-            key: const ValueKey('tail'),
-            unit: unit,
-            activity: active
-                ? const ConversationActivityView(
-                    identity: 'real-activity',
-                    kind: ConversationActivityKind.thinking,
-                  )
-                : null,
-            now: () => now,
-            childBuilder: (_) => CompletionRunConnector(
-              unit: unit,
-              threadId: 'thread',
-              content: content,
-              images: images,
+        var opens = 0;
+        expansion.openDisplayMembers = (_, _, _) async {
+          opens++;
+          return handle;
+        };
+        addTearDown(() {
+          expansion.retire();
+          images.release();
+        });
+        var now = DateTime.fromMillisecondsSinceEpoch(1000000);
+        const work = LiveDisplayBlock(
+          id: 'tail',
+          blockOrder: 1,
+          state: DisplayBlockState.open,
+          body: WorkDisplayBlock(
+            members: reference,
+            summary: WorkSummary(
+              total: 1,
+              terminal: 0,
+              running: 1,
+              waiting: 0,
+              failed: 0,
+              cancelled: 0,
+              transferred: 0,
+              unavailable: 0,
+              createdAt: 1000,
             ),
           ),
         );
-      }
-
-      await tester.pumpWidget(scene(true));
-      handle.send(
-        DisplayMemberPage(
-          block: reference,
+        final latest = LiveDisplayWindow(
+          currentWorkId: 'tail',
           revision: 1,
-          sealed: false,
-          entries: [
-            DisplayMemberHead(
-              memberKey: 'stable-row',
-              memberOrder: 1,
-              record: DisplayRecord(
-                atom: _textItem(),
-                contentSource: const CurrentAtom(),
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: const [work],
+        );
+        final older = LiveDisplayWindow(
+          currentWorkId: null,
+          revision: 1,
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: const [],
+          older: 'next-older',
+        );
+        final live = ValueNotifier<LiveDisplayWindow?>(latest);
+        addTearDown(live.dispose);
+        TimelineCurrentDisplay? display;
+        final pagingRequests = <String>[];
+        var returnsToLatest = 0;
+        Widget scene(bool active, {bool showLeading = false}) {
+          final paging = showLeading
+              ? ViewingOlderLiveWindow(
+                  before: 'older',
+                  window: older,
+                  cut: const LiveWindowCut(
+                    revision: 1,
+                    historyThrough: 0,
+                    executionPresent: true,
+                    attemptId: 1,
+                    isDisplayActive: true,
+                  ),
+                )
+              : const LatestLiveWindow();
+          final window = showLeading ? older : latest;
+          final projected =
+              LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+                latestWindow: latest,
+                effectiveOutputWindow: window,
+                effectiveTimelineWindow: latest,
+                activeTurnId: null,
+                outputPaging: paging,
+                rawNotices: [
+                  if (active)
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'real-activity',
+                        kind: ConversationActivityKind.thinking,
+                      ),
+                    ),
+                  if (showLeading) ...[
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'stopping',
+                        kind: ConversationActivityKind.stopping,
+                        summary: '等待执行收束',
+                      ),
+                    ),
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'storage',
+                        kind: ConversationActivityKind.storageBlocked,
+                        errorMessage: '保存已暂停',
+                      ),
+                    ),
+                  ],
+                ],
+              );
+          final connector = ConversationCurrentConnector(
+            section: ConversationLiveSection.output,
+            managedByViewModel: true,
+            session: const ThreadSessionState(threadId: 'thread'),
+            content: content,
+            live: live,
+            presenting: LiveStatusPresenting(
+              surface: projected.surface!,
+              effectiveWindow: window,
+              paging: paging,
+              showInteractionDetails: false,
+            ),
+            liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+              block: block,
+              executionPresent: executionPresent,
+              expansion: expansion,
+            ),
+            images: images,
+            readAttachment: (_) async => Uint8List(0),
+            isDisplayActive: () => true,
+            registerDisplay: (value) {
+              display = value;
+              return () => display = null;
+            },
+            onLoadOlder: pagingRequests.add,
+            onReturnToLatest: () => returnsToLatest++,
+            now: () => now,
+          );
+          return _host(
+            MediaQuery(
+              data: const MediaQueryData(size: Size(480, 360)),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 480,
+                  height: bounded ? 162 : null,
+                  child: bounded
+                      ? connector
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [connector],
+                        ),
+                ),
               ),
             ),
-          ],
-        ),
-      );
-      await _flush(tester);
-      final members = expansion.members;
-      final memberState = tester.state(find.byType(TimelineMemberAtom));
-      final groupState = tester.state(find.byType(TimelineDisplayUnitView));
-      final scope = content.scopes.single;
-      scope.watches.single.add(_window('合法打开的正文'));
-      await _flush(tester);
-      for (final active in [false, true]) {
-        now = now.add(const Duration(days: 1));
-        await tester.pumpWidget(scene(active));
+          );
+        }
+
+        await tester.pumpWidget(scene(true));
+        handle.send(
+          DisplayMemberPage(
+            block: reference,
+            revision: 1,
+            sealed: false,
+            entries: [
+              DisplayMemberHead(
+                memberKey: 'stable-row',
+                memberOrder: 1,
+                record: DisplayRecord(
+                  atom: _textItem(),
+                  contentSource: const CurrentAtom(),
+                ),
+              ),
+            ],
+          ),
+        );
         await _flush(tester);
-        expect(expansion.expanded, isTrue);
-        expect(expansion.members, same(members));
-        expect(
-          tester.state(find.byType(TimelineMemberAtom)),
-          same(memberState),
-        );
-        expect(
-          tester.state(find.byType(TimelineDisplayUnitView)),
-          same(groupState),
-        );
-        expect(scope.isActive, isTrue);
-        expect(scope.cancels, 0);
-        expect(opens, 1);
-        expect(content.scopes, hasLength(1));
-        expect(find.text('合法打开的正文'), findsOneWidget);
-        expect(find.textContaining('执行了'), findsNothing);
-        expect(tester.takeException(), isNull);
-      }
-      await tester.pumpWidget(const SizedBox());
-      expansion.retire();
-      await _flush(tester);
-      expect(handle.closed, isTrue);
-      expect(scope.isActive, isFalse);
-    },
-  );
+        final members = expansion.members;
+        final memberState = tester.state(find.byType(TimelineMemberAtom));
+        final groupState = tester.state(find.byType(TimelineDisplayUnitView));
+        final originalDisplay = display;
+        expect(originalDisplay, isNotNull);
+        final scope = content.scopes.single;
+        scope.watches.single.add(_window('合法打开的正文'));
+        await _flush(tester);
+        for (final update in [
+          (active: false, leading: true),
+          (active: true, leading: false),
+          (active: true, leading: true),
+          (active: false, leading: false),
+        ]) {
+          now = now.add(const Duration(days: 1));
+          await tester.pumpWidget(
+            scene(update.active, showLeading: update.leading),
+          );
+          await _flush(tester);
+          expect(tester.takeException(), isNull);
+          expect(expansion.expanded, isTrue);
+          expect(expansion.members, same(members));
+          expect(
+            tester.state(find.byType(TimelineMemberAtom)),
+            same(memberState),
+          );
+          expect(
+            tester.state(find.byType(TimelineDisplayUnitView)),
+            same(groupState),
+          );
+          expect(scope.isActive, isTrue);
+          expect(scope.cancels, 0);
+          expect(scope.requests, hasLength(1));
+          expect(opens, 1);
+          expect(content.scopes, hasLength(1));
+          expect(display, same(originalDisplay));
+          expect(find.text('合法打开的正文'), findsOneWidget);
+          expect(find.text('合法打开的正文').hitTestable(), findsOneWidget);
+          expect(find.textContaining('执行了'), findsNothing);
+          final header = find.byKey(
+            const ValueKey('completion-run-header:tail'),
+          );
+          expect(header.hitTestable(), findsOneWidget);
+          final member = find.byType(TimelineMemberAtom);
+          expect(tester.getSize(member).height, greaterThan(0));
+          expect(
+            tester.getRect(member).overlaps(tester.getRect(header)),
+            isFalse,
+          );
+          if (update.leading) {
+            final notices = find.byType(ConversationRealtimeNotices);
+            final scroll = find
+                .ancestor(of: notices, matching: find.byType(Scrollable))
+                .first;
+            final position = tester.state<ScrollableState>(scroll).position;
+            expect(position.maxScrollExtent, greaterThan(0));
+            for (final target in [
+              find.text('等待执行收束'),
+              find.text('保存已暂停'),
+              find.text('更早实时片段'),
+              find.text('最新实时片段'),
+            ]) {
+              position.jumpTo(0);
+              await tester.pump();
+              await tester.dragUntilVisible(
+                target,
+                scroll,
+                const Offset(0, -24),
+              );
+              expect(target.hitTestable(), findsOneWidget);
+            }
+            await tester.tap(find.text('最新实时片段'));
+            expect(returnsToLatest, greaterThan(0));
+            position.jumpTo(0);
+            await tester.pump();
+            await tester.dragUntilVisible(
+              find.text('更早实时片段'),
+              scroll,
+              const Offset(0, -24),
+            );
+            await tester.tap(find.text('更早实时片段'));
+            expect(pagingRequests.last, 'next-older');
+            expect(header.hitTestable(), findsOneWidget);
+            expect(tester.getSize(member).height, greaterThan(0));
+            expect(tester.takeException(), isNull);
+          }
+        }
+        await tester.pumpWidget(const SizedBox());
+        expansion.retire();
+        await _flush(tester);
+        expect(handle.closed, isTrue);
+        expect(scope.isActive, isFalse);
+      },
+    );
+  }
 
   testWidgets(
     '#364 FinalEmptyAfterContent retires the stream and renders its typed explanation',

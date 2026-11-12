@@ -1,9 +1,10 @@
 //! Content-only schema-20 migration: preserve every published identity and immutable member.
+use super::display_observations::legacy::{DisplayBlockBody, DisplayHeader, work};
 use super::*;
-use crate::studio::thread_projection::presentation::{DisplayHeader, DisplayMemberWrite, work};
+use crate::studio::thread_projection::presentation::DisplayMemberWrite;
 use pl_protocol::{
-    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatTerminalOutcome, DisplayBlockBody,
-    DisplayBlockRef, DisplayContentSource, WorkSummary,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatTerminalOutcome, DisplayBlockRef,
+    DisplayContentSource, WorkSummary,
 };
 
 pub(super) struct ToolWork;

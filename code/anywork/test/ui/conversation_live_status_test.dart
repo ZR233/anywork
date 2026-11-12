@@ -1411,9 +1411,17 @@ void main() {
             findsNothing,
           );
           expect(
-            find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
+            find.descendant(
+              of: barFinder,
+              matching: find.byKey(const ValueKey('work-header-member-count')),
+            ),
             findsOneWidget,
-            reason: '${stage.name}: group elapsed is never the phase timer',
+            reason: '${stage.name}: the open tail exposes its reliable count',
+          );
+          expect(
+            find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
+            findsNothing,
+            reason: '${stage.name}: group creation is not an active-work clock',
           );
           expect(
             find.descendant(

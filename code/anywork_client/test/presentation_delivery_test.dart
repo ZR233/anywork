@@ -17,6 +17,28 @@ DisplayBlockBody _body(String id) => SingleDisplayBlock(
 );
 DisplayBlock _block(String id, int pos) =>
     DisplayBlock(id: id, historyPos: pos, body: _body(id));
+LiveDisplayBlock _work(
+  String id,
+  int order, {
+  DisplayBlockState state = DisplayBlockState.open,
+}) => LiveDisplayBlock(
+  id: id,
+  blockOrder: order,
+  state: state,
+  body: WorkDisplayBlock(
+    summary: const WorkSummary(
+      total: 1,
+      terminal: 1,
+      running: 0,
+      waiting: 0,
+      failed: 0,
+      cancelled: 0,
+      transferred: 0,
+      unavailable: 0,
+    ),
+    members: DisplayBlockRef(databaseId: 'db', blockId: id),
+  ),
+);
 LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
     LiveDisplayWindow(
       currentWorkId: null,
@@ -224,9 +246,19 @@ void main() {
     expect(h.content.live.value!.blocks.single.id, 'work');
     final accepted = h.content.live.value;
     final scope = h.content.openScope(generation: 1);
-    feed.onLiveOlder = (_, _) async => _live(['older'], pos: 1);
+    // An older query is a local viewport, not a replacement latest window.
+    final olderPage = LiveDisplayWindow(
+      currentWorkId: null,
+      revision: 1,
+      historyThrough: 1,
+      executionPresent: true,
+      blocks: [_work('work', 2)],
+    );
+    feed.onLiveOlder = (_, _) async => olderPage;
     final older = await scope.loadLiveOlder(before: 'older', demand: _demand);
+    expect(older, same(olderPage));
     expect(older.currentWorkId, isNull);
+    expect(older.blocks.single.state, DisplayBlockState.open);
     expect(h.content.live.value, same(accepted));
     final updated = tail(revision: 2, pos: 1, active: true);
     await feed.deliver(
@@ -248,100 +280,118 @@ void main() {
     expect(feed.acknowledgements, [1, 2, 3]);
   });
 
-  for (final kind in ['missing', 'sealed', 'single']) {
-    test(
-      '#364 currentWorkId rejects an invalid $kind target before ACK and resynchronizes a new scope',
-      () async {
-        final h = _Harness();
-        addTearDown(h.close);
-        final feed = await h.open();
-        await feed.eventsSubscribed.future;
-        final oldScope = h.content.openScope(generation: 1);
-        final live = LiveDisplayWindow(
-          currentWorkId: 'invalid',
-          revision: 1,
-          historyThrough: 0,
-          executionPresent: true,
-          blocks: [
-            if (kind != 'missing')
-              LiveDisplayBlock(
-                id: 'invalid',
-                blockOrder: 1,
-                state: kind == 'sealed'
-                    ? DisplayBlockState.sealed
-                    : DisplayBlockState.open,
-                body: kind == 'sealed'
-                    ? const WorkDisplayBlock(
-                        summary: WorkSummary(
-                          total: 1,
-                          terminal: 1,
-                          running: 0,
-                          waiting: 0,
-                          failed: 0,
-                          cancelled: 0,
-                          transferred: 0,
-                          unavailable: 0,
-                        ),
-                        members: DisplayBlockRef(
-                          databaseId: 'db',
-                          blockId: 'invalid',
-                        ),
-                      )
-                    : _body('invalid'),
+  for (final kind in [
+    'missing',
+    'sealed',
+    'single',
+    'null-with-open',
+    'null-with-multiple-open',
+    'selected-with-multiple-open',
+  ]) {
+    for (final placement in [ChatPlacement.set, ChatPlacement.append]) {
+      test(
+        '#364 ${placement.name} rejects $kind current Work before consumer/ACK and resynchronizes a new scope',
+        () async {
+          final h = _Harness();
+          addTearDown(h.close);
+          final feed = await h.open();
+          await feed.eventsSubscribed.future;
+          if (placement == ChatPlacement.append) {
+            await feed.deliver(ConversationTimelineEvent(batch: _set()));
+          }
+          final accepted = h.content.live.value;
+          final acceptedCount = h.consumer.values.length;
+          final acknowledgements = feed.acknowledgements.toList();
+          final oldScope = h.content.openScope(generation: 1);
+          final live = LiveDisplayWindow(
+            currentWorkId: kind.startsWith('null-') ? null : 'invalid',
+            revision: 1,
+            historyThrough: 0,
+            executionPresent: true,
+            blocks: [
+              if (kind == 'sealed')
+                _work('invalid', 1, state: DisplayBlockState.sealed),
+              if (kind == 'single')
+                LiveDisplayBlock(
+                  id: 'invalid',
+                  blockOrder: 1,
+                  state: DisplayBlockState.open,
+                  body: _body('invalid'),
+                ),
+              if (kind == 'null-with-open' ||
+                  kind == 'null-with-multiple-open' ||
+                  kind == 'selected-with-multiple-open')
+                _work('invalid', 1),
+              if (kind == 'null-with-multiple-open' ||
+                  kind == 'selected-with-multiple-open')
+                _work('other-open', 2),
+            ],
+          );
+          feed.send(
+            ConversationTimelineEvent(
+              batch: TimelineBatch(
+                presentationVersion: presentationVersion,
+                placement: placement,
+                blocks: [],
+                fromPos: placement == ChatPlacement.append ? 0 : null,
+                throughPos: 0,
+                live: live,
               ),
-          ],
-        );
-        feed.send(
-          ConversationTimelineEvent(
-            batch: TimelineBatch(
-              presentationVersion: presentationVersion,
-              placement: ChatPlacement.set,
-              blocks: [],
-              throughPos: 0,
-              live: live,
             ),
-          ),
-        );
-        await feed.requestCloseStarted.future;
-        expect(h.consumer.values, isEmpty);
-        expect(feed.acknowledgements, isEmpty);
-        expect(h.content.live.value, isNull);
-        expect(
-          h.content.state.value,
-          isA<ChatReconnecting<bool>>().having(
-            (state) => state.error,
-            'error',
-            isA<ConversationContinuityError>(),
-          ),
-        );
-        expect(oldScope.isActive, isFalse);
-        await feed.closeCompleted.future;
-        expect(feed.closeCalls, 1);
-        expect(feed.reader.requested, isTrue);
-        expect(feed.reader.closeCalls, 1);
+          );
+          await feed.requestCloseStarted.future;
+          expect(h.consumer.values, hasLength(acceptedCount));
+          expect(feed.acknowledgements, acknowledgements);
+          expect(h.content.live.value, same(accepted));
+          expect(
+            h.content.state.value,
+            isA<ChatReconnecting<bool>>().having(
+              (state) => state.error,
+              'error',
+              isA<ConversationContinuityError>(),
+            ),
+          );
+          expect(oldScope.isActive, isFalse);
+          await feed.closeCompleted.future;
+          expect(feed.closeCalls, 1);
+          expect(feed.reader.requested, isTrue);
+          expect(feed.reader.closeCalls, 1);
 
-        final replacement = await h.finishOpen(1);
-        final restored = _set(live: ['restored-$kind']);
-        await replacement.deliver(ConversationTimelineEvent(batch: restored));
-        final newScope = h.content.openScope(generation: 2);
-        expect(newScope, isNot(same(oldScope)));
-        expect(newScope.isActive, isTrue);
-        expect(oldScope.isActive, isFalse);
-        expect((await oldScope.close()).complete, isTrue);
-        await expectLater(
-          oldScope.loadLiveOlder(before: 'retired', demand: _demand),
-          throwsA(isA<StaleConversationScope>()),
-        );
-        expect(h.content.state.value, isA<ChatReady<bool>>());
-        expect(h.consumer.values, hasLength(1));
-        expect(h.consumer.values.single.$1, same(restored));
-        expect(h.content.live.value, same(restored.live));
-        expect(h.content.live.value!.blocks.single.id, 'restored-$kind');
-        expect(h.content.live.value!.currentWorkId, isNull);
-        expect(feed.acknowledgements, isEmpty);
-        expect(replacement.acknowledgements, [1]);
-      },
-    );
+          final replacement = await h.finishOpen(1);
+          final restored = TimelineBatch(
+            presentationVersion: presentationVersion,
+            placement: ChatPlacement.set,
+            blocks: [],
+            throughPos: 0,
+            live: LiveDisplayWindow(
+              currentWorkId: 'restored',
+              revision: 1,
+              historyThrough: 0,
+              executionPresent: true,
+              blocks: [_work('restored', 1)],
+            ),
+          );
+          await replacement.deliver(ConversationTimelineEvent(batch: restored));
+          final newScope = h.content.openScope(generation: 2);
+          expect(newScope, isNot(same(oldScope)));
+          expect(newScope.isActive, isTrue);
+          expect(oldScope.isActive, isFalse);
+          expect((await oldScope.close()).complete, isTrue);
+          await expectLater(
+            oldScope.loadLiveOlder(before: 'retired', demand: _demand),
+            throwsA(isA<StaleConversationScope>()),
+          );
+          expect(h.content.state.value, isA<ChatReady<bool>>());
+          expect(h.consumer.values, hasLength(acceptedCount + 1));
+          expect(h.consumer.values.last.$1, same(restored));
+          expect(h.content.live.value, same(restored.live));
+          expect(h.content.live.value!.blocks.single.id, 'restored');
+          expect(h.content.live.value!.currentWorkId, 'restored');
+          expect(feed.acknowledgements, acknowledgements);
+          expect(replacement.acknowledgements, [1]);
+        },
+      );
+    }
   }
 
   for (final cold in [false, true]) {

@@ -219,7 +219,8 @@ Finder timelineGroupTitleFinder(
     }
     if (widget is! TimelineReasoningSummary &&
         (widget is! Text ||
-            widget.key == const ValueKey('work-header-elapsed'))) {
+            widget.key == const ValueKey('work-header-elapsed') ||
+            widget.key == const ValueKey('work-header-member-count'))) {
       return false;
     }
     var insideSummaryOrTitle = false;

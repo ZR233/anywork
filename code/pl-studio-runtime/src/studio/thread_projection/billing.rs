@@ -147,6 +147,7 @@ mod tests {
             attempt: None,
             model_members: Default::default(),
             model_member_starts: Default::default(),
+            model_member_content_available: Default::default(),
             context_compactions: Default::default(),
             turn: None,
             discovered_tools: None,

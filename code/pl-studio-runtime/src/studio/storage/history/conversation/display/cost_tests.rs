@@ -92,6 +92,7 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
         crate::studio::storage::history::schema::display_snapshots::tests::fixture().await?;
     crate::studio::storage::history::schema::display_snapshots::upgrade(&db).await?;
     crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
+    crate::studio::storage::history::schema::visible_tail_workgroups::upgrade(&db).await?;
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -299,5 +300,205 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
         }
     }
     db.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn v364_hundred_thousand_terminal_rows_commit_and_release_before_any_boundary() -> Result<()>
+{
+    let (_dir, db) =
+        crate::studio::storage::history::schema::display_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::display_snapshots::upgrade(&db).await?;
+    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
+    crate::studio::storage::history::schema::visible_tail_workgroups::upgrade(&db).await?;
+    let database: String = db
+        .query_one_raw(statement(
+            "SELECT database_id FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .unwrap()
+        .try_get("", "database_id")?;
+    let mut owner = PresentationState::default();
+    owner.bind(&database)?;
+    let mut tail_id = None;
+    let mut last = None;
+    for batch in 0..400u64 {
+        let effect = batch + 1;
+        let mut facts = Vec::new();
+        for offset in 0..250u32 {
+            let index = batch * 250 + u64::from(offset) + 1;
+            let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(
+                &super::super::tests::metadata(&format!("long-tail-{index}")),
+            )?;
+            atom.kind = ChatAtomKind::ToolCall;
+            atom.tool = Some(pl_protocol::ChatToolIdentity {
+                call_id: format!("call-{index}"),
+                name: "exec".into(),
+            });
+            atom.source = if index % 2 == 0 {
+                ChatSourceId::BackgroundResult {
+                    message_id: format!("result-{index}"),
+                }
+            } else {
+                ChatSourceId::ForegroundTurn {
+                    turn_id: "long-tail".into(),
+                }
+            };
+            atom.delivery = if index % 2 == 0 {
+                ChatDeliveryKind::Independent
+            } else {
+                ChatDeliveryKind::Foreground
+            };
+            atom.completion_item_id = None;
+            atom.completion_seq = None;
+            atom.contents.clear();
+            atom.payload = None;
+            atom.lifecycle = ChatAtomLifecycle::Terminal {
+                started: None,
+                ended: Some(ChatFactPosition {
+                    effect_seq: effect,
+                    suborder: offset,
+                }),
+                outcome: ChatTerminalOutcome::Cancelled,
+            };
+            facts.push(atom);
+        }
+        let measured = matches!(batch, 0 | 39 | 399);
+        if measured {
+            owner.begin_cost_observation();
+        }
+        let delta = owner.prepare(effect, effect as i64, &facts, &[], &[])?;
+        assert_eq!(delta.blocks.len(), 1);
+        assert_eq!(delta.members.len(), 250);
+        let id = &delta.blocks[0].header.id;
+        assert!(tail_id.as_ref().is_none_or(|previous| previous == id));
+        tail_id = Some(id.clone());
+        assert!(!delta.blocks[0].header.sealed);
+        assert_eq!(delta.published_through, 0);
+        let tx = db.begin().await?;
+        apply(&tx, &delta).await?;
+        tx.execute_raw(statement(
+            "UPDATE history_meta SET applied_write_seq=? WHERE id=1",
+            vec![integer(effect)?.into()],
+        ))
+        .await?;
+        tx.commit().await?;
+        owner.confirm(effect);
+        assert_eq!(owner.resident_member_count(), 0);
+        if measured {
+            let visits = owner.finish_cost_observation();
+            assert_eq!(visits.members.keys.len(), 250);
+            assert_eq!(visits.heads.keys.len(), 1);
+            assert!(
+                visits
+                    .members
+                    .keys
+                    .iter()
+                    .all(|(_, position)| *position > batch * 250 && *position <= effect * 250)
+            );
+            eprintln!(
+                "TAIL_COMMIT_COST {}",
+                serde_json::json!({
+                    "durable_members": effect * 250, "resident_members": owner.resident_member_count(),
+                    "retained_bytes": owner.retained_bytes(), "member_reads": visits.members.reads,
+                    "member_writes": visits.members.writes, "unique_members": visits.members.keys.len(),
+                    "unique_heads": visits.heads.keys.len(), "head_reads": visits.heads.reads,
+                    "head_writes": visits.heads.writes,
+                })
+            );
+        }
+        last = facts.pop();
+    }
+    let duplicate = last.unwrap();
+    let duplicate_delta =
+        owner.prepare(401, 1_000_000, std::slice::from_ref(&duplicate), &[], &[])?;
+    assert!(
+        duplicate_delta.members.is_empty(),
+        "released terminal replay must not create a row"
+    );
+    assert!(duplicate_delta.blocks.is_empty());
+    let tx = db.begin().await?;
+    apply(&tx, &duplicate_delta).await?;
+    tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=401 WHERE id=1")
+        .await?;
+    tx.commit().await?;
+    owner.confirm(401);
+    let recovery = recovery(&db).await?;
+    assert_eq!(recovery.open.len(), 1);
+    assert!(recovery.unfinished.is_empty());
+    assert_eq!(recovery.open[0].next_member, 100_000);
+    let mut cold = PresentationState::default();
+    cold.restore(
+        &database,
+        recovery.published,
+        recovery.last_order,
+        recovery.effect,
+        recovery.open,
+        recovery.unfinished,
+    )?;
+    assert_eq!(cold.resident_member_count(), 0);
+    assert!(cold.retained_bytes() < 4096);
+    let id = tail_id.unwrap();
+    let sampler = Sampler::display_heads(&db).await?;
+    let heads = open_heads(&db, None, 1).await;
+    let work = sampler.finish(&db).await?;
+    let heads = heads?;
+    assert_eq!(heads[0].id, id);
+    assert_eq!(
+        (
+            work.candidates,
+            work.member_rows,
+            work.fullscan_steps,
+            work.denied_reads
+        ),
+        (1, 0, 0, 0)
+    );
+    report(
+        "long_open_tail_head",
+        0,
+        100_000,
+        serde_json::to_vec(&heads)?.len(),
+        &work,
+    );
+    let sampler = Sampler::display_members(&db).await?;
+    let page = member_page(&db, &id, None, 2).await;
+    let work = sampler.finish(&db).await?;
+    let page = page?;
+    assert_eq!(
+        page.iter().map(|m| m.head.member_order).collect::<Vec<_>>(),
+        [99_999, 100_000]
+    );
+    assert_eq!(
+        (work.member_rows, work.fullscan_steps, work.denied_reads),
+        (2, 0, 0)
+    );
+    report(
+        "long_open_tail_members",
+        0,
+        100_000,
+        serde_json::to_vec(&page)?.len(),
+        &work,
+    );
+    let mut next = duplicate;
+    next.id = "after-cold".into();
+    next.source = ChatSourceId::BackgroundResult {
+        message_id: "after-cold".into(),
+    };
+    next.tool = Some(pl_protocol::ChatToolIdentity {
+        call_id: "after-cold".into(),
+        name: "exec".into(),
+    });
+    next.lifecycle = ChatAtomLifecycle::Terminal {
+        started: None,
+        ended: Some(ChatFactPosition {
+            effect_seq: 402,
+            suborder: 0,
+        }),
+        outcome: ChatTerminalOutcome::Cancelled,
+    };
+    let delta = cold.prepare(402, 2_000_000, &[next], &[], &[])?;
+    assert_eq!(delta.blocks[0].header.id, id);
+    assert_eq!(delta.members[0].head.member_order, 100_001);
     Ok(())
 }
