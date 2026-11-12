@@ -440,16 +440,8 @@ fn reconnect_script() -> Vec<Step> {
             json!({"serverId":"fixture","threadId":"other"}),
             "unknown field",
         ),
-        (
-            "unknown",
-            json!({"serverId":"unknown"}),
-            "unknown or disabled",
-        ),
-        (
-            "disabled",
-            json!({"serverId":"fixture"}),
-            "unknown or disabled",
-        ),
+        ("unknown", json!({"serverId":"unknown"}), "not enabled"),
+        ("disabled", json!({"serverId":"fixture"}), "not enabled"),
         (
             "credential",
             json!({"serverId":"credential"}),
