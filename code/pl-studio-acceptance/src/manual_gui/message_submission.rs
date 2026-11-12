@@ -142,7 +142,7 @@ pub(super) fn run(context: &SubmissionScenario<'_>, mut fixture: OwnedProcess) -
             "submission-next-draft.png",
             "submission-stopping.png",
             "submission-stopped.png",
-            "submission-resumed-narrow.png",
+            "submission-resumed.png",
         ] {
             ensure!(
                 context.output.join(name).is_file(),

@@ -64,7 +64,11 @@ DesktopInstanceBootstrap::DesktopInstanceBootstrap() {
   g_autofree gchar* directory = g_path_get_dirname(executable);
   g_autofree gchar* path = g_build_filename(
       directory, "lib", "libpl_studio_bridge.so", nullptr);
-  void* library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  // Resolve Rust's unwinder against its own dependencies before Flutter's
+  // globally exported libunwind symbols. Mixing libgcc's _Unwind_Backtrace
+  // context with Flutter's _Unwind_GetIP crashes Backtrace::force_capture.
+  // This first load is process-owned; Dart later reopens the same library.
+  void* library = dlopen(path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   if (library != nullptr) {
     claim_ = reinterpret_cast<ClaimFunction>(dlsym(library, "anywork_desktop_instance_claim"));
     report_ = reinterpret_cast<ReportFunction>(dlsym(library, "anywork_desktop_instance_report"));
