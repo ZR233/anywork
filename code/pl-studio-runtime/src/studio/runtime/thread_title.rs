@@ -344,6 +344,9 @@ async fn generate_title(
         &input,
         request,
         ModelTurnOptions::default()
+            .with_prompt_cache_scope(pl_model::runtime::PromptCacheScope::auxiliary(
+                thread_id, "title",
+            ))
             .with_cancellation(token.clone())
             .with_trace_metadata(pl_model::completion::CompletionTraceContext {
                 session_id: thread_id.to_owned(),

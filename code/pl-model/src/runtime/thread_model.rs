@@ -15,7 +15,6 @@ use pl_core::{
 use super::{ModelInvocationContext, ModelRuntime, ModelSession};
 use crate::completion::{ReasoningConfig, ToolSpec};
 
-mod cache;
 mod compaction;
 pub use compaction::{
     TextCompactionBinding, ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions,
@@ -283,7 +282,6 @@ impl CoreModelSession for ThreadModelSession {
         let observed = self.observed.clone();
         let marker = OpaquePayload::new("pl.model.continuation", 1, request.attempt_id.clone())
             .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
-        let cache_key = cache::key(&runtime, &request.thread_id);
         let invocation = ModelInvocationContext::new(self.physical.clone())
             .with_trace_metadata(crate::completion::CompletionTraceContext {
                 session_id: request.thread_id.clone(),
@@ -293,7 +291,7 @@ impl CoreModelSession for ThreadModelSession {
             .with_cancellation(Some(request.cancellation.clone()))
             .with_progress(request.progress.clone())
             .with_members(request.members.clone())
-            .with_prompt_cache_key(cache_key);
+            .with_prompt_cache_scope(super::PromptCacheScope::thread(&request.thread_id));
         let call = PreparedModelCall::new(async move {
             *observed
                 .lock()

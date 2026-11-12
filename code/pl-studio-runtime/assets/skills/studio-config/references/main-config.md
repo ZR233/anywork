@@ -45,6 +45,40 @@ from the URL. Optional
 Use the account editor for protocol-specific capabilities, manual model definitions
 and connection settings so their typed validation remains visible.
 
+### Prompt cache hints for compatible Responses endpoints
+
+A compatible endpoint does not inherit OpenAI service capabilities. After confirming
+that it accepts `prompt_cache_key` on Responses requests, use the existing explicit
+capability declaration on that account:
+
+```toml
+[models.accounts.gateway.capabilities]
+source = "explicit"
+
+[models.accounts.gateway.capabilities.prompt_cache]
+dialect = "open_ai_prompt_cache_key"
+```
+
+Merge this into the account's existing declaration and preserve any other supported
+explicit capabilities. `source = "explicit"` replaces template defaults; omitted
+capabilities remain disabled. A custom URL can revoke template-inherited cache
+support, so selecting an OpenAI model catalog alone does not enable the field.
+`implicit_prefix` relies on server-side prefix matching, while `none` sends no
+explicit cache hint; neither value promises that server-side caching is disabled.
+The cache-key dialect currently applies to Responses, not Chat Completions.
+
+The runtime derives independent keys for each agent's stable Thread, account and
+model. Conversation and compaction share the Thread scope; title generation and
+tool review use separate purposes within it. Retries and reopening the same Thread
+preserve affinity. Do not put `prompt_cache_key` into a model's fixed request body
+or parameter wire: conflicts with the runtime-owned field fail before network I/O.
+Keys cannot replace matching prompt prefixes or isolate permissions and history.
+
+Save through the existing main-settings flow. Subsequent model admission resolves
+the current account capabilities; an already prepared request remains frozen.
+Verify the actual Responses request and reported cache read/write usage. A saved
+capability or a present key does not prove a cache hit or lower cost.
+
 Both built-in Mode routes are required. A route contains `account_id`, `model_id`
 and optional `effort`, which must be supported by that model. Custom Modes inherit
 `mode.simple` unless their full ID has an explicit route. Existing Threads retain

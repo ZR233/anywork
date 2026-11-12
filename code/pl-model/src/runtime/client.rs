@@ -145,13 +145,11 @@ impl RemoteCompaction<'_> {
             )
             .into());
         }
-        let prompt_cache_key = context.prompt_cache_key();
         let response = self
             .complete(
                 ModelCompactionRequest {
                     mode: crate::completion::OpenAiCompactionMode::RemoteV2,
                     prefix: request,
-                    prompt_cache_key,
                 },
                 context,
             )

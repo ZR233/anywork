@@ -87,7 +87,8 @@ async fn main() -> Result<()> {
             summary: None,
         }),
     );
-    let thread = ThreadHandle::start("cache-matrix".into(), factory.open_session().await?).unwrap();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    let thread = ThreadHandle::start(thread_id.clone(), factory.open_session().await?).unwrap();
     let first = instruction(1, append, None)?;
     thread
         .replace_context(ReplaceContext {
@@ -117,7 +118,7 @@ async fn main() -> Result<()> {
             if index == 6 {
                 let snapshot = thread.snapshot();
                 let compacted = factory.compact(ModelRequest {
-                    thread_id: "cache-matrix".into(), turn_id: "auxiliary-summary".into(), attempt_id: "summary-matrix".into(),
+                    thread_id: thread_id.clone(), turn_id: "auxiliary-summary".into(), attempt_id: "summary-matrix".into(),
                     context: snapshot.context.clone(), tools: Default::default(), tool_call_mode: ToolCallMode::Sequential,
                     solo_tool_ids: Default::default(), committed_private_context: snapshot.private_context.clone(), resources: None,
                     cancellation: Default::default(), progress: None, members: None,

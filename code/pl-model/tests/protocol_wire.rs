@@ -17,7 +17,9 @@ use pl_model::{
         ProtocolEndpoint, ProtocolKind, ToolWirePolicy,
         openai::{CacheMode, OpenAiCompletion, OpenAiCompletionOptions, PromptCacheOptions},
     },
-    runtime::{CancellationToken, ModelInvocationContext, ModelRuntime, ModelSession},
+    runtime::{
+        CancellationToken, ModelInvocationContext, ModelRuntime, ModelSession, PromptCacheScope,
+    },
 };
 use pl_protocol::trace::{InMemoryTraceEventSink, TraceEventKind, TracePartKind, TraceTextChannel};
 use pl_protocol::{PricingOutcome, ToolCallCaller, ToolResultRecord};
@@ -1948,13 +1950,12 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         fixture_model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
             field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
         });
-        let runtime = ModelRuntime::new_with_account_id(
-            "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
-            fixture_model,
-        )
-        .unwrap()
-        .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
+        let mut endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
+        endpoint.service_capabilities.prompt_cache.dialect =
+            PromptCacheDialect::OpenAiPromptCacheKey;
+        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, fixture_model)
+            .unwrap()
+            .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
         let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let contract = pl_core::model::ToolPresentationContract::new(match label {
@@ -2125,6 +2126,25 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
     let requests = fixture.finish().await.unwrap();
     assert_eq!(requests.len(), 18);
     assert!(requests.iter().all(|request| request.accepted));
+    for group in requests.as_chunks::<6>().0 {
+        if group[0].path == "/v1/chat/completions" {
+            assert!(
+                group
+                    .iter()
+                    .all(|r| r.body.get("prompt_cache_key").is_none())
+            );
+        } else {
+            let key = group[0].body["prompt_cache_key"].as_str().unwrap();
+            assert!(
+                group.iter().all(|r| r.body["prompt_cache_key"] == key),
+                "retry and cold resume must preserve the Thread cache scope"
+            );
+        }
+    }
+    assert_ne!(
+        requests[0].body["prompt_cache_key"],
+        requests[6].body["prompt_cache_key"]
+    );
     for request in &requests {
         let wire = request.body.to_string();
         for metadata in [
@@ -3950,12 +3970,9 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::xai(Some(fixture.base_url())),
-        model,
-    )
-    .unwrap();
+    let mut endpoint = ProtocolEndpoint::xai(Some(fixture.base_url()));
+    endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::OpenAiPromptCacheKey;
+    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
     assert!(matches!(runtime.protocol_client(), ProtocolClient::Xai(_)));
     let reply = runtime
         .complete(
@@ -3987,7 +4004,8 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
                     summary: None,
                 }))
                 .build(),
-            ModelInvocationContext::default().with_prompt_cache_key(Some("grok-session".into())),
+            ModelInvocationContext::default()
+                .with_prompt_cache_scope(PromptCacheScope::thread("grok-session")),
         )
         .await
         .unwrap();
@@ -4000,7 +4018,7 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
     assert_eq!(records[0].path, "/v1/responses");
     assert_eq!(records[0].body["model"], "grok-4.7");
     assert_eq!(records[0].body["reasoning"]["effort"], "high");
-    assert_eq!(records[0].body["prompt_cache_key"], "grok-session");
+    assert!(records[0].body["prompt_cache_key"].as_str().is_some());
     assert!(records[0].body.get("store") == Some(&json!(false)));
     let tools = records[0].body["tools"].as_array().unwrap();
     assert!(tools.iter().all(|tool| tool["type"] == "function"));
@@ -4709,7 +4727,8 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
     let result = runtime
         .complete(
             image_request("describe", bytes.clone()),
-            ModelInvocationContext::default().with_prompt_cache_key(Some("stable-key".into())),
+            ModelInvocationContext::default()
+                .with_prompt_cache_scope(PromptCacheScope::thread("stable-key")),
         )
         .await
         .unwrap();
@@ -4721,7 +4740,7 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
         result.accounting.pricing
     );
     let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].body["prompt_cache_key"], "stable-key");
+    assert!(records[0].body["prompt_cache_key"].as_str().is_some());
     let image_url = records[0].body["input"][0]["content"][1]["image_url"]
         .as_str()
         .unwrap();
@@ -4928,13 +4947,21 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
         ])
         .build();
     runtime
-        .complete(prefix.clone(), ModelInvocationContext::default())
+        .complete(
+            prefix.clone(),
+            ModelInvocationContext::default()
+                .with_prompt_cache_scope(PromptCacheScope::thread("compact-thread")),
+        )
         .await
         .unwrap();
     let compacted = runtime
         .compaction()
         .unwrap()
-        .checkpoint(prefix, ModelInvocationContext::default())
+        .checkpoint(
+            prefix,
+            ModelInvocationContext::default()
+                .with_prompt_cache_scope(PromptCacheScope::thread("compact-thread")),
+        )
         .await
         .unwrap();
     assert!(
@@ -4951,6 +4978,11 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
     assert_eq!(timing.ttft_millis, None);
     let records = fixture.finish().await.unwrap();
     assert_eq!(records.len(), 2);
+    assert!(records[0].body["prompt_cache_key"].is_string());
+    assert_eq!(
+        records[0].body["prompt_cache_key"],
+        records[1].body["prompt_cache_key"]
+    );
     assert_eq!(records[0].body["tools"], records[1].body["tools"]);
     let tools = records[1].body["tools"].as_array().unwrap();
     let patch = tools

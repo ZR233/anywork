@@ -89,7 +89,7 @@ impl ModelTurnRequest {
 pub struct ModelTurnOptions {
     cancellation_token: Option<CancellationToken>,
     session: Option<crate::runtime::ModelSession>,
-    prompt_cache_key: Option<String>,
+    prompt_cache_scope: Option<super::PromptCacheScope>,
     trace: Option<crate::completion::CompletionTraceContext>,
 }
 
@@ -105,9 +105,9 @@ impl ModelTurnOptions {
         self
     }
 
-    /// Supplies a provider cache hint for this invocation, without changing its input.
-    pub fn with_prompt_cache_key(mut self, key: String) -> Self {
-        self.prompt_cache_key = Some(key);
+    /// Supplies the owning Thread and auxiliary purpose, without changing the input.
+    pub fn with_prompt_cache_scope(mut self, scope: super::PromptCacheScope) -> Self {
+        self.prompt_cache_scope = Some(scope);
         self
     }
 
@@ -178,8 +178,10 @@ impl ModelTurnClient {
         let session = options.session.unwrap_or_default();
         let mut invocation = ModelInvocationContext::new(session.clone())
             .with_events(event_tx)
-            .with_prompt_cache_key(options.prompt_cache_key)
             .with_cancellation(options.cancellation_token);
+        if let Some(scope) = options.prompt_cache_scope {
+            invocation = invocation.with_prompt_cache_scope(scope);
+        }
         if let Some(trace) = options.trace {
             invocation = invocation.with_trace_metadata(trace);
         }

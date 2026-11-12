@@ -91,6 +91,10 @@ name = "context_cache_observe"
 required-features = ["live-tests"]
 
 [[example]]
+name = "context_cache_keys"
+required-features = ["live-tests"]
+
+[[example]]
 name = "context_cache_matrix"
 required-features = ["live-tests"]
 
