@@ -320,7 +320,7 @@ void main() {
         'Real expanded members in the original parallel Work window.',
       );
       await fixtureGate(tester, provider, _backgroundResultObserverStage);
-      await scene.captureBackgroundResultWithForeground(parallelObserver);
+      await scene.observeBackgroundResultWithForeground(parallelObserver);
       await fixtureGate(
         tester,
         provider,
@@ -709,7 +709,7 @@ final class _RealtimeScene {
     return evidence;
   }
 
-  Future<void> captureBackgroundResultWithForeground(
+  Future<void> observeBackgroundResultWithForeground(
     _PreparedToolObserver prepared,
   ) async {
     final evidence = <String, Object?>{
@@ -916,159 +916,44 @@ final class _RealtimeScene {
       'A canonical result output is actually rendered',
       timeout: remaining(),
     );
-    await observed.revealMember(reasoning, reference: prepared.reference);
-    final reasoningRow = find.byWidgetPredicate(
-      (widget) =>
-          widget is TimelineMemberAtom && widget.atom.id == reasoning.id,
+    // The native boundary proves that the same active foreground reference is readable
+    // while the independent result has really arrived. Co-display geometry and disclosure
+    // are covered by data-driven component tests, without another native scroll protocol.
+    final summary = reasoning.contents.singleWhere(
+      (content) => content.role == ChatContentRole.reasoningSummary,
     );
-    await until(
-      () => _laidOut(reasoningRow),
-      'real still-active reasoning member laid out',
-      timeout: remaining(),
+    final scope = prepared.lease.content.openScope(
+      generation: prepared.generation,
     );
-    await _revealTextFragment(tester, reasoningRow, _backgroundResultReasoning);
-    // Reserve the remaining Main viewport for the foreground Work; the cut
-    // below still requires its header and both glyph ranges in the same frame.
-    final mainPosition = prepared.lease.scrollController.position;
-    final backgroundAlignment = switch (mainPosition.axisDirection) {
-      AxisDirection.up => 1.0,
-      AxisDirection.down => 0.0,
-      _ => throw StateError('Main timeline must scroll vertically'),
-    };
-    evidence['backgroundRevealFraming'] = {
-      'mainAxis': mainPosition.axisDirection.name,
-      'alignment': backgroundAlignment,
-      'mainViewportExtent': mainPosition.viewportDimension,
-      'actualLogicalWidth':
-          tester.view.physicalSize.width / tester.view.devicePixelRatio,
-      'actualLogicalHeight':
-          tester.view.physicalSize.height / tester.view.devicePixelRatio,
-    };
-    await _revealTextFragment(
-      tester,
-      backgroundOutput,
-      'realtime-parallel-a-line-05',
-      alignment: backgroundAlignment,
-      expectedScrollPosition: mainPosition,
-    );
-    remaining();
-    final executionId = graph.client.conversations
-        .session(lease.threadId)
-        .state
-        .runtime
-        ?.execution
-        ?.id;
-    expect(executionId, isNotNull);
-    final frozenBody = block.body;
-
-    Map<String, Object?> cut() {
-      expect(_expectPreparedToolObserver(prepared), isTrue);
-      final state = graph.client.conversations.session(lease.threadId).state;
-      expect(state.activeTurn?.turnId, prepared.turnId);
-      expect(state.activeTurn?.state.isBusy, isTrue);
-      expect(state.activeTurn?.state.isTerminal, isFalse);
-      expect(state.runtime?.execution?.id, executionId);
-      expect(state.runtime?.execution?.turnId, prepared.turnId);
-      expect(state.runtime?.execution?.phase.isStopping, isFalse);
-      final foreground = observed.unitForBlock(prepared.reference);
-      expect(foreground.id, prepared.display.unitId);
-      expect(foreground.historyPos, isNull);
-      expect(foreground.state, DisplayBlockState.open);
-      expect(lease.live.value!.executionPresent, isTrue);
-      final currentReasoning = _preparedToolDisplay(prepared).atoms
-          .singleWhere((member) => member.id == reasoning.id);
-      expect(currentReasoning.source, source);
-      expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
-      expect(
-        currentReasoning.contents.map(
-          (content) => contentReferenceIdentity(content.reference).toString(),
-        ),
-        orderedEquals(
-          reasoning.contents.map(
-            (content) => contentReferenceIdentity(content.reference).toString(),
-          ),
-        ),
+    try {
+      final window = await scope.readContent(
+        reference: summary.reference,
+        range: const ContentRange(offset: 0, maxBytes: 4096),
       );
-      final currentResult = observed.unit(block.id);
-      expect(currentResult.body, same(frozenBody));
-      expect(currentResult.historyPos, block.historyPos);
-      expect(currentResult.memberReference, block.memberReference);
-      final member = tester.widget<ChatItemView>(backgroundRow).item.atom!;
-      expect(member.source, backgroundSource);
-      expect(member.id, atom.id);
-      expect(member.completionItemId, atom.completionItemId);
-      expect(member.completionSeq, atom.completionSeq);
-      expect(member.delivery, ChatDeliveryKind.independent);
-      expect(
-        (member.lifecycle as TerminalChatAtom).outcome,
-        ChatTerminalOutcome.completed,
-      );
-      expect(observed.main.where((unit) => unit.id == foreground.id), isEmpty);
-      if (resultHead == null) {
-        expect(
-          observed.liveBlocks.where((unit) => unit.id == block.id),
-          isEmpty,
-        );
-      }
-      // The completed result and active foreground reasoning coexist.
-      final header = observed.groupHeader(foreground.id);
-      expect(observed.groupExpanded(foreground.id), isTrue);
-      final label = timelineGroupTitleFinder(tester, header);
-      expect(label.hitTestable(), findsOneWidget);
-      expect(timelineGroupTitleText(tester, label).trim(), isNotEmpty);
-      expect(backgroundRow, findsOneWidget);
-      expect(_laidOut(backgroundRow), isTrue);
-      expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
-      _expectTextFragmentVisible(
-        tester,
-        backgroundOutput,
-        'realtime-parallel-a-line-05',
-        hitTestable: true,
-      );
-      _expectTextFragmentVisible(
-        tester,
-        reasoningRow,
-        _backgroundResultReasoning,
-      );
-      expect(_laidOut(reasoningRow), isTrue);
-      return {
-        'executionId': executionId,
-        'executionPhase': state.runtime!.execution!.phase.name,
-        'turnId': prepared.turnId,
-        'foregroundBlockId': foreground.id,
-        'foregroundMemberBlockId': foreground.memberReference!.blockId,
-        'reasoningMemberId': reasoning.id,
-        'reasoningLifecycle': currentReasoning.lifecycle.runtimeType.toString(),
-        'backgroundBlockId': block.id,
-        'backgroundHistoryPos': currentResult.historyPos,
-        'backgroundMemberId': atom.id,
-        'backgroundMessageId': backgroundSource.messageId,
-        'toolCallId': tool.toolCallId,
-        'taskId': taskId,
-        'mainSets': lease.appliedSets,
-        'mainAppends': lease.appliedAppends,
-        'mainBlockIds': observed.main.map((unit) => unit.id).toList(),
-      };
+      expect(utf8.decode(window.bytes), contains(_backgroundResultReasoning));
+    } finally {
+      expect((await scope.close()).complete, isTrue);
     }
-
-    evidence['stage'] = 'capturing validated coexistence cut';
-    evidence['beforeCapture'] = cut();
-    evidence['capture'] = await captureEvidence(
-      'background-final-foreground-active.png',
-      _backgroundResultObserverStage,
-      'A independent final result coexists with the original live foreground '
-          'Work and a real nonterminal reasoning member; B may already be terminal.',
-      identities: {
-        'backgroundBlockId': block.id,
-        'backgroundMemberId': atom.id,
-        'backgroundMessageId': backgroundSource.messageId,
-        'foregroundBlockId': prepared.display.unitId,
-        'reasoningMemberId': reasoning.id,
-        'taskId': taskId,
-      },
-    );
-    evidence['afterCapture'] = cut();
-    evidence['stage'] = 'capture checked; ready for gate release';
+    expect(_expectPreparedToolObserver(prepared), isTrue);
+    final state = graph.client.conversations.session(lease.threadId).state;
+    expect(state.activeTurn?.turnId, prepared.turnId);
+    expect(state.activeTurn?.state.isBusy, isTrue);
+    expect(state.activeTurn?.state.isTerminal, isFalse);
+    expect(state.runtime?.execution?.turnId, prepared.turnId);
+    expect(state.runtime?.execution?.phase.isStopping, isFalse);
+    final currentReasoning = _preparedToolDisplay(prepared).atoms
+        .singleWhere((member) => member.id == reasoning.id);
+    expect(currentReasoning.source, source);
+    expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
+    expect(observed.unitForBlock(prepared.reference).historyPos, isNull);
+    expect(lease.live.value!.executionPresent, isTrue);
+    evidence.addAll({
+      'stage': 'native result and active foreground content verified',
+      'executionId': state.runtime?.execution?.id,
+      'foregroundSummaryRead': true,
+      'backgroundCompletionId': atom.completionItemId,
+      'backgroundAndForegroundShareWork': block.id == prepared.display.unitId,
+    });
   }
 
   Future<void> captureStoppingIfVisible(ChatAtom partial) async {
@@ -3711,7 +3596,9 @@ final class _RealtimeScene {
               (display) => display.unitId == preparedObserver.display.unitId,
             );
             for (final atom in display.atoms.where(
-              (atom) => expectedCallIds.contains(atom.tool?.callId),
+              (atom) =>
+                  atom.delivery != ChatDeliveryKind.independent &&
+                  expectedCallIds.contains(atom.tool?.callId),
             )) {
               expect(
                 atom.source,

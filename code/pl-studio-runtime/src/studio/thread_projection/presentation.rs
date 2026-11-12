@@ -546,7 +546,9 @@ impl PresentationState {
                 &mut self.current_work_rows
             } else {
                 ensure!(
-                    self.blocks[&order].first_content_at.is_some() || self.blocks[&order].legacy,
+                    member.head.record.atom.kind != ChatAtomKind::Text
+                        || self.blocks[&order].first_content_at.is_some()
+                        || self.blocks[&order].legacy,
                     "visible Text has no content evidence"
                 );
                 &mut self.open_texts

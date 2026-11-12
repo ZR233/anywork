@@ -2792,7 +2792,13 @@ impl ThreadStorageSink {
                                 .map_or(pl_protocol::studio::HistoryFault::WriteFailed, |typed| {
                                     typed.kind
                                 });
-                            record_error(&inner, kind, message, &safe_error_reasons(&error));
+                            record_error(
+                                &inner,
+                                kind,
+                                FaultTarget::Queued,
+                                message,
+                                &safe_error_reasons(&error),
+                            );
                             retrying_since = None;
                         } else {
                             note_absorbed_conflict(&inner);
@@ -3119,9 +3125,16 @@ fn frozen_route_revision(snapshot: &ThreadSnapshot) -> Option<u64> {
         .map(|(record, _)| record.revision)
 }
 
+#[derive(Clone, Copy)]
+enum FaultTarget {
+    Queued,
+    NextWrite,
+}
+
 fn record_error(
     inner: &Inner,
     kind: pl_protocol::studio::HistoryFault,
+    target: FaultTarget,
     message: String,
     reasons: &[&str],
 ) {
@@ -3132,6 +3145,13 @@ fn record_error(
             .effects
             .back()
             .map_or(progress.durable, |queued| queued.sequence);
+        if matches!(target, FaultTarget::NextWrite) {
+            // Rejecting a ticket did not save any new fact. Equal old watermarks cannot
+            // verify repair; a later successful write must cross this failure boundary.
+            progress.fault_target = progress
+                .fault_target
+                .max(progress.durable.saturating_add(1));
+        }
         progress.retry_requested = false;
         progress.fault = Some(kind);
         progress.error = Some(message);
@@ -3224,6 +3244,7 @@ impl ColdStore for ThreadStorageSink {
                 } else {
                     pl_protocol::studio::HistoryFault::WriteFailed
                 },
+                FaultTarget::Queued,
                 error.to_string(),
                 &safe_error_reasons(error),
             );
@@ -3353,6 +3374,7 @@ impl ColdStore for ThreadStorageSink {
             record_error(
                 &self.0,
                 pl_protocol::studio::HistoryFault::WriteFailed,
+                FaultTarget::NextWrite,
                 "Thread persistence ticket mismatch".to_owned(),
                 &["ticket_mismatch"],
             );
@@ -7556,7 +7578,9 @@ pub(crate) mod storage_fault_tests {
                 + accounting_only.display.as_ref().context("frozen display handoff")?.retained_bytes
                 // Publication consumed the effect-local member updates, but their empty
                 // Arc collection remains part of PreparedEffect's retained shell.
-                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64,
+                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64
+                // Empty first-content evidence and observation plans are also retained.
+                + 2 * b"[]".len() as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -10372,32 +10396,38 @@ pub(crate) mod storage_fault_tests {
 
     #[tokio::test]
     async fn empty_queue_retry_does_not_clear_a_ticket_contract_failure() -> Result<()> {
-        let (_temp, store, sink) = sink("ticket-contract").await?;
-        assert!(
-            sink.admit("ticket-contract", ticket("another-thread", 1))
-                .is_err()
-        );
-        let failed = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
-        assert_eq!(failed.queued_records, 0);
-        sink.0.channel.retry(failed.fault_generation)?;
-        // Exercise the worker after the retry, with equal zero watermarks but no
-        // successful write that could repair the rejected ticket's contract.
-        assert!(matches!(step(&sink.0).await?, Step::Idle));
-        let pressure = sink.pressure("ticket-contract");
-        assert!(pressure.error.is_some());
-        assert_eq!(
-            pressure.fault,
-            Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
-        );
-        assert_eq!(pressure.recovered_generation, None);
-        assert_eq!(
-            store.history("ticket-contract").await?.watermark().await?,
-            0
-        );
+        for durable in [0, 1] {
+            let (_temp, store, sink) = sink("ticket-contract").await?;
+            if durable != 0 {
+                sink.admit("ticket-contract", ticket("ticket-contract", durable))?;
+                sink.flush("ticket-contract", durable).await?;
+            }
+            assert!(
+                sink.admit("ticket-contract", ticket("another-thread", durable + 1))
+                    .is_err()
+            );
+            let failed = sink.0.channel.subscribe().borrow().clone();
+            assert_eq!(
+                failed.fault,
+                Some(pl_protocol::studio::HistoryFault::WriteFailed)
+            );
+            assert_eq!(failed.queued_records, 0);
+            sink.0.channel.retry(failed.fault_generation)?;
+            // Exercise the worker after the retry, with equal old watermarks but no
+            // successful write that could repair the rejected ticket's contract.
+            assert!(matches!(step(&sink.0).await?, Step::Idle));
+            let pressure = sink.pressure("ticket-contract");
+            assert!(pressure.error.is_some());
+            assert_eq!(
+                pressure.fault,
+                Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
+            );
+            assert_eq!(pressure.recovered_generation, None);
+            assert_eq!(
+                store.history("ticket-contract").await?.watermark().await?,
+                durable
+            );
+        }
         Ok(())
     }
 

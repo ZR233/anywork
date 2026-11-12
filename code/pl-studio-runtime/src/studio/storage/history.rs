@@ -3172,9 +3172,9 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
-    if matches!(schema::version(db).await?, 19 | 20) {
+    if matches!(schema::version(db).await?, 19..=21) {
         // A current fixture may also contain an open Work with no immutable completion.
-        // Prove every original/display collection empty before dropping any v19/v20 structure.
+        // Prove every original/display collection empty before dropping any current display structure.
         for table in [
             "conversation_items",
             "conversation_display_blocks",
@@ -3197,7 +3197,9 @@ pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTra
              ALTER TABLE history_meta DROP COLUMN display_applied_effect;
              DELETE FROM seaql_migrations
              WHERE version IN ('m20261109_000001_display_snapshots',
-                               'm20261111_000001_display_observations');
+                               'm20261111_000001_display_observations',
+                               'm20261112_000001_history_tool_work',
+                               'm20261112_000001_visible_tail_workgroups');
              UPDATE history_meta SET schema_version=18 WHERE id=1;",
         )
         .await?;

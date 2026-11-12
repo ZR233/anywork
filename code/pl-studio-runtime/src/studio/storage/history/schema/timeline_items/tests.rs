@@ -783,6 +783,7 @@ async fn applied_background_migration_and_both_published_member_layouts_reopen_w
             DISPLAY_SNAPSHOTS,
             DISPLAY_OBSERVATIONS,
             TOOL_WORK,
+            VISIBLE_TAIL_WORKGROUPS,
         ];
         assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
         for step in appended_steps {
@@ -1023,12 +1024,12 @@ async fn formal_migration_round_trip() -> Result<()> {
     let applied_ledger = migration_records(db).await?;
     assert_eq!(
         applied_ledger.len(),
-        original_ledger.len() + 9,
-        "content preparation appends the nine named content/display upgrades, not lifecycle migrations"
+        original_ledger.len() + 10,
+        "content preparation appends the ten named content/display upgrades, not lifecycle migrations"
     );
     let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1039,6 +1040,7 @@ async fn formal_migration_round_trip() -> Result<()> {
                 DISPLAY_SNAPSHOTS.into(),
                 DISPLAY_OBSERVATIONS.into(),
                 TOOL_WORK.into(),
+                VISIBLE_TAIL_WORKGROUPS.into(),
             ],
         ))
         .await?
@@ -1056,7 +1058,8 @@ async fn formal_migration_round_trip() -> Result<()> {
             TIMELINE_BACKGROUND_TAIL,
             IMMUTABLE_COMPLETION_RUNS,
             DISPLAY_OBSERVATIONS,
-            TOOL_WORK
+            TOOL_WORK,
+            VISIBLE_TAIL_WORKGROUPS
         ]
     );
     for record in &original_ledger {

@@ -324,6 +324,7 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         DISPLAY_SNAPSHOTS,
         DISPLAY_OBSERVATIONS,
         TOOL_WORK,
+        VISIBLE_TAIL_WORKGROUPS,
     ];
     assert_eq!(new_ledger.len(), old_ledger.len() + appended_steps.len());
     for step in appended_steps {

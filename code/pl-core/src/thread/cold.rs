@@ -1589,9 +1589,6 @@ impl Owner {
             return Ok(ColdFlushTicket::AlreadySatisfied);
         };
         let through = self.state.persistence.admitted_sequence;
-        if self.state.persistence.durable_sequence >= through {
-            return Ok(ColdFlushTicket::AlreadySatisfied);
-        }
         Ok(ColdFlushTicket::Pending {
             store: store.clone(),
             thread_id: self.id.clone(),

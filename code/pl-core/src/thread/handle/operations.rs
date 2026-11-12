@@ -1029,24 +1029,31 @@ impl ThreadHandle {
             Err(_) => return self.settled_flush(),
         };
         let through = ticket.pending_target();
-        ticket.wait().await?;
+        let result = ticket.wait().await;
         let Some(through) = through else {
-            return Ok(());
+            return result;
         };
-        // Complete the original owner's publication before returning. A backend may not expose
-        // pressure notifications; the successful fixed-target wait is itself the durability proof.
+        let completion = match result {
+            Ok(()) => Ok(through),
+            Err(ThreadError::Storage(error)) => Err(error),
+            Err(error) => return Err(error),
+        };
+        // A backend may not publish pressure notifications. Both a successful fixed-target
+        // receipt and an explicit failed ACK belong to the original owner's public snapshot.
         let (reply, response) = oneshot::channel();
-        if self
+        let sent = self
             .mailbox
-            .send(super::mailbox::MailboxCommand::ConfirmFlush { through, reply })
+            .send(super::mailbox::MailboxCommand::CompleteFlush {
+                result: completion.clone(),
+                reply,
+            })
             .await
-            .is_err()
-        {
-            return self.settled_flush();
-        }
-        match response.await {
-            Ok(()) => Ok(()),
-            Err(_) => self.settled_flush(),
+            .is_ok();
+        let published = sent && response.await.is_ok();
+        match completion {
+            Err(error) => Err(ThreadError::Storage(error)),
+            Ok(_) if published => Ok(()),
+            Ok(_) => self.settled_flush(),
         }
     }
 
@@ -1054,6 +1061,7 @@ impl ThreadHandle {
     fn durably_released(&self) -> bool {
         let snapshot = self.snapshot();
         snapshot.lifecycle == ThreadLifecycle::Closed
+            && snapshot.persistence.error.is_none()
             && (!snapshot.persistence.attached
                 || snapshot.persistence.durable_sequence >= snapshot.commit_sequence)
     }

@@ -514,11 +514,20 @@ final class _TimelineScene {
       final composer = tester.widget<PromptComposerView>(
         find.byType(PromptComposerView),
       );
+      final storage = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .existingSession(_submittedThreadId!)
+                ?.state
+                .storage;
       debugPrintSynchronously(
         'Timeline submission failure: draft=${composer.state.composer.draft}, '
         'pending=${composer.state.composer.isSubmissionPending}, '
         'execution=${composer.state.execution?.id}/${composer.state.execution?.phase}, '
-        'blocker=${composer.state.blocker}, failure=${composer.state.failure}',
+        'blocker=${composer.state.blocker}, failure=${composer.state.failure}, '
+        'storageFault=${storage?.fault}, storageError=${storage?.lastError}, '
+        'saved=${storage?.durableSequence}/${storage?.acceptedSequence}, '
+        'pressurePaused=${storage?.pressurePaused}, resumeRequired=${storage?.resumeRequired}',
       );
       rethrow;
     }
