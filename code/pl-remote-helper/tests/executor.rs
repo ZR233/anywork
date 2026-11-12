@@ -693,3 +693,54 @@ async fn non_utf8_directory_names_fail_without_closing_the_connection() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn cancelled_directory_observations_keep_entries_and_close_releases_unread_files() {
+    both(|executor| async move {
+        let directory = tempfile::tempdir().unwrap();
+        let mut expected = std::collections::BTreeSet::new();
+        for index in 0..512 {
+            let name = format!("{index:04}-{}", "x".repeat(220));
+            tokio::fs::write(directory.path().join(&name), b"entry")
+                .await
+                .unwrap();
+            expected.insert(name);
+        }
+        let root = executor.path(directory.path().to_str().unwrap()).unwrap();
+        let mut reader = executor.fs().read_dir(&root).await.unwrap();
+        let mut observed = std::collections::BTreeSet::new();
+        loop {
+            let mut next = Box::pin(reader.next());
+            let entry = match futures::poll!(next.as_mut()) {
+                std::task::Poll::Ready(entry) => entry,
+                std::task::Poll::Pending => {
+                    // Cancel only this observation, retaining the same directory.
+                    drop(next);
+                    reader.next().await
+                }
+            }
+            .unwrap();
+            let Some(entry) = entry else { break };
+            assert!(
+                observed.insert(entry.name),
+                "iteration must not duplicate an entry"
+            );
+        }
+        assert_eq!(
+            observed, expected,
+            "cancelled next futures must not discard entries or partial records"
+        );
+        let large = executor.join_path(&root, "unread.bin").unwrap();
+        tokio::fs::write(large.as_str(), vec![0x80; 256 * 1024])
+            .await
+            .unwrap();
+        let mut unread = executor.fs().read(&large).await.unwrap();
+        executor.close().await.unwrap();
+        assert!(unread.read(&mut [0; 1]).await.is_err());
+        assert!(
+            reader.next().await.unwrap().is_none(),
+            "known directory EOF remains valid"
+        );
+    })
+    .await;
+}

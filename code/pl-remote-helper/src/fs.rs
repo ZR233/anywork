@@ -13,6 +13,7 @@ use crate::{ExecutionError, Executor, TargetPath, executor::ExecutorBackend};
 
 pub(crate) mod mutate;
 mod patch;
+mod read;
 mod write;
 
 #[derive(Debug, Clone)]
@@ -58,6 +59,15 @@ pub struct WriteResult {
 pub struct FileReader {
     pub(crate) io: Pin<Box<dyn AsyncRead + Send>>,
     pub(crate) _executor: Executor,
+    cancel: Option<CancellationToken>,
+    finished: bool,
+}
+impl Drop for FileReader {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+        }
+    }
 }
 impl AsyncRead for FileReader {
     fn poll_read(
@@ -65,7 +75,20 @@ impl AsyncRead for FileReader {
         cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.io.as_mut().poll_read(cx, buffer)
+        if self.finished {
+            return Poll::Ready(Ok(()));
+        }
+        if self._executor.is_closed() {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        let before = buffer.filled().len();
+        let capacity = buffer.remaining();
+        let result = self.io.as_mut().poll_read(cx, buffer);
+        if matches!(result, Poll::Ready(Ok(()))) && capacity > 0 && before == buffer.filled().len()
+        {
+            self.finished = true;
+        }
+        result
     }
 }
 
@@ -125,12 +148,16 @@ impl FileWriter {
 }
 
 enum DirectorySource {
-    Native(Box<tokio::fs::ReadDir>),
-    Remote(tokio::io::BufReader<FileReader>),
+    Native(read::Directory),
+    Remote {
+        reader: tokio::io::BufReader<FileReader>,
+        line: Vec<u8>,
+    },
 }
 pub struct DirectoryReader {
     source: DirectorySource,
     executor: Executor,
+    finished: bool,
 }
 impl std::fmt::Debug for DirectoryReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -141,53 +168,43 @@ impl std::fmt::Debug for DirectoryReader {
 }
 impl DirectoryReader {
     pub async fn next(&mut self) -> Result<Option<DirectoryEntry>, ExecutionError> {
-        match &mut self.source {
-            DirectorySource::Native(entries) => {
-                let Some(entry) = entries
-                    .next_entry()
-                    .await
-                    .map_err(|error| ExecutionError::io("read directory", error))?
-                else {
-                    return Ok(None);
-                };
-                let name = entry.file_name().into_string().map_err(|_| {
-                    ExecutionError::InvalidInput("directory name is not UTF-8".into())
-                })?;
-                let path = entry.path().into_os_string().into_string().map_err(|_| {
-                    ExecutionError::InvalidInput("directory path is not UTF-8".into())
-                })?;
-                let kind = entry
-                    .file_type()
-                    .await
-                    .map_err(|error| ExecutionError::io("directory entry type", error))?;
-                Ok(Some(DirectoryEntry {
-                    name,
-                    path,
-                    is_file: kind.is_file(),
-                    is_dir: kind.is_dir(),
-                    is_symlink: kind.is_symlink(),
-                }))
-            }
-            DirectorySource::Remote(reader) => {
-                let mut line = Vec::new();
-                let count = reader
-                    .take((crate::stream::DESCRIPTOR_LIMIT + 1) as u64)
-                    .read_until(b'\n', &mut line)
+        if self.finished {
+            return Ok(None);
+        }
+        if self.executor.is_closed() {
+            return Err(ExecutionError::Disconnected(
+                "directory reader is closed".into(),
+            ));
+        }
+        let result = match &mut self.source {
+            DirectorySource::Native(entries) => entries.next().await,
+            DirectorySource::Remote { reader, line } => {
+                let capacity = (crate::stream::DESCRIPTOR_LIMIT + 1).saturating_sub(line.len());
+                (&mut *reader)
+                    .take(capacity as u64)
+                    .read_until(b'\n', line)
                     .await
                     .map_err(|error| ExecutionError::io("directory stream", error))?;
-                if count == 0 {
-                    return Ok(None);
+                if line.is_empty() {
+                    Ok(None)
+                } else {
+                    if line.len() > crate::stream::DESCRIPTOR_LIMIT || line.last() != Some(&b'\n') {
+                        return Err(ExecutionError::Protocol(
+                            "directory entry is oversized or incomplete".into(),
+                        ));
+                    }
+                    let result = serde_json::from_slice(line)
+                        .map(Some)
+                        .map_err(|error| ExecutionError::Protocol(error.to_string()));
+                    line.clear();
+                    result
                 }
-                if count > crate::stream::DESCRIPTOR_LIMIT || line.last() != Some(&b'\n') {
-                    return Err(ExecutionError::Protocol(
-                        "directory entry is oversized or incomplete".into(),
-                    ));
-                }
-                serde_json::from_slice(&line)
-                    .map(Some)
-                    .map_err(|error| ExecutionError::Protocol(error.to_string()))
             }
+        };
+        if matches!(result, Ok(None)) {
+            self.finished = true;
         }
+        result
     }
 }
 
@@ -220,9 +237,22 @@ impl FileSystem {
         self.validate(cwd)
             .map_err(crate::PatchExecutionError::Execution)?;
         match &self.executor.inner.backend {
-            ExecutorBackend::Local => patch::apply(self.executor.clone(), cwd.clone(), patch)
-                .await
-                .map_err(crate::PatchExecutionError::Patch),
+            ExecutorBackend::Local => {
+                let cancel = self.executor.inner.closing.child_token();
+                let _cancel = cancel.clone().drop_guard();
+                let (send, receive) = oneshot::channel();
+                let executor = self.executor.clone();
+                let cwd = cwd.clone();
+                let patch = patch.to_owned();
+                self.executor.inner.tasks.spawn(async move {
+                    let result = patch::apply(executor, cwd, &patch, cancel).await;
+                    let _ = send.send(result);
+                });
+                tokio::select! {
+                    _=self.executor.inner.closing.cancelled()=>Err(crate::PatchExecutionError::Execution(ExecutionError::Disconnected("patch execution closed; effects may be unknown".into()))),
+                    result=receive=>result.map_err(|_|crate::PatchExecutionError::Execution(ExecutionError::Disconnected("patch result is unknown".into())))?.map_err(crate::PatchExecutionError::Patch),
+                }
+            }
             ExecutorBackend::Remote(connection) => {
                 let result: Result<pl_patch::PatchReport, pl_patch::PatchFailure> = connection
                     .patch(cwd.as_str(), patch)
@@ -267,7 +297,7 @@ impl FileSystem {
         request: MetadataRequest,
     ) -> Result<MetadataResponse, ExecutionError> {
         match &self.executor.inner.backend {
-            ExecutorBackend::Local => metadata_native(request).await,
+            ExecutorBackend::Local => metadata_native(&self.executor, request).await,
             ExecutorBackend::Remote(connection) => connection.json("/fs/metadata", &request).await,
         }
     }
@@ -312,46 +342,60 @@ impl FileSystem {
     }
     pub async fn read(&self, path: &TargetPath) -> Result<FileReader, ExecutionError> {
         self.validate(path)?;
-        let io: Pin<Box<dyn AsyncRead + Send>> = match &self.executor.inner.backend {
-            ExecutorBackend::Local => Box::pin(
-                tokio::fs::File::open(path.as_str())
-                    .await
-                    .map_err(|error| ExecutionError::io("open file", error))?,
-            ),
-            ExecutorBackend::Remote(connection) => {
-                Box::pin(connection.reader("/fs/read", &path.value).await?)
-            }
-        };
-        Ok(FileReader {
-            io,
-            _executor: self.executor.clone(),
-        })
+        match &self.executor.inner.backend {
+            ExecutorBackend::Local => read::open(&self.executor, path.value.clone()).await,
+            ExecutorBackend::Remote(connection) => Ok(FileReader {
+                io: Box::pin(connection.reader("/fs/read", &path.value).await?),
+                _executor: self.executor.clone(),
+                cancel: None,
+                finished: false,
+            }),
+        }
     }
     pub async fn read_dir(&self, path: &TargetPath) -> Result<DirectoryReader, ExecutionError> {
         self.validate(path)?;
         let source = match &self.executor.inner.backend {
-            ExecutorBackend::Local => DirectorySource::Native(Box::new(
-                tokio::fs::read_dir(path.as_str())
-                    .await
-                    .map_err(|error| ExecutionError::io("open directory", error))?,
-            )),
-            ExecutorBackend::Remote(connection) => {
-                DirectorySource::Remote(tokio::io::BufReader::new(FileReader {
+            ExecutorBackend::Local => {
+                DirectorySource::Native(read::directory(&self.executor, path.value.clone()).await?)
+            }
+            ExecutorBackend::Remote(connection) => DirectorySource::Remote {
+                reader: tokio::io::BufReader::new(FileReader {
                     io: Box::pin(connection.reader("/fs/read-dir", &path.value).await?),
                     _executor: self.executor.clone(),
-                }))
-            }
+                    cancel: None,
+                    finished: false,
+                }),
+                line: Vec::new(),
+            },
         };
         Ok(DirectoryReader {
             source,
             executor: self.executor.clone(),
+            finished: false,
         })
     }
 }
 
 pub(crate) async fn metadata_native(
+    executor: &Executor,
     request: MetadataRequest,
 ) -> Result<MetadataResponse, ExecutionError> {
+    let (send, receive) = oneshot::channel();
+    let closing = executor.inner.closing.clone();
+    executor.inner.tasks.spawn(async move {
+        let result = if closing.is_cancelled() {
+            Err(ExecutionError::Cancelled)
+        } else {
+            metadata_io(request).await
+        };
+        let _ = send.send(result);
+    });
+    tokio::select! {
+        _=executor.inner.closing.cancelled()=>Err(ExecutionError::Disconnected("metadata request closed".into())),
+        result=receive=>result.map_err(|_|ExecutionError::Protocol("native metadata owner ended".into()))?,
+    }
+}
+async fn metadata_io(request: MetadataRequest) -> Result<MetadataResponse, ExecutionError> {
     let result = match request {
         MetadataRequest::Metadata(path) => tokio::fs::metadata(path).await,
         MetadataRequest::SymlinkMetadata(path) => tokio::fs::symlink_metadata(path).await,

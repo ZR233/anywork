@@ -14,6 +14,82 @@ impl TargetPath {
 }
 
 impl Executor {
+    fn check_path_owner(&self, path: &TargetPath) -> Result<(), ExecutionError> {
+        if path.executor == self.id() {
+            Ok(())
+        } else {
+            Err(ExecutionError::InvalidInput(
+                "path belongs to another executor".into(),
+            ))
+        }
+    }
+    /// Parent in the target's path syntax. Root has no parent; symlinks are not resolved here.
+    pub fn parent_path(&self, path: &TargetPath) -> Result<Option<TargetPath>, ExecutionError> {
+        self.check_path_owner(path)?;
+        let parent = if self.target_info().os == "windows" {
+            std::path::Path::new(path.as_str())
+                .parent()
+                .map(|parent| {
+                    parent.to_str().map(str::to_owned).ok_or_else(|| {
+                        ExecutionError::InvalidInput("target path is not UTF-8".into())
+                    })
+                })
+                .transpose()?
+        } else {
+            let value = path.as_str().trim_end_matches('/');
+            if value.is_empty() {
+                None
+            } else {
+                value.rsplit_once('/').map(|(parent, _)| {
+                    if parent.is_empty() {
+                        "/".into()
+                    } else {
+                        parent.to_owned()
+                    }
+                })
+            }
+        };
+        parent.map(|parent| self.path(parent)).transpose()
+    }
+    /// Lexical display projection only. Access checks must first resolve the relevant
+    /// path or existing ancestor on the target filesystem.
+    pub fn relative_path(
+        &self,
+        base: &TargetPath,
+        path: &TargetPath,
+    ) -> Result<Option<String>, ExecutionError> {
+        self.check_path_owner(base)?;
+        self.check_path_owner(path)?;
+        if self.target_info().os == "windows" {
+            return std::path::Path::new(path.as_str())
+                .strip_prefix(base.as_str())
+                .ok()
+                .map(|path| {
+                    path.to_str()
+                        .map(|path| {
+                            if path.is_empty() {
+                                ".".into()
+                            } else {
+                                path.into()
+                            }
+                        })
+                        .ok_or_else(|| {
+                            ExecutionError::InvalidInput("target path is not UTF-8".into())
+                        })
+                })
+                .transpose();
+        }
+        let base = base.as_str().trim_end_matches('/');
+        if path.as_str().trim_end_matches('/') == base {
+            return Ok(Some(".".into()));
+        }
+        Ok(path
+            .as_str()
+            .strip_prefix(base)
+            .and_then(|path| path.strip_prefix('/'))
+            .map(str::to_owned))
+    }
+
     pub fn path(&self, path: impl AsRef<str>) -> Result<TargetPath, ExecutionError> {
         let path = path.as_ref();
         if path.contains('\0') {

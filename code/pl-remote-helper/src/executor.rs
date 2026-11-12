@@ -224,6 +224,10 @@ impl Executor {
     pub fn id(&self) -> ExecutorId {
         self.inner.id
     }
+    /// Whether a validated path may also be used as a native desktop file locator.
+    pub fn is_local(&self) -> bool {
+        matches!(self.inner.backend, ExecutorBackend::Local)
+    }
     pub fn target_info(&self) -> &TargetInfo {
         &self.inner.info
     }

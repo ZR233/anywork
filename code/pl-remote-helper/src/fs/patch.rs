@@ -10,6 +10,7 @@ const DIAGNOSTIC_LIMIT: usize = 8 * 1024;
 struct NativePatch {
     executor: Executor,
     cwd: TargetPath,
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl PatchPathDisplay for NativePatch {
@@ -30,7 +31,7 @@ impl NativePatch {
             .map_err(PatchError::new)
     }
     fn cancelled(&self) -> PatchResult<()> {
-        if self.executor.is_closed() {
+        if self.executor.is_closed() || self.cancel.is_cancelled() {
             Err(PatchError::new("patch execution cancelled"))
         } else {
             Ok(())
@@ -87,6 +88,7 @@ impl PatchBackend for NativePatch {
             .map_err(PatchError::new)
     }
     async fn read_optional_text(&self, path: &Path) -> PatchResult<Option<String>> {
+        self.cancelled()?;
         match tokio::fs::read_to_string(path).await {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -120,6 +122,7 @@ impl PatchBackend for NativePatch {
             .write_all(content.as_bytes())
             .await
             .map_err(PatchError::new)?;
+        self.cancelled()?;
         writer.finish().await.map_err(PatchError::new)?;
         Ok(())
     }
@@ -133,6 +136,7 @@ pub(super) async fn apply(
     executor: Executor,
     cwd: TargetPath,
     patch: &str,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<PatchReport, PatchFailure> {
     let failure = |diagnostic: String| PatchFailure {
         diagnostic,
@@ -160,7 +164,14 @@ pub(super) async fn apply(
             ));
         }
     }
-    let backend = NativePatch { executor, cwd };
+    let backend = NativePatch {
+        executor,
+        cwd,
+        cancel,
+    };
+    backend
+        .cancelled()
+        .map_err(|error| failure(error.to_string()))?;
     match pl_patch::apply_patch(patch, &backend).await {
         Ok(outcome) => Ok(outcome.report(&backend)),
         Err(error) => {

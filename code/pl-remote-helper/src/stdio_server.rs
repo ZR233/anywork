@@ -248,7 +248,11 @@ async fn apply_patch(
             Err(crate::PatchExecutionError::Execution(error)) => Err(error),
         }
     };
-    let result = tokio::select! { result = operation => result, _ = closing.cancelled() => return };
+    let result = tokio::select! {
+        result = operation => result,
+        _ = closing.cancelled() => return,
+        _ = futures::future::poll_fn(|cx|response.lock().unwrap_or_else(std::sync::PoisonError::into_inner).poll_reset(cx))=>return,
+    };
     let (status, bytes) = match result {
         Ok(result) => (
             http::StatusCode::OK,
@@ -303,7 +307,11 @@ async fn write_file(
             .map_err(|error| ExecutionError::io("receive file upload", error))?;
         writer.finish().await
     };
-    let result = tokio::select! { result = operation => result, _ = closing.cancelled() => return };
+    let result = tokio::select! {
+        result = operation => result,
+        _ = closing.cancelled() => return,
+        _ = futures::future::poll_fn(|cx|response.lock().unwrap_or_else(std::sync::PoisonError::into_inner).poll_reset(cx))=>return,
+    };
     let (status, bytes) = match result {
         Ok(result) => (
             http::StatusCode::OK,
@@ -361,7 +369,7 @@ async fn filesystem(
         if path == "/fs/metadata" {
             let request = serde_json::from_slice(&bytes)
                 .map_err(|error| ExecutionError::InvalidInput(error.to_string()))?;
-            let metadata = crate::fs::metadata_native(request).await?;
+            let metadata = crate::fs::metadata_native(&executor, request).await?;
             return Ok::<_, ExecutionError>((
                 Some(serde_json::to_vec(&metadata).expect("metadata serializes")),
                 None,

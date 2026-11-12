@@ -21,6 +21,10 @@ pub(super) async fn open(
     let owner = executor.clone();
     executor.inner.tasks.spawn(async move {
         let closing = owner.inner.closing.clone();
+        if stopped.is_cancelled() || closing.is_cancelled() {
+            let _ = ready.send(Err(ExecutionError::Cancelled));
+            return;
+        }
         let prepared = prepare(&descriptor, permissions).await;
         let (mut file, temporary) = match prepared {
             Ok(prepared) => prepared,

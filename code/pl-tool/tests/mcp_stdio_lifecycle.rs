@@ -1,5 +1,4 @@
 //! Local MCP stdio handshake, framing and cancellation through real child pipes.
-#[cfg(target_os = "linux")]
 #[path = "support/mcp_stdio.rs"]
 mod stdio;
 
@@ -20,8 +19,6 @@ async fn t06_close_does_not_block_on_inflight_call_tool() -> anyhow::Result<()> 
     env.insert("MCP_HANG_CALL_MS".to_owned(), "10000".to_owned());
 
     let connector = McpConnector::default();
-    #[cfg(target_os = "linux")]
-    let connector = connector;
     let config = stdio_effective_config(
         "slow-call",
         &script,

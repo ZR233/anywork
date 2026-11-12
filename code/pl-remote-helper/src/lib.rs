@@ -39,7 +39,7 @@ pub use executor::{
 /// Host process creation and background ownership shared by execution adapters.
 pub mod process;
 
-/// Host-side physical process supervision, shared by local execution and the SSH service.
+/// Linux supervision for the one-time login-environment bootstrap. Business children use Executor.
 #[cfg(target_os = "linux")]
 pub mod client;
 
