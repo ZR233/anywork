@@ -15,18 +15,18 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
 
-import 'support/acp_scene_transport.dart';
+import '../support/acp_scene_transport.dart';
+import '../support/pump_client_future.dart';
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized().framePolicy =
-      LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
   WidgetController.hitTestWarningShouldBeFatal = true;
 
   testWidgets(
     'same login flow survives navigation, duplicate input, cancellation and deletion',
     (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final transport = AcpSceneTransport();
       final graph = AppGraph(
         transport: transport,
@@ -44,31 +44,55 @@ void main() {
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox());
         router.dispose();
-        final report = await graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 30)),
+        final report = await pumpClientFuture(
+          tester,
+          graph.close(
+            deadline: DateTime.now().add(const Duration(seconds: 30)),
+          ),
+          'ACP authentication graph close',
         );
         expect(report.unresolved, isEmpty);
         container.dispose();
       });
-      await graph.initialize();
+      await pumpClientFuture(
+        tester,
+        graph.initialize(),
+        'ACP graph initialize',
+      );
       final summaries = graph.accounts.observeSummaries();
-      await graph.accounts.state.waitFor((state) => state.loaded);
-      await graph.acp.save(
-        const AcpAccountUpdateView(
-          accountId: 'antigravity-test',
-          name: 'Antigravity',
-          template: AcpProviderView.antigravity,
+      await pumpClientFuture(
+        tester,
+        graph.accounts.state.waitFor((state) => state.loaded),
+        'ACP accounts loaded',
+      );
+      await pumpClientFuture(
+        tester,
+        graph.acp.save(
+          const AcpAccountUpdateView(
+            accountId: 'antigravity-test',
+            name: 'Antigravity',
+            template: AcpProviderView.antigravity,
+          ),
+          expectedDocumentRevision: null,
         ),
-        expectedDocumentRevision: null,
+        'ACP account saved',
       );
       const identity = AcpAccountIdentity('antigravity-test');
-      await graph.accounts.state.waitFor(
-        (state) => state.account(identity) != null,
+      await pumpClientFuture(
+        tester,
+        graph.accounts.state.waitFor(
+          (state) => state.account(identity) != null,
+        ),
+        'ACP account observed',
       );
       final revision = graph.accounts.state.value
           .account(identity)!
           .acpConnectionRevision!;
-      await summaries.release();
+      await pumpClientFuture(
+        tester,
+        summaries.release(),
+        'ACP summaries release',
+      );
       router.go(
         const AccountDetailsRoute(
           kind: AccountKind.acp,
@@ -104,14 +128,18 @@ void main() {
       }
 
       Future<void> canonical(bool Function(AcpAuthStateView) predicate) async {
-        await graph.acp.auth.waitFor(
-          (resource) => predicate(
-            resource.value?.stateOf(
-                  identity.accountId,
-                  connectionRevision: revision,
-                ) ??
-                const AcpUncheckedState(),
+        await pumpClientFuture(
+          tester,
+          graph.acp.auth.waitFor(
+            (resource) => predicate(
+              resource.value?.stateOf(
+                    identity.accountId,
+                    connectionRevision: revision,
+                  ) ??
+                  const AcpUncheckedState(),
+            ),
           ),
+          'ACP canonical authentication state',
         );
         await tester.pump();
       }
@@ -226,13 +254,20 @@ void main() {
             matching: find.byType(FilledButton),
           ),
         );
-        await graph.accounts.state.waitFor(
-          (state) => state.account(identity) == null,
+        await pumpClientFuture(
+          tester,
+          graph.accounts.state.waitFor(
+            (state) => state.account(identity) == null,
+          ),
+          'ACP account removed',
         );
         // Canonical absence can precede the removal receipt and its navigation.
-        // The live binding drives frames while the Router completes its event.
         observeRoute();
-        await returned.future;
+        await pumpClientFuture(
+          tester,
+          returned.future,
+          'ACP return to settings',
+        );
       } finally {
         router.routerDelegate.removeListener(observeRoute);
       }

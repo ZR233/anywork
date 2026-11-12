@@ -1,6 +1,6 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_encoding.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   const source = ForegroundTurnChatSource(turnId: '轮次🐱');
