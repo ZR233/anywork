@@ -538,21 +538,20 @@ void main() {
     await h.open();
     final composer = await h.composer();
     composer.updateDraft('do not redirect');
-    final entered = Completer<void>();
-    final gate = Completer<void>();
-    final sending = composer.submit(
-      beforeSubmit: () async {
-        entered.complete();
-        await gate.future;
-      },
-    );
-    await entered.future;
+    h.transport.admissionResult = [
+      _attachment('frozen', AttachmentModalityView.file),
+    ];
+    await composer.addRemoteAttachment('https://example.test/context.bin');
+    h.transport.bytesGate = Completer<Uint8List>();
+    final sending = composer.submit();
+    await h.transport.readEntered.future;
     h.transport.emitThread(null, 'thread', revision: 2);
     await Future<void>.delayed(Duration.zero);
-    gate.complete();
+    h.transport.bytesGate!.complete(Uint8List.fromList([1, 2, 3]));
     await sending;
     expect(h.calls('prompt'), isEmpty);
     expect(composer.state.draft, 'do not redirect');
+    expect(composer.state.attachments.single.id, 'frozen');
     await composer.close();
     expect(h.transport.directoryCloseCalls, greaterThan(0));
   });

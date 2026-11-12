@@ -10,6 +10,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../composer/views/composer_submission_status.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_ui_controllers.dart';
@@ -650,14 +651,6 @@ class _ComposerSubmissionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = switch (submission.phase) {
-      ComposerSubmissionPhase.sending => context.l10n.composerSubmissionSending,
-      ComposerSubmissionPhase.accepted =>
-        context.l10n.composerSubmissionAccepted,
-      ComposerSubmissionPhase.failed => context.l10n.composerSubmissionFailed,
-      ComposerSubmissionPhase.unknownOutcome =>
-        context.l10n.composerSubmissionUnknown,
-    };
     return Align(
       alignment: AlignmentDirectional.centerEnd,
       child: Container(
@@ -710,12 +703,7 @@ class _ComposerSubmissionCard extends StatelessWidget {
                 ),
               ),
             const SizedBox(height: 4),
-            SelectionContainer.disabled(
-              child: Text(
-                status,
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-            ),
+            ComposerSubmissionStatus(phase: submission.phase),
             if (submission.error case final error?) ...[
               const SizedBox(height: 4),
               Text(

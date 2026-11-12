@@ -699,7 +699,7 @@ packages:
     source: hosted
     version: "0.19.6"
   nativeapi:
-    dependency: "direct overridden"
+    dependency: "direct main"
     description:
       name: nativeapi
       sha256: c71a5e10aacd177fe1c3eef279179beeba6fd08132f0d36e0a7e081e13906749
@@ -707,7 +707,7 @@ packages:
     source: hosted
     version: "0.6.0"
   nativeapi_flutter:
-    dependency: "direct overridden"
+    dependency: "direct main"
     description:
       name: nativeapi_flutter
       sha256: "3709b58224473298349375c8a0404d19dc0b5f151397cae2f127fe49a3a1a491"
@@ -1071,14 +1071,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.14"
-  tray_manager:
-    dependency: "direct main"
-    description:
-      name: tray_manager
-      sha256: "30c67f4f27a9b2ad56606b369b75256fd9ef25851b66788597d4df3fbbfa536a"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.8.3"
   typed_data:
     dependency: transitive
     description:

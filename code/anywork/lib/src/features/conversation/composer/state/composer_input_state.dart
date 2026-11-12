@@ -88,29 +88,19 @@ final class ComposerInputState {
     execution: execution,
     continuation: continuation,
     hasContent: text.trim().isNotEmpty || composer.attachments.isNotEmpty,
-    submissionPending: submissionPending || stopPending,
+    inputEnabled: enabled,
+    submissionPending: submissionPending,
+    stopPending: stopPending,
+    stopUnconfirmed: stopUnconfirmed,
     stopAccepted: stopAccepted,
     continuationAccepted: continuationAccepted,
     continuationPending: continuationPending,
     blocker: blocker,
   );
 
-  bool get stopAvailable =>
-      execution != null &&
-      !execution!.phase.isStopping &&
-      !stopAccepted &&
-      (!stopPending || stopUnconfirmed);
+  bool get primaryEnabled => action.enabled;
 
-  bool get primaryEnabled =>
-      enabled &&
-      action.enabled &&
-      (action.kind != ComposerPrimaryActionKind.stop || stopAvailable);
+  bool get primaryBusy => action.busy;
 
-  bool get primaryBusy =>
-      submissionPending ||
-      action.kind == ComposerPrimaryActionKind.stopping ||
-      action.kind == ComposerPrimaryActionKind.continuing ||
-      (stopPending && !stopUnconfirmed);
-
-  bool get enterSubmits => enabled && action.enterSubmits;
+  bool get enterSubmits => action.enterSubmits;
 }

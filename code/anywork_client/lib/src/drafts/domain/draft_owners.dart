@@ -16,7 +16,7 @@ abstract interface class ComposerDraftOwner {
   Future<void> addRemoteAttachment(String url);
   Future<void> addClipboardImage(Uint8List pngBytes);
   Future<void> removeAttachment(String draftId);
-  Future<void> submit({Future<void> Function()? beforeSubmit});
+  Future<void> submit();
   Future<void> retrySubmission(String inputId);
   Future<void> removeSubmission(String inputId);
   void markInputsPresented(Iterable<String> inputIds);
