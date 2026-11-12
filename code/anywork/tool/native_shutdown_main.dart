@@ -74,8 +74,11 @@ Future<void> _prepareAndClose(AppGraph graph) async {
   if (state.lastTurn!.state is! CompletedStudioTurnState) {
     throw StateError('Shutdown setup failed: ${state.lastTurn!.state.reason}');
   }
-  await File('$coord/shutdown-ready.json')
-      .writeAsString(jsonEncode({'pid': pid, 'threadId': result.thread.id}));
+  final ready = File('$coord/shutdown-ready.tmp');
+  await ready.writeAsString(
+    jsonEncode({'pid': pid, 'threadId': result.thread.id}),
+  );
+  await ready.rename('$coord/shutdown-ready.json');
   await _waitForClose(File('$coord/shutdown-close'))
       .timeout(const Duration(seconds: 120));
   await StudioExitCoordinator.requestExit();
