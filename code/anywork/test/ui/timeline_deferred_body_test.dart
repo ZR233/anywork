@@ -5,8 +5,8 @@ import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_component_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -352,7 +352,29 @@ void main() {
             ComposerSubmissionPhase.failed => '发送失败',
             ComposerSubmissionPhase.unknownOutcome => '发送结果待确认',
           };
-          expect(find.text(status), findsOneWidget);
+          final normal =
+              phase == ComposerSubmissionPhase.sending ||
+              phase == ComposerSubmissionPhase.accepted;
+          expect(find.text(status), normal ? findsNothing : findsOneWidget);
+          if (normal) {
+            expect(
+              find.semantics.byPredicate(
+                (node) => node.getSemanticsData().tooltip == status,
+              ),
+              findsOne,
+            );
+          } else {
+            expect(find.bySemanticsLabel(status), findsOneWidget);
+          }
+          if (normal) {
+            final icon = find.byIcon(
+              phase == ComposerSubmissionPhase.sending
+                  ? Icons.schedule_rounded
+                  : Icons.done_rounded,
+            );
+            expect(icon, findsOneWidget);
+            expect(tester.getSize(icon).height, lessThanOrEqualTo(18));
+          }
           final wideHeight = tester
               .getSize(find.byType(TimelineMarkdown))
               .height;

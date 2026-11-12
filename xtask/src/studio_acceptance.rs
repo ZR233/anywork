@@ -12,7 +12,7 @@
 //!
 //! * Unix: the launcher replaces itself with the tool via `exec`, so there is
 //!   no intermediate cargo process holding locks or stealing terminal signals;
-//!   the tool's own Ctrl-C handling, interactive stdin and exit status reach
+//!   the tool's own Ctrl-C handling, piped or terminal stdin and exit status reach
 //!   the caller unchanged.
 //! * Windows: the tool is spawned directly (again not through `cargo run`)
 //!   after the current process joins a kill-on-close Job Object, so a closed
@@ -134,8 +134,8 @@ fn launch_acceptance_tool(executable: &Path, args: &[OsString]) -> Result<()> {
     let _ctrl_c_shield = shield_ctrl_c_while_tool_runs()?;
     let mut tool = Command::new(executable);
     tool.args(args);
-    // The tool drives an interactive stdin loop, so it must inherit the
-    // console instead of the resident background configuration.
+    // The tool reads control commands from piped or terminal stdin, so inherit
+    // it instead of using the resident background configuration.
     tool.stdin(Stdio::inherit());
     let mut child = tool
         .spawn()

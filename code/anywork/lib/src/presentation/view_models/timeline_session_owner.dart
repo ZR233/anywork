@@ -825,12 +825,11 @@ final class TimelineSessionOwner {
     _publishState(hasNewOutput: false);
   }
 
-  /// Synchronously returns a visible composer submission to Chat's latest edge
-  /// before its next frame, then gives that frame an opportunity to paint.
-  Future<void> prepareComposerSubmissionDisplay(
+  /// Returns a mounted composer to Chat's latest edge without waiting for paint.
+  void prepareComposerSubmissionDisplay(
     String threadId, {
     required TimelineDisplayLease lease,
-  }) async {
+  }) {
     bool current() =>
         identical(this.lease(threadId), lease) &&
         lease.isMounted &&
@@ -844,10 +843,11 @@ final class TimelineSessionOwner {
       scroll.jumpTo(scroll.position.minScrollExtent);
     }
 
-    await returnToLive(threadId);
+    if (!current()) return;
+    lease._mode = TimelineDisplayMode.live;
+    _publishState(hasNewOutput: false);
     if (!current()) return;
     WidgetsBinding.instance.ensureVisualUpdate();
-    await WidgetsBinding.instance.endOfFrame;
   }
 
   Future<void> loadOlder(String threadId, {required int generation}) =>

@@ -193,7 +193,7 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 
 路由解析根据当前路由选中的模型绑定与连接覆盖（`connection_overrides`）确定传输协议（`Responses` 或 `Chat`）与连接方式（`HTTP` 或 `WS`），再结合账号的厂商协议适配、端点地址、凭据与服务能力组装为运行时路由；合法传输组合矩阵为 `Responses + WS/HTTP` 与 `Chat + HTTP`。
 
-账号端点服务能力与单模型能力严格区分：账号服务能力表征服务端点是否支持 Responses 托管工具（hosted tools）、托管或独立联网搜索（携带 `OpenAIResponses` 或 `DeepSeekResponses` 方言）以及图像生成（携带 `Images` 方言与生图模型前缀）；模型能力则表征当前模型自身是否支持原生搜索、函数调用或多模态输入。官方 OpenAI 端点默认开启 Responses 托管工具，若用户覆盖为自定义 `base_url` 则默认关闭；xAI 权威端点默认继承 `prompt_cache_key` 缓存方言，若覆盖为非权威 `base_url` 则由 `TemplateDefaults` 自动撤销该缓存方言。
+账号端点服务能力与单模型能力严格区分：账号服务能力表征服务端点是否支持 Responses 托管工具（hosted tools）、托管或独立联网搜索（携带 `OpenAIResponses` 或 `DeepSeekResponses` 方言）以及图像生成（携带 `Images` 方言与生图模型前缀）；模型能力则表征当前模型自身是否支持原生搜索、函数调用或多模态输入。官方 OpenAI 端点默认开启 Responses 托管工具，若用户覆盖为自定义 `base_url` 则默认关闭；xAI 权威端点默认继承 `prompt_cache_key` 缓存方言，若覆盖为非权威 `base_url` 则由 `TemplateDefaults` 自动撤销该缓存方言。自定义 Responses 服务确认支持缓存键后，可通过现有 `capabilities.source = "explicit"` 与 `capabilities.prompt_cache.dialect = "open_ai_prompt_cache_key"` 声明；这不启用其他未声明的服务能力。每个智能体的缓存归属由运行时按 Thread 生成，用户配置、模型固定 body 和参数映射不提供原始键覆盖入口。
 
 内置目录模型与用户自定义或附加模型共用统一的数据结构（含 `model_id`、`display_name`、`description`、`context_window`、`max_context_window`、`auto_compact_token_limit`、`default_temperature`、`max_output_tokens`、`pricing`、`parameters`、`binding`、`capabilities`、`truncation_policy` 与 `base_instructions`）。其中 `capabilities` 为结构化输入能力矩阵（见 [06](./06-model.md)），显式声明支持的模态、来源与体积限制；未知模型默认为纯文本（`text-only`），非视觉模型在任何附件 I/O 与凭据读取前即拒绝图片输入。同账号下显式配置的同 ID 模型定义优先于绑定的内置定义，同 ID 在线明确字段优先于本地补全；不同账号之间的同名模型严禁交叉借用能力、参数或价格。
 

@@ -12,14 +12,14 @@ metadata:
 本技能只维护项目生成、构建、运行与证据边界。通用预览、布局、测试和 Dart 教程使用
 用户级官方 `flutter-*` / `dart-*` 技能；发现与命令映射见根 `AGENTS.md`，不在项目复制上游内容。
 
-## 界面设计对齐优先无头工具
+## 统一实验方法，按边界选择最轻入口
 
-建议先用官方 `flutter_test`／`WidgetTester` 检查生产组件布局与交互，用官方 Widget Previewer
-配合无头 Chrome 对齐概念稿、核图及迭代；这些工作无需 X11/Xvfb。复用真实组件、主题和本地化，
-不复制预览 UI 或建立第二份业务状态。操作见 [Widget Previewer 指南](references/widget-preview.md)。
+实验、验证和截图统一使用[无头实验指南](references/experiments.md)。纯界面开发默认用官方
+Widget Previewer 复用生产组件、主题与本地化，局部交互和截图**不编译 Rust bridge**，
+不启动模型服务，也不依赖 X11/Xvfb。确定性行为使用相关 Widget 测试，不新增截图落盘用例。
 
-FRB、原生插件、持久化、真实窗口和进程退出仍由相应原生入口证明；无头工具不替代明确要求的
-产品原生截图或性能采样。按变化选择最小充分边界，不把无头与原生入口排成每轮必跑清单。
+只有 FRB、持久化、原生插件或资源行为才选择隔离原生应用与官方 Dart MCP；OS 退出等由平台专项证明。
+不同载体共享取证方法，不建立第二份 UI、业务状态或操作框架，也不排成每轮必跑清单。
 
 ## 会话临时文件
 
@@ -30,12 +30,12 @@ xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临�
 
 ## 标准入口
 
-所有 GUI 构建和运行都从仓库根目录通过 xtask 执行：
+原生 GUI 构建和运行从仓库根目录通过 xtask 执行；官方组件预览只借助项目入口准备依赖，
+也支持准备后直接使用 Flutter CLI，详见[预览入口](references/widget-preview.md)：
 
 ```powershell
 cargo xtask run-gui
 cargo xtask run-gui --demo
-cargo xtask run-gui --capture
 cargo xtask run-gui --inspect
 cargo xtask preview-gui --headless --no-devtools
 cargo xtask run-gui --release
@@ -162,11 +162,11 @@ macOS 没有 Linux subreaper，主动脱离进程组的子进程不在该机制�
 Linux 缺少编译器、CMake、Ninja、pkg-config 或 GTK 3 开发文件时，保留 xtask 返回的真实预检命令
 和原始错误，不注入机器专用 include/library 路径。
 
-## 原生 GUI 人工验收
+## 原生实验的补充边界
 
-需要原生观察时可参考 [人工验收操作指南](references/manual-gui.md)：包含隔离 harness、Linux SSH 下的
-官方 MCP 的组件树、交互和截图，Linux 的显示条件、隔离配置及进程回收。不要将无交互终端直接
-等同于无法验收，也不要把 demo、静态分析或成功启动等同于完整业务验收。
+共同操作按[无头实验指南](references/experiments.md)，隔离数据、系统凭据及平台进程责任按
+[原生补充](references/manual-gui.md)。管道 stdin 可以驱动完成信号，不依赖伪终端；
+截图由官方 MCP 完成，自定义 capture 仅保留自动化及原生测量的内部职责。
 
 ## 官方组件预览
 

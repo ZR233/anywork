@@ -1,7 +1,7 @@
+use clap::Parser;
+
 fn main() -> anyhow::Result<()> {
-    environment::run()
+    manual_gui::run(manual_gui::ManualGuiOptions::parse())
 }
 
-mod desktop;
-mod environment;
 mod manual_gui;

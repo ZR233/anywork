@@ -342,6 +342,20 @@ Future<void> _close(WidgetTester tester, _Composer composer) async {
   );
 }
 
+void _expectStopping(WidgetTester tester) {
+  final button = find.byKey(StudioDriverKeys.composerStopping);
+  expect(tester.widget<IconButton>(button).onPressed, isNull);
+  expect(find.text('Stopping'), findsNothing);
+  expect(find.byTooltip('Stopping'), findsOneWidget);
+  expect(
+    find.descendant(
+      of: button,
+      matching: find.byType(CircularProgressIndicator),
+    ),
+    findsOneWidget,
+  );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -850,7 +864,7 @@ void main() {
       () => find.byKey(StudioDriverKeys.composerStopping).evaluate().isNotEmpty,
       'stopping after acceptance',
     );
-    expect(find.text('Stopping'), findsOneWidget);
+    _expectStopping(tester);
     await _close(tester, composer);
   });
 
@@ -1028,7 +1042,7 @@ void main() {
       () => find.byKey(StudioDriverKeys.composerStopping).evaluate().isNotEmpty,
       'stopping after acceptance with draft',
     );
-    expect(find.text('Stopping'), findsOneWidget);
+    _expectStopping(tester);
     expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
     await _close(tester, composer);
   });
@@ -1563,7 +1577,7 @@ void main() {
       () => find.byKey(StudioDriverKeys.composerStopping).evaluate().isNotEmpty,
       'accepted stop shows stopping',
     );
-    expect(find.text('Stopping'), findsOneWidget);
+    _expectStopping(tester);
 
     // 超过阈值：已受理不是「结果未确认」，继续显示正在停止。
     await tester.pump(const Duration(seconds: 16));
@@ -1622,7 +1636,7 @@ void main() {
       findsNothing,
       reason: '受理后未确认标记被清除',
     );
-    expect(find.text('Stopping'), findsOneWidget);
+    _expectStopping(tester);
     await _close(tester, composer);
   });
 

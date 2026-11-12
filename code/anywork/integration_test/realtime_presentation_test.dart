@@ -16,7 +16,6 @@ import 'package:anywork/src/features/conversation/composer/views/prompt_composer
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
@@ -103,7 +102,7 @@ void main() {
     'presentationCaptures': <Map<String, Object?>>[],
     'presentationCaptureScope':
         'Production journey witnesses below; initial empty surface, failure '
-        'diagnostics and synthetic component-compacting are kept separate.',
+        'diagnostics are kept separate. Synthetic previews run in widget tests.',
     'captureCoverageGaps': {
       'mediaFailure': 'This strict realtime story does not read media.',
       'attachmentOnly': 'This strict realtime story submits text only.',
@@ -541,20 +540,7 @@ void main() {
       expect(find.byType(ChatItemView), findsWidgets);
 
       if (full) {
-        // Supplemental native production-component capture, not a fixture-driven
-        // compaction lifecycle. Keep its evidence separate from the real journey.
-        graph.setConversationPageVisible(false);
-        await tester.pumpWidget(
-          RepaintBoundary(
-            key: presentationCaptureKey,
-            child: conversationLiveStatusCompactingPreview(),
-          ),
-        );
-        await tester.pump();
-        await capturePresentation(tester, 'component-compacting.png');
-
         report.addAll({
-          'syntheticComponentCaptures': ['component-compacting.png'],
           'delayedStreamVisible': true,
           'reasoningHistoryVisible': true,
           'execWaitCardsVisible': true,

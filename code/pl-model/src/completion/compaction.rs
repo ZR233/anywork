@@ -24,7 +24,6 @@ impl OpenAiCompactionMode {
 pub struct ModelCompactionRequest {
     pub mode: OpenAiCompactionMode,
     pub prefix: super::CompletionRequest,
-    pub prompt_cache_key: Option<String>,
 }
 
 /// Provider 完成远程压缩后返回的替换历史。

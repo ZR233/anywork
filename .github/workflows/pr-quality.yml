@@ -28,6 +28,7 @@ jobs:
       release_configuration: ${{ steps.plan.outputs.release_configuration }}
       rust_checks: ${{ steps.plan.outputs.rust_checks }}
       linux_environment: ${{ steps.plan.outputs.linux_environment }}
+      client_checks: ${{ steps.plan.outputs.client_checks }}
       flutter_checks: ${{ steps.plan.outputs.flutter_checks }}
       gui_generated: ${{ steps.plan.outputs.gui_generated }}
       linux_inputs: ${{ steps.plan.outputs.linux_inputs }}
@@ -177,7 +178,7 @@ jobs:
   flutter-checks:
     name: Flutter and Client (Linux, no bridge)
     needs: [changes, linux-environment]
-    if: needs.changes.outputs.flutter_checks == 'true'
+    if: needs.changes.outputs.client_checks == 'true' || needs.changes.outputs.flutter_checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -195,7 +196,14 @@ jobs:
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
       - name: Check frontend contracts and production UI components
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash .github/scripts/pr-quality-flutter.sh
+        env:
+          CHECK_CLIENT: ${{ needs.changes.outputs.client_checks }}
+          CHECK_APP: ${{ needs.changes.outputs.flutter_checks }}
+        run: |
+          checks=()
+          if [ "$CHECK_CLIENT" = true ]; then checks+=(--client); fi
+          if [ "$CHECK_APP" = true ]; then checks+=(--app); fi
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash .github/scripts/pr-quality-flutter.sh "${checks[@]}"
 
   linux-environment:
     name: Prepare exact Linux build environment
@@ -245,15 +253,12 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env CARGO_HOME="$CARGO_HOME" bash -euo pipefail -c '
             cargo fmt --all --check
             # These isolated selections must run before workspace feature unification.
-            cargo check --locked -p pl-agent-tool --no-default-features --all-targets
             cargo test --locked -p pl-agent-tool --no-default-features
             cargo test --locked -p pl-agent-tool --no-default-features --features typed
-            cargo test --locked -p pl-agent-tool --no-default-features --features typed,macros
-            cargo test --locked -p pl-agent-tool-macros
+            # The workspace run below covers typed+macros and the macro crate.
             cargo test --locked --manifest-path code/pl-agent-tool/fixtures/downstream/Cargo.toml --target-dir target/tool-downstream
             python3 .github/scripts/check_tool_boundaries.py
-            cargo check --locked --all-targets --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
-            cargo test --locked --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream --test media_execution
+            cargo test --locked --all-targets --manifest-path code/tools/fixtures/downstream/Cargo.toml --target-dir target/tools-downstream
             cargo check --locked -p pl-core --no-default-features --all-targets
             cargo clippy --locked --workspace --all-targets -- -D warnings
             # Library tests run outside the Flutter bundle and need the
@@ -617,9 +622,17 @@ jobs:
   windows-build:
     name: Clippy and GUI build (Windows)
     needs: [changes, linux-inputs]
-    if: needs.changes.outputs.windows_build == 'true'
+    # Test-only Rust changes need host Clippy, but no Linux helper producer.
+    if: >-
+      !cancelled() && needs.changes.result == 'success' &&
+      needs.changes.outputs.windows_build == 'true' &&
+      (needs.changes.outputs.windows_gui_build != 'true' || needs.linux-inputs.result == 'success')
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     permissions:
       contents: read
     steps:
@@ -641,7 +654,7 @@ jobs:
         if: needs.changes.outputs.windows_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes
@@ -650,16 +663,23 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Compile the production Flutter executable without running tests
+      - name: Compile the application in debug mode without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
-        run: cargo xtask build-gui
+        run: cargo xtask build-gui --debug
 
   macos-build:
     name: Clippy and GUI build (macOS)
     needs: [changes, linux-inputs]
-    if: needs.changes.outputs.macos_build == 'true'
+    if: >-
+      !cancelled() && needs.changes.result == 'success' &&
+      needs.changes.outputs.macos_build == 'true' &&
+      (needs.changes.outputs.macos_gui_build != 'true' || needs.linux-inputs.result == 'success')
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     permissions:
       contents: read
     steps:
@@ -681,7 +701,7 @@ jobs:
         if: needs.changes.outputs.macos_gui_build == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           channel: stable
           cache: true
       - name: Prepare Clippy for Rust changes
@@ -690,9 +710,9 @@ jobs:
       - name: Check Rust on macOS
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Compile the production Flutter executable without running tests
+      - name: Compile the application in debug mode without running tests
         if: needs.changes.outputs.macos_gui_build == 'true'
-        run: cargo xtask build-gui
+        run: cargo xtask build-gui --debug
 
   # Configure this stable aggregate as the repository required check.
   ci-gate:

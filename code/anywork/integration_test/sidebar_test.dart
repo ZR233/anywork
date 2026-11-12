@@ -9,7 +9,6 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -536,7 +535,7 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   testWidgets(
-    'sidebar drag, double tap and accessibility resize persist through the production Client',
+    'sidebar width edit persists through the production Client',
     (tester) async {
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
@@ -578,91 +577,10 @@ void main() {
         () => width() > initial,
         'drag changes the production sidebar width',
       );
-      final dragged = width();
       await expectSaved('drag');
 
-      await tester.drag(divider, const Offset(-1000, 0));
-      await scene.until(
-        () => width() < initial && width() < dragged,
-        'large negative drag reaches a lower width',
-      );
-      final lowerBoundary = width();
-      await expectSaved('lower boundary');
-      await tester.drag(divider, const Offset(-64, 0));
-      await tester.pump();
-      expect(
-        width(),
-        closeTo(lowerBoundary, 1),
-        reason: 'further outward drag cannot cross the lower boundary',
-      );
-      await expectSaved('repeated lower-boundary drag');
-      await tester.drag(divider, const Offset(1000, 0));
-      await scene.until(
-        () => width() > initial && width() > lowerBoundary,
-        'large positive drag reaches an upper width',
-      );
-      final upperBoundary = width();
-      await expectSaved('upper boundary');
-      await tester.drag(divider, const Offset(64, 0));
-      await tester.pump();
-      expect(
-        width(),
-        closeTo(upperBoundary, 1),
-        reason: 'further outward drag cannot cross the upper boundary',
-      );
-      await expectSaved('repeated upper-boundary drag');
-
-      // Wait out the minimum interval while the first press is still down.
-      // Its release starts the double-tap timeout; keep the release and second
-      // click in one engine event packet so host scheduling cannot split them.
-      final tapPosition = tester.getCenter(divider);
-      final pointer = TestPointer(
-        tester.nextPointer,
-        ui.PointerDeviceKind.mouse,
-      );
-      final secondPointer = TestPointer(
-        pointer.pointer + 1,
-        ui.PointerDeviceKind.mouse,
-      );
-      await tester.handlePointerEventRecord([
-        PointerEventRecord(Duration.zero, [pointer.down(tapPosition)]),
-      ]);
-      await tester.binding.delayed(kDoubleTapMinTime);
-      await tester.handlePointerEventRecord([
-        PointerEventRecord(Duration.zero, [
-          pointer.up(),
-          secondPointer.down(tapPosition),
-          secondPointer.up(),
-        ]),
-      ]);
-      await scene.until(
-        () => (width() - defaultWidth).abs() <= 1,
-        'double tap restores the initial default in the UI',
-      );
-      await expectSaved('double-tap default restoration');
-
-      // 应用自定义按键已移除；无障碍用户仍可通过官方语义动作调整宽度。
-      final resizeSemantics = find.semantics.byLabel(
-        tester.element(divider).l10n.sidebarResize,
-      );
-      tester.semantics.increase(resizeSemantics);
-      await scene.until(
-        () => width() > defaultWidth,
-        'accessibility increase widens the sidebar in the UI',
-      );
-      final increasedWidth = width();
-      await expectSaved('accessibility increase');
-      tester.semantics.decrease(resizeSemantics);
-      await scene.until(
-        () => width() < increasedWidth,
-        'accessibility decrease narrows the sidebar in the UI',
-      );
-      expect(
-        width(),
-        closeTo(defaultWidth, 1),
-        reason: 'inverse accessibility actions restore the original width',
-      );
-      await expectSaved('accessibility decrease');
+      // Gesture boundaries, reset and semantics are proved in widget tests.
+      // This real bridge path proves a UI edit reaches canonical settings.
       expect(tester.takeException(), isNull);
     },
     semanticsEnabled: true,
@@ -670,77 +588,10 @@ void main() {
   );
 
   testWidgets(
-    'real narrow native window uses drawer without overflow at large text',
+    'project archive confirmation preserves or removes only the canonical target',
     (tester) async {
-      final scene = await harness.mount(
-        tester,
-        textScaler: TextScaler.linear(1.6),
-      );
+      final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
-
-      await tester.binding.setSurfaceSize(const Size(820, 760));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      tester.view.physicalSize = const Size(820, 760);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pump();
-      await File('${harness.artifacts.path}/sidebar-native-window.json')
-          .writeAsString(
-            const JsonEncoder.withIndent('  ').convert({
-              'requested': {'width': 820, 'height': 760},
-              'view': {
-                'physicalWidth': tester.view.physicalSize.width,
-                'physicalHeight': tester.view.physicalSize.height,
-                'devicePixelRatio': tester.view.devicePixelRatio,
-              },
-            }),
-            flush: true,
-          );
-      await scene.until(() {
-        final view = tester.view;
-        return view.physicalSize.width / view.devicePixelRatio < 960;
-      }, 'Flutter adopts the compact test surface geometry');
-
-      final shell = find.byKey(StudioDriverKeys.shell);
-      final scaffold = find
-          .ancestor(of: shell, matching: find.byType(Scaffold))
-          .first;
-      final scaffoldState = tester.state<ScaffoldState>(scaffold);
-      expect(scaffoldState.isDrawerOpen, isFalse);
-      expect(find.byKey(StudioDriverKeys.sidebar), findsNothing);
-      await tester.tap(find.byKey(const ValueKey<String>('sidebar-toggle')));
-      await scene.until(
-        () =>
-            scaffoldState.isDrawerOpen &&
-            find.byKey(StudioDriverKeys.sidebar).evaluate().length == 1 &&
-            tester.getTopLeft(find.byKey(StudioDriverKeys.sidebar)).dx >= 0,
-        'compact shell opens the production navigation drawer',
-      );
-
-      final projectRow = find.byKey(
-        StudioDriverKeys.projectRow(fixture.project.id),
-      );
-      final threadRow = find.byKey(
-        StudioDriverKeys.threadRow(fixture.thread.id),
-      );
-      await scene.until(
-        () =>
-            projectRow.evaluate().length == 1 &&
-            threadRow.evaluate().length == 1 &&
-            find
-                .descendant(of: threadRow, matching: find.text(longTitle))
-                .evaluate()
-                .isNotEmpty,
-        'drawer retains the project tree and long canonical thread title',
-      );
-      expect(
-        MediaQuery.textScalerOf(tester.element(threadRow)).scale(14),
-        greaterThanOrEqualTo(22.4),
-      );
-      expect(tester.takeException(), isNull);
-      await scene.capture('sidebar-narrow-drawer');
-
       final archiveDirectory = Directory(
         '${Directory(projectPath).parent.path}/sidebar-project-close-target',
       );

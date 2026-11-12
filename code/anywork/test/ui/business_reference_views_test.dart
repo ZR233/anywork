@@ -6,7 +6,6 @@ import 'package:anywork/src/features/conversation/composer/views/composer_dock_v
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_viewport.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/plan_document_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/interactions/state/interaction_payload.dart';
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
@@ -16,22 +15,13 @@ import 'package:anywork_client/src/conversation/data/conversation_read_scope.dar
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart' show chatWorkspace;
+import '../support/plan_document_harness.dart';
+import '../support/plan_document_transport.dart';
+import '../support/pump_client_future.dart';
 
-ContentRef _plan(int revision) => ContentRef(
-  databaseId: 'database',
-  target: BodyContentTarget(
-    owner: CurrentContentOwner(
-      domain: 'plan',
-      id: 'thread',
-      revision: revision,
-    ),
-    key: 'plan.document',
-  ),
-);
 CurrentCollectionRef _interactions(int revision) => CurrentCollectionRef(
   databaseId: 'database',
   collection: 'interactions',
@@ -49,6 +39,7 @@ CurrentCollectionPage _page(
   String title, {
   String? next,
   Map<String, Object?>? request,
+  String threadId = 'thread',
 }) => CurrentCollectionPage(
   revision: revision,
   entries: [
@@ -61,7 +52,7 @@ CurrentCollectionPage _page(
             request ??
                 {
                   'interactionId': title,
-                  'scope': {'threadId': 'thread', 'turnId': 'turn'},
+                  'scope': {'threadId': threadId, 'turnId': 'turn'},
                   'revision': revision,
                   'content': {
                     'kind': 'userInput',
@@ -890,194 +881,134 @@ void main() {
     );
   }
 
-  testWidgets(
-    'B08/B09: an initial State Plan reference reads while activity is empty',
-    (tester) async {
-      final content = _Content();
-      final reference = _plan(3);
-      await tester.pumpWidget(
-        _host(
-          PlanDocumentConnector(
-            key: ValueKey(reference),
-            content: content,
-            reference: reference,
-            isCurrent: () => true,
-            documentBuilder: Text.new,
-          ),
-        ),
-      );
-      await _frames(tester);
-      expect(content.activity.value, isNull);
-      expect(content.reader.reads.single.$1, reference);
-      content.reader.reads.single.$2.complete(_window('冷会话的完整计划 v3'));
-      await _frames(tester);
-      expect(find.text('冷会话的完整计划 v3'), findsOneWidget);
-      expect(
-        content.reader.businessReads,
-        0,
-        reason: 'GUI consumes the supplied State reference',
-      );
-      await tester.pumpWidget(const SizedBox());
-      await content.join();
-    },
-  );
-
-  testWidgets(
-    'B10/B16: token publications do not replace the Plan reader or Main',
-    (tester) async {
-      final content = _Content();
-      final reference = _plan(3);
-      final history = InMemoryChatController(
-        messages: [const Message.custom(id: 'completed', authorId: 'user')],
-      );
-      final saved = history.messages.single;
-      Widget view() => _host(
-        PlanDocumentConnector(
-          key: ValueKey(reference),
-          content: content,
-          reference: reference,
-          isCurrent: () => true,
-          documentBuilder: Text.new,
-        ),
-      );
-      await tester.pumpWidget(view());
-      await _frames(tester);
-      final scope = content.scopes.single;
-      for (var revision = 1; revision <= 5; revision++) {
-        content.activity.publish(
-          ActivitySnapshot(
-            revision: revision,
-            completedThrough: 0,
-            executionPresent: true,
-            entries: const [],
-          ),
-        );
-        await tester.pumpWidget(view());
-      }
-      expect(content.scopes.single, same(scope));
-      expect(content.reader.reads, hasLength(1));
-      content.reader.reads.single.$2.complete(_window('独立于慢历史的计划'));
-      await _frames(tester);
-      expect(find.text('独立于慢历史的计划'), findsOneWidget);
-      expect(history.messages.single, same(saved));
-      await tester.pumpWidget(const SizedBox());
-      await content.join();
-      history.dispose();
-    },
-  );
-
-  for (final failOld in [false, true]) {
-    testWidgets(
-      'B10/B15/B17: old Plan ${failOld ? 'error' : 'bytes'} cannot overwrite a new State reference',
-      (tester) async {
-        final content = _Content();
-        var current = _plan(3);
-        Widget view(ContentRef reference) => _host(
-          PlanDocumentConnector(
-            key: ValueKey(reference),
-            content: content,
-            reference: reference,
-            isCurrent: () => current == reference,
-            documentBuilder: Text.new,
-          ),
-        );
-        await tester.pumpWidget(view(current));
-        await _frames(tester);
-        final old = content.reader.reads.single.$2;
-        final oldScope = content.scopes.single;
-        current = _plan(4);
-        await tester.pumpWidget(view(current));
-        await _frames(tester);
-        expect(oldScope.isActive, isFalse);
-        content.reader.reads.last.$2.complete(_window('计划 v4'));
-        await _frames(tester);
-        if (failOld) {
-          old.completeError(StateError('旧文档失效'));
-        } else {
-          old.complete(_window('计划 v3'));
-        }
-        await _frames(tester);
-        expect(find.text('计划 v4'), findsOneWidget);
-        expect(find.text('计划 v3'), findsNothing);
-        expect(find.textContaining('旧文档失效'), findsNothing);
-        await tester.pumpWidget(const SizedBox());
-        await content.join();
-      },
-    );
-  }
-
-  testWidgets(
-    'B15: content failures remain visible and never fall back to history text',
-    (tester) async {
-      final content = _Content();
-      final reference = _plan(3);
-      await tester.pumpWidget(
-        _host(
-          PlanDocumentConnector(
-            key: ValueKey(reference),
-            content: content,
-            reference: reference,
-            isCurrent: () => true,
-            documentBuilder: Text.new,
-          ),
-        ),
-      );
-      await _frames(tester);
-      content.reader.reads.single.$2.completeError(StateError('缺少计划正文块'));
-      await _frames(tester);
-      expect(find.textContaining('缺少计划正文块'), findsOneWidget);
-      expect(content.reader.businessReads, 0);
-      await tester.pumpWidget(const SizedBox());
-      await content.join();
-    },
-  );
-
   for (final failOldPage in [false, true]) {
     testWidgets(
       'B11/B18: changed interaction refs retire the old second page ${failOldPage ? 'failure' : 'bytes'}, leaving the Plan window intact',
       (tester) async {
-        final content = _Content();
-        var current = _interactions(1);
-        final plan = _plan(3);
-        Widget view() => _host(
-          Column(
-            children: [
-              PlanDocumentConnector(
-                key: ValueKey(plan),
-                content: content,
-                reference: plan,
-                isCurrent: () => true,
-                documentBuilder: Text.new,
+        final h = await PlanDocumentHarness.open(
+          tester,
+          PlanDocumentTransport()..controlInteractionPages = true,
+        );
+        await h.publish(3, '保留的计划窗口');
+        final content = h.session.content;
+        Future<void> publishInteraction(int revision) async {
+          final previous = h.session.state.businessRefs?.interactions;
+          h.transport.seedConversationState(
+            'thread-main',
+            ThreadInteractionUpdate(
+              interaction: PendingInteraction(
+                id: 'shared-owner-question',
+                threadId: 'thread-main',
+                turnId: 'turn',
+                kind: InteractionKind.userInput,
+                title: '问题版本 $revision',
+                body: '',
+                revision: revision,
+                payload: const UserInputInteractionPayload(
+                  questions: [
+                    UserQuestionView(
+                      id: 'public',
+                      header: '问题',
+                      question: '只读详情',
+                      isOther: true,
+                      isSecret: false,
+                      options: [],
+                    ),
+                  ],
+                ),
               ),
-              InteractionDetailsConnector(
-                key: const ValueKey('details'),
-                content: content,
-                reference: current,
-                isCurrent: () => true,
+              pending: true,
+            ),
+          );
+          await pumpClientUntil(
+            tester,
+            () => h.session.state.businessRefs?.interactions != previous,
+            'Client accepted interaction reference $revision',
+          );
+        }
+
+        await publishInteraction(1);
+        var current = h.session.state.businessRefs!.interactions!;
+        final oldReference = current;
+        Future<void> mount() => h.mount(
+          layout: (plan) => Column(
+            children: [
+              Expanded(child: plan),
+              SizedBox(
+                height: 250,
+                child: SingleChildScrollView(
+                  child: InteractionDetailsConnector(
+                    key: const ValueKey('details'),
+                    content: content,
+                    reference: current,
+                    isCurrent: () => true,
+                  ),
+                ),
               ),
             ],
           ),
         );
-        await tester.pumpWidget(view());
+        await mount();
+        await h.body('保留的计划窗口');
+        final window = h.document.window;
+        final reads = h.transport.reads.length;
+        final attempt = h.session.content.currentAttemptId;
         await _frames(tester);
-        expect(content.reader.pages, isEmpty);
-        content.reader.reads.single.$2.complete(_window('保留的计划窗口'));
+        expect(
+          tester
+              .widget<InteractionDetailsConnector>(
+                find.byType(InteractionDetailsConnector),
+              )
+              .content,
+          same(h.session.content),
+        );
+        expect(h.transport.interactionPages, isEmpty);
         await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
-        await _frames(tester);
-        content.reader.pages.single.$3.complete(
-          _page(1, '当前问题', next: 'page-2'),
+        await pumpClientUntil(
+          tester,
+          () => h.transport.interactionPages.length == 1,
+          'first interaction page requested',
+        );
+        expect(h.transport.interactionPages.single.$1, current);
+        h.transport.interactionPages.single.$3.complete(
+          _page(
+            current.revision,
+            '当前问题',
+            next: 'page-2',
+            threadId: content.threadId,
+          ),
         );
         await _frames(tester);
+        expect(find.text('当前问题'), findsOneWidget);
         expect(find.textContaining('不可展示的原始字段'), findsNothing);
         await tester.tap(find.text(_l10n(tester).interactionDetailsNextPage));
-        await _frames(tester);
-        final oldPage = content.reader.pages.last;
+        await pumpClientUntil(
+          tester,
+          () => h.transport.interactionPages.length == 2,
+          'old second interaction page in flight',
+        );
+        final oldPage = h.transport.interactionPages.last;
+        expect(oldPage.$1, oldReference);
         expect(oldPage.$2, 'page-2');
-        current = _interactions(2);
-        await tester.pumpWidget(view());
+        await publishInteraction(2);
+        current = h.session.state.businessRefs!.interactions!;
+        expect(current.databaseId, oldReference.databaseId);
+        expect(current.collection, oldReference.collection);
+        expect(current.revision, greaterThan(oldReference.revision));
+        await mount();
+        await pumpClientUntil(
+          tester,
+          () => h.transport.interactionPages.length == 3,
+          'new scope reads before old second page completes',
+        );
+        expect(oldPage.$3.isCompleted, isFalse);
+        expect(h.transport.interactionPages.last.$1, current);
+        expect(h.transport.interactionPages.last.$2, isNull);
+        h.transport.interactionPages.last.$3.complete(
+          _page(current.revision, '新的问题切面', threadId: content.threadId),
+        );
         await _frames(tester);
-        expect(content.scopes[1].isActive, isFalse);
-        content.reader.pages.last.$3.complete(_page(2, '新的问题切面'));
+        expect(find.text('新的问题切面'), findsOneWidget);
         if (failOldPage) {
           oldPage.$3.completeError(
             const StudioFailure(
@@ -1088,17 +1019,31 @@ void main() {
             ),
           );
         } else {
-          oldPage.$3.complete(_page(1, '过期的第二页'));
+          oldPage.$3.complete(
+            _page(oldReference.revision, '过期的第二页', threadId: content.threadId),
+          );
         }
         await _frames(tester);
         expect(find.text('新的问题切面'), findsOneWidget);
         expect(find.text('过期的第二页'), findsNothing);
         expect(find.textContaining('旧交互版本失效'), findsNothing);
-        expect(find.text('保留的计划窗口'), findsOneWidget);
-        expect(content.scopes.first.isActive, isTrue);
-        expect(content.reader.businessReads, 0);
-        await tester.pumpWidget(const SizedBox());
-        await content.join();
+        expect(
+          find.text(const StaleConversationScope().toString()),
+          findsNothing,
+        );
+        expect(
+          find.textContaining('保留的计划窗口', findRichText: true),
+          findsOneWidget,
+        );
+        expect(h.document.window, same(window));
+        expect(h.transport.reads, hasLength(reads));
+        expect(h.session.content.currentAttemptId, attempt);
+        expect(h.session.content, same(content));
+        expect(content.isClosed, isFalse);
+        expect(content.state.value, isA<ChatReady<bool>>());
+        expect(h.transport.interactionPages, hasLength(3));
+        expect(h.transport.businessReads, 0);
+        await h.close();
       },
     );
   }

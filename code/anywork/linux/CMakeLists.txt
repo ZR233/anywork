@@ -194,8 +194,9 @@ install(FILES "io.github.zr233.anywork.desktop"
   DESTINATION "${CMAKE_INSTALL_PREFIX}/share/applications" COMPONENT Runtime)
 install(PROGRAMS "install-desktop-entry.py"
   DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
-install(FILES "../../../design/assets/anywork-app-icon.png"
-  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/1024x1024/apps"
+# Use a size registered by the system hicolor theme so named icon lookup works.
+install(FILES "../../../design/assets/anywork-app-icon-512.png"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/512x512/apps"
   RENAME "io.github.zr233.anywork.png" COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"

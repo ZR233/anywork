@@ -27,6 +27,20 @@ pub(crate) enum OpenAiRequestBody {
 }
 
 impl OpenAiRequestBody {
+    /// Model and native overlays cannot replace the host's resolved cache affinity.
+    pub(crate) fn validate_prompt_cache_key(&self, expected: Option<&str>) -> Result<()> {
+        let body = match self {
+            Self::Responses(body) | Self::Chat(body) => body,
+        };
+        let expected = expected.map(|key| Value::String(key.to_owned()));
+        if body.get("prompt_cache_key") != expected.as_ref() {
+            return Err(protocol_error(
+                "prompt_cache_key must match the runtime-resolved PromptCacheScope; model body, parameter wire and native options cannot override it",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_chatgpt(&self, original: &Self) -> Result<()> {
         match (self, original) {
             (Self::Responses(body), Self::Responses(original)) => {

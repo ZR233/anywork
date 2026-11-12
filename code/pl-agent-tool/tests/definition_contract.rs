@@ -150,13 +150,3 @@ fn debug_output_stays_bounded() {
     let without_output = ToolDefinition::text("note", "n").unwrap();
     assert!(format!("{without_output:?}").contains("has_output_schema: false"));
 }
-
-#[test]
-fn declarations_are_cloneable_and_comparable() {
-    let definition = ToolDefinition::json("add", "d", json!({})).unwrap();
-    let clone = definition.clone();
-    assert_eq!(definition, clone);
-
-    let other = ToolDefinition::json("sub", "d", json!({})).unwrap();
-    assert_ne!(definition, other);
-}

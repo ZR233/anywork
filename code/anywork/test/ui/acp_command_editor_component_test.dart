@@ -1,6 +1,6 @@
 import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
-import 'package:anywork/src/features/settings/accounts/previews/account_preview_fixtures.dart';
-import 'package:anywork/src/features/settings/accounts/previews/account_preview_host.dart';
+import 'package:anywork_previews/src/features/settings/accounts/previews/account_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/settings/accounts/previews/account_preview_host.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';

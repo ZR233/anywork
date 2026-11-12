@@ -253,7 +253,7 @@ final class _DraftTransport extends AccountsTestTransport
       promptEntered.complete(input);
     else if (!secondPromptEntered.isCompleted)
       secondPromptEntered.complete(input);
-    if (promptCalls == 2 && secondPromptReply != null) {
+    if (secondPromptEntered.isCompleted && secondPromptReply != null) {
       return secondPromptReply!.future;
     }
     return promptReply.future;
@@ -582,6 +582,25 @@ Future<AnyworkClient> _client(
   return client;
 }
 
+const _knownPromptRejection = StudioFailure(
+  code: StudioFailureCode.busy,
+  message: 'Prompt rejected before acceptance',
+  retryable: true,
+  correlationId: 'known-prompt-rejection',
+);
+
+Future<void> _rejectComposerSubmission(
+  ComposerDraftOwner owner,
+  _DraftTransport transport,
+) async {
+  transport.promptFailure = _knownPromptRejection;
+  try {
+    await owner.submit();
+  } finally {
+    transport.promptFailure = null;
+  }
+}
+
 Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
   await client.drafts.startDraft.close();
   await client.drafts.composer('thread').close();
@@ -852,25 +871,21 @@ void main() {
     await _close(client, transport);
   });
 
-  test('preparation failure cancels pre-registered input evidence without dispatch', () async {
-    final transport = _DraftTransport();
+  test('known rejection cancels pre-registered input evidence', () async {
+    final transport = _DraftTransport()..promptFailure = _knownPromptRejection;
     final client = await _client(transport);
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     final owner = client.drafts.composer('thread')
       ..updateDraft('prepare failure');
-    await owner.submit(
-      beforeSubmit: () async {
-        throw StateError('preparation failed');
-      },
-    );
-    expect(transport.promptCalls, 0);
+    await owner.submit();
+    expect(transport.promptCalls, 1);
     expect(client.mutations.operations.single.phase, OperationPhase.rejected);
     expect(owner.state.draft, isEmpty);
     expect(
       owner.submissions.value.single.phase,
       ComposerSubmissionPhase.failed,
     );
-    expect(owner.submissions.value.single.error, isA<StateError>());
+    expect(owner.submissions.value.single.error, same(_knownPromptRejection));
     await _close(client, transport);
   });
 
@@ -983,14 +998,8 @@ void main() {
         .deliverWorkspace(_workspace(thread: _thread('thread', 'parent')));
     final owner = client.drafts.composer('thread');
     owner.updateDraft('  子会话只读\n');
-    var prepared = false;
-    await owner.submit(
-      beforeSubmit: () async {
-        prepared = true;
-      },
-    );
+    await owner.submit();
     await owner.addLocalAttachments(['/child.bin']);
-    expect(prepared, isFalse);
     expect(transport.promptCalls, 0);
     expect(transport.admissionCalls, 0);
     expect(owner.state.draft, '  子会话只读\n');
@@ -1268,30 +1277,17 @@ void main() {
     final owner = client.drafts.composer('thread')
       ..updateDraft('frozen before wait');
     await owner.addLocalAttachments(['/frozen.bin']);
-    final preparation = Completer<void>();
-    final preparationStarted = Completer<void>();
-    var prepared = false;
-    final submission = owner.submit(
-      beforeSubmit: () async {
-        prepared = true;
-        preparationStarted.complete();
-        await preparation.future;
-      },
-    );
+    final submission = owner.submit();
 
     final sending = owner.submissions.value.single;
     expect(sending.phase, ComposerSubmissionPhase.sending);
     expect(sending.text, 'frozen before wait');
     expect(sending.attachments.single.id, 'attachment-1-0');
-    expect(prepared, isFalse);
-    await preparationStarted.future;
-    expect(prepared, isTrue);
 
     owner
       ..updateDraft('new editable draft')
       ..markInputsPresented([sending.inputId]);
     expect(owner.submissions.value, isEmpty);
-    preparation.complete();
     final input = await transport.promptEntered.future;
     transport.promptReply.complete(
       SubmitPromptReceipt(
@@ -1373,7 +1369,6 @@ void main() {
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     final owner = client.drafts.composer('thread')..updateDraft('frozen text');
     await owner.addLocalAttachments(['/frozen.bin']);
-    final preparation = Completer<void>();
     final reentrant = owner.submissions.watch((submissions) {
       if (submissions.isNotEmpty &&
           submissions.single.phase == ComposerSubmissionPhase.sending) {
@@ -1381,13 +1376,12 @@ void main() {
       }
     });
 
-    final submission = owner.submit(beforeSubmit: () => preparation.future);
+    final submission = owner.submit();
     final frozen = owner.submissions.value.single;
     expect(owner.state.draft, 'synchronous reentrant edit');
     expect(frozen.text, 'frozen text');
     expect(frozen.attachments.single.id, 'attachment-1-0');
 
-    preparation.complete();
     final input = await transport.promptEntered.future;
     expect(input.text, frozen.text);
     expect(input.attachmentDraftIds, [frozen.attachments.single.id]);
@@ -1442,19 +1436,19 @@ void main() {
     final owner = client.drafts.composer('thread')
       ..updateDraft('frozen request');
     await owner.addLocalAttachments(['/retry-owned.bin']);
-    final gate = Completer<void>();
-    final first = owner.submit(beforeSubmit: () => gate.future);
+    transport.promptFailure = _knownPromptRejection;
+    final first = owner.submit();
     expect(owner.state.draft, isEmpty);
     expect(owner.state.attachments, isEmpty);
     final sending = owner.submissions.value.single;
     expect(sending.text, 'frozen request');
     expect(sending.attachments.single.id, 'attachment-1-0');
     owner.updateDraft('new editor text');
-    gate.completeError(StateError('display not ready'));
     await first;
+    transport.promptFailure = null;
     final failed = owner.submissions.value.single;
     expect(failed.phase, ComposerSubmissionPhase.failed);
-    expect(failed.error, isA<StateError>());
+    expect(failed.error, same(_knownPromptRejection));
     expect(owner.state.draft, 'new editor text');
 
     final retry = owner.retrySubmission(failed.inputId);
@@ -1487,16 +1481,13 @@ void main() {
     final owner = client.drafts.composer('thread')
       ..updateDraft('retry then close');
     await owner.addLocalAttachments(['/retry-close.bin']);
-    await owner.submit(
-      beforeSubmit: () =>
-          Future.error(StateError('known pre-dispatch failure')),
-    );
+    await _rejectComposerSubmission(owner, transport);
     final failed = owner.submissions.value.single;
     final retry = owner.retrySubmission(failed.inputId);
     final closing = owner.close();
     await expectLater(retry, completes);
     await closing;
-    expect(transport.promptCalls, 0);
+    expect(transport.promptCalls, 1);
     expect(transport.removed, ['attachment-1-0']);
   });
 
@@ -1511,10 +1502,7 @@ void main() {
       final owner = client.drafts.composer('thread')
         ..updateDraft('failed payload');
       await owner.addLocalAttachments(['/same-path.bin']);
-      await owner.submit(
-        beforeSubmit: () =>
-            Future.error(StateError('known pre-dispatch failure')),
-      );
+      await _rejectComposerSubmission(owner, transport);
       final failed = owner.submissions.value.single;
       owner.updateDraft('new payload');
       await owner.addLocalAttachments(['/same-path.bin']);
@@ -1543,9 +1531,7 @@ void main() {
       final owner = client.drafts.composer('thread')
         ..updateDraft('known failed payload');
       await owner.addLocalAttachments(['/remove-close.bin']);
-      await owner.submit(
-        beforeSubmit: () => Future.error(StateError('known dispatch failure')),
-      );
+      await _rejectComposerSubmission(owner, transport);
       final inputId = owner.submissions.value.single.inputId;
       Future<void>? closing;
       var closeFinished = false;
@@ -1631,9 +1617,7 @@ void main() {
     final owner = client.drafts.composer('thread')
       ..updateDraft('removable failed input');
     await owner.addLocalAttachments(['/remove-close.bin']);
-    await owner.submit(
-      beforeSubmit: () => Future.error(StateError('known send failure')),
-    );
+    await _rejectComposerSubmission(owner, transport);
     final inputId = owner.submissions.value.single.inputId;
     Future<void>? closing;
     var closeFinished = false;
@@ -1773,44 +1757,6 @@ void main() {
   );
 
   test(
-    'a later submission waits behind an earlier hook in beforeDispatch',
-    () async {
-      final transport = _DraftTransport()
-        ..secondPromptReply = Completer<SubmitPromptReceipt>();
-      final client = await _client(transport);
-      await client.conversations
-          .session('thread')
-          .deliverWorkspace(_workspace());
-      final owner = client.drafts.composer('thread')
-        ..updateDraft('A with display hook');
-      final hook = Completer<void>();
-      final aFuture = owner.submit(beforeSubmit: () => hook.future);
-      owner.updateDraft('B without display hook');
-      final bFuture = owner.submit();
-      expect(transport.promptCalls, 0);
-
-      hook.complete();
-      final a = await transport.promptEntered.future;
-      expect(a.text, 'A with display hook');
-      transport.promptReply.complete(
-        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 30),
-      );
-      await aFuture;
-      final b = await transport.secondPromptEntered.future;
-      expect(b.text, 'B without display hook');
-      expect(transport.promptInputs.map((input) => input.text), [
-        'A with display hook',
-        'B without display hook',
-      ]);
-      transport.secondPromptReply!.complete(
-        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 31),
-      );
-      await bFuture;
-      await _close(client, transport);
-    },
-  );
-
-  test(
     'retry reserves the lane before a subsequent independent composer submit',
     () async {
       final transport = _DraftTransport()
@@ -1821,15 +1767,12 @@ void main() {
           .deliverWorkspace(_workspace());
       final owner = client.drafts.composer('thread')..updateDraft('retry A');
       await owner.addLocalAttachments(['/retry-lane.bin']);
-      await owner.submit(
-        beforeSubmit: () =>
-            Future.error(StateError('known failure before send')),
-      );
+      await _rejectComposerSubmission(owner, transport);
       final failed = owner.submissions.value.single;
       final retry = owner.retrySubmission(failed.inputId);
       owner.updateDraft('independent B');
       final bFuture = owner.submit();
-      expect(transport.promptCalls, 0);
+      expect(transport.promptCalls, 1);
 
       final a = await transport.promptEntered.future;
       expect(a.text, 'retry A');
@@ -1841,51 +1784,13 @@ void main() {
       expect(b.text, 'independent B');
       expect(transport.promptInputs.map((input) => input.text), [
         'retry A',
+        'retry A',
         'independent B',
       ]);
       transport.secondPromptReply!.complete(
         SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 33),
       );
       await bFuture;
-      await _close(client, transport);
-    },
-  );
-
-  test(
-    'a later draft cannot pass an earlier draft blocked in beforeDispatch',
-    () async {
-      final transport = _DraftTransport()
-        ..secondPromptReply = Completer<SubmitPromptReceipt>();
-      final client = await _client(transport);
-      await client.conversations
-          .session('thread')
-          .deliverWorkspace(_workspace());
-      final owner = client.drafts.composer('thread')
-        ..updateDraft('A with display hook');
-      final hook = Completer<void>();
-      final first = owner.submit(beforeSubmit: () => hook.future);
-      owner.updateDraft('B without display hook');
-      final second = owner.submit();
-      expect(transport.promptCalls, 0);
-
-      hook.complete();
-      final a = await transport.promptEntered.future;
-      expect(a.text, 'A with display hook');
-      expect(transport.promptInputs, [a]);
-      transport.promptReply.complete(
-        SubmitPromptReceipt(threadId: 'thread', inputId: a.inputId, cursor: 30),
-      );
-      await first;
-      final b = await transport.secondPromptEntered.future;
-      expect(b.text, 'B without display hook');
-      expect(transport.promptInputs.map((input) => input.text), [
-        'A with display hook',
-        'B without display hook',
-      ]);
-      transport.secondPromptReply!.complete(
-        SubmitPromptReceipt(threadId: 'thread', inputId: b.inputId, cursor: 31),
-      );
-      await second;
       await _close(client, transport);
     },
   );
@@ -1901,15 +1806,12 @@ void main() {
           .deliverWorkspace(_workspace());
       final owner = client.drafts.composer('thread')..updateDraft('retry A');
       await owner.addLocalAttachments(['/retry-lane.bin']);
-      await owner.submit(
-        beforeSubmit: () =>
-            Future.error(StateError('known failure before send')),
-      );
+      await _rejectComposerSubmission(owner, transport);
       final failed = owner.submissions.value.single;
       final retry = owner.retrySubmission(failed.inputId);
       owner.updateDraft('independent B');
       final second = owner.submit();
-      expect(transport.promptCalls, 0);
+      expect(transport.promptCalls, 1);
       final a = await transport.promptEntered.future;
       expect(a.text, 'retry A');
       transport.promptReply.complete(
@@ -1919,6 +1821,7 @@ void main() {
       final b = await transport.secondPromptEntered.future;
       expect(b.text, 'independent B');
       expect(transport.promptInputs.map((input) => input.text), [
+        'retry A',
         'retry A',
         'independent B',
       ]);
@@ -3025,66 +2928,52 @@ void main() {
     await _close(client, transport);
   });
 
-  test(
-    'the preparation hook runs after freezing and before the backend submit',
-    () async {
-      final transport = _DraftTransport();
-      final client = await _client(transport);
-      await client.conversations
-          .session('thread')
-          .deliverWorkspace(_workspace());
-      final owner = client.drafts.composer('thread');
-      owner.updateDraft('prepare before sending');
-      await owner.addLocalAttachments(['/payload.bin']);
-
-      var hookCalls = 0;
-      String? frozenTarget;
-      final submission = owner.submit(
-        beforeSubmit: () async {
-          hookCalls += 1;
-          // 冻结目标与冻结附件在钩子运行前已经成立，后端此刻还没有收到提交。
-          frozenTarget = client.mutations.operations.single.target;
-          expect(transport.promptCalls, 0);
-          expect(owner.state.draft, isEmpty);
-          expect(
-            owner.submissions.value.single.phase,
-            ComposerSubmissionPhase.sending,
-          );
-        },
-      );
-      final input = await transport.promptEntered.future;
-      transport.promptReply.complete(
-        SubmitPromptReceipt(
-          threadId: 'thread',
-          inputId: input.inputId,
-          cursor: 3,
-        ),
-      );
-      await submission;
-      expect(hookCalls, 1);
-      expect(frozenTarget, 'submit:thread');
-      expect(transport.promptCalls, 1);
-      await _close(client, transport);
-    },
-  );
-
-  test('a failing preparation is a known non-submission and keeps the draft usable', () async {
+  test('retiring display observation does not cancel handed-off input or clear a new draft', () async {
     final transport = _DraftTransport();
     final client = await _client(transport);
     await client.conversations.session('thread').deliverWorkspace(_workspace());
     final owner = client.drafts.composer('thread');
-    owner.updateDraft('send after display preparation');
+    owner.updateDraft('send without display observation');
     await owner.addLocalAttachments(['/payload.bin']);
-    const failure = StudioFailure(
-      code: StudioFailureCode.storage,
-      message: 'display preparation failed',
-      retryable: true,
-      correlationId: 'prepare-failure',
-    );
 
-    await owner.submit(beforeSubmit: () => Future.error(failure));
-    // 展示准备发生在 backend 提交之前：这是已知未提交，不是未知结果。
-    expect(transport.promptCalls, 0);
+    final observation = owner.submissions.watch((_) {});
+    final submission = owner.submit();
+    final echo = owner.submissions.value.single;
+    expect(client.mutations.operations.single.target, 'submit:thread');
+    expect(owner.state.draft, isEmpty);
+    expect(echo.phase, ComposerSubmissionPhase.sending);
+    observation.cancel();
+    client.conversations.setVisibleThread(null);
+    owner.updateDraft('new draft after display retirement');
+    await owner.addLocalAttachments(['/new-payload.bin']);
+    final input = await transport.promptEntered.future;
+    expect(input.inputId, echo.inputId);
+    expect(input.text, 'send without display observation');
+    expect(input.attachmentDraftIds, ['attachment-1-0']);
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 3,
+      ),
+    );
+    await submission;
+    expect(transport.promptCalls, 1);
+    expect(owner.state.draft, 'new draft after display retirement');
+    expect(owner.state.attachments.single.id, 'attachment-2-0');
+    await _close(client, transport);
+  });
+
+  test('a known backend rejection keeps the frozen input retryable', () async {
+    final transport = _DraftTransport();
+    final client = await _client(transport);
+    await client.conversations.session('thread').deliverWorkspace(_workspace());
+    final owner = client.drafts.composer('thread');
+    owner.updateDraft('retry rejected payload');
+    await owner.addLocalAttachments(['/payload.bin']);
+
+    await _rejectComposerSubmission(owner, transport);
+    expect(transport.promptCalls, 1);
     expect(
       client.mutations.operations.single.phase,
       isNot(OperationPhase.unknownOutcome),
@@ -3096,10 +2985,7 @@ void main() {
       owner.submissions.value.single.phase,
       ComposerSubmissionPhase.failed,
     );
-    expect(
-      owner.submissions.value.single.text,
-      'send after display preparation',
-    );
+    expect(owner.submissions.value.single.text, 'retry rejected payload');
     expect(
       owner.submissions.value.single.attachments.single.id,
       'attachment-1-0',
@@ -3108,7 +2994,7 @@ void main() {
     // 草稿没有被永久封住：再次提交可以真正进入后端。
     final submission = owner.retrySubmission(failedInputId);
     final input = await transport.promptEntered.future;
-    expect(transport.promptCalls, 1);
+    expect(transport.promptCalls, 2);
     expect(input.attachmentDraftIds, ['attachment-1-0']);
     transport.promptReply.complete(
       SubmitPromptReceipt(

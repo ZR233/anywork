@@ -30,7 +30,7 @@ struct OpenedCompletionStream {
 }
 /// 单次模型调用的运行期上下文。
 ///
-/// 连接 continuation 属于 [`ModelSession`]；trace、事件输出和 prompt cache key
+/// 连接 continuation 属于 [`ModelSession`]；trace、事件输出和 prompt cache scope
 /// 只在当前调用内有效，不进入 canonical completion request。
 #[derive(Debug, Clone)]
 pub struct ModelInvocationContext {
@@ -39,7 +39,7 @@ pub struct ModelInvocationContext {
     trace: Option<CompletionTraceContext>,
     trace_sink: Option<Arc<dyn TraceEventSink>>,
     cancellation: Option<tokio_util::sync::CancellationToken>,
-    prompt_cache_key: Option<String>,
+    prompt_cache_scope: Option<super::PromptCacheScope>,
     progress: Option<pl_core::model::ModelProgressSender>,
     members: Option<pl_core::model::ModelMemberSender>,
 }
@@ -76,10 +76,6 @@ impl ModelInvocationContext {
         }
     }
 
-    pub(super) fn prompt_cache_key(&self) -> Option<String> {
-        self.prompt_cache_key.clone()
-    }
-
     pub(super) fn with_session(mut self, session: ModelSession) -> Self {
         self.session = session;
         self
@@ -93,7 +89,7 @@ impl ModelInvocationContext {
             trace: None,
             trace_sink: None,
             cancellation: None,
-            prompt_cache_key: None,
+            prompt_cache_scope: None,
             progress: None,
             members: None,
         }
@@ -123,8 +119,9 @@ impl ModelInvocationContext {
         self
     }
 
-    pub fn with_prompt_cache_key(mut self, prompt_cache_key: Option<String>) -> Self {
-        self.prompt_cache_key = prompt_cache_key;
+    /// Supplies stable host ownership; the bound runtime resolves endpoint support and the wire key.
+    pub fn with_prompt_cache_scope(mut self, scope: super::PromptCacheScope) -> Self {
+        self.prompt_cache_scope = Some(scope);
         self
     }
     fn begin_retry(&self, error: &mut CompletionFailure) -> Result<()> {
@@ -772,11 +769,13 @@ impl InvocationRunner {
             | pl_protocol::ToolSpec::WebSearch { .. } => true,
         });
         let is_compaction = self.purpose == InvocationPurpose::RemoteCompaction;
-        let (body, mut model_observation) =
-            match self.prepare_request_body(request, context.prompt_cache_key.as_deref()) {
-                Ok(prepared) => prepared,
-                Err(error) => return (Err(error.into()), true),
-            };
+        let (body, mut model_observation) = match self
+            .prompt_cache_key(context)
+            .and_then(|key| self.prepare_request_body(request, key.as_deref()))
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return (Err(error.into()), true),
+        };
         let opening = self.stream_events(body, context.session.clone(), trace.clone());
         tokio::pin!(opening);
         let opened = match context.cancellation.as_ref() {
@@ -861,11 +860,28 @@ impl InvocationRunner {
         }
     }
 
+    pub(super) fn prompt_cache_key(
+        &self,
+        context: &ModelInvocationContext,
+    ) -> Result<Option<String>> {
+        context
+            .prompt_cache_scope
+            .as_ref()
+            .map(|scope| scope.resolve(&self.account_id, &self.endpoint, &self.model))
+            .transpose()
+            .map(Option::flatten)
+    }
+
     fn prepare_request_body(
         &self,
         request: CompletionRequest,
         prompt_cache_key: Option<&str>,
     ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
+        let prompt_cache_key = prompt_cache_key.filter(|_| {
+            self.endpoint
+                .effective_prompt_cache_policy(&self.model)
+                .uses_prompt_cache_key()
+        });
         let request = super::context::project_request(
             &self.endpoint,
             &self.model,
@@ -882,6 +898,7 @@ impl InvocationRunner {
         let original = self.endpoint.chatgpt_session.as_ref().map(|_| body.clone());
         body.apply_native_options(&self.native_body);
         body.reject_reserved_instruction_channel()?;
+        body.validate_prompt_cache_key(prompt_cache_key)?;
         if let Some(original) = &original {
             body.validate_chatgpt(original)?;
         }
@@ -1092,6 +1109,10 @@ impl InvocationRunner {
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+#[path = "invocation_cache_tests.rs"]
+mod cache_tests;
 
 #[cfg(test)]
 #[path = "invocation_chatgpt_tests.rs"]

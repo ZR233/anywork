@@ -39,7 +39,7 @@ pub(crate) enum Command {
     ManualGui(ToolOptions),
     /// Run the anywork desktop app.
     RunGui(RunGuiOptions),
-    /// Build release artifacts for the current desktop OS.
+    /// Build the current desktop app (release by default).
     BuildGui(BuildGuiOptions),
     /// Stage or verify a platform release; finalize Windows signatures.
     ReleaseGui {
@@ -185,6 +185,9 @@ impl LogLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Args)]
 pub(crate) struct BuildGuiOptions {
+    /// Build a debug bundle without staging release artifacts.
+    #[arg(long)]
+    pub(crate) debug: bool,
     /// Build with ANYWORK_DEMO=true.
     #[arg(long)]
     pub(crate) demo: bool,
@@ -277,6 +280,30 @@ fn parse_forwarded_command(args: &[OsString]) -> Option<Command> {
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
+
+    #[test]
+    fn debug_native_inspection_accepts_exit_report_without_profile() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--inspect",
+            "--native-launch",
+            "--native-exit-report",
+            "evidence with spaces/native-exit.json",
+        ])
+        .expect("debug native acceptance keeps the official inspection entrypoint");
+        let Command::RunGui(options) = cli.command else {
+            panic!("run-gui command expected");
+        };
+        assert!(options.native_launch && options.inspect && options.capture);
+        assert!(!options.profile && !options.release && !options.demo);
+        assert!(options.native_launch_target.is_none());
+        assert_eq!(
+            options.native_exit_report,
+            Some("evidence with spaces/native-exit.json".into())
+        );
+    }
 
     #[test]
     fn profile_inspection_keeps_native_and_non_release_guards() {

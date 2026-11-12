@@ -10,6 +10,7 @@ use pl_dev_support::paths;
 use pl_dev_support::process;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -145,6 +146,17 @@ pub(crate) fn verify_gui() -> Result<()> {
     let app_dir = paths::studio_app_dir(&workspace_root);
     print_context(&workspace_root, &app_dir);
     codegen::check_gui_generated_sources(&workspace_root, &app_dir)?;
+    run_tool(
+        "flutter",
+        &[
+            "pub",
+            "get",
+            "--enforce-lockfile",
+            "--directory",
+            "../anywork_previews",
+        ],
+        &app_dir,
+    )?;
     run_tool("cargo", &["fmt", "--all", "--check"], &workspace_root)?;
     run_tool(
         "dart",
@@ -156,13 +168,14 @@ pub(crate) fn verify_gui() -> Result<()> {
             "test",
             "tool",
             "integration_test",
+            "../anywork_previews/lib",
         ],
         &app_dir,
     )?;
     run_flutter(
         &workspace_root,
         &app_dir,
-        &["analyze", "--no-pub"],
+        &["analyze", "--no-pub", ".", "../anywork_previews"],
         DemoMode::Native,
     )?;
     run_tool(
@@ -428,6 +441,7 @@ fn run_gui_native_launch(
     configure_native_engine_environment(&mut command);
     let program = executable.to_string_lossy().into_owned();
     let display = process::display_command(&program, &[]);
+    publish_native_launch_boundary(&mut std::io::stdout().lock())?;
     let native_started = std::time::Instant::now();
     let exit = process::run_resident_reporting(&mut command, &display)?;
     let report = NativeExitReport::from_exit(&exit, native_started.elapsed());
@@ -446,6 +460,83 @@ fn run_gui_native_launch(
         report.reclaimed_descendants.len()
     );
     Ok(())
+}
+
+/// The VM readiness budget starts here, after every build and artifact check.
+/// Failure to publish the complete line must abort before any native spawn.
+fn publish_native_launch_boundary(output: &mut impl Write) -> Result<()> {
+    output
+        .write_all(b"startup_stage=native_launch_ready\n")
+        .context("failed to publish native launch boundary")?;
+    output
+        .flush()
+        .context("failed to flush native launch boundary")
+}
+
+#[cfg(test)]
+mod native_startup_stage_tests {
+    use super::publish_native_launch_boundary;
+    use std::io::{self, Write};
+
+    #[derive(Default)]
+    struct BoundaryOutput {
+        bytes: Vec<u8>,
+        flushed: bool,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    impl Write for BoundaryOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("stage write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                return Err(io::Error::other("stage flush failed"));
+            }
+            self.flushed = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn launch_boundary_is_a_complete_flushed_line() -> anyhow::Result<()> {
+        let mut output = BoundaryOutput::default();
+        publish_native_launch_boundary(&mut output)?;
+        assert_eq!(output.bytes, b"startup_stage=native_launch_ready\n");
+        assert!(output.flushed);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_errors_are_preserved() {
+        for mut output in [
+            BoundaryOutput {
+                fail_write: true,
+                ..Default::default()
+            },
+            BoundaryOutput {
+                fail_flush: true,
+                ..Default::default()
+            },
+        ] {
+            let error = publish_native_launch_boundary(&mut output).unwrap_err();
+            let diagnostic = format!("{error:#}");
+            assert!(
+                diagnostic.contains(if output.fail_write {
+                    "stage write failed"
+                } else {
+                    "stage flush failed"
+                }),
+                "{diagnostic}"
+            );
+        }
+    }
 }
 
 /// Structured, machine-readable record of a native artifact's real exit.
@@ -604,7 +695,6 @@ fn run_gui_args<'a>(
 pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace_root);
-    let dist_dir = paths::release_dist_dir(&workspace_root);
     let target = DesktopTarget::current()?;
     let app_version = studio_version::read(&app_dir)?;
     print_context(&workspace_root, &app_dir);
@@ -620,9 +710,13 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
-    let args = build_gui_args(target, &version_define);
-    let bridge_artifacts =
-        prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Release)?;
+    let configuration = if options.debug {
+        BridgeConfiguration::Debug
+    } else {
+        BridgeConfiguration::Release
+    };
+    let args = build_gui_args(target, &version_define, configuration);
+    let bridge_artifacts = prepare_bridge_artifacts(&workspace_root, demo_mode, configuration)?;
     run_flutter_with_process_mode(
         &workspace_root,
         &app_dir,
@@ -636,7 +730,16 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         },
     )?;
 
+    if options.debug {
+        println!(
+            "Debug build complete. Output: {}",
+            target.native_bundle_dir(&app_dir, false).display()
+        );
+        return Ok(());
+    }
+
     let artifact_dir = target.release_artifact_dir(&app_dir);
+    let dist_dir = paths::release_dist_dir(&workspace_root);
 
     let clean_mode = if options.no_clean {
         DistCleanMode::KeepExisting
@@ -646,11 +749,19 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
     copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)
 }
 
-fn build_gui_args(target: DesktopTarget, version_define: &str) -> Vec<&str> {
+fn build_gui_args(
+    target: DesktopTarget,
+    version_define: &str,
+    configuration: BridgeConfiguration,
+) -> Vec<&str> {
     vec![
         "build",
         target.flutter_name(),
-        "--release",
+        match configuration {
+            BridgeConfiguration::Debug => "--debug",
+            BridgeConfiguration::Profile => "--profile",
+            BridgeConfiguration::Release => "--release",
+        },
         version_define,
         "--no-pub",
     ]

@@ -18,7 +18,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../integration_test/support/acp_scene_transport.dart';
+import '../support/acp_scene_transport.dart';
 import '../support/pump_client_future.dart';
 
 void main() {

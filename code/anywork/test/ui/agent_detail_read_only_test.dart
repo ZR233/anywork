@@ -197,6 +197,21 @@ void main() {
 
     expect(find.byKey(StudioDriverKeys.agentReadOnlyPanel), findsOneWidget);
     expect(find.text('Child session (read-only)'), findsOneWidget);
+    final scope = tester
+        .widget<Tooltip>(
+          find.ancestor(
+            of: find.byIcon(Icons.lock_outline),
+            matching: find.byType(Tooltip),
+          ),
+        )
+        .message!;
+    expect(find.text(scope), findsNothing, reason: '固定教学描述不再占据只读底栏');
+    expect(
+      find.semantics.byPredicate(
+        (node) => node.getSemanticsData().tooltip == scope,
+      ),
+      findsOne,
+    );
     // 没有中断工作、也没有当前执行时，不声称等待主智能体调度。
     expect(find.byKey(const ValueKey('agent-readonly-waiting')), findsNothing);
 
@@ -205,6 +220,14 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('agent-readonly-waiting')), findsNothing);
     expect(find.byKey(StudioDriverKeys.agentReadOnlyPanel), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(StudioDriverKeys.agentReadOnlyPanel),
+        matching: find.text('Running'),
+      ),
+      findsOneWidget,
+      reason: '运行快照与目录状态只合成一枚状态徽标，不重复展示',
+    );
 
     // canonical 确实有未认领继续点且没有当前执行时才说明等待调度。
     await fixture.publishRuntime(execution: null, continuation: _continuation);

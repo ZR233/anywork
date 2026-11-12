@@ -28,9 +28,10 @@ void main(List<String> arguments) {
 void _runClientBoundary(Directory root) {
   final client = Directory('${root.path}/code/anywork_client/lib');
   final app = Directory('${root.path}/code/anywork/lib');
+  final previews = Directory('${root.path}/code/anywork_previews/lib');
   final diagnostics = <String>[];
   var checked = 0;
-  for (final directory in [client, app]) {
+  for (final directory in [client, app, previews]) {
     if (!directory.existsSync()) {
       diagnostics.add(
         'required source directory is missing: ${directory.path}',
@@ -186,6 +187,14 @@ const _acpRoot = 'code/anywork/lib/src/features/conversation/acp/';
 // Normalize package and relative imports to the same source boundary. This
 // does not resolve symbols or infer ownership from a type's name.
 String _sourcePath(String from, String uri) {
+  if (uri.startsWith('package:anywork_previews/')) {
+    return Uri.parse(
+      uri.replaceFirst(
+        'package:anywork_previews/',
+        'code/anywork_previews/lib/',
+      ),
+    ).normalizePath().toString();
+  }
   if (uri.startsWith('package:anywork/')) {
     return Uri.parse(uri.replaceFirst('package:anywork/', 'code/anywork/lib/'))
         .normalizePath()
@@ -302,10 +311,12 @@ bool _isForbiddenUiPath(String path) =>
 
 bool _isFollowedUiUri(String uri) =>
     uri.startsWith('package:anywork/') ||
+    uri.startsWith('package:anywork_previews/') ||
     !(uri.startsWith('package:') || uri.startsWith('dart:'));
 
 bool _isUiFollowedPath(String path) =>
     path.startsWith('code/anywork/lib/') ||
+    path.startsWith('code/anywork_previews/lib/') ||
     path.startsWith('code/anywork/test/');
 
 bool _isAccountPresentation(String path) =>
@@ -351,18 +362,24 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   final bool isClient;
   final _classes = <ClassDeclaration>[];
 
-  bool get isFeature => path.startsWith('code/anywork/lib/src/features/');
+  // Development previews retain their feature's presentation rules after
+  // moving out of the production package. Diagnostics still use the real path.
+  String get applicationPath =>
+      path.replaceFirst('code/anywork_previews/lib/', 'code/anywork/lib/');
+
+  bool get isFeature =>
+      applicationPath.startsWith('code/anywork/lib/src/features/');
   bool get isProvider =>
       path.startsWith('code/anywork/lib/src/presentation/providers/');
   bool get isCommand =>
       path.contains('/commands/') || path.endsWith('_commands.dart');
-  bool get isAccountFeature => path.startsWith(_accountsRoot);
-  bool get isAccountPresentation => _isAccountPresentation(path);
+  bool get isAccountFeature => applicationPath.startsWith(_accountsRoot);
+  bool get isAccountPresentation => _isAccountPresentation(applicationPath);
   bool get isAccountState => path.startsWith('${_accountsRoot}state/');
   bool get isAccountViewModel =>
       path.startsWith('${_accountsRoot}view_models/');
-  bool get isAcpFeature => path.startsWith(_acpRoot);
-  bool get isAcpPresentation => _isAcpPresentation(path);
+  bool get isAcpFeature => applicationPath.startsWith(_acpRoot);
+  bool get isAcpPresentation => _isAcpPresentation(applicationPath);
   bool get isAcpState => path.startsWith('${_acpRoot}state/');
   bool get isAcpViewModel => path.startsWith('${_acpRoot}view_models/');
 

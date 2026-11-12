@@ -1,0 +1,338 @@
+import 'package:material_ui/material_ui.dart';
+
+import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
+
+import 'account_preview_fixtures.dart';
+import 'account_list_preview_data.dart';
+
+Widget accountPreviewHost(
+  Widget Function(ValueChanged<String> record) builder, {
+  required Object scenarioIdentity,
+  double textScale = 1,
+  Locale locale = const Locale('zh'),
+}) => _PreviewHost(
+  builder: builder,
+  scenarioIdentity: scenarioIdentity,
+  textScale: textScale,
+  locale: locale,
+);
+Widget accountListPreview(
+  AccountListPreviewData value, {
+  double textScale = 1,
+  Locale locale = const Locale('zh'),
+}) => accountPreviewHost(
+  (record) => _ListScenario(initial: value, record: record),
+  scenarioIdentity: value,
+  textScale: textScale,
+  locale: locale,
+);
+Widget accountNativeEditorPreviewHost(
+  NativeAccountEditorPresentation value, {
+  double textScale = 1,
+  String? focusManualModelEditorKey,
+  bool focusManualModelId = false,
+  ValueChanged<bool>? onSetDefaultOnCreateChanged,
+}) => accountPreviewHost(
+  (record) => _NativeEditorScenario(
+    initial: value,
+    record: record,
+    focusManualModelEditorKey: focusManualModelEditorKey,
+    focusManualModelId: focusManualModelId,
+    onSetDefaultOnCreateChanged: onSetDefaultOnCreateChanged,
+  ),
+  scenarioIdentity: value,
+  textScale: textScale,
+);
+Widget accountAcpEditorPreviewHost(AcpAccountEditorPresentation value) =>
+    accountPreviewHost(
+      (record) => _AcpEditorScenario(initial: value, record: record),
+      scenarioIdentity: value,
+    );
+Widget accountDetailsPreviewHost(
+  AccountDetailsPresentation value, {
+  double textScale = 1,
+}) => accountPreviewHost(
+  (record) => AccountDetailsView(
+    value: value,
+    onBack: () => record('back'),
+    onEdit: () => record('edit'),
+    onDelete: () => record('delete'),
+    onSetDefault: () => record('set default'),
+    onAddModel: () => record('add manual model'),
+    onRefreshUsage: () => record('refresh usage'),
+    onBillingChanged: (billing) => record('billing: ${billing.name}'),
+    onResetBilling: () => record('reset billing'),
+    onSyncModels: () => record('sync models'),
+    modelActions: accountPreviewModelActions(record),
+    onAcpAction: (action) => record('ACP: ${action.name}'),
+    onLoginMethodChanged: (id) => record('login method: $id'),
+    onRetry: () => record('retry detail'),
+  ),
+  scenarioIdentity: value,
+  textScale: textScale,
+);
+
+AccountModelActions accountPreviewModelActions(ValueChanged<String> record) =>
+    AccountModelActions(
+      onCompactPreset: (key, percent) =>
+          record('preset ${key.modelId}: $percent%'),
+      onEnabledChanged: (key, enabled) =>
+          record('${key.modelId}: enabled $enabled'),
+      onConnectionChanged: (key, connection) =>
+          record('${key.modelId}: ${connection.name}'),
+      onCompactChanged: (key, raw) => record('${key.modelId}: threshold $raw'),
+      onAction: (key, action) => record('${key.modelId}: ${action.name}'),
+    );
+
+class _PreviewHost extends StatefulWidget {
+  const _PreviewHost({
+    required this.builder,
+    required this.scenarioIdentity,
+    required this.textScale,
+    required this.locale,
+  });
+  final Widget Function(ValueChanged<String>) builder;
+
+  /// Immutable fixture value or stable component label, never callback identity.
+  final Object scenarioIdentity;
+  final double textScale;
+  final Locale locale;
+  @override
+  State<_PreviewHost> createState() => _PreviewHostState();
+}
+
+class _PreviewHostState extends State<_PreviewHost> {
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
+  void _record(String action) {
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(action), duration: const Duration(seconds: 2)),
+      );
+  }
+
+  @override
+  void didUpdateWidget(covariant _PreviewHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.scenarioIdentity != widget.scenarioIdentity ||
+        oldWidget.textScale != widget.textScale ||
+        oldWidget.locale != widget.locale) {
+      _messengerKey.currentState?.clearSnackBars();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    scaffoldMessengerKey: _messengerKey,
+    locale: widget.locale,
+    theme: pureStudioTheme(locale: widget.locale),
+    localizationsDelegates: [
+      AppLocalizations.delegate,
+      ...GlobalMaterialLocalizations.delegates,
+    ],
+    supportedLocales: AppLocalizations.supportedLocales,
+    builder: (context, child) => MediaQuery(
+      data: MediaQuery.of(context)
+          .copyWith(textScaler: TextScaler.linear(widget.textScale)),
+      // MaterialApp's builder context is below the production Theme. Reset the
+      // Previewer's explicit ListTileTheme rather than inheriting its dark tiles.
+      child: ListTileTheme(
+        data: Theme.of(context).listTileTheme,
+        child: child!,
+      ),
+    ),
+    home: Scaffold(
+      body: KeyedSubtree(
+        key: ValueKey<Object>(widget.scenarioIdentity),
+        child: widget.builder(_record),
+      ),
+    ),
+  );
+}
+
+class _ListScenario extends StatefulWidget {
+  const _ListScenario({required this.initial, required this.record});
+  final AccountListPreviewData initial;
+  final ValueChanged<String> record;
+  @override
+  State<_ListScenario> createState() => _ListScenarioState();
+}
+
+class _ListScenarioState extends State<_ListScenario> {
+  late String _search = widget.initial.search;
+
+  @override
+  void didUpdateWidget(covariant _ListScenario oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initial != widget.initial) {
+      _search = widget.initial.search;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = widget.initial.rows
+        .where((row) => row.name.toLowerCase().contains(_search.toLowerCase()))
+        .toList();
+    return AccountsListView(
+      value: widget.initial.presentation.copyWith(
+        search: _search,
+        members: [for (final row in rows) row.key],
+        searchHasNoResults: _search.isNotEmpty && rows.isEmpty,
+      ),
+      onSearchChanged: (raw) => setState(() => _search = raw),
+      onAdd: () => widget.record('add account'),
+      onRefreshAll: () => widget.record('refresh all'),
+      onOpen: (key) => widget.record('open: ${key.kind.name}/${key.id}'),
+      onRowAction: (key, action) =>
+          widget.record('${key.kind.name}/${key.id}: ${action.name}'),
+      onRetry: () => widget.record('retry list'),
+      cardBuilder: (context, key, layout, onOpen, onAction) => AccountListItem(
+        value: rows.singleWhere((row) => row.key == key),
+        layout: layout,
+        onOpen: onOpen,
+        onAction: onAction,
+      ),
+    );
+  }
+}
+
+class _NativeEditorScenario extends StatefulWidget {
+  const _NativeEditorScenario({
+    required this.initial,
+    required this.record,
+    this.focusManualModelEditorKey,
+    this.focusManualModelId = false,
+    this.onSetDefaultOnCreateChanged,
+  });
+  final NativeAccountEditorPresentation initial;
+  final ValueChanged<String> record;
+  final String? focusManualModelEditorKey;
+  final bool focusManualModelId;
+  final ValueChanged<bool>? onSetDefaultOnCreateChanged;
+  @override
+  State<_NativeEditorScenario> createState() => _NativeEditorScenarioState();
+}
+
+class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
+  late NativeAccountEditorPresentation _value = widget.initial;
+
+  @override
+  void didUpdateWidget(covariant _NativeEditorScenario oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initial != widget.initial) {
+      _value = widget.initial;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => NativeAccountEditorView(
+    value: _value,
+    onAuthenticationChanged: (method) => setState(() {
+      _value = _value.copyWith(authentication: method);
+      widget.record('authentication: ${method.name}');
+    }),
+    onStartChatGptLogin: () => widget.record('start ChatGPT login'),
+    onCancelChatGptLogin: () => widget.record('cancel ChatGPT login'),
+    onOpenChatGptAuthorization: () =>
+        widget.record('open official authorization link'),
+    onOpenChatGptUsage: () => widget.record('open ChatGPT usage settings'),
+    onFieldChanged: (field, raw) => setState(() {
+      _value = switch (field) {
+        NativeAccountField.name => _value.copyWith(
+          name: _value.name.copyWith(raw: raw),
+        ),
+        NativeAccountField.endpoint => _value.copyWith(
+          endpoint: _value.endpoint.copyWith(raw: raw),
+        ),
+        NativeAccountField.credential => _value.copyWith(
+          credential: _value.credential.copyWith(raw: raw),
+        ),
+      };
+    }),
+    onTemplateChanged: (key) =>
+        widget.record('template: ${key.kind.name}/${key.id}'),
+    onBillingChanged: (billing) => widget.record('billing: ${billing.name}'),
+    onResetBilling: () => widget.record('reset billing'),
+    onAddModel: () => widget.record('add manual model'),
+    onManualModelFieldChanged: (key, field, raw) =>
+        widget.record('$key: ${field.name} $raw'),
+    onManualModelConnectionChanged: (key, connection) =>
+        widget.record('$key: ${connection.name}'),
+    onManualModelWireApiChanged: (key, wireApi) =>
+        widget.record('$key: ${wireApi.name}'),
+    onRemoveManualModel: (key) => widget.record('remove manual: $key'),
+    modelActions: accountPreviewModelActions(widget.record),
+    onSave: () => widget.record('save (not persisted)'),
+    onCancel: () => widget.record('cancel editor'),
+    focusManualModelEditorKey: widget.focusManualModelEditorKey,
+    focusManualModelId: widget.focusManualModelId,
+    onSetDefaultOnCreateChanged: (enabled) {
+      setState(() {
+        _value = _value.copyWith(setDefaultOnCreate: enabled);
+      });
+      widget.onSetDefaultOnCreateChanged?.call(enabled);
+      widget.record('set default on create: $enabled');
+    },
+  );
+}
+
+class _AcpEditorScenario extends StatefulWidget {
+  const _AcpEditorScenario({required this.initial, required this.record});
+  final AcpAccountEditorPresentation initial;
+  final ValueChanged<String> record;
+  @override
+  State<_AcpEditorScenario> createState() => _AcpEditorScenarioState();
+}
+
+class _AcpEditorScenarioState extends State<_AcpEditorScenario> {
+  late AcpAccountEditorPresentation _value = widget.initial;
+
+  @override
+  void didUpdateWidget(covariant _AcpEditorScenario oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initial != widget.initial) {
+      _value = widget.initial;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AcpAccountEditorView(
+    value: _value,
+    templateSelector: _value.accountKey != null
+        ? null
+        : AccountTemplateSelector(
+            templates: AccountPreviewFixtures.templates,
+            selected: const AccountTemplateKey(
+              kind: AccountKind.acp,
+              id: 'command',
+            ),
+            onSelected: (key) =>
+                widget.record('select ${key.kind.name}: ${key.id}'),
+          ),
+    onNameChanged: (raw) => setState(
+      () => _value = _value.copyWith(name: _value.name.copyWith(raw: raw)),
+    ),
+    onSourceChanged: (source) =>
+        setState(() => _value = _value.copyWith(source: source)),
+    onCommandChanged: (command) =>
+        setState(() => _value = _value.copyWith(command: command)),
+    onArgsChanged: (args) =>
+        setState(() => _value = _value.copyWith(args: args)),
+    onEnvironmentChanged: (entries) =>
+        setState(() => _value = _value.copyWith(environment: entries)),
+    onEnabledChanged: (enabled) =>
+        setState(() => _value = _value.copyWith(enabled: enabled)),
+    onAction: (action) => widget.record('ACP: ${action.name}'),
+    onLoginMethodChanged: (method) => widget.record('method: $method'),
+    onSave: () => widget.record('save ACP (not persisted)'),
+    onCancel: () => widget.record('cancel ACP editor'),
+  );
+}

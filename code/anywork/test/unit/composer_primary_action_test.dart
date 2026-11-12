@@ -1,5 +1,6 @@
 import 'package:anywork/src/domain/models/composer_primary_action.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_input_state.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _execution = AgentExecutionView(
@@ -52,6 +53,9 @@ ComposerPrimaryAction _resolve({
   bool stopAccepted = false,
   bool continuationAccepted = false,
   bool continuationPending = false,
+  bool inputEnabled = true,
+  bool stopPending = false,
+  bool stopUnconfirmed = false,
   ComposerBlocker? blocker,
 }) {
   return ComposerPrimaryAction.resolve(
@@ -63,11 +67,104 @@ ComposerPrimaryAction _resolve({
     stopAccepted: stopAccepted,
     continuationAccepted: continuationAccepted,
     continuationPending: continuationPending,
+    inputEnabled: inputEnabled,
+    stopPending: stopPending,
+    stopUnconfirmed: stopUnconfirmed,
     blocker: blocker,
   );
 }
 
 void main() {
+  group('one action projection', () {
+    test('全局不可编辑同时禁用点击与Enter，不伪造忙碌', () {
+      for (final execution in [null, _execution]) {
+        final action = _resolve(
+          execution: execution,
+          hasContent: true,
+          inputEnabled: false,
+        );
+        expect(action.enabled, isFalse);
+        expect(action.enterSubmits, isFalse);
+        expect(action.busy, isFalse);
+      }
+    });
+
+    test('停止未受理不冒充stopping，超时只开放原停止入口', () {
+      for (final hasContent in [false, true]) {
+        for (final unconfirmed in [false, true]) {
+          final action = _resolve(
+            execution: _execution,
+            hasContent: hasContent,
+            stopPending: true,
+            stopUnconfirmed: unconfirmed,
+          );
+          expect(
+            action.kind,
+            hasContent
+                ? ComposerPrimaryActionKind.sendAndContinue
+                : ComposerPrimaryActionKind.stop,
+          );
+          expect(action.enabled, !hasContent && unconfirmed);
+          expect(action.busy, !unconfirmed);
+          expect(action.enterSubmits, isFalse);
+        }
+      }
+    });
+
+    test('新执行替代继续请求后，不受旧pending/accepted继续回执锁定', () {
+      final action = _resolve(
+        execution: _execution,
+        continuation: _claimed,
+        continuationAccepted: true,
+        continuationPending: true,
+        hasContent: true,
+      );
+      expect(action.kind, ComposerPrimaryActionKind.sendAndContinue);
+      expect(action.enabled, isTrue);
+      expect(action.enterSubmits, isTrue);
+      expect(action.busy, isFalse);
+    });
+
+    test('停止事实只关联同一执行，旧停止不锁新草稿', () {
+      for (final accepted in [false, true]) {
+        final command = CommandStatus(
+          key: 'stop:thread',
+          phase: CommandPhase.pending,
+          target: const CommandTarget(label: 'exec-1'),
+          accepted: accepted,
+          startedAtMs: 1,
+        );
+        ComposerInputState input(AgentExecutionView execution) =>
+            ComposerInputState(
+              composer: const ComposerThreadState.idle(draft: 'new draft'),
+              enabled: true,
+              nowMs: 2,
+              stopCommand: command,
+              execution: execution,
+            );
+        final current = input(_execution);
+        expect(current.action.enabled, isFalse);
+        expect(current.action.busy, isTrue);
+        expect(current.enterSubmits, isFalse);
+        expect(
+          current.action.kind,
+          accepted
+              ? ComposerPrimaryActionKind.stopping
+              : ComposerPrimaryActionKind.sendAndContinue,
+        );
+        final next = input(
+          const AgentExecutionView(
+            id: 'exec-2',
+            phase: AgentExecutionPhase.running,
+          ),
+        );
+        expect(next.action.enabled, isTrue);
+        expect(next.action.busy, isFalse);
+        expect(next.enterSubmits, isTrue);
+      }
+    });
+  });
+
   group('running', () {
     test('空草稿是中性停止，且回车不提交', () {
       final action = _resolve(execution: _execution);
@@ -170,6 +267,7 @@ void main() {
         reason: '回执未到就不算已受理，不能提前显示正在继续',
       );
       expect(action.enabled, isFalse, reason: '同一时刻不重复提交');
+      expect(action.busy, isTrue);
     });
 
     test('继续点已被执行取代时回到运行中按钮', () {

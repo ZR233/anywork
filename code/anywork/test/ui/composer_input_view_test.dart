@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_input_state.dart';
+import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_actions.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/composer/views/composer_support_views.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/dropped_file.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -13,6 +15,142 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
+  for (final width in [320.0, 800.0]) {
+    testWidgets('宽度 $width 主操作原位切换且不重复文字，语义和大字保留', (tester) async {
+      tester.view.physicalSize = Size(width, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final key = GlobalKey<_EditorHostState>();
+      await tester.pumpWidget(_host(key, textScale: 2));
+      final continuation = ContinuationView(
+        id: 'continue',
+        sourceTurnId: 'turn',
+        reason: ContinuationReason.userStop,
+        createdAt: DateTime.utc(2026),
+        claimed: false,
+      );
+      const running = AgentExecutionView(
+        id: 'exec',
+        phase: AgentExecutionPhase.running,
+      );
+      const stopping = AgentExecutionView(
+        id: 'exec',
+        phase: AgentExecutionPhase.stopping,
+      );
+      final states = [
+        (execution: null, continuation: null, accepted: false, text: ''),
+        (execution: running, continuation: null, accepted: false, text: ''),
+        (execution: running, continuation: null, accepted: false, text: 'next'),
+        (
+          execution: stopping,
+          continuation: null,
+          accepted: false,
+          text: 'next',
+        ),
+        (
+          execution: null,
+          continuation: continuation,
+          accepted: false,
+          text: '',
+        ),
+        (execution: null, continuation: continuation, accepted: true, text: ''),
+      ];
+      Rect? slot;
+      Offset? selector;
+      for (final state in states) {
+        key.currentState!.show(
+          ComposerInputState(
+            composer: ComposerThreadState.idle(draft: state.text),
+            enabled: true,
+            execution: state.execution,
+            continuation: state.continuation,
+            continuationAccepted: state.accepted,
+            nowMs: 0,
+          ),
+        );
+        // Busy indicators deliberately keep animating, so do not pumpAndSettle.
+        await tester.pump();
+        final button = find.descendant(
+          of: find.byType(PromptComposerView),
+          matching: find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.style?.fixedSize != null,
+          ),
+        );
+        final widget = tester.widget<IconButton>(button);
+        final rect = tester.getRect(button);
+        slot ??= rect;
+        expect(rect.size, slot.size);
+        expect(rect.left, slot.left);
+        final relativeSelector =
+            tester.getTopLeft(find.text('route')) - rect.topLeft;
+        selector ??= relativeSelector;
+        expect(relativeSelector, selector);
+        expect(find.text(widget.tooltip!), findsNothing);
+        expect(
+          find.semantics.byPredicate(
+            (node) => node.getSemanticsData().tooltip == widget.tooltip,
+          ),
+          findsOne,
+        );
+        expect(
+          find.descendant(
+            of: button,
+            matching: find.byType(CircularProgressIndicator),
+          ),
+          key.currentState!.projection!.action.busy
+              ? findsOneWidget
+              : findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      }
+      // Empty Enter must not invoke continuation; only the explicit button may.
+      key.currentState!.show(
+        ComposerInputState(
+          composer: const ComposerThreadState.idle(),
+          enabled: true,
+          continuation: continuation,
+          nowMs: 0,
+        ),
+      );
+      await tester.pump();
+      await tester.showKeyboard(find.byKey(StudioDriverKeys.composerInput));
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      expect(key.currentState!.continues, 0);
+      await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
+      expect(key.currentState!.continues, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('待决交互停止不重复文字，收束状态有禁用语义和进度', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        const InteractionStopView(
+          state: InteractionStopViewState(
+            executionId: 'exec',
+            pending: false,
+            stopping: true,
+            failure: null,
+          ),
+          onStop: null,
+        ),
+      ),
+    );
+    final button = find.byKey(StudioDriverKeys.composerStopping);
+    final label = tester.widget<IconButton>(button).tooltip!;
+    expect(find.text(label), findsNothing);
+    expect(
+      find.semantics.byPredicate(
+        (node) => node.getSemanticsData().tooltip == label,
+      ),
+      findsOne,
+    );
+    expect(tester.widget<IconButton>(button).onPressed, isNull);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   for (final width in [320.0, 800.0]) {
     testWidgets('宽度 $width 的输入区仅整体外框反馈焦点', (tester) async {
       tester.view.physicalSize = Size(width, 600);
@@ -171,7 +309,10 @@ void main() {
   });
 }
 
-Widget _host(GlobalKey<_EditorHostState> key) => MaterialApp(
+Widget _host(GlobalKey<_EditorHostState> key, {double textScale = 1}) =>
+    _app(_EditorHost(key: key), textScale: textScale);
+
+Widget _app(Widget child, {double textScale = 1}) => MaterialApp(
   theme: pureStudioTheme(),
   locale: const Locale('en'),
   localizationsDelegates: [
@@ -179,9 +320,12 @@ Widget _host(GlobalKey<_EditorHostState> key) => MaterialApp(
     ...GlobalMaterialLocalizations.delegates,
   ],
   supportedLocales: AppLocalizations.supportedLocales,
-  home: Scaffold(
-    body: Center(child: _EditorHost(key: key)),
+  builder: (context, child) => MediaQuery(
+    data: MediaQuery.of(context)
+        .copyWith(textScaler: TextScaler.linear(textScale)),
+    child: child!,
   ),
+  home: Scaffold(body: Center(child: child)),
 );
 
 class _EditorHost extends StatefulWidget {
@@ -195,15 +339,21 @@ class _EditorHostState extends State<_EditorHost> implements ComposerActions {
   String text = '';
   final changes = <String>[];
   int submits = 0;
+  int continues = 0;
+  ComposerInputState? projection;
+  void show(ComposerInputState value) => setState(() => projection = value);
   @override
   Widget build(BuildContext context) => PromptComposerView(
     targetKey: 'editor-test',
     actions: this,
-    state: ComposerInputState(
-      composer: ComposerThreadState.idle(draft: text),
-      enabled: true,
-      nowMs: 0,
-    ),
+    selectorBar: const Text('route'),
+    state:
+        projection ??
+        ComposerInputState(
+          composer: ComposerThreadState.idle(draft: text),
+          enabled: true,
+          nowMs: 0,
+        ),
   );
   @override
   void updateText(String value) => setState(() {
@@ -215,7 +365,7 @@ class _EditorHostState extends State<_EditorHost> implements ComposerActions {
   @override
   void stop(String expectedExecutionId) {}
   @override
-  void continueConversation() {}
+  void continueConversation() => continues++;
   @override
   void addUrl(String url) {}
   @override

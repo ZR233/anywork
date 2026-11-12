@@ -1,10 +1,10 @@
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_component_previews.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/plan_detail_previews.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_component_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/plan_detail_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/interactions/views/plan_confirmation_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
