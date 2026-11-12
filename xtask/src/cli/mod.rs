@@ -279,6 +279,30 @@ mod inspection_tests {
     use super::*;
 
     #[test]
+    fn debug_native_inspection_accepts_exit_report_without_profile() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "run-gui",
+            "--capture",
+            "--inspect",
+            "--native-launch",
+            "--native-exit-report",
+            "evidence with spaces/native-exit.json",
+        ])
+        .expect("debug native acceptance keeps the official inspection entrypoint");
+        let Command::RunGui(options) = cli.command else {
+            panic!("run-gui command expected");
+        };
+        assert!(options.native_launch && options.inspect && options.capture);
+        assert!(!options.profile && !options.release && !options.demo);
+        assert!(options.native_launch_target.is_none());
+        assert_eq!(
+            options.native_exit_report,
+            Some("evidence with spaces/native-exit.json".into())
+        );
+    }
+
+    #[test]
     fn profile_inspection_keeps_native_and_non_release_guards() {
         let cli = Cli::try_parse_from([
             "xtask",

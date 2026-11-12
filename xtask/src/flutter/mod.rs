@@ -10,6 +10,7 @@ use pl_dev_support::paths;
 use pl_dev_support::process;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -428,6 +429,7 @@ fn run_gui_native_launch(
     configure_native_engine_environment(&mut command);
     let program = executable.to_string_lossy().into_owned();
     let display = process::display_command(&program, &[]);
+    publish_native_launch_boundary(&mut std::io::stdout().lock())?;
     let native_started = std::time::Instant::now();
     let exit = process::run_resident_reporting(&mut command, &display)?;
     let report = NativeExitReport::from_exit(&exit, native_started.elapsed());
@@ -446,6 +448,83 @@ fn run_gui_native_launch(
         report.reclaimed_descendants.len()
     );
     Ok(())
+}
+
+/// The VM readiness budget starts here, after every build and artifact check.
+/// Failure to publish the complete line must abort before any native spawn.
+fn publish_native_launch_boundary(output: &mut impl Write) -> Result<()> {
+    output
+        .write_all(b"startup_stage=native_launch_ready\n")
+        .context("failed to publish native launch boundary")?;
+    output
+        .flush()
+        .context("failed to flush native launch boundary")
+}
+
+#[cfg(test)]
+mod native_startup_stage_tests {
+    use super::publish_native_launch_boundary;
+    use std::io::{self, Write};
+
+    #[derive(Default)]
+    struct BoundaryOutput {
+        bytes: Vec<u8>,
+        flushed: bool,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    impl Write for BoundaryOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("stage write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                return Err(io::Error::other("stage flush failed"));
+            }
+            self.flushed = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn launch_boundary_is_a_complete_flushed_line() -> anyhow::Result<()> {
+        let mut output = BoundaryOutput::default();
+        publish_native_launch_boundary(&mut output)?;
+        assert_eq!(output.bytes, b"startup_stage=native_launch_ready\n");
+        assert!(output.flushed);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_errors_are_preserved() {
+        for mut output in [
+            BoundaryOutput {
+                fail_write: true,
+                ..Default::default()
+            },
+            BoundaryOutput {
+                fail_flush: true,
+                ..Default::default()
+            },
+        ] {
+            let error = publish_native_launch_boundary(&mut output).unwrap_err();
+            let diagnostic = format!("{error:#}");
+            assert!(
+                diagnostic.contains(if output.fail_write {
+                    "stage write failed"
+                } else {
+                    "stage flush failed"
+                }),
+                "{diagnostic}"
+            );
+        }
+    }
 }
 
 /// Structured, machine-readable record of a native artifact's real exit.

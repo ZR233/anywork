@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -8,8 +7,6 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,17 +14,10 @@ import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
-const _captureOutputEnvironment = 'ANYWORK_AGENT_LIST_SCREENSHOT';
 const _rootId = 'thread-main';
 const _selectedId = 'thread-selected';
-const _captureSize = Size(1100, 700);
 
-bool get _captureEnabled {
-  final path = Platform.environment[_captureOutputEnvironment];
-  return path != null && path.isNotEmpty;
-}
-
-StudioAgentView _captureAgent({
+StudioAgentView _layoutAgent({
   required String threadId,
   required String task,
   required StudioAgentState state,
@@ -53,8 +43,8 @@ StudioAgentView _captureAgent({
   );
 }
 
-List<StudioAgentView> _captureAgents({bool selectedWaiting = false}) => [
-  _captureAgent(
+List<StudioAgentView> _layoutAgents({bool selectedWaiting = false}) => [
+  _layoutAgent(
     threadId: _selectedId,
     task: 'Selected executor with a deliberately long task title',
     state: selectedWaiting
@@ -70,13 +60,13 @@ List<StudioAgentView> _captureAgents({bool selectedWaiting = false}) => [
     canStop: !selectedWaiting,
     awaitingScheduling: selectedWaiting,
   ),
-  _captureAgent(
+  _layoutAgent(
     threadId: 'thread-waiting',
     task: 'Waiting for the main agent to schedule the next independent task',
     state: const IdleStudioAgent(),
     awaitingScheduling: true,
   ),
-  _captureAgent(
+  _layoutAgent(
     threadId: 'thread-faulted',
     task: 'Faulted member keeps the diagnostic discoverable without changing row identity',
     state: const FaultedStudioAgent(
@@ -88,7 +78,7 @@ List<StudioAgentView> _captureAgents({bool selectedWaiting = false}) => [
       diagnosticTurnId: 'faulted-turn',
     ),
   ),
-  _captureAgent(
+  _layoutAgent(
     threadId: 'thread-running',
     task: 'Running member with a long title to exercise the status and trailing columns',
     state: const RunningStudioAgent('running-turn'),
@@ -107,7 +97,7 @@ List<StudioAgentView> _agentsWithSelectedState({
   bool canStop = false,
   bool awaitingScheduling = false,
 }) => [
-  _captureAgent(
+  _layoutAgent(
     threadId: _selectedId,
     task: 'Selected executor with a deliberately long task title',
     state: state,
@@ -115,22 +105,22 @@ List<StudioAgentView> _agentsWithSelectedState({
     canStop: canStop,
     awaitingScheduling: awaitingScheduling,
   ),
-  ..._captureAgents().skip(1),
+  ..._layoutAgents().skip(1),
 ];
 
-List<StudioAgentView> _deepAgents() => [
-  _captureAgent(
+List<StudioAgentView> _deepLayoutAgents() => [
+  _layoutAgent(
     threadId: 'thread-deep-a',
     task: 'First level member',
     state: const IdleStudioAgent(),
   ),
-  _captureAgent(
+  _layoutAgent(
     threadId: 'thread-deep-b',
     task: 'Second level member',
     state: const IdleStudioAgent(),
     parentAgentId: 'thread-deep-a',
   ),
-  _captureAgent(
+  _layoutAgent(
     threadId: 'thread-deep-c',
     task: 'Third level member',
     state: const IdleStudioAgent(),
@@ -138,33 +128,10 @@ List<StudioAgentView> _deepAgents() => [
   ),
 ];
 
-Future<ByteData> _readFont(String path) async {
-  final bytes = await File(path).readAsBytes();
-  return ByteData.sublistView(bytes);
-}
-
-Future<void> _loadLocalFlutterFonts() async {
-  final flutterRoot = Platform.environment['FLUTTER_ROOT'];
-  if (flutterRoot == null || flutterRoot.isEmpty) {
-    throw StateError('FLUTTER_ROOT must identify the local Flutter SDK');
-  }
-  final directory = '$flutterRoot/bin/cache/artifacts/material_fonts';
-
-  final roboto = FontLoader('Roboto')
-    ..addFont(_readFont('$directory/Roboto-Regular.ttf'))
-    ..addFont(_readFont('$directory/Roboto-Medium.ttf'))
-    ..addFont(_readFont('$directory/Roboto-Bold.ttf'));
-  await roboto.load();
-
-  final materialIcons = FontLoader('MaterialIcons')
-    ..addFont(_readFont('$directory/MaterialIcons-Regular.otf'));
-  await materialIcons.load();
-}
-
-Future<AppGraph> _captureGraph(WidgetTester tester) async {
+Future<AppGraph> _layoutGraph(WidgetTester tester) async {
   final graph = AppGraph(
     transport: RecordingDemoTransport(),
-    clientId: 'agent-list-layout-capture',
+    clientId: 'agent-list-layout-test',
     statisticsFeed: const TestStatisticsFeedPort(),
   );
   await pumpClientFuture(
@@ -173,7 +140,7 @@ Future<AppGraph> _captureGraph(WidgetTester tester) async {
     'agent layout bootstrap',
   );
   graph.client.project.applyAgentDirectory(
-    AgentDirectoryState(revision: 1, values: _captureAgents()),
+    AgentDirectoryState(revision: 1, values: _layoutAgents()),
   );
   return graph;
 }
@@ -188,24 +155,21 @@ Future<void> _pumpAgentMenu(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [appGraphProvider.overrideWithValue(graph)],
-      child: RepaintBoundary(
-        key: const ValueKey('agent-list-capture-boundary'),
-        child: MaterialApp(
-          debugShowCheckedModeBanner: false,
-          theme: pureStudioTheme(),
-          locale: const Locale('en'),
-          localizationsDelegates: [
-            AppLocalizations.delegate,
-            ...GlobalMaterialLocalizations.delegates,
-          ],
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(
-            body: AgentSwitcherMenu(
-              agents: agents,
-              workspaceRows: const [],
-              recoveryIssues: recoveryIssues,
-              selectedThreadId: selectedThreadId,
-            ),
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: pureStudioTheme(),
+        locale: const Locale('en'),
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: AgentSwitcherMenu(
+            agents: agents,
+            workspaceRows: const [],
+            recoveryIssues: recoveryIssues,
+            selectedThreadId: selectedThreadId,
           ),
         ),
       ),
@@ -214,9 +178,9 @@ Future<void> _pumpAgentMenu(
   await tester.pump();
 }
 
-Future<void> _ensureCaptureMenuOpen(WidgetTester tester) async {
+Future<void> _ensureLayoutMenuOpen(WidgetTester tester) async {
   if (find.byKey(StudioDriverKeys.agentRow(_selectedId)).evaluate().isEmpty) {
-    await _openCaptureMenu(tester);
+    await _openLayoutMenu(tester);
   }
 }
 
@@ -272,7 +236,7 @@ void _expectAgentGeometryStable(
   );
 }
 
-StudioRecoveryIssue _captureRecoveryIssue() => const StudioRecoveryIssue(
+StudioRecoveryIssue _layoutRecoveryIssue() => const StudioRecoveryIssue(
   id: 'selected-thread-recovery',
   scope: RecoveryIssueScope.thread,
   category: RecoveryIssueCategory.repository,
@@ -282,13 +246,13 @@ StudioRecoveryIssue _captureRecoveryIssue() => const StudioRecoveryIssue(
   detail: 'The selected synthetic repository needs recovery',
 );
 
-Future<void> _openCaptureMenu(WidgetTester tester) async {
+Future<void> _openLayoutMenu(WidgetTester tester) async {
   await tester.tap(find.byKey(StudioDriverKeys.agentSwitcher));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 300));
 }
 
-Future<void> _closeCaptureGraph(WidgetTester tester, AppGraph graph) async {
+Future<void> _closeLayoutGraph(WidgetTester tester, AppGraph graph) async {
   final anchors = find.byType(MenuAnchor);
   if (anchors.evaluate().isNotEmpty) {
     tester.widget<MenuAnchor>(anchors).controller?.close();
@@ -298,107 +262,53 @@ Future<void> _closeCaptureGraph(WidgetTester tester, AppGraph graph) async {
   await pumpClientFuture(
     tester,
     graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-    'agent list layout capture teardown',
+    'agent list layout teardown',
   );
-}
-
-Future<void> _capturePng(WidgetTester tester) async {
-  final outputPath = Platform.environment[_captureOutputEnvironment];
-  if (outputPath == null || outputPath.isEmpty) return;
-
-  final boundary = tester.renderObject<RenderRepaintBoundary>(
-    find.byKey(const ValueKey('agent-list-capture-boundary')),
-  );
-  final captured = await tester.runAsync(() async {
-    final image = await boundary.toImage(pixelRatio: 1);
-    try {
-      expect(image.width, _captureSize.width.toInt());
-      expect(image.height, _captureSize.height.toInt());
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (data == null) throw StateError('Flutter did not return PNG bytes');
-      await Directory(File(outputPath).parent.path).create(recursive: true);
-      await File(outputPath).writeAsBytes(
-        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-        flush: true,
-      );
-      return true;
-    } finally {
-      image.dispose();
-    }
-  });
-  if (captured != true) {
-    final error = tester.takeException();
-    if (error != null) Error.throwWithStackTrace(error, StackTrace.current);
-    throw StateError('Flutter screenshot did not complete');
-  }
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets(
-    'captures the readable production agent list baseline at 1100x700',
-    (tester) async {
-      if (_captureEnabled) {
-        await tester.runAsync(_loadLocalFlutterFonts);
-      }
-      tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = _captureSize;
-      addTearDown(() {
-        tester.view.resetPhysicalSize();
-        tester.view.resetDevicePixelRatio();
-      });
+  testWidgets('shows agent state, actions, and diagnostics in the layout', (
+    tester,
+  ) async {
+    final graph = await _layoutGraph(tester);
+    await _pumpAgentMenu(tester, graph, _layoutAgents());
 
-      expect(tester.view.devicePixelRatio, 1);
-      expect(tester.view.physicalSize, _captureSize);
-      final graph = await _captureGraph(tester);
-      await _pumpAgentMenu(tester, graph, _captureAgents());
+    final menuElement = find.byType(AgentSwitcherMenu);
+    expect(menuElement, findsOneWidget);
+    await _openLayoutMenu(tester);
 
-      final menuElement = find.byType(AgentSwitcherMenu);
-      expect(menuElement, findsOneWidget);
-      expect(MediaQuery.sizeOf(tester.element(menuElement)), _captureSize);
-      await _openCaptureMenu(tester);
-
-      expect(
-        find.byKey(StudioDriverKeys.agentRow(_selectedId)),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(StudioDriverKeys.agentStop(_selectedId)),
-        findsOneWidget,
-      );
-      expect(find.text('Executor · Model not recorded'), findsWidgets);
-      expect(find.byIcon(Icons.stop_circle_outlined), findsNWidgets(2));
-      expect(find.text('Waiting'), findsOneWidget);
-      expect(find.text('Failed'), findsOneWidget);
-      expect(
-        find.byTooltip('Stopped, waiting for the main agent to schedule'),
-        findsOneWidget,
-      );
-      expect(find.byTooltip('The synthetic member failed'), findsOneWidget);
-      expect(find.text('The synthetic member failed'), findsNothing);
-      await _capturePng(tester);
-
-      await _closeCaptureGraph(tester, graph);
-    },
-    timeout: const Timeout(Duration(seconds: 30)),
-  );
+    expect(find.byKey(StudioDriverKeys.agentRow(_selectedId)), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.agentStop(_selectedId)), findsOneWidget);
+    expect(find.text('Executor · Model not recorded'), findsWidgets);
+    expect(find.byIcon(Icons.stop_circle_outlined), findsNWidgets(2));
+    expect(find.text('Waiting'), findsOneWidget);
+    expect(find.text('Failed'), findsOneWidget);
+    expect(
+      find.byTooltip('Stopped, waiting for the main agent to schedule'),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('The synthetic member failed'), findsOneWidget);
+    expect(find.text('The synthetic member failed'), findsNothing);
+    await _closeLayoutGraph(tester, graph);
+  }, timeout: const Timeout(Duration(seconds: 30)));
 
   testWidgets('keeps fixed slots aligned and rows at one height', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = _captureSize;
+    tester.view.physicalSize = const Size(1100, 700);
     addTearDown(() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
 
-    final graph = await _captureGraph(tester);
-    await _pumpAgentMenu(tester, graph, _captureAgents());
-    await _openCaptureMenu(tester);
+    final graph = await _layoutGraph(tester);
+    await _pumpAgentMenu(tester, graph, _layoutAgents());
+    await _openLayoutMenu(tester);
 
-    final ids = _captureAgents().map((agent) => agent.threadId).toList();
+    final ids = _layoutAgents().map((agent) => agent.threadId).toList();
     final rowHeight = tester
         .getRect(find.byKey(StudioDriverKeys.agentRow(ids.first)))
         .height;
@@ -438,22 +348,22 @@ void main() {
       isNull,
       reason: 'fixed-column layout produced a Flutter exception',
     );
-    await _closeCaptureGraph(tester, graph);
+    await _closeLayoutGraph(tester, graph);
   });
 
   testWidgets(
     'status transitions preserve all fixed columns and one row height',
     (tester) async {
       tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = _captureSize;
+      tester.view.physicalSize = const Size(1100, 700);
       addTearDown(() {
         tester.view.resetPhysicalSize();
         tester.view.resetDevicePixelRatio();
       });
 
-      final graph = await _captureGraph(tester);
-      await _pumpAgentMenu(tester, graph, _captureAgents());
-      await _openCaptureMenu(tester);
+      final graph = await _layoutGraph(tester);
+      await _pumpAgentMenu(tester, graph, _layoutAgents());
+      await _openLayoutMenu(tester);
       final baseline = _agentGeometry(tester, _selectedId);
       expect(
         find.byKey(StudioDriverKeys.agentStop(_selectedId)),
@@ -534,7 +444,7 @@ void main() {
           AgentDirectoryState(revision: revision++, values: transition.agents),
         );
         await _pumpAgentMenu(tester, graph, transition.agents);
-        await _ensureCaptureMenuOpen(tester);
+        await _ensureLayoutMenuOpen(tester);
 
         final statusText = tester.widget<Text>(
           find.descendant(
@@ -578,7 +488,7 @@ void main() {
         findsNothing,
         reason: 'closed state never regains a stop affordance',
       );
-      await _closeCaptureGraph(tester, graph);
+      await _closeLayoutGraph(tester, graph);
     },
   );
 
@@ -586,25 +496,25 @@ void main() {
     'recovery appears inside the status slot without moving rows or stop',
     (tester) async {
       tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = _captureSize;
+      tester.view.physicalSize = const Size(1100, 700);
       addTearDown(() {
         tester.view.resetPhysicalSize();
         tester.view.resetDevicePixelRatio();
       });
 
-      final graph = await _captureGraph(tester);
-      final agents = _captureAgents();
+      final graph = await _layoutGraph(tester);
+      final agents = _layoutAgents();
       await _pumpAgentMenu(tester, graph, agents);
-      await _openCaptureMenu(tester);
+      await _openLayoutMenu(tester);
       final before = _agentGeometry(tester, _selectedId);
       expect(
         find.byKey(StudioDriverKeys.agentStop(_selectedId)),
         findsOneWidget,
       );
 
-      final issue = _captureRecoveryIssue();
+      final issue = _layoutRecoveryIssue();
       await _pumpAgentMenu(tester, graph, agents, recoveryIssues: [issue]);
-      await _ensureCaptureMenuOpen(tester);
+      await _ensureLayoutMenuOpen(tester);
       final withRecovery = _agentGeometry(tester, _selectedId);
       _expectAgentGeometryStable(
         before,
@@ -636,7 +546,7 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await _pumpAgentMenu(tester, graph, agents);
-      await _ensureCaptureMenuOpen(tester);
+      await _ensureLayoutMenuOpen(tester);
       _expectAgentGeometryStable(
         before,
         _agentGeometry(tester, _selectedId),
@@ -653,10 +563,10 @@ void main() {
 
       tester.view.physicalSize = const Size(320, 700);
       await _pumpAgentMenu(tester, graph, agents);
-      await _ensureCaptureMenuOpen(tester);
+      await _ensureLayoutMenuOpen(tester);
       final narrowBefore = _agentGeometry(tester, _selectedId);
       await _pumpAgentMenu(tester, graph, agents, recoveryIssues: [issue]);
-      await _ensureCaptureMenuOpen(tester);
+      await _ensureLayoutMenuOpen(tester);
       final narrowWithRecovery = _agentGeometry(tester, _selectedId);
       _expectAgentGeometryStable(
         narrowBefore,
@@ -672,7 +582,7 @@ void main() {
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);
-      await _closeCaptureGraph(tester, graph);
+      await _closeLayoutGraph(tester, graph);
     },
   );
 
@@ -680,20 +590,20 @@ void main() {
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = _captureSize;
+    tester.view.physicalSize = const Size(1100, 700);
     addTearDown(() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
 
-    final graph = await _captureGraph(tester);
+    final graph = await _layoutGraph(tester);
     await _pumpAgentMenu(
       tester,
       graph,
-      _deepAgents(),
+      _deepLayoutAgents(),
       selectedThreadId: 'thread-deep-a',
     );
-    await _openCaptureMenu(tester);
+    await _openLayoutMenu(tester);
     final firstLeft = tester
         .getRect(find.byKey(StudioDriverKeys.agentTaskSummary('thread-deep-a')))
         .left;
@@ -706,17 +616,17 @@ void main() {
     expect(secondLeft, greaterThan(firstLeft));
     expect(thirdLeft, greaterThan(secondLeft));
     expect(thirdLeft - secondLeft, closeTo(secondLeft - firstLeft, 0.01));
-    await _closeCaptureGraph(tester, graph);
+    await _closeLayoutGraph(tester, graph);
 
-    final narrowGraph = await _captureGraph(tester);
+    final narrowGraph = await _layoutGraph(tester);
     tester.view.physicalSize = const Size(320, 700);
-    await _pumpAgentMenu(tester, narrowGraph, _captureAgents());
+    await _pumpAgentMenu(tester, narrowGraph, _layoutAgents());
     expect(
       MediaQuery.sizeOf(tester.element(find.byType(AgentSwitcherMenu))),
       const Size(320, 700),
     );
-    await _openCaptureMenu(tester);
-    final narrowIds = _captureAgents().map((agent) => agent.threadId);
+    await _openLayoutMenu(tester);
+    final narrowIds = _layoutAgents().map((agent) => agent.threadId);
     final narrowRows = [
       for (final id in narrowIds)
         tester.getRect(find.byKey(StudioDriverKeys.agentRow(id))),
@@ -745,6 +655,6 @@ void main() {
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
-    await _closeCaptureGraph(tester, narrowGraph);
+    await _closeLayoutGraph(tester, narrowGraph);
   });
 }

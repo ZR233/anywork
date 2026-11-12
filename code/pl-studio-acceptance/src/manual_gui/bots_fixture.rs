@@ -167,7 +167,7 @@ pub(super) enum RegistrationEnvCommand {
 }
 
 pub(super) enum EnvLine {
-    GuiAction,
+    NotEnvironment,
     Registration(RegistrationEnvCommand),
     Message(MessageEnvCommand),
     Conversations(ConversationsEnvCommand),
@@ -296,12 +296,9 @@ pub(super) fn validate(options: &ManualGuiOptions) -> Result<()> {
 
 pub(super) fn classify_line(line: &str) -> EnvLine {
     let trimmed = line.trim();
-    if trimmed == "done" {
-        return EnvLine::GuiAction;
-    }
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     if tokens.first().copied() != Some("bots-env") {
-        return EnvLine::GuiAction;
+        return EnvLine::NotEnvironment;
     }
     env_command(&tokens).unwrap_or(EnvLine::UnknownEnv)
 }

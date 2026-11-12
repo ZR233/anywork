@@ -212,3 +212,4 @@ AI 也能使用统一的文件展示工具，把明确选择的图片或文件�
 - **[工作模式与工作流编辑器](design/11-thread-mode.md)**：状态图协议、内置模式与离线预演。
 - **[外部机器人与飞书接入](design/27-bots.md)**：扫码首配、最小权限、发送结果与安全边界。
 - **[项目协作与开发规范（AGENTS.md）](AGENTS.md)**：开发命令、构建要求与贡献指南。
+- **[无头实验与验证](.agents/skills/flutter-studio-build/references/experiments.md)**：纯界面调整与截图优先使用官方 Widget Previewer，不编译 Rust bridge；只有真实跨层行为才选择隔离原生应用及 Dart MCP，按同一方法操作、取证和回收资源。
