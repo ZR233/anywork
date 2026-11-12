@@ -186,3 +186,8 @@ pl-studio-server = { path = "code/pl-studio-server" }
 pl-model = { path = "code/pl-model" }
 pl-acp = { path = "code/pl-acp" }
 pl-provider-fixture = { path = "code/pl-provider-fixture" }
+
+# Engineering tools hash complete native bundles even in debug builds. Keep the
+# existing SHA-2 backend optimized so validation costs less than rebuilding.
+[profile.dev.package.sha2]
+opt-level = 3
