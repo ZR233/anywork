@@ -10,9 +10,11 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
@@ -28,6 +30,9 @@ import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/display_fixtures.dart';
+import '../support/timeline_text_observation.dart';
 
 const _source = ForegroundTurnChatSource(turnId: 'T');
 ContentRef _ref({int revision = 1}) => ContentRef(
@@ -1494,102 +1499,156 @@ void main() {
           key: 'part.summaryText.0',
         ),
       );
+      const backgroundText = '后台结果一\n后台结果二\n后台结果三\n后台结果四\n后台结果已返回';
+      const backgroundRef = ContentRef(
+        databaseId: 'database',
+        target: BodyContentTarget(
+          owner: ItemContentOwner(itemId: 'background-completion'),
+          key: 'tool.result',
+        ),
+      );
+      content.onRead = (reference, range) async {
+        expect(
+          contentReferenceIdentity(reference),
+          contentReferenceIdentity(backgroundRef),
+        );
+        final bytes = utf8.encode(backgroundText);
+        return ContentWindow(
+          bytes: bytes,
+          offset: 0,
+          generation: 'background',
+          availableThrough: bytes.length,
+          sealed: true,
+        );
+      };
       TimelineMemberDisplay? display;
       Widget scene({bool withBody = true, bool withBackground = false}) =>
           _host(
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (withBackground)
+            CompletionRunView(
+              id: 'mixed-current-work',
+              summary: displaySummary(
+                withBackground ? 2 : 1,
+                terminal: withBackground ? 1 : 0,
+                running: 1,
+              ),
+              location: WorkDisplayLocation.live,
+              executionPresent: true,
+              initiallyExpanded: true,
+              childBuilder: (_) => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (withBackground)
+                    TimelineMemberAtom(
+                      key: const ValueKey("background-result"),
+                      content: content,
+                      isActive: () => true,
+                      images: images,
+                      readAttachment: null,
+                      displayId: "background-result",
+                      record: DisplayRecord(
+                        contentSource: const CompletedOriginal(
+                          completionId: "background-completion",
+                        ),
+                        atom: ChatAtom(
+                          id: "background-result",
+                          completionItemId: "background-completion",
+                          completionSeq: 8,
+                          source: const BackgroundResultChatSource(
+                            messageId: "task-result",
+                          ),
+                          sourceOrder: 1,
+                          kind: ChatAtomKind.toolCall,
+                          delivery: ChatDeliveryKind.independent,
+                          lifecycle: const TerminalChatAtom(
+                            started: null,
+                            ended: null,
+                            outcome: ChatTerminalOutcome.completed,
+                          ),
+                          contents: const [
+                            ChatAtomContent(
+                              role: ChatContentRole.toolOutput,
+                              reference: backgroundRef,
+                            ),
+                          ],
+                          payload: InlinePayload(
+                            bytes: utf8.encode(
+                              jsonEncode({
+                                "contract": "anywork.chat/1",
+                                "type": "tool",
+                                "data": {
+                                  "invocation": {
+                                    "toolCallId": "background-call",
+                                    "name": "独立后台命令",
+                                    "presentationContract": "generic@1",
+                                  },
+                                  "state": {
+                                    "kind": "succeeded",
+                                    "completedAt": 12,
+                                    "output": {
+                                      "exitCode": 0,
+                                      "attachments": [],
+                                    },
+                                  },
+                                },
+                                "bodies": [
+                                  {
+                                    "key": "tool.arguments",
+                                    "byteLength": 2,
+                                    "inline": [123, 125],
+                                  },
+                                  {
+                                    "key": "tool.result",
+                                    "byteLength": utf8
+                                        .encode(backgroundText)
+                                        .length,
+                                    "inline": utf8.encode(backgroundText),
+                                  },
+                                ],
+                              }),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   TimelineMemberAtom(
-                    key: const ValueKey("background-result"),
+                    key: const ValueKey('reasoning-member'),
                     content: content,
                     isActive: () => true,
                     images: images,
                     readAttachment: null,
-                    displayId: "background-result",
+                    registerDisplay: (value) {
+                      display = value;
+                      return () => display = null;
+                    },
                     record: DisplayRecord(
-                      contentSource: const CompletedOriginal(
-                        completionId: "background-completion",
-                      ),
                       atom: ChatAtom(
-                        id: "background-result",
-                        completionItemId: "background-completion",
-                        completionSeq: 8,
-                        source: const BackgroundResultChatSource(
-                          messageId: "task-result",
-                        ),
+                        id: 'reasoning-member',
+                        source: _source,
                         sourceOrder: 1,
-                        kind: ChatAtomKind.toolCall,
-                        delivery: ChatDeliveryKind.independent,
-                        lifecycle: const TerminalChatAtom(
+                        kind: ChatAtomKind.reasoning,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
                           started: null,
-                          ended: null,
-                          outcome: ChatTerminalOutcome.completed,
+                          status: ChatActiveStatus.running,
                         ),
-                        contents: const [],
-                        payload: InlinePayload(
-                          bytes: utf8.encode(
-                            jsonEncode({
-                              "contract": "anywork.chat/1",
-                              "type": "tool",
-                              "data": {
-                                "invocation": {
-                                  "toolCallId": "background-call",
-                                  "name": "独立后台命令",
-                                  "presentationContract": "generic@1",
-                                },
-                                "state": {
-                                  "kind": "succeeded",
-                                  "completedAt": 12,
-                                  "output": {"exitCode": 0, "attachments": []},
-                                },
-                              },
-                              "bodies": [],
-                            }),
+                        contents: [
+                          const ChatAtomContent(
+                            role: ChatContentRole.reasoningSummary,
+                            reference: summaryRef,
                           ),
-                        ),
+                          if (withBody)
+                            ChatAtomContent(
+                              role: ChatContentRole.body,
+                              reference: _ref(),
+                            ),
+                        ],
                       ),
+                      contentSource: const CurrentAtom(),
                     ),
+                    displayId: "fixture-current",
                   ),
-                TimelineMemberAtom(
-                  key: const ValueKey('reasoning-member'),
-                  content: content,
-                  isActive: () => true,
-                  images: images,
-                  readAttachment: null,
-                  registerDisplay: (value) {
-                    display = value;
-                    return () => display = null;
-                  },
-                  record: DisplayRecord(
-                    atom: ChatAtom(
-                      id: 'reasoning-member',
-                      source: _source,
-                      sourceOrder: 1,
-                      kind: ChatAtomKind.reasoning,
-                      delivery: ChatDeliveryKind.foreground,
-                      lifecycle: const ActiveChatAtom(
-                        started: null,
-                        status: ChatActiveStatus.running,
-                      ),
-                      contents: [
-                        const ChatAtomContent(
-                          role: ChatContentRole.reasoningSummary,
-                          reference: summaryRef,
-                        ),
-                        if (withBody)
-                          ChatAtomContent(
-                            role: ChatContentRole.body,
-                            reference: _ref(),
-                          ),
-                      ],
-                    ),
-                    contentSource: const CurrentAtom(),
-                  ),
-                  displayId: "fixture-current",
-                ),
-              ],
+                ],
+              ),
             ),
           );
       await tester.pumpWidget(scene());
@@ -1653,6 +1712,36 @@ void main() {
       );
       expect(tester.widget<TimelineActivityRow>(row).expandable, isFalse);
       expect(fresh.requests, hasLength(1));
+      final backgroundRow = find.byKey(const ValueKey('background-result'));
+      await tester.tap(find.textContaining('独立后台命令'));
+      await _flush(tester);
+      final reasoningRow = find.byKey(const ValueKey('reasoning-member'));
+      await revealTimelineTextFragment(
+        tester,
+        reasoningRow,
+        '折叠后仍可更新概要',
+        alignment: 1,
+      );
+      expect(
+        find
+            .byKey(const ValueKey('completion-run-header:mixed-current-work'))
+            .hitTestable(),
+        findsOneWidget,
+      );
+      expectTimelineTextFragmentVisible(
+        tester,
+        backgroundRow,
+        '后台结果已返回',
+        hitTestable: true,
+      );
+      expectTimelineTextFragmentVisible(
+        tester,
+        reasoningRow,
+        '折叠后仍可更新概要',
+        hitTestable: true,
+      );
+      expect(content.scopes, hasLength(3));
+      expect(content.scopes.last.reads.single.$1, same(backgroundRef));
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(content.scopes.every((scope) => scope.closed), isTrue);
