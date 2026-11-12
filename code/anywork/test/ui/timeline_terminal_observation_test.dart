@@ -44,21 +44,25 @@ DisplayBlock _single(ChatSourceId source) => DisplayBlock(
   ),
 );
 
-DisplayMemberPage _page(ChatSourceId source) => DisplayMemberPage(
-  block: _reference,
-  revision: 1,
-  sealed: true,
-  entries: [
-    DisplayMemberHead(
-      memberKey: 'stable-member-key',
-      memberOrder: 1,
-      record: DisplayRecord(
-        atom: _tool(source),
-        contentSource: CompletedOriginal(completionId: 'handoff-completion'),
-      ),
-    ),
-  ],
-);
+DisplayMemberPage _page(ChatSourceId source, {int order = 1, int? before}) =>
+    DisplayMemberPage(
+      block: _reference,
+      revision: 1,
+      sealed: true,
+      before: before,
+      entries: [
+        DisplayMemberHead(
+          memberKey: 'stable-member-key',
+          memberOrder: order,
+          record: DisplayRecord(
+            atom: _tool(source),
+            contentSource: CompletedOriginal(
+              completionId: 'handoff-completion',
+            ),
+          ),
+        ),
+      ],
+    );
 
 final class _Fixture {
   _Fixture(WidgetTester tester, {int generation = 1}) {
@@ -100,18 +104,29 @@ final class _Fixture {
 }
 
 void main() {
-  testWidgets('tool-only historical Work qualifies by its real bounded head', (
+  testWidgets('mixed-source Work qualifies through bounded member pages', (
     tester,
   ) async {
     final f = _Fixture(tester);
-    await f.set([displayWork('work', 1, total: 1)]);
-    f.content.scope.reply = Future.value(_page(_source));
+    await f.set([displayWork('work', 1, total: 2)]);
+    f.content.scope.replyForWindow = (window) async => switch (window) {
+      LatestDisplayMembers() => _page(_other, order: 2, before: 2),
+      BeforeDisplayMembers(:final memberOrder) => () {
+        expect(memberOrder, 2);
+        return _page(_source);
+      }(),
+    };
     expect(f.observed.singleBlocks, isEmpty);
     expect(await f.observed.hasHistoricalSource(_source), isTrue);
-    expect(f.content.scope.demands.single.maxItems, 1);
-    expect(f.content.scope.demands.single.maxBytes, 16384);
-    expect(f.content.scope.handles.single.closeRequested, isTrue);
-    expect(f.content.scope.handles.single.closed, isTrue);
+    expect(f.content.scope.demands, hasLength(2));
+    for (final demand in f.content.scope.demands) {
+      expect(demand.maxItems, 1);
+      expect(demand.maxBytes, 16384);
+    }
+    for (final handle in f.content.scope.handles) {
+      expect(handle.closeRequested, isTrue);
+      expect(handle.closed, isTrue);
+    }
     expect(
       f.lease.groupDisplays,
       isEmpty,
@@ -268,6 +283,7 @@ final class _Content extends Fake implements ConversationContent {
 
 final class _Scope extends Fake implements TimelineQueryScope {
   late Future<DisplayMemberPage> reply;
+  Future<DisplayMemberPage> Function(DisplayMemberWindow)? replyForWindow;
   final entered = Completer<void>();
   final demands = <ReadDemand>[];
   final handles = <_Members>[];
@@ -283,9 +299,9 @@ final class _Scope extends Fake implements TimelineQueryScope {
     required ReadDemand demand,
   }) async {
     expect(reference, _reference);
-    expect(window, isA<LatestDisplayMembers>());
+    if (replyForWindow == null) expect(window, isA<LatestDisplayMembers>());
     demands.add(demand);
-    final handle = _Members(reply, nextFailure);
+    final handle = _Members(replyForWindow?.call(window) ?? reply, nextFailure);
     handles.add(handle);
     if (!entered.isCompleted) entered.complete();
     return handle;

@@ -2456,8 +2456,8 @@ final class _RealtimeScene {
         (display) => display.unitId == foregroundBlockId,
       );
       expect(
-        foregroundDisplay.atoms.every((atom) => atom.source == source),
-        isTrue,
+        foregroundDisplay.atoms.where((atom) => atom.source == source),
+        isNotEmpty,
       );
       while (true) {
         remaining();
@@ -3109,7 +3109,12 @@ final class _RealtimeScene {
         // State proves the outcome; Main admission remains independent and
         // uses the original wait budget, without a normal completion item.
         if (!observed.singleBlocks.any((item) => item.atom!.source == source) ||
-            observed.liveBlocks.isNotEmpty) {
+            graph.client.conversations
+                    .session(turn.threadId)
+                    .state
+                    .runtime
+                    ?.execution !=
+                null) {
           return false;
         }
         if (kind == StudioTurnStatus.failed ||
@@ -3693,6 +3698,7 @@ final class _RealtimeScene {
             preparedObserver == null ||
             _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
+        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         if (preparedObserver != null) {
           expect(units.single.id, preparedObserver.display.unitId);
           expect(units.single.historyPos, isNull);
@@ -3704,7 +3710,9 @@ final class _RealtimeScene {
             final display = lease.groupDisplays.singleWhere(
               (display) => display.unitId == preparedObserver.display.unitId,
             );
-            for (final atom in display.atoms) {
+            for (final atom in display.atoms.where(
+              (atom) => expectedCallIds.contains(atom.tool?.callId),
+            )) {
               expect(
                 atom.source,
                 ForegroundTurnChatSource(turnId: preparedObserver.turnId),
@@ -3733,7 +3741,6 @@ final class _RealtimeScene {
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
-        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         final required = tools == null
             ? null
             : expectedCallIds.isEmpty
