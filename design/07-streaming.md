@@ -149,3 +149,7 @@ SDK 各 feed owner 唯一发送自身 ACK：Chat 在 applyBatch 完成且原 lea
 可变目录查询采用领域专用的不透明观察句柄，而不是连续推送的 StreamSink producer。open 绑定不可变 query/window 或 thread ID，并在首读前登记变化；next 每次只交付一份完整当前结果及其实际 stamp。SDK 验证目标并提交只读模型后才请求下一帧，同句柄拒绝并发 next，不引入目录 ACK 或无界中转。
 
 requestClose 同步封闭本观察的新准入并唤醒等待，close 汇合该句柄已准入的 next/read 和迟到 open；同查询如需恢复，重建的是原完整窗口，不从全局目录首页拼补。错误保留在原观察，不关闭业务 Session、其他消费者或独立会话内容 feed。该机制复用账号 pull 观察的生命周期，但不将两种领域泛化为通用同步总线；目录事实与窗口成本见 [18.7](./18-studio-state.md#187-项目侧栏)，Client 与呈现责任见 [25.6](./25-frontend-state.md#256-只读模型与细粒度呈现)。
+
+### 可靠开始与首次内容可读
+
+Native 模型成员的 Started 保持与内容独立的真实开始。ContentAvailable 沿同一可靠成员准入通道，每公开 part 至多一次，在下一归一化事件前交接；call registry、预算、effect/journal 和原保存责任共同覆盖，不能依赖仅保最新值的 progress/watch。显示边界使用其真实位置，不改原 start_fact，也不分配完成 ID/seq。Started/ContentAvailable/Completed 保持真实顺序；空正文、完整返回、权威终值和失败取消的展示规则见 [26](./26-timeline-content.md)。不新增传输通道、DTO 副本或 ACP 义务。

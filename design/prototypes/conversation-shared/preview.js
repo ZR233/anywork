@@ -275,6 +275,7 @@
                     <div class="cv-reading-column">
                       <div class="cv-history-start"></div>
                       <div class="cv-history-list"></div>
+                      <div class="cv-resting-tail" aria-label="可继续追加的静态工作尾组"></div>
                     </div>
                   </div>
                   <div class="cv-unread-wrap"></div>
@@ -687,6 +688,10 @@
       }
 
       const live = state.live;
+      const tailHost = this.root.querySelector('.cv-resting-tail');
+      if (!live || live.kind !== 'workGroup' || !live.resting) {
+        tailHost?.replaceChildren();
+      }
       if (!live) {
         this.liveHost.replaceChildren();
         this.liveView = null;
@@ -728,6 +733,12 @@
         icons(surface);
       }
       if (kind === 'workGroup') {
+        const resting = Boolean(live.resting);
+        this.liveView.group.mode = resting ? 'resting' : 'live';
+        this.liveView.group.node.classList.toggle('cv-group-live', !resting);
+        this.liveView.group.node.classList.toggle('cv-group-history', resting);
+        (resting ? tailHost : this.liveView.surface).append(this.liveView.group.node);
+        this.liveView.surface.hidden = resting;
         this.liveView.group.update(live);
       } else {
         this.liveView.surface.querySelector('.cv-tabular').textContent = live.elapsed + 's';

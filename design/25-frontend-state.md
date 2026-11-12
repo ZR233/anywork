@@ -500,3 +500,7 @@ Flutter 侧归 `features/modes/`：`state/` 持有 Freezed 工作区视图状态
 页面级导航统一经应用唯一类型化路由树，父子层级、查询与退出职责遵循 [25.4](#254-观察注册与页面导航)。设置分区选择从已提交的类型化目的地派生，不保留独立的标签导航状态。工作区内部内容分区、详情选择、呈现槽位与模态对话框仍是各自职责内的局部状态；窄屏详情页返回时清除选中状态，下层工作区保持挂载以保留画布视口与缩放。
 
 Mode 编辑会话保留打开或新建时的身份；可编辑 JSON 中的文档 ID 不决定离页守卫归属。复制创建新编辑会话后，旧路由只退出自己的草稿；正常编辑、保存与放弃不会改变打开身份，也不会因文档改名绕过守卫。
+
+### 唯一尾组的呈现与读取所有权
+
+Native presentation v3 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
