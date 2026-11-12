@@ -10309,14 +10309,11 @@ pub(crate) mod storage_fault_tests {
             };
             let (_temp, store, sink) = sink(id).await?;
             let channel = &sink.0.channel;
-            channel
-                .process_bytes
-                .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+            // Recovery generations belong to real faults, not temporary capacity pressure.
+            assert!(sink.admit(id, ticket("wrong-owner", 1)).is_err());
             let first = ticket(id, 1);
-            assert!(sink.admit(id, first.clone()).is_err());
             let failed = channel.subscribe().borrow().clone();
             let generation = failed.fault_generation;
-            channel.process_bytes.store(0, Ordering::Release);
             sink.admit(id, first)?;
             let (entered, release) = store.thread_persistence().pause_retry_before_reports();
             let coordinator = store.thread_persistence().clone();
@@ -10346,11 +10343,7 @@ pub(crate) mod storage_fault_tests {
                 );
                 channel.stop_and_join().await?;
             } else {
-                channel
-                    .process_bytes
-                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-                assert!(sink.admit(id, ticket(id, 2)).is_err());
-                channel.process_bytes.store(0, Ordering::Release);
+                assert!(sink.admit(id, ticket("wrong-owner", 2)).is_err());
             }
             release
                 .send(())
@@ -10415,22 +10408,20 @@ pub(crate) mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn stale_fault_generation_cannot_resume_a_new_queue_failure() -> Result<()> {
+    async fn stale_fault_generation_cannot_resume_a_new_ticket_failure() -> Result<()> {
         let (_temp, store, sink) = sink("fault-generation").await?;
         for sequence in [1, 2] {
-            sink.0
-                .channel
-                .process_bytes
-                .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
             let write = ticket("fault-generation", sequence);
-            assert!(sink.admit("fault-generation", write.clone()).is_err());
+            assert!(
+                sink.admit("fault-generation", ticket("wrong-owner", sequence))
+                    .is_err()
+            );
             let failed = sink.0.channel.subscribe().borrow().clone();
             assert_eq!(failed.fault_generation, sequence);
             if sequence == 2 {
                 assert!(sink.0.channel.retry(1).is_err());
                 assert_eq!(sink.0.channel.subscribe().borrow().fault_generation, 2);
             }
-            sink.0.channel.process_bytes.store(0, Ordering::Release);
             sink.admit("fault-generation", write)?;
             tokio::time::timeout(
                 Duration::from_secs(5),
