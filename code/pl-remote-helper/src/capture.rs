@@ -1,0 +1,48 @@
+use std::sync::Arc;
+
+use tokio::sync::watch;
+
+#[derive(Debug, Clone)]
+pub struct CaptureSpec {
+    pub stdout_path: String,
+    pub stderr_path: String,
+    pub max_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureState {
+    Complete,
+    LimitExceeded,
+    IoFailed,
+    Incomplete,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturedStream {
+    pub state: CaptureState,
+    pub confirmed_bytes: Option<u64>,
+    pub error: Option<Arc<std::io::Error>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CaptureResult {
+    pub stdout: CapturedStream,
+    pub stderr: CapturedStream,
+}
+
+pub(crate) type CaptureCompletion = watch::Receiver<Option<CapturedStream>>;
+
+pub(crate) async fn completion(receiver: &mut CaptureCompletion) -> CapturedStream {
+    loop {
+        if let Some(result) = receiver.borrow().clone() {
+            return result;
+        }
+        if receiver.changed().await.is_err() {
+            return CapturedStream {
+                state: CaptureState::Incomplete,
+                confirmed_bytes: None,
+                error: None,
+            };
+        }
+    }
+}

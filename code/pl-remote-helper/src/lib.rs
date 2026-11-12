@@ -4,6 +4,17 @@ pub mod process_worker_protocol;
 pub mod start_control;
 pub mod transport;
 
+mod capture;
+mod child;
+mod command;
+mod executor;
+mod native;
+
+pub use capture::{CaptureResult, CaptureSpec, CaptureState, CapturedStream};
+pub use child::{Child, ChildStderr, ChildStdin, ChildStdout, Output, PartialOutput, ProcessExit};
+pub use command::{Command, Stdio};
+pub use executor::{ExecutionError, Executor, ExecutorId, SpawnError, StartKnowledge, TargetInfo};
+
 pub use pl_protocol::remote::RemoteError;
 
 /// Host process creation and background ownership shared by execution adapters.
