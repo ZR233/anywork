@@ -1,5 +1,5 @@
-//! Small cache-key comparison through production ThreadModel preparation.
-//! Run only behind a caller-owned budget gateway; this example does not implement billing admission.
+//! Small explicit-key comparison or implicit-prefix observation through production ThreadModel.
+//! The caller owns spending admission; this example only bounds input and output, not billing.
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
@@ -26,9 +26,18 @@ async fn main() -> Result<()> {
         PathBuf::from(std::env::var("ANYWORK_HOME").context("isolated ANYWORK_HOME required")?);
     let config: toml::Value =
         toml::from_str(&tokio::fs::read_to_string(home.join("config.toml")).await?)?;
-    let account: AccountConfig = config["models"]["accounts"][&account_id]
+    let mut account: AccountConfig = config["models"]["accounts"][&account_id]
         .clone()
         .try_into()?;
+    if account.bearer_token.is_none() && account.bearer_token_env.is_none() {
+        let credential_id = account_id.clone();
+        account.bearer_token = Some(
+            tokio::task::spawn_blocking(move || {
+                keyring::Entry::new("anywork", &format!("account:{credential_id}"))?.get_password()
+            })
+            .await??,
+        );
+    }
     let mut model = account
         .effective_models(None)?
         .into_iter()
@@ -39,11 +48,18 @@ async fn main() -> Result<()> {
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let endpoint = account.to_endpoint()?;
-    ensure!(
-        endpoint.effective_prompt_cache_policy(&model)
-            == EffectivePromptCachePolicy::OpenAiPromptCacheKey,
-        "the selected account must explicitly support Responses cache keys"
-    );
+    let arms = match endpoint.effective_prompt_cache_policy(&model) {
+        EffectivePromptCachePolicy::OpenAiPromptCacheKey => vec![
+            ("omitted", PromptCacheDialect::None),
+            ("enabled", PromptCacheDialect::OpenAiPromptCacheKey),
+        ],
+        EffectivePromptCachePolicy::ImplicitPrefix => {
+            vec![("implicit", PromptCacheDialect::ImplicitPrefix)]
+        }
+        EffectivePromptCachePolicy::None => {
+            anyhow::bail!("the selected account must declare its cache capability")
+        }
+    };
     ensure!(
         model
             .parameters
@@ -62,10 +78,7 @@ async fn main() -> Result<()> {
         .context("use a new output directory")?;
     let run_id = uuid::Uuid::new_v4().to_string();
     let execution = async {
-        for (arm, dialect) in [
-            ("omitted", PromptCacheDialect::None),
-            ("enabled", PromptCacheDialect::OpenAiPromptCacheKey),
-        ] {
+        for (arm, dialect) in arms {
             let mut endpoint = endpoint.clone();
             endpoint.service_capabilities.prompt_cache.dialect = dialect;
             let runtime = ModelRuntime::new_with_account_id(&account_id, endpoint, model.clone())?
@@ -143,7 +156,7 @@ async fn main() -> Result<()> {
     let report = json!({
         "runId": run_id, "account": account_id, "model": model_id, "effort": effort,
         "execution": execution.as_ref().err().map(ToString::to_string),
-        "comparison": "cache-key hint only; server automatic caching remains enabled",
+        "comparison": "declared cache policy; server automatic caching remains enabled",
     });
     tokio::fs::write(
         output.join("report.json"),

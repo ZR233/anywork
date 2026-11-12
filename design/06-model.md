@@ -267,7 +267,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 缓存能力声明仅控制客户端是否发送显式提示，`none` 不表示关闭服务端自动缓存。通用兼容端点必须显式声明已确认的缓存方言，不从 URL、模型名或账号显示名推断。共同前缀仍须匹配；缓存键不能保证命中率，也不是会话历史或权限隔离机制。OpenAI 的不同模型代际对键的路由及计量语义不同，真实对照应记录完整缓存读写和实际费用，不把发送字段当作收益证明。
 
-小样本观察入口为 `cargo run --locked -p pl-studio-runtime --features live-tests --example context_cache_keys -- <account> <model> <new-output-dir> [effort]`。它只读隔离 `ANYWORK_HOME` 的账号配置，并通过生产 Thread 适配器分别执行省略键、启用键两组请求，每组三次，输出上限为 256 token。所选账号须已声明 Responses 缓存键能力，实验使用 HTTP；运行者必须在端点前配置既有预算准入网关。用 `ANYWORK_WIRE_CAPTURE_DIR` 捕获最终请求，结合独立费用账本核对缓存用量和实际输入，保留兼容服务额外计入指令、未知用量及未完成对照的事实；该示例不实现另一套预算系统。
+小样本观察入口为 `cargo run --locked -p pl-studio-runtime --features live-tests --example context_cache_keys -- <account> <model> <new-output-dir> [effort]`。它只读隔离 `ANYWORK_HOME` 的账号配置和既有凭据关联，通过生产 Thread 适配器观察声明的缓存能力：显式缓存键方言分别执行省略键、启用键两组请求，隐式前缀方言（如 DeepSeek）执行一组且不发送缓存键。每组三次，输出上限为 256 token；实验使用 Responses HTTP，由运行者提供费用准入。用 `ANYWORK_WIRE_CAPTURE_DIR` 捕获最终请求，结合独立费用账本核对缓存用量和实际输入，保留兼容服务额外计入指令、未知用量及未完成对照的事实；该示例不实现另一套预算系统。
 
 ### 上下文压缩与超窗恢复
 
