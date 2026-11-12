@@ -15,7 +15,9 @@ use super::{SkillCatalog, SkillMetadata, SkillSourceKind};
 use crate::skill::SkillsConfig;
 
 mod discovery;
+mod executor;
 mod filesystem;
+pub use executor::ExecutorSkillProvider;
 
 pub use discovery::SkillDiscoverySources;
 pub use filesystem::{FileSystemSkillProvider, SkillDirectorySource};
@@ -146,6 +148,11 @@ pub trait SkillProvider: Send + Sync + fmt::Debug {
     /// not capability changes. Fixed request fields are included separately by the registry.
     fn discovery_identity(&self) -> String;
 
+    /// Optional project-directory fact owned by a concrete execution binding.
+    fn project_directory(&self, _config: &SkillsConfig) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
+
     /// Lists Provider-owned candidates for one workspace observation.
     /// Cancellation is cooperative: settle owned discovery workers before returning, rather
     /// than detaching them when the request token is cancelled.
@@ -274,8 +281,27 @@ impl SkillRegistry {
     ///
     /// Returns an error when discovery is cancelled or its workspace/configuration is invalid.
     pub async fn discover(&self, request: SkillProviderRequest) -> Result<FrozenSkillCatalog> {
+        self.discover_sources(request, Vec::new()).await
+    }
+
+    /// Adds a frozen project binding to the registered desktop/extension sources.
+    /// This does not register it globally or let concurrent workspaces replace it.
+    pub async fn discover_project(
+        &self,
+        request: SkillProviderRequest,
+        files: Arc<crate::workspace_file::ExecutorWorkspaceFileBackend>,
+    ) -> Result<FrozenSkillCatalog> {
+        self.discover_sources(request, vec![Arc::new(ExecutorSkillProvider::new(files)?)])
+            .await
+    }
+
+    async fn discover_sources(
+        &self,
+        request: SkillProviderRequest,
+        additional: Vec<Arc<dyn SkillProvider>>,
+    ) -> Result<FrozenSkillCatalog> {
         let generation = self.inner.generation.load(Ordering::Acquire);
-        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request)?;
+        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request, &additional)?;
         let (_, first) = sources
             .discover_generation(request.cancellation.clone())
             .await?;
@@ -283,7 +309,7 @@ impl SkillRegistry {
             return Ok(first);
         }
         let generation = self.inner.generation.load(Ordering::Acquire);
-        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request)?;
+        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request, &additional)?;
         let (_, mut second) = sources.discover_generation(request.cancellation).await?;
         if generation != self.inner.generation.load(Ordering::Acquire) {
             second.snapshot.complete = false;
@@ -646,15 +672,19 @@ pub(super) fn activation_resource_base(base: &SkillResourceBase) -> SkillActivat
     }
 }
 
-/// Builds the default local registry and returns the guard that owns its provider.
-///
-/// # Errors
-///
-/// Returns an error if the built-in Provider cannot be registered.
-pub fn local_skill_registry() -> Result<(SkillRegistry, SkillProviderRegistration)> {
+/// Builds project and desktop read-only sources over a concrete local executor.
+pub async fn local_skill_registry(
+    workspace_root: &Path,
+) -> Result<(SkillRegistry, Vec<SkillProviderRegistration>)> {
     let registry = SkillRegistry::new();
-    let registration = registry.register(Arc::new(FileSystemSkillProvider::new()))?;
-    Ok((registry, registration))
+    let files = crate::workspace_file::ExecutorWorkspaceFileBackend::local(
+        workspace_root.to_owned(),
+        false,
+    )
+    .await?;
+    let project = registry.register(Arc::new(ExecutorSkillProvider::new(Arc::new(files))?))?;
+    let readonly = registry.register(Arc::new(FileSystemSkillProvider::configured_readonly()))?;
+    Ok((registry, vec![project, readonly]))
 }
 
 /// Convenience discovery for product-neutral callers without a process registry.
@@ -668,7 +698,7 @@ pub async fn discover_local_skills(
     system_dir: Option<&Path>,
     cancellation: CancellationToken,
 ) -> Result<FrozenSkillCatalog> {
-    let (registry, _registration) = local_skill_registry()?;
+    let (registry, _registrations) = local_skill_registry(workspace_root).await?;
     registry
         .discover(SkillProviderRequest {
             workspace_root: workspace_root.to_path_buf(),

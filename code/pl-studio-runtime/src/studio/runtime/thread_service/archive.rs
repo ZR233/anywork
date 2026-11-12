@@ -1044,7 +1044,7 @@ async fn clean_execution_temp(
     let files = SessionFiles::new(&member.thread_id);
     match &member.execution.endpoint {
         WorkspaceEndpoint::Local => {
-            let backend = SessionTempBackend::Local(Path::new(&member.execution.root));
+            let backend = SessionTempBackend::local(Path::new(&member.execution.root)).await?;
             backend.migrate(&files).await?;
             backend.remove(&files).await?;
         }
@@ -1060,14 +1060,14 @@ async fn clean_execution_temp(
                 .context("archive frozen SSH endpoint is no longer configured")?
                 .profile;
             let host = ssh
-                .open_workspace_host(&profile.alias, member.execution.root.clone())
+                .open_workspace_binding(&profile.alias, member.execution.root.clone())
                 .await?;
             ensure!(
                 WorkspaceEndpoint::from_profile(Some(&host.profile)) == member.execution.endpoint
-                    && host.files.canonical_path() == member.execution.root,
+                    && host.files().canonical_path() == member.execution.root,
                 "archive SSH endpoint or canonical root changed"
             );
-            let backend = SessionTempBackend::Ssh(&host.files);
+            let backend = SessionTempBackend::new(&host.files());
             backend.migrate(&files).await?;
             backend.remove(&files).await?;
         }
@@ -1142,9 +1142,7 @@ mod ssh_tests {
         }
         let error = outcome?.expect_err("transport loss is not PathNotFound or archive success");
         assert!(
-            error
-                .downcast_ref::<pl_tool::remote::RemoteClientError>()
-                .is_some(),
+            error.downcast_ref::<pl_tool::remote::SshError>().is_some(),
             "the original transport error must survive the archive boundary"
         );
         assert!(!member.execution_cleaned && !member.host_cleaned);

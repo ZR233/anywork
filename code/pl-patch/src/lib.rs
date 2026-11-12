@@ -10,9 +10,14 @@ mod error;
 mod matching;
 mod outcome;
 mod parse;
+mod report;
+pub use report::*;
 
 pub use apply::*;
 pub use backend::*;
 pub use error::*;
 pub use outcome::*;
 pub use parse::*;
+
+mod output;
+pub use output::{PatchMove, PatchOutput};

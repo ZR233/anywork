@@ -1,22 +1,31 @@
 use std::path::{Path, PathBuf};
 
 use pl_patch::{PatchBackend, PatchError, PatchPathDisplay, PatchResult};
-use pl_protocol::{PureError, Result};
+use pl_protocol::PureError;
 
 use super::backend::*;
-use super::schema::TOOL_APPLY_PATCH;
-use crate::tool_error;
 
-use pl_tool_filesystem::apply_patch::PatchOutput;
+use pl_patch::PatchOutput;
 
-pub async fn apply_patch_to_backend<B>(backend: &B, cwd: String, patch: &str) -> Result<PatchOutput>
-where
-    B: WorkspaceFileBackend,
-{
-    let patch_backend = WorkspacePatchBackend { backend, cwd: &cwd };
-    pl_tool_filesystem::apply_patch::apply_patch(&patch_backend, cwd.clone(), patch)
+pub async fn apply_patch_to_backend<B: WorkspaceFileBackend>(
+    backend: &B,
+    cwd: String,
+    patch: &str,
+) -> std::result::Result<PatchOutput, pl_patch::PatchFailure> {
+    backend
+        .apply_patch(cwd.clone(), patch)
         .await
-        .map_err(|error| tool_error(TOOL_APPLY_PATCH, error.into_message()))
+        .map(|report| report.into_output(cwd))
+}
+
+pub(super) async fn apply_via_files<B: WorkspaceFileBackend>(
+    backend: &B,
+    cwd: String,
+    patch: &str,
+) -> std::result::Result<pl_patch::PatchReport, pl_patch::PatchFailure> {
+    use pl_tool_filesystem::apply_patch::PatchExecutor;
+    let adapter = WorkspacePatchBackend { backend, cwd: &cwd };
+    adapter.execute_patch(cwd.clone(), patch).await
 }
 
 #[derive(Debug)]
@@ -87,12 +96,13 @@ where
         let path = self.display_path(path);
         let stat = self
             .backend
-            .stat(WorkspaceFileStatRequest {
+            .stat_optional(WorkspaceFileStatRequest {
                 path: path.clone(),
                 cwd: Some(self.cwd.to_string()),
             })
-            .await;
-        if !stat.is_ok_and(|stat| stat.is_file) {
+            .await
+            .map_err(patch_error)?;
+        if !stat.is_some_and(|stat| stat.is_file) {
             return Ok(None);
         }
         self.backend

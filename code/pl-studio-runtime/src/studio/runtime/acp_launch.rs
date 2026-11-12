@@ -91,15 +91,13 @@ pub(super) async fn resolve_launch(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use crate::studio::runtime::acp_worker::{
-        AcpSpawnError, AcpSpawnRequest, AcpWorker, Reclaim, WorkerSource,
-    };
-    use crate::worker_assets::RemoteHelperSource;
+    use crate::studio::runtime::acp_worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, Reclaim};
+    use pl_remote_helper::Executor;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     #[tokio::test]
-    async fn real_worker_uses_frozen_path_env_argv_cwd_and_reclaims_process_tree() {
+    async fn real_child_uses_frozen_path_env_argv_cwd_and_confirms_root_exit() {
         let temp = tempfile::tempdir().unwrap();
         let store = StudioStore::open(temp.path().join("home/data/studio.sqlite"))
             .await
@@ -160,7 +158,7 @@ wait
         definition
             .env
             .insert("PATH".into(), "/nonexistent-after-freeze".into());
-        let source = WorkerSource::new(RemoteHelperSource::External);
+        let source = Executor::local().expect("local executor");
         let mut worker = AcpWorker::spawn(
             AcpSpawnRequest {
                 program: resolved.program,
@@ -200,10 +198,21 @@ wait
             observed[4],
             temp.path().join("isolated-home").to_string_lossy()
         );
-        for pid in &observed[5..] {
+        assert!(
+            !std::path::Path::new("/proc").join(&observed[5]).exists(),
+            "the direct child was reaped"
+        );
+        // The executor confirms its root. A killed descendant may await reaping
+        // by the system's parent; it must not remain a running fixture process.
+        if let Ok(stat) = std::fs::read_to_string(
+            std::path::Path::new("/proc")
+                .join(&observed[6])
+                .join("stat"),
+        ) {
             assert!(
-                !std::path::Path::new("/proc").join(pid).exists(),
-                "fixture pid {pid} survived reclamation"
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, tail)| tail.starts_with('Z')),
+                "the descendant is still running"
             );
         }
 

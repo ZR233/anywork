@@ -486,7 +486,7 @@ impl StudioRuntime {
         index: usize,
         remote_hosts: &mut Vec<(
             crate::studio::agent_host::worktree_lease::WorkspaceIdentity,
-            pl_tool::remote::RemoteWorkspaceHost,
+            pl_tool::remote::SshWorkspaceBinding,
         )>,
     ) -> Result<()> {
         let member = operation.members[index].clone();
@@ -496,7 +496,7 @@ impl StudioRuntime {
                     self.remove_bound_execution_session(
                         operation,
                         index,
-                        SessionTempBackend::Local(Path::new(&identity.root)),
+                        SessionTempBackend::local(Path::new(&identity.root)).await?,
                     )
                     .await?;
                 }
@@ -520,15 +520,12 @@ impl StudioRuntime {
                         Ok(host)
                     } else {
                         self.ssh_manager
-                            .open_workspace_host(&profile.alias, identity.root.clone())
+                            .open_workspace_binding(&profile.alias, identity.root.clone())
                             .await
                     };
                     let host = match opened {
                         Ok(host) => host,
-                        Err(pl_tool::remote::RemoteClientError::Remote {
-                            code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
-                            ..
-                        }) => {
+                        Err(error) if error.is_not_found() => {
                             operation.members[index].execution_deleted = true;
                             operation.changed()?;
                             return self.store.save_thread_delete(operation).await;
@@ -537,7 +534,7 @@ impl StudioRuntime {
                     };
                     ensure!(
                         WorkspaceEndpoint::from_profile(Some(&host.profile)) == identity.endpoint
-                            && host.files.canonical_path() == identity.root,
+                            && host.files().canonical_path() == identity.root,
                         "delete SSH endpoint or canonical root changed"
                     );
                     if !remote_hosts
@@ -549,7 +546,7 @@ impl StudioRuntime {
                     self.remove_bound_execution_session(
                         operation,
                         index,
-                        SessionTempBackend::Ssh(&host.files),
+                        SessionTempBackend::new(&host.files()),
                     )
                     .await?;
                 }
@@ -564,7 +561,7 @@ impl StudioRuntime {
         &self,
         operation: &mut ThreadDeleteOperation,
         index: usize,
-        backend: SessionTempBackend<'_>,
+        backend: SessionTempBackend,
     ) -> Result<()> {
         let files = SessionFiles::new(&operation.members[index].identity.thread_id);
         if operation.members[index].execution_removal_started {
@@ -701,7 +698,7 @@ fn deletion_reason(error: &anyhow::Error) -> &'static str {
         "decode"
     } else if error
         .chain()
-        .any(|source| source.is::<pl_tool::remote::RemoteClientError>())
+        .any(|source| source.is::<pl_tool::remote::SshError>())
     {
         "remote"
     } else if error
@@ -771,7 +768,7 @@ fn deletion_error(
         public.clone()
     } else if let Some(source) = error
         .chain()
-        .find_map(|source| source.downcast_ref::<pl_tool::remote::RemoteClientError>())
+        .find_map(|source| source.downcast_ref::<pl_tool::remote::SshError>())
     {
         crate::error_mapping::studio_error_from_anyhow_ref(&anyhow::Error::new(source.clone()))
     } else if let Some(source) = error
@@ -920,11 +917,10 @@ mod error_tests {
             public.details.as_ref().unwrap()["reason"],
             "syntheticPermission"
         );
-        let remote = pl_tool::remote::RemoteClientError::AuthenticationFailed(
+        let remote = pl_tool::remote::SshError::AuthenticationFailed(
             pl_tool::remote::SshAuthFailure::new("fixture denied", vec![]),
         );
-        let error = anyhow::Error::new(pl_tool::workspace::SessionRemovalError::Remote(remote))
-            .context(DeleteStage("删除执行端目录"));
+        let error = anyhow::Error::new(remote).context(DeleteStage("删除执行端目录"));
         let public = deletion_error(&error, "删除执行端目录", "fixture-root");
         assert_eq!(public.code, StudioErrorCode::PermissionDenied);
         assert_eq!(

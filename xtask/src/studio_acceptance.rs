@@ -45,6 +45,10 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
 pub(crate) fn build_acceptance_tool(workspace: &Path) -> Result<PathBuf> {
     use std::process::Stdio;
 
+    if let Some(executable) = crate::quality_inputs::artifact(workspace, ACCEPTANCE_PACKAGE)? {
+        return Ok(executable);
+    }
+
     let display = format!(
         "cargo build --locked -p {ACCEPTANCE_PACKAGE} --message-format=json-render-diagnostics"
     );

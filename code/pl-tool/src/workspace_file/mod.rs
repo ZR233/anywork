@@ -7,8 +7,8 @@ use crate::tool_error;
 mod backend;
 mod container;
 mod container_path;
+mod executor;
 mod independent;
-mod local;
 mod ops;
 mod patch;
 mod schema;
@@ -19,10 +19,17 @@ use crate::workspace::ToolWorkspace;
 
 pub use backend::*;
 pub use container::ContainerWorkspaceFileBackend;
-pub use local::LocalWorkspaceFileBackend;
+pub(crate) use executor::file_error;
+pub use executor::{
+    ExecutorWorkspaceFileBackend, WorkspaceDirectoryReader, WorkspaceDownloadError,
+    WorkspaceFileError, load_workspace_instructions,
+};
 pub use ops::WorkspaceFileToolExecution;
 pub use patch::apply_patch_to_backend;
 pub use schema::*;
 
 mod write;
 pub use write::{ThreadWriteFileTool, thread_write_file_tool_definition};
+
+mod mutation;
+pub use mutation::{WorkspaceMutationKind, WorkspaceMutationTool};

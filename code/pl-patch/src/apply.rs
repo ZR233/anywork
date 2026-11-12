@@ -20,10 +20,11 @@ pub async fn apply_patch(
 
     for hunk in hunks {
         if let Err(error) = apply_hunk(hunk, backend, &mut outcome).await {
-            return Err(PatchError::new(format!(
-                "{error}{}",
-                outcome.failure_suffix(backend)
-            )));
+            return Err(PatchError::from_failure(crate::PatchFailure {
+                diagnostic: format!("{error}{}", outcome.failure_suffix(backend)),
+                applied_changes: outcome.report(backend).changes,
+                changes_may_be_incomplete: !outcome.is_exact(),
+            }));
         }
     }
 

@@ -261,7 +261,7 @@ jobs:
           '
       - name: Check workspace Clippy
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build the current-source remote supervisor
+      - name: Build the current-source remote helper
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
       - name: Compile workspace tests with SQLite enabled
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked --workspace --features pl-core/sqlite --no-run
@@ -365,6 +365,67 @@ jobs:
           compression-level: 0
           retention-days: 3
 
+  linux-test-inputs:
+    name: Compile shared Linux test inputs
+    needs: [changes, linux-environment]
+    if: needs.changes.outputs.linux_desktop == 'true' || needs.changes.outputs.linux_native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    permissions:
+      contents: read
+    outputs:
+      artifactId: ${{ steps.archive.outputs.artifact-id }}
+      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
+      sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
+      workspace: ${{ steps.checkpoint.outputs.workspace }}
+      environment: ${{ steps.checkpoint.outputs.environment }}
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+      - name: Compile acceptance tool
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-acceptance
+      - name: Compile debug bridge
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-bridge
+      - name: Checkpoint immutable test inputs
+        id: checkpoint
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p output/ci-test-inputs
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            python3 .github/scripts/pr_quality_handoff.py pack-tests \
+            --archive output/ci-test-inputs/quality.tar.gz --source-sha "$SOURCE_SHA" \
+            --environment "$LINUX_BUILD_IMAGE" | tee -a "$GITHUB_OUTPUT"
+      - name: Share the exact test input archive
+        id: archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-linux-test-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          path: output/ci-test-inputs/quality.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   gui-generated:
     name: Canonical GUI generation (Linux)
     needs: [changes, linux-environment, linux-inputs]
@@ -409,7 +470,7 @@ jobs:
 
   linux-desktop:
     name: Desktop integration (Linux, shard ${{ matrix.shard }})
-    needs: [changes, linux-environment, linux-inputs]
+    needs: [changes, linux-environment, linux-inputs, linux-test-inputs]
     if: needs.changes.outputs.linux_desktop == 'true'
     strategy:
       fail-fast: false
@@ -460,12 +521,21 @@ jobs:
           artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
           sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
           source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+      - name: Restore this run's test inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tests
+          artifact-id: ${{ needs.linux-test-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-test-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-test-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-test-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-test-inputs.outputs.environment }}
       # A shard owns its checkout, display and fixtures. Cases inside it stay
       # sequential so no two Flutter processes rewrite the same build inputs.
       - name: Record disk usage before desktop build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+          for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
             if [ -d "$directory" ]; then
               du -sh "$directory"
             else
@@ -476,7 +546,9 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
+            ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
@@ -487,7 +559,7 @@ jobs:
         if: always()
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+          for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
             if [ -d "$directory" ]; then
               du -sh "$directory"
             else
@@ -527,7 +599,7 @@ jobs:
 
   linux-native:
     name: Native lifecycle integration (Linux)
-    needs: [changes, linux-environment, linux-inputs]
+    needs: [changes, linux-environment, linux-inputs, linux-test-inputs]
     if: needs.changes.outputs.linux_native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 150
@@ -574,10 +646,19 @@ jobs:
           artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
           sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
           source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+      - name: Restore this run's test inputs
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tests
+          artifact-id: ${{ needs.linux-test-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-test-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-test-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-test-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-test-inputs.outputs.environment }}
       - name: Record disk usage before native build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+          for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
             if [ -d "$directory" ]; then
               du -sh "$directory"
             else
@@ -586,7 +667,9 @@ jobs:
           done
       - name: Run the full native lifecycle suite
         run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
+            ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
@@ -596,7 +679,7 @@ jobs:
         if: always()
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          for directory in target output/ci-cargo-home "$RUNNER_TEMP"; do
+          for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
             if [ -d "$directory" ]; then
               du -sh "$directory"
             else
@@ -729,6 +812,7 @@ jobs:
       - linux-environment
       - rust-checks
       - linux-inputs
+      - linux-test-inputs
       - gui-generated
       - linux-desktop
       - linux-native
@@ -754,6 +838,7 @@ jobs:
           LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           LINUX_INPUTS_RESULT: ${{ needs.linux-inputs.result }}
+          LINUX_TEST_INPUTS_RESULT: ${{ needs.linux-test-inputs.result }}
           GUI_GENERATED_RESULT: ${{ needs.gui-generated.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux-desktop.result }}
           LINUX_NATIVE_RESULT: ${{ needs.linux-native.result }}

@@ -28,11 +28,13 @@ use crate::stdio_peer::{proc_start_ticks, spawn_tracked_grandchild};
 pub struct LspStdioOptions {
     /// File the server writes its own and the grandchild's pid/starttime into.
     pub coord_file: PathBuf,
+    /// Keep the descendant in the owned group for coordinated-stop scenarios.
+    pub inherit_process_group: bool,
 }
 
 /// Runs the scenario-owned LSP server until the client sends `exit`.
 pub fn run_lsp_stdio(options: LspStdioOptions) -> Result<()> {
-    let grandchild_pid = spawn_tracked_grandchild()?;
+    let grandchild_pid = spawn_tracked_grandchild(options.inherit_process_group)?;
     let lsp_pid = std::process::id();
     write_coord_record(&options.coord_file, lsp_pid, grandchild_pid)?;
     serve()

@@ -166,7 +166,9 @@ impl BotRuntime {
         .await
         .map_err(workspace_error)?
         .map_err(workspace_error)?;
-        pl_tool::workspace::SessionTempBackend::Local(&root)
+        pl_tool::workspace::SessionTempBackend::local(&root)
+            .await
+            .map_err(workspace_error)?
             .migrate(&files)
             .await
             .map_err(workspace_error)?;

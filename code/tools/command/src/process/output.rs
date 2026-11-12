@@ -57,7 +57,6 @@ struct Record<'a, R> {
     process_started: Option<bool>,
     exit_code: Option<i32>,
     signal: Option<i32>,
-    supervision_failure: Option<&'a str>,
     input_receipt: Option<&'a crate::process::CommandInputReceipt>,
     stdout: Stream<'a>,
 
@@ -65,10 +64,11 @@ struct Record<'a, R> {
     stdout_file: &'a Path,
     stderr_file: &'a Path,
     captured_bytes: Option<u64>,
-    confirmed_bytes: u64,
-    stdout_confirmed_bytes: u64,
-    stderr_confirmed_bytes: u64,
+    confirmed_bytes: Option<u64>,
+    stdout_confirmed_bytes: Option<u64>,
+    stderr_confirmed_bytes: Option<u64>,
     capture_status: &'static str,
+    capture: Option<&'a crate::process::CommandCaptureResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     archive_status: Option<&'static str>,
     stdout_resource: Option<&'a R>,
@@ -89,18 +89,20 @@ fn stream<'a>(
             &snapshot.stdout,
             &snapshot.stdout_omission_marker,
             snapshot.stdout_text_lossy,
-            snapshot.capture_offsets.stdout,
+            snapshot.confirmed_bytes(crate::process::CommandCaptureStream::Stdout),
         ),
         crate::process::CommandCaptureStream::Stderr => (
             &snapshot.stderr,
             &snapshot.stderr_omission_marker,
             snapshot.stderr_text_lossy,
-            snapshot.capture_offsets.stderr,
+            snapshot.confirmed_bytes(crate::process::CommandCaptureStream::Stderr),
         ),
     };
-    let original_bytes = original
-        .original_length
-        .max(usize::try_from(confirmed).unwrap_or(usize::MAX));
+    let original_bytes = original.original_length.max(
+        confirmed
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(original.original_length),
+    );
     let marker_bytes = marker.as_ref().map_or(0, |range| {
         range.end.min(content.len()).saturating_sub(range.start)
     });
@@ -158,9 +160,7 @@ pub fn projection<R: Serialize>(
         {
             Some(ExecDiagnosticCode::OutputLimit)
         }
-        _ if snapshot.output_failure.is_some() || snapshot.supervision_failure.is_some() => {
-            Some(ExecDiagnosticCode::CaptureIo)
-        }
+        _ if snapshot.output_failure.is_some() => Some(ExecDiagnosticCode::CaptureIo),
         Some(CommandProcessFinalResult::TimedOut) => Some(ExecDiagnosticCode::TimedOut),
         Some(CommandProcessFinalResult::Failed { .. }) if snapshot.state.exit_code().is_some() => {
             Some(ExecDiagnosticCode::ExitNonzero)
@@ -195,10 +195,6 @@ pub fn projection<R: Serialize>(
             .then_some(true),
         exit_code: snapshot.exit_code,
         signal: snapshot.signal,
-        supervision_failure: snapshot
-            .supervision_failure
-            .as_deref()
-            .map(|text| prefix(text, 4096)),
         input_receipt: snapshot.input_receipt.as_ref(),
         stdout: stream(
             snapshot,
@@ -212,19 +208,32 @@ pub fn projection<R: Serialize>(
         ),
         stdout_file: &snapshot.output_file,
         stderr_file: &snapshot.stderr_output_file,
-        captured_bytes: snapshot.capture_usage.map(|usage| usage.captured_bytes),
-        confirmed_bytes: snapshot.capture_offsets.total(),
-        stdout_confirmed_bytes: snapshot.capture_offsets.stdout,
-        stderr_confirmed_bytes: snapshot.capture_offsets.stderr,
+        captured_bytes: snapshot
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.confirmed_total()),
+        confirmed_bytes: snapshot
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.confirmed_total()),
+        stdout_confirmed_bytes: snapshot
+            .confirmed_bytes(crate::process::CommandCaptureStream::Stdout),
+        stderr_confirmed_bytes: snapshot
+            .confirmed_bytes(crate::process::CommandCaptureStream::Stderr),
         capture_status: if snapshot.state.final_result().is_none() {
             "inProgress"
         } else if snapshot.output_failure.is_some() {
             "partial"
-        } else if snapshot.capture_usage.is_some() {
+        } else if snapshot
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.complete())
+        {
             "complete"
         } else {
             "unknown"
         },
+        capture: snapshot.capture.as_ref(),
         archive_status: target_task_id.is_none().then_some(if archived {
             "retained"
         } else if snapshot.state.final_result().is_some() {
@@ -249,12 +258,4 @@ pub fn projection<R: Serialize>(
         next_action,
     };
     serde_json::to_string(&record)
-}
-
-fn prefix(text: &str, mut bytes: usize) -> &str {
-    bytes = bytes.min(text.len());
-    while !text.is_char_boundary(bytes) {
-        bytes -= 1;
-    }
-    &text[..bytes]
 }

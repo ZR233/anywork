@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::SshServerProfile;
 use super::ssh::{posix_remote_command, run_ssh_capture, ssh_command};
-use crate::remote::RemoteClientError;
+use crate::remote::SshError;
 
 const HELPER_NAME: &str = "pl-remote-helper";
 
@@ -21,19 +21,19 @@ pub enum RemoteHelperTarget {
 }
 
 impl RemoteHelperTarget {
-    pub(super) fn from_uname(output: &str) -> Result<Self, RemoteClientError> {
+    pub(super) fn from_uname(output: &str) -> Result<Self, SshError> {
         let mut lines = output.lines();
         let os = lines.next().unwrap_or_default().trim();
         let architecture = lines.next().unwrap_or_default().trim();
         if os != "Linux" {
-            return Err(RemoteClientError::Protocol(format!(
+            return Err(SshError::Protocol(format!(
                 "unsupported remote operating system '{os}'"
             )));
         }
         match architecture {
             "aarch64" | "arm64" => Ok(Self::Aarch64Musl),
             "x86_64" | "amd64" => Ok(Self::X8664Musl),
-            other => Err(RemoteClientError::Protocol(format!(
+            other => Err(SshError::Protocol(format!(
                 "unsupported remote architecture '{other}'"
             ))),
         }
@@ -56,8 +56,8 @@ pub trait RemoteHelperAssets: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// 资产缺失、损坏或无法解压时返回 [`RemoteClientError`]。
-    fn load(&self, target: RemoteHelperTarget) -> Result<Arc<[u8]>, RemoteClientError>;
+    /// 资产缺失、损坏或无法解压时返回 [`SshError`]。
+    fn load(&self, target: RemoteHelperTarget) -> Result<Arc<[u8]>, SshError>;
 }
 
 #[derive(Debug)]
@@ -66,9 +66,9 @@ struct FileHelperAssets {
 }
 
 impl RemoteHelperAssets for FileHelperAssets {
-    fn load(&self, target: RemoteHelperTarget) -> Result<Arc<[u8]>, RemoteClientError> {
+    fn load(&self, target: RemoteHelperTarget) -> Result<Arc<[u8]>, SshError> {
         let helper = self.helpers.get(&target).ok_or_else(|| {
-            RemoteClientError::Protocol(format!(
+            SshError::Protocol(format!(
                 "helper artifact for {} is not available",
                 target.triple()
             ))
@@ -91,10 +91,10 @@ pub(super) fn file_helper_assets(
     (!helpers.is_empty()).then(|| Arc::new(FileHelperAssets { helpers }) as Arc<_>)
 }
 
-fn verify_file_helper(helper: &std::path::Path) -> Result<Arc<[u8]>, RemoteClientError> {
+fn verify_file_helper(helper: &std::path::Path) -> Result<Arc<[u8]>, SshError> {
     let checksum_path = helper.with_extension("sha256");
     let checksum = std::fs::read_to_string(&checksum_path).map_err(|error| {
-        RemoteClientError::Protocol(format!(
+        SshError::Protocol(format!(
             "failed to read helper checksum {}: {error}",
             checksum_path.display()
         ))
@@ -104,17 +104,16 @@ fn verify_file_helper(helper: &std::path::Path) -> Result<Arc<[u8]>, RemoteClien
         .next()
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| {
-            RemoteClientError::Protocol(format!(
+            SshError::Protocol(format!(
                 "helper checksum {} is invalid",
                 checksum_path.display()
             ))
         })?;
-    let bytes = std::fs::read(helper).map_err(|error| {
-        RemoteClientError::Protocol(format!("failed to read helper artifact: {error}"))
-    })?;
+    let bytes = std::fs::read(helper)
+        .map_err(|error| SshError::Protocol(format!("failed to read helper artifact: {error}")))?;
     let actual = hex::encode(Sha256::digest(&bytes));
     if !actual.eq_ignore_ascii_case(expected) {
-        return Err(RemoteClientError::Protocol(format!(
+        return Err(SshError::Protocol(format!(
             "helper checksum mismatch for {}",
             helper.display()
         )));
@@ -125,11 +124,11 @@ fn verify_file_helper(helper: &std::path::Path) -> Result<Arc<[u8]>, RemoteClien
 pub(super) async fn load_helper(
     assets: Arc<dyn RemoteHelperAssets>,
     target: RemoteHelperTarget,
-) -> Result<Arc<[u8]>, RemoteClientError> {
+) -> Result<Arc<[u8]>, SshError> {
     tokio::task::spawn_blocking(move || assets.load(target))
         .await
         .map_err(|error| {
-            RemoteClientError::Protocol(format!("remote helper decompression task failed: {error}"))
+            SshError::Protocol(format!("remote helper decompression task failed: {error}"))
         })?
 }
 
@@ -138,7 +137,7 @@ pub(super) async fn upload_helper(
     ssh_config: &super::super::ssh_config::SshConfigFile,
     password: Option<&str>,
     bytes: &[u8],
-) -> Result<String, RemoteClientError> {
+) -> Result<String, SshError> {
     let digest = hex::encode(Sha256::digest(bytes));
     let version = env!("CARGO_PKG_VERSION");
     let directory = format!(
