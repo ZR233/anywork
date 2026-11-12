@@ -91,8 +91,19 @@ DisplayBlockBody _displayBodyFromFrb(
       summary: _workSummaryFromFrb(summary),
       members: _displayBlockRefFromFrb(members),
     ),
-  frb_presentation.BridgeDisplayBlockBody_Single(:final record) =>
-    SingleDisplayBlock(record: _displayRecordFromFrb(record)),
+  frb_presentation.BridgeDisplayBlockBody_Single(
+    :final record,
+    :final visibility,
+  ) =>
+    SingleDisplayBlock(
+      record: _displayRecordFromFrb(record),
+      visibility: switch (visibility) {
+        frb_presentation.BridgeSingleVisibility.content =>
+          SingleVisibility.content,
+        frb_presentation.BridgeSingleVisibility.finalEmptyAfterContent =>
+          SingleVisibility.finalEmptyAfterContent,
+      },
+    ),
 };
 
 LiveDisplayWindow _liveDisplayWindowFromFrb(
@@ -104,6 +115,7 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
     'display history prefix',
   ),
   executionPresent: value.executionPresent,
+  currentWorkId: value.currentWorkId,
   blocks: [
     for (final block in value.blocks)
       LiveDisplayBlock(

@@ -62,6 +62,11 @@ final class ChatItemPresentation {
   final TimelineDisplayUnit? displayUnit;
   final ChatAtom? atom;
   final DisplayRecord? displayRecord;
+  bool get finalEmptyAfterContent => switch (displayUnit?.body) {
+    SingleDisplayBlock(visibility: SingleVisibility.finalEmptyAfterContent) =>
+      true,
+    _ => false,
+  };
   bool get observationUnavailable =>
       displayRecord?.contentSource is FrozenObservation &&
       !(displayRecord!.contentSource as FrozenObservation).available;
@@ -122,6 +127,7 @@ final class ChatItemPresentation {
   /// Structural empty text still exists in owner metadata. Deferred/unknown
   /// content is never assumed empty.
   bool get isKnownEmptyText =>
+      !finalEmptyAfterContent &&
       atom?.contentPresent == false &&
       type == 'text' &&
       compatibility == ChatItemCompatibility.current &&
@@ -182,7 +188,10 @@ final class ChatItemPresentation {
 
   static ChatItemPresentation forUnit(TimelineDisplayUnit unit) {
     final item = unit.atom;
-    if (item == null) {
+    if (item == null ||
+        (unit.body is SingleDisplayBlock &&
+            (unit.body as SingleDisplayBlock).visibility ==
+                SingleVisibility.finalEmptyAfterContent)) {
       return ChatItemPresentation(
         id: unit.id,
         compatibility: ChatItemCompatibility.current,

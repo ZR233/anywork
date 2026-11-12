@@ -1,5 +1,6 @@
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart' show ConversationActivityView;
+import 'package:anywork_client/models.dart'
+    show ConversationActivityView, ConversationActivityKind;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -71,10 +72,8 @@ class _CompletionRunViewState extends State<CompletionRunView> {
   Widget build(BuildContext context) {
     final summary = widget.summary;
     final live = widget.state == DisplayBlockState.open;
-    final runningClock =
-        live && widget.executionPresent && summary.createdAt != null;
     final savedElapsed = summary.elapsedMs;
-    final savedSeconds = savedElapsed != null && savedElapsed >= 0
+    final savedSeconds = !live && savedElapsed != null && savedElapsed >= 0
         ? savedElapsed ~/ 1000
         : null;
     return Expansible(
@@ -91,8 +90,8 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           onTap: _disclosure.toggle,
           borderRadius: BorderRadius.circular(8),
           child: TimelineActivityClock(
-            startedAt: runningClock ? summary.createdAt : null,
-            running: runningClock,
+            startedAt: null,
+            running: false,
             now: widget.now,
             builder: (context, seconds) => _WorkHeader(
               key: ValueKey('completion-run-header:${widget.id}'),
@@ -101,7 +100,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               executionPresent: widget.executionPresent,
               state: widget.state,
               activity: widget.activity,
-              seconds: runningClock ? seconds : savedSeconds,
+              seconds: savedSeconds,
               expanded: _disclosure.isExpanded,
             ),
           ),
@@ -166,17 +165,16 @@ class _WorkHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final live = state == DisplayBlockState.open;
-    final cold = live && !executionPresent;
-    final working = summary.running > 0 || summary.waiting > 0;
+    final cold =
+        live && !executionPresent && summary.hasUnfinishedOrUnavailableMembers;
+    final active = live && executionPresent && activity != null;
     final l10n = context.l10n;
     final fallback = cold
         ? l10n.timelineGroupUnrestored
-        : activity != null
+        : active
         ? context.conversationActivityLabel(activity!)
-        : summary.waiting > 0
-        ? l10n.conversationActivityWaitingTools
-        : l10n.timelineGroupWorking;
-    final activeThought = live && !cold
+        : l10n.timelineGroupRecord;
+    final activeThought = active
         ? [
                 if (activity != null) activity!.thinkingSummary,
                 summary.thinkingSummary,
@@ -186,9 +184,7 @@ class _WorkHeader extends StatelessWidget {
               .where((value) => value.isNotEmpty)
               .firstOrNull
         : null;
-    final rawSummary = live && !cold && (working || activity == null)
-        ? activity?.summary?.trim()
-        : null;
+    final rawSummary = active ? activity?.summary?.trim() : null;
     final status =
         activeThought ??
         (rawSummary != null && rawSummary.isNotEmpty ? rawSummary : fallback);
@@ -201,9 +197,16 @@ class _WorkHeader extends StatelessWidget {
                 ? ActivityDurationKind.executing
                 : ActivityDurationKind.worked,
           );
+    final phaseDuration =
+        active &&
+            activity!.kind == ConversationActivityKind.thinking &&
+            activity!.thinkingSeconds != null
+        ? activityDurationLabel(context, activity!.thinkingSeconds!)
+        : null;
+    final meta = phaseDuration ?? duration;
     // A group summary is a fact in its own right, not an inferred model phase.
     // Without that fact, current activity or active members, retain static Work.
-    final hasPhase = cold || working || activity != null;
+    final hasPhase = cold || active;
     final current = live && (hasPhase || activeThought != null);
     final label = current ? status : duration ?? l10n.timelineGroupRecord;
     final outcomes = <String>[
@@ -222,10 +225,9 @@ class _WorkHeader extends StatelessWidget {
       l10n.timelineGroupMemberCount(summary.total),
       ...outcomes,
     ].join('，');
-    final active = live && executionPresent && (working || activity != null);
     final icon = cold
         ? Icons.history_outlined
-        : live && activity != null
+        : active
         ? activity!.kind.icon
         : summary.cancelled > 0
         ? Icons.stop_circle_outlined
@@ -238,11 +240,7 @@ class _WorkHeader extends StatelessWidget {
         : secondaryColor.withValues(alpha: .78);
     final titleStyle = context.text.bodySmall!.copyWith(
       color: live
-          ? (active
-                ? (working
-                      ? context.colors.onSurface
-                      : context.colors.onSurface.withValues(alpha: .92))
-                : secondaryColor)
+          ? (active ? context.colors.onSurface : secondaryColor)
           : secondaryColor,
       fontSize: live ? TimelineActivityRow.headerFontSize : 13,
       fontWeight: FontWeight.w500,
@@ -326,10 +324,18 @@ class _WorkHeader extends StatelessWidget {
                                   style: titleStyle,
                                 ),
                         ),
-                        if (duration != null && label != duration) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          l10n.timelineGroupMemberCount(summary.total),
+                          key: const ValueKey('work-header-member-count'),
+                          maxLines: 1,
+                          softWrap: false,
+                          style: metaStyle,
+                        ),
+                        if (meta != null && label != meta) ...[
                           const SizedBox(width: 8),
                           Text(
-                            duration,
+                            meta,
                             key: const ValueKey('work-header-elapsed'),
                             maxLines: 1,
                             softWrap: false,

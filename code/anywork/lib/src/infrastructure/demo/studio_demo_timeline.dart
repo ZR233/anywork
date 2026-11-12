@@ -73,6 +73,7 @@ extension _DemoDisplayHistory on _DemoHistory {
       work: work,
       turnId: turnId,
     );
+    if (work) displayCurrentWorkId = id;
     for (final member in memberIds) {
       displayMembership[member] = id;
       updateDisplayMember(member);
@@ -127,7 +128,10 @@ extension _DemoDisplayHistory on _DemoHistory {
     final heads = displayHeads[displayRef(script.id)] ?? const [];
     if (!script.work) {
       final head = heads.single;
-      return SingleDisplayBlock(record: head.record);
+      return SingleDisplayBlock(
+        visibility: SingleVisibility.content,
+        record: head.record,
+      );
     }
     var terminal = 0,
         running = 0,
@@ -266,6 +270,7 @@ extension _DemoDisplayHistory on _DemoHistory {
       ),
     );
     script.sealed = true;
+    if (displayCurrentWorkId == id) displayCurrentWorkId = null;
     displayRevision++;
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
   }
@@ -400,7 +405,13 @@ extension _DemoDisplayHistory on _DemoHistory {
         reference.blockId,
     };
     displayBlocks.addAll(blocks);
-    if (live != null) displayLiveSeed = live;
+    if (blocks.any((block) => block.id == displayCurrentWorkId)) {
+      displayCurrentWorkId = null;
+    }
+    if (live != null) {
+      displayLiveSeed = live;
+      displayCurrentWorkId = live.currentWorkId;
+    }
     for (final entry
         in (members ?? const <DisplayBlockRef, List<DisplayMemberHead>>{})
             .entries) {
@@ -463,9 +474,10 @@ Object _displayRecordJson(DisplayRecord record) => {
 };
 
 Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
-  SingleDisplayBlock(:final record) => {
+  SingleDisplayBlock(:final record, :final visibility) => {
     'kind': 'single',
     'record': _displayRecordJson(record),
+    'visibility': visibility.name,
   },
   WorkDisplayBlock(:final summary, :final members) => {
     'kind': 'work',
@@ -495,6 +507,7 @@ Object _liveJson(LiveDisplayWindow live) => {
   'revision': live.revision,
   'historyThrough': live.historyThrough,
   'executionPresent': live.executionPresent,
+  'currentWorkId': live.currentWorkId,
   'older': live.older,
   'blocks': [
     for (final b in live.blocks)
@@ -526,7 +539,8 @@ int _timelineBytes(TimelineBatch batch) => _demoEncoded({
 
 extension _DemoTimelineReader on _DemoReader {
   DisplayBlockBody fitDisplay(DisplayBlockBody body) => switch (body) {
-    SingleDisplayBlock(:final record) => SingleDisplayBlock(
+    SingleDisplayBlock(:final record, :final visibility) => SingleDisplayBlock(
+      visibility: visibility,
       record: DisplayRecord(
         atom: fit(record.atom, 0),
         startFact: record.startFact,
@@ -548,6 +562,7 @@ extension _DemoTimelineReader on _DemoReader {
     final selected = <LiveDisplayBlock>[];
     String? older;
     LiveDisplayWindow page() => LiveDisplayWindow(
+      currentWorkId: history.displayCurrentWorkId,
       revision: revision,
       historyThrough: history.displayHead,
       executionPresent:
@@ -567,6 +582,7 @@ extension _DemoTimelineReader on _DemoReader {
       );
       final next = i > 0 ? cursor('display-live', revision, i) : null;
       final trial = LiveDisplayWindow(
+        currentWorkId: history.displayCurrentWorkId,
         revision: revision,
         historyThrough: history.displayHead,
         executionPresent: page().executionPresent,
@@ -586,6 +602,18 @@ extension _DemoTimelineReader on _DemoReader {
       if (selected.length == demand.maxItems) break;
     }
     final result = page();
+    if (before == null &&
+        result.currentWorkId != null &&
+        !result.blocks.any(
+          (block) =>
+              block.id == result.currentWorkId &&
+              block.state == DisplayBlockState.open &&
+              block.body is WorkDisplayBlock,
+        )) {
+      throw _demoQueryFailure(
+        'InvalidDemand: current Work head does not fit the latest window',
+      );
+    }
     if (_demoEncoded(_liveJson(result)) > demand.maxBytes) {
       throw _demoQueryFailure(
         'InvalidDemand: live display envelope does not fit',

@@ -200,6 +200,7 @@ void main() {
             id: 'image-input',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -316,6 +317,7 @@ void main() {
               id: 'invalid-image-input',
               historyPos: 1,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: _head(),
                   contentSource: CompletedOriginal(completionId: 'completion'),
@@ -351,6 +353,7 @@ void main() {
             id: 'failed-image-input',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: _head(),
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -401,6 +404,7 @@ void main() {
             id: 'single-block-not-record',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -596,6 +600,7 @@ void main() {
               id: 'block',
               historyPos: 1,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: _head(),
                   contentSource: CompletedOriginal(completionId: 'completion'),
@@ -644,6 +649,7 @@ void main() {
             id: 'restricted-block',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),

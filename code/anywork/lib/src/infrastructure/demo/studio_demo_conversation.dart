@@ -544,6 +544,7 @@ final class _DemoHistory {
   final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
   final Map<String, int> displayMemberRevisions = {};
   LiveDisplayWindow? displayLiveSeed;
+  String? displayCurrentWorkId;
   int displayRevision = 0;
   bool displayExecutionPresent = false;
   int get displayHead => displayBlocks.lastOrNull?.historyPos ?? 0;

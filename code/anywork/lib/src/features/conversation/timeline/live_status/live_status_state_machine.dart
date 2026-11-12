@@ -35,79 +35,51 @@ abstract final class LiveStatusStateMachine {
     });
   }
 
-  /// 当前活跃前台轮次的最新开放 `Work` 归入底部实时状态栏；
-  /// 已封存、冷读未恢复、跨轮次及计划遮蔽期工作组留在上方时间线工作区。
-  static bool isLiveBarWorkBlock({
-    required bool confirmingPlan,
-    required bool dockMasked,
-    required LiveDisplayWindow? live,
-    required String? activeTurnId,
-    required LiveDisplayBlock block,
-  }) {
-    if (dockMasked ||
-        confirmingPlan ||
-        live == null ||
-        !live.executionPresent ||
-        activeTurnId == null ||
-        !identical(live.blocks.lastOrNull, block) ||
-        block.state != DisplayBlockState.open ||
-        block.body is! WorkDisplayBlock) {
-      return false;
+  /// 规范最新窗口是当前尾组身份的唯一来源；旧页和来源仅描述内容。
+  static LiveDisplayBlock? currentWork(LiveDisplayWindow? live) {
+    final id = live?.currentWorkId;
+    if (id == null) return null;
+    for (final block in live!.blocks) {
+      if (block.id == id &&
+          block.state == DisplayBlockState.open &&
+          block.body is WorkDisplayBlock) {
+        return block;
+      }
     }
-    final source = block.source;
-    return source is ForegroundTurnChatSource && source.turnId == activeTurnId;
+    return null;
   }
 
-  /// 判断上方时间线工作区应忽略的“属于当前轮次底部栏”的开放 `Work`：
-  /// 普通问答遮蔽期间该开放组归前台交互轮次持有，不转入独立时间线工作记录。
-  static bool _isOwnedByActiveForegroundTurn({
-    required bool confirmingPlan,
-    required LiveDisplayWindow? live,
-    required String? activeTurnId,
-    required LiveDisplayBlock block,
-  }) {
-    if (confirmingPlan ||
-        live == null ||
-        !live.executionPresent ||
-        activeTurnId == null ||
-        !identical(live.blocks.lastOrNull, block) ||
-        block.state != DisplayBlockState.open ||
-        block.body is! WorkDisplayBlock) {
-      return false;
-    }
-    final source = block.source;
-    return source is ForegroundTurnChatSource && source.turnId == activeTurnId;
+  static bool _needsRestoration(LiveDisplayBlock block) {
+    if (block.state != DisplayBlockState.open) return false;
+    return switch (block.body) {
+      WorkDisplayBlock(:final summary) =>
+        summary.hasUnfinishedOrUnavailableMembers,
+      SingleDisplayBlock(:final record) =>
+        record.atom.lifecycle is ActiveChatAtom ||
+            (record.contentSource is FrozenObservation &&
+                !(record.contentSource as FrozenObservation).available),
+    };
   }
 
-  /// 常规轮次活动提示合并进当前活跃轮次最新且开放的 `Work` 卡片头部；
-  /// 成员失败、取消或交接不代表当前轮次结束，不阻止当前活动合并。
-  /// 更早实时窗口以及审批/存储故障等关键提示仍保持独立呈现。
+  /// 普通活动沿原 State 合并到明确的当前尾组；不把来源或成员状态当活动。
+  /// 审批、存储故障等关键提示以及 unavailable 组仍保持独立呈现。
   static ({String blockId, ExecutionLiveNotice notice})? mergeableWorkNotice({
     required LiveDisplayWindow? live,
-    required String? activeTurnId,
     required List<LiveStatusNotice> notices,
   }) {
-    if (live == null || !live.executionPresent || activeTurnId == null) {
+    if (live == null || !live.executionPresent) {
       return null;
     }
-    final latest = live.blocks.lastOrNull;
-    if (latest == null ||
-        latest.state != DisplayBlockState.open ||
-        latest.body is! WorkDisplayBlock) {
-      return null;
-    }
+    final latest = currentWork(live);
+    if (latest == null) return null;
     final summary = (latest.body as WorkDisplayBlock).summary;
     if (summary.unavailable != 0) {
-      return null;
-    }
-    final source = latest.source;
-    if (source is! ForegroundTurnChatSource || source.turnId != activeTurnId) {
       return null;
     }
     for (final notice in notices) {
       if (notice is! ExecutionLiveNotice) continue;
       final view = notice.view;
-      if (view.turnId != activeTurnId || view.errorMessage != null) continue;
+      if (view.errorMessage != null) continue;
       if (view.kind == ConversationActivityKind.preparing ||
           view.kind == ConversationActivityKind.thinking ||
           view.kind == ConversationActivityKind.runningTool ||
@@ -315,38 +287,23 @@ abstract final class LiveStatusStateMachine {
   projectSurfaceAndTimelineWork({
     required LiveDisplayWindow? effectiveOutputWindow,
     required LiveDisplayWindow? effectiveTimelineWindow,
+    required LiveDisplayWindow? latestWindow,
     required String? activeTurnId,
-    required bool confirmingPlan,
     required LiveWindowPagingState outputPaging,
     required List<LiveStatusNotice> rawNotices,
   }) {
+    final tail = currentWork(latestWindow);
     final timelineWorkBlocks = <LiveDisplayBlock>[
       for (final block
           in effectiveTimelineWindow?.blocks ?? const <LiveDisplayBlock>[])
-        if (block.body is WorkDisplayBlock &&
-            !_isOwnedByActiveForegroundTurn(
-              confirmingPlan: confirmingPlan,
-              live: effectiveTimelineWindow,
-              activeTurnId: activeTurnId,
-              block: block,
-            ))
-          block,
+        if (block.body is WorkDisplayBlock && block.id != tail?.id) block,
     ];
 
-    final merged = !outputPaging.isViewingOlder
-        ? mergeableWorkNotice(
-            live: effectiveOutputWindow,
-            activeTurnId: activeTurnId,
-            notices: rawNotices,
-          )
-        : null;
-    final coldWorkOnly =
-        effectiveOutputWindow != null &&
-        !effectiveOutputWindow.executionPresent &&
-        effectiveOutputWindow.blocks.isNotEmpty &&
-        effectiveOutputWindow.blocks.every(
-          (block) => block.body is WorkDisplayBlock,
-        );
+    final merged = mergeableWorkNotice(live: latestWindow, notices: rawNotices);
+    final unrestoredInWorkHeader =
+        tail != null &&
+        latestWindow?.executionPresent == false &&
+        latestWindow!.blocks.every((block) => block.body is WorkDisplayBlock);
     final standaloneNotices = <LiveStatusNotice>[
       for (final notice in rawNotices)
         if (!identical(notice, merged?.notice) &&
@@ -355,23 +312,15 @@ abstract final class LiveStatusStateMachine {
               activeTurnId: activeTurnId,
               notice: notice,
             ) &&
-            !(coldWorkOnly && notice is UnrestoredLiveNotice))
+            !(unrestoredInWorkHeader && notice is UnrestoredLiveNotice))
           notice,
     ];
 
     final outputBlocks = <LiveDisplayBlock>[
       for (final block
           in effectiveOutputWindow?.blocks ?? const <LiveDisplayBlock>[])
-        if (block.body is SingleDisplayBlock ||
-            (block.body is WorkDisplayBlock &&
-                isLiveBarWorkBlock(
-                  confirmingPlan: confirmingPlan,
-                  dockMasked: false,
-                  live: effectiveOutputWindow,
-                  activeTurnId: activeTurnId,
-                  block: block,
-                )))
-          block,
+        if (block.body is SingleDisplayBlock) block,
+      if (tail != null) tail,
     ];
 
     final hasPagingControls =
@@ -385,13 +334,12 @@ abstract final class LiveStatusStateMachine {
     }
 
     final LiveStatusPrimarySurface surface;
-    final trailingWork = outputBlocks.lastOrNull;
-    if (trailingWork != null && trailingWork.body is WorkDisplayBlock) {
-      final mergedView = merged?.blockId == trailingWork.id
+    if (tail != null) {
+      final mergedView = merged?.blockId == tail.id
           ? merged?.notice.view
           : null;
       surface = LiveStatusWorkSurface(
-        workBlock: trailingWork,
+        workBlock: tail,
         precedingSingles: outputBlocks.sublist(0, outputBlocks.length - 1),
         mergedActivity: mergedView,
         headerIndicatorStyle: resolveLiveHeaderIndicatorStyle(mergedView),
@@ -455,9 +403,7 @@ abstract final class LiveStatusStateMachine {
 
     final rawNotices = <LiveStatusNotice>[
       if (latestLive?.executionPresent == false &&
-          latestLive!.blocks.any(
-            (block) => block.state == DisplayBlockState.open,
-          ))
+          latestLive!.blocks.any(_needsRestoration))
         const UnrestoredLiveNotice(),
       if (executionView != null &&
           !(confirmingPlan &&
@@ -472,8 +418,8 @@ abstract final class LiveStatusStateMachine {
     final projected = projectSurfaceAndTimelineWork(
       effectiveOutputWindow: effectiveOutputWindow,
       effectiveTimelineWindow: effectiveTimelineWindow,
+      latestWindow: latestLive,
       activeTurnId: observation.activeTurnId,
-      confirmingPlan: confirmingPlan,
       outputPaging: outputPaging,
       rawNotices: rawNotices,
     );
@@ -482,6 +428,14 @@ abstract final class LiveStatusStateMachine {
       effectiveWindow: effectiveTimelineWindow,
       paging: timelineWorkPaging,
     );
+    final obscured = projected.surface == null
+        ? null
+        : LiveStatusPresenting(
+            surface: projected.surface!,
+            effectiveWindow: effectiveOutputWindow,
+            paging: outputPaging,
+            showInteractionDetails: false,
+          );
 
     // 2. 若普通待决提问占据底部交互停靠区，则遮蔽底部活动条（不影响独立时间线工作区）。
     if (questionMasked) {
@@ -491,6 +445,7 @@ abstract final class LiveStatusStateMachine {
         barState: LiveStatusDockMasked(
           interactionId: interaction!.id,
           showInteractionDetails: showInteractionDetails,
+          obscured: obscured,
         ),
         timelineWork: timelineSlice,
         outputPaging: outputPaging,
@@ -513,6 +468,7 @@ abstract final class LiveStatusStateMachine {
         barState: LiveStatusDockMasked(
           interactionId: interaction.id,
           showInteractionDetails: false,
+          obscured: obscured,
         ),
         timelineWork: timelineSlice,
         outputPaging: outputPaging,

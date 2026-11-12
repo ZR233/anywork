@@ -36,6 +36,7 @@ DisplayBlock _single(ChatSourceId source) => DisplayBlock(
   id: 'single',
   historyPos: 2,
   body: SingleDisplayBlock(
+    visibility: SingleVisibility.content,
     record: DisplayRecord(
       atom: _tool(source),
       contentSource: CompletedOriginal(completionId: 'handoff-completion'),
@@ -88,6 +89,7 @@ final class _Fixture {
     displayBatch(
       blocks,
       live: LiveDisplayWindow(
+        currentWorkId: null,
         revision: 1,
         historyThrough: blocks.isEmpty ? 0 : blocks.last.historyPos,
         executionPresent: false,
@@ -133,6 +135,7 @@ void main() {
     final f = _Fixture(tester);
     await f.set([]);
     f.lease.live.value = LiveDisplayWindow(
+      currentWorkId: null,
       revision: 2,
       historyThrough: 0,
       executionPresent: true,
@@ -202,6 +205,7 @@ void main() {
     final f = _Fixture(tester);
     await f.set([displayWork('work', 1, total: 1), _single(_source)]);
     f.lease.live.value = LiveDisplayWindow(
+      currentWorkId: null,
       revision: 9,
       historyThrough: 2,
       executionPresent: true,
@@ -210,6 +214,7 @@ void main() {
           id: 'background-live',
           blockOrder: 3,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: _tool(
                 const BackgroundResultChatSource(messageId: 'result'),

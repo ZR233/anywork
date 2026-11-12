@@ -520,6 +520,7 @@ class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
         id: 'overlap-text',
         historyPos: 1,
         body: SingleDisplayBlock(
+          visibility: SingleVisibility.content,
           record: DisplayRecord(
             atom: TimelinePreviewFixtures.overlapText.atom,
             contentSource: const CurrentAtom(),

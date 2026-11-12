@@ -150,6 +150,7 @@ void main() {
       threadId: _thread,
       blocks: [],
       live: LiveDisplayWindow(
+        currentWorkId: null,
         revision: 1,
         historyThrough: 3,
         executionPresent: false,
@@ -159,6 +160,7 @@ void main() {
               id: 'live-$i',
               blockOrder: i,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: chatAtomMessage('live-$i'),
                   contentSource: const CurrentAtom(),
@@ -188,6 +190,7 @@ void main() {
       threadId: _thread,
       blocks: [],
       live: LiveDisplayWindow(
+        currentWorkId: null,
         revision: 2,
         historyThrough: 3,
         executionPresent: false,
@@ -424,6 +427,7 @@ void main() {
       threadId: _thread,
       blocks: [],
       live: LiveDisplayWindow(
+        currentWorkId: null,
         revision: 1,
         historyThrough: 3,
         executionPresent: true,
@@ -433,6 +437,7 @@ void main() {
               id: 'handoff-$i',
               blockOrder: i,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: chatAtomMessage('handoff-$i'),
                   contentSource: const CurrentAtom(),
@@ -455,6 +460,7 @@ void main() {
           displaySingle(chatMessage('handoff-$i'), historyPos: 3 + i),
       ],
       live: LiveDisplayWindow(
+        currentWorkId: null,
         revision: 2,
         historyThrough: 5,
         executionPresent: false,
@@ -486,6 +492,7 @@ void main() {
       expect((await _nextTimeline(events, 1)).throughPos, 3);
 
       LiveDisplayWindow live(int through, String id) => LiveDisplayWindow(
+        currentWorkId: null,
         revision: through,
         historyThrough: through,
         executionPresent: true,
@@ -494,6 +501,7 @@ void main() {
             id: id,
             blockOrder: through,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: chatAtomMessage(id),
                 contentSource: const CurrentAtom(),
@@ -568,6 +576,7 @@ void main() {
         threadId: _thread,
         blocks: [],
         live: LiveDisplayWindow(
+          currentWorkId: null,
           revision: 1,
           historyThrough: 3,
           executionPresent: false,
@@ -597,6 +606,7 @@ void main() {
         threadId: _thread,
         blocks: [DisplayBlock(id: ref.blockId, historyPos: 4, body: body)],
         live: LiveDisplayWindow(
+          currentWorkId: null,
           revision: 2,
           historyThrough: 4,
           executionPresent: false,
@@ -643,6 +653,7 @@ void main() {
       );
       final work = WorkDisplayBlock(summary: displaySummary(1), members: ref);
       final single = SingleDisplayBlock(
+        visibility: SingleVisibility.content,
         record: DisplayRecord(
           atom: chatAtomMessage('stable-member'),
           contentSource: const CurrentAtom(),
@@ -657,6 +668,7 @@ void main() {
         'single-to-work' => work,
         'different-work-member' => work,
         _ => SingleDisplayBlock(
+          visibility: SingleVisibility.content,
           record: DisplayRecord(
             atom: chatAtomMessage('other-member'),
             contentSource: const CurrentAtom(),
@@ -675,6 +687,7 @@ void main() {
         threadId: _thread,
         blocks: [],
         live: LiveDisplayWindow(
+          currentWorkId: null,
           revision: 1,
           historyThrough: 3,
           executionPresent: false,
@@ -719,6 +732,7 @@ void main() {
             DisplayBlock(id: ref.blockId, historyPos: 5, body: replacement),
           ],
           live: LiveDisplayWindow(
+            currentWorkId: null,
             revision: 2,
             historyThrough: 5,
             executionPresent: false,
@@ -773,6 +787,7 @@ void main() {
         threadId: _thread,
         blocks: [DisplayBlock(id: ref.blockId, historyPos: 4, body: original)],
         live: LiveDisplayWindow(
+          currentWorkId: null,
           revision: 2,
           historyThrough: 4,
           executionPresent: false,
@@ -823,6 +838,7 @@ void main() {
       threadId: _thread,
       blocks: [],
       live: LiveDisplayWindow(
+        currentWorkId: ref.blockId,
         revision: 1,
         historyThrough: 3,
         executionPresent: false,

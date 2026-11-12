@@ -24,6 +24,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
   final _expansion = TimelineExpansionIntent();
   static final _now = DateTime.fromMillisecondsSinceEpoch(1428000);
   static final _window = LiveDisplayWindow(
+    currentWorkId: 'model-request-wait',
     revision: 7,
     historyThrough: 0,
     executionPresent: true,

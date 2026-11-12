@@ -949,6 +949,7 @@ void main() {
           <
             ({
               String name,
+              String? currentWorkId,
               bool collapsedSingleRow,
               TimelineActivityIndicatorStyle expectedStyle,
               String expectedTitle,
@@ -958,6 +959,7 @@ void main() {
           >[
             (
               name: 'preparing',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '准备中',
@@ -973,6 +975,7 @@ void main() {
             ),
             (
               name: 'thinking',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -989,6 +992,7 @@ void main() {
             ),
             (
               name: 'old-sealed-before-new-model-request',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1013,6 +1017,7 @@ void main() {
             ),
             (
               name: 'new-work-waiting-api-without-result-or-summary',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1038,6 +1043,7 @@ void main() {
             ),
             (
               name: 'new-work-thinking-before-exec',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1054,6 +1060,7 @@ void main() {
             ),
             (
               name: 'workgroup',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1085,6 +1092,7 @@ void main() {
             ),
             (
               name: 'all-members-terminal-transferred-waiting-api-again',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1109,6 +1117,7 @@ void main() {
             ),
             (
               name: 'failed-call-thinking',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1124,6 +1133,7 @@ void main() {
             ),
             (
               name: 'failed-call-with-thought',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1147,6 +1157,7 @@ void main() {
             ),
             (
               name: 'text',
+              currentWorkId: null,
               collapsedSingleRow: false,
               expectedStyle: TimelineActivityIndicatorStyle.writing,
               expectedTitle: '正在输出',
@@ -1164,6 +1175,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
+                    visibility: SingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'text-1',
@@ -1214,6 +1226,7 @@ void main() {
             ),
             (
               name: 'after-text',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1237,6 +1250,7 @@ void main() {
             ),
             (
               name: 'next-group-exec-only',
+              currentWorkId: 'work-2',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
               expectedTitle: '工作中',
@@ -1274,6 +1288,7 @@ void main() {
             ),
             (
               name: 'next-group',
+              currentWorkId: 'work-2',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '运行测试并核对布局',
@@ -1311,6 +1326,7 @@ void main() {
             ),
             (
               name: 'compacting',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
               expectedTitle: '正在压缩上下文',
@@ -1321,6 +1337,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
+                    visibility: SingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'compact-1',
@@ -1346,6 +1363,7 @@ void main() {
             ),
             (
               name: 'stopping',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '停止中',
@@ -1367,6 +1385,7 @@ void main() {
       double? previousCatPhase;
 
       for (final stage in stages) {
+        harness.currentWorkId = stage.currentWorkId;
         harness.blocks = stage.blocks;
         harness.status = stage.status;
         await tester.pumpWidget(harness.build());
@@ -1575,10 +1594,12 @@ class _ZeroJitterHarness {
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = const [];
   ThreadActivityView? status;
+  String? currentWorkId;
   int revision = 0;
 
   Widget build() {
     final window = LiveDisplayWindow(
+      currentWorkId: currentWorkId,
       revision: ++revision,
       historyThrough: 0,
       executionPresent: true,

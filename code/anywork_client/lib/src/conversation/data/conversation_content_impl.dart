@@ -473,6 +473,16 @@ final class ConversationContentImpl implements TimelineContent {
             block.blockOrder > order;
         order = block.blockOrder;
       }
+      final currentWorkId = incoming.currentWorkId;
+      valid =
+          valid &&
+          (currentWorkId == null ||
+              incoming.blocks.any(
+                (block) =>
+                    block.id == currentWorkId &&
+                    block.state == DisplayBlockState.open &&
+                    block.body is WorkDisplayBlock,
+              ));
     }
     if (!valid) {
       throw const ConversationContinuityError('invalid Timeline batch');
@@ -487,6 +497,9 @@ final class ConversationContentImpl implements TimelineContent {
                     ? previousLive.historyThrough
                     : batch.throughPos,
                 executionPresent: previousLive.executionPresent,
+                currentWorkId: ids.contains(previousLive.currentWorkId)
+                    ? null
+                    : previousLive.currentWorkId,
                 blocks: previousLive.blocks
                     .where((block) => !ids.contains(block.id))
                     .toList(),

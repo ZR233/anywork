@@ -100,6 +100,46 @@ Finder get _rowTap => find
 
 void main() {
   testWidgets(
+    '#364 final empty Single keeps its boundary without showing stale or guessed text',
+    (tester) async {
+      final atom = ChatAtom(
+        id: 'retracted-output',
+        source: const ForegroundTurnChatSource(turnId: 'turn'),
+        sourceOrder: 1,
+        kind: ChatAtomKind.text,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contentPresent: false,
+        contents: const [],
+      );
+      final unit = TimelineDisplayUnit(
+        block: DisplayBlock(
+          id: 'retracted-block',
+          historyPos: 7,
+          body: SingleDisplayBlock(
+            visibility: SingleVisibility.finalEmptyAfterContent,
+            record: DisplayRecord(
+              atom: atom,
+              contentSource: const CompletedOriginal(completionId: 'empty'),
+            ),
+          ),
+        ),
+      );
+      final item = ChatItemPresentation.forUnit(unit);
+      expect(item.isKnownEmptyText, isFalse);
+      await _show(tester, item);
+      expect(find.text('该输出的最终内容为空'), findsOneWidget);
+      expect(find.text('内容状态未知'), findsNothing);
+      expect(find.byType(TimelineContentConnector), findsNothing);
+      expect(unit.historyPos, 7);
+    },
+  );
+
+  testWidgets(
     'Accepted Input and Inbox render only declared text, retaining request domains and body aliases',
     (tester) async {
       const text =
@@ -190,6 +230,7 @@ void main() {
             id: 'accepted',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(completionId: 'accepted'),
@@ -388,6 +429,7 @@ void main() {
           id: 'inbox-record',
           historyPos: 1,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: atom,
               contentSource: CompletedOriginal(completionId: 'inbox-record'),
@@ -454,6 +496,7 @@ void main() {
             id: contentItemId,
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(completionId: contentItemId),
@@ -1333,6 +1376,7 @@ void main() {
             id: 'patch-declared-$truncated',
             historyPos: 1,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(
@@ -1632,6 +1676,7 @@ void main() {
           id: 'lsp-declared',
           historyPos: 1,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: atom,
               contentSource: CompletedOriginal(completionId: 'lsp-declared'),

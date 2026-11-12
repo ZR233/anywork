@@ -84,6 +84,7 @@ void main() {
     }
 
     final live = LiveDisplayWindow(
+      currentWorkId: null,
       revision: (lease.live.value?.revision ?? 0) + 1,
       historyThrough: feed.historyThrough,
       executionPresent: true,
@@ -93,6 +94,7 @@ void main() {
           blockOrder: 1,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: ChatAtom(
                 id: 'live',
@@ -283,6 +285,7 @@ void main() {
           from: feed.historyThrough,
           through: feed.historyThrough,
           live: LiveDisplayWindow(
+            currentWorkId: null,
             revision: live.revision + 1,
             historyThrough: feed.historyThrough,
             executionPresent: false,

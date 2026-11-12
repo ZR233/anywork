@@ -399,6 +399,7 @@ final _statusDeclaredWindowItem = ChatItemPresentation.forUnit(
       id: 'preview-lsp-status-unit',
       historyPos: 1,
       body: SingleDisplayBlock(
+        visibility: SingleVisibility.content,
         record: DisplayRecord(
           atom: ChatAtom(
             id: 'preview-lsp-status',

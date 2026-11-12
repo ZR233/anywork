@@ -11,6 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
@@ -231,6 +232,7 @@ final class _Harness {
   final live = ValueNotifier<LiveDisplayWindow?>(null);
   Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
   void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
+    currentWorkId: null,
     revision: ++revision,
     historyThrough: 0,
     executionPresent: true,
@@ -241,6 +243,7 @@ final class _Harness {
           blockOrder: index + 1,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: entry.atom,
               contentSource: const CurrentAtom(),
@@ -288,6 +291,165 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  testWidgets(
+    '#364 Active-Resting-Active preserves the expanded tail and original member/content owners',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      final handle = _FreezeMembers();
+      final expansion = TimelineExpansionIntent()..expanded = true;
+      const reference = DisplayBlockRef(
+        databaseId: 'database',
+        blockId: 'tail',
+      );
+      var opens = 0;
+      expansion.openDisplayMembers = (_, _, _) async {
+        opens++;
+        return handle;
+      };
+      addTearDown(() {
+        expansion.retire();
+        images.release();
+      });
+      var now = DateTime.fromMillisecondsSinceEpoch(1000000);
+      Widget scene(bool active) {
+        final unit = TimelineDisplayUnit.live(
+          block: const LiveDisplayBlock(
+            id: 'tail',
+            blockOrder: 1,
+            state: DisplayBlockState.open,
+            body: WorkDisplayBlock(
+              members: reference,
+              summary: WorkSummary(
+                total: 1,
+                terminal: 0,
+                running: 1,
+                waiting: 0,
+                failed: 0,
+                cancelled: 0,
+                transferred: 0,
+                unavailable: 0,
+                createdAt: 1000,
+              ),
+            ),
+          ),
+          executionPresent: true,
+          expansion: expansion,
+        );
+        return _host(
+          TimelineDisplayUnitView(
+            key: const ValueKey('tail'),
+            unit: unit,
+            activity: active
+                ? const ConversationActivityView(
+                    identity: 'real-activity',
+                    kind: ConversationActivityKind.thinking,
+                  )
+                : null,
+            now: () => now,
+            childBuilder: (_) => CompletionRunConnector(
+              unit: unit,
+              threadId: 'thread',
+              content: content,
+              images: images,
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(scene(true));
+      handle.send(
+        DisplayMemberPage(
+          block: reference,
+          revision: 1,
+          sealed: false,
+          entries: [
+            DisplayMemberHead(
+              memberKey: 'stable-row',
+              memberOrder: 1,
+              record: DisplayRecord(
+                atom: _textItem(),
+                contentSource: const CurrentAtom(),
+              ),
+            ),
+          ],
+        ),
+      );
+      await _flush(tester);
+      final members = expansion.members;
+      final memberState = tester.state(find.byType(TimelineMemberAtom));
+      final groupState = tester.state(find.byType(TimelineDisplayUnitView));
+      final scope = content.scopes.single;
+      scope.watches.single.add(_window('合法打开的正文'));
+      await _flush(tester);
+      for (final active in [false, true]) {
+        now = now.add(const Duration(days: 1));
+        await tester.pumpWidget(scene(active));
+        await _flush(tester);
+        expect(expansion.expanded, isTrue);
+        expect(expansion.members, same(members));
+        expect(
+          tester.state(find.byType(TimelineMemberAtom)),
+          same(memberState),
+        );
+        expect(
+          tester.state(find.byType(TimelineDisplayUnitView)),
+          same(groupState),
+        );
+        expect(scope.isActive, isTrue);
+        expect(scope.cancels, 0);
+        expect(opens, 1);
+        expect(content.scopes, hasLength(1));
+        expect(find.text('合法打开的正文'), findsOneWidget);
+        expect(find.textContaining('执行了'), findsNothing);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpWidget(const SizedBox());
+      expansion.retire();
+      await _flush(tester);
+      expect(handle.closed, isTrue);
+      expect(scope.isActive, isFalse);
+    },
+  );
+
+  testWidgets(
+    '#364 FinalEmptyAfterContent retires the stream and renders its typed explanation',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      h.accept([_part(_textItem())]);
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      final scope = h.content.scopes.single;
+      final previous = h.live.value!;
+      h.live.value = LiveDisplayWindow(
+        currentWorkId: null,
+        revision: previous.revision + 1,
+        historyThrough: 0,
+        executionPresent: true,
+        blocks: [
+          LiveDisplayBlock(
+            id: previous.blocks.single.id,
+            blockOrder: 1,
+            state: DisplayBlockState.sealed,
+            body: SingleDisplayBlock(
+              visibility: SingleVisibility.finalEmptyAfterContent,
+              record: DisplayRecord(
+                atom: _textItem(),
+                contentSource: const CompletedOriginal(completionId: 'empty'),
+              ),
+            ),
+          ),
+        ],
+      );
+      await _flush(tester);
+      expect(find.text('该输出的最终内容为空'), findsOneWidget);
+      expect(scope.isActive, isFalse);
+      expect(h.content.scopes, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final bounded in [true, false]) {
     testWidgets(
       'active response preserves body scrolling with ${bounded ? "bounded" : "unbounded"} member height',
@@ -794,6 +956,7 @@ void main() {
           blockOrder: 2,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: _textItem(revision: 2),
               contentSource: const CurrentAtom(),
@@ -802,6 +965,7 @@ void main() {
         );
         LiveDisplayWindow latest({int revision = 7, int through = 0}) =>
             LiveDisplayWindow(
+              currentWorkId: null,
               revision: revision,
               historyThrough: through,
               executionPresent: true,
@@ -809,6 +973,7 @@ void main() {
               older: 'older-cursor',
             );
         final page = LiveDisplayWindow(
+          currentWorkId: null,
           revision: 7,
           historyThrough: 0,
           executionPresent: true,
@@ -818,6 +983,7 @@ void main() {
               blockOrder: 1,
               state: DisplayBlockState.open,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: _textItem(),
                   contentSource: const CurrentAtom(),

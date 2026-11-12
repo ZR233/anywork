@@ -37,51 +37,59 @@ class LiveStatusBar extends ConsumerWidget {
     final sessionState = ref.watch(threadSessionStoreProvider(threadId));
     final children = <Widget>[];
 
-    switch (barState) {
-      case LiveStatusHidden():
-        break;
-      case LiveStatusDockMasked():
-        break;
-      case LiveStatusPresenting():
-        final timeline = ref.read(timelineSessionOwnerProvider);
-        final lease = timeline.lease(threadId);
-        if (lease != null && identical(lease.content, content)) {
-          final notifier = ref.read(
-            liveStatusViewModelProvider(threadId).notifier,
-          );
-          children.add(
-            ConversationCurrentConnector(
-              section: ConversationLiveSection.output,
-              key: ValueKey((threadId, content, lease.generation)),
-              managedByViewModel: true,
-              presenting: barState,
-              onLoadOlder: notifier.loadOlderOutput,
-              onReturnToLatest: notifier.returnToLatestOutput,
-              session: sessionState,
-              content: content,
-              live: lease.live,
-              liveUnit: lease.liveUnit,
-              onExpandedChanged: StudioDriverState.publishActivityExpanded,
-              registerDisplay: lease.registerCurrentDisplay,
-              images: lease.imageResources,
-              readAttachment: (id) => client.readAttachmentBytes(threadId, id),
-              isDisplayActive: () =>
-                  !lease.retirement.value &&
-                  identical(timeline.lease(threadId), lease) &&
-                  identical(lease.content, content),
+    final presenting = switch (barState) {
+      LiveStatusPresenting() => barState,
+      LiveStatusDockMasked(:final obscured) => obscured,
+      LiveStatusHidden() => null,
+    };
+    final masked = barState is LiveStatusDockMasked;
+    if (presenting != null) {
+      final timeline = ref.read(timelineSessionOwnerProvider);
+      final lease = timeline.lease(threadId);
+      if (lease != null && identical(lease.content, content)) {
+        final notifier = ref.read(
+          liveStatusViewModelProvider(threadId).notifier,
+        );
+        children.add(
+          Offstage(
+            offstage: masked,
+            child: TickerMode(
+              enabled: !masked,
+              child: ConversationCurrentConnector(
+                section: ConversationLiveSection.output,
+                key: ValueKey((threadId, content, lease.generation)),
+                managedByViewModel: true,
+                presenting: presenting,
+                onLoadOlder: notifier.loadOlderOutput,
+                onReturnToLatest: notifier.returnToLatestOutput,
+                session: sessionState,
+                content: content,
+                live: lease.live,
+                liveUnit: lease.liveUnit,
+                onExpandedChanged: StudioDriverState.publishActivityExpanded,
+                registerDisplay: lease.registerCurrentDisplay,
+                images: lease.imageResources,
+                readAttachment: (id) =>
+                    client.readAttachmentBytes(threadId, id),
+                isDisplayActive: () =>
+                    !lease.retirement.value &&
+                    identical(timeline.lease(threadId), lease) &&
+                    identical(lease.content, content),
+              ),
             ),
-          );
-        } else if (barState.surface.standaloneNotices.isNotEmpty) {
-          children.add(
-            ConversationActivityBar(
-              children: [
-                ConversationRealtimeNotices(
-                  notices: barState.surface.standaloneNotices,
-                ),
-              ],
-            ),
-          );
-        }
+          ),
+        );
+      } else if (!masked && presenting.surface.standaloneNotices.isNotEmpty) {
+        children.add(
+          ConversationActivityBar(
+            children: [
+              ConversationRealtimeNotices(
+                notices: presenting.surface.standaloneNotices,
+              ),
+            ],
+          ),
+        );
+      }
     }
 
     final reference = sessionState.businessRefs?.interactions;

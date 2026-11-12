@@ -175,7 +175,11 @@ class _CurrentState extends State<ConversationCurrentConnector>
   LiveStatusPresenting? get _resolvedPresenting {
     if (widget.managedByViewModel) return widget.presenting;
     final state = _ensureStandaloneAggregate().barState;
-    return state is LiveStatusPresenting ? state : null;
+    return switch (state) {
+      LiveStatusPresenting() => state,
+      LiveStatusDockMasked(:final obscured) => obscured,
+      LiveStatusHidden() => null,
+    };
   }
 
   LiveStatusTimelineWorkSlice get _resolvedWorkSlice =>
@@ -300,7 +304,12 @@ class _CurrentState extends State<ConversationCurrentConnector>
     }
     final presenting = _resolvedPresenting;
     if (presenting == null) return const SizedBox.shrink();
-    return _buildOutputSection(presenting);
+    return Offstage(
+      offstage:
+          !widget.managedByViewModel &&
+          _ensureStandaloneAggregate().barState is LiveStatusDockMasked,
+      child: _buildOutputSection(presenting),
+    );
   }
 
   Widget _buildWorkSection(LiveStatusTimelineWorkSlice slice) {
@@ -355,6 +364,10 @@ class _CurrentState extends State<ConversationCurrentConnector>
               window.executionPresent,
               activity: surface.mergedActivityFor(block.id),
             ),
+            SingleDisplayBlock(
+              visibility: SingleVisibility.finalEmptyAfterContent,
+            ) =>
+              const Text('该输出的最终内容为空'),
             SingleDisplayBlock(:final record) => TimelineMemberAtom(
               key: ValueKey((block.id, _retirements[block.id])),
               record: record,

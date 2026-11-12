@@ -180,6 +180,7 @@ void main() {
     );
     LiveDisplayWindow live(int revision, int total, int terminal) =>
         LiveDisplayWindow(
+          currentWorkId: reference.blockId,
           revision: revision,
           historyThrough: 0,
           executionPresent: true,
@@ -241,6 +242,7 @@ void main() {
           placement: ChatPlacement.append,
           from: 0,
           live: LiveDisplayWindow(
+            currentWorkId: null,
             revision: 4,
             historyThrough: 1,
             executionPresent: false,
@@ -289,6 +291,7 @@ void main() {
       ),
     );
     final live = LiveDisplayWindow(
+      currentWorkId: 'work',
       revision: 1,
       historyThrough: 1,
       executionPresent: true,
@@ -322,6 +325,7 @@ void main() {
           placement: ChatPlacement.append,
           from: 1,
           live: LiveDisplayWindow(
+            currentWorkId: null,
             revision: 2,
             historyThrough: 2,
             executionPresent: false,
