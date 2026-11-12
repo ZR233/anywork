@@ -1,28 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/view_models/plan_document_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
-import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../support/chat_fixtures.dart';
+import '../support/display_fixtures.dart';
+import '../support/plan_document_harness.dart';
 import '../support/plan_document_transport.dart';
 import '../support/pump_client_future.dart';
-import '../support/test_statistics_feed.dart';
 
 void main() {
   testWidgets('计划先于 ready 挂载，离页返回、A-B-A 与新 attempt 自动恢复', (tester) async {
     final initialGate = Completer<void>();
-    final h = await _Harness.open(
+    final h = await PlanDocumentHarness.open(
       tester,
       PlanDocumentTransport()..nextInitialGate = initialGate,
     );
@@ -32,8 +27,15 @@ void main() {
     final panel = tester.state(find.byType(PlanDetailView));
     expect(h.session.content.state.value, isA<ChatOpening<bool>>());
     expect(h.transport.reads, isEmpty);
+    expect(h.session.content.activity.value, isNull);
     initialGate.complete();
     await h.body('First plan body');
+    expect(h.session.content.activity.value, isNull);
+    expect(
+      h.transport.reads.single.reference,
+      h.session.state.businessRefs!.plan!.document,
+    );
+    expect(h.transport.businessReads, 0);
     expect(h.transport.reads.single.range.maxBytes, 64 * 1024);
     expect(
       find.byKey(
@@ -45,6 +47,44 @@ void main() {
       findsOneWidget,
     );
     final firstAttempt = h.session.content.currentAttemptId;
+    final window = h.document.window;
+    final lease = h.graph.timeline.lease('thread-main')!;
+    final main = lease.controller;
+    final history = main.messages.toList();
+    expect(history, isNotEmpty);
+    final feed = h.transport.timelineFeeds.single;
+    for (var update = 0; update < 5; update++) {
+      final previous = lease.live.value!;
+      final live = LiveDisplayWindow(
+        revision: previous.revision + 1,
+        historyThrough: previous.historyThrough,
+        executionPresent: true,
+        blocks: const [],
+      );
+      feed.emitTimeline(
+        displayBatch(
+          const [],
+          placement: ChatPlacement.append,
+          from: live.historyThrough,
+          through: live.historyThrough,
+          live: live,
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => lease.live.value?.revision == live.revision,
+        'live update ${live.revision} accepted by Client',
+      );
+      expect(h.document.window, same(window));
+      expect(h.transport.reads, hasLength(1));
+      expect(h.session.content.currentAttemptId, firstAttempt);
+      expect(h.graph.timeline.lease('thread-main'), same(lease));
+      expect(lease.controller, same(main));
+      expect(main.messages, hasLength(history.length));
+      for (var index = 0; index < history.length; index++) {
+        expect(main.messages[index], same(history[index]));
+      }
+    }
 
     h.graph.setConversationPageVisible(false);
     await tester.pump();
@@ -91,7 +131,7 @@ void main() {
   });
 
   testWidgets('旧读取迟到不清新 loading，文档换版隔离旧错误，局部失败显式重试', (tester) async {
-    final h = await _Harness.open(tester, PlanDocumentTransport());
+    final h = await PlanDocumentHarness.open(tester, PlanDocumentTransport());
     await h.publish(1, 'Old version body');
     final oldGate = Completer<void>();
     h.transport.nextReadGate = oldGate;
@@ -110,29 +150,55 @@ void main() {
     newGate.complete();
     await h.body('Old version body');
 
-    final oldErrorGate = Completer<void>();
-    h.transport
-      ..nextReadGate = oldErrorGate
-      ..nextReadError = StateError('obsolete version failure');
-    await h.publish(2, 'Second version body');
-    await h.reads(3);
-    final oldError = h.transport.reads.last;
-    await h.publish(3, 'Current version body');
-    await h.body('Current version body');
-    oldErrorGate.complete();
-    await pumpClientUntil(tester, () => oldError.delivered, 'late old failure');
-    expect(find.textContaining('obsolete version failure'), findsNothing);
-    expect(h.document.error, isNull);
-    expect(h.document.loading, isFalse);
+    // Both stale bytes and errors must be isolated after a document revision,
+    // not just after reconnecting the same document on a new attempt.
+    for (final failOld in [false, true]) {
+      final revision = failOld ? 4 : 2;
+      final obsoleteGate = Completer<void>();
+      h.transport
+        ..nextReadGate = obsoleteGate
+        ..nextReadError = failOld
+            ? StateError('obsolete version failure')
+            : null;
+      final reads = h.transport.reads.length;
+      await h.publish(revision, 'Obsolete version $revision');
+      await h.reads(reads + 1);
+      final obsolete = h.transport.reads.last;
+      await h.publish(revision + 1, 'Current version ${revision + 1}');
+      await h.body('Current version ${revision + 1}');
+      final window = h.document.window;
+      obsoleteGate.complete();
+      await pumpClientUntil(
+        tester,
+        () => obsolete.delivered,
+        'late old ${failOld ? 'failure' : 'bytes'}',
+      );
+      expect(h.document.window, same(window));
+      expect(find.textContaining('Obsolete version'), findsNothing);
+      expect(find.textContaining('obsolete version failure'), findsNothing);
+      expect(h.document.error, isNull);
+      expect(h.document.loading, isFalse);
+    }
 
+    final completedReads = h.transport.completedReads;
+    final olderReads = h.transport.olderReads;
     h.transport.nextReadError = StateError('document disk unavailable');
-    await h.publish(4, 'Retry version body');
+    await h.publish(6, 'Retry version body');
     await pumpClientUntil(
       tester,
       () => h.document.error != null,
       'local failure',
     );
     expect(find.textContaining('document disk unavailable'), findsOneWidget);
+    expect(h.document.window, isNull);
+    expect(find.byKey(StudioDriverKeys.planDetailsMarkdown), findsNothing);
+    expect(
+      find.textContaining('Retry version body', findRichText: true),
+      findsNothing,
+    );
+    expect(h.transport.businessReads, 0);
+    expect(h.transport.completedReads, completedReads);
+    expect(h.transport.olderReads, olderReads);
     final feeds = h.transport.timelineFeeds.length;
     final reads = h.transport.reads.length;
     await tester.pump(const Duration(seconds: 2));
@@ -146,7 +212,7 @@ void main() {
     h.transport
       ..nextReadGate = disposedGate
       ..nextReadError = StateError('disposed document failure');
-    await h.publish(5, 'Disposed version body');
+    await h.publish(7, 'Disposed version body');
     await h.reads(reads + 2);
     final disposedRead = h.transport.reads.last;
     await tester.pumpWidget(const SizedBox.shrink());
@@ -162,7 +228,7 @@ void main() {
   });
 
   testWidgets('真实连接失败显示原因，显式重试刷新连接后自动读正文', (tester) async {
-    final h = await _Harness.open(
+    final h = await PlanDocumentHarness.open(
       tester,
       PlanDocumentTransport()
         ..failNextInitial = const StudioFailure(
@@ -206,7 +272,7 @@ void main() {
         null,
       );
     });
-    final h = await _Harness.open(
+    final h = await PlanDocumentHarness.open(
       tester,
       PlanDocumentTransport()..responseMaxBytes = 32,
     );
@@ -253,124 +319,4 @@ void main() {
     expect(copied, markdown.substring(32, 64));
     await h.close();
   });
-}
-
-class _Harness {
-  _Harness(this.tester, this.transport, this.graph);
-  final WidgetTester tester;
-  final PlanDocumentTransport transport;
-  final AppGraph graph;
-  late ProviderContainer container;
-  ConversationSession get session =>
-      graph.client.conversations.session('thread-main');
-  PlanDocumentState get document =>
-      container.read(planDocumentViewModelProvider('thread-main'));
-
-  static Future<_Harness> open(
-    WidgetTester tester,
-    PlanDocumentTransport transport,
-  ) async {
-    final graph = AppGraph(
-      statisticsFeed: const TestStatisticsFeedPort(),
-      transport: transport,
-      clientId: 'plan-recovery',
-    );
-    final h = _Harness(tester, transport, graph);
-    await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
-    graph
-      ..timeline.updateReadDemand(chatDemand)
-      ..setConversationPageVisible(true);
-    await pumpClientFuture(
-      tester,
-      graph.client.directoryCommands.selectThread('thread-main'),
-      'select thread',
-    );
-    await pumpClientUntil(
-      tester,
-      () => h.session.state.hasSnapshot,
-      'state before content ready',
-    );
-    return h;
-  }
-
-  Future<void> publish(int revision, String markdown) async {
-    transport.seedConversationState(
-      'thread-main',
-      ThreadRuntimeUpdate(
-        runtime: session.state.workspace!.runtime.copyWith(
-          plan: PlanRuntimeView(
-            revision: revision,
-            state: PlanRuntimePhase.awaitingConfirmation,
-            updatedAt: DateTime.utc(2026, 3, 18),
-            document: PlanDocumentView(
-              version: revision,
-              markdown: markdown,
-              contentHash: 'plan-$revision',
-            ),
-          ),
-        ),
-        todo: null,
-        modelRoute: session.state.modelRoute,
-      ),
-    );
-    await pumpClientUntil(
-      tester,
-      () => session.state.businessRefs?.plan?.revision == revision,
-      'plan reference $revision',
-    );
-  }
-
-  Future<void> mount() async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [appGraphProvider.overrideWithValue(graph)],
-        child: MaterialApp(
-          theme: pureStudioTheme(),
-          locale: const Locale('zh'),
-          localizationsDelegates: [
-            AppLocalizations.delegate,
-            ...GlobalMaterialLocalizations.delegates,
-          ],
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(
-            body: PlanDetailConnector(
-              threadId: 'thread-main',
-              identity: 'pending-plan',
-              status: PlanDetailStatus.awaitingConfirmation,
-              onClose: () {},
-            ),
-          ),
-        ),
-      ),
-    );
-    container = ProviderScope.containerOf(
-      tester.element(find.byType(PlanDetailConnector)),
-    );
-    await tester.pump();
-  }
-
-  Future<void> reads(int count) => pumpClientUntil(
-    tester,
-    () => transport.reads.length >= count,
-    'read $count',
-  );
-
-  Future<void> body(String text) => pumpClientUntil(
-    tester,
-    () =>
-        document.window != null &&
-        !document.loading &&
-        find.textContaining(text, findRichText: true).evaluate().isNotEmpty,
-    'body $text',
-  );
-
-  Future<void> close() async {
-    await tester.pumpWidget(const SizedBox.shrink());
-    final report = await pumpClientFuture(
-      tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-      'close graph',
-    );
-    expect(report.complete, isTrue);
-  }
 }

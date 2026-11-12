@@ -12,6 +12,12 @@ class PlanDocumentTransport extends RecordingDemoTransport {
   Object? nextReadError;
   int? responseMaxBytes;
   final reads = <PlanDocumentRead>[];
+  int businessReads = 0;
+  int completedReads = 0;
+  int olderReads = 0;
+  bool controlInteractionPages = false;
+  final interactionPages =
+      <(CurrentCollectionRef, String?, Completer<CurrentCollectionPage>)>[];
 
   @override
   Future<TimelineFeed> openTimelineFeed(
@@ -71,17 +77,29 @@ class _PlanReader implements ConversationReader {
   }
 
   @override
-  Future<ThreadBusinessRefs> readBusinessRefs() => inner.readBusinessRefs();
+  Future<ThreadBusinessRefs> readBusinessRefs() {
+    transport.businessReads++;
+    return inner.readBusinessRefs();
+  }
+
   @override
   Future<CompletedEntry> readCompleted({
     required String recordId,
     required ReadDemand demand,
-  }) => inner.readCompleted(recordId: recordId, demand: demand);
+  }) {
+    transport.completedReads++;
+    return inner.readCompleted(recordId: recordId, demand: demand);
+  }
+
   @override
   Future<ChatBatch> loadOlder({
     required String before,
     required ReadDemand demand,
-  }) => inner.loadOlder(before: before, demand: demand);
+  }) {
+    transport.olderReads++;
+    return inner.loadOlder(before: before, demand: demand);
+  }
+
   @override
   Future<ContentManifestPage> listContents({
     required String itemId,
@@ -102,11 +120,20 @@ class _PlanReader implements ConversationReader {
     required CurrentCollectionRef reference,
     String? continuation,
     required ReadDemand demand,
-  }) => inner.pageCurrent(
-    reference: reference,
-    continuation: continuation,
-    demand: demand,
-  );
+  }) {
+    if (transport.controlInteractionPages) {
+      // Only control delivery; State and the SDK retain reference qualification.
+      final result = Completer<CurrentCollectionPage>();
+      transport.interactionPages.add((reference, continuation, result));
+      return result.future;
+    }
+    return inner.pageCurrent(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    );
+  }
+
   @override
   void requestClose() => inner.requestClose();
   @override
