@@ -10,6 +10,13 @@ fn main() -> std::process::ExitCode {
         None => bootstrap_server(),
         Some(mode) if mode == "--serve" && arguments.next().is_none() => run_server(),
         #[cfg(target_os = "linux")]
+        Some(mode) if mode == "--stdio" && arguments.next().is_none() => {
+            environment::bootstrap_mode("--serve-connection").map_err(Into::into)
+        }
+        Some(mode) if mode == "--serve-connection" && arguments.next().is_none() => {
+            run_connection()
+        }
+        #[cfg(target_os = "linux")]
         Some(mode) if mode == "--session-owner" => match (arguments.next(), arguments.next()) {
             (Some(socket), None) => run_owner(socket.into()),
             _ => Err("session owner requires one socket path".into()),
@@ -37,6 +44,23 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn run_connection() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let io = pl_remote_helper::transport::Io {
+        reader: tokio::io::stdin(),
+        writer: tokio::io::stdout(),
+    };
+    let result = runtime.block_on(pl_remote_helper::serve_connection(io));
+    runtime.shutdown_timeout(std::time::Duration::ZERO);
+    if matches!(result, Err(pl_remote_helper::ServerError::CleanupTimedOut)) {
+        eprintln!("foreground server cleanup unconfirmed");
+        std::process::exit(1);
+    }
+    result.map_err(Into::into)
 }
 
 fn bootstrap_server() -> Result<(), Box<dyn std::error::Error>> {

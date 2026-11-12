@@ -14,7 +14,7 @@ static NEXT_EXECUTOR: AtomicU64 = AtomicU64::new(1);
 pub struct ExecutorId(u64);
 
 /// Non-sensitive facts about the machine which interprets commands and paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TargetInfo {
     pub os: String,
     pub arch: String,
@@ -73,15 +73,21 @@ impl ExecutionError {
     }
 }
 
-pub(crate) struct LocalExecutor {
+pub(crate) enum ExecutorBackend {
+    Local,
+    Remote(crate::remote::RemoteConnection),
+}
+
+pub(crate) struct ExecutorInner {
     pub id: ExecutorId,
     pub info: TargetInfo,
     pub tasks: TaskTracker,
     pub closing: CancellationToken,
+    pub backend: ExecutorBackend,
     pub environment: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 }
 
-impl Drop for LocalExecutor {
+impl Drop for ExecutorInner {
     fn drop(&mut self) {
         self.closing.cancel();
         self.tasks.close();
@@ -91,7 +97,7 @@ impl Drop for LocalExecutor {
 /// An execution machine, independent of any workspace's default directory.
 #[derive(Clone)]
 pub struct Executor {
-    pub(crate) local: Arc<LocalExecutor>,
+    pub(crate) inner: Arc<ExecutorInner>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -104,6 +110,23 @@ impl std::fmt::Debug for Executor {
 }
 
 impl Executor {
+    /// Binds permanently to one foreground server over an already authenticated transport.
+    pub async fn remote<T>(io: T) -> Result<Self, ExecutionError>
+    where
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (connection, hello) = crate::remote::RemoteConnection::connect(io).await?;
+        Ok(Self {
+            inner: Arc::new(ExecutorInner {
+                id: ExecutorId(NEXT_EXECUTOR.fetch_add(1, Ordering::Relaxed)),
+                info: hello.target,
+                tasks: connection.tasks.clone(),
+                closing: connection.closing.clone(),
+                backend: ExecutorBackend::Remote(connection),
+                environment: Default::default(),
+            }),
+        })
+    }
     /// Freezes the local initial directory; later process-wide cwd changes have no effect.
     pub fn local() -> Result<Self, ExecutionError> {
         let directory = std::env::current_dir()
@@ -113,7 +136,8 @@ impl Executor {
             .into_string()
             .map_err(|_| ExecutionError::InvalidInput("initial directory is not UTF-8".into()))?;
         Ok(Self {
-            local: Arc::new(LocalExecutor {
+            inner: Arc::new(ExecutorInner {
+                backend: ExecutorBackend::Local,
                 id: ExecutorId(NEXT_EXECUTOR.fetch_add(1, Ordering::Relaxed)),
                 info: TargetInfo {
                     os: std::env::consts::OS.into(),
@@ -130,12 +154,29 @@ impl Executor {
     }
 
     pub fn id(&self) -> ExecutorId {
-        self.local.id
+        self.inner.id
     }
     pub fn target_info(&self) -> &TargetInfo {
-        &self.local.info
+        &self.inner.info
     }
     pub fn command(&self, program: impl Into<String>) -> Command {
         Command::new(self.clone(), program.into())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.inner.closing.is_cancelled()
+    }
+
+    /// Ends this concrete execution connection. It can never be reopened.
+    pub async fn close(&self) -> Result<(), ExecutionError> {
+        self.inner.closing.cancel();
+        self.inner.tasks.close();
+        tokio::time::timeout(std::time::Duration::from_secs(2), self.inner.tasks.wait())
+            .await
+            .map_err(|_| {
+                ExecutionError::Disconnected(
+                    "executor cleanup unconfirmed after two seconds".into(),
+                )
+            })
     }
 }

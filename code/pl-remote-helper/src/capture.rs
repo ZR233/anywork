@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CaptureSpec {
     pub stdout_path: String,
     pub stderr_path: String,
     pub max_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureState {
     Complete,
     LimitExceeded,

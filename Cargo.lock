@@ -3996,6 +3996,8 @@ dependencies = [
 name = "pl-patch"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -4048,6 +4050,7 @@ dependencies = [
  "hex",
  "http",
  "libc",
+ "pl-patch",
  "pl-protocol",
  "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "procfs",

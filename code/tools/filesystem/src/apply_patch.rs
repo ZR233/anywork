@@ -1,6 +1,6 @@
 //! Raw Codex patches, using `pl-patch` as the sole grammar and algorithm.
-use pl_patch::{PatchBackend, PatchError, PatchFileChange};
-use std::{collections::BTreeSet, marker::PhantomData};
+use pl_patch::{PatchBackend, PatchError, PatchOutput};
+use std::marker::PhantomData;
 
 pub const NAME: &str = "apply_patch";
 pub const DESCRIPTION: &str = "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. The input is a complete Codex-style patch beginning with *** Begin Patch and ending with *** End Patch; each file operation uses one of *** Add File: <path>, *** Delete File: <path>, or *** Update File: <path> (optionally followed by *** Move to: <path>). Do not use ---/+++ unified diff, *** File: metadata, or natural-language edit instructions such as Insert after. Update hunk lines start with a control prefix: space for context, `-` for deletion, `+` for addition; preserve a leading `-` or `+` in the file content after that prefix. If a previous patch failed, read the target file again and retry with a smaller patch based on current content.";
@@ -52,28 +52,6 @@ impl<B: PatchBackend + Send + Sync + 'static> pl_agent_tool::Tool for ApplyPatch
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PatchOutput {
-    pub cwd: String,
-    pub added: Vec<String>,
-    pub updated: Vec<String>,
-    pub deleted: Vec<String>,
-    pub moved: Vec<PatchMove>,
-    pub changed_files: Vec<String>,
-    pub stdout: String,
-    pub stderr: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PatchMove {
-    pub from: String,
-    pub to: String,
-}
-
 /// Applies once, preserving `pl-patch`'s ordered partial-failure diagnostics.
 pub async fn apply_patch<B: PatchBackend + Sync>(
     backend: &B,
@@ -81,47 +59,5 @@ pub async fn apply_patch<B: PatchBackend + Sync>(
     patch: &str,
 ) -> Result<PatchOutput, PatchError> {
     let outcome = pl_patch::apply_patch(patch, backend).await?;
-    let summary = outcome.summary(backend);
-    let mut added = Vec::new();
-    let mut updated = Vec::new();
-    let mut deleted = Vec::new();
-    let mut moved = Vec::new();
-    let mut changed_files = BTreeSet::new();
-    for change in outcome.file_changes() {
-        match change {
-            PatchFileChange::Add { path } => {
-                let path = backend.display_path(&path);
-                changed_files.insert(path.clone());
-                added.push(path);
-            }
-            PatchFileChange::Update { path } => {
-                let path = backend.display_path(&path);
-                changed_files.insert(path.clone());
-                updated.push(path);
-            }
-            PatchFileChange::Delete { path } => {
-                let path = backend.display_path(&path);
-                changed_files.insert(path.clone());
-                deleted.push(path);
-            }
-            PatchFileChange::Move { source, target } => {
-                let from = backend.display_path(&source);
-                let to = backend.display_path(&target);
-                changed_files.insert(from.clone());
-                changed_files.insert(to.clone());
-                moved.push(PatchMove { from, to });
-            }
-        }
-    }
-    Ok(PatchOutput {
-        cwd,
-        added,
-        updated,
-        deleted,
-        moved,
-        changed_files: changed_files.into_iter().collect(),
-        stdout: "apply_patch completed".into(),
-        stderr: String::new(),
-        summary,
-    })
+    Ok(outcome.report(backend).into_output(cwd))
 }

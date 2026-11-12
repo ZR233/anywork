@@ -37,7 +37,7 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
     native.args(&command.arguments).current_dir(&directory);
     native.env_clear();
     if !command.clear_environment {
-        native.envs(&command.executor.local.environment);
+        native.envs(&command.executor.inner.environment);
     }
     for (key, value) in &command.environment {
         match value {
@@ -79,7 +79,10 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
     let notify = Arc::new(Notify::new());
     let mut lifetimes = Vec::new();
     let mut lifetime = || {
-        let guard = Arc::new(PipeLifetime(notify.clone()));
+        let guard = Arc::new(PipeLifetime {
+            notify: notify.clone(),
+            _executor: command.executor.clone(),
+        });
         lifetimes.push(Arc::downgrade(&guard));
         guard
     };
@@ -104,14 +107,14 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
             out_file,
             budget.clone(),
             cancellation.clone(),
-            &command.executor.local.tasks,
+            &command.executor.inner.tasks,
         );
         let (err, err_done) = capture_pipe(
             stderr.take().expect("validated piped stderr"),
             err_file,
             budget,
             cancellation.clone(),
-            &command.executor.local.tasks,
+            &command.executor.inner.tasks,
         );
         stdout = Some(out);
         stderr = Some(err);
@@ -119,8 +122,8 @@ pub(crate) async fn spawn(command: &Command) -> Result<Child, SpawnError> {
     });
     let (exit_send, exit) = watch::channel(None);
     let (kill, requests) = mpsc::channel(8);
-    let closing = command.executor.local.closing.clone();
-    command.executor.local.tasks.spawn(own_process(
+    let closing = command.executor.inner.closing.clone();
+    command.executor.inner.tasks.spawn(own_process(
         spawned.process,
         requests,
         cancellation.clone(),

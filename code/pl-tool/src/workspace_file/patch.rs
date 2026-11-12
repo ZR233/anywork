@@ -7,7 +7,7 @@ use super::backend::*;
 use super::schema::TOOL_APPLY_PATCH;
 use crate::tool_error;
 
-use pl_tool_filesystem::apply_patch::PatchOutput;
+use pl_patch::PatchOutput;
 
 pub async fn apply_patch_to_backend<B>(backend: &B, cwd: String, patch: &str) -> Result<PatchOutput>
 where

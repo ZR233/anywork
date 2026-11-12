@@ -8,7 +8,23 @@ mod capture;
 mod child;
 mod command;
 mod executor;
+pub mod fs;
 mod native;
+mod remote;
+mod stdio_server;
+mod stream;
+mod target_path;
+mod wire;
+pub use stdio_server::serve as serve_connection;
+pub use target_path::TargetPath;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PatchExecutionError {
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
+    #[error(transparent)]
+    Patch(#[from] pl_patch::PatchFailure),
+}
 
 pub use capture::{CaptureResult, CaptureSpec, CaptureState, CapturedStream};
 pub use child::{Child, ChildStderr, ChildStdin, ChildStdout, Output, PartialOutput, ProcessExit};
@@ -35,6 +51,8 @@ pub use server::{attach_stdio, run_owner, run_stdio};
 /// Failure of the physical SSH helper service.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    #[error("foreground server cleanup exceeded two seconds")]
+    CleanupTimedOut,
     #[error("remote helper stdio failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("remote helper resource cleanup failed: {0:?}")]

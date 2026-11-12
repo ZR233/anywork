@@ -15,7 +15,7 @@ use crate::{
     capture::{CaptureCompletion, completion},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessExit {
     Code(i32),
     Signal(i32),
@@ -49,10 +49,13 @@ pub struct Output {
     pub capture: Option<CaptureResult>,
 }
 
-pub(crate) struct PipeLifetime(pub Arc<tokio::sync::Notify>);
+pub(crate) struct PipeLifetime {
+    pub notify: Arc<tokio::sync::Notify>,
+    pub _executor: Executor,
+}
 impl Drop for PipeLifetime {
     fn drop(&mut self) {
-        self.0.notify_one();
+        self.notify.notify_one();
     }
 }
 
@@ -215,19 +218,36 @@ impl Child {
         let mut stdout = self.stdout.take();
         let mut stderr = self.stderr.take();
         let mut partial = PartialOutput::default();
-        let (exit, out, err) = tokio::join!(
-            self.wait(),
-            read(&mut stdout, &mut partial.stdout),
-            read(&mut stderr, &mut partial.stderr)
-        );
-        partial.root_exit = exit.as_ref().ok().copied();
+        let cause = {
+            let wait = self.wait();
+            let out = read(&mut stdout, &mut partial.stdout);
+            let err = read(&mut stderr, &mut partial.stderr);
+            tokio::pin!(wait, out, err);
+            let mut out_done = false;
+            let mut err_done = false;
+            loop {
+                tokio::select! {
+                    result = &mut wait, if partial.root_exit.is_none() => match result {
+                        Ok(exit) => partial.root_exit = Some(exit), Err(error) => break Some(error),
+                    },
+                    result = &mut out, if !out_done => match result {
+                        Ok(()) => out_done = true, Err(error) => break Some(error),
+                    },
+                    result = &mut err, if !err_done => match result {
+                        Ok(()) => err_done = true, Err(error) => break Some(error),
+                    },
+                }
+                if partial.root_exit.is_some() && out_done && err_done {
+                    break None;
+                }
+            }
+        };
+        drop(stdout);
+        drop(stderr);
+        if cause.is_some() {
+            self.cancellation.cancel();
+        }
         partial.capture = self.finish_capture().await?;
-        let cause = exit
-            .as_ref()
-            .err()
-            .cloned()
-            .or_else(|| out.err())
-            .or_else(|| err.err());
         if let Some(cause) = cause {
             return Err(ExecutionError::CollectFailed {
                 partial: Box::new(partial),
@@ -235,7 +255,7 @@ impl Child {
             });
         }
         Ok(Output {
-            status: exit?,
+            status: partial.root_exit.expect("all completions observed"),
             stdout: partial.stdout,
             stderr: partial.stderr,
             capture: partial.capture,

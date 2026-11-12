@@ -4,7 +4,7 @@ use crate::{
     CaptureSpec, Child, ExecutionError, Executor, Output, ProcessExit, SpawnError, StartKnowledge,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Stdio {
     Null,
     Piped,
@@ -100,11 +100,20 @@ impl Command {
     }
 
     pub async fn spawn(&mut self) -> Result<Child, SpawnError> {
+        if self.executor.is_closed() {
+            return Err(SpawnError {
+                knowledge: StartKnowledge::NotStarted,
+                cause: ExecutionError::Disconnected("executor is permanently closed".into()),
+            });
+        }
         self.validate().map_err(|cause| SpawnError {
             knowledge: StartKnowledge::NotStarted,
             cause,
         })?;
-        crate::native::spawn(self).await
+        match &self.executor.inner.backend {
+            crate::executor::ExecutorBackend::Local => crate::native::spawn(self).await,
+            crate::executor::ExecutorBackend::Remote(connection) => connection.spawn(self).await,
+        }
     }
     pub async fn status(&mut self) -> Result<ProcessExit, ExecutionError> {
         if [self.stdin, self.stdout, self.stderr].contains(&Some(Stdio::Piped))
