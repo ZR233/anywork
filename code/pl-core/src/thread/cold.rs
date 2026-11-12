@@ -17,6 +17,13 @@ pub(super) enum ColdFlushTicket {
 }
 
 impl ColdFlushTicket {
+    pub(super) fn pending_target(&self) -> Option<u64> {
+        match self {
+            Self::AlreadySatisfied => None,
+            Self::Pending { through, .. } => Some(*through),
+        }
+    }
+
     pub(super) async fn wait(self) -> Result<(), ThreadError> {
         let Self::Pending {
             store,
@@ -1593,6 +1600,13 @@ impl Owner {
         })
     }
 
+    pub(super) fn confirm_flush(&mut self, through: u64) {
+        self.state.persistence.durable_sequence =
+            self.state.persistence.durable_sequence.max(through);
+        self.effect_window
+            .release_through(self.state.persistence.durable_sequence);
+    }
+
     pub(super) async fn flush_cold(&mut self) -> Result<(), ThreadError> {
         let ticket = self.prepare_flush()?;
         let through = match &ticket {
@@ -1603,12 +1617,7 @@ impl Owner {
         match result {
             Ok(()) => {
                 // New admissions while waiting do not extend this barrier's proof.
-                self.state.persistence.durable_sequence =
-                    self.state.persistence.durable_sequence.max(through);
-                // The durable handoff makes every covered commit recoverable from history, so the
-                // live window may release those bodies once its byte budget needs the space.
-                self.effect_window
-                    .release_through(self.state.persistence.durable_sequence);
+                self.confirm_flush(through);
             }
             Err(ThreadError::Storage(error)) => {
                 // A caller that asked for a fixed durable target and did not get it has a terminal

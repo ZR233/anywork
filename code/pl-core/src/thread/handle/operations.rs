@@ -1024,8 +1024,28 @@ impl ThreadHandle {
         {
             return self.settled_flush();
         }
+        let ticket = match response.await {
+            Ok(result) => result?,
+            Err(_) => return self.settled_flush(),
+        };
+        let through = ticket.pending_target();
+        ticket.wait().await?;
+        let Some(through) = through else {
+            return Ok(());
+        };
+        // Complete the original owner's publication before returning. A backend may not expose
+        // pressure notifications; the successful fixed-target wait is itself the durability proof.
+        let (reply, response) = oneshot::channel();
+        if self
+            .mailbox
+            .send(super::mailbox::MailboxCommand::ConfirmFlush { through, reply })
+            .await
+            .is_err()
+        {
+            return self.settled_flush();
+        }
         match response.await {
-            Ok(result) => result?.wait().await,
+            Ok(()) => Ok(()),
             Err(_) => self.settled_flush(),
         }
     }

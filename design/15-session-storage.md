@@ -334,7 +334,7 @@ PRAGMA busy_timeout = 5000;
 
 会话关闭流程先封闭准入并收束当前在途工作，随后提交真实的终态副作用；对话历史与最终检查点在同一事务中到达固定写入水位后，方可释放会话所有者。若持久化保存失败，会话保持 `Closing` 状态并留存所有者、未保存事实与重试入口。会话数据库连接与写入任务按需创建，当会话处于空闲状态且无活跃订阅、无在途执行、无待保存数据时自动释放。
 
-会话关闭与显式 flush 在运行中及存储暂停期间均保持可达。公开 `ThreadHandle::flush` 保留原签名和关闭耐久证明，经原有界 mailbox 由 Owner 同步 `prepare_flush`：拒绝永久删除，尝试原 pending 准入并检查真实 cold_error，固定 admitted_sequence=N，立即回复私有 `ColdFlushTicket`。AlreadySatisfied 沿原无存储/已满足语义；Pending 只携原 store、thread、N 和永久删除 token。调用者 Future 独立等待原 store.flush 到 N，不借 `&mut Owner` 等 I/O，不 spawn 独立确认任务或存 waiter 列表；N+1 不推远目标，drop 等待不取消 writer 或删除事实，错误不冒充成功。
+会话关闭与显式 flush 在运行中及存储暂停期间均保持可达。公开 `ThreadHandle::flush` 保留原签名和关闭耐久证明，经原有界 mailbox 由 Owner 同步 `prepare_flush`：拒绝永久删除，尝试原 pending 准入并检查真实 cold_error，固定 admitted_sequence=N，立即回复私有 `ColdFlushTicket`。AlreadySatisfied 沿原无存储/已满足语义；Pending 只携原 store、thread、N 和永久删除 token。调用者 Future 独立等待原 store.flush 到 N，成功后经同一 mailbox 短确认 N，由原 Owner 发布实际耐久水位并释放已覆盖窗口，再向调用者返回；该确认不依赖后端支持 pressure 通知，不将后续提交计入本次保存证明。不借 `&mut Owner` 等 I/O，不 spawn 独立确认任务或存 waiter 列表；N+1 不推远目标，drop 等待不取消 writer 或删除事实，错误不冒充成功。
 
 Owner 在运行中等待和空闲位置复用原 pressure 通知折叠真实 durable/error，并释放已耐久 effect 窗口；进入等待前订阅，关闭 receiver 退役不忙循环，无通知后端沿原安全点刷新。副作用前保存、受理续接及最终关闭保存屏障仍固定目标，并通过原可服务成员/控制/保存通知的等待入口收束，不复制 select 循环。close 先触发原中断再 join，分别报告执行结束、保存与资源关闭；存储永久失败保留未保存事实/所有者，不抬高退出预算或假报耐久。RetryOutputStorage 保持真实归档重试，不作为公开 flush 的转发路径。故障代次、resume_required 和显式恢复证明不因一次 flush 成功而撤销。
 

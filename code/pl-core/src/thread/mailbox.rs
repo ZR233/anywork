@@ -147,6 +147,11 @@ pub(super) enum MailboxCommand {
     /// wait for a Turn that cannot end on its own. The target is the admitted watermark this owner
     /// has when it handles the request, so a later admission never extends the barrier.
     Flush(oneshot::Sender<Result<cold::ColdFlushTicket, ThreadError>>),
+    /// Caller-held storage wait succeeded for this exact target; no I/O runs here.
+    ConfirmFlush {
+        through: u64,
+        reply: oneshot::Sender<()>,
+    },
     ToolCancelTask {
         caller: String,
         authorization: Option<crate::tool::opaque::ToolAuthorization>,
@@ -578,6 +583,12 @@ impl Owner {
             MailboxCommand::Flush(reply) => {
                 let result = self.prepare_flush();
                 let _ = reply.send(result);
+            }
+            MailboxCommand::ConfirmFlush { through, reply } => {
+                self.confirm_flush(through);
+                self.refresh_storage_pressure();
+                self.publish_snapshot();
+                let _ = reply.send(());
             }
             // Handled by `dispatch_mailbox`, which is the only place that may await the machine.
             MailboxCommand::RetryOutputStorage(reply) => {
