@@ -385,8 +385,13 @@ fn run_gui_native_launch(
     let app_version = studio_version::read(app_dir)?;
     let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
     print_context(workspace_root, app_dir);
+    let preflight_started = std::time::Instant::now();
     ensure_desktop_build_environment(target)?;
     ensure_flutter_dependencies(workspace_root, app_dir)?;
+    println!(
+        "startup_stage=native_preflight elapsed_ms={}",
+        preflight_started.elapsed().as_millis()
+    );
     let spec = NativeLaunchSpec::from_options(app_dir, &options)?;
     let demo_mode = spec.demo_mode;
     let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
@@ -406,7 +411,8 @@ fn run_gui_native_launch(
             BridgeConfiguration::Debug
         },
     )?;
-    run_flutter_with_process_mode(
+    let flutter_started = std::time::Instant::now();
+    let flutter_result = run_flutter_with_process_mode(
         workspace_root,
         app_dir,
         &build_args,
@@ -417,7 +423,12 @@ fn run_gui_native_launch(
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
             log_level: options.log_level,
         },
-    )?;
+    );
+    println!(
+        "startup_stage=build_native_flutter elapsed_ms={}",
+        flutter_started.elapsed().as_millis()
+    );
+    flutter_result?;
 
     let bundle_dir = target.native_bundle_dir(app_dir, spec.profile);
     let executable = bundle_dir.join(target.executable_name());
