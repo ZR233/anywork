@@ -48,6 +48,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  anywork_previews:
+    dependency: "direct dev"
+    description:
+      path: "../anywork_previews"
+      relative: true
+    source: path
+    version: "0.0.0"
   args:
     dependency: "direct dev"
     description:

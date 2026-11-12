@@ -1,0 +1,10 @@
+analyzer:
+  exclude:
+    - build/**
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # This unpublished development package previews the app's actual internal
+    # widgets; it does not define a public API or duplicate their implementation.
+    implementation_imports: false

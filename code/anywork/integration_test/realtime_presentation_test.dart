@@ -16,7 +16,7 @@ import 'package:anywork/src/features/conversation/composer/views/prompt_composer
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
-import 'package:anywork/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';

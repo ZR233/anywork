@@ -3,7 +3,10 @@
 
 use std::{
     error::Error as StdError,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use pl_agent_tool::{InputFormat, Tool, ToolDefinition, ToolHandle};
@@ -18,7 +21,7 @@ enum EchoError {
 
 struct Echo {
     definition: ToolDefinition,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     fail: bool,
 }
 
@@ -26,7 +29,7 @@ impl Echo {
     fn new(fail: bool) -> Self {
         Self {
             definition: ToolDefinition::text("echo", "SECRET-DESCRIPTION").unwrap(),
-            closed: AtomicBool::new(false),
+            closed: Arc::new(AtomicBool::new(false)),
             fail,
         }
     }
@@ -123,8 +126,11 @@ fn default_and_overridden_close_behave() {
     });
     futures::executor::block_on(plain.close()).unwrap();
 
-    let handle = ToolHandle::new(Echo::new(false));
+    let echo = Echo::new(false);
+    let closed = Arc::clone(&echo.closed);
+    let handle = ToolHandle::new(echo);
     futures::executor::block_on(handle.close()).unwrap();
+    assert!(closed.load(Ordering::SeqCst));
 }
 
 #[test]

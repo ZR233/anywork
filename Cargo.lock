@@ -3923,7 +3923,8 @@ dependencies = [
  "ctrlc",
  "libc",
  "nix",
- "process-wrap",
+ "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "process-wrap 10.0.1 (git+https://github.com/watchexec/process-wrap?rev=2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e)",
  "tempfile",
  "windows-sys 0.61.2",
 ]
@@ -4048,7 +4049,7 @@ dependencies = [
  "http",
  "libc",
  "pl-protocol",
- "process-wrap",
+ "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "procfs",
  "reqwest",
  "serde",
@@ -4170,7 +4171,7 @@ dependencies = [
  "pl-studio-mcp",
  "pl-tool",
  "pl-trace",
- "process-wrap",
+ "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "prost",
  "rawzip",
  "reqwest",
@@ -4268,7 +4269,7 @@ dependencies = [
  "pl-tool-media-support",
  "pl-tool-search",
  "pl-tool-skill",
- "process-wrap",
+ "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest",
  "rmcp",
  "schemars 1.2.3",
@@ -4652,6 +4653,16 @@ dependencies = [
  "nix",
  "tokio",
  "tracing",
+ "windows",
+]
+
+[[package]]
+name = "process-wrap"
+version = "10.0.1"
+source = "git+https://github.com/watchexec/process-wrap?rev=2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e#2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e"
+dependencies = [
+ "indexmap 2.14.2",
+ "nix",
  "windows",
 ]
 

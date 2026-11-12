@@ -7,26 +7,32 @@ import 'live_status_state.dart';
 /// 不执行任何异步 I/O、不读取 Provider、不依赖 Widget 上下文。
 /// 所有窗口切换、遮蔽门控、阶段合并与外部副作用统一在此完成确定性转换。
 abstract final class LiveStatusStateMachine {
-  /// 是否已有当前轮次真实流式正文渲染器承担输出展示（避免重复叠加普通“正在输出”提示行）。
+  /// 当前轮次正文或压缩记录已承担展示时，接管并抑制对应的普通同类状态提示。
   static bool hasCurrentOutputRenderer({
     required LiveDisplayWindow? live,
     required String? activeTurnId,
     required LiveStatusNotice notice,
   }) {
     if (notice is! ExecutionLiveNotice ||
-        notice.view.kind != ConversationActivityKind.responding ||
+        (notice.view.kind != ConversationActivityKind.responding &&
+            notice.view.kind != ConversationActivityKind.compacting) ||
         notice.view.errorMessage != null ||
         notice.view.turnId != activeTurnId ||
         activeTurnId == null ||
         live?.executionPresent != true) {
       return false;
     }
+    final expectedAtomKind = switch (notice.view.kind) {
+      ConversationActivityKind.responding => ChatAtomKind.text,
+      ConversationActivityKind.compacting => ChatAtomKind.compaction,
+      _ => null,
+    };
     return live!.blocks.any((block) {
       if (block.state != DisplayBlockState.open) return false;
       if (block.body case SingleDisplayBlock(
         record: DisplayRecord(contentSource: CurrentAtom(), atom: final atom),
       )) {
-        return atom.kind == ChatAtomKind.text &&
+        return atom.kind == expectedAtomKind &&
             atom.lifecycle is ActiveChatAtom &&
             atom.source is ForegroundTurnChatSource &&
             (atom.source as ForegroundTurnChatSource).turnId == activeTurnId;

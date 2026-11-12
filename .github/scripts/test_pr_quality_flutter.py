@@ -99,25 +99,55 @@ if args == ["pub", "deps", "--json"]:
             ) else "anywork"
             self.assertEqual(Path(cwd), self.root / "code" / package)
         self.assertEqual(
-            [tool for tool, args, _ in calls
-             if args == ["pub", "get", "--enforce-lockfile"]],
-            ["dart", "flutter"],
+            [[tool, args] for tool, args, _ in calls if args[:2] == ["pub", "get"]],
+            [
+                ["dart", ["pub", "get", "--enforce-lockfile"]],
+                ["flutter", ["pub", "get", "--enforce-lockfile"]],
+                ["flutter", ["pub", "get", "--enforce-lockfile",
+                             "--directory", "../anywork_previews"]],
+            ],
         )
-        self.assertEqual(calls[-1][0:2],
-                         ["flutter", ["test", "--no-pub", "test/ui"]])
-        unit_call = ["flutter", ["test", "--no-pub", "test/unit"]]
-        self.assertIn(unit_call, [[tool, args] for tool, args, _ in calls])
-        self.assertLess(
-            [call[:2] for call in calls].index(unit_call),
-            [call[:2] for call in calls].index(
-                ["flutter", ["test", "--no-pub", "test/ui"]]
-            ),
+        self.assertEqual(
+            [[tool, args] for tool, args, _ in calls
+             if tool == "flutter" and args[0] == "test"],
+            [["flutter", ["test", "--no-pub", "test/unit", "test/ui"]]],
         )
         boundary_calls = [args for _, args, _ in calls
                           if args[0].startswith("--packages=")]
         self.assertEqual(len(boundary_calls), 2)
         self.assertNotIn("--ui-closure", boundary_calls[0])
         self.assertIn("--ui-closure", boundary_calls[1])
+
+    def test_selection_runs_only_requested_package_and_ignores_other_suites(self):
+        for option, package, other in [
+            ("--client", "anywork_client", "anywork"),
+            ("--app", "anywork", "anywork_client"),
+        ]:
+            with self.subTest(option=option):
+                other_directory = self.root / "code" / other
+                ignored_inputs = [other_directory / "test", other_directory / "pubspec.lock"]
+                for source in ignored_inputs:
+                    source.rename(source.with_name(source.name + ".saved"))
+                try:
+                    result = self.run_entry(None, option)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = self.sdk_calls()
+                    self.assertTrue(calls)
+                    self.assertEqual(
+                        {Path(cwd) for _, _, cwd in calls},
+                        {self.root / "code" / package},
+                    )
+                finally:
+                    for source in ignored_inputs:
+                        source.with_name(source.name + ".saved").rename(source)
+
+        result = self.run_entry(None, "--app", "--client")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [tool for tool, args, _ in self.sdk_calls()
+             if args == ["pub", "get", "--enforce-lockfile"]],
+            ["dart", "flutter"],
+        )
 
     def test_invalid_runtime_dependency_shapes_stop_before_checks(self):
         root = {"name": "anywork_client", "kind": "root",
@@ -178,17 +208,16 @@ if args == ["pub", "deps", "--json"]:
         self.assertEqual(self.sdk_calls()[-1][1], ["analyze", "--fatal-infos"])
         self.assertTrue(all(tool == "dart" for tool, _, _ in self.sdk_calls()))
 
-    def test_unit_failure_propagates_to_wrapper(self):
-        self.environment["FAIL_COMMAND"] = "flutter test --no-pub test/unit"
-        result = self.run_entry()
-        self.assertEqual(result.returncode, 23)
-        calls = self.sdk_calls()
-        self.assertEqual(calls[-1][0:2],
-                         ["flutter", ["test", "--no-pub", "test/unit"]])
-        self.assertNotIn(
-            ["flutter", ["test", "--no-pub", "test/ui"]],
-            [[tool, args] for tool, args, _ in calls],
-        )
+    def test_app_failure_propagates_to_wrapper(self):
+        for args in (
+            ["pub", "get", "--enforce-lockfile", "--directory", "../anywork_previews"],
+            ["test", "--no-pub", "test/unit", "test/ui"],
+        ):
+            with self.subTest(args=args):
+                self.environment["FAIL_COMMAND"] = "flutter " + " ".join(args)
+                result = self.run_entry()
+                self.assertEqual(result.returncode, 23)
+                self.assertEqual(self.sdk_calls()[-1][0:2], ["flutter", args])
 
     def test_dependency_command_failure_cannot_pass_the_pipeline(self):
         self.environment["FAIL_COMMAND"] = "dart pub deps --json"
