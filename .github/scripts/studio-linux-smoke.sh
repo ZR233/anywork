@@ -30,7 +30,7 @@ test -z "$(dpkg --audit)"
 test "$(readlink /usr/bin/anywork)" = /opt/anywork/anywork
 test -x /usr/bin/anywork
 test -s /usr/share/applications/io.github.zr233.anywork.desktop
-test -s /usr/share/icons/hicolor/1024x1024/apps/io.github.zr233.anywork.png
+test -s /usr/share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png
 test -s /opt/anywork/LICENSE
 test -s /opt/anywork/THIRD_PARTY_NOTICES.md
 for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
@@ -66,7 +66,8 @@ done < <(find /opt/anywork -type f -print0)
 
 # Only inspection/headless rendering utilities, never a development toolchain.
 apt-get install -y --no-install-recommends \
-  binutils xvfb xauth dbus-x11 libgl1-mesa-dri libglx-mesa0 x11-utils
+  binutils xvfb xauth dbus-x11 libgl1-mesa-dri libglx-mesa0 x11-utils \
+  python3-gi gir1.2-gtk-3.0
 for file in "${elfs[@]}"; do
   echo "ELF ABI evidence: $file"
   readelf --file-header --version-info "$file"
@@ -104,6 +105,32 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 setsid xvfb-run -a -s '-screen 0 1280x720x24' dbus-run-session -- bash -euo pipefail -c '
+  # File existence alone misses icons installed outside index.theme directories.
+  python3 - <<"PY" > /evidence/desktop-icon.log
+from pathlib import Path
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gio, Gtk
+
+entry = Gio.DesktopAppInfo.new_from_filename(
+    "/usr/share/applications/io.github.zr233.anywork.desktop"
+)
+assert entry is not None, "Installed desktop entry could not be loaded"
+icon = entry.get_icon()
+assert icon is not None, "Installed desktop entry has no icon"
+theme = Gtk.IconTheme.get_default()
+expected = Path("/usr/share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png")
+for size in (16, 32, 48, 128, 256, 512):
+    for scale in (1, 2):
+        info = theme.lookup_by_gicon_for_scale(icon, size, scale, 0)
+        assert info is not None, f"Desktop icon not found at {size}px scale {scale}"
+        assert Path(info.get_filename()).resolve() == expected, info.get_filename()
+        pixbuf = info.load_icon()
+        assert pixbuf.get_width() > 0 and pixbuf.get_height() > 0
+        print(f"PASS: {icon.to_string()} at {size}px scale {scale}: {info.get_filename()}")
+PY
+  cat /evidence/desktop-icon.log
   anywork > /evidence/application.log 2>&1 &
   app=$!
   trap '\''kill "$app" 2>/dev/null || true; wait "$app" 2>/dev/null || true'\'' EXIT
