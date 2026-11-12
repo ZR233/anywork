@@ -150,7 +150,7 @@ mod tests {
         let store = FileResourceStore::new(resource_root.clone());
         let host = Arc::new(MediaHost(store.clone()));
         let backend = Arc::new(
-            pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+            pl_tool::workspace_file::ExecutorWorkspaceFileBackend::local(
                 root.path().to_path_buf(),
                 false,
             )

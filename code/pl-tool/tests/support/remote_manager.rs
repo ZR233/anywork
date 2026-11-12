@@ -1,7 +1,7 @@
 //! A real SSH probe with a gated public asset provider makes cancellation ordering observable.
 use anyhow::{Context, ensure};
 use pl_tool::remote::{
-    RemoteClientError, RemoteHelperAssets, RemoteHelperTarget, SshConfigFile, SshConnectionState,
+    RemoteHelperAssets, RemoteHelperTarget, SshConfigFile, SshConnectionState, SshError,
     SshManager, SshServerProfile,
 };
 use std::{
@@ -16,7 +16,7 @@ struct GatedAssets {
     wake: Condvar,
 }
 impl RemoteHelperAssets for GatedAssets {
-    fn load(&self, _: RemoteHelperTarget) -> Result<Arc<[u8]>, RemoteClientError> {
+    fn load(&self, _: RemoteHelperTarget) -> Result<Arc<[u8]>, SshError> {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
         }
@@ -76,10 +76,7 @@ pub async fn cancellation_joins_connect(
     );
     drop(release);
     disconnecting.await?;
-    ensure!(matches!(
-        connecting.await?,
-        Err(RemoteClientError::Cancelled)
-    ));
+    ensure!(matches!(connecting.await?, Err(SshError::Cancelled)));
     ensure!(matches!(
         manager.connection_snapshot(&alias).await?.state,
         SshConnectionState::Disconnected

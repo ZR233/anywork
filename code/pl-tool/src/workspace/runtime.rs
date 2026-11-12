@@ -1,6 +1,5 @@
 //! Workspace tool resources and shared file mutation leases.
 use crate::workspace::{AgentWorkspace, WorkspaceMutability};
-use pl_core::tool::opaque::CallContext;
 use std::{
     fmt,
     path::PathBuf,
@@ -11,7 +10,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 /// 由 workspace 类工具在注册时捕获的稳定运行时依赖。
 ///
 /// 该对象统一持有 agent workspace、LSP 通知出口与写入串行化边界；调用级批准仍从
-/// [`CallContext`] 读取，因此旧 plan 不会看到后续 workspace replacement。
+/// [`pl_core::tool::opaque::CallContext`] 读取，因此旧 plan 不会看到后续 workspace replacement。
 #[derive(Clone)]
 pub struct ToolWorkspace {
     workspace: AgentWorkspace,
@@ -86,13 +85,6 @@ impl ToolWorkspace {
         self.workspace.root()
     }
 
-    pub fn allows_workspace_escape(&self, context: &CallContext) -> bool {
-        self.workspace.boundary().allows_host_paths()
-            && context
-                .grant
-                .contains(crate::approval::HOST_WORKSPACE_ACCESS)
-    }
-
     pub fn ensure_workspace_writable(&self) -> pl_protocol::Result<()> {
         if self.workspace.mutability() == WorkspaceMutability::ReadOnly {
             return Err(pl_protocol::PureError::ToolExecutionFailed {
@@ -106,15 +98,6 @@ impl ToolWorkspace {
     /// 校验一次 Pure 内置文件 mutation 的最终解析路径。
     pub fn ensure_path_writable(&self, path: &std::path::Path) -> pl_protocol::Result<()> {
         self.workspace.ensure_path_writable(path)
-    }
-
-    /// 校验 confined backend 中一次 workspace-relative 文件 mutation。
-    pub fn ensure_relative_path_writable(
-        &self,
-        cwd: Option<&str>,
-        path: &str,
-    ) -> pl_protocol::Result<()> {
-        self.workspace.ensure_relative_path_writable(cwd, path)
     }
 
     /// Acquires the workspace mutation lease shared by file backends for this root.

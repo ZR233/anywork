@@ -23,7 +23,7 @@ pub(super) fn message_for_state(state: &CommandProcessState) -> String {
                 "Command timed out and was terminated.".to_string()
             }
             CommandProcessFinalResult::Cancelled => {
-                "Command was interrupted and its process tree was reaped.".to_string()
+                "Command was interrupted; its root process exited.".to_string()
             }
         },
     }

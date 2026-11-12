@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::client::RemoteClientError;
+use super::SshError;
 use super::manager::SshServerProfile;
 
 const BEGIN_MARKER: &str = "# BEGIN anywork server:";
@@ -33,7 +33,7 @@ pub struct SshConfigFile {
 
 impl SshConfigFile {
     /// 用户默认配置文件（Unix `~/.ssh/config`，Windows `%USERPROFILE%\.ssh\config`）。
-    pub fn user_default() -> Result<Self, RemoteClientError> {
+    pub fn user_default() -> Result<Self, SshError> {
         Ok(Self {
             path: user_ssh_config_path()?,
             explicit: false,
@@ -66,16 +66,13 @@ impl SshConfigFile {
     }
 
     /// 解析全部可选 Host 条目；文件缺失视为没有配置。
-    pub async fn read(&self) -> Result<Vec<SshConfigEntry>, RemoteClientError> {
+    pub async fn read(&self) -> Result<Vec<SshConfigEntry>, SshError> {
         let bytes = self.read_bytes().await?;
         Ok(parse_entries(&bytes))
     }
 
     /// 幂等写入或替换一组管理块；别名被手写条目占用时失败。
-    pub async fn upsert_managed(
-        &self,
-        profiles: &[SshServerProfile],
-    ) -> Result<(), RemoteClientError> {
+    pub async fn upsert_managed(&self, profiles: &[SshServerProfile]) -> Result<(), SshError> {
         for profile in profiles {
             validate_profile_shape(profile)?;
         }
@@ -85,34 +82,34 @@ impl SshConfigFile {
     }
 
     /// 删除一个管理块；别名不存在或属于手写条目时失败。
-    pub async fn remove_managed(&self, alias: &str) -> Result<(), RemoteClientError> {
+    pub async fn remove_managed(&self, alias: &str) -> Result<(), SshError> {
         let bytes = self.read_bytes().await?;
         let updated = remove_bytes(&bytes, alias)?;
         self.write_atomic(updated).await
     }
 
-    async fn read_bytes(&self) -> Result<Vec<u8>, RemoteClientError> {
+    async fn read_bytes(&self) -> Result<Vec<u8>, SshError> {
         let path = self.path.clone();
         match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
             Ok(Ok(bytes)) => Ok(bytes),
             Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Ok(Err(error)) => Err(error.into()),
-            Err(error) => Err(RemoteClientError::Protocol(error.to_string())),
+            Err(error) => Err(SshError::Protocol(error.to_string())),
         }
     }
 
-    async fn write_atomic(&self, contents: Vec<u8>) -> Result<(), RemoteClientError> {
+    async fn write_atomic(&self, contents: Vec<u8>) -> Result<(), SshError> {
         let path = self.path.clone();
         let result = tokio::task::spawn_blocking(move || write_atomic(&path, &contents))
             .await
-            .map_err(|error| RemoteClientError::Protocol(error.to_string()))?;
-        result.map_err(RemoteClientError::from)
+            .map_err(|error| SshError::Protocol(error.to_string()))?;
+        result.map_err(SshError::from)
     }
 }
 
 /// Host 别名必须是可单 token 引用的名字：非空、无空白与控制字符、
 /// 不含通配/否定/注释/引号字符，也不以 `-` 开头。
-pub fn validate_alias(alias: &str) -> Result<(), RemoteClientError> {
+pub fn validate_alias(alias: &str) -> Result<(), SshError> {
     if alias.is_empty()
         || alias.starts_with('-')
         || alias.chars().any(|c| {
@@ -121,23 +118,23 @@ pub fn validate_alias(alias: &str) -> Result<(), RemoteClientError> {
                 || matches!(c, '*' | '?' | '[' | ']' | '!' | '#' | '"' | '\'' | '\\')
         })
     {
-        return Err(RemoteClientError::Protocol(format!(
+        return Err(SshError::Protocol(format!(
             "SSH alias '{alias}' is invalid"
         )));
     }
     Ok(())
 }
 
-fn validate_profile_shape(profile: &SshServerProfile) -> Result<(), RemoteClientError> {
+fn validate_profile_shape(profile: &SshServerProfile) -> Result<(), SshError> {
     validate_alias(&profile.alias)?;
     if profile.host_name.trim().is_empty() || profile.username.trim().is_empty() {
-        return Err(RemoteClientError::Protocol(format!(
+        return Err(SshError::Protocol(format!(
             "SSH server {} is missing a host name or username",
             profile.alias
         )));
     }
     if profile.port == 0 {
-        return Err(RemoteClientError::Protocol(
+        return Err(SshError::Protocol(
             "SSH server port must be greater than zero".to_string(),
         ));
     }
@@ -188,7 +185,7 @@ pub fn allocate_alias(base: &str, taken: &HashSet<String>) -> String {
     unreachable!("alias suffix space is infinite")
 }
 
-fn user_ssh_config_path() -> Result<PathBuf, RemoteClientError> {
+fn user_ssh_config_path() -> Result<PathBuf, SshError> {
     #[cfg(windows)]
     const HOME_VARS: &[&str] = &["USERPROFILE", "HOME"];
     #[cfg(not(windows))]
@@ -199,9 +196,7 @@ fn user_ssh_config_path() -> Result<PathBuf, RemoteClientError> {
         .map(PathBuf::from)
         .find(|path| !path.as_os_str().is_empty())
         .map(|home| home.join(".ssh").join("config"))
-        .ok_or_else(|| {
-            RemoteClientError::Protocol("could not resolve user home directory".to_string())
-        })
+        .ok_or_else(|| SshError::Protocol("could not resolve user home directory".to_string()))
 }
 
 struct ManagedSpan {
@@ -448,7 +443,7 @@ fn newline_style(bytes: &[u8]) -> &'static [u8] {
     }
 }
 
-fn upsert_bytes(bytes: &[u8], profiles: &[SshServerProfile]) -> Result<Vec<u8>, RemoteClientError> {
+fn upsert_bytes(bytes: &[u8], profiles: &[SshServerProfile]) -> Result<Vec<u8>, SshError> {
     let parsed = parse(bytes);
     let managed_aliases: HashSet<&str> = parsed
         .managed_spans
@@ -465,7 +460,7 @@ fn upsert_bytes(bytes: &[u8], profiles: &[SshServerProfile]) -> Result<Vec<u8>, 
             .iter()
             .any(|entry| entry.profile.alias == profile.alias)
         {
-            return Err(RemoteClientError::Protocol(format!(
+            return Err(SshError::Protocol(format!(
                 "SSH alias '{}' is already used by a hand-written entry",
                 profile.alias
             )));
@@ -507,7 +502,7 @@ fn upsert_bytes(bytes: &[u8], profiles: &[SshServerProfile]) -> Result<Vec<u8>, 
     Ok(out)
 }
 
-fn remove_bytes(bytes: &[u8], alias: &str) -> Result<Vec<u8>, RemoteClientError> {
+fn remove_bytes(bytes: &[u8], alias: &str) -> Result<Vec<u8>, SshError> {
     let parsed = parse(bytes);
     if let Some(span) = parsed.managed_spans.iter().find(|span| span.alias == alias) {
         let mut out = Vec::with_capacity(bytes.len());
@@ -520,13 +515,11 @@ fn remove_bytes(bytes: &[u8], alias: &str) -> Result<Vec<u8>, RemoteClientError>
         .iter()
         .any(|entry| entry.profile.alias == alias)
     {
-        return Err(RemoteClientError::Protocol(format!(
+        return Err(SshError::Protocol(format!(
             "SSH alias '{alias}' belongs to a hand-written entry"
         )));
     }
-    Err(RemoteClientError::Protocol(format!(
-        "unknown SSH alias '{alias}'"
-    )))
+    Err(SshError::Protocol(format!("unknown SSH alias '{alias}'")))
 }
 
 fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {

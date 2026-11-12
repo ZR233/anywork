@@ -27450,8 +27450,6 @@ impl SseDecode for crate::api::studio::types::ssh::SshConnectionSnapshotDto {
         let mut var_state = <String>::sse_decode(deserializer);
         let mut var_helperVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_architecture = <Option<String>>::sse_decode(deserializer);
-        let mut var_attempt = <Option<u32>>::sse_decode(deserializer);
-        let mut var_delaySeconds = <Option<u64>>::sse_decode(deserializer);
         let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
         let mut var_errorMessage = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::ssh::SshConnectionSnapshotDto {
@@ -27459,8 +27457,6 @@ impl SseDecode for crate::api::studio::types::ssh::SshConnectionSnapshotDto {
             state: var_state,
             helper_version: var_helperVersion,
             architecture: var_architecture,
-            attempt: var_attempt,
-            delay_seconds: var_delaySeconds,
             error_code: var_errorCode,
             error_message: var_errorMessage,
         };
@@ -45629,8 +45625,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::ssh::SshConnec
             self.state.into_into_dart().into_dart(),
             self.helper_version.into_into_dart().into_dart(),
             self.architecture.into_into_dart().into_dart(),
-            self.attempt.into_into_dart().into_dart(),
-            self.delay_seconds.into_into_dart().into_dart(),
             self.error_code.into_into_dart().into_dart(),
             self.error_message.into_into_dart().into_dart(),
         ]
@@ -60542,8 +60536,6 @@ impl SseEncode for crate::api::studio::types::ssh::SshConnectionSnapshotDto {
         <String>::sse_encode(self.state, serializer);
         <Option<String>>::sse_encode(self.helper_version, serializer);
         <Option<String>>::sse_encode(self.architecture, serializer);
-        <Option<u32>>::sse_encode(self.attempt, serializer);
-        <Option<u64>>::sse_encode(self.delay_seconds, serializer);
         <Option<String>>::sse_encode(self.error_code, serializer);
         <Option<String>>::sse_encode(self.error_message, serializer);
     }

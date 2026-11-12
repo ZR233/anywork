@@ -326,6 +326,10 @@ fn should_skip_dir(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return true;
     };
+    skip_directory_name(name)
+}
+
+pub(super) fn skip_directory_name(name: &str) -> bool {
     name.starts_with('.')
         || matches!(
             name,

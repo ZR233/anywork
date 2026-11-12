@@ -88,6 +88,7 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceF
         let result = execute_workspace_patch_tool(backend, input.content())
             .await
             .map_err(ToolError::new)?;
+        let failure = result.failure;
         // Projection was produced at execution time. Historical readers never rerun it.
         let output = ToolOutput::new(
             OpaquePayload::new("pl.tool.workspace-file", 1, result.output)
@@ -99,10 +100,13 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceF
         if result.success {
             Ok(output)
         } else {
-            Err(
-                ToolError::new(tool_error(self.kind.name(), "workspace operation failed"))
-                    .with_output(output),
-            )
+            Err(ToolError::new(tool_error(
+                self.kind.name(),
+                failure
+                    .map(|failure| failure.diagnostic)
+                    .unwrap_or_else(|| "workspace operation failed".into()),
+            ))
+            .with_output(output))
         }
     }
 }
