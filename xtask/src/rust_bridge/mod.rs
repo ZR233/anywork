@@ -45,6 +45,15 @@ pub(crate) fn build_workspace_artifacts(
     configuration: BridgeConfiguration,
 ) -> Result<RustBridgeArtifacts> {
     let workspace_root = resolve_workspace_root(workspace_root)?;
+    if configuration == BridgeConfiguration::Debug
+        && let Some(dynamic_library) =
+            crate::quality_inputs::artifact(&workspace_root, "libpl_studio_bridge.so")?
+    {
+        return Ok(RustBridgeArtifacts {
+            dynamic_library,
+            debug_symbols: None,
+        });
+    }
     let artifact_target_dir = resolve_cargo_target_dir(
         &workspace_root,
         std::env::var_os("CARGO_TARGET_DIR").as_deref(),
