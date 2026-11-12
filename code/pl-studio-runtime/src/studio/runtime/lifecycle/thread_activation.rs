@@ -219,5 +219,23 @@ mod future_sizes {
             "residency enforcement",
             |runtime: &'static StudioRuntime| runtime.enforce_residency_limit(),
         );
+        // This continuation also contributes to the real default-stack session-tool flow's
+        // inline layout. Bound its admission state, not just the activation waiter above.
+        check(
+            "interaction continuation",
+            |runtime: &'static StudioRuntime| {
+                runtime.resolve_interaction(
+                    "size".into(),
+                    "size".into(),
+                    0,
+                    "size".into(),
+                    pl_protocol::InteractionResolution::UserInput(
+                        pl_protocol::UserInputResolution {
+                            answers: Default::default(),
+                        },
+                    ),
+                )
+            },
+        );
     }
 }
