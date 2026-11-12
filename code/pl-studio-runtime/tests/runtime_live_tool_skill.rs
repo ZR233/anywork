@@ -232,10 +232,15 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             .with_context(|| format!("Main feed close: {main_closed:?}"))?;
         main_closed?;
         let scope = ChatScope::Children { parent_id };
-        let original = support::nested_delivery(&env.home, thread_id, CALL).await?;
-        let expected_output = original.output.context().iter().find_map(|part| match part {
-            pl_core::context::ContextContent::Text { text } => Some(text.as_ref()), _ => None,
-        }).context("original child text")?;
+        // The following provider request proves admission to model context, not a durable
+        // writer barrier. Derive the authored child preview from that selected typed receipt;
+        // publication and cancellation are then checked through the public conversation reader.
+        let viewed: Value = serde_json::from_str(&support::tool_output(&env.root_provider, CALL)?)?;
+        let expected_output = format!("Skill: {}\nResource: {}\n\n{}",
+            viewed["skill"]["name"].as_str().context("viewed skill name")?,
+            viewed["filePath"].as_str().context("viewed skill file")?,
+            viewed["content"].as_str().context("viewed skill content")?);
+
 
         let mut feed = env.runtime.open_conversation_feed(thread_id, scope.clone(), demand()).await
             .context("open the original active Turn's Children")?;
