@@ -1290,6 +1290,7 @@ pub(crate) mod tests {
             commands: None,
             remote: None,
             ssh_profile: None,
+            lsp_lease: None,
         });
         *scope.mcp.lock().unwrap() = Some(owner.clone());
         factory.bind_resource_scope(&owner.thread_id, &scope)?;

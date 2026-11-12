@@ -178,6 +178,9 @@ impl RemoteMutationCapability {
                 .remove_path(path.to_string(), None, target.is_dir)
                 .await
                 .map_err(super::workspace::remote_file_error)?;
+            self.workspace
+                .notify_deleted(&self.workspace.root().join(path))
+                .await;
         }
         Ok(())
     }
@@ -241,13 +244,21 @@ impl MutationBackend for RemoteMutationCapability {
         self.backend
             .remove_path(path.clone(), None, false)
             .await
-            .map_err(super::workspace::remote_file_error)
+            .map_err(super::workspace::remote_file_error)?;
+        self.workspace
+            .notify_deleted(&self.workspace.root().join(path))
+            .await;
+        Ok(())
     }
     async fn remove_directory(&self, path: &String, recursive: bool) -> Result<()> {
         self.backend
             .remove_path(path.clone(), None, recursive)
             .await
-            .map_err(super::workspace::remote_file_error)
+            .map_err(super::workspace::remote_file_error)?;
+        self.workspace
+            .notify_deleted(&self.workspace.root().join(path))
+            .await;
+        Ok(())
     }
     async fn copy(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
         let recursive = self.is_directory(from).await?;
@@ -257,13 +268,24 @@ impl MutationBackend for RemoteMutationCapability {
         self.prepare_destination(to, collision).await?;
         self.backend
             .copy_path(from.clone(), to.clone(), None, recursive)
-            .await
+            .await?;
+        self.workspace
+            .notify_changed(&self.workspace.root().join(to))
+            .await;
+        Ok(())
     }
     async fn rename(&self, from: &String, to: &String, collision: PathCollision) -> Result<()> {
         self.prepare_destination(to, collision).await?;
         self.backend
             .rename_path(from.clone(), to.clone(), None)
-            .await
+            .await?;
+        self.workspace
+            .notify_deleted(&self.workspace.root().join(from))
+            .await;
+        self.workspace
+            .notify_changed(&self.workspace.root().join(to))
+            .await;
+        Ok(())
     }
 }
 

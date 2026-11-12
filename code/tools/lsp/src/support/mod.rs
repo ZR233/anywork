@@ -41,6 +41,7 @@ impl Operation {
 #[derive(Debug)]
 pub struct QueryRequest {
     pub language_id: String,
+    pub server_id: Option<String>,
     pub operation: Operation,
     pub file_path: Option<PathBuf>,
     pub line: Option<u32>,

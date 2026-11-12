@@ -1073,16 +1073,15 @@ pub const GUI_SHUTDOWN_SERVICE_STEP: usize = 6;
 
 /// Index of the LSP language-service turn inside [`GUI_SHUTDOWN_PROMPTS`].
 ///
-/// Its reply is a single `lsp_query` tool call, so the product starts the
-/// configured scenario-owned `[lsp.servers.*]` entry through its supervised
+/// Its reply is a single `lsp_query` tool call using the scenario-owned
+/// `.anywork/lsp/` configuration and supervised
 /// worker; the following [`Step::tool_output`] step then matches the delivered
 /// result. The spawned language server (and its own-process-group grandchild)
 /// is the subtree the forced exit must reclaim.
 pub const GUI_SHUTDOWN_LSP_STEP: usize = 8;
 
-/// Language id of the scenario-owned fake LSP server. It must be unique across
-/// the catalog (the builtin rust-analyzer already owns `rust`) or
-/// `apply_user_servers` fails loud with `ConflictingLanguage`.
+/// Language id of the scenario-owned fake LSP server, allowing the scenario to
+/// route without a server selector when unrelated servers are configured.
 pub const GUI_SHUTDOWN_LSP_LANGUAGE_ID: &str = "anywork-shutdown-fixture";
 
 /// Workspace-relative source file the `lsp_query` tool reads in the LSP turn.

@@ -17,7 +17,7 @@ struct ProjectActivationRecoveryBlock<'a> {
 }
 
 impl StudioRuntime {
-    /// Prepares workspace services and schedules optional language services in the background.
+    /// Prepares project navigation and skills without retaining language services.
     /// This is not a read-only navigation/history query; blocked projects remain available through
     /// the independent directory and history reads when their access is not blocked.
     pub async fn activate_project(&self, workspace_id: &str) -> Result<()> {
@@ -53,9 +53,6 @@ impl StudioRuntime {
             .into());
         }
         let project = self.project_record(workspace_id).await?;
-        let lsp = self.external_runtimes.lsp.execution_scope(
-            &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
-        );
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
@@ -63,12 +60,6 @@ impl StudioRuntime {
                 .await?;
             let workspace_root = std::path::PathBuf::from(host.files.canonical_path());
             let settings = self.config_runtime.read()?;
-            lsp.configure_workspace_from_directory(
-                &workspace_root,
-                Some(Arc::new(host.clone())),
-                None,
-            )
-            .await;
             let fingerprint = format!(
                 "ssh:{server_id}:{}:{}:{}",
                 workspace_root.display(),
@@ -88,13 +79,6 @@ impl StudioRuntime {
             {
                 return Ok(());
             }
-            let _command = self.external_runtimes.lsp_state.command().await;
-            self.external_runtimes
-                .lsp_state
-                .begin(pl_protocol::StateOperation::Activate)
-                .await?;
-            let health = health(&self.external_runtimes.lsp).await;
-            self.external_runtimes.lsp_state.ready(health, true).await?;
             let _ = self
                 .skills
                 .discover_remote(
@@ -113,13 +97,6 @@ impl StudioRuntime {
         }
         let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
         let settings = self.config_runtime.read()?;
-        let host = self.local_lsp_host(&workspace_root).await;
-        lsp.configure_workspace_from_directory(
-            &workspace_root,
-            host,
-            Some(self.store.paths().home().join("lsp/host")),
-        )
-        .await;
         let fingerprint = format!(
             "{}:{}",
             workspace_root.display(),
@@ -138,13 +115,6 @@ impl StudioRuntime {
         {
             return Ok(());
         }
-        let _command = self.external_runtimes.lsp_state.command().await;
-        self.external_runtimes
-            .lsp_state
-            .begin(pl_protocol::StateOperation::Activate)
-            .await?;
-        let health = health(&self.external_runtimes.lsp).await;
-        self.external_runtimes.lsp_state.ready(health, true).await?;
         let _ = self
             .skills
             .discover(workspace_id, &workspace_root, &settings.config.skills)
@@ -218,9 +188,22 @@ impl StudioRuntime {
             .lsp_state
             .begin(pl_protocol::StateOperation::Probe)
             .await?;
-        lsp.configure_workspace_from_directory(&workspace_root, host, defaults)
-            .await;
-        lsp.retry_workspace_configuration(&workspace_root).await;
+        let result = async {
+            let lease = lsp
+                .acquire_workspace(&workspace_root, host, defaults)
+                .await?;
+            lsp.retry_workspace_configuration(&workspace_root).await;
+            let initialized = lease.wait_initialized().await;
+            let closed = lease.close().await;
+            initialized?;
+            closed
+        }
+        .await;
+        if let Err(error) = result {
+            let error = anyhow::Error::from(error);
+            self.external_runtimes.lsp_state.failed(&error).await?;
+            return Err(error);
+        }
         let health = health(&self.external_runtimes.lsp).await;
         self.external_runtimes.lsp_state.ready(health, true).await?;
         Ok(())

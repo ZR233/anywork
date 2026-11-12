@@ -121,13 +121,27 @@ where
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
         self.workspace
             .ensure_relative_path_writable(request.cwd.as_deref(), &request.path)?;
-        self.backend.write_text(request).await
+        let path = self
+            .workspace
+            .root()
+            .join(request.cwd.as_deref().unwrap_or(""))
+            .join(&request.path);
+        self.backend.write_text(request).await?;
+        self.workspace.notify_changed(&path).await;
+        Ok(())
     }
 
     async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> Result<()> {
         self.workspace
             .ensure_relative_path_writable(request.cwd.as_deref(), &request.path)?;
-        self.backend.remove_file(request).await
+        let path = self
+            .workspace
+            .root()
+            .join(request.cwd.as_deref().unwrap_or(""))
+            .join(&request.path);
+        self.backend.remove_file(request).await?;
+        self.workspace.notify_deleted(&path).await;
+        Ok(())
     }
 
     async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {

@@ -28,6 +28,7 @@ pub(crate) struct ToolBinding {
     pub workspace: ToolWorkspace,
     pub commands: Option<WeakCommandProcesses>,
     pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
     pub ssh_profile: Option<pl_tool::remote::SshServerProfile>,
 }
 
@@ -41,6 +42,7 @@ pub(crate) struct ThreadToolLifetime {
 pub(in crate::studio) struct RefreshedToolBinding {
     previous: std::sync::Arc<()>,
     binding: ToolBinding,
+    release_lsp: Option<pl_lsp::runtime::LspWorkspaceLease>,
 }
 
 impl StudioThreadFactory {
@@ -173,6 +175,11 @@ impl StudioThreadFactory {
             ));
         }
         *current = candidate.binding;
+        if let Some(lease) = candidate.release_lsp {
+            // close eagerly invalidates the user and records the async reclaim
+            // with the directory owner; commit itself remains synchronous.
+            drop(lease.close());
+        }
         Ok(())
     }
     pub(in crate::studio) fn session_files_fact(
@@ -228,6 +235,9 @@ impl StudioThreadFactory {
                 && binding.project.ssh_alias.as_deref() == Some(server_id)
             {
                 binding.target_invalidated = true;
+                if let Some(lease) = &binding.lsp_lease {
+                    drop(lease.close());
+                }
             }
         }
     }
@@ -250,7 +260,21 @@ impl StudioThreadFactory {
             Some(lifetime) => Some(lifetime.gate.lock().await),
             None => None,
         };
-        self.shutdown_scope_mcp(scope).await?;
+        let lsp_lease = scope
+            .binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|binding| binding.lsp_lease.clone());
+        let (mcp_result, lsp_result) = tokio::join!(self.shutdown_scope_mcp(scope), async {
+            match lsp_lease {
+                Some(lease) => lease.close().await.map_err(anyhow::Error::from),
+                None => Ok(()),
+            }
+        });
+        // Preserve the binding when either owner failed, so close can be retried.
+        mcp_result?;
+        lsp_result?;
         let removed = scope
             .binding
             .lock()
@@ -272,6 +296,9 @@ impl StudioThreadFactory {
             && std::sync::Arc::ptr_eq(&binding.lifetime, lifetime)
         {
             binding.lifetime.cancellation.cancel();
+            if let Some(lease) = &binding.lsp_lease {
+                drop(lease.close());
+            }
         }
     }
 
@@ -446,6 +473,7 @@ impl StudioThreadFactory {
                 },
                 &binding.lifetime,
                 CatalogPreparation::Refresh {
+                    lsp_lease: binding.lsp_lease.clone(),
                     policy_key: binding.policy_key.clone(),
                     policies: binding.policies.clone(),
                     remote: remote.map(Box::new),
@@ -495,7 +523,13 @@ impl StudioThreadFactory {
             .or(previous_commands);
         let candidate = RefreshedToolBinding {
             previous: binding.incarnation.clone(),
+            release_lsp: if prepared.lsp_lease.is_none() {
+                binding.lsp_lease.clone()
+            } else {
+                None
+            },
             binding: ToolBinding {
+                lsp_lease: prepared.lsp_lease.clone(),
                 incarnation: std::sync::Arc::new(()),
                 commands,
                 remote: prepared.remote.clone(),

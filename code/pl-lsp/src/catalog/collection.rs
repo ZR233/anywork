@@ -26,11 +26,6 @@ impl std::fmt::Debug for LspCatalogServer {
 pub enum LspCatalogError {
     #[error("duplicate LSP server id `{server_id}`")]
     DuplicateServerId { server_id: String },
-    #[error("language `{language_id}` is declared by multiple LSP servers: {servers:?}")]
-    ConflictingLanguage {
-        language_id: String,
-        servers: Vec<String>,
-    },
 }
 
 /// 显式提供的服务器定义集合；空集合不包含任何默认服务器。
@@ -58,7 +53,7 @@ impl LspServerCatalog {
     ) -> Result<Self, LspCatalogError> {
         let mut catalog = Self::empty();
         for (server_id, config) in user_servers {
-            catalog.insert_checked(config.to_catalog_server(server_id))?;
+            catalog.insert(config.to_catalog_server(server_id))?;
         }
         Ok(catalog)
     }
@@ -71,27 +66,6 @@ impl LspServerCatalog {
         }
         self.servers.insert(server.definition.id.clone(), server);
         Ok(())
-    }
-
-    fn insert_checked(&mut self, server: LspCatalogServer) -> Result<(), LspCatalogError> {
-        let id = server.definition.id.clone();
-        for language_id in &server.definition.language_ids {
-            let mut conflicting = self
-                .servers
-                .values()
-                .filter(|existing| existing.definition.language_ids.contains(language_id))
-                .map(|existing| existing.definition.id.clone())
-                .collect::<Vec<_>>();
-            if !conflicting.is_empty() {
-                conflicting.push(id);
-                conflicting.sort();
-                return Err(LspCatalogError::ConflictingLanguage {
-                    language_id: language_id.clone(),
-                    servers: conflicting,
-                });
-            }
-        }
-        self.insert(server)
     }
 
     pub fn get(&self, server_id: &str) -> Option<&LspCatalogServer> {

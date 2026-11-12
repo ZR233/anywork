@@ -1,17 +1,18 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lsp_server::{Message, Request, Response};
+use lsp_server::{ErrorCode, Message, Request, Response};
 use lsp_types::{
-    ProgressParams, ProgressToken, PublishDiagnosticsParams, WorkDoneProgressCreateParams,
+    ConfigurationParams, ProgressParams, ProgressToken, PublishDiagnosticsParams,
+    WorkDoneProgressCreateParams,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::driver::LspServerDriver;
-use crate::runtime::{LspResult, LspRuntimeError};
+use crate::runtime::{LspResult, LspRuntimeError, ResolvedLspServer};
 
-use super::configuration::workspace_configuration_response;
+use super::configuration::{workspace_configuration_response, workspace_folder};
 use super::connection::LspClient;
 use super::retry::is_content_modified_error;
 use super::rpc::RpcClient;
@@ -28,6 +29,8 @@ impl LspClient {
         let status = self.status.clone();
         let updates = self.diagnostics.updates.clone();
         let driver = self.driver.clone();
+        let server = self.server.clone();
+        let style = self.path_style();
         let server_id = self.server.id.clone();
         let initialized = self.initialized.clone();
         let connection_alive = self.connection_alive.clone();
@@ -37,15 +40,22 @@ impl LspClient {
                 let message = match message {
                     Ok(message) => message,
                     Err(error) => {
+                        record_last_error_status(&status, error.to_string()).await;
                         rpc.fail_pending(error.to_string()).await;
                         break;
                     }
                 };
                 match message {
                     Message::Request(request) => {
-                        let response =
-                            respond_to_server_request(request, driver.as_ref(), &status, &updates)
-                                .await;
+                        let response = respond_to_server_request(
+                            request,
+                            driver.as_ref(),
+                            &server,
+                            style,
+                            &status,
+                            &updates,
+                        )
+                        .await;
                         let _ = rpc.respond(response).await;
                     }
                     Message::Notification(notification) => match notification.method.as_str() {
@@ -100,24 +110,59 @@ impl LspClient {
 pub(crate) async fn respond_to_server_request(
     request: Request,
     driver: &dyn LspServerDriver,
+    server: &ResolvedLspServer,
+    style: crate::host::LspPathStyle,
     status: &Arc<Mutex<LspClientStatus>>,
     updates: &broadcast::Sender<()>,
 ) -> Response {
     let result = match request.method.as_str() {
         "workspace/configuration" => {
-            workspace_configuration_response(Some(&request.params), driver)
+            let params = match serde_json::from_value::<ConfigurationParams>(request.params) {
+                Ok(params) => params,
+                Err(error) => {
+                    return Response::new_err(
+                        request.id,
+                        ErrorCode::InvalidParams as i32,
+                        error.to_string(),
+                    );
+                }
+            };
+            workspace_configuration_response(params, driver)
         }
+        "workspace/workspaceFolders" => match workspace_folder(server, style) {
+            Ok(folder) => serde_json::json!([folder]),
+            Err(error) => {
+                return Response::new_err(
+                    request.id,
+                    ErrorCode::InternalError as i32,
+                    error.to_string(),
+                );
+            }
+        },
         "window/workDoneProgress/create" => {
-            if let Ok(params) =
-                serde_json::from_value::<WorkDoneProgressCreateParams>(request.params.clone())
-                && register_progress_token_status(status, params.token).await
-            {
+            let params =
+                match serde_json::from_value::<WorkDoneProgressCreateParams>(request.params) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        return Response::new_err(
+                            request.id,
+                            ErrorCode::InvalidParams as i32,
+                            error.to_string(),
+                        );
+                    }
+                };
+            if register_progress_token_status(status, params.token).await {
                 let _ = updates.send(());
             }
             Value::Null
         }
-        "client/registerCapability" | "client/unregisterCapability" => Value::Null,
-        _ => Value::Null,
+        _ => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::MethodNotFound as i32,
+                format!("unsupported LSP client method: {}", request.method),
+            );
+        }
     };
     Response::new_ok(request.id, result)
 }

@@ -34,11 +34,13 @@ pub(super) struct PreparedThreadTools {
     pub environment: pl_tool::environment::ExecutionEnvironment,
     pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
     pub workspace: ToolWorkspace,
+    pub lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
 }
 
 pub(super) enum CatalogPreparation {
     Initial,
     Refresh {
+        lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
         commands: Option<crate::thread_assembler::StudioCommandProcesses>,
         remote: Option<Box<pl_tool::remote::RemoteWorkspaceHost>>,
         policy_key: String,
@@ -109,6 +111,7 @@ impl StudioThreadFactory {
             workspace: assembly.workspace.clone(),
             commands: None,
             remote: None,
+            lsp_lease: None,
             ssh_profile: match &assembly.project.ssh_alias {
                 Some(alias) => self
                     .services
@@ -139,6 +142,7 @@ impl StudioThreadFactory {
             }
         };
         let binding = super::tool_bindings::ToolBinding {
+            lsp_lease: tools.lsp_lease.clone(),
             remote: tools.remote.clone(),
             catalog: tools.catalog.clone(),
             initial_skill_prompt: tools
@@ -165,10 +169,17 @@ impl StudioThreadFactory {
         let scope = self
             .resource_scope(&id)
             .ok_or(ThreadAssemblyError::Closed)?;
-        *scope
+        let previous = scope
             .binding
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(binding);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(binding);
+        if let Some(lease) = previous.and_then(|binding| binding.lsp_lease) {
+            lease
+                .close()
+                .await
+                .map_err(|error| resource_error("close previous LSP binding", error))?;
+        }
         Ok(tools)
     }
 
@@ -479,9 +490,16 @@ impl StudioThreadFactory {
             workspace: workspace.clone(),
             reviewer,
         };
+        let mut lsp_lease = None;
         if config.runtime.tool_capabilities.lsp {
             let lsp_started = std::time::Instant::now();
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", "starting");
+            let previous = match &preparation {
+                CatalogPreparation::Refresh { lsp_lease, .. } => {
+                    lsp_lease.clone().filter(|lease| !lease.is_closed())
+                }
+                CatalogPreparation::Initial => None,
+            };
             let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
                 Some(host) => Some(Arc::new(host.clone())),
                 None => {
@@ -516,11 +534,20 @@ impl StudioThreadFactory {
             let defaults = remote
                 .is_none()
                 .then(|| self.services.store.paths().home().join("lsp/host"));
-            lsp.configure_workspace_from_directory(&root, host, defaults)
-                .await;
-            if matches!(&preparation, CatalogPreparation::Refresh { .. }) {
-                lsp.refresh_workspace_configuration(&root).await;
-            }
+            lsp_lease = if let Some(lease) = previous {
+                if let Err(error) = lease.refresh_configuration(host, defaults).await {
+                    tracing::warn!(%error, thread_id, "LSP directory refresh failed");
+                }
+                Some(lease)
+            } else {
+                match lsp.acquire_workspace(&root, host, defaults).await {
+                    Ok(lease) => Some(lease),
+                    Err(error) => {
+                        tracing::warn!(%error, thread_id, "LSP directory acquisition failed");
+                        None
+                    }
+                }
+            };
             let paths = match &remote {
                 Some(host) => pl_tool::lsp::LspPathBinding::Remote {
                     workspace: workspace.clone(),
@@ -567,6 +594,7 @@ impl StudioThreadFactory {
             environment,
             remote,
             workspace,
+            lsp_lease,
         })
     }
 }

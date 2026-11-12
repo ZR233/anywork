@@ -8,6 +8,8 @@ use std::{marker::PhantomData, path::PathBuf};
 pub struct LspQueryInput {
     /// 目标语言 ID；运行期按 catalog 路由到对应 server。
     pub language_id: String,
+    /// Explicit server ID when multiple servers support this language.
+    pub server_id: Option<String>,
     pub operation: Operation,
     /// Workspace-relative or absolute path to the source file.
     pub file_path: Option<PathBuf>,
@@ -116,18 +118,21 @@ impl<S: QueryService> Tool for LspQueryTool<S> {
             return Err(QueryError::Cancelled);
         }
         let language = input.language_id.clone();
+        let request = context.service.query(QueryRequest {
+            language_id: input.language_id,
+            server_id: input.server_id,
+            operation: input.operation,
+            file_path,
+            line: input.line,
+            character: input.character,
+            query: input.query,
+            max_results: input.max_results,
+        });
         let value = context
-            .service
-            .query(QueryRequest {
-                language_id: input.language_id,
-                operation: input.operation,
-                file_path,
-                line: input.line,
-                character: input.character,
-                query: input.query,
-                max_results: input.max_results,
-            })
+            .cancellation
+            .run_until_cancelled(request)
             .await
+            .ok_or(QueryError::Cancelled)?
             .map_err(|source| QueryError::Service { language, source })?;
         Ok(LspResult { value })
     }

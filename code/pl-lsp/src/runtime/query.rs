@@ -31,16 +31,9 @@ impl LspRuntimeRegistry {
             .await?;
         if let Some(path) = query.file_path.as_deref() {
             let uri = path_to_file_uri(path, client.path_style());
-            let _ = client.open_document(path, &uri).await;
+            client.open_document(path, &uri).await?;
         }
-        let value = match request_for_query(&client, &query).await {
-            Ok(value) => value,
-            Err(error) => {
-                self.mark_client_failure(&workspace_root, &server_id, &client, error.to_string())
-                    .await;
-                return Err(error);
-            }
-        };
+        let value = request_for_query(&client, &query).await?;
         let formatted = format_lsp_result(
             query.operation,
             &value,
@@ -61,53 +54,23 @@ impl LspRuntimeRegistry {
         let path = path.as_ref();
         self.refresh_for_configuration_path(path).await;
         for client in self.open_clients_for_path(path).await {
-            let _ = client.file_changed(path).await;
+            if let Err(error) = client.file_changed(path).await {
+                tracing::warn!(path = %path.display(), %error, "LSP file change notification failed");
+            }
+            if let Err(error) = client.refresh_document(path).await {
+                tracing::warn!(path = %path.display(), %error, "LSP document refresh failed");
+            }
         }
-        let Some(client) = self.open_client_for_path(path).await else {
-            return;
-        };
-        let _ = client.refresh_document(path).await;
     }
 
     pub async fn notify_file_deleted(&self, path: impl AsRef<Path>) {
         let path = path.as_ref();
         self.refresh_for_configuration_path(path).await;
         for client in self.open_clients_for_path(path).await {
-            let _ = client.file_deleted(path).await;
-        }
-        if let Some(client) = self.open_client_for_path(path).await {
-            let _ = client.close_document(path).await;
-        }
-    }
-
-    async fn mark_client_failure(
-        &self,
-        workspace_root: &Path,
-        server_id: &str,
-        failed_client: &std::sync::Arc<crate::client::LspClient>,
-        message: String,
-    ) {
-        {
-            let mut state = self.state.lock().await;
-            let Some(server) = state
-                .workspaces
-                .get_mut(workspace_root)
-                .and_then(|workspace| workspace.servers.get_mut(server_id))
-            else {
-                return;
-            };
-            if !server
-                .client
-                .as_ref()
-                .is_some_and(|client| std::sync::Arc::ptr_eq(client, failed_client))
-            {
-                return;
+            if let Err(error) = client.file_deleted(path).await {
+                tracing::warn!(path = %path.display(), %error, "LSP file deletion notification failed");
             }
-            server.set_phase(super::LspLifecyclePhase::Failed, Some(message));
-            server.cancel.cancel();
-            failed_client.cancel();
         }
-        self.emit_update();
     }
 
     async fn refresh_for_configuration_path(&self, path: &Path) {
@@ -118,11 +81,15 @@ impl LspRuntimeRegistry {
             .workspaces
             .iter()
             .filter(|(root, workspace)| {
-                path.starts_with(root.join(".anywork/lsp"))
+                let configuration = root.join(".anywork/lsp");
+                path.starts_with(&configuration)
+                    || configuration.starts_with(path)
                     || workspace
                         .defaults_directory
                         .as_ref()
-                        .is_some_and(|directory| path.starts_with(directory))
+                        .is_some_and(|directory| {
+                            path.starts_with(directory) || directory.starts_with(path)
+                        })
             })
             .map(|(root, _)| root.clone())
             .collect();
@@ -137,10 +104,12 @@ impl LspRuntimeRegistry {
         query: LspQuery,
     ) -> LspResult<LspQueryResult> {
         let max_results = query.max_results.unwrap_or(100);
-        let mut diagnostics = self.all_diagnostics_for_workspace(workspace_root).await;
-        let server_id = if let Some(language_id) = query.language_id.as_deref() {
+        let mut diagnostics = self
+            .all_diagnostics_for_workspace(workspace_root, query.file_path.as_deref())
+            .await;
+        let server_id = if query.server_id.is_some() || query.language_id.is_some() {
             let server_id = self
-                .server_id_for_language_in_workspace(workspace_root, language_id)
+                .server_id_for_query_in_workspace(workspace_root, &query)
                 .await?;
             self.ensure_operation_supported_in_workspace(
                 workspace_root,
@@ -155,16 +124,6 @@ impl LspRuntimeRegistry {
         if let Some(server_id) = server_id.as_deref() {
             diagnostics.retain(|diagnostic| diagnostic.server_id == server_id);
         }
-        if let Some(path) = query.file_path.as_deref() {
-            let display = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string();
-            diagnostics.retain(|diagnostic| {
-                diagnostic.path == path.to_string_lossy() || diagnostic.path.ends_with(&display)
-            });
-        }
         let formatted = format_diagnostics(&diagnostics, max_results);
         Ok(LspQueryResult {
             success: true,
@@ -176,7 +135,11 @@ impl LspRuntimeRegistry {
         })
     }
 
-    async fn all_diagnostics_for_workspace(&self, workspace_root: &Path) -> Vec<LspDiagnostic> {
+    async fn all_diagnostics_for_workspace(
+        &self,
+        workspace_root: &Path,
+        path: Option<&Path>,
+    ) -> Vec<LspDiagnostic> {
         let containers = self
             .state
             .lock()
@@ -188,18 +151,27 @@ impl LspRuntimeRegistry {
                     .servers
                     .values()
                     .filter(|server| server.healthy())
-                    .map(|server| server.diagnostics.clone())
+                    .filter_map(|server| {
+                        server.client.as_ref().map(|client| {
+                            (
+                                server.diagnostics.clone(),
+                                path.map(|path| path_to_file_uri(path, client.path_style())),
+                            )
+                        })
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let mut diagnostics = Vec::new();
-        for container in containers {
+        for (container, uri) in containers {
             diagnostics.extend(
                 container
                     .lock()
                     .await
                     .values()
-                    .flat_map(|items| items.iter().cloned()),
+                    .flat_map(|items| items.iter())
+                    .filter(|diagnostic| uri.as_ref().is_none_or(|uri| diagnostic.uri == *uri))
+                    .cloned(),
             );
         }
         diagnostics.sort_by(|left, right| {

@@ -68,6 +68,11 @@ pub struct RemoteClient {
     lifetime: Arc<SessionLifetime>,
 }
 impl RemoteClient {
+    /// Identifies the logical helper session across transport reattachments.
+    pub(in crate::remote) fn session_identity(&self) -> &str {
+        &self.inner.request_namespace
+    }
+
     /// Creates exactly one HTTP/2 connection. The initial Hello identifies the physical owner.
     pub async fn from_streams<R, W>(reader: R, writer: W) -> Result<Self, RemoteClientError>
     where

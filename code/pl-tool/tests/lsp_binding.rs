@@ -75,9 +75,10 @@ async fn hosted_lsp_tools_share_registry_and_preserve_path_authorization() -> an
         root.path(),
         helper::remote_helper_executable().to_owned(),
     )?);
-    registry
-        .configure_workspace(root.path(), Some(host), [("fixture".into(), config)].into())
-        .await;
+    write_config(root.path(), "fixture", config).await?;
+    let _lease = registry
+        .acquire_workspace(root.path(), Some(host), None)
+        .await?;
     wait_ready(&registry, root.path(), "fixture").await?;
     let paths = LspPathBinding::Local(ToolWorkspace::new(AgentWorkspace::local(root.path())));
     let capabilities = ThreadLspTool::new(
@@ -207,13 +208,21 @@ async fn write_config(
     // This fixture writes only strings/arrays and its one known nested settings
     // shape; schema behavior is tested independently in pl-lsp's parser tests.
     let mut content = format!(
-        "schema_version = 1\nid = {}\ncommand = {}\nargs = {}\nlanguage_ids = {}\nextensions = {}\n",
+        "schema_version = 1\nid = {}\ncommand = {}\nargs = {}\nlanguage_ids = {}\nextensions = {}\ndetection = {}\noperations = {}\n",
         serde_json::to_string(id)?,
         serde_json::to_string(&config.command)?,
         serde_json::to_string(&config.args)?,
         serde_json::to_string(&config.language_ids)?,
-        serde_json::to_string(&config.extensions)?
+        serde_json::to_string(&config.extensions)?,
+        serde_json::to_string(&config.detection)?,
+        serde_json::to_string(&config.operations)?
     );
+    if let Some(display_name) = &config.display_name {
+        content.push_str(&format!(
+            "display_name = {}\n",
+            serde_json::to_string(display_name)?
+        ));
+    }
     if !config.initialization_options.is_null() {
         content.push_str("[initialization_options]\nnested = [{ root = '{workspaceRoot}/init' }]\n[settings.fixture.nested]\nroot = '{workspaceRoot}/settings'\n");
     }
@@ -294,15 +303,15 @@ async fn directory_loading_is_local_failure_isolated_and_initialization_is_paral
     write_config(root.path(), "failing", failing).await?;
     tokio::fs::write(root.path().join(".anywork/lsp/broken.toml"), "schema_version=1\nid='broken'\ncommand='private-token'\nlanguage_ids=['broken']\ntypo=true").await?;
     let registry = LspRuntimeRegistry::new();
-    tokio::time::timeout(
+    let _lease = tokio::time::timeout(
         std::time::Duration::from_millis(250),
-        registry.configure_workspace_from_directory(
+        registry.acquire_workspace(
             root.path(),
             Some(local_host(root.path())?),
             Some(defaults.path().to_owned()),
         ),
     )
-    .await?;
+    .await??;
     let observed: anyhow::Result<()> = async {
         let loading = registry.snapshots_for_workspace(root.path()).await;
         anyhow::ensure!(
@@ -389,16 +398,14 @@ async fn refresh_preserves_unchanged_and_cancels_superseded_generations() -> any
     let config = fixture_config("fixture", "requests.jsonl");
     let path = write_config(root.path(), "fixture", config.clone()).await?;
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            root.path(),
-            Some(local_host(root.path())?),
-            Default::default(),
-        )
-        .await;
+    let lease = registry
+        .acquire_workspace(root.path(), Some(local_host(root.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, root.path(), "fixture").await?;
-        registry.refresh_workspace_configuration(root.path()).await;
+        lease
+            .refresh_configuration(Some(local_host(root.path())?), None)
+            .await?;
         for _ in 0..10 {
             let _ = registry.snapshots_for_workspace(root.path()).await;
             let _ = registry.capabilities_for_workspace(root.path()).await;
@@ -406,7 +413,9 @@ async fn refresh_preserves_unchanged_and_cancels_superseded_generations() -> any
         // Force another scan with a bad neighbor, then wait for its published diagnostic:
         // this proves the unchanged member passed a completed merge, not just the old state.
         tokio::fs::write(root.path().join(".anywork/lsp/broken.toml"), "invalid").await?;
-        registry.refresh_workspace_configuration(root.path()).await;
+        lease
+            .refresh_configuration(Some(local_host(root.path())?), None)
+            .await?;
         wait_phase(&registry, root.path(), "broken", Phase::Failed).await?;
         let messages = log_messages(&root.path().join("requests.jsonl")).await?;
         anyhow::ensure!(
@@ -486,13 +495,10 @@ async fn exited_servers_are_not_routed_and_status_reads_do_not_restart_them() ->
     let mut config = fixture_config("fixture", "exit.jsonl");
     config.env.insert("LSP_FIXTURE_EXIT".into(), "1".into());
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            root.path(),
-            Some(local_host(root.path())?),
-            [("fixture".into(), config)].into(),
-        )
-        .await;
+    write_config(root.path(), "fixture", config).await?;
+    let _lease = registry
+        .acquire_workspace(root.path(), Some(local_host(root.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_phase(
             &registry,
@@ -522,6 +528,7 @@ async fn exited_servers_are_not_routed_and_status_reads_do_not_restart_them() ->
             .query_in_workspace(
                 root.path(),
                 pl_lsp::query::LspQuery {
+                    server_id: None,
                     operation: LspQueryOperation::Hover,
                     file_path: Some(root.path().join("source.fixture")),
                     line: Some(1),
@@ -561,9 +568,9 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
         "supervisor preparation failed: fixture reason",
     )?);
     let mut updates = registry.subscribe();
-    registry
-        .configure_workspace(root.path(), Some(unavailable.clone()), Default::default())
-        .await;
+    let lease = registry
+        .acquire_workspace(root.path(), Some(unavailable.clone()), None)
+        .await?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if registry
@@ -578,11 +585,14 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
         Ok::<_, anyhow::Error>(())
     })
     .await??;
+    lease.wait_initialized().await?;
     while updates.try_recv().is_ok() {}
+    let mut additional_users = Vec::new();
     for _ in 0..5 {
-        registry
-            .configure_workspace(root.path(), Some(unavailable.clone()), Default::default())
-            .await;
+        let user = registry
+            .acquire_workspace(root.path(), Some(unavailable.clone()), None)
+            .await?;
+        additional_users.push(user);
         anyhow::ensure!(
             registry
                 .snapshots_for_workspace(root.path())
@@ -594,12 +604,16 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
         updates.try_recv().is_err(),
         "identical empty binding must not publish Loading again"
     );
-    registry.refresh_workspace_configuration(root.path()).await;
+    lease
+        .refresh_configuration(Some(unavailable.clone()), None)
+        .await?;
+    lease.wait_initialized().await?;
     anyhow::ensure!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), updates.recv())
+        registry
+            .snapshots_for_workspace(root.path())
             .await
-            .is_err(),
-        "unchanged empty scan must not emit another update"
+            .is_empty(),
+        "an empty rescan must not introduce a server or Loading state"
     );
     let path = write_config(
         root.path(),
@@ -623,13 +637,9 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
             !root.path().join("recovered.jsonl").exists(),
             "unavailable host must not launch a fallback process"
         );
-        registry
-            .configure_workspace(
-                root.path(),
-                Some(local_host(root.path())?),
-                Default::default(),
-            )
-            .await;
+        lease
+            .refresh_configuration(Some(local_host(root.path())?), None)
+            .await?;
         wait_ready(&registry, root.path(), "fixture").await?;
         Ok(())
     }
@@ -641,31 +651,34 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
 }
 
 #[tokio::test]
-async fn workspace_catalogs_are_isolated_and_conflicts_never_enter_routing() -> anyhow::Result<()> {
-    use pl_lsp::runtime::{LspLifecyclePhase as Phase, LspRoutingError, LspRuntimeError};
+async fn workspace_catalogs_are_isolated_and_ambiguous_servers_require_selection()
+-> anyhow::Result<()> {
+    use pl_lsp::runtime::{LspRoutingError, LspRuntimeError};
     let first = tempfile::tempdir()?;
     let second = tempfile::tempdir()?;
+    tokio::fs::write(first.path().join("source.fixture"), "fixture").await?;
     let mut other = fixture_config("other", "other.jsonl");
     other.extensions = vec![".fixture".into()];
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            first.path(),
-            Some(local_host(first.path())?),
-            [
-                ("first".into(), fixture_config("fixture", "first.jsonl")),
-                ("other".into(), other),
-            ]
-            .into(),
-        )
-        .await;
-    registry
-        .configure_workspace(
-            second.path(),
-            Some(local_host(second.path())?),
-            [("first".into(), fixture_config("second", "second.jsonl"))].into(),
-        )
-        .await;
+    write_config(
+        first.path(),
+        "first",
+        fixture_config("fixture", "first.jsonl"),
+    )
+    .await?;
+    write_config(first.path(), "other", other).await?;
+    write_config(
+        second.path(),
+        "first",
+        fixture_config("second", "second.jsonl"),
+    )
+    .await?;
+    let _first_lease = registry
+        .acquire_workspace(first.path(), Some(local_host(first.path())?), None)
+        .await?;
+    let _second_lease = registry
+        .acquire_workspace(second.path(), Some(local_host(second.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, first.path(), "first").await?;
         wait_ready(&registry, first.path(), "other").await?;
@@ -674,6 +687,7 @@ async fn workspace_catalogs_are_isolated_and_conflicts_never_enter_routing() -> 
             .query_in_workspace(
                 first.path(),
                 pl_lsp::query::LspQuery {
+                    server_id: None,
                     operation: LspQueryOperation::Hover,
                     file_path: Some(first.path().join("source.fixture")),
                     line: Some(1),
@@ -689,21 +703,25 @@ async fn workspace_catalogs_are_isolated_and_conflicts_never_enter_routing() -> 
             error,
             LspRuntimeError::Routing(LspRoutingError::AmbiguousPath { .. })
         ));
-        let path = write_config(
-            first.path(),
-            "conflict",
-            fixture_config("fixture", "conflict.jsonl"),
-        )
-        .await?;
+        let mut alternative = fixture_config("fixture", "conflict.jsonl");
+        alternative
+            .env
+            .insert("LSP_FIXTURE_HOVER".into(), "selected second server".into());
+        let path = write_config(first.path(), "conflict", alternative).await?;
         registry.notify_file_changed(&path).await;
-        wait_phase(&registry, first.path(), "conflict", Phase::Failed).await?;
-        wait_phase(&registry, first.path(), "first", Phase::Failed).await?;
-        anyhow::ensure!(
-            registry
-                .active_server_names_for_workspace(first.path())
-                .await
-                == ["other"]
-        );
+        wait_ready(&registry, first.path(), "conflict").await?;
+        let mut query = fixture_query(first.path(), LspQueryOperation::Hover);
+        let error = registry
+            .query_in_workspace(first.path(), query.clone())
+            .await
+            .expect_err("same-language servers require explicit selection");
+        anyhow::ensure!(matches!(
+            error,
+            LspRuntimeError::Routing(LspRoutingError::AmbiguousLanguage { .. })
+        ));
+        query.server_id = Some("conflict".into());
+        let selected = registry.query_in_workspace(first.path(), query).await?;
+        anyhow::ensure!(selected.result.contains("selected second server"));
         anyhow::ensure!(
             registry
                 .active_server_names_for_workspace(second.path())
@@ -712,7 +730,6 @@ async fn workspace_catalogs_are_isolated_and_conflicts_never_enter_routing() -> 
         );
         let second_capabilities = registry.capabilities_for_workspace(second.path()).await;
         anyhow::ensure!(second_capabilities.servers[0].language_ids == ["second"]);
-        anyhow::ensure!(!first.path().join("conflict.jsonl").exists());
         anyhow::ensure!(
             log_messages(&second.path().join("second.jsonl"))
                 .await?
@@ -770,13 +787,15 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
     );
     tokio::fs::write(root.path().join("source.fixture"), "fixture source").await?;
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            root.path(),
-            Some(host),
-            [("fixture".into(), fixture_config("fixture", "lease.jsonl"))].into(),
-        )
-        .await;
+    write_config(
+        root.path(),
+        "fixture",
+        fixture_config("fixture", "lease.jsonl"),
+    )
+    .await?;
+    let lease = registry
+        .acquire_workspace(root.path(), Some(host), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, root.path(), "fixture").await?;
         anyhow::ensure!(!dropped.load(Ordering::Acquire));
@@ -796,13 +815,7 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
             "re-materialized worker leases are not new execution hosts"
         );
         let mut updates = registry.subscribe();
-        registry
-            .configure_workspace(
-                root.path(),
-                Some(next_host),
-                [("fixture".into(), fixture_config("fixture", "lease.jsonl"))].into(),
-            )
-            .await;
+        lease.refresh_configuration(Some(next_host), None).await?;
         anyhow::ensure!(
             next_dropped.load(Ordering::Acquire),
             "the unused replacement lease must release without disturbing the active owner"
@@ -816,6 +829,7 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
             .query_in_workspace(
                 root.path(),
                 pl_lsp::query::LspQuery {
+                    server_id: None,
                     operation: LspQueryOperation::Hover,
                     file_path: Some(root.path().join("source.fixture")),
                     line: Some(1),
@@ -846,17 +860,16 @@ async fn missing_program_failure_does_not_make_registry_shutdown_fail() -> anyho
     let mut missing = fixture_config("missing", "missing.jsonl");
     missing.command = "anywork-lsp-shutdown-regression-nonexistent-program".into();
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            root.path(),
-            Some(local_host(root.path())?),
-            [
-                ("missing".into(), missing),
-                ("fixture".into(), fixture_config("fixture", "healthy.jsonl")),
-            ]
-            .into(),
-        )
-        .await;
+    write_config(root.path(), "missing", missing).await?;
+    write_config(
+        root.path(),
+        "fixture",
+        fixture_config("fixture", "healthy.jsonl"),
+    )
+    .await?;
+    let _lease = registry
+        .acquire_workspace(root.path(), Some(local_host(root.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, root.path(), "fixture").await?;
         wait_phase(
@@ -909,6 +922,7 @@ async fn missing_program_failure_does_not_make_registry_shutdown_fail() -> anyho
 
 fn fixture_query(root: &Path, operation: LspQueryOperation) -> pl_lsp::query::LspQuery {
     pl_lsp::query::LspQuery {
+        server_id: None,
         operation,
         file_path: operation
             .requires_file()
@@ -937,20 +951,26 @@ async fn endpoint_views_isolate_same_root_and_global_owner_joins_every_partition
     b_config
         .env
         .insert("LSP_FIXTURE_HOVER".into(), "endpoint B".into());
+    let a_defaults = tempfile::tempdir()?;
+    let b_defaults = tempfile::tempdir()?;
+    let a_path = write_config(a_defaults.path(), "fixture", a_config).await?;
+    let b_path = write_config(b_defaults.path(), "fixture", b_config).await?;
     let mut global_updates = owner.subscribe();
-    a.configure_workspace(
-        directory.path(),
-        Some(local_host(directory.path())?),
-        [("fixture".into(), a_config)].into(),
-    )
-    .await;
+    let _a_lease = a
+        .acquire_workspace(
+            directory.path(),
+            Some(local_host(directory.path())?),
+            a_path.parent().map(Path::to_owned),
+        )
+        .await?;
     tokio::time::timeout(std::time::Duration::from_secs(5), global_updates.recv()).await??;
-    b.configure_workspace(
-        directory.path(),
-        Some(local_host(directory.path())?),
-        [("fixture".into(), b_config)].into(),
-    )
-    .await;
+    let _b_lease = b
+        .acquire_workspace(
+            directory.path(),
+            Some(local_host(directory.path())?),
+            b_path.parent().map(Path::to_owned),
+        )
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&a, directory.path(), "fixture").await?;
         wait_ready(&b, directory.path(), "fixture").await?;
@@ -1007,14 +1027,10 @@ async fn endpoint_views_isolate_same_root_and_global_owner_joins_every_partition
     shutdown?;
     anyhow::ensure!(!b.has_ready_servers(directory.path()).await);
     let late = owner.execution_scope("ssh:late");
-    late.configure_workspace(
-        directory.path(),
-        Some(local_host(directory.path())?),
-        [("fixture".into(), fixture_config("fixture", "late.jsonl"))].into(),
-    )
-    .await;
     anyhow::ensure!(
-        late.snapshots().await.is_empty(),
+        late.acquire_workspace(directory.path(), Some(local_host(directory.path())?), None,)
+            .await
+            .is_err(),
         "global shutdown must reject new partition startup"
     );
     Ok(())
@@ -1038,13 +1054,9 @@ async fn explicit_retry_recovers_unchanged_configuration_without_restarting_heal
     )
     .await?;
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            directory.path(),
-            Some(local_host(directory.path())?),
-            Default::default(),
-        )
-        .await;
+    let lease = registry
+        .acquire_workspace(directory.path(), Some(local_host(directory.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_phase(&registry, directory.path(), "fixture", Phase::Failed).await?;
         wait_ready(&registry, directory.path(), "healthy").await?;
@@ -1063,9 +1075,9 @@ async fn explicit_retry_recovers_unchanged_configuration_without_restarting_heal
             "invalid",
         )
         .await?;
-        registry
-            .refresh_workspace_configuration(directory.path())
-            .await;
+        lease
+            .refresh_configuration(Some(local_host(directory.path())?), None)
+            .await?;
         wait_phase(&registry, directory.path(), "scan-marker", Phase::Failed).await?;
         anyhow::ensure!(
             registry
@@ -1114,13 +1126,9 @@ async fn diagnostic_maps_are_generation_owned_and_late_old_notifications_are_not
     );
     let path = write_config(directory.path(), "fixture", config.clone()).await?;
     let registry = LspRuntimeRegistry::new();
-    registry
-        .configure_workspace(
-            directory.path(),
-            Some(local_host(directory.path())?),
-            Default::default(),
-        )
-        .await;
+    let _lease = registry
+        .acquire_workspace(directory.path(), Some(local_host(directory.path())?), None)
+        .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, directory.path(), "fixture").await?;
         let mut updates = registry.subscribe();

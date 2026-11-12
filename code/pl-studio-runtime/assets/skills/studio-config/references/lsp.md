@@ -73,7 +73,9 @@ execution uses the actual workspace and command driver.
 Operation names are `goToDefinition`, `findReferences`, `hover`, `documentSymbol`,
 `workspaceSymbol`, `goToImplementation`, `prepareCallHierarchy`, `incomingCalls`,
 `outgoingCalls`, `diagnostics`. Server capabilities still determine availability.
-Avoid two servers claiming the same language in one workspace.
+Multiple servers may claim the same language. Select one with the query's
+`serverId`; without an explicit selection, multiple matching servers produce an
+ambiguity error with candidates rather than a guessed priority.
 
 Detection is not recursive. For a monorepo without a relevant root marker,
 omit it or choose a real root marker, then configure the server's project roots
@@ -139,8 +141,16 @@ location.
 
 ## Reload and verify configuration
 
-Configuration changes trigger background loading and initialization; the GUI also
-provides explicit reload. Servers initialize concurrently. The read-only status
+An active agent holds a lease on its actual execution directory. Agents using the
+same endpoint and directory share servers; closing one agent does not stop the
+others. Releasing the last lease immediately starts server reclamation, without
+an idle timer. An ordinary turn ending does not close an active agent.
+Project browsing and Settings do not keep servers alive or start them; an explicit
+probe holds only a temporary lease and releases it when the probe completes.
+
+Configuration changes in a leased directory trigger background loading and
+initialization; the GUI also provides explicit reload. Servers initialize
+concurrently. The read-only status
 operation reports published state; it does not scan, start or wait for a server.
 
 Check the reported configuration source, phase and error. Detection mismatch is

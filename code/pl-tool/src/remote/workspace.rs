@@ -86,10 +86,14 @@ impl RemoteWorkspaceFileBackend {
     }
 
     pub(super) fn binding_identity(&self) -> String {
-        // Membership retains both hosts while comparing identities, so two live leases
-        // cannot reuse an allocation address. Cloned backends share the same lease.
-        // This identity is only for live in-process comparison and must not be persisted.
-        format!("remote-workspace:{:p}", std::sync::Arc::as_ptr(&self.lease))
+        // Opening the same canonical directory can produce distinct workspace
+        // leases. Shared services follow the logical session and directory, not
+        // the allocation address of one user's handle.
+        format!(
+            "remote-workspace:{}:{}",
+            self.client.session_identity(),
+            self.canonical_path
+        )
     }
 
     /// Whether both workspaces use the same transport and workspace handle.
