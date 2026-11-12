@@ -22,9 +22,13 @@ mod timeline_history_20k;
 mod wait_events;
 mod web_search;
 mod websocket_recovery;
+#[cfg(all(test, windows))]
+mod windows_cleanup_tests;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
+#[cfg(windows)]
+use pl_dev_support::process::OwnedChild as Child;
 use pl_dev_support::{paths, process};
 use pl_model::config::{AccountConfig, AccountId, AgentRoleId};
 use pl_model::model::{
@@ -48,7 +52,9 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(not(windows))]
+use std::process::Child;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -458,21 +464,37 @@ impl OwnedProcess {
             command.process_group(0);
         }
         #[cfg(windows)]
-        if fixture {
-            use std::os::windows::process::CommandExt;
-            use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
-            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        let flags = if fixture {
+            windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP
         } else {
-            process::configure_background_command(command);
-        }
+            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+        };
+        #[cfg(windows)]
+        let child = {
+            let placeholder = Command::new(command.get_program());
+            Child::spawn(std::mem::replace(command, placeholder), flags)?
+        };
         #[cfg(not(windows))]
         let _ = fixture;
         #[cfg(not(windows))]
         process::configure_background_command(command);
+        #[cfg(not(windows))]
+        let child = command.spawn().context("failed to start child process")?;
         Ok(Self {
-            child: command.spawn().context("failed to start child process")?,
+            child,
             stopped: false,
         })
+    }
+
+    fn tree_exited(&self) -> Result<bool> {
+        #[cfg(windows)]
+        {
+            Ok(self.child.tree_exited()?)
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(true)
+        }
     }
 
     fn exited(&mut self) -> Result<bool> {
@@ -530,7 +552,9 @@ impl OwnedProcess {
     fn wait_exit(&mut self, timeout: Duration) -> Result<Option<std::process::ExitStatus>> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(status) = self.child.try_wait()? {
+            if let Some(status) = self.child.try_wait()?
+                && self.tree_exited()?
+            {
                 self.stopped = true;
                 return Ok(Some(status));
             }
@@ -545,18 +569,34 @@ impl OwnedProcess {
         if self.stopped {
             return;
         }
-        let signaled = self.kill_tree();
-        match self.child.wait() {
-            Ok(_) => self.stopped = true,
-            Err(error) if signaled => {
-                eprintln!(
-                    "process {} signaled but wait failed: {error}",
-                    self.child.id()
-                );
-                self.stopped = true;
+        #[cfg(windows)]
+        {
+            let result = self
+                .child
+                .terminate()
+                .map_err(anyhow::Error::from)
+                .and_then(|()| self.wait_exit(Duration::from_secs(10)))
+                .and_then(|status| status.context("Windows Job cleanup timed out"));
+            match result {
+                Ok(_) => self.stopped = true,
+                Err(error) => eprintln!("failed to reclaim Windows Job: {error}"),
             }
-            Err(error) => {
-                eprintln!("failed to terminate process {}: {error}", self.child.id());
+        }
+        #[cfg(not(windows))]
+        {
+            let signaled = self.kill_tree();
+            match self.child.wait() {
+                Ok(_) => self.stopped = true,
+                Err(error) if signaled => {
+                    eprintln!(
+                        "process {} signaled but wait failed: {error}",
+                        self.child.id()
+                    );
+                    self.stopped = true;
+                }
+                Err(error) => {
+                    eprintln!("failed to terminate process {}: {error}", self.child.id());
+                }
             }
         }
     }
@@ -582,13 +622,7 @@ impl OwnedProcess {
         }
         #[cfg(windows)]
         {
-            Command::new("taskkill")
-                .args(["/T", "/F", "/PID"])
-                .arg(self.child.id().to_string())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
+            self.child.terminate().is_ok()
         }
     }
 
@@ -620,6 +654,7 @@ impl OwnedProcess {
             }
             if report.is_file()
                 && let Some(status) = status
+                && self.tree_exited()?
             {
                 self.stopped = true;
                 return Ok(status);
@@ -653,6 +688,9 @@ impl OwnedProcess {
     }
 }
 
+// Windows relies on OwnedChild::Drop's single termination request. Explicit
+// cleanup owns the deadline and is the only proof of Job completion.
+#[cfg(unix)]
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
         if self.stopped {
@@ -672,15 +710,6 @@ impl Drop for OwnedProcess {
                 .arg("-KILL")
                 .arg("--")
                 .arg(format!("-{}", self.child.id()))
-                .stderr(Stdio::null())
-                .status();
-        }
-        #[cfg(windows)]
-        {
-            let _ = Command::new("taskkill")
-                .args(["/T", "/F", "/PID"])
-                .arg(self.child.id().to_string())
-                .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
         }
@@ -2662,14 +2691,14 @@ fn finish_manual_gui_session(
     };
     let cleanup = (|| -> Result<()> {
         let deadline = Instant::now() + cleanup_timeout;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         let mut native_phase = match startup_log {
             Some(log) => native_launch_started(&fs::read_to_string(log)?),
             None => true,
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         let native_phase = {
-            // Only Linux has a verified preparation-group join. Other hosts
+            // Other hosts lack a verified preparation scope join and
             // retain the native-owner report barrier, including before launch.
             let _ = startup_log;
             true
@@ -2677,6 +2706,15 @@ fn finish_manual_gui_session(
         // A reaped cargo child can leave the native supervisor alive in the
         // original group. Always request that group's cooperative stop.
         let stop_requested = gui.request_stop();
+        #[cfg(windows)]
+        let stop_requested = if !native_phase {
+            gui.child
+                .terminate()
+                .context("failed to stop GUI preparation Job")?;
+            true
+        } else {
+            stop_requested
+        };
         // Do not use wait_exit here: direct-child reap is not subtree cleanup.
         // Keep observing the phase even while the original child is still up:
         // cancellation can race the preparation-to-native transition.
@@ -2685,7 +2723,7 @@ fn finish_manual_gui_session(
                 Instant::now() < deadline,
                 "native launcher cleanup timed out (stop_requested={stop_requested}); independent app subtree reclamation is unconfirmed; owner-group termination is not subtree completion"
             );
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             if !native_phase
                 && let Some(log) = startup_log
                 && native_launch_started(&fs::read_to_string(log)?)
@@ -2696,7 +2734,7 @@ fn finish_manual_gui_session(
                 gui.request_stop();
             }
             let child_reaped = gui.exit_status()?.is_some();
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             if child_reaped && !native_phase && preparation_group_exited(gui)?
             // No group member can now publish a late boundary. Read again
             // after joining, not from the pre-cancellation phase snapshot.
@@ -2713,7 +2751,7 @@ fn finish_manual_gui_session(
             }
             // Cargo may exit before the internal supervisor finishes its join.
             // A post-boundary run always needs that supervisor's report.
-            if child_reaped && native_phase {
+            if child_reaped && native_phase && gui.tree_exited()? {
                 match fs::read(report) {
                     Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                         Ok(report) => {
@@ -2746,6 +2784,12 @@ fn finish_manual_gui_session(
     bots_fixture::with_cleanup(session, cleanup)
 }
 
+#[cfg(windows)]
+fn preparation_group_exited(gui: &OwnedProcess) -> Result<bool> {
+    gui.tree_exited()
+        .context("failed to inspect preparation Job")
+}
+
 /// Only absence of the original build group establishes preparation cleanup.
 /// Query errors stay unknown; a reaped outer cargo child alone is insufficient.
 #[cfg(target_os = "linux")]
@@ -2776,7 +2820,9 @@ fn wait_for_gui_exit(
 ) -> Result<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = gui.child.try_wait()? {
+        if let Some(status) = gui.child.try_wait()?
+            && gui.tree_exited()?
+        {
             gui.stopped = true;
             return Ok(status);
         }
@@ -2807,7 +2853,9 @@ fn wait_manual_shutdown(
             !fixture.exited()?,
             "account fixture exited during manual shutdown"
         );
-        if let Some(status) = gui.exit_status()? {
+        if let Some(status) = gui.exit_status()?
+            && gui.tree_exited()?
+        {
             ensure!(status.success(), "manual GUI shutdown failed: {status}");
             if let Some(report) = native_exit_report {
                 require_native_exit(report, None)?;

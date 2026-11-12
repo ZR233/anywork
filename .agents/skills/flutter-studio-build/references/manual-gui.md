@@ -31,6 +31,20 @@ GUI 截图或编译通过外推成完整业务/原生行为通过。
 产品启动，不包含 helper、bridge 和 Flutter 冷编译。保留首次错误，不以延长 VM 期限或用热缓存
 重跑掩盖阶段混用；准备前失败按未启动收束所属构建进程，不能要求或伪造产品退出报告。
 
+Windows 启动树由共享进程层的专属 Job 管理，准备取消后以 Job 活动进程数为零确认回收；
+外层 Cargo 退出不代表构建后代已退出。进入 native 启动阶段后仍须校验原生退出报告，
+EOF／取消仍报告失败。无需手工调用 `taskkill`，也不增加额外启动脚本。
+进程回归可直接运行 `cargo test --locked -p pl-dev-support`，验收阶段衔接使用
+`cargo test --locked -p pl-studio-acceptance windows_cleanup_tests`；这些验证 Windows 工程
+进程生命周期，不能替代官方 Flutter `integration_test` 或真实原生 GUI 的 done／EOF／取消观察。
+
+Windows 工程进程层暂时固定引用 `process-wrap` 上游已合并提交
+`2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e`，其共享 Job 句柄能力尚未包含在 crates.io 10.0.1；
+不修改产品运行时依赖，也不复制依赖的 Job 创建及挂起／恢复实现。调用方持有清理期限，
+Job 完成仅作一次官方 accounting 查询，避免完成端口排空或析构等待越过期限。
+接口依据为上游 [JobObjectHandle](https://github.com/watchexec/process-wrap/blob/2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e/src/windows.rs)
+与 Windows [QueryInformationJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject)。
+
 真实供应商仅在具体授权后使用 `cargo xtask run-gui --inspect` 读取已有配置，不更改凭据；
 若数据根已占用，先核实独立、受保护的配置与凭据关联，不复制正在写入的数据库。
 桌面资源从 bundle 的 `data/remote-helper/` 校验加载，不用 PATH 中 helper 冒充资源完整。

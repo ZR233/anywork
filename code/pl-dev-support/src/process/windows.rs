@@ -1,5 +1,8 @@
 //! Windows kill-on-close Job Object backing `own_current_process_tree`.
 
+mod child;
+pub use child::OwnedChild;
+
 use anyhow::{Context, Result, bail};
 use std::ffi::c_void;
 use std::mem::size_of;

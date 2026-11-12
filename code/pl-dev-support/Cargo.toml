@@ -21,6 +21,9 @@ process-wrap = { workspace = true, features = ["std"] }
 tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# Shared Job handle and corrected creation flags are not in crates.io 10.0.1.
+# Keep the engineering-only dependency pinned until an official release includes them.
+process-wrap-windows = { package = "process-wrap", git = "https://github.com/watchexec/process-wrap", rev = "2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e", default-features = false, features = ["std", "job-object", "creation-flags"] }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
