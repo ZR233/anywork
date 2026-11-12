@@ -391,9 +391,9 @@ impl ShutdownCollector {
         let mapped = crate::error_mapping::studio_error_from_anyhow_ref(error);
         // Diagnostics keep only redacted, structure-level facts: the shared `StudioError` message,
         // `std::io` kind/OS code and the database failure category/code. The raw source chain can
-        // embed prompt bodies or credentials, so its message bodies are never written verbatim;
-        // the backtrace is force-captured so the stack is a real fact rather than an `anyhow`
-        // backtrace that may be disabled.
+        // embed prompt bodies or credentials, so its message bodies are never written verbatim.
+        // Do not unwind the embedding host here: the classified issue and its save/owner
+        // facts must remain reportable even when the host's native unwinder is unavailable.
         tracing::error!(
             pid = std::process::id(),
             stage,
@@ -411,7 +411,6 @@ impl ShutdownCollector {
             unresolved_threads = %self.unresolved_label(),
             error_bytes = error.to_string().len(),
             error_chain = %redacted_chain(error),
-            backtrace = %std::backtrace::Backtrace::force_capture(),
             detail = %mapped.message,
             "Studio shutdown stage failed"
         );
@@ -964,7 +963,6 @@ impl StudioRuntime {
                     correlation_id = %issue.correlation_id,
                     retryable = issue.retryable,
                     detail = %issue.message,
-                    backtrace = %std::backtrace::Backtrace::force_capture(),
                     "Studio runtime early exit fence reported a failure"
                 );
             }

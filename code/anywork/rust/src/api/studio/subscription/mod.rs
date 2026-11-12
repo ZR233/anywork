@@ -131,8 +131,9 @@ fn owned_completion(
         };
         if outcome.is_err() {
             // Record the key safety diagnostic the moment the owner actually fails, instead of
-            // waiting for a future exit to observe it. Stable identifiers and a forced backtrace
-            // only; the (possibly caller-controlled) failure text is never written to the log.
+            // waiting for a future exit to observe it. Use stable identifiers only, without
+            // unwinding the host before publishing the result. The (possibly caller-controlled)
+            // failure text is never written to the log.
             let code = match owner {
                 SubscriptionOwner::Producer => "producerTaskFailed",
                 SubscriptionOwner::Sink => "sinkTaskFailed",
@@ -144,7 +145,6 @@ fn owned_completion(
                 code = %code,
                 resource = subscription_id,
                 correlation_id = %correlation_id,
-                backtrace = %std::backtrace::Backtrace::force_capture(),
                 "Studio subscription owner task failed"
             );
         }

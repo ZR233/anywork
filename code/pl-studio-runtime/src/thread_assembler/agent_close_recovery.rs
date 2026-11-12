@@ -55,7 +55,9 @@ impl SessionRuntime {
                         ensure!(!admission.0.state().closing, "child close owner is closing");
                         Ok(())
                     },
-                    async move {
+                    // Like Native recovery below, keep the backend operation's state
+                    // out of the caller's admission/wait future.
+                    Box::pin(async move {
                         let operation = owner.agent_operation(&id).await;
                         let _seal = owner.seal_agent_operation(&id);
                         recovery
@@ -66,7 +68,7 @@ impl SessionRuntime {
                         let (_, error) = recovery.factory.finish_acp_child_close(&id).await?;
                         ensure!(error.is_none(), "ACP close recovery incomplete: {error:?}");
                         Ok::<_, anyhow::Error>(())
-                    },
+                    }),
                 )
                 .await;
             if let Err(error) = result {
@@ -92,7 +94,10 @@ impl SessionRuntime {
                         ensure!(!admission.0.state().closing, "child close owner is closing");
                         Ok(())
                     },
-                    async move { recovery.resume_child_close_tree(owner, targets).await },
+                    // The operation owner retains this potentially large recovery state.
+                    // Keep its callers' admission/wait futures small without adding a task
+                    // or changing who joins work after a caller stops observing it.
+                    Box::pin(async move { recovery.resume_child_close_tree(owner, targets).await }),
                 )
                 .await
             {

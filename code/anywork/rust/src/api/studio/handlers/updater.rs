@@ -155,8 +155,9 @@ fn owned_completion(
         };
         if outcome.is_err() {
             // Record the key safety diagnostic the moment the owner actually fails, instead of
-            // waiting for a future exit to observe it. Stable identifiers and a forced backtrace
-            // only; the (possibly caller-controlled) error text is never written to the log.
+            // waiting for a future exit to observe it. Use stable identifiers only, without
+            // unwinding the host before publishing the result. The (possibly caller-controlled)
+            // error text is never written to the log.
             let failure_code = match owner {
                 OwnerTask::Install => "installTaskFailed",
                 OwnerTask::Sink => "progressTaskFailed",
@@ -168,7 +169,6 @@ fn owned_completion(
                 code = failure_code,
                 resource = operation_id,
                 correlation_id = %correlation_id,
-                backtrace = %std::backtrace::Backtrace::force_capture(),
                 "Studio update operation owner task failed"
             );
         }

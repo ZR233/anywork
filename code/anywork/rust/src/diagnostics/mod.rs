@@ -106,9 +106,9 @@ pub(crate) struct ShutdownDiagnostic<'a> {
 /// deadline 的前置条件。
 pub(crate) fn record_shutdown_diagnostic(diagnostic: ShutdownDiagnostic<'_>) {
     let pid = std::process::id();
-    // Force-capture so the stack is a real fact even when `anyhow`/`RUST_BACKTRACE` capture is
-    // disabled; shutdown issues are rare, so the cost is bounded to the degraded path.
-    let backtrace = std::backtrace::Backtrace::force_capture();
+    // This is an already classified issue, not a panic. Preserve its original context
+    // without unwinding the embedding host's native stack: that extra diagnostic work
+    // must not prevent the shutdown report from returning.
     tracing::error!(
         pid = pid,
         stage = diagnostic.stage,
@@ -120,13 +120,12 @@ pub(crate) fn record_shutdown_diagnostic(diagnostic: ShutdownDiagnostic<'_>) {
         owner_id = diagnostic.owner_id.unwrap_or("-"),
         save_watermark = diagnostic.save_watermark,
         detail = diagnostic.message,
-        backtrace = %backtrace,
         "Studio shutdown issue"
     );
-    persist_shutdown_emergency(&diagnostic, pid, &backtrace.to_string());
+    persist_shutdown_emergency(&diagnostic, pid);
 }
 
-fn persist_shutdown_emergency(diagnostic: &ShutdownDiagnostic<'_>, pid: u32, backtrace: &str) {
+fn persist_shutdown_emergency(diagnostic: &ShutdownDiagnostic<'_>, pid: u32) {
     // Irrecoverable fallback chain: primary diagnostics home, then the process temp dir, then
     // stderr/Windows debug (via `report_fallback`). Never let a missing/unwritable primary path
     // drop the emergency record or hold the watchdog.
@@ -136,7 +135,7 @@ fn persist_shutdown_emergency(diagnostic: &ShutdownDiagnostic<'_>, pid: u32, bac
     ];
     let mut last_error = None;
     for directory in candidates {
-        match write_shutdown_emergency(&directory, diagnostic, pid, backtrace) {
+        match write_shutdown_emergency(&directory, diagnostic, pid) {
             Ok(()) => return,
             Err(error) => last_error = Some(error),
         }
@@ -152,7 +151,6 @@ fn write_shutdown_emergency(
     directory: &Path,
     diagnostic: &ShutdownDiagnostic<'_>,
     pid: u32,
-    backtrace: &str,
 ) -> std::io::Result<()> {
     (|| -> std::io::Result<()> {
         std::fs::create_dir_all(directory)?;
@@ -161,7 +159,7 @@ fn write_shutdown_emergency(
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(
             file,
-            "appVersion={}\npid={pid}\nstage={}\ncode={}\ncorrelationId={}\nretryable={}\npending={}\nownerId={}\nsaveWatermark={}\nelapsedMs={}\nmessage={}\nbacktrace={backtrace}\n",
+            "appVersion={}\npid={pid}\nstage={}\ncode={}\ncorrelationId={}\nretryable={}\npending={}\nownerId={}\nsaveWatermark={}\nelapsedMs={}\nmessage={}\n",
             env!("CARGO_PKG_VERSION"),
             diagnostic.stage,
             diagnostic.code,
@@ -362,3 +360,47 @@ fn report_windows_debug(message: &str) {
 
 #[cfg(not(windows))]
 fn report_windows_debug(_message: &str) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_emergency_preserves_the_classified_issue() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let diagnostic = ShutdownDiagnostic {
+            stage: "external",
+            code: "progressCancelTimeout",
+            message: "progress subscription did not finish",
+            retryable: true,
+            correlation_id: "shutdown-correlation",
+            pending: "unknown",
+            owner_id: Some("original-owner"),
+            save_watermark: Some(17),
+            elapsed_ms: 2000,
+        };
+        write_shutdown_emergency(directory.path(), &diagnostic, 42)?;
+        let files = std::fs::read_dir(directory.path())?.collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(files.len(), 1);
+        let record = std::fs::read_to_string(files[0].path())?;
+        for field in [
+            "pid=42\n",
+            "stage=external\n",
+            "code=progressCancelTimeout\n",
+            "correlationId=shutdown-correlation\n",
+            "retryable=true\n",
+            "pending=unknown\n",
+            "ownerId=original-owner\n",
+            "saveWatermark=17\n",
+            "elapsedMs=2000\n",
+            "message=progress subscription did not finish\n",
+        ] {
+            assert!(
+                record.contains(field),
+                "missing original issue field: {field}"
+            );
+        }
+        assert!(!record.contains("backtrace="));
+        Ok(())
+    }
+}

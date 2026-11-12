@@ -542,7 +542,7 @@ void main() {
       expect(prompts, hasLength(1));
 
       await capturePresentation(tester, 'acp-native-background-return.png');
-      await tester.tap(find.text('中断'));
+      await tester.tap(primaryAction());
       await tester.pumpAndSettle();
       final interrupt = harness.port.calls.last.$2 as AcpInterruptRequestView;
       expect(interrupt.target, same(harness.owner.state.target));
