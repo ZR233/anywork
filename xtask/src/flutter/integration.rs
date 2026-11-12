@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
+mod native;
+pub(super) use native::tool_identity as native_tool_identity;
+
 use super::{
     BridgeConfiguration, DemoMode, DesktopTarget, RustBridgeArtifacts,
     ensure_desktop_build_environment, ensure_flutter_dependencies_for_build, paths,
@@ -43,23 +46,44 @@ pub(crate) struct DesktopTestPreparation {
 impl DesktopTestPreparation {
     pub(crate) fn prepare(workspace: &Path) -> Result<Self> {
         let workspace = workspace.canonicalize()?;
+        if let Some(prepared) = Self::from_environment(&workspace)? {
+            return Ok(prepared);
+        }
+        Self::build(&workspace)
+    }
+
+    pub(crate) fn from_environment(workspace: &Path) -> Result<Option<Self>> {
         match (
             std::env::var_os(PREPARATION_ENV),
             std::env::var_os(XTASK_ENV),
         ) {
-            (None, None) => {}
+            (None, None) => Ok(None),
             (Some(directory), Some(xtask)) if !directory.is_empty() && !xtask.is_empty() => {
-                return Self::borrow(&workspace, Path::new(&directory), Path::new(&xtask));
+                Self::borrow(
+                    &workspace.canonicalize()?,
+                    Path::new(&directory),
+                    Path::new(&xtask),
+                )
+                .map(Some)
             }
             _ => bail!("{PREPARATION_ENV} and {XTASK_ENV} must be set together and non-empty"),
         }
+    }
+
+    fn build(workspace: &Path) -> Result<Self> {
+        let workspace = workspace.to_owned();
         let xtask = std::env::current_exe()
             .context("locate desktop test xtask entrypoint")?
             .canonicalize()
             .context("resolve desktop test xtask entrypoint")?;
+        let started = std::time::Instant::now();
         ensure_desktop_build_environment(DesktopTarget::current()?)?;
         let app = paths::studio_app_dir(&workspace);
         ensure_flutter_dependencies_for_build(&workspace, &app)?;
+        println!(
+            "startup_stage=native_preflight elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         let helpers = prepare_remote_helpers(&workspace, DemoMode::Native)?
             .context("desktop tests require helper inputs")?
             .canonicalize()?;
@@ -279,6 +303,18 @@ fn configuration_identity() -> String {
         "FLUTTER_ROOT",
         "PUB_HOSTED_URL",
         "PUB_CACHE",
+        "PURE_REMOTE_HELPER_PREBUILT_DIR",
+        "PURE_REMOTE_HELPER_BUILDER",
+        "CARGO_PROFILE_DEV_DEBUG",
+        "CARGO_PROFILE_DEV_OPT_LEVEL",
+        "CARGO_PROFILE_DEV_CODEGEN_UNITS",
+        "CARGO_PROFILE_DEV_LTO",
+        "CARGO_PROFILE_RELEASE_DEBUG",
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL",
+        "CARGO_PROFILE_RELEASE_LTO",
+        "CARGO_INCREMENTAL",
+        "CMAKE_GENERATOR",
+        "CMAKE_TOOLCHAIN_FILE",
     ] {
         hash.update(format!("{name}={:?}\0", std::env::var_os(name)));
     }
@@ -289,7 +325,7 @@ fn configuration_identity() -> String {
 mod tests {
     use super::*;
 
-    fn fixture() -> Result<(TempDir, DesktopTestPreparation)> {
+    pub(super) fn fixture() -> Result<(TempDir, DesktopTestPreparation)> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().canonicalize()?;
         for args in [

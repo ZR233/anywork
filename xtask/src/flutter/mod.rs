@@ -385,41 +385,83 @@ fn run_gui_native_launch(
     let app_version = studio_version::read(app_dir)?;
     let version_define = format!("--dart-define=ANYWORK_VERSION={app_version}");
     print_context(workspace_root, app_dir);
-    ensure_desktop_build_environment(target)?;
-    ensure_flutter_dependencies(workspace_root, app_dir)?;
     let spec = NativeLaunchSpec::from_options(app_dir, &options)?;
     let demo_mode = spec.demo_mode;
-    let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
-    let build_args = run_native_launch_args(
-        target,
-        &version_define,
-        spec.profile,
-        &spec.entrypoint,
-        spec.capture,
-    );
-    let bridge_artifacts = prepare_bridge_artifacts(
-        workspace_root,
-        demo_mode,
-        if spec.profile {
-            BridgeConfiguration::Profile
-        } else {
-            BridgeConfiguration::Debug
-        },
-    )?;
-    run_flutter_with_process_mode(
-        workspace_root,
-        app_dir,
-        &build_args,
-        FlutterInvocation {
+    let (bundle_dir, bridge_artifacts, remote_helper_bundle_dir) = if let Some(preparation) =
+        DesktopTestPreparation::from_environment(workspace_root)?
+    {
+        ensure!(
+            !spec.profile && spec.demo_mode == DemoMode::Native,
+            "the live test preparation requires a native debug build; profile/demo needs its own preparation"
+        );
+        let arguments = run_native_launch_args(
+            target,
+            &version_define,
+            spec.profile,
+            &spec.entrypoint,
+            spec.capture,
+        );
+        let identity_started = std::time::Instant::now();
+        let tools = integration::native_tool_identity()?;
+        println!(
+            "startup_stage=native_identity elapsed_ms={}",
+            identity_started.elapsed().as_millis()
+        );
+        let bundle = preparation.native_bundle(&arguments, &tools, || {
+            build_native_bundle(
+                workspace_root,
+                app_dir,
+                target,
+                &spec,
+                &version_define,
+                FlutterInvocation {
+                    demo_mode,
+                    process_mode: FlutterProcessMode::Batch,
+                    bridge_artifacts: Some(preparation.bridge()),
+                    remote_helper_bundle_dir: Some(preparation.helpers()),
+                    log_level: options.log_level,
+                },
+            )
+        })?;
+        (
+            bundle,
+            Some(preparation.bridge().clone()),
+            Some(preparation.helpers().to_owned()),
+        )
+    } else {
+        let preflight_started = std::time::Instant::now();
+        ensure_desktop_build_environment(target)?;
+        ensure_flutter_dependencies(workspace_root, app_dir)?;
+        println!(
+            "startup_stage=native_preflight elapsed_ms={}",
+            preflight_started.elapsed().as_millis()
+        );
+        let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
+        let bridge_artifacts = prepare_bridge_artifacts(
+            workspace_root,
             demo_mode,
-            process_mode: FlutterProcessMode::Batch,
-            bridge_artifacts: bridge_artifacts.as_ref(),
-            remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
-            log_level: options.log_level,
-        },
-    )?;
-
-    let bundle_dir = target.native_bundle_dir(app_dir, spec.profile);
+            if spec.profile {
+                BridgeConfiguration::Profile
+            } else {
+                BridgeConfiguration::Debug
+            },
+        )?;
+        let bundle = build_native_bundle(
+            workspace_root,
+            app_dir,
+            target,
+            &spec,
+            &version_define,
+            FlutterInvocation {
+                demo_mode,
+                process_mode: FlutterProcessMode::Batch,
+                bridge_artifacts: bridge_artifacts.as_ref(),
+                remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+                log_level: options.log_level,
+            },
+        )?;
+        (bundle, bridge_artifacts, remote_helper_bundle_dir)
+    };
     let executable = bundle_dir.join(target.executable_name());
     ensure!(
         executable.is_file(),
@@ -460,6 +502,31 @@ fn run_gui_native_launch(
         report.reclaimed_descendants.len()
     );
     Ok(())
+}
+
+fn build_native_bundle(
+    workspace: &Path,
+    app: &Path,
+    target: DesktopTarget,
+    spec: &NativeLaunchSpec,
+    version_define: &str,
+    invocation: FlutterInvocation<'_>,
+) -> Result<PathBuf> {
+    let arguments = run_native_launch_args(
+        target,
+        version_define,
+        spec.profile,
+        &spec.entrypoint,
+        spec.capture,
+    );
+    let started = std::time::Instant::now();
+    let result = run_flutter_with_process_mode(workspace, app, &arguments, invocation);
+    println!(
+        "startup_stage=build_native_flutter elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    result?;
+    Ok(target.native_bundle_dir(app, spec.profile))
 }
 
 /// The VM readiness budget starts here, after every build and artifact check.
@@ -623,6 +690,12 @@ impl NativeLaunchSpec {
             None if options.inspect => "tool/inspect_main.dart".to_owned(),
             None => "lib/main.dart".to_owned(),
         };
+        let entrypoint = app_dir
+            .join(entrypoint)
+            .canonicalize()
+            .context("resolve native entrypoint")?
+            .to_string_lossy()
+            .into_owned();
         Ok(Self {
             entrypoint,
             profile: options.profile,
