@@ -149,14 +149,7 @@ impl StudioThreadTools {
             access,
         } = binding;
         let execution = backend.binding();
-        let files = Arc::new(
-            pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
-                execution.executor,
-                execution.root.as_str(),
-            )
-            .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
-            .with_workspace(workspace.clone()),
-        );
+        let files = Arc::new(execution.files().with_workspace(workspace.clone()));
         if capabilities.exec {
             let exec_definition = ThreadBuiltin::Exec.declaration();
             let stdin_definition = ThreadBuiltin::WriteStdin.declaration();

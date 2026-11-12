@@ -22,15 +22,22 @@ pub use ssh_config::{
     SshConfigEntry, SshConfigFile, allocate_alias, sanitize_alias_base, validate_alias,
 };
 
-/// 一个远端 workspace 的本地后端集合。
-///
-/// 该类型只暴露环境原语；工具名与 schema 由 pl-tool 提供，权限策略与 Turn 装配由宿主负责。
+/// A frozen SSH endpoint fact and the common execution binding it selected.
+/// File, command and Git views are projections of this one concrete executor.
 #[derive(Debug, Clone)]
-pub struct RemoteWorkspaceHost {
-    /// Frozen non-secret endpoint of the exact transport that returned this canonical workspace.
+pub struct SshWorkspaceBinding {
     pub profile: std::sync::Arc<SshServerProfile>,
-    pub files: ExecutorWorkspaceFileBackend,
-    pub commands: ExecutorCommandBackend,
-    pub git: crate::execution::ExecutorExecutionBackend,
+    pub execution: crate::command::WorkspaceExecutionBinding,
     pub execution_environment: ExecutionEnvironment,
+}
+impl SshWorkspaceBinding {
+    pub fn files(&self) -> ExecutorWorkspaceFileBackend {
+        self.execution.files()
+    }
+    pub fn commands(&self) -> ExecutorCommandBackend {
+        self.execution.commands(self.execution_environment.clone())
+    }
+    pub fn git(&self) -> crate::execution::ExecutorExecutionBackend {
+        self.execution.git()
+    }
 }

@@ -61,15 +61,14 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 (StudioErrorCode::InvalidArgument, false)
             }
             WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
-            WorktreeError::LocalIo { .. } => (StudioErrorCode::Storage, true),
+            WorktreeError::Target { .. } => (StudioErrorCode::Unavailable, true),
             WorktreeError::GitLaunchFailed { .. }
             | WorktreeError::GitTimedOut { .. }
             | WorktreeError::GitExited { .. }
             | WorktreeError::GitStatusUnknown { .. }
-            | WorktreeError::Remote { .. }
-            | WorktreeError::RemoteExecution { .. }
-            | WorktreeError::RemoteDownload { .. }
-            | WorktreeError::RemoteFile { .. } => (StudioErrorCode::Unavailable, true),
+            | WorktreeError::Execution { .. }
+            | WorktreeError::Download { .. }
+            | WorktreeError::File { .. } => (StudioErrorCode::Unavailable, true),
         };
         return StudioError::new(code, error.safe_diagnostic(), retryable);
     }

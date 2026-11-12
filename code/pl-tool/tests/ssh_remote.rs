@@ -1,5 +1,11 @@
 //! Real SSH is an explicit external suite. Unconfigured runs stay ignored;
 //! `--ignored` without host/workspace/helper artifacts fails instead of using a local helper.
+#[expect(
+    dead_code,
+    reason = "remote fixture uses the shared protocol script and config; local script writer is unused"
+)]
+#[path = "support/mcp_stdio.rs"]
+mod mcp_stdio;
 #[path = "support/remote_manager.rs"]
 mod remote_manager;
 #[path = "support/remote_stream.rs"]
@@ -79,21 +85,21 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     println!("connection={:?}", snapshot.state);
 
     let host = manager
-        .open_workspace_host("validation", workspace.clone())
+        .open_workspace_binding("validation", workspace.clone())
         .await?;
     let cached = manager
-        .open_workspace_host("validation", workspace.clone())
+        .open_workspace_binding("validation", workspace.clone())
         .await?;
-    anyhow::ensure!(host.files.is_same_binding(&cached.files));
+    anyhow::ensure!(host.files().is_same_binding(&cached.files()));
     drop(cached);
-    let files = Arc::new(host.files.clone());
+    let files = Arc::new(host.files().clone());
     if scope == "lsp" {
         // A focused protocol entry, independent of unrelated command/capture-layout checks.
         // The default full suite below remains unchanged.
         let observed = async {
             let environment = run_remote(
-                &host.git,
-                host.files.canonical_path(),
+                &host.git(),
+                host.files().canonical_path(),
                 vec!["sh".into(), "-c".into(), "printf '%s' \"$PATH\"".into()],
             )
             .await?;
@@ -124,13 +130,13 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             files.create_directory(path.clone(), None).await?;
             let path = format!("{workspace}/{path}");
             let opened = manager
-                .open_workspace_host("validation", path.clone())
+                .open_workspace_binding("validation", path.clone())
                 .await?;
-            let identity = opened.files.executor().id();
+            let identity = opened.files().executor().id();
             drop(opened);
-            let reopened = manager.open_workspace_host("validation", path).await?;
+            let reopened = manager.open_workspace_binding("validation", path).await?;
             anyhow::ensure!(
-                reopened.files.executor().id() == identity,
+                reopened.files().executor().id() == identity,
                 "workspaces on the same connection must share its executor"
             );
             drop(reopened);
@@ -181,7 +187,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
             pl_tool_filesystem::PathCollision::FailIfExists,
         )
         .await?;
-    let processes = CommandProcessManager::new(Arc::new(host.commands.clone()));
+    let processes = CommandProcessManager::new(Arc::new(host.commands().clone()));
     let first = processes
         .start(CommandStartRequest {
             command: "printf 'stdout-one\\n'; printf 'stderr-one\\n' >&2; read line; printf 'stdin:%s\\n' \"$line\"".to_string(),
@@ -339,8 +345,8 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     }
 
     let environment = run_remote(
-        &host.git,
-        host.files.canonical_path(),
+        &host.git(),
+        host.files().canonical_path(),
         vec!["sh".into(), "-c".into(), "printf '%s' \"$PATH\"".into()],
     )
     .await?;
@@ -371,8 +377,8 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         .await?;
     if let Ok(tool) = std::env::var("PURE_SSH_TEST_TOOL") {
         let output = run_remote(
-            &host.git,
-            host.files.canonical_path(),
+            &host.git(),
+            host.files().canonical_path(),
             vec![tool, "--version".into()],
         )
         .await?;
@@ -416,8 +422,8 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 
     // Git/worktree 没有归档读者，直传结果不应继承 exec 的磁盘额度。
     let large = run_remote(
-        &host.git,
-        host.files.canonical_path(),
+        &host.git(),
+        host.files().canonical_path(),
         vec![
             "sh".into(),
             "-c".into(),
@@ -426,7 +432,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     )
     .await?;
     anyhow::ensure!(large.status == 0 && large.stdout.len() == 20_000_000);
-    validate_git(&host.git, files.as_ref()).await?;
+    validate_git(&host.git(), files.as_ref()).await?;
     validate_skills(files.clone()).await?;
     validate_image_bytes(files.as_ref()).await?;
     validate_lsp_backend(host.clone(), files.as_ref()).await?;
@@ -434,11 +440,11 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let mut connection_state = manager.subscribe_state("validation").await;
     use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-    let mut tree = host.commands.spawn(CommandSpawnRequest {
+    let mut tree = host.commands().spawn(CommandSpawnRequest {
         start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
         process_id: "closed-connection-process".into(),
         command: "printf '%s' \"$$\" > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"".into(),
-        cwd:host.files.canonical_path().into(), output_target: CommandOutputTarget::new(format!("{}/disconnect.log",host.files.canonical_path()), "disconnect.log",format!("{}/disconnect.stderr.log",host.files.canonical_path()),"disconnect.stderr.log"),
+        cwd:host.files().canonical_path().into(), output_target: CommandOutputTarget::new(format!("{}/disconnect.log",host.files().canonical_path()), "disconnect.log",format!("{}/disconnect.stderr.log",host.files().canonical_path()),"disconnect.stderr.log"),
         capture_limit_bytes: 1024 * 1024,
     }).await?;
     let mut stdout = BufReader::new(tree.take_stdout().expect("command stdout"));
@@ -453,10 +459,10 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     manager.reconnect_server("validation").await?;
     wait_until_ready(&mut connection_state).await?;
     let reconnected = manager
-        .open_workspace_host("validation", workspace.clone())
+        .open_workspace_binding("validation", workspace.clone())
         .await?;
     anyhow::ensure!(
-        !host.files.is_same_binding(&reconnected.files),
+        !host.files().is_same_binding(&reconnected.files()),
         "a new connection must have a new immutable executor identity"
     );
     anyhow::ensure!(
@@ -484,7 +490,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         "a disconnected command must never be continued on the new server"
     );
     println!("old connection ended; root observation={root_result:?}; new executor is distinct");
-    let reconnected_files = Arc::new(reconnected.files);
+    let reconnected_files = Arc::new(reconnected.files());
 
     let transfer_bytes = std::env::var("PURE_SSH_TEST_TRANSFER_BYTES")
         .ok()
@@ -580,6 +586,8 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         "pixel.png",
         "fixture.py",
         "lsp_fixture.py",
+        "mcp_fixture.py",
+        "parallel.bin",
         "expected-path.json",
         "tracked.txt",
         "tree.pid",
@@ -675,46 +683,87 @@ async fn validate_session_capture_layout(
             .await
             .is_err()
     );
-    let workspace = AgentWorkspace::directory("/remote", Some(vec!["/remote/src".into()]))
-        .with_session_id("validation");
+    let root = std::path::Path::new(files.canonical_path());
+    let workspace =
+        AgentWorkspace::directory(root, Some(vec![root.join("src")])).with_session_id("validation");
+    let bound = files
+        .clone()
+        .with_workspace(pl_tool::workspace::ToolWorkspace::new(workspace));
+    bound
+        .create_directory(
+            alpha
+                .scratch()
+                .join("policy-probe")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+        )
+        .await?;
+    bound
+        .write_bytes_atomic(
+            alpha
+                .commands()
+                .join("policy-probe.log")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+            b"owned",
+        )
+        .await?;
+    let empty = AgentWorkspace::directory(root, Some(Vec::new())).with_session_id("validation");
+    let bound = files
+        .clone()
+        .with_workspace(pl_tool::workspace::ToolWorkspace::new(empty));
+    bound
+        .create_directory(
+            alpha
+                .scratch()
+                .join("empty-probe")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+        )
+        .await?;
+    bound
+        .create_directory(
+            alpha
+                .artifacts()
+                .join("empty-probe")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+        )
+        .await?;
     anyhow::ensure!(
-        workspace
-            .ensure_relative_path_writable(None, &alpha.scratch().to_string_lossy())
-            .is_ok()
-    );
-    anyhow::ensure!(
-        workspace
-            .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
-            .is_ok()
-    );
-    let empty =
-        AgentWorkspace::directory("/remote", Some(Vec::new())).with_session_id("validation");
-    anyhow::ensure!(
-        empty
-            .ensure_relative_path_writable(None, &alpha.scratch().to_string_lossy())
-            .is_ok()
-    );
-    anyhow::ensure!(
-        empty
-            .ensure_relative_path_writable(None, &alpha.artifacts().to_string_lossy())
-            .is_ok()
-    );
-    anyhow::ensure!(
-        empty
-            .ensure_relative_path_writable(None, "src/lib.rs")
+        bound
+            .write_bytes_atomic("src/lib.rs".into(), None, b"denied")
+            .await
             .is_err()
     );
-    anyhow::ensure!(
-        empty
-            .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
-            .is_ok()
-    );
-    // The current scratch allowance is this Thread's entire temp directory,
-    // including command capture. Another Thread's temp remains outside the grant.
+    bound
+        .write_bytes_atomic(
+            alpha
+                .commands()
+                .join("empty-probe.log")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+            b"owned",
+        )
+        .await?;
     let neighbor = SessionFiles::new("neighbor");
     anyhow::ensure!(
-        empty
-            .ensure_relative_path_writable(None, &neighbor.commands().join("x").to_string_lossy())
+        bound
+            .write_bytes_atomic(
+                neighbor
+                    .commands()
+                    .join("policy-probe.log")
+                    .to_string_lossy()
+                    .into_owned(),
+                None,
+                b"denied"
+            )
+            .await
             .is_err()
     );
     concurrent_remote_pool_ignore(files).await?;
@@ -942,7 +991,7 @@ async fn validate_image_bytes(
 }
 
 async fn validate_lsp_backend(
-    host: pl_tool::remote::RemoteWorkspaceHost,
+    host: pl_tool::remote::SshWorkspaceBinding,
     files: &pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
 ) -> anyhow::Result<()> {
     let server = r#"import json
@@ -1030,11 +1079,26 @@ root = "{workspaceRoot}/init"
             .into(),
         })
         .await?;
+    let execution = host.execution.clone();
+    let environment = host.execution_environment.clone();
+    let sample = || async {
+        run_remote(
+            &execution.git(),
+            execution.root(),
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'server_pid=%s rss_kib=' \"$PPID\"; ps -o rss= -p \"$PPID\"".into(),
+            ],
+        )
+        .await
+    };
+    let before = sample().await?;
     let registry = LspRuntimeRegistry::new();
     let workspace_root = PathBuf::from(files.canonical_path());
     let host: Arc<dyn LspHostBackend> = Arc::new(pl_lsp::host::ExecutorLspHost::new(
-        host.files.executor().clone(),
-        host.files.canonical_path(),
+        host.files().executor().clone(),
+        host.files().canonical_path(),
     )?);
     registry
         .configure_workspace_from_directory(&workspace_root, Some(host), None)
@@ -1047,6 +1111,55 @@ root = "{workspaceRoot}/init"
         Ok::<_, anyhow::Error>(())
     })
     .await??;
+    files
+        .write_bytes_atomic(
+            "mcp_fixture.py".into(),
+            None,
+            mcp_stdio::STDIO_MCP_SCRIPT.as_bytes(),
+        )
+        .await?;
+    let script = execution.executor().join_path(
+        &execution.executor().path(execution.root())?,
+        "mcp_fixture.py",
+    )?;
+    let mcp = pl_tool::mcp::McpConnector::default()
+        .connect(pl_tool::mcp::McpConnectRequest {
+            server_id: "parallel-fixture".into(),
+            server: mcp_stdio::stdio_effective_config(
+                "parallel-fixture",
+                std::path::Path::new(script.as_str()),
+                vec![],
+                Default::default(),
+                Some(execution.root().into()),
+                pl_tool::mcp::config::McpExecutionContext::Remote {
+                    commands: execution.commands(environment),
+                },
+            ),
+        })
+        .await?;
+    let mut first = execution
+        .executor()
+        .command("/bin/cat")
+        .stdin(pl_remote_helper::Stdio::Piped)
+        .spawn()
+        .await?;
+    let first_input = first.stdin.take();
+    let mut neighbor = execution
+        .executor()
+        .command("/bin/cat")
+        .stdin(pl_remote_helper::Stdio::Piped)
+        .spawn()
+        .await?;
+    let neighbor_input = neighbor.stdin.take();
+    files
+        .write_bytes_atomic("parallel.bin".into(), None, &vec![0x6d; 65536])
+        .await?;
+    let call = mcp
+        .call_tool("inspect_env".into(), serde_json::json!({}))
+        .await?;
+    anyhow::ensure!(!call.is_error.unwrap_or(false));
+    remote_manager::verify_single_business_channel("two-exec-mcp-lsp-files-active")?;
+    let loaded = sample().await?;
     let result = registry
         .query_in_workspace(
             &workspace_root,
@@ -1063,7 +1176,32 @@ root = "{workspaceRoot}/init"
         .await?;
     assert!(result.success);
     assert!(result.result.contains("remote_symbol"));
+    first.kill().await?;
+    drop(first_input);
+    anyhow::ensure!(neighbor.try_wait()?.is_none());
     registry.shutdown().await?;
+    anyhow::ensure!(
+        neighbor.try_wait()?.is_none(),
+        "closing LSP killed the neighboring exec"
+    );
+    anyhow::ensure!(
+        !mcp.call_tool("inspect_env".into(), serde_json::json!({}))
+            .await?
+            .is_error
+            .unwrap_or(false)
+    );
+    mcp.close().await?;
+    anyhow::ensure!(
+        neighbor.try_wait()?.is_none(),
+        "closing MCP killed the neighboring exec"
+    );
+    neighbor.kill().await?;
+    drop(neighbor_input);
+    let after = sample().await?;
+    println!(
+        "{}",
+        serde_json::json!({"scenario":"shared-consumer-load", "before":before.stdout.trim(),"loaded":loaded.stdout.trim(),"after":after.stdout.trim(),"independentClose":true,"explicitKillCalls":2,"bytesTransferredWhileActive":65536})
+    );
     Ok(())
 }
 

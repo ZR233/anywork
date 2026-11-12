@@ -55,6 +55,14 @@ impl ExecutorWorkspaceFileBackend {
             workspace: None,
         })
     }
+    pub(crate) fn from_binding(executor: Executor, root: TargetPath) -> Self {
+        Self {
+            executor,
+            root,
+            allow_workspace_escape: false,
+            workspace: None,
+        }
+    }
     pub async fn local(root: PathBuf, allow_workspace_escape: bool) -> Result<Self> {
         let executor = Executor::local().map_err(file_error)?;
         let path = executor

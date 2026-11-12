@@ -51,7 +51,7 @@ fn exclusive(source: &Path, target: &Path) -> io::Result<()> {
 fn exclusive(source: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::{
-        Win32::Storage::FileSystem::{MOVEFILE_FLAGS, MoveFileExW},
+        Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW},
         core::PCWSTR,
     };
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -62,7 +62,7 @@ fn exclusive(source: &Path, target: &Path) -> io::Result<()> {
         MoveFileExW(
             PCWSTR(source.as_ptr()),
             PCWSTR(target.as_ptr()),
-            MOVEFILE_FLAGS(0),
+            MOVE_FILE_FLAGS(0),
         )
     }
     .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))

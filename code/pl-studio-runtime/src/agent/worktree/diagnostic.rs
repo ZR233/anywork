@@ -1,5 +1,5 @@
 //! Worktree-specific safe failure facts, not a general-purpose secret sanitizer.
-use super::{ExecutionFailure, SshError, WorkspaceDownloadError, WorktreeError};
+use super::{ExecutionFailure, WorkspaceDownloadError, WorktreeError};
 
 impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
@@ -28,28 +28,23 @@ impl WorktreeError {
                 git_operation(args),
                 safe_command_cause(stderr)
             ),
-            Self::LocalIo { operation, source } => format!(
-                "{operation}: filesystem {:?}; os_code={:?}",
-                source.kind(),
-                source.raw_os_error()
-            ),
-            Self::Remote { operation, source } => format!("{operation}: {}", remote_code(source)),
-            Self::RemoteExecution { args, source } => {
+            Self::Target { operation, source } => format!("{operation}: {}", file_cause(source)),
+            Self::Execution { args, source } => {
                 format!("git {}: {}", git_operation(args), execution_cause(source))
             }
-            Self::RemoteDownload { operation, source } => {
+            Self::Download { operation, source } => {
                 format!("{operation}: {}", download_cause(source))
             }
-            Self::RemoteFile { operation, source } => format!(
+            Self::File { operation, source } => format!(
                 "{operation}: {}",
                 match source {
                     crate::PureError::Io(error) => format!(
-                        "remote file I/O {:?}; os_code={:?}",
+                        "target file I/O {:?}; os_code={:?}",
                         error.kind(),
                         error.raw_os_error()
                     ),
-                    crate::PureError::PermissionDenied(_) => "remote file permission denied".into(),
-                    _ => "remote file operation failed; no structured cause is available".into(),
+                    crate::PureError::PermissionDenied(_) => "target file permission denied".into(),
+                    _ => "target file operation failed; no structured cause is available".into(),
                 }
             ),
             Self::InvalidResource(_) => "worktree backend or owned-path validation failed".into(),
@@ -61,17 +56,7 @@ impl WorktreeError {
 /// Preserve the transfer phase and typed cause without reflecting paths or arbitrary helper text.
 pub(super) fn download_cause(error: &WorkspaceDownloadError) -> String {
     match error {
-        WorkspaceDownloadError::Path(source) => match source {
-            pl_tool::workspace_file::WorkspaceFileError::Execution(source) => {
-                execution_error(source)
-            }
-            pl_tool::workspace_file::WorkspaceFileError::Removal(source) => {
-                format!("removal unconfirmed: {}", execution_error(source))
-            }
-            pl_tool::workspace_file::WorkspaceFileError::Policy(_) => {
-                "workspace path policy rejected".into()
-            }
-        },
+        WorkspaceDownloadError::Path(source) => file_cause(source),
         WorkspaceDownloadError::Open(source) => execution_error(source),
         WorkspaceDownloadError::Io(source) | WorkspaceDownloadError::Read(source) => format!(
             "file transfer IO {:?}; os={:?}",
@@ -114,26 +99,6 @@ fn execution_error(error: &pl_remote_helper::ExecutionError) -> String {
             format!("output incomplete: {}", execution_error(cause))
         }
         ExecutionError::Http(_) => "HTTP egress failed".into(),
-    }
-}
-
-pub(super) fn remote_code(error: &SshError) -> String {
-    match error {
-        SshError::HostIo(error) => format!(
-            "SSH host IO {:?}; os={:?}",
-            error.kind(),
-            error.raw_os_error()
-        ),
-        SshError::Removal(error) => {
-            format!("removal outcome unconfirmed: {}", execution_error(error))
-        }
-        SshError::Execution(error) => execution_error(error),
-        SshError::ManagerClosing => "SSH ManagerClosing".into(),
-        SshError::Disconnected => "SSH Disconnected".into(),
-        SshError::Cancelled => "SSH Cancelled before admission".into(),
-        SshError::AuthenticationFailed(_) => "SSH AuthenticationFailed".into(),
-        SshError::Protocol(_) => "SSH Protocol failure (unclassified details withheld)".into(),
-        SshError::Remote { code, .. } => format!("remote helper {code:?}"),
     }
 }
 
@@ -187,5 +152,16 @@ pub(super) fn git_operation(args: &str) -> &'static str {
         (Some("status"), _) => "status --porcelain=v1 --untracked-files=all --ignored=matching",
         (Some("branch"), _) => "branch",
         _ => "inspection",
+    }
+}
+
+pub(super) fn file_cause(error: &pl_tool::workspace_file::WorkspaceFileError) -> String {
+    use pl_tool::workspace_file::WorkspaceFileError;
+    match error {
+        WorkspaceFileError::Execution(source) => execution_error(source),
+        WorkspaceFileError::Removal(source) => {
+            format!("removal unconfirmed: {}", execution_error(source))
+        }
+        WorkspaceFileError::Policy(_) => "workspace path policy rejected".into(),
     }
 }

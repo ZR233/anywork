@@ -25,6 +25,8 @@ use crate::stdio_peer::{proc_start_ticks, spawn_tracked_grandchild};
 pub struct McpStdioOptions {
     /// File the server writes its own and the grandchild's pid/starttime into.
     pub coord_file: PathBuf,
+    /// Keep the descendant in the owned group for coordinated-stop scenarios.
+    pub inherit_process_group: bool,
 }
 
 /// The protocol versions the fixture accepts, newest first. Kept in step with
@@ -43,7 +45,7 @@ pub fn run_mcp_stdio(options: McpStdioOptions) -> Result<()> {
     // `sleep` (or any immediate exec failure) must not turn into a vacuous
     // "reclamation" pass. The helper keeps the grandchild handle owned so it
     // cannot become a zombie and never kills it here.
-    let grandchild_pid = spawn_tracked_grandchild()?;
+    let grandchild_pid = spawn_tracked_grandchild(options.inherit_process_group)?;
     let mcp_pid = std::process::id();
     write_coord_record(&options.coord_file, mcp_pid, grandchild_pid)?;
     serve()

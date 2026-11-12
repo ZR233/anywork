@@ -4,7 +4,7 @@ use super::worktree_lease::{
     WorktreeLeaseOwnerKind, WorktreeLeaseState,
 };
 use crate::agent::worktree::{
-    LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeCleanupPolicy,
+    ExecutorWorktreeBackend, WorktreeBackend, WorktreeCleanupPolicy,
     WorktreeCreateFailureDisposition, WorktreeCreateSpec, WorktreeError, WorktreeHandle,
     WorktreeManager, WorktreeOwnership,
 };
@@ -280,37 +280,27 @@ pub(in crate::studio) async fn backend_for(
     project_root: &Path,
     kind: WorktreeBackendRoot,
 ) -> Result<(Arc<dyn WorktreeBackend>, WorkspaceEndpoint)> {
-    match ssh_alias {
+    let (executor, endpoint) = match ssh_alias {
         Some(server_id) => {
-            let profile = ssh_manager
-                .list_servers()
-                .await
-                .into_iter()
-                .find(|entry| entry.profile.alias == server_id)
-                .ok_or_else(|| lifecycle_error("SSH worktree endpoint is not configured"))?
-                .profile;
-            let endpoint = WorkspaceEndpoint::from_profile(Some(&profile));
-            let backend = match kind {
-                WorktreeBackendRoot::Project => RemoteWorktreeBackend::new(
-                    ssh_manager.clone(),
-                    profile,
-                    project_root.to_path_buf(),
-                ),
-                WorktreeBackendRoot::Repository => RemoteWorktreeBackend::canonical_repository(
-                    ssh_manager.clone(),
-                    profile,
-                    project_root.to_path_buf(),
-                ),
-            };
-            backend
-                .map(|backend| (Arc::new(backend) as Arc<dyn WorktreeBackend>, endpoint))
-                .map_err(anyhow::Error::from)
+            let host = ssh_manager
+                .open_workspace_binding(server_id, project_root.to_string_lossy().into_owned())
+                .await?;
+            if matches!(kind, WorktreeBackendRoot::Repository)
+                && host.files().canonical_path() != project_root.to_string_lossy()
+            {
+                anyhow::bail!("repository canonical identity changed");
+            }
+            (
+                host.files().executor().clone(),
+                WorkspaceEndpoint::from_profile(Some(&host.profile)),
+            )
         }
-        None => Ok((
-            Arc::new(LocalWorktreeBackend::default()),
+        None => (
+            pl_remote_helper::Executor::local()?,
             WorkspaceEndpoint::Local,
-        )),
-    }
+        ),
+    };
+    Ok((Arc::new(ExecutorWorktreeBackend::new(executor)), endpoint))
 }
 
 pub(in crate::studio) async fn manager_from_lease(
@@ -727,16 +717,16 @@ async fn prepare_repository_worktree_pool(
     match ssh_alias {
         Some(server) => {
             let host = ssh_manager
-                .open_workspace_host(server, workspace_path_text(repository_root, true)?)
+                .open_workspace_binding(server, workspace_path_text(repository_root, true)?)
                 .await?;
             if WorkspaceEndpoint::from_profile(Some(&host.profile)) != *expected_endpoint
-                || host.files.canonical_path() != workspace_path_text(repository_root, true)?
+                || host.files().canonical_path() != workspace_path_text(repository_root, true)?
             {
                 return Err(lifecycle_error(
                     "worktree pool endpoint or canonical repository changed before preparation",
                 ));
             }
-            pl_tool::workspace::prepare_worktree_pool(&host.files)
+            pl_tool::workspace::prepare_worktree_pool(&host.files())
                 .await
                 .map_err(anyhow::Error::from)
         }

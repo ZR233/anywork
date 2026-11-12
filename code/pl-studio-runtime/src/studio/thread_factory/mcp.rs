@@ -12,7 +12,7 @@ use pl_tool::mcp::{
     McpAvailabilityKind, McpAvailabilitySnapshot, McpResetScope, McpRuntime, McpRuntimeHandle,
     McpTurnLease,
 };
-use pl_tool::remote::RemoteWorkspaceHost;
+use pl_tool::remote::SshWorkspaceBinding;
 use pl_tool::workspace::ToolWorkspace;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +32,7 @@ pub(super) struct ThreadMcpPreparation<'a> {
     pub lifetime: &'a Arc<ThreadToolLifetime>,
     pub project: &'a WorkspaceRecord,
     pub workspace: &'a ToolWorkspace,
-    pub remote: Option<&'a RemoteWorkspaceHost>,
+    pub remote: Option<&'a SshWorkspaceBinding>,
     pub preparation: &'a CatalogPreparation,
     pub cancellation: &'a CancellationToken,
 }
@@ -668,7 +668,7 @@ impl StudioThreadFactory {
             },
             None => McpScope::Host,
         };
-        let remote_commands = remote.map(|host| Arc::new(host.commands.clone()));
+        let remote_commands = remote.map(|host| Arc::new(host.commands().clone()));
         let resolved = self
             .services
             .config_runtime

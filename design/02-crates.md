@@ -40,7 +40,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-acp` | 外部智能体的 ACP 协商、认证与业务会话协议，类型化请求、有序更新及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
 | 独立工具家族 crate | 文件、命令、Git、LSP、MCP、搜索、媒体与文件展示、技能、机器人各自聚合相关工具，以模块保存各工具的声明、校验、领域编排、结果与错误；通过 `pl-agent-tool` 被独立宿主消费，跨家族只共享必要的窄领域支持 |
-| `pl-tool` | Anywork 工具宿主适配、受限本地/SSH/容器后端与共享服务所有权、内核结果及控制映射；保留用户交互、笔记、待办、轮次完成、任务治理和多智能体等宿主控制工具 |
+| `pl-tool` | Anywork 工具宿主适配、统一执行器的工作区/工具策略、容器窄后端与共享服务所有权、内核结果及控制映射；保留用户交互、笔记、待办、轮次完成、任务治理和多智能体等宿主控制工具 |
 | `pl-protocol` | 多个 crate 或产品适配边界实际共享的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
@@ -84,3 +84,5 @@ SSH 远程开发场景中，技能发现与目录选择的过滤、排序由宿�
 - **统计与跨层类型导入**：可丢弃的调用统计由全局 `calls.sqlite` 独立写入。Studio 通过通用的扩展 CAS 接口保存业务状态并提交模型上下文投影，桌面界面仅消费规范的产品 DTO。账号配置、工具配置与业务协议分别从 `pl-model`、`pl-tool` 与 `pl-protocol` 直接导入，不经由 `pl-core` 镜像中转。
 
 存储与内核契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。
+
+项目技能、会话临时目录、命令捕获归档和 Git 工作树分别由各自领域适配同一个具体执行器。`SshWorkspaceBinding` 只携带冻结端点事实与公共工作区执行绑定，不持有多套物理 owner。工作树的 Git 算法、common-dir/backlink 归属校验和未知副作用分类仍归 Studio；确认的 Git 元数据位于 checkout 外时，在同一执行器上打开独立的受限读取视图。

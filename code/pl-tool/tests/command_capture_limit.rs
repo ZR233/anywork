@@ -147,21 +147,44 @@ async fn session_layout_and_directory_policy() -> anyhow::Result<()> {
         );
     }
 
-    // Backend-relative mutation inputs use POSIX separators on every host.
-    let relative = workspace
-        .ensure_relative_path_writable(None, &files.scratch().to_string_lossy().replace('\\', "/"));
-    anyhow::ensure!(relative.is_ok());
+    // Exercise the actual target mutation policy instead of a second lexical policy.
+    let bound = backend
+        .clone()
+        .with_workspace(pl_tool::workspace::ToolWorkspace::new(workspace.clone()));
+    bound
+        .create_directory(
+            files
+                .scratch()
+                .join("policy-probe")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+        )
+        .await?;
+    bound
+        .write_bytes_atomic(
+            files
+                .commands()
+                .join("policy-probe.log")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+            b"owned",
+        )
+        .await?;
     anyhow::ensure!(
-        workspace
-            .ensure_relative_path_writable(
-                None,
-                &files
+        bound
+            .write_bytes_atomic(
+                neighbor
                     .commands()
-                    .join("x")
+                    .join("policy-probe.log")
                     .to_string_lossy()
-                    .replace('\\', "/"),
+                    .into_owned(),
+                None,
+                b"denied"
             )
-            .is_ok()
+            .await
+            .is_err()
     );
 
     let empty =

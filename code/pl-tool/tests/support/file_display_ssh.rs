@@ -144,23 +144,23 @@ async fn show_files_archives_real_ssh_originals_and_releases_connection() -> Res
         active_children = ssh_children()?.difference(&baseline).cloned().collect();
         #[cfg(target_os = "linux")]
         ensure!(active_children.len() == 1, "expected one production SSH business connection: {active_children:?}");
-        let parent = manager.open_workspace_host("show-files-external", parent_path.clone()).await?;
-        ensure!(parent.files.inspect_path(fixture.clone(), None).await?.is_none(),
+        let parent = manager.open_workspace_binding("show-files-external", parent_path.clone()).await?;
+        ensure!(parent.files().inspect_path(fixture.clone(), None).await?.is_none(),
             "generated fixture path already exists; refusing to reuse it");
-        parent.files.create_directory(fixture.clone(), None).await?;
+        parent.files().create_directory(fixture.clone(), None).await?;
         created = true;
         let marker = format!("{fixture}/.show-files-owner");
-        parent.files.write_bytes_atomic(marker.clone(), None, nonce.as_bytes()).await?;
+        parent.files().write_bytes_atomic(marker.clone(), None, nonce.as_bytes()).await?;
         let exercised = exercise(&manager, &remote_path, &artifacts).await;
         // This scope owns the only generated directory. A conflicting/missing marker is
         // preserved for diagnosis, never recursively removed on assumptions.
         let cleaned = async {
-            let owner = parent.files.read_text(WorkspaceFileReadRequest {
+            let owner = parent.files().read_text(WorkspaceFileReadRequest {
                 path:marker, cwd:None,
             }).await?;
             ensure!(owner == nonce, "fixture ownership marker differs; cleanup refused");
-            parent.files.remove_path(fixture.clone(), None, true).await?;
-            ensure!(parent.files.inspect_path(fixture.clone(), None).await?.is_none(),
+            parent.files().remove_path(fixture.clone(), None, true).await?;
+            ensure!(parent.files().inspect_path(fixture.clone(), None).await?.is_none(),
                 "remote fixture still exists after acknowledged removal");
             println!("{}", serde_json::json!({"remoteFixture":remote_path, "markerVerified":true, "removed":true}));
             Ok::<_, anyhow::Error>(())
@@ -201,9 +201,9 @@ async fn show_files_archives_real_ssh_originals_and_releases_connection() -> Res
 
 async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> Result<()> {
     let workspace = manager
-        .open_workspace_host("show-files-external", remote_path.into())
+        .open_workspace_binding("show-files-external", remote_path.into())
         .await?;
-    let files = Arc::new(workspace.files.clone());
+    let files = Arc::new(workspace.files());
     let md = b"# remote original\n\nChinese: \xe4\xb8\xad\xe6\x96\x87\n".to_vec();
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgba8(3, 2).write_to(&mut png, image::ImageFormat::Png)?;

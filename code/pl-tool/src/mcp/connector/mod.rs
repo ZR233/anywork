@@ -179,10 +179,10 @@ pub struct ConnectedMcp {
     /// confirmed stopped is re-inserted here instead of being dropped while still running.
     tool_subscription: Arc<tokio::sync::Mutex<Option<ToolListSubscription>>>,
     /// Serialized, reusable close progress. The spawned close task owns the subscription,
-    /// the service, the Linux supervisor and the worker image lease until the whole tree is
-    /// confirmed reclaimed, so a timeout retains — never silently drops — those owners.
+    /// the service and the concrete stdio process until their close results are
+    /// confirmed, so a timeout retains — never silently drops — those owners.
     close: tokio::sync::Mutex<CloseProgress>,
-    /// Supervised local or remote stdio command owned through `pl-remote-helper`.
+    /// Executor-owned stdio command owned through `pl-remote-helper`.
     stdio_command: tokio::sync::Mutex<Option<ManagedCommand>>,
     /// Cancellation token for remote HTTP exchange / SSE streams.
     transport_cancel: Option<CancellationToken>,
@@ -190,7 +190,7 @@ pub struct ConnectedMcp {
 
 /// Close bookkeeping shared by every `close()` caller on one [`ConnectedMcp`].
 struct CloseProgress {
-    /// In-flight close task; owns the service, supervisor and executable lease.
+    /// In-flight close task; owns the service and concrete stdio command.
     task: Option<tokio::task::JoinHandle<std::result::Result<(), String>>>,
     /// Terminal result, cached only once every owned resource is confirmed released so a
     /// retry can never replay a merely-suspected outcome as if it were reliable.
@@ -328,8 +328,7 @@ impl ConnectedMcp {
 
     /// 幂等、限时关闭 rmcp service、tool 订阅及其 transport owner，并确认整棵进程树已回收。
     ///
-    /// 关闭任务独占订阅、service、Linux supervisor 与可执行镜像 lease，并先同步发出所有
-    /// 取消、再独立 join 聚合并发错误；超时不代表停止，任务被保留（owner 随任务结束或
+    /// 关闭任务独占订阅、service 与具体执行器的 Child，先终止 stdio 进程再释放协议输入；超时不代表停止，任务被保留（owner 随任务结束或
     /// 进程终止回收），而不是静默 clean。只有确认全部 owner 已释放才缓存终态结果供
     /// 幂等重放；仍有 owner 未确认时保留可重试状态。
     pub async fn close(&self) -> Result<()> {
@@ -481,12 +480,8 @@ fn resolve_stdio_program(
     Ok((command_name, program))
 }
 
-/// Owns every closeable resource of one MCP session and reclaims them concurrently.
-///
-/// All cancellations are issued before either join so a service that never acknowledges can
-/// never starve the supervisor cancel (and vice versa). Subscription, service and supervisor
-/// results are joined independently and aggregated; a recoverable issue never aborts the
-/// other independent cleanups.
+/// Owns every closeable resource of one MCP session. Stdio root termination
+/// precedes protocol teardown; independent close results are retained and aggregated.
 async fn close_everything(
     subscription_slot: Arc<tokio::sync::Mutex<Option<ToolListSubscription>>>,
     service: Option<RunningService<RoleClient, McpClientHandler>>,
@@ -496,28 +491,29 @@ async fn close_everything(
 ) -> std::result::Result<(), String> {
     let mut subscription = subscription_slot.lock().await.take();
 
-    // Issue every cancellation up front. The rmcp token and the subscription cancel are
-    // synchronous; the supervisor cancel is the first step of `close_worker`, polled
-    // concurrently with the service join below, so neither can starve the other.
+    // Stop subscriptions immediately. For stdio, terminate the owned process before
+    // dropping protocol stdin: EOF can otherwise let the root exit before its group
+    // receives cancellation, leaving in-group descendants outside the root-only wait.
     if let Some(subscription) = subscription.as_mut() {
         subscription.cancel.cancel();
     }
+    if let Some(command) = stdio_command.as_ref() {
+        command.cancellation().cancel();
+    }
+    // The retained close task and its outer observation budget still own this wait.
+    // Root exit does not wait for the protocol readers to drain.
+    let command_result = close_stdio_command(stdio_command).await;
     if let Some(service) = service.as_ref() {
         service.cancellation_token().cancel();
     }
     if let Some(cancel) = transport_cancel.as_ref() {
         cancel.cancel();
     }
-    if let Some(command) = stdio_command.as_ref() {
-        command.cancellation().cancel();
-    }
 
     let subscription_join =
         close_tool_subscription(&subscription_slot, &mut subscription, close_timeout);
     let service_join = await_service_close(service);
-    let command_join = close_stdio_command(stdio_command);
-    let (subscription_result, service_result, command_result) =
-        tokio::join!(subscription_join, service_join, command_join);
+    let (subscription_result, service_result) = tokio::join!(subscription_join, service_join);
 
     let mut failures = Vec::new();
     for result in [subscription_result, service_result, command_result] {

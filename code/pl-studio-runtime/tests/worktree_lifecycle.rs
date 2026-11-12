@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::agent::worktree::{
-    LocalWorktreeBackend, WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeError,
+    ExecutorWorktreeBackend, WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeError,
     WorktreeManager, WorktreeOwnership,
 };
 use std::{path::Path, process::Command, sync::Arc};
@@ -23,11 +23,17 @@ fn git(path: &Path, args: &[&str]) -> Result<String> {
 
 #[tokio::test]
 async fn managed_worktrees_are_detached_and_keep_every_branch() -> Result<()> {
+    both(managed_worktrees_are_detached_and_keep_every_branch_on).await
+}
+
+async fn managed_worktrees_are_detached_and_keep_every_branch_on(
+    executor: pl_remote_helper::Executor,
+) -> Result<()> {
     let temp = tempfile::tempdir()?;
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo)?;
     git(&repo, &["init", "-b", "main"])?;
-    let backend = Arc::new(LocalWorktreeBackend::default());
+    let backend = Arc::new(ExecutorWorktreeBackend::new(executor.clone()));
     let repo = WorktreeManager::resolve_repository_root(backend.as_ref(), &repo).await?;
     let manager = WorktreeManager::new(repo.clone(), backend);
     assert!(
@@ -41,7 +47,13 @@ async fn managed_worktrees_are_detached_and_keep_every_branch() -> Result<()> {
     assert!(
         matches!(
             manager.resolve_head(&temp.path().join("missing")).await,
-            Err(WorktreeError::GitLaunchFailed { .. })
+            Err(WorktreeError::Execution {
+                source: pl_tool::execution::ExecutionFailure::Spawn(pl_remote_helper::SpawnError {
+                    knowledge: pl_remote_helper::StartKnowledge::NotStarted,
+                    ..
+                }),
+                ..
+            })
         ),
         "real execution failures must not be mislabeled as a missing initial commit"
     );
@@ -151,7 +163,7 @@ struct Repository {
 }
 
 impl Repository {
-    async fn new() -> Result<Self> {
+    async fn new(executor: pl_remote_helper::Executor) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("repo");
         std::fs::create_dir(&path)?;
@@ -163,7 +175,7 @@ impl Repository {
         git(&path, &["add", "."])?;
         git(&path, &["commit", "-m", "initial"])?;
         let base = git(&path, &["rev-parse", "HEAD"])?;
-        let backend = Arc::new(LocalWorktreeBackend::default());
+        let backend = Arc::new(ExecutorWorktreeBackend::new(executor));
         let path = WorktreeManager::resolve_repository_root(backend.as_ref(), &path).await?;
         let manager = WorktreeManager::new(path.clone(), backend);
         Ok(Self {
@@ -194,7 +206,13 @@ impl Repository {
 
 #[tokio::test]
 async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() -> Result<()> {
-    let repo = Repository::new().await?;
+    both(cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard_on).await
+}
+
+async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard_on(
+    executor: pl_remote_helper::Executor,
+) -> Result<()> {
+    let repo = Repository::new(executor).await?;
     let handle = repo.create("dirty").await?;
     std::fs::write(handle.path.join("file.txt"), "dirty\n")?;
     std::fs::write(handle.path.join("untracked.txt"), "untracked\n")?;
@@ -265,7 +283,13 @@ async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() 
 
 #[tokio::test]
 async fn missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics() -> Result<()> {
-    let repo = Repository::new().await?;
+    both(missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics_on).await
+}
+
+async fn missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics_on(
+    executor: pl_remote_helper::Executor,
+) -> Result<()> {
+    let repo = Repository::new(executor).await?;
     let first = repo.create("backlink-first").await?;
     let second = repo.create("backlink-second").await?;
     for relative_links in [false, true] {
@@ -352,5 +376,25 @@ async fn missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics() 
         foreign.path.join("keep.txt").exists(),
         "no repository-wide prune or deletion"
     );
+    Ok(())
+}
+
+// Run the same ownership, backlink, cleanup and side-effect scenarios through
+// native calls and the production h2 transport; no worktree algorithm substitute.
+async fn both<F, Fut>(case: F) -> Result<()>
+where
+    F: Fn(pl_remote_helper::Executor) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    case(pl_remote_helper::Executor::local()?).await?;
+    let (client, server) = tokio::io::duplex(1024 * 1024);
+    let owner = tokio::spawn(pl_remote_helper::serve_connection(server));
+    let executor = pl_remote_helper::Executor::remote(client).await?;
+    let result = case(executor.clone()).await;
+    let closed = executor.close().await;
+    let server = tokio::time::timeout(std::time::Duration::from_secs(5), owner).await?;
+    result?;
+    closed?;
+    server??;
     Ok(())
 }

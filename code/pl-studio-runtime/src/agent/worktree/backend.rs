@@ -34,32 +34,26 @@ pub enum WorktreeError {
     },
     #[error("git {args} status is unknown: {stderr}")]
     GitStatusUnknown { args: String, stderr: String },
-    #[error("{operation}: filesystem error ({:?}, os={:?})", .source.kind(), .source.raw_os_error())]
-    LocalIo {
+    #[error("{operation}: target file operation failed")]
+    Target {
         operation: &'static str,
         #[source]
-        source: std::io::Error,
-    },
-    #[error("{operation}: {}", super::diagnostic::remote_code(.source))]
-    Remote {
-        operation: &'static str,
-        #[source]
-        source: super::SshError,
+        source: pl_tool::workspace_file::WorkspaceFileError,
     },
     #[error("git {}: {}", super::diagnostic::git_operation(.args), super::diagnostic::execution_cause(.source))]
-    RemoteExecution {
+    Execution {
         args: String,
         #[source]
         source: ExecutionFailure,
     },
     #[error("{operation}: {}", super::diagnostic::download_cause(.source))]
-    RemoteDownload {
+    Download {
         operation: &'static str,
         #[source]
         source: super::WorkspaceDownloadError,
     },
-    #[error("{operation}: remote file operation failed")]
-    RemoteFile {
+    #[error("{operation}: file operation failed")]
+    File {
         operation: &'static str,
         #[source]
         source: crate::PureError,
@@ -192,36 +186,53 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
     ) -> BoxFuture<'a, Result<String, WorktreeError>>;
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct LocalWorktreeBackend {
-    backend: ExecutorExecutionBackend,
+#[derive(Debug, Clone)]
+pub struct ExecutorWorktreeBackend {
+    executor: pl_remote_helper::Executor,
 }
 
-impl LocalWorktreeBackend {
+impl ExecutorWorktreeBackend {
+    pub fn new(executor: pl_remote_helper::Executor) -> Self {
+        Self { executor }
+    }
+    fn files(
+        &self,
+        root: &str,
+    ) -> Result<pl_tool::workspace_file::ExecutorWorkspaceFileBackend, WorktreeError> {
+        pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(self.executor.clone(), root)
+            .map_err(|source| WorktreeError::Target {
+                operation: "bind worktree files",
+                source,
+            })
+    }
+    fn path(&self, path: &Path) -> Result<pl_remote_helper::TargetPath, WorktreeError> {
+        self.executor
+            .path(path.to_str().ok_or_else(|| {
+                WorktreeError::InvalidResource("worktree path is not UTF-8".into())
+            })?)
+            .map_err(|source| WorktreeError::Target {
+                operation: "resolve worktree path",
+                source: source.into(),
+            })
+    }
     async fn run_git_output(
         &self,
         cwd: &Path,
         args: &[String],
     ) -> Result<ExecutionOutput, WorktreeError> {
-        let request = git_request(cwd, args);
+        let cwd = self.path(cwd)?;
+        let request = git_request(
+            cwd.as_str(),
+            args,
+            self.executor.target_info().os == "windows",
+        );
         let arguments = args.join(" ");
-        self.backend
+        ExecutorExecutionBackend::new(self.executor.clone())
             .run_classified(request)
             .await
-            .map_err(|failure| match failure {
-                ExecutionFailure::Spawn(error)
-                    if error.knowledge == pl_remote_helper::StartKnowledge::NotStarted =>
-                {
-                    WorktreeError::GitLaunchFailed {
-                        args: arguments,
-                        message: error.to_string(),
-                    }
-                }
-                ExecutionFailure::TimedOut => WorktreeError::GitTimedOut { args: arguments },
-                failure => WorktreeError::GitStatusUnknown {
-                    args: arguments,
-                    stderr: failure.to_string(),
-                },
+            .map_err(|source| WorktreeError::Execution {
+                args: arguments,
+                source,
             })
     }
 
@@ -230,7 +241,7 @@ impl LocalWorktreeBackend {
     }
 }
 
-impl WorktreeBackend for LocalWorktreeBackend {
+impl WorktreeBackend for ExecutorWorktreeBackend {
     fn is_ancestor<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -250,35 +261,67 @@ impl WorktreeBackend for LocalWorktreeBackend {
         common_dir: &'a str,
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
-            use tokio::io::AsyncReadExt;
             let args = vec!["rev-parse".into(), "--absolute-git-dir".into()];
             let output = self.run_git(path, &args).await?;
             let admin = checked_admin_dir(&output.stdout, common_dir)?;
-            let backlink = Path::new(&admin).join("gitdir");
-            pl_tool::workspace::path_safety::validate_path_for_write_async(
-                Path::new(common_dir),
-                &backlink,
-            )
-            .await
-            .map_err(|error| match error {
-                pl_tool::workspace::path_safety::PathSafetyError::Io {
-                    operation, source, ..
-                } => WorktreeError::LocalIo { operation, source },
-                _ => WorktreeError::IdentityMismatch(
-                    "registration admin path crosses an unsafe ancestor".into(),
-                ),
-            })?;
-            let file = tokio::fs::File::open(&backlink).await.map_err(|source| {
-                WorktreeError::LocalIo {
-                    operation: "open Git admin backlink",
-                    source,
-                }
-            })?;
-            let mut bytes = Vec::new();
-            file.take((MAX_ADMIN_BACKLINK_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)
+            // Git-confirmed metadata can live outside the checkout. It receives a
+            // separate confined file view on the same concrete executor, never a new connection.
+            let common =
+                self.executor
+                    .path(common_dir)
+                    .map_err(|source| WorktreeError::Target {
+                        operation: "resolve Git common directory",
+                        source: source.into(),
+                    })?;
+            let canonical = self
+                .executor
+                .fs()
+                .canonicalize(&common)
                 .await
-                .map_err(|source| WorktreeError::LocalIo {
+                .map_err(|source| WorktreeError::Target {
+                    operation: "canonicalize Git common directory",
+                    source: source.into(),
+                })?;
+            if self
+                .executor
+                .relative_path(&common, &canonical)
+                .map_err(|source| WorktreeError::Target {
+                    operation: "compare Git common directory",
+                    source: source.into(),
+                })?
+                .as_deref()
+                != Some(".")
+            {
+                return Err(WorktreeError::IdentityMismatch(
+                    "Git common directory changed physical identity".into(),
+                ));
+            }
+            let files = self.files(common.as_str())?;
+            let backlink = self
+                .executor
+                .join_path(
+                    &self
+                        .executor
+                        .path(&admin)
+                        .map_err(|source| WorktreeError::Target {
+                            operation: "resolve Git admin directory",
+                            source: source.into(),
+                        })?,
+                    "gitdir",
+                )
+                .map_err(|source| WorktreeError::Target {
+                    operation: "resolve Git admin backlink",
+                    source: source.into(),
+                })?;
+            let mut bytes = Vec::new();
+            files
+                .copy_capture_bounded(
+                    backlink.as_str(),
+                    &mut bytes,
+                    MAX_ADMIN_BACKLINK_BYTES as u64,
+                )
+                .await
+                .map_err(|source| WorktreeError::Download {
                     operation: "read Git admin backlink",
                     source,
                 })?;
@@ -295,10 +338,16 @@ impl WorktreeBackend for LocalWorktreeBackend {
             let args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
             let output = self.run_git(path, &args).await?;
             let root = non_empty_head(&args, &output.stdout)?;
-            dunce::canonicalize(root).map_err(|source| WorktreeError::LocalIo {
-                operation: "canonicalize repository root",
-                source,
-            })
+            let root = self.path(Path::new(&root))?;
+            self.executor
+                .fs()
+                .canonicalize(&root)
+                .await
+                .map(|path| PathBuf::from(path.as_str()))
+                .map_err(|source| WorktreeError::Target {
+                    operation: "canonicalize repository root",
+                    source: source.into(),
+                })
         }
         .boxed()
     }
@@ -309,14 +358,22 @@ impl WorktreeBackend for LocalWorktreeBackend {
         target_path: &'a Path,
     ) -> BoxFuture<'a, Result<(), WorktreeError>> {
         async move {
-            pl_tool::workspace::path_safety::validate_path_for_write(repo_root, target_path)
-                .map_err(|error| WorktreeError::InvalidResource(error.to_string()))?;
-            let parent = target_path.parent().ok_or_else(|| {
-                WorktreeError::InvalidResource("worktree target has no parent".to_string())
-            })?;
-            tokio::fs::create_dir_all(parent)
+            let root = self.path(repo_root)?;
+            let target = self.path(target_path)?;
+            let parent = self
+                .executor
+                .parent_path(&target)
+                .map_err(|source| WorktreeError::Target {
+                    operation: "resolve worktree parent",
+                    source: source.into(),
+                })?
+                .ok_or_else(|| {
+                    WorktreeError::InvalidResource("worktree target has no parent".into())
+                })?;
+            self.files(root.as_str())?
+                .create_directory(parent.as_str().into(), None)
                 .await
-                .map_err(|source| WorktreeError::LocalIo {
+                .map_err(|source| WorktreeError::File {
                     operation: "create worktree parent",
                     source,
                 })
@@ -330,28 +387,16 @@ impl WorktreeBackend for LocalWorktreeBackend {
         path: &'a Path,
     ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
         async move {
-            // Reject symlink/reparse traversal even when Git's stale registration still names
-            // the expected text. Only inspect ancestors, never the checkout contents.
-            pl_tool::workspace::path_safety::validate_path_for_write_async(repo_root, path)
+            let root = self.path(repo_root)?;
+            let target = self.path(path)?;
+            self.files(root.as_str())?
+                .inspect_path(target.as_str().into(), None)
                 .await
-                .map_err(|error| match error {
-                    pl_tool::workspace::path_safety::PathSafetyError::Io {
-                        operation,
-                        source,
-                        ..
-                    } => WorktreeError::LocalIo { operation, source },
-                    _ => WorktreeError::IdentityMismatch(
-                        "path crosses a symlink or unsafe ancestor".into(),
-                    ),
-                })?;
-            match tokio::fs::symlink_metadata(path).await {
-                Ok(_) => Ok(true),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(source) => Err(WorktreeError::LocalIo {
+                .map(|stat| stat.is_some())
+                .map_err(|source| WorktreeError::Target {
                     operation: "stat worktree path",
                     source,
-                }),
-            }
+                })
         }
         .boxed()
     }
@@ -367,16 +412,24 @@ impl WorktreeBackend for LocalWorktreeBackend {
                 "worktree".to_string(),
                 "add".to_string(),
                 "--detach".to_string(),
-                local_git_path_argument(target_path),
+                self.path(target_path)
+                    .map_err(WorktreeCreateFailure::no_side_effects)?
+                    .as_str()
+                    .into(),
                 base_commit.to_string(),
             ];
             let output =
                 self.run_git_output(repo_root, &args)
                     .await
                     .map_err(|error| match error {
-                        WorktreeError::GitLaunchFailed { .. } => {
-                            WorktreeCreateFailure::no_side_effects(error)
-                        }
+                        WorktreeError::Execution {
+                            source:
+                                ExecutionFailure::Spawn(pl_remote_helper::SpawnError {
+                                    knowledge: pl_remote_helper::StartKnowledge::NotStarted,
+                                    ..
+                                }),
+                            ..
+                        } => WorktreeCreateFailure::no_side_effects(error),
                         _ => WorktreeCreateFailure::may_have_created(error),
                     })?;
             checked_output(&args, output)
@@ -431,7 +484,7 @@ impl WorktreeBackend for LocalWorktreeBackend {
             if force {
                 args.push("--force".to_string());
             }
-            args.push(local_git_path_argument(target_path));
+            args.push(self.path(target_path)?.as_str().into());
             self.run_git(repo_root, &args).await.map(|_| ())
         }
         .boxed()
@@ -481,30 +534,26 @@ pub(super) fn ancestor_result(
     checked_output(args, output).map(|_| true)
 }
 
-pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {
-    let cwd = dunce::simplified(cwd);
+fn git_request(cwd: &str, args: &[String], windows: bool) -> ExecutionRequest {
     let mut full_args = vec![
         "-c".to_string(),
         "core.hooksPath=/dev/null".to_string(),
         "-c".to_string(),
-        format!("safe.directory={}", cwd.display()),
+        format!("safe.directory={cwd}"),
         "-c".to_string(),
         "credential.helper=".to_string(),
     ];
-    #[cfg(windows)]
-    full_args.extend(["-c".to_string(), "core.longpaths=true".to_string()]);
+    if windows {
+        full_args.extend(["-c".to_string(), "core.longpaths=true".to_string()]);
+    }
     full_args.extend_from_slice(args);
     ExecutionRequest {
         program: PathBuf::from("git"),
         args: full_args,
-        cwd: cwd.to_path_buf(),
+        cwd: PathBuf::from(cwd),
         env: BTreeMap::from([("LC_ALL".into(), "C".into())]),
         timeout: Some(WORKTREE_GIT_TIMEOUT),
     }
-}
-
-fn local_git_path_argument(path: &Path) -> String {
-    dunce::simplified(path).to_string_lossy().into_owned()
 }
 
 pub(super) fn checked_output(

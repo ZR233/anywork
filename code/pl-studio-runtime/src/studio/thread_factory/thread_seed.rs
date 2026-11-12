@@ -31,7 +31,7 @@ pub(super) async fn capture(
     let documents = match &seed.resources.remote {
         Some(host) => {
             pl_tool::workspace_file::load_workspace_instructions(
-                &host.files,
+                &host.files(),
                 config.project_doc_max_bytes,
                 &config.project_doc_fallback_filenames,
             )

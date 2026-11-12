@@ -4,7 +4,7 @@ mod asset;
 mod connection;
 mod shutdown;
 mod ssh;
-use super::{RemoteWorkspaceHost, SshConfigEntry, SshConfigFile, SshError};
+use super::{SshConfigEntry, SshConfigFile, SshError, SshWorkspaceBinding};
 use asset::file_helper_assets;
 pub use asset::{RemoteHelperAssets, RemoteHelperTarget};
 use pl_remote_helper::{Executor, ExecutorId};
@@ -410,36 +410,36 @@ impl SshManager {
         alias: &str,
         path: String,
     ) -> Result<ExecutorWorkspaceFileBackend, SshError> {
-        Ok(self.open_workspace_host(alias, path).await?.files)
+        Ok(self.open_workspace_binding(alias, path).await?.files())
     }
-    pub async fn open_workspace_host(
+    pub async fn open_workspace_binding(
         &self,
         alias: &str,
         path: String,
-    ) -> Result<RemoteWorkspaceHost, SshError> {
+    ) -> Result<SshWorkspaceBinding, SshError> {
         let _admitted = self.admit_connection().await?;
         self.connect_server(alias).await?;
         let connection = self.active_connection(alias).await?;
-        self.workspace_host(connection, path).await
+        self.workspace_binding(connection, path).await
     }
-    pub async fn open_workspace_host_on_connection(
+    pub async fn open_workspace_binding_on_connection(
         &self,
         alias: &str,
         frozen: &ExecutorWorkspaceFileBackend,
         path: String,
-    ) -> Result<RemoteWorkspaceHost, SshError> {
+    ) -> Result<SshWorkspaceBinding, SshError> {
         let _admitted = self.admit_connection().await?;
         let connection = self.active_connection(alias).await?;
         if frozen.executor().id() != connection.executor.id() {
             return Err(SshError::Disconnected);
         }
-        self.workspace_host(connection, path).await
+        self.workspace_binding(connection, path).await
     }
-    async fn workspace_host(
+    async fn workspace_binding(
         &self,
         connection: Arc<SshConnection>,
         path: String,
-    ) -> Result<RemoteWorkspaceHost, SshError> {
+    ) -> Result<SshWorkspaceBinding, SshError> {
         let executor = connection.executor.clone();
         let root = executor.path(&path)?;
         let root = executor.fs().canonicalize(&root).await?;
@@ -454,15 +454,9 @@ impl SshManager {
             ));
         }
         let environment = execution_environment(executor.target_info())?;
-        Ok(RemoteWorkspaceHost {
+        Ok(SshWorkspaceBinding {
             profile: connection.profile.clone(),
-            files: ExecutorWorkspaceFileBackend::new(executor.clone(), root.as_str())?,
-            commands: crate::command::ExecutorCommandBackend::new(
-                executor.clone(),
-                root.as_str(),
-                environment.clone(),
-            )?,
-            git: crate::execution::ExecutorExecutionBackend::new(executor),
+            execution: crate::command::WorkspaceExecutionBinding::new(executor, root.as_str())?,
             execution_environment: environment,
         })
     }

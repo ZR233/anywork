@@ -59,15 +59,15 @@ impl StudioRuntime {
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
-                .open_workspace_host(server_id, project.path.clone())
+                .open_workspace_binding(server_id, project.path.clone())
                 .await?;
-            let workspace_root = std::path::PathBuf::from(host.files.canonical_path());
+            let workspace_root = std::path::PathBuf::from(host.files().canonical_path());
             let settings = self.config_runtime.read()?;
             lsp.configure_workspace_from_directory(
                 &workspace_root,
                 Some(Arc::new(pl_lsp::host::ExecutorLspHost::new(
-                    host.files.executor().clone(),
-                    host.files.canonical_path(),
+                    host.files().executor().clone(),
+                    host.files().canonical_path(),
                 )?)),
                 None,
             )
@@ -75,7 +75,7 @@ impl StudioRuntime {
             let fingerprint = format!(
                 "ssh:{server_id}:{}:{}:{}",
                 workspace_root.display(),
-                host.files.executor().id().to_string().as_str(),
+                host.files().executor().id().to_string().as_str(),
                 super::super::skill_catalog::skills_fingerprint(&settings.config.skills)?,
             );
             let _activation_command = self.activation.command_lock.lock().await;
@@ -105,7 +105,7 @@ impl StudioRuntime {
                     &workspace_root,
                     &settings.config.skills,
                     tokio_util::sync::CancellationToken::new(),
-                    Arc::new(host.files.clone()),
+                    Arc::new(host.files().clone()),
                 )
                 .await?;
             *self.activation.applied.write().await = Some(super::super::ProjectActivation {
@@ -164,9 +164,9 @@ impl StudioRuntime {
         if let Some(server_id) = &project.ssh_alias {
             let host = self
                 .ssh_manager
-                .open_workspace_host(server_id, project.path.clone())
+                .open_workspace_binding(server_id, project.path.clone())
                 .await?;
-            let workspace_root = std::path::PathBuf::from(host.files.canonical_path());
+            let workspace_root = std::path::PathBuf::from(host.files().canonical_path());
             let settings = self.config_runtime.read()?;
             return self
                 .skills
@@ -175,7 +175,7 @@ impl StudioRuntime {
                     &workspace_root,
                     &settings.config.skills,
                     tokio_util::sync::CancellationToken::new(),
-                    Arc::new(host.files.clone()),
+                    Arc::new(host.files().clone()),
                 )
                 .await;
         }
@@ -204,13 +204,13 @@ impl StudioRuntime {
         let (workspace_root, host, defaults) = if let Some(alias) = &project.ssh_alias {
             let host = self
                 .ssh_manager
-                .open_workspace_host(alias, project.path.clone())
+                .open_workspace_binding(alias, project.path.clone())
                 .await?;
             (
-                std::path::PathBuf::from(host.files.canonical_path()),
+                std::path::PathBuf::from(host.files().canonical_path()),
                 Some(Arc::new(pl_lsp::host::ExecutorLspHost::new(
-                    host.files.executor().clone(),
-                    host.files.canonical_path(),
+                    host.files().executor().clone(),
+                    host.files().canonical_path(),
                 )?) as Arc<dyn pl_lsp::host::LspHostBackend>),
                 None,
             )

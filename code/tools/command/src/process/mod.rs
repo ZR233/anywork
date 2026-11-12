@@ -1,6 +1,6 @@
 //! Process-domain capabilities and immutable observations.
 //!
-//! The host owns admission, deadlines, process trees and capture repair. These
+//! The host owns admission, deadlines, process ownership and confirmed capture prefixes. These
 //! interfaces neither create an owner nor equate cancellation with physical exit.
 pub mod input;
 mod observation;

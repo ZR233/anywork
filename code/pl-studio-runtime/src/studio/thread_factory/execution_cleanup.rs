@@ -135,19 +135,27 @@ impl StudioThreadFactory {
                 let host = self
                     .services
                     .ssh_manager
-                    .open_workspace_host(&profile.alias, container.to_string_lossy().into_owned())
+                    .open_workspace_binding(
+                        &profile.alias,
+                        container.to_string_lossy().into_owned(),
+                    )
                     .await?;
                 ensure!(
                     WorkspaceEndpoint::from_profile(Some(&host.profile)) == identity.endpoint
-                        && host.files.canonical_path() == container.to_string_lossy(),
+                        && host.files().canonical_path() == container.to_string_lossy(),
                     "execution cleanup endpoint or canonical container changed"
                 );
                 let path = source.to_string_lossy().into_owned();
-                if host.files.inspect_path(path.clone(), None).await?.is_some() {
-                    host.files.remove_path(path.clone(), None, true).await?;
+                if host
+                    .files()
+                    .inspect_path(path.clone(), None)
+                    .await?
+                    .is_some()
+                {
+                    host.files().remove_path(path.clone(), None, true).await?;
                 }
                 ensure!(
-                    host.files.inspect_path(path, None).await?.is_none(),
+                    host.files().inspect_path(path, None).await?.is_none(),
                     "execution files remain after cleanup for {id}"
                 );
             }

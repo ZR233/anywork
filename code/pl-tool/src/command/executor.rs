@@ -9,8 +9,49 @@ use std::collections::BTreeMap;
 use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct WorkspaceExecutionBinding {
-    pub executor: Executor,
-    pub root: TargetPath,
+    executor: Executor,
+    root: TargetPath,
+}
+
+impl WorkspaceExecutionBinding {
+    pub fn new(
+        executor: Executor,
+        root: &str,
+    ) -> std::result::Result<Self, pl_remote_helper::ExecutionError> {
+        Ok(Self {
+            root: executor.path(root)?,
+            executor,
+        })
+    }
+    pub fn executor(&self) -> &Executor {
+        &self.executor
+    }
+    pub fn root(&self) -> &str {
+        self.root.as_str()
+    }
+    pub fn is_same_binding(&self, other: &Self) -> bool {
+        self.executor.id() == other.executor.id() && self.root == other.root
+    }
+    pub fn files(&self) -> crate::workspace_file::ExecutorWorkspaceFileBackend {
+        crate::workspace_file::ExecutorWorkspaceFileBackend::from_binding(
+            self.executor.clone(),
+            self.root.clone(),
+        )
+    }
+    pub fn commands(
+        &self,
+        environment: crate::environment::ExecutionEnvironment,
+    ) -> ExecutorCommandBackend {
+        ExecutorCommandBackend {
+            executor: self.executor.clone(),
+            root: self.root.clone(),
+            environment,
+            child_environment: BTreeMap::new(),
+        }
+    }
+    pub fn git(&self) -> crate::execution::ExecutorExecutionBackend {
+        crate::execution::ExecutorExecutionBackend::new(self.executor.clone())
+    }
 }
 
 #[derive(Debug, Clone)]

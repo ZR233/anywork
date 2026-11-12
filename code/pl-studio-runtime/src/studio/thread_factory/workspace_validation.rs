@@ -2,8 +2,7 @@
 use super::{StudioThreadFactory, tool_bindings::ToolBinding};
 use crate::{
     agent::worktree::{
-        LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeError,
-        WorktreeHandle, WorktreeManager,
+        ExecutorWorktreeBackend, WorktreeBackend, WorktreeError, WorktreeHandle, WorktreeManager,
     },
     studio::{
         ThreadRecord, WorkspaceRecord,
@@ -54,10 +53,7 @@ impl ReviewWorkspaceError {
                 WorktreeError::Missing
                 | WorktreeError::IdentityMismatch(_)
                 | WorktreeError::InvalidResource(_) => false,
-                WorktreeError::LocalIo { source, .. } => {
-                    source.kind() != std::io::ErrorKind::NotFound
-                }
-                WorktreeError::Remote { source, .. } => !source.is_not_found(),
+                WorktreeError::Target { source, .. } => !source.is_not_found(),
                 _ => true,
             },
         }
@@ -216,11 +212,11 @@ impl ReviewWorkspaceCheck {
                 .ok_or(ReviewWorkspaceError::Unconfirmed(
                     "SSH execution connection is unavailable",
                 ))?
-                .files;
+                .files();
             self.factory
                 .services
                 .ssh_manager
-                .open_workspace_host_on_connection(alias, frozen, self.root.clone())
+                .open_workspace_binding_on_connection(alias, frozen, self.root.clone())
                 .await?;
         }
         self.recheck()
@@ -681,7 +677,7 @@ impl StudioThreadFactory {
             .and_then(|binding| binding.remote.as_ref())
         {
             let stat = remote
-                .files
+                .files()
                 .inspect_path(".".into(), None)
                 .await
                 .map_err(pl_tool::remote::SshError::from)?
@@ -689,7 +685,7 @@ impl StudioThreadFactory {
                     "frozen SSH workspace is missing",
                 ))?;
             if !stat.is_dir
-                || !same_workspace_path(remote.files.canonical_path(), &assignment.root, true)
+                || !same_workspace_path(remote.files().canonical_path(), &assignment.root, true)
             {
                 return Err(ReviewWorkspaceError::Invalid(
                     "frozen SSH workspace is not the same canonical directory",
@@ -721,29 +717,21 @@ impl StudioThreadFactory {
         project_root: &Path,
         binding: Option<&ToolBinding>,
     ) -> Result<(PathBuf, WorktreeManager), ReviewWorkspaceError> {
-        let backend = |root: &Path,
-                       canonical_repository: bool|
+        let executor = match &project.ssh_alias {
+            Some(_) => binding
+                .and_then(|binding| binding.remote.as_ref())
+                .ok_or(ReviewWorkspaceError::Unconfirmed(
+                    "SSH execution binding disappeared",
+                ))?
+                .files()
+                .executor()
+                .clone(),
+            None => self.services.local_executor.clone(),
+        };
+        let backend = |_root: &Path,
+                       _canonical_repository: bool|
          -> Result<Arc<dyn WorktreeBackend>, ReviewWorkspaceError> {
-            match &project.ssh_alias {
-                Some(_) => Ok(Arc::new(RemoteWorktreeBackend::from_frozen_connection(
-                    self.services.ssh_manager.clone(),
-                    binding
-                        .and_then(|binding| binding.ssh_profile.clone())
-                        .ok_or(ReviewWorkspaceError::Unconfirmed(
-                            "SSH profile binding disappeared",
-                        ))?,
-                    root.to_path_buf(),
-                    binding
-                        .and_then(|binding| binding.remote.as_ref())
-                        .ok_or(ReviewWorkspaceError::Unconfirmed(
-                            "SSH execution binding disappeared",
-                        ))?
-                        .files
-                        .clone(),
-                    canonical_repository,
-                )?)),
-                None => Ok(Arc::new(LocalWorktreeBackend::default())),
-            }
+            Ok(Arc::new(ExecutorWorktreeBackend::new(executor.clone())))
         };
         let resolver = backend(project_root, false)?;
         let repository_root =

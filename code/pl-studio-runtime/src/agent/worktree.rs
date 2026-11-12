@@ -3,18 +3,15 @@
 mod backend;
 mod diagnostic;
 mod manager;
-mod remote;
 
 pub(crate) use backend::RegisteredWorktree;
 pub use backend::{
-    LocalWorktreeBackend, WorktreeBackend, WorktreeCreateFailure, WorktreeCreateFailureDisposition,
-    WorktreeError, WorktreeStatus,
+    ExecutorWorktreeBackend, WorktreeBackend, WorktreeCreateFailure,
+    WorktreeCreateFailureDisposition, WorktreeError, WorktreeStatus,
 };
 pub use manager::{
     WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
     WorktreeRetirementRequest,
 };
 pub use pl_tool::execution::ExecutionFailure;
-pub use pl_tool::remote::SshError;
 pub use pl_tool::workspace_file::WorkspaceDownloadError;
-pub use remote::RemoteWorktreeBackend;

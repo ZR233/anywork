@@ -32,7 +32,7 @@ pub(super) struct PreparedThreadTools {
     pub tools: StudioThreadTools,
     pub hosted: Vec<pl_model::runtime::HostedTool>,
     pub environment: pl_tool::environment::ExecutionEnvironment,
-    pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub remote: Option<pl_tool::remote::SshWorkspaceBinding>,
     pub workspace: ToolWorkspace,
 }
 
@@ -40,7 +40,7 @@ pub(super) enum CatalogPreparation {
     Initial,
     Refresh {
         commands: Option<crate::thread_assembler::StudioCommandProcesses>,
-        remote: Option<Box<pl_tool::remote::RemoteWorkspaceHost>>,
+        remote: Option<Box<pl_tool::remote::SshWorkspaceBinding>>,
         policy_key: String,
         policies: std::collections::BTreeMap<
             String,
@@ -236,7 +236,7 @@ impl StudioThreadFactory {
                     Some(server) => Some(
                         self.services
                             .ssh_manager
-                            .open_workspace_host(server, root.to_string_lossy().into_owned())
+                            .open_workspace_binding(server, root.to_string_lossy().into_owned())
                             .await
                             .map_err(|error| {
                                 resource_error("open child remote workspace", error)
@@ -254,7 +254,7 @@ impl StudioThreadFactory {
                 crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
                     &host.profile,
                 )),
-                host.files.canonical_path().into(),
+                host.files().canonical_path().into(),
             ),
             None => match verified_local {
                 Some(proof) => Ok(proof.identity()),
@@ -288,11 +288,22 @@ impl StudioThreadFactory {
         self.services
             .worktrees
             .preserve_workspace_resources(thread_id, identity);
+        let executor = remote
+            .as_ref()
+            .map(|host| host.execution.executor().clone())
+            .unwrap_or_else(|| self.services.local_executor.clone());
+        let execution = pl_tool::command::WorkspaceExecutionBinding::new(
+            executor.clone(),
+            root.to_str().ok_or_else(|| {
+                ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
+            })?,
+        )
+        .map_err(|error| resource_error("bind Thread execution workspace", error))?;
         if verified_local.is_some() {
             super::session_files::verify_existing_session_files(workspace.root(), thread_id)
                 .await?;
         } else {
-            super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
+            super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
         }
         let shell_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", "starting");
@@ -318,20 +329,10 @@ impl StudioThreadFactory {
         } else {
             Default::default()
         };
-        let executor = remote
-            .as_ref()
-            .map(|host| host.files.executor().clone())
-            .unwrap_or_else(|| self.services.local_executor.clone());
         let binding = StudioCommandBinding {
-            commands: pl_tool::command::ExecutorCommandBackend::new(
-                executor.clone(),
-                workspace.root().to_str().ok_or_else(|| {
-                    ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
-                })?,
-                environment.clone(),
-            )
-            .map_err(|error| ThreadAssemblyError::Identity(error.to_string()))?
-            .with_child_environment(child_environment),
+            commands: execution
+                .commands(environment.clone())
+                .with_child_environment(child_environment),
             workspace: workspace.clone(),
             access: match config.runtime.permission_mode {
                 crate::approval::PermissionMode::FullAccess
@@ -387,24 +388,13 @@ impl StudioThreadFactory {
             let git =
                 pl_tool::git::GitWorkspaceConfig::local(root.clone()).with_native_credentials();
             let credentials = Arc::new(pl_tool::git::NoGitCredentialProvider);
-            tools = match &remote {
-                Some(host) => tools.with_git(StudioGitBinding {
-                    config: git,
-                    backend: Arc::new(host.git.clone()),
-                    credentials,
-                    kinds: pl_tool::git::GitToolKind::all().to_vec(),
-                    authorization: workspace.authorization(),
-                })?,
-                None => tools.with_git(StudioGitBinding {
-                    config: git,
-                    backend: Arc::new(pl_tool::execution::ExecutorExecutionBackend::new(
-                        self.services.local_executor.clone(),
-                    )),
-                    credentials,
-                    kinds: pl_tool::git::GitToolKind::all().to_vec(),
-                    authorization: workspace.authorization(),
-                })?,
-            };
+            tools = tools.with_git(StudioGitBinding {
+                config: git,
+                backend: Arc::new(execution.git()),
+                credentials,
+                kinds: pl_tool::git::GitToolKind::all().to_vec(),
+                authorization: workspace.authorization(),
+            })?;
         }
         if config.runtime.tool_capabilities.mcp {
             let mcp_started = std::time::Instant::now();
@@ -442,7 +432,7 @@ impl StudioThreadFactory {
                         &root,
                         &config.skills,
                         cancellation.clone(),
-                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                        Some(Arc::new(execution.files())),
                     )
                     .await
                     .map_err(|error| resource_error("refresh Thread skill catalog", error))?;
@@ -456,7 +446,7 @@ impl StudioThreadFactory {
                         &root,
                         &config.skills,
                         cancellation.clone(),
-                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                        Some(Arc::new(execution.files())),
                     )
                     .await
                     .map_err(|error| resource_error("discover child skills", error))?

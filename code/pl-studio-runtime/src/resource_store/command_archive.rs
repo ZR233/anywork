@@ -133,8 +133,8 @@ mod tests {
         let backend = Arc::new(ExecutorCommandBackend::local(root.path())?);
         let binding = backend.binding();
         let files = Arc::new(ExecutorWorkspaceFileBackend::new(
-            binding.executor,
-            binding.root.as_str(),
+            binding.executor().clone(),
+            binding.root(),
         )?);
         let manager = CommandProcessManager::new(backend);
         let mut snapshot = manager

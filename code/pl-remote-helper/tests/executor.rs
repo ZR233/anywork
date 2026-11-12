@@ -39,6 +39,9 @@ async fn literal_arguments_and_concurrent_environment_and_directories() {
             assert_eq!(fields[1], value.as_bytes());
             assert_eq!(&fields[2..fields.len() - 1], &arguments.map(str::as_bytes));
         }
+        let mut exit_255 = executor.command("/bin/sh");
+        exit_255.args(["-c", "exit 255"]);
+        assert_eq!(exit_255.status().await.unwrap(), ProcessExit::Code(255));
         let failure = executor
             .command("/definitely/missing/anywork-command")
             .spawn()

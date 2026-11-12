@@ -257,6 +257,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
             "--mcp-stdio".to_owned(),
             "--coord-file".to_owned(),
             concurrent_mcp_coord.to_string_lossy().into_owned(),
+            "--inherit-process-group".to_owned(),
         ],
     )?;
     let concurrent_tool_coord = working.join("shutdown-concurrent-tool-coord.json");
@@ -1852,7 +1853,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "the concurrent turn's required receipt continuation was accepted (consumed {}/{} steps, remainingOptional={}) before the exclusive writer lock was taken across the exit (blocked terminal save); the scenario-owned stdio MCP server and the background tool subtree were each proven live and then reclaimed on their own (mcp stop {mcp_stop:?} ms, tool stop {tool_stop:?} ms) while that chain was still waiting; the native exit code 1 was a non-clean degraded shutdown (event={} code={} pending={}, coordinatedFinish={}, deadlineImminent={}): {}",
+                    "the concurrent turn's required receipt continuation was accepted (consumed {}/{} steps, remainingOptional={}) before the exclusive writer lock was taken across the exit (blocked terminal save); the scenario-owned stdio MCP server and the background tool subtree, each with an inherited-group descendant, were proven live and then reclaimed on their own (mcp stop {mcp_stop:?} ms, tool stop {tool_stop:?} ms) while that chain was still waiting; the native exit code 1 was a non-clean degraded shutdown (event={} code={} pending={}, coordinatedFinish={}, deadlineImminent={}): {}",
                     continuation.consumed_steps,
                     continuation.expected_steps,
                     continuation.remaining_optional,

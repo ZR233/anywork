@@ -486,7 +486,7 @@ impl StudioRuntime {
         index: usize,
         remote_hosts: &mut Vec<(
             crate::studio::agent_host::worktree_lease::WorkspaceIdentity,
-            pl_tool::remote::RemoteWorkspaceHost,
+            pl_tool::remote::SshWorkspaceBinding,
         )>,
     ) -> Result<()> {
         let member = operation.members[index].clone();
@@ -520,7 +520,7 @@ impl StudioRuntime {
                         Ok(host)
                     } else {
                         self.ssh_manager
-                            .open_workspace_host(&profile.alias, identity.root.clone())
+                            .open_workspace_binding(&profile.alias, identity.root.clone())
                             .await
                     };
                     let host = match opened {
@@ -534,7 +534,7 @@ impl StudioRuntime {
                     };
                     ensure!(
                         WorkspaceEndpoint::from_profile(Some(&host.profile)) == identity.endpoint
-                            && host.files.canonical_path() == identity.root,
+                            && host.files().canonical_path() == identity.root,
                         "delete SSH endpoint or canonical root changed"
                     );
                     if !remote_hosts
@@ -546,7 +546,7 @@ impl StudioRuntime {
                     self.remove_bound_execution_session(
                         operation,
                         index,
-                        SessionTempBackend::new(&host.files),
+                        SessionTempBackend::new(&host.files()),
                     )
                     .await?;
                 }

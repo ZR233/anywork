@@ -703,3 +703,6 @@ pub(crate) async fn reply(
         let _ = stream::send(&mut stream, bytes.into(), true, &closing).await;
     }
 }
+
+#[cfg(test)]
+mod tests;

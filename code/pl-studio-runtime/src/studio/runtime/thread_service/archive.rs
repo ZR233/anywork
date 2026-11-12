@@ -1060,14 +1060,14 @@ async fn clean_execution_temp(
                 .context("archive frozen SSH endpoint is no longer configured")?
                 .profile;
             let host = ssh
-                .open_workspace_host(&profile.alias, member.execution.root.clone())
+                .open_workspace_binding(&profile.alias, member.execution.root.clone())
                 .await?;
             ensure!(
                 WorkspaceEndpoint::from_profile(Some(&host.profile)) == member.execution.endpoint
-                    && host.files.canonical_path() == member.execution.root,
+                    && host.files().canonical_path() == member.execution.root,
                 "archive SSH endpoint or canonical root changed"
             );
-            let backend = SessionTempBackend::new(&host.files);
+            let backend = SessionTempBackend::new(&host.files());
             backend.migrate(&files).await?;
             backend.remove(&files).await?;
         }

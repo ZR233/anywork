@@ -4352,7 +4352,7 @@ pub(crate) mod storage_fault_tests {
     async fn close_worktree_preserves_original_history_refs_and_terminal_replacements() -> Result<()>
     {
         use crate::agent::worktree::{
-            LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
         };
         use crate::studio::agent_host::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
@@ -4406,7 +4406,9 @@ pub(crate) mod storage_fault_tests {
         let fixture = close_factory(&store)?;
         let manager = WorktreeManager::new(
             repository.clone(),
-            Arc::new(LocalWorktreeBackend::default()),
+            Arc::new(ExecutorWorktreeBackend::new(
+                pl_remote_helper::Executor::local()?,
+            )),
         );
         let ownership = WorktreeOwnership::Child {
             child_id: child.id.clone(),

@@ -1,9 +1,9 @@
 //! Shared helpers for the scenario-owned stdio peers (MCP and fake LSP).
 //!
 //! Both peers are started by the real product through its supervised worker and
-//! must reclaim the whole subtree on exit. To make that observable, each peer
+//! observes the configured process-group boundary on exit. To make that observable, each peer
 //! spawns a grandchild that ignores `SIGTERM` and lives in its own process group
-//! (so a group-wide signal cannot reach it) and records its own and the
+//! by default; coordinated-stop opts into the inherited group. Each records its own and the
 //! grandchild's pid/starttime into a coordination file. The coordinator then
 //! OS-polls the real business pids.
 
@@ -23,7 +23,7 @@ use std::process::{Child, Command, Stdio};
 /// it) while `SIGKILL` still can. `process_group(0)` detaches it from the peer's
 /// group, so a group-wide signal misses it — exactly the descendant a product
 /// supervisor must adopt and reap by pid.
-fn spawn_sigterm_ignoring_grandchild() -> Result<Child> {
+fn spawn_sigterm_ignoring_grandchild(inherit_process_group: bool) -> Result<Child> {
     let shell = if cfg!(unix) { "/bin/sh" } else { "sh" };
     let mut command = Command::new(shell);
     command
@@ -31,10 +31,14 @@ fn spawn_sigterm_ignoring_grandchild() -> Result<Child> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(not(unix))]
+    let _ = inherit_process_group;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        if !inherit_process_group {
+            command.process_group(0);
+        }
     }
     command
         .spawn()
@@ -65,8 +69,8 @@ fn ensure_grandchild_alive(_pid: u32) -> Result<()> {
 /// The peer never kills the grandchild itself: reclaiming it is exactly what the
 /// product's supervision must do, so the acceptance can tell a self-supervised
 /// subtree apart from a leaked one.
-pub(crate) fn spawn_tracked_grandchild() -> Result<u32> {
-    let grandchild = spawn_sigterm_ignoring_grandchild()?;
+pub(crate) fn spawn_tracked_grandchild(inherit_process_group: bool) -> Result<u32> {
+    let grandchild = spawn_sigterm_ignoring_grandchild(inherit_process_group)?;
     let pid = grandchild.id();
     ensure_grandchild_alive(pid)?;
     std::thread::spawn(move || {
