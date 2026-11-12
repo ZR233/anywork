@@ -907,6 +907,18 @@ final class _TimelineScene {
   }
 
   Future<void> waitForTerminalTurn(String turnId) async {
+    final samples = <Map<String, Object?>>[];
+    final clock = Stopwatch()..start();
+    String? previous;
+    var changes = 0;
+    Map<String, Object?>? latest;
+    Map<String, Object?>? turnCut(StudioTurnView? turn) => turn == null
+        ? null
+        : {
+            'id': turn.turnId,
+            'status': turn.state.status.name,
+            'revision': turn.revision,
+          };
     try {
       await until(
         () {
@@ -918,6 +930,50 @@ final class _TimelineScene {
           }
           final live = display.live.value;
           final state = graph.client.conversations.session(selected).state;
+          final execution = state.runtime?.execution;
+          final cut = <String, Object?>{
+            'submittedTurn': _submittedTurnId,
+            'targetTurn': turnId,
+            'sessionRevision': state.revision,
+            'streamEpoch': state.streamEpoch,
+            'baseRevision': state.baseRevision,
+            'sync': state.sync.phase.name,
+            'syncRetryExhausted': state.sync.retryExhausted,
+            'lastTurn': turnCut(state.lastTurn),
+            'activeTurn': turnCut(state.activeTurn),
+            'execution': execution == null
+                ? null
+                : {
+                    'id': execution.id,
+                    'turnId': execution.turnId,
+                    'phase': execution.phase.name,
+                  },
+            'activity': state.activity == null
+                ? null
+                : {
+                    'kind': state.activity!.kind.name,
+                    'tools': state.activity!.tools.count,
+                    'background': state.activity!.tools.background,
+                  },
+            'live': live == null
+                ? null
+                : {
+                    'revision': live.revision,
+                    'executionPresent': live.executionPresent,
+                    'blockCount': live.blocks.length,
+                    'blockIds': live.blocks
+                        .take(64)
+                        .map((block) => block.id)
+                        .toList(),
+                  },
+          };
+          final encoded = jsonEncode(cut);
+          if (encoded != previous) {
+            changes++;
+            previous = encoded;
+            latest = {'elapsedMillis': clock.elapsedMilliseconds, ...cut};
+            if (samples.length < 128) samples.add(latest!);
+          }
           final completed = state.lastTurn;
           return turnId == _submittedTurnId &&
               completed?.threadId == selected &&
@@ -963,6 +1019,27 @@ final class _TimelineScene {
         }
       }
       rethrow;
+    } finally {
+      final evidence = {
+        'targetTurn': turnId,
+        'changeCount': changes,
+        'sampleLimit': 128,
+        'truncated': changes > samples.length,
+        'samples': samples,
+        'latest': latest,
+      };
+      report['terminalTurnSamples'] = evidence;
+      try {
+        File(
+          '${Platform.environment['ANYWORK_TIMELINE_OUTPUT']}/timeline-terminal-samples.json',
+        ).writeAsStringSync(
+          '${const JsonEncoder.withIndent('  ').convert(evidence)}\n',
+          flush: true,
+        );
+      } catch (error) {
+        report['terminalSamplesWriteFailureType'] = error.runtimeType
+            .toString();
+      }
     }
   }
 
