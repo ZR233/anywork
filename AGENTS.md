@@ -117,10 +117,10 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - 通用 Flutter / Dart 技能从用户级 `~/.agents/skills/` 发现，官方来源为 `flutter/agent-plugins` 和 `dart-lang/skills`；项目不复制或维护这些技能。缺少时读取对应官方文档，安装或更新按用户授权进行。本仓库技能只补充项目架构、构建和验收约定。
 - 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束，测试必要性由 `test-quality` 判断。
 - 上游技能中的 CLI 示例映射到本项目入口：应用命令使用 `cargo flutter` / `cargo dart`，纯 Client 使用 `verify-client`，生成使用 `generate-gui`，原生启动使用 `run-gui`，桌面测试使用 `test-project`。保留 Riverpod、typed GoRouter、Client/FRB 和既有生成模型；通用示例不要求换状态库、手改锁文件或绑定、增加依赖、开启实验语法或全仓应用自动修复。
-- 界面对照按场景选择最小充分入口：纯组件先用 `cargo xtask preview-gui --headless --no-devtools`；实际页面与业务使用隔离原生应用及官方 MCP；可重复断言使用 `test/ui` 或 `integration_test`。先固定场景、实际视口、主题和字号，再检查组件树、交互与截图，复用同次运行的热更新，不为每次布局修改重跑完整构建和业务套件。
-- `preview-gui` 透传官方 `widget-preview start` 参数，先按锁文件准备应用依赖，再从应用 Pub overrides 生成官方缓存中的覆盖配置；Flutter 负责发现、编译、缓存和热更新。恢复不完整缓存用官方 `cargo flutter widget-preview clean`，下次启动自动准备；不手改 SDK 或缓存 manifest。
+- 人工实验统一按 `flutter-studio-build` 的[实验指南](.agents/skills/flutter-studio-build/references/experiments.md)操作。纯界面开发、局部交互和截图默认使用 `cargo xtask preview-gui --headless --no-devtools`，**不编译 Rust bridge**，不启动模型服务；可重复断言用相关 `test/ui`。只有持久化、模型调用或原生资源才选择隔离原生应用及官方 Dart MCP，不把全部层级排成必跑清单。
+- `preview-gui` 复用官方 `widget-preview start` 的依赖、缓存和热更新，项目只适配应用 Pub overrides；不复制 UI、不手改 SDK 或缓存 manifest。具体适配与故障恢复见构建技能，不为一次截图增加测试入口、环境变量或永久脚本。
 - Dart MCP 使用官方 `dart mcp-server`，项目 roots 按当前工作区注册。MCP 的 stdio 启动直接使用实际 Dart SDK 可执行文件，不能套用会向 stdout 打印日志的 Cargo 包装；项目工作命令仍遵循上面的入口。先读取实际工具 schema，再连接 xtask 启动的应用，不用 MCP `launch_app` 绕过 bridge/helper 准备。
-- Dart 界面修改后使用 MCP 热重载/重启并检查真实界面及运行时错误；普通 `run-gui --inspect` 保持 Flutter 工具常驻，`--native-launch` / release 不作为热重载入口。Rust、FRB 或原生代码变化须经 xtask 构建并完整重开。宿主与容器不要同时改写同一 checkout 的 Pub/生成缓存，切换环境前结束原运行或使用独立 checkout。
+- Dart 界面修改复用当前载体的官方热更新并检查画面和错误；预览不因截图转为原生构建。原生 `run-gui --inspect` 支持 MCP 热重载，`--native-launch` / release 不作为热重载入口；Rust/FRB/原生变化才构建并完整重开。宿主与容器不要同时改写同一 checkout 的 Pub/生成缓存，切换前结束原运行或使用独立 checkout。
 
 ### 桌面 GUI
 
@@ -143,15 +143,15 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件，由项目 Docker 镜像提供。宿主原生运行时，xtask 仍须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask test-project --suite desktop` 复用 bridge/helper 构建与进程树管理，运行官方桌面 `integration_test`；与 demo、capture、profile/native-launch 和 release 模式互斥。测试用 `WidgetTester` 操作真实生产组件。`wait_events` 的隔离 provider 由 `manual-gui --preset wait-events` 持有；`conversation_read_work` 的关闭 SQLite 预置由 `--preset conversation-read-work` 持有。`test-project` 在对应环境变量未齐时调用这些 preset。
 - `cargo xtask test-project --suite native` 在进程外裁判真实退出码、重开和第二实例；薄故障装配是 `tool/native_fault_main.dart`。
-- `cargo xtask run-gui --capture` 在正常 debug 应用上开启只读 Flutter 内容捕获（`ext.anywork.capture`）；发布构建不注册该 extension。宿主落盘使用 `code/anywork/tool/capture_ui.dart`。
-- `cargo xtask run-gui --inspect` 使用独立 debug 入口注册官方 Flutter Driver extension，供 Dart MCP 的 `widget_inspector` 和 `flutter_driver_command` 读取布局、点击、输入、滚动及截图；与 release/profile 和自定义 native target 互斥，不改变正式应用入口或 `integration_test` binding。隔离人工观察用 `cargo xtask manual-gui --preset gui --inspect`；截图成功仍需检查真实画面和资源退出。
+- 人工截图使用 Widget Previewer/成熟浏览器工具或原生官方 Dart MCP；自定义内容捕获只保留自动化及原生测量的内部职责，不作为平行人工入口。
+- 原生 MCP 观察使用独立 debug Driver 入口；隔离模拟环境用 `cargo xtask manual-gui --preset gui --inspect`，复用已有 native launcher 和真实退出报告，不改变正式入口或 `integration_test` binding。Linux 无桌面时由系统 `xvfb-run` 提供显示，不需要伪终端；管道 stdin 的 `done` 请求退出后须等待并校验真实退出与后代回收，不重复录入 UI 动作。验收载体不提供 resident 热重载；确需跨层开发热重载才用普通 `run-gui --inspect`，其工具退出码不能代证产品正常退出。
 - UI 自动化在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，不准备 Rust/bridge。
 - 无显示环境的 widget 测试仍会运行依赖包的官方 native-assets hooks。当前 `cnativeapi` 在 Linux 需要 C++ 编译器、pkg-config 以及 GTK 3 / X11 / Xi 开发文件；缺少时按 hook 原始错误补齐宿主依赖，不禁用 hooks 或用额外 UI 实现代替。
-- `cargo xtask manual-gui` 启动隔离的原生 Studio 和本地模拟供应商，记录截图、快照、请求与日志供人工判定；场景参数是 `--preset`。真实供应商人工验收用 `cargo xtask run-gui` 直接读取用户已有配置，不修改其凭据。
+- `cargo xtask manual-gui` 启动隔离的原生 Studio 和本地模拟供应商，持有环境、请求及日志供观察；场景参数是 `--preset`，截图和操作遵循统一实验指南。真实供应商观察须有具体授权，读取已有配置，不修改凭据。
   此命令仅按需编译并调用独立的 `pl-studio-acceptance`，参数由验收工具解析；普通 xtask、
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
-- GUI 人工验收使用 `cargo xtask manual-gui --preset`；`cargo xtask run-gui --demo` 仍可供独立的界面预览，不能证明真实 bridge、持久化或 provider 行为。人工结论独立记录，默认为待评审。
+- `run-gui --demo` 不作为人工实验的默认入口，也不能证明真实 bridge、持久化或 provider 行为。纯界面使用官方预览，业务使用隔离真实产品；人工结论独立记录，默认为待评审。
 - `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
 - AI 运行时观察优先通过官方 Dart/Flutter MCP / Inspector 操作 Flutter 层，重复功能验证使用 `WidgetTester` / `integration_test`。Windows、Linux 共用这些接口；Linux 没有显示服务时用 Xvfb 提供原生启动环境，Windows 原生验证仍需可运行桌面应用的会话。平台窗口、IME、托盘等边界按需使用真实键盘/指针或系统工具；不把 Flutter 层截图外推为系统行为验证。专用工具可覆盖时不使用 Computer Use。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
 
@@ -230,10 +230,8 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   `cargo install --path code/pl-remote-helper --locked` 安装或更新。
   桌面 xtask 构建将 worker 作为 Flutter bundle 资源分发，不嵌入 bridge；两种宿主均不使用裸 shell 后备路径。
 
-- 不默认启用 `--all-features`：`live-tests` 等 feature 依赖外部服务与有效
-  API key，需要时以 `cargo run -p pl-studio-runtime --features live-tests --example model_observe -- <provider> <model> <task-file> <artifact-dir>` 等显式
-  opt-in 执行，CI 与本地默认检查都不包含。
-- 真实模型和 GUI 任务使用人工观察入口；本地模拟验收记录执行结果和证据，不把模拟通过等同于真实供应商兼容。人工结论独立记录，默认为待评审。
+- 不默认启用 `--all-features`。性能与真实外部服务观察按明确目标和授权显式选择，不将费用、凭据或机器敏感采样带入普通检查；不保留专项实验 example、永久截图脚本或第二套业务运行时。
+- 真实模型与 GUI 观察遵循统一实验方法，按边界选择载体；模拟通过不等于真实供应商兼容，人工结论独立记录，默认为待评审。
 - CI 的触发条件与作业以 [PR Quality Gate](.github/workflows/pr-quality.yml) 为准；它描述远端实际检查，不构成本地重复执行要求。GUI 人工观察与 live 模型观察是独立入口，模拟、单平台和真实供应商结果各有覆盖边界。
 - `cargo doc --workspace --all-features --no-deps` 为按需检查项，CI 不执行。
 

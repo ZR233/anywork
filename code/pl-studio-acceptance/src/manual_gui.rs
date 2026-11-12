@@ -5,6 +5,10 @@ mod conversation_read_work;
 mod delegation;
 #[cfg(test)]
 mod history_fault_tests;
+#[cfg(test)]
+mod manual_cleanup_tests;
+#[cfg(test)]
+mod manual_startup_tests;
 mod message_submission;
 mod mode_editor;
 mod model_catalog;
@@ -42,7 +46,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -53,7 +57,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[command(
     name = "cargo xtask manual-gui",
     bin_name = "cargo xtask manual-gui",
-    about = "Prepare an isolated Studio environment. Manual presets stay interactive; desktop and native presets are judged automatically."
+    about = "Prepare an isolated Studio environment. Use official Dart MCP for manual UI interaction and screenshots; send done on stdin to shut down. Desktop and native presets are judged automatically."
 )]
 pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
@@ -66,6 +70,8 @@ pub(crate) struct ManualGuiOptions {
     pub(crate) preset: String,
     /// Enable official Flutter MCP/Driver interaction for the manual gui or
     /// plan-recovery or history-fault preset.
+    /// The gui preset uses debug native launch with an exit report, not a
+    /// resident hot-reload session.
     #[arg(long)]
     pub(crate) inspect: bool,
     /// Run only stop/background evidence; omission keeps the complete realtime journey.
@@ -871,47 +877,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             "--model-catalog-restart requires a `models` inventory; a payload instance returns a captured list with no withdrawable model_id"
         );
     }
-    // Automatic desktop/native presets and catalog bind checks own their
-    // verdict. Remaining presets are operator runbooks and need a terminal.
     bots_fixture::validate(&options)?;
-    if !matches!(
-        options.preset.as_str(),
-        "statistics"
-            | "realtime"
-            | "realtime-presentation"
-            | "message-submission"
-            | "timeline-concept"
-            | "timeline-boundary"
-            | "media-handoff"
-            | "stress-body"
-            | "stress-body-large"
-            | "history-lock"
-            | "history-fault"
-            | "plan-recovery"
-            | "mode-editor"
-            | "context-replay-recovery"
-            | "websocket-recovery"
-            | "call-lifecycle-recovery"
-            | "tool-scroll"
-            | "web-search"
-            | "provider-usage"
-            | "shutdown"
-            | "timeline-history"
-            | "timeline-history-20k"
-            | "question-history"
-            | "skill-activity"
-            | "wait-events"
-            | "conversation-read-work"
-            | "sidebar-query"
-    ) && !options.model_catalog_restart
-        && !options.model_catalog_restart_check
-        && options.delegation_driver.is_none()
-    {
-        ensure!(
-            io::stdin().is_terminal(),
-            "manual-gui requires an interactive terminal"
-        );
-    }
     let (interrupt_tx, interrupt_rx) = mpsc::channel();
     thread::spawn(move || {
         if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -943,7 +909,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         && !options.timeline_displacement
         && !options.bots_fixture
         && options.delegation_driver.is_none();
-    let output = options.output.unwrap_or_else(|| {
+    let output = options.output.clone().unwrap_or_else(|| {
         workspace
             .join("target/manual-gui")
             .join(format!("{stamp}-{}", std::process::id()))
@@ -1749,22 +1715,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     gui_command
         .stdout(Stdio::from(gui_stdout))
         .stderr(Stdio::from(gui_log));
-    if bots.is_none() {
-        if options.inspect {
-            gui_command.arg("--inspect");
-        }
-        if options.preset == "gui" {
-            gui_command.args(["--log-level", "info"]);
-        }
-        if options.seed_home_copy.is_some() {
-            // Observe the real native wait status; Flutter's resident runner reports zero even
-            // when the app exits abnormally during migration/restart review.
-            gui_command
-                .args(["--native-launch", "--native-exit-report"])
-                .arg(output.join("native-exit.json"));
-        }
-        if matches!(options.preset.as_str(), "stress" | "tool-scroll") {
-            gui_command.args(["--profile", "--native-launch"]);
+    let native_exit_report = configure_manual_gui_launch(&mut gui_command, &options, &output);
+    if let Some(report) = &native_exit_report {
+        match fs::remove_file(report) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("failed to clear previous native exit report"),
         }
     }
     let mut gui = match OwnedProcess::start(&mut gui_command, false) {
@@ -1782,7 +1738,18 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         }
     };
     let session = (|| -> Result<()> {
-        let vm_url = wait_for_vm(&gui_log_path, &mut gui, &mut fixture, &interrupt_rx)?;
+        let vm_url = wait_for_vm_in_phase(
+            &gui_log_path,
+            &mut gui,
+            &mut fixture,
+            &interrupt_rx,
+            if native_exit_report.is_some() {
+                VmStartupPhase::NativePreparation
+            } else {
+                VmStartupPhase::Immediate
+            },
+            Duration::from_secs(600),
+        )?;
         println!("Native GUI is ready. Evidence: {}", output.display());
         if bots.is_some() {
             println!(
@@ -1824,7 +1791,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             )?;
             println!(
                 "Tool-scroll runbook: open the isolated project, send a turn that \
-                 expands a tool with image recycling, then type done to capture. \
+                 expands a tool with image recycling, then type done to shut down. \
                  VM service: {vm_url}"
             );
             if let Some(target) = &options.ssh_target {
@@ -1847,12 +1814,12 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             );
             println!(
                 "Stress runbook: open {}, send the fixture stress prompt, inspect \
-                 paging and frames, then type done to capture. VM service: {vm_url}",
+                 paging and frames, then type done to shut down. VM service: {vm_url}",
                 project.display()
             );
         }
         println!(
-            "Record actions one per line: open-project, create-thread, select-model, send-prompt, inspect-response, stop-turn, open-settings, edit-settings, save-settings, other. Type done to capture and shut down; Ctrl-C cancels. Only action codes are saved."
+            "Use official Dart MCP for UI interaction and screenshots; no action codes are required. Send done on stdin to request normal shutdown and wait for the launcher to exit; EOF or Ctrl-C cancels."
         );
         if bots.is_some() {
             println!(
@@ -1882,32 +1849,47 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         });
         let mut operations = Vec::new();
         loop {
+            ensure!(
+                interrupt_rx.try_recv().is_err(),
+                "manual GUI cancelled; human verdict remains pending"
+            );
+            ensure!(!gui.exited()?, "GUI exited before manual review completed");
+            ensure!(
+                !fixture.exited()?,
+                "account fixture exited during manual review"
+            );
             match input_rx.try_recv() {
                 Ok(InputEvent::Line(line)) => {
-                    let operation = record_session_line(bots.as_ref(), &line)?;
-                    operations.push(operation);
-                    fs::write(
-                        output.join("operations.json"),
-                        serde_json::to_vec_pretty(&operations)?,
-                    )?;
+                    if let Some(operation) = record_session_line(bots.as_ref(), &line)? {
+                        operations.push(operation);
+                        fs::write(
+                            output.join("operations.json"),
+                            serde_json::to_vec_pretty(&operations)?,
+                        )?;
+                    }
                     continue;
                 }
                 Ok(InputEvent::Done) => {
-                    capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, true)?;
+                    request_app_exit(
+                        &app_dir,
+                        &vm_url,
+                        &output.join("request-exit.log"),
+                        &interrupt_rx,
+                    )?;
+                    wait_manual_shutdown(
+                        &mut gui,
+                        &mut fixture,
+                        &interrupt_rx,
+                        Duration::from_secs(30),
+                        native_exit_report.as_deref(),
+                    )?;
+                    fs::write(output.join("shutdown-stage.txt"), "shutdown_completed\n")?;
                     return Ok(());
                 }
                 Ok(InputEvent::Eof) => bail!("manual GUI input closed before done"),
                 Err(mpsc::TryRecvError::Disconnected) => bail!("manual GUI input unavailable"),
                 Err(mpsc::TryRecvError::Empty) => {}
             }
-            if interrupt_rx.try_recv().is_ok() {
-                bail!("manual GUI cancelled; human verdict remains pending");
-            }
-            ensure!(!gui.exited()?, "GUI exited before manual review completed");
-            ensure!(
-                !fixture.exited()?,
-                "account fixture exited during manual review"
-            );
             thread::sleep(Duration::from_millis(200));
         }
     })();
@@ -1922,7 +1904,17 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         }
         Ok(())
     });
+    let session = finish_manual_gui_session(
+        session,
+        &mut gui,
+        native_exit_report.as_deref(),
+        Duration::from_secs(10),
+        Some(&gui_log_path),
+    );
     let gui_log_result = write_sanitized_log(&gui_log_path, &output.join("gui.log"));
+    // Native failures first give the launcher its complete cleanup window.
+    // Drop is only a last-resort group cleanup if that wait failed; it does
+    // not establish reclamation of the independent app group.
     drop(gui);
     // This records only the harness session Result, not shutdown acknowledgement
     // or successful reclamation of the complete GUI process tree.
@@ -2091,12 +2083,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         }
         if options.retain_environment {
             let project = if options.preset == "tool-scroll" {
-                let capture = fs::read_to_string(output.join("capture-stage.txt"))
-                    .context("retained environment requires completed shutdown capture")?;
-                ensure!(
-                    capture.trim() == "shutdown_completed",
-                    "runtime shutdown did not complete"
-                );
+                require_manual_shutdown(&output)?;
                 Some(working.path().join("tool-scroll-project"))
             } else {
                 None
@@ -2614,6 +2601,173 @@ fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
     Ok(())
 }
 
+/// Configures the existing native launcher and its real exit report, leaving
+/// the private bots command isolated and profile presets in profile mode.
+fn configure_manual_gui_launch(
+    command: &mut Command,
+    options: &ManualGuiOptions,
+    output: &Path,
+) -> Option<PathBuf> {
+    if options.bots_fixture {
+        return None;
+    }
+    if options.inspect {
+        command.arg("--inspect");
+    }
+    if options.preset == "gui" {
+        command.args(["--log-level", "info"]);
+    }
+    let profile = matches!(options.preset.as_str(), "stress" | "tool-scroll");
+    if profile {
+        command.arg("--profile");
+    }
+    if options.preset == "gui" || options.seed_home_copy.is_some() || profile {
+        // The Flutter resident wrapper can mask abnormal native exits. Reuse
+        // the direct native launcher (including inspect_main when requested).
+        let report = output.join("native-exit.json");
+        command
+            .args(["--native-launch", "--native-exit-report"])
+            .arg(&report);
+        Some(report)
+    } else {
+        None
+    }
+}
+
+fn require_manual_shutdown(output: &Path) -> Result<()> {
+    let stage = fs::read_to_string(output.join("shutdown-stage.txt"))
+        .context("retained environment requires verified native shutdown")?;
+    ensure!(
+        stage.trim() == "shutdown_completed",
+        "runtime shutdown did not complete"
+    );
+    require_native_exit(&output.join("native-exit.json"), None)
+}
+
+/// A failed session stays failed even when cancellation reclaims the tree.
+/// Give the existing supervisor time to reap independent app groups before the
+/// owner can reach its short, group-only Drop fallback.
+fn finish_manual_gui_session(
+    session: Result<()>,
+    gui: &mut OwnedProcess,
+    native_exit_report: Option<&Path>,
+    cleanup_timeout: Duration,
+    startup_log: Option<&Path>,
+) -> Result<()> {
+    if session.is_ok() || gui.stopped {
+        return session;
+    }
+    let Some(report) = native_exit_report else {
+        return session;
+    };
+    let cleanup = (|| -> Result<()> {
+        let deadline = Instant::now() + cleanup_timeout;
+        #[cfg(target_os = "linux")]
+        let mut native_phase = match startup_log {
+            Some(log) => native_launch_started(&fs::read_to_string(log)?),
+            None => true,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let native_phase = {
+            // Only Linux has a verified preparation-group join. Other hosts
+            // retain the native-owner report barrier, including before launch.
+            let _ = startup_log;
+            true
+        };
+        // A reaped cargo child can leave the native supervisor alive in the
+        // original group. Always request that group's cooperative stop.
+        let stop_requested = gui.request_stop();
+        // Do not use wait_exit here: direct-child reap is not subtree cleanup.
+        // Keep observing the phase even while the original child is still up:
+        // cancellation can race the preparation-to-native transition.
+        loop {
+            ensure!(
+                Instant::now() < deadline,
+                "native launcher cleanup timed out (stop_requested={stop_requested}); independent app subtree reclamation is unconfirmed; owner-group termination is not subtree completion"
+            );
+            #[cfg(target_os = "linux")]
+            if !native_phase
+                && let Some(log) = startup_log
+                && native_launch_started(&fs::read_to_string(log)?)
+            {
+                native_phase = true;
+                // The first signal may have preceded the native supervisor's
+                // installation. Notify that owner too, without resetting time.
+                gui.request_stop();
+            }
+            let child_reaped = gui.exit_status()?.is_some();
+            #[cfg(target_os = "linux")]
+            if child_reaped && !native_phase && preparation_group_exited(gui)?
+            // No group member can now publish a late boundary. Read again
+            // after joining, not from the pre-cancellation phase snapshot.
+            {
+                let log = startup_log.context("missing native preparation phase log")?;
+                if native_launch_started(&fs::read_to_string(log)?) {
+                    native_phase = true;
+                    gui.request_stop();
+                } else {
+                    eprintln!("manual GUI preparation stopped; product not started");
+                    gui.mark_reaped();
+                    return Ok(());
+                }
+            }
+            // Cargo may exit before the internal supervisor finishes its join.
+            // A post-boundary run always needs that supervisor's report.
+            if child_reaped && native_phase {
+                match fs::read(report) {
+                    Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        Ok(report) => {
+                            ensure!(
+                                report["schema"] == "anywork-native-exit/1"
+                                    && report["pid"].as_u64().is_some_and(|pid| pid > 0)
+                                    && report["cancelled"].is_boolean()
+                                    && report["descendantsAtRootExit"].is_array()
+                                    && report["reclaimedDescendants"].is_array(),
+                                "invalid native cleanup report; independent app subtree reclamation is unconfirmed"
+                            );
+                            break;
+                        }
+                        // fs::write is not atomic. Wait only for an unfinished JSON
+                        // write, never retry a complete malformed report.
+                        Err(error) if error.is_eof() => {}
+                        Err(error) => return Err(error).context("invalid native cleanup report"),
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).context("failed to read native cleanup report");
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        gui.mark_reaped();
+        Ok(())
+    })();
+    bots_fixture::with_cleanup(session, cleanup)
+}
+
+/// Only absence of the original build group establishes preparation cleanup.
+/// Query errors stay unknown; a reaped outer cargo child alone is insufficient.
+#[cfg(target_os = "linux")]
+fn preparation_group_exited(gui: &OwnedProcess) -> Result<bool> {
+    let output = Command::new("ps")
+        .args(["-e", "-o", "pgid="])
+        .output()
+        .context("failed to inspect preparation process group")?;
+    ensure!(
+        output.status.success(),
+        "preparation process group inspection failed: {}",
+        output.status
+    );
+    let groups = std::str::from_utf8(&output.stdout)?;
+    for group in groups.split_whitespace() {
+        if group.parse::<u32>()? == gui.child.id() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// 等待被 `ext.anywork.requestExit` 协调关闭的 GUI 自然退出，并返回真实退出状态。
 fn wait_for_gui_exit(
     gui: &mut OwnedProcess,
@@ -2634,50 +2788,66 @@ fn wait_for_gui_exit(
     }
 }
 
-fn safe_action(line: &str) -> &'static str {
-    match line.split_whitespace().next().unwrap_or("") {
-        "open-project" => "open-project",
-        "create-thread" => "create-thread",
-        "select-model" => "select-model",
-        "send-prompt" => "send-prompt",
-        "inspect-response" => "inspect-response",
-        "stop-turn" => "stop-turn",
-        "open-settings" => "open-settings",
-        "edit-settings" => "edit-settings",
-        "save-settings" => "save-settings",
-        _ => "other",
+/// Waits for the existing launcher's owned process-tree cleanup, not just the
+/// requestExit acknowledgement. Failure leaves the owner armed for cleanup.
+fn wait_manual_shutdown(
+    gui: &mut OwnedProcess,
+    fixture: &mut OwnedProcess,
+    interrupt: &mpsc::Receiver<()>,
+    timeout: Duration,
+    native_exit_report: Option<&Path>,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        ensure!(
+            interrupt.try_recv().is_err(),
+            "manual GUI cancelled during shutdown; human verdict remains pending"
+        );
+        ensure!(
+            !fixture.exited()?,
+            "account fixture exited during manual shutdown"
+        );
+        if let Some(status) = gui.exit_status()? {
+            ensure!(status.success(), "manual GUI shutdown failed: {status}");
+            if let Some(report) = native_exit_report {
+                require_native_exit(report, None)?;
+            }
+            gui.mark_reaped();
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "manual GUI launcher did not exit after coordinated shutdown"
+        );
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
 fn record_session_line(
     bots: Option<&bots_fixture::BotsFixture>,
     line: &str,
-) -> Result<ManualOperation> {
+) -> Result<Option<ManualOperation>> {
     let at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_millis());
     let Some(bots) = bots else {
-        return Ok(ManualOperation {
-            at_unix_ms,
-            action: safe_action(line),
-            outcome: None,
-        });
+        println!("Unrecognized stdin command ignored; use Dart MCP for UI interaction.");
+        return Ok(None);
     };
     match bots_fixture::classify_line(line) {
-        bots_fixture::EnvLine::GuiAction => Ok(ManualOperation {
-            at_unix_ms,
-            action: safe_action(line),
-            outcome: None,
-        }),
+        bots_fixture::EnvLine::NotEnvironment => {
+            println!("Unrecognized stdin command ignored; use Dart MCP for UI interaction.");
+            Ok(None)
+        }
         bots_fixture::EnvLine::UnknownEnv => {
             println!(
                 "Unknown bots environment command rejected; platform scripts and synthetic samples are unchanged."
             );
-            Ok(ManualOperation {
+            Ok(Some(ManualOperation {
                 at_unix_ms,
                 action: "env-command-rejected",
                 outcome: Some("rejected"),
-            })
+            }))
         }
         bots_fixture::EnvLine::Registration(command) => {
             bots.apply_registration_env(command)?;
@@ -2685,11 +2855,11 @@ fn record_session_line(
                 "Queued next mock registration poll ({}); this is not GUI authorization or a product pass.",
                 command.action_code()
             );
-            Ok(ManualOperation {
+            Ok(Some(ManualOperation {
                 at_unix_ms,
                 action: command.action_code(),
                 outcome: Some("script-set"),
-            })
+            }))
         }
         bots_fixture::EnvLine::Message(command) => {
             bots.apply_message_env(command)?;
@@ -2697,11 +2867,11 @@ fn record_session_line(
                 "Queued one fixed synthetic direct message ({}) on the live platform websocket; queued for delivery is not product consumption, approval, execution, or a send pass.",
                 command.action_code()
             );
-            Ok(ManualOperation {
+            Ok(Some(ManualOperation {
                 at_unix_ms,
                 action: command.action_code(),
                 outcome: Some("event-queued"),
-            })
+            }))
         }
         bots_fixture::EnvLine::Conversations(command) => {
             bots.apply_conversations_env(command)?;
@@ -2709,11 +2879,11 @@ fn record_session_line(
                 "Replaced the peer's synthetic conversation and history samples ({}); this is not GUI authorization or a product pass.",
                 command.action_code()
             );
-            Ok(ManualOperation {
+            Ok(Some(ManualOperation {
                 at_unix_ms,
                 action: command.action_code(),
                 outcome: Some("environment-set"),
-            })
+            }))
         }
     }
 }
@@ -3337,13 +3507,76 @@ fn wait_for_vm(
     fixture: &mut OwnedProcess,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(600);
+    wait_for_vm_in_phase(
+        path,
+        gui,
+        fixture,
+        interrupt,
+        VmStartupPhase::Immediate,
+        Duration::from_secs(600),
+    )
+}
+
+const NATIVE_LAUNCH_BOUNDARY: &str = "startup_stage=native_launch_ready\n";
+
+fn native_launch_started(log: &str) -> bool {
+    log.split_inclusive('\n')
+        .any(|line| line == NATIVE_LAUNCH_BOUNDARY)
+}
+
+#[derive(Clone, Copy)]
+enum VmStartupPhase {
+    Immediate,
+    NativePreparation,
+}
+
+struct VmStartupBudget {
+    deadline: Option<Instant>,
+    timeout: Duration,
+}
+
+impl VmStartupBudget {
+    fn new(phase: VmStartupPhase, timeout: Duration, now: Instant) -> Self {
+        Self {
+            deadline: match phase {
+                VmStartupPhase::Immediate => Some(now + timeout),
+                VmStartupPhase::NativePreparation => None,
+            },
+            timeout,
+        }
+    }
+
+    fn observe(&mut self, log: &str, now: Instant) {
+        if self.deadline.is_none() && native_launch_started(log) {
+            self.deadline = Some(now + self.timeout);
+        }
+    }
+}
+
+fn wait_for_vm_in_phase(
+    path: &Path,
+    gui: &mut OwnedProcess,
+    fixture: &mut OwnedProcess,
+    interrupt: &mpsc::Receiver<()>,
+    phase: VmStartupPhase,
+    timeout: Duration,
+) -> Result<String> {
+    let mut budget = VmStartupBudget::new(phase, timeout, Instant::now());
     loop {
         let log = fs::read_to_string(path)?;
-        if let Some(url) = vm_service_url(&log) {
-            return Ok(url);
+        budget.observe(&log, Instant::now());
+        let mut native_vm_url = None;
+        if budget.deadline.is_some()
+            && let Some(url) = vm_service_url(&log)
+        {
+            if matches!(phase, VmStartupPhase::Immediate) {
+                return Ok(url);
+            }
+            native_vm_url = Some(url);
         }
-        ensure!(!gui.exited()?, "GUI exited before publishing VM service");
+        if let Some(status) = gui.exit_status()? {
+            bail!("GUI exited before publishing VM service ({status})");
+        }
         ensure!(
             !fixture.exited()?,
             "account fixture exited while GUI started"
@@ -3353,9 +3586,14 @@ fn wait_for_vm(
             "manual GUI cancelled while starting GUI"
         );
         ensure!(
-            Instant::now() < deadline,
+            budget
+                .deadline
+                .is_none_or(|deadline| Instant::now() < deadline),
             "GUI VM service startup timed out"
         );
+        if let Some(url) = native_vm_url {
+            return Ok(url);
+        }
         thread::sleep(Duration::from_millis(300));
     }
 }
@@ -6722,6 +6960,271 @@ mod credit_wait_capture_tests {
             observations: Vec::new(),
             truncated: false,
             capture_error: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod manual_control_tests {
+    use super::{
+        ManualGuiOptions, bots_fixture, configure_manual_gui_launch, record_session_line,
+        require_native_exit,
+    };
+    use clap::Parser;
+    use std::path::Path;
+    use std::process::Command;
+
+    #[test]
+    fn gui_launch_uses_one_native_report_without_changing_specialized_modes() {
+        let output = Path::new("evidence with spaces");
+        for arguments in [
+            vec!["manual-gui", "--inspect"],
+            vec!["manual-gui", "--inspect", "--seed-home-copy", "closed-home"],
+            vec!["manual-gui"],
+        ] {
+            let options = ManualGuiOptions::try_parse_from(arguments).unwrap();
+            let mut command = Command::new("cargo");
+            let report = configure_manual_gui_launch(&mut command, &options, output);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(report, Some(output.join("native-exit.json")));
+            assert_eq!(
+                args.iter().filter(|arg| **arg == "--native-launch").count(),
+                1
+            );
+            assert_eq!(
+                args.iter()
+                    .filter(|arg| **arg == "--native-exit-report")
+                    .count(),
+                1
+            );
+            assert_eq!(args.last().copied(), report.as_deref().map(Path::as_os_str));
+            assert_eq!(
+                args.contains(&std::ffi::OsStr::new("--inspect")),
+                options.inspect
+            );
+            assert!(!args.contains(&std::ffi::OsStr::new("--profile")));
+        }
+        for preset in ["stress", "tool-scroll"] {
+            let options =
+                ManualGuiOptions::try_parse_from(["manual-gui", "--preset", preset]).unwrap();
+            let mut command = Command::new("cargo");
+            assert_eq!(
+                configure_manual_gui_launch(&mut command, &options, output),
+                Some(output.join("native-exit.json"))
+            );
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                [
+                    std::ffi::OsStr::new("--profile"),
+                    std::ffi::OsStr::new("--native-launch"),
+                    std::ffi::OsStr::new("--native-exit-report"),
+                    output.join("native-exit.json").as_os_str(),
+                ]
+            );
+        }
+        let options = ManualGuiOptions::try_parse_from(["manual-gui", "--bots-fixture"]).unwrap();
+        let mut command = Command::new("dbus-run-session");
+        command.arg("--private-command");
+        assert_eq!(
+            configure_manual_gui_launch(&mut command, &options, output),
+            None
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--private-command"]
+        );
+        let rejected =
+            ManualGuiOptions::try_parse_from(["manual-gui", "--bots-fixture", "--inspect"])
+                .unwrap();
+        assert!(super::validate_inspect_options(&rejected).is_err());
+    }
+
+    fn clean_native_report() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "anywork-native-exit/1",
+            "pid": 42,
+            "exitCode": 0,
+            "signal": null,
+            "cancelled": false,
+            "descendantsAtRootExit": [],
+            "reclaimedDescendants": [],
+        })
+    }
+
+    #[test]
+    fn native_report_rejects_missing_failed_cancelled_or_unreclaimed_exit() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("native-exit.json");
+        assert!(require_native_exit(&path, None).is_err());
+        std::fs::write(&path, b"not-json")?;
+        assert!(require_native_exit(&path, None).is_err());
+        for (field, value) in [
+            ("schema", serde_json::json!("foreign-schema")),
+            ("pid", serde_json::json!(0)),
+            ("exitCode", serde_json::json!(1)),
+            ("signal", serde_json::json!(9)),
+            ("cancelled", serde_json::json!(true)),
+            ("descendantsAtRootExit", serde_json::json!([43])),
+            ("reclaimedDescendants", serde_json::json!([43])),
+        ] {
+            let mut report = clean_native_report();
+            report[field] = value;
+            std::fs::write(&path, serde_json::to_vec(&report)?)?;
+            assert!(require_native_exit(&path, None).is_err(), "{field}");
+        }
+        let mut missing_cleanup = clean_native_report();
+        missing_cleanup
+            .as_object_mut()
+            .unwrap()
+            .remove("reclaimedDescendants");
+        std::fs::write(&path, serde_json::to_vec(&missing_cleanup)?)?;
+        assert!(require_native_exit(&path, None).is_err());
+        std::fs::write(&path, serde_json::to_vec(&clean_native_report())?)?;
+        require_native_exit(&path, Some(42))?;
+        assert!(require_native_exit(&path, Some(43)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn retained_tool_scroll_requires_new_shutdown_stage_and_real_exit_report() -> anyhow::Result<()>
+    {
+        let options = ManualGuiOptions::try_parse_from([
+            "manual-gui",
+            "--preset",
+            "tool-scroll",
+            "--retain-environment",
+        ])?;
+        assert!(options.retain_environment);
+        let directory = tempfile::tempdir()?;
+        let output = directory.path();
+        let mut command = Command::new("cargo");
+        let report = configure_manual_gui_launch(&mut command, &options, output).unwrap();
+        std::fs::write(&report, serde_json::to_vec(&clean_native_report())?)?;
+        std::fs::write(output.join("capture-stage.txt"), "shutdown_completed\n")?;
+        assert!(super::require_manual_shutdown(output).is_err());
+        std::fs::remove_file(output.join("capture-stage.txt"))?;
+        std::fs::write(output.join("shutdown-stage.txt"), "shutdown_completed\n")?;
+        super::require_manual_shutdown(output)?;
+        let mut failed = clean_native_report();
+        failed["reclaimedDescendants"] = serde_json::json!([43]);
+        std::fs::write(&report, serde_json::to_vec(&failed)?)?;
+        assert!(super::require_manual_shutdown(output).is_err());
+        std::fs::remove_file(&report)?;
+        assert!(super::require_manual_shutdown(output).is_err());
+        assert!(!output.join("screenshot.png").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_wait_requires_launcher_report_and_preserves_cancellation() -> anyhow::Result<()> {
+        use super::{OwnedProcess, wait_manual_shutdown};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        fn process(script: &str) -> anyhow::Result<OwnedProcess> {
+            OwnedProcess::start(Command::new("sh").args(["-c", script]), false)
+        }
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("native-exit.json");
+        let (tx, rx) = mpsc::channel();
+        let mut fixture = process("exec sleep 60")?;
+        let timeout = Duration::from_secs(2);
+        // A successful launcher cannot substitute for a missing/failed native report.
+        for report in [
+            None,
+            Some(clean_native_report()),
+            Some({
+                let mut failed = clean_native_report();
+                failed["exitCode"] = serde_json::json!(1);
+                failed
+            }),
+        ] {
+            if let Some(report) = &report {
+                std::fs::write(&path, serde_json::to_vec(report)?)?;
+            }
+            let mut gui = process("exit 0")?;
+            let result = wait_manual_shutdown(&mut gui, &mut fixture, &rx, timeout, Some(&path));
+            let clean = report
+                .as_ref()
+                .is_some_and(|report| report["exitCode"] == 0);
+            assert_eq!(result.is_ok(), clean, "{result:?}");
+        }
+        let mut gui = process("exit 7")?;
+        assert!(wait_manual_shutdown(&mut gui, &mut fixture, &rx, timeout, None).is_err());
+        let mut gui = process("exec sleep 60")?;
+        assert!(
+            wait_manual_shutdown(&mut gui, &mut fixture, &rx, Duration::ZERO, None)
+                .unwrap_err()
+                .to_string()
+                .contains("did not exit")
+        );
+        tx.send(())?;
+        assert!(
+            wait_manual_shutdown(&mut gui, &mut fixture, &rx, timeout, None)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        let mut exited_fixture = process("exit 0")?;
+        exited_fixture.child.wait()?;
+        assert!(
+            wait_manual_shutdown(&mut gui, &mut exited_fixture, &rx, timeout, None)
+                .unwrap_err()
+                .to_string()
+                .contains("fixture exited")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_stdin_never_becomes_a_synthetic_ui_operation() -> anyhow::Result<()> {
+        for line in [
+            "open-project",
+            "send-prompt private text",
+            "other",
+            "",
+            "unrecognized private text",
+            "bots-env registration complete",
+        ] {
+            assert!(record_session_line(None, line)?.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bots_control_accepts_only_fixed_environment_commands() {
+        use bots_fixture::EnvLine;
+
+        assert!(matches!(
+            bots_fixture::classify_line("bots-env registration pending"),
+            EnvLine::Registration(_)
+        ));
+        assert!(matches!(
+            bots_fixture::classify_line("bots-env message unknown-direct"),
+            EnvLine::Message(_)
+        ));
+        assert!(matches!(
+            bots_fixture::classify_line("bots-env conversations prepare-pages"),
+            EnvLine::Conversations(_)
+        ));
+        for line in [
+            "bots-env registration complete supplied-identity",
+            "bots-env message unknown-direct supplied-body",
+            "bots-env conversations prepare-pages supplied-url",
+            "bots-env unknown",
+        ] {
+            assert!(matches!(
+                bots_fixture::classify_line(line),
+                EnvLine::UnknownEnv
+            ));
+        }
+        for line in ["send-prompt", "arbitrary private text", ""] {
+            assert!(matches!(
+                bots_fixture::classify_line(line),
+                EnvLine::NotEnvironment
+            ));
         }
     }
 }

@@ -142,7 +142,7 @@ Widget acpPlanCardPreview() => _acpPreviewShell(
   ),
 );
 
-@Preview(name: 'ACP 权限审批停靠面板', group: 'ACP', size: Size(720, 320))
+@Preview(name: 'ACP 权限审批停靠面板', group: 'ACP', size: Size(720, 360))
 Widget acpPermissionDockPreview() => _acpPreviewShell(
   AcpPermissionDock(
     state: const AcpPermissionDockViewState(
