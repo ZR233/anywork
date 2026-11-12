@@ -140,7 +140,7 @@ class _AcpConversationComposerViewState
       AcpComposerBlockerKind.configError => l10n.acpComposerBlockerConfigError(
         blocker.detail ?? '',
       ),
-      AcpComposerBlockerKind.sending => l10n.acpComposerBlockerSending,
+      AcpComposerBlockerKind.sending => null,
       // While running, the bottom status bar and stop button already indicate
       // active generation without cluttering the composer with a warning line.
       AcpComposerBlockerKind.running => null,
@@ -304,26 +304,27 @@ class _PrimaryComposerButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    if (isRunning) {
-      return Tooltip(
-        message: l10n.acpComposerInterruptTooltip,
-        child: FilledButton.tonalIcon(
-          onPressed: canInterrupt ? onInterrupt : null,
-          style: FilledButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          ),
-          icon: const Icon(Icons.stop_rounded, size: 17),
-          label: Text(l10n.acpComposerInterruptTooltip),
-        ),
-      );
-    }
-
     return SizedBox.square(
       dimension: 36,
       child: IconButton.filled(
-        tooltip: l10n.acpComposerSendTooltip,
-        onPressed: canSend ? onSend : null,
+        tooltip: isRunning
+            ? l10n.acpComposerInterruptTooltip
+            : submitting
+            ? l10n.acpComposerBlockerSending
+            : l10n.acpComposerSendTooltip,
+        style: isRunning
+            ? IconButton.styleFrom(
+                backgroundColor: context.colors.surfaceContainerHighest,
+                foregroundColor: context.colors.onSurface,
+              )
+            : null,
+        onPressed: isRunning
+            ? canInterrupt
+                  ? onInterrupt
+                  : null
+            : canSend
+            ? onSend
+            : null,
         icon: submitting
             ? SizedBox.square(
                 dimension: 15,
@@ -332,7 +333,10 @@ class _PrimaryComposerButton extends StatelessWidget {
                   color: context.colors.onPrimary,
                 ),
               )
-            : const Icon(Icons.arrow_upward_rounded, size: 18),
+            : Icon(
+                isRunning ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                size: 18,
+              ),
       ),
     );
   }

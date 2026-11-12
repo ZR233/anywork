@@ -21,6 +21,7 @@ import 'composer_dock_view.dart';
 import 'composer_route_selectors.dart';
 import 'composer_support_views.dart';
 import 'composer_submission_body.dart';
+import 'composer_submission_status.dart';
 import 'prompt_composer_view.dart';
 import 'start_environment_bar.dart';
 import 'start_page_composer_view.dart';
@@ -130,16 +131,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
                   ),
                   for (final attachment in submission.attachments)
                     Text(attachment.filename),
-                  Text(switch (submission.phase) {
-                    ComposerSubmissionPhase.sending =>
-                      context.l10n.composerSubmissionSending,
-                    ComposerSubmissionPhase.accepted =>
-                      context.l10n.composerSubmissionAccepted,
-                    ComposerSubmissionPhase.failed =>
-                      context.l10n.composerSubmissionFailed,
-                    ComposerSubmissionPhase.unknownOutcome =>
-                      context.l10n.composerSubmissionUnknown,
-                  }),
+                  ComposerSubmissionStatus(phase: submission.phase),
                   if (submission.error case final failure?) Text('$failure'),
                   ComposerSubmissionControls(
                     target: widget.target,

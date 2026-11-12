@@ -152,6 +152,7 @@ final class ComposerPrimaryAction {
   const ComposerPrimaryAction({
     required this.kind,
     required this.enabled,
+    this.busy = false,
     this.blocker,
   });
 
@@ -172,6 +173,9 @@ final class ComposerPrimaryAction {
     required bool stopAccepted,
     required bool continuationAccepted,
     bool continuationPending = false,
+    bool inputEnabled = true,
+    bool stopPending = false,
+    bool stopUnconfirmed = false,
     ComposerBlocker? blocker,
   }) {
     // 子会话没有用户操作：详情只读，执行由主智能体调度。
@@ -184,13 +188,23 @@ final class ComposerPrimaryAction {
     // 内容提交的准入：启用、有内容、不在提交中且没有阻塞原因。
     // 只有不可绕过的前置条件阻塞提交；上一次被拒绝的原因照常显示但允许重试。
     final blocked = blocker?.blocksSubmission ?? false;
-    final requestPending = submissionPending || continuationPending;
-    final submitEnabled = !requestPending && !blocked && hasContent;
+    // 新执行出现后，旧继续请求不再拥有当前输入的操作资格。
+    final requestPending =
+        submissionPending ||
+        stopPending ||
+        (execution == null && continuationPending);
+    final submitEnabled =
+        inputEnabled && !requestPending && !blocked && hasContent;
+    final requestBusy =
+        submissionPending ||
+        (stopPending && !stopUnconfirmed) ||
+        (execution == null && continuationPending);
     // 停止已受理但清理未结束：既不继续也不提交，且不再提供停止入口。
     if (stopAccepted || (execution?.phase.isStopping ?? false)) {
       return ComposerPrimaryAction(
         kind: ComposerPrimaryActionKind.stopping,
         enabled: false,
+        busy: true,
         blocker: blocker,
       );
     }
@@ -199,13 +213,15 @@ final class ComposerPrimaryAction {
         return ComposerPrimaryAction(
           kind: ComposerPrimaryActionKind.sendAndContinue,
           enabled: submitEnabled,
+          busy: requestBusy,
           blocker: blocker,
         );
       }
       // 阻塞原因不隐藏停止入口：这是唯一能中断当前执行的通道。
       return ComposerPrimaryAction(
         kind: ComposerPrimaryActionKind.stop,
-        enabled: true,
+        enabled: inputEnabled && (!stopPending || stopUnconfirmed),
+        busy: requestBusy,
         blocker: blocker,
       );
     }
@@ -213,6 +229,7 @@ final class ComposerPrimaryAction {
       return ComposerPrimaryAction(
         kind: ComposerPrimaryActionKind.continuing,
         enabled: false,
+        busy: true,
         blocker: blocker,
       );
     }
@@ -223,19 +240,22 @@ final class ComposerPrimaryAction {
         return ComposerPrimaryAction(
           kind: ComposerPrimaryActionKind.sendAndContinue,
           enabled: submitEnabled,
+          busy: requestBusy,
           blocker: blocker,
         );
       }
       return ComposerPrimaryAction(
         kind: ComposerPrimaryActionKind.continueConversation,
-        enabled: !requestPending && !blocked,
+        enabled: inputEnabled && !requestPending && !blocked,
+        busy: requestBusy,
         blocker: blocker,
       );
     }
     // 没有中断工作：普通发送，空输入只是禁用态，不显示继续。
     return ComposerPrimaryAction(
       kind: ComposerPrimaryActionKind.send,
-      enabled: !submissionPending && !blocked && hasContent,
+      enabled: submitEnabled,
+      busy: requestBusy,
       blocker: blocker,
     );
   }
@@ -244,6 +264,9 @@ final class ComposerPrimaryAction {
 
   /// 主按钮此刻是否可点。
   final bool enabled;
+
+  /// 仅表达操作在途或等待权威收束，不将请求在途误记为已受理。
+  final bool busy;
 
   /// 可显示的阻塞原因；与 [enabled] 不同，它也可能存在于仍可停止的运行中会话。
   final ComposerBlocker? blocker;
@@ -263,12 +286,13 @@ final class ComposerPrimaryAction {
       other is ComposerPrimaryAction &&
           kind == other.kind &&
           enabled == other.enabled &&
+          busy == other.busy &&
           blocker == other.blocker;
 
   @override
-  int get hashCode => Object.hash(kind, enabled, blocker);
+  int get hashCode => Object.hash(kind, enabled, busy, blocker);
 
   @override
   String toString() =>
-      'ComposerPrimaryAction($kind, enabled: $enabled, blocker: $blocker)';
+      'ComposerPrimaryAction($kind, enabled: $enabled, busy: $busy, blocker: $blocker)';
 }

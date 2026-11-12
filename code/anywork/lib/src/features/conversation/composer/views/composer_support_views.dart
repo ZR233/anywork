@@ -45,18 +45,19 @@ class InteractionStopView extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              if (state.stopping)
-                Text(
-                  context.l10n.composerStopping,
-                  key: StudioDriverKeys.composerStopping,
-                ),
               IconButton.filledTonal(
-                key: StudioDriverKeys.composerStop,
+                key: state.stopping
+                    ? StudioDriverKeys.composerStopping
+                    : StudioDriverKeys.composerStop,
+                style: IconButton.styleFrom(
+                  fixedSize: const Size.square(40),
+                  shape: const CircleBorder(),
+                ),
                 tooltip: state.stopping
                     ? context.l10n.composerStopping
                     : context.l10n.composerStop,
                 onPressed: state.canStop ? onStop : null,
-                icon: state.pending
+                icon: state.pending || state.stopping
                     ? const SizedBox.square(
                         key: StudioDriverKeys.composerPending,
                         dimension: 18,
@@ -186,10 +187,13 @@ class AgentReadOnlyDockView extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.lock_outline,
-                size: 18,
-                color: context.colors.onSurfaceVariant,
+              Tooltip(
+                message: context.l10n.composerAgentReadOnlyScope,
+                child: Icon(
+                  Icons.lock_outline,
+                  size: 18,
+                  color: context.colors.onSurfaceVariant,
+                ),
               ),
               const SizedBox(width: 9),
               Expanded(
@@ -201,18 +205,12 @@ class AgentReadOnlyDockView extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 6),
           if (waitingForScheduling)
             Text(
               context.l10n.composerAgentReadOnlyWaiting,
               key: const ValueKey('agent-readonly-waiting'),
               style: secondaryStyle,
             ),
-          Text(
-            context.l10n.composerAgentReadOnlyScope,
-            key: const ValueKey('agent-readonly-scope'),
-            style: secondaryStyle,
-          ),
           if (pending != null)
             Text(
               context.l10n.composerAgentReadOnlyPending,
@@ -225,20 +223,17 @@ class AgentReadOnlyDockView extends StatelessWidget {
             runSpacing: 4,
             children: [
               InfoChip(
-                icon: Icons.timeline_outlined,
+                icon: execution == null
+                    ? Icons.timeline_outlined
+                    : Icons.bolt_outlined,
                 label: context.threadStatusLabel(
-                  (row.backend as NativeAgentBackendView).status,
+                  execution == null
+                      ? (row.backend as NativeAgentBackendView).status
+                      : execution.phase == AgentExecutionPhase.stopping
+                      ? ThreadStatusView.cancelling
+                      : ThreadStatusView.running,
                 ),
               ),
-              if (execution != null)
-                InfoChip(
-                  icon: Icons.bolt_outlined,
-                  label: context.threadStatusLabel(
-                    execution.phase == AgentExecutionPhase.stopping
-                        ? ThreadStatusView.cancelling
-                        : ThreadStatusView.running,
-                  ),
-                ),
               if (route != null)
                 InfoChip(icon: Icons.memory_outlined, label: route.modelId),
               if (row.workspacePath.trim().isNotEmpty)

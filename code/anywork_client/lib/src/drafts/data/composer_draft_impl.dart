@@ -266,13 +266,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   }
 
   /// 提交一次已冻结的输入。
-  ///
-  /// [beforeSubmit] 是 SDK-only 的可等待展示准备钩子：它在本草稿冻结目标、payload、route、
-  /// OperationId 与冻结附件引用之后，在调用后端 `submitComposer` **之前**执行。app 用它把
-  /// “当前仍在显示该 Thread 时先回到实时新代次首帧”插在发送前；钩子失败保留草稿、附件与
-  /// 原 History，后端从未收到该提交。钩子不写 canonical 事实，也不替代提交回执、保存观察或
-  /// 附件所有权（design/26 §26.8）。
-  Future<void> submit({Future<void> Function()? beforeSubmit}) {
+  Future<void> submit() {
     if (_closed || (state.draft.trim().isEmpty && state.attachments.isEmpty))
       return Future<void>.value();
     final submissionStamp = stamp;
@@ -303,10 +297,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         _dependencies.directory?.observedThread(threadId);
     if (row?.backend is AcpAgentBackendView) {
       unawaited(
-        _submitAcp(
-          row!,
-          beforeSubmit,
-        ).then(completion.complete, onError: completion.completeError),
+        _submitAcp(row!)
+            .then(completion.complete, onError: completion.completeError),
       );
       return pending;
     }
@@ -326,10 +318,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       return pending;
     }
     unawaited(
-      _prepareAndSubmit(
-        frozen,
-        beforeSubmit,
-      ).then(completion.complete, onError: completion.completeError),
+      _prepareAndSubmit(frozen)
+          .then(completion.complete, onError: completion.completeError),
     );
     return pending;
   }
@@ -384,10 +374,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
   }
 
-  Future<void> _submitAcp(
-    SessionDirectoryRow row,
-    Future<void> Function()? beforeSubmit,
-  ) async {
+  Future<void> _submitAcp(SessionDirectoryRow row) async {
     OperationId? operationId;
     var accepted = false;
     var clear = false;
@@ -430,7 +417,6 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         attachments,
         owner.state.capabilities,
       );
-      if (beforeSubmit != null) await beforeSubmit();
       _requireAcpSend(row, owner, target);
       if (_generation != generation) {
         throw StateError('The ACP draft was discarded before dispatch');
@@ -522,10 +508,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     return List.unmodifiable(content);
   }
 
-  Future<void> _prepareAndSubmit(
-    FrozenComposerSubmission frozen,
-    Future<void> Function()? beforeSubmit,
-  ) async {
+  Future<void> _prepareAndSubmit(FrozenComposerSubmission frozen) async {
     InputSubmissionObservation? evidence;
     Future<SubmitPromptReceipt>? dispatch;
     Completer<void>? beforeDispatchReady;
@@ -549,10 +532,6 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         beforeDispatch: () async {
           await dispatchReady.future;
           if (setupFailure != null) throw setupFailure;
-          if (_closed || _dependencies.isClosed) {
-            throw StateError('Submission cancelled before backend dispatch');
-          }
-          if (beforeSubmit != null) await beforeSubmit();
           if (_closed || _dependencies.isClosed) {
             throw StateError('Submission cancelled before backend dispatch');
           }

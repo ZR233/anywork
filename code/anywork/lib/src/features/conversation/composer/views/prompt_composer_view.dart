@@ -292,14 +292,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
               blocker: blocker,
               continuationNote: showContinuationNote ? continuationNote : null,
             ),
-            if (_primaryActionStatus(context, action) case final status?)
-              Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: status,
-                ),
-              ),
             LayoutBuilder(
               builder: (context, constraints) => Column(
                 mainAxisSize: MainAxisSize.min,
@@ -479,34 +471,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
     );
   }
 
-  /// 唯一主按钮：停止、发送并继续、继续、正在停止、正在继续或普通发送。
-  ///
-  /// 中断态与清理态用可见文字表达，不依赖 tooltip；空输入继续只由这里的按钮发起。
-  Widget? _primaryActionStatus(
-    BuildContext context,
-    ComposerPrimaryAction action,
-  ) {
-    final colors = Theme.of(context).colorScheme;
-    final labelStyle = Theme.of(context).textTheme.labelMedium
-        ?.copyWith(color: colors.onSurfaceVariant);
-    return switch (action.kind) {
-      ComposerPrimaryActionKind.stopping => Text(
-        context.l10n.composerStopping,
-        key: StudioDriverKeys.composerStopping,
-        style: labelStyle,
-      ),
-      ComposerPrimaryActionKind.continuing => Text(
-        context.l10n.composerContinuing,
-        style: labelStyle,
-      ),
-      ComposerPrimaryActionKind.continueConversation => Text(
-        context.l10n.composerContinue,
-        style: labelStyle,
-      ),
-      _ => null,
-    };
-  }
-
   /// 每种主动作占用同一个圆按钮槽，状态说明不挤占配置工具栏。
   Widget _primaryActionButton(
     BuildContext context,
@@ -516,7 +480,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
     final sendKind =
         action.kind == ComposerPrimaryActionKind.send ||
         action.kind == ComposerPrimaryActionKind.sendAndContinue;
-    final enabled = widget.state.primaryEnabled;
+    final enabled = action.enabled;
     final key = switch (action.kind) {
       ComposerPrimaryActionKind.stop => StudioDriverKeys.composerStop,
       ComposerPrimaryActionKind.sendAndContinue ||
@@ -524,10 +488,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
         enabled
             ? StudioDriverKeys.composerSubmit
             : const ValueKey('composer-submit-disabled'),
-      // 停止状态由旁边的可见文字拥有稳定键，按钮只是禁用态。
-      ComposerPrimaryActionKind.stopping => const ValueKey(
-        'composer-stopping-disabled',
-      ),
+      ComposerPrimaryActionKind.stopping => StudioDriverKeys.composerStopping,
       ComposerPrimaryActionKind.continuing =>
         StudioDriverKeys.composerContinuing,
       ComposerPrimaryActionKind.continueConversation =>
@@ -547,7 +508,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
         context.l10n.composerContinueTooltip,
       ComposerPrimaryActionKind.readOnly => context.l10n.composerStopping,
     };
-    final busy = widget.state.primaryBusy;
+    final busy = action.busy;
     return IconButton.filled(
       key: key,
       tooltip: tooltip,

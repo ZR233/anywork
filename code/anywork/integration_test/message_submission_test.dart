@@ -33,6 +33,8 @@ import 'support/timeline_observation.dart';
 const _first = '请保持第一轮运行，我将继续发送一条消息。';
 const _second = '这是运行中的第二条消息，请确认收到。';
 const _stage = 'submission-first-running';
+const _lifecycle = '请保持这次执行，等待我停止后再显式继续。';
+const _nextDraft = '这是下一条尚未发送的草稿，不应被上一条回执清除。';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -136,6 +138,7 @@ void main() {
     tester,
   ) async {
     final router = createApplicationRouter();
+    var firstGateReleased = false;
     void syncRoute() {
       if (router.routerDelegate.currentConfiguration.isEmpty) return;
       final state = router.routerDelegate.state;
@@ -154,7 +157,9 @@ void main() {
     addTearDown(() async {
       transport.releaseAll();
       try {
-        await fixtureGate(tester, provider, _stage, release: true);
+        if (!firstGateReleased) {
+          await fixtureGate(tester, provider, _stage, release: true);
+        }
         graph.setConversationPageVisible(false);
         await tester.pumpWidget(const SizedBox());
         expect(
@@ -269,6 +274,9 @@ void main() {
       await tester.enterText(input, text);
       await tester.pump();
       expect(tester.widget<TextField>(input).controller!.text, text);
+      if (text == _first) {
+        await capturePresentation(tester, 'submission-editing.png');
+      }
       record(text == _second ? 'second-ui-submit' : 'first-ui-submit');
       await tester.tap(find.byKey(const ValueKey('composer-submit')));
       await tester.pump();
@@ -327,7 +335,8 @@ void main() {
       owner.submissions.value.single.phase,
       ComposerSubmissionPhase.sending,
     );
-    expect(find.text('正在发送'), findsOneWidget);
+    expect(find.text('正在发送'), findsNothing);
+    expect(find.byTooltip('正在发送'), findsOneWidget);
     expect(transport.realSecondRpcStarted, isFalse);
     expect(transport.receipt, isNull);
     expect(
@@ -340,12 +349,17 @@ void main() {
     );
     record('pending-painted-before-real-rpc', {'inputId': inputId});
     await capturePresentation(tester, 'submission-pending.png');
+    final input = find.byKey(const ValueKey('composer-input'));
+    await tester.enterText(input, _nextDraft);
+    await tester.pump();
+    expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
+    await capturePresentation(tester, 'submission-next-draft.png');
 
     transport.releaseRpc();
     await until(
       () =>
           transport.receipt != null &&
-          find.text('已收到，等待同步').evaluate().length == 1 &&
+          find.byTooltip('已收到，等待同步').evaluate().length == 1 &&
           owner.submissions.value.any(
             (item) =>
                 item.inputId == inputId &&
@@ -355,7 +369,9 @@ void main() {
     );
     expect(transport.receipt!.inputId, inputId);
     await until(() => transport.heldFrames > 0, 'real feed frame held');
-    expect(find.text('已收到，等待同步'), findsOneWidget);
+    expect(find.text('已收到，等待同步'), findsNothing);
+    expect(find.byTooltip('已收到，等待同步'), findsOneWidget);
+    expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     expect(card.hitTestable(), findsOneWidget);
     expect(
       observed.singleBlocks.where(
@@ -399,6 +415,7 @@ void main() {
       InputChatSource(inputId: inputId),
     );
     expect(find.text(_second), findsOneWidget);
+    expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,
       'blockId': canonical.id,
@@ -407,6 +424,7 @@ void main() {
     });
     await capturePresentation(tester, 'submission-canonical.png');
     await fixtureGate(tester, provider, _stage, release: true);
+    firstGateReleased = true;
     await until(() {
       final turn = latestTurn();
       return turn != null &&
@@ -420,6 +438,167 @@ void main() {
                     ChatAtomKind.text,
           );
     }, 'second real model turn completed after interrupting the first');
+    await until(() {
+      final state = graph.client.conversations.session(threadId).state;
+      final storage = state.storage;
+      return state.runtime?.execution == null &&
+          storage?.acceptedSequence != null &&
+          storage?.durableSequence != null &&
+          storage!.durableSequence! >= storage.acceptedSequence!;
+    }, 'original journey has no execution and its accepted history is durable');
+    expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
+
+    // Keep the same real bridge, Thread and persisted history. The coordinator
+    // replaces only the now-complete strict provider script on the same address.
+    await File('$output/submission-lifecycle-requested')
+        .writeAsString('ready\n');
+    await until(
+      () => File('$output/submission-lifecycle-ready').existsSync(),
+      'strict lifecycle provider listening on the original address',
+    );
+    await submit(_lifecycle);
+    await until(
+      () =>
+          File('$output/submission-stop-reached').existsSync() &&
+          graph.client.conversations
+                  .session(threadId)
+                  .state
+                  .runtime
+                  ?.execution
+                  ?.phase ==
+              AgentExecutionPhase.running,
+      'real execution is running inside the provider gate',
+    );
+    final session = graph.client.conversations.session(threadId);
+    final stoppedExecution = session.state.runtime!.execution!;
+    final stoppedTurnId = stoppedExecution.turnId!;
+    expect(latestTurn()!.turnId, stoppedTurnId);
+    expect(latestTurn()!.state.isTerminal, isFalse);
+    expect(tester.widget<TextField>(input).controller!.text, isEmpty);
+
+    // Hold only the real stop RPC, not a fabricated stop result. This gives a
+    // stable pending frame while the canonical execution is genuinely running.
+    transport.armStop();
+    final pendingStop = find.byKey(const ValueKey('composer-stop'));
+    await tester.tap(pendingStop);
+    await tester.pump();
+    await until(() {
+      final command = tester
+          .widget<PromptComposerView>(find.byType(PromptComposerView))
+          .state
+          .stopCommand;
+      return transport.blockedStopExecutionId == stoppedExecution.id &&
+          pendingStop.hitTestable().evaluate().length == 1 &&
+          tester.widget<IconButton>(pendingStop).onPressed == null &&
+          find
+                  .descendant(
+                    of: pendingStop,
+                    matching: find.byType(CircularProgressIndicator),
+                  )
+                  .evaluate()
+                  .length ==
+              1 &&
+          command?.target.label == stoppedExecution.id &&
+          command?.isPending == true &&
+          command?.accepted == false &&
+          session.state.runtime?.execution?.id == stoppedExecution.id &&
+          session.state.runtime?.execution?.phase ==
+              AgentExecutionPhase.running;
+    }, 'production stop action pending for the frozen execution identity');
+    expect(transport.stopReceipt, isNull);
+    expect(session.state.runtime!.execution!.id, stoppedExecution.id);
+    expect(latestTurn()!.state.isTerminal, isFalse);
+    await capturePresentation(tester, 'submission-stopping.png');
+    expect(session.state.runtime!.execution!.id, stoppedExecution.id);
+    record('stop-pending-not-terminal', {'executionId': stoppedExecution.id});
+    transport.releaseStop();
+    await until(
+      () => transport.stopReceipt != null,
+      'real stop receipt returned',
+    );
+    expect(transport.stopReceipt!.executionId, stoppedExecution.id);
+    expect(transport.stopReceipt!.threadId, threadId);
+    expect(transport.stopReceipt!.stopped, isTrue);
+    record('stop-accepted', {'executionId': stoppedExecution.id});
+    // A successful RPC is NOT the end condition: wait for the canonical
+    // execution to disappear, the exact Turn to terminate and its continuation.
+    await until(
+      () =>
+          session.state.runtime?.execution == null &&
+          session.state.runtime?.continuation?.sourceTurnId == stoppedTurnId &&
+          session.state.runtime?.continuation?.claimed == false &&
+          latestTurn()?.turnId == stoppedTurnId &&
+          latestTurn()?.state.status == StudioTurnStatus.cancelled &&
+          find.byKey(const ValueKey('composer-continue')).evaluate().length ==
+              1,
+      'stopped execution ended and canonical continuation is available',
+    );
+    final continuation = session.state.runtime!.continuation!;
+    expect(continuation.reason, ContinuationReason.userStop);
+    expect(find.byKey(const ValueKey('composer-stop')), findsNothing);
+    expect(find.byKey(const ValueKey('composer-stopping')), findsNothing);
+    await capturePresentation(tester, 'submission-stopped.png');
+    expect(session.state.runtime!.execution, isNull);
+    expect(session.state.runtime!.continuation!.id, continuation.id);
+    expect(File('$output/submission-resume-reached').existsSync(), isFalse);
+    record('execution-ended-with-continuation', {
+      'executionId': stoppedExecution.id,
+      'turnId': stoppedTurnId,
+      'continuationId': continuation.id,
+    });
+
+    // No text is submitted to recover. Only the production Continue action may
+    // claim this exact canonical continuation and admit a new execution.
+    await tester.tap(find.byKey(const ValueKey('composer-continue')));
+    await tester.pump();
+    await until(
+      () =>
+          File('$output/submission-resume-reached').existsSync() &&
+          session.state.runtime?.execution?.phase ==
+              AgentExecutionPhase.running &&
+          session.state.runtime?.execution?.id != stoppedExecution.id,
+      'explicit continuation starts a new real execution',
+    );
+    final resumedExecution = session.state.runtime!.execution!;
+    expect(resumedExecution.turnId, isNot(stoppedTurnId));
+    expect(latestTurn()!.state.isTerminal, isFalse);
+    expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
+    expect(find.byKey(const ValueKey('composer-continue')), findsNothing);
+    expect(tester.widget<TextField>(input).controller!.text, isEmpty);
+    report['resumedViewport'] = await configurePresentationWindow(
+      tester,
+      logicalWidth: 900,
+      logicalHeight: 760,
+    );
+    await capturePresentation(tester, 'submission-resumed-narrow.png');
+    expect(session.state.runtime!.execution!.id, resumedExecution.id);
+    record('new-execution-running', {
+      'executionId': resumedExecution.id,
+      'turnId': resumedExecution.turnId,
+      'continuationId': continuation.id,
+    });
+    await File('$output/submission-stop-release').writeAsString('release\n');
+    await File('$output/submission-resume-release').writeAsString('release\n');
+    await until(
+      () =>
+          session.state.runtime?.execution == null &&
+          session.state.runtime?.continuation == null &&
+          latestTurn()?.turnId == resumedExecution.turnId &&
+          latestTurn()?.state.status == StudioTurnStatus.completed &&
+          session.state.storage?.acceptedSequence != null &&
+          session.state.storage?.durableSequence != null &&
+          session.state.storage!.durableSequence! >=
+              session.state.storage!.acceptedSequence!,
+      'resumed execution completes, consumes the continuation and is durable',
+    );
+    report['lifecycle'] = {
+      'stoppedExecutionId': stoppedExecution.id,
+      'stoppedTurnId': stoppedTurnId,
+      'continuationId': continuation.id,
+      'resumedExecutionId': resumedExecution.id,
+      'resumedTurnId': resumedExecution.turnId,
+      'completed': true,
+    };
     report['inputId'] = inputId;
     report['firstTurnId'] = firstTurn.turnId;
     report['heldFrames'] = transport.heldFrames;
@@ -427,6 +606,11 @@ void main() {
       'submission-pending.png',
       'submission-received.png',
       'submission-canonical.png',
+      'submission-editing.png',
+      'submission-next-draft.png',
+      'submission-stopping.png',
+      'submission-stopped.png',
+      'submission-resumed-narrow.png',
     ]) {
       expect(await File('$output/$name').length(), greaterThan(0));
     }
@@ -440,6 +624,9 @@ class _SubmissionTransport extends FrbStudioTransport {
   final void Function(String, [Map<String, Object?>]) record;
   Completer<void>? _rpc;
   Completer<void>? _feed;
+  Completer<void>? _stopRpc;
+  String? blockedStopExecutionId;
+  StopThreadCommandReply? stopReceipt;
   StudioPromptInput? blockedInput;
   SubmitPromptReceipt? receipt;
   bool realSecondRpcStarted = false;
@@ -467,6 +654,32 @@ class _SubmissionTransport extends FrbStudioTransport {
   void releaseAll() {
     releaseRpc();
     releaseFeed();
+    releaseStop();
+  }
+
+  void armStop() => _stopRpc = Completer<void>();
+
+  void releaseStop() {
+    if (_stopRpc case final gate? when !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  @override
+  Future<StopThreadCommandReply> stopThread(
+    String threadId,
+    String executionId, {
+    required OperationId operationId,
+  }) async {
+    blockedStopExecutionId = executionId;
+    await _stopRpc!.future;
+    final reply = await super.stopThread(
+      threadId,
+      executionId,
+      operationId: operationId,
+    );
+    stopReceipt = reply;
+    return reply;
   }
 
   @override

@@ -352,7 +352,29 @@ void main() {
             ComposerSubmissionPhase.failed => '发送失败',
             ComposerSubmissionPhase.unknownOutcome => '发送结果待确认',
           };
-          expect(find.text(status), findsOneWidget);
+          final normal =
+              phase == ComposerSubmissionPhase.sending ||
+              phase == ComposerSubmissionPhase.accepted;
+          expect(find.text(status), normal ? findsNothing : findsOneWidget);
+          if (normal) {
+            expect(
+              find.semantics.byPredicate(
+                (node) => node.getSemanticsData().tooltip == status,
+              ),
+              findsOne,
+            );
+          } else {
+            expect(find.bySemanticsLabel(status), findsOneWidget);
+          }
+          if (normal) {
+            final icon = find.byIcon(
+              phase == ComposerSubmissionPhase.sending
+                  ? Icons.schedule_rounded
+                  : Icons.done_rounded,
+            );
+            expect(icon, findsOneWidget);
+            expect(tester.getSize(icon).height, lessThanOrEqualTo(18));
+          }
           final wideHeight = tester
               .getSize(find.byType(TimelineMarkdown))
               .height;
