@@ -48,8 +48,9 @@ pub(crate) struct StreamCompletionAccumulator {
     presentation_bytes: usize,
     completed_member: Option<(usize, crate::runtime::ModelMemberState)>,
     presentation_states: HashMap<String, crate::runtime::ModelMemberState>,
-    started_members: std::collections::BTreeMap<PartKey, ObservedPartIdentity>,
+    started_members: std::collections::BTreeMap<PartKey, StartedPart>,
     pending_starts: Vec<ObservedPartIdentity>,
+    pending_content_available: Vec<ObservedPartIdentity>,
     text_output_bytes: usize,
     /// Charged high-water of each tool call's argument bytes, keyed by the accumulator identity the
     /// stream resolves an event to.
@@ -68,6 +69,11 @@ pub(crate) struct StreamCompletionAccumulator {
     reported_model_is_terminal: bool,
     state: StreamAccumulatorState,
     trace: Option<TraceProjection>,
+}
+
+struct StartedPart {
+    identity: ObservedPartIdentity,
+    content_available: bool,
 }
 
 impl StreamCompletionAccumulator {
@@ -93,6 +99,7 @@ impl StreamCompletionAccumulator {
             presentation_states: HashMap::new(),
             started_members: Default::default(),
             pending_starts: Vec::new(),
+            pending_content_available: Vec::new(),
             text_output_bytes: 0,
             tool_output_bytes: HashMap::new(),
             tool_stream: ToolStream::new(),
@@ -145,6 +152,7 @@ impl StreamCompletionAccumulator {
         event_tx: &AgentEventSender,
     ) -> Result<()> {
         let starts = self.started_identities(&stream_event)?;
+        let content_available = self.content_available_identities(&stream_event)?;
         match stream_event {
             ModelStreamEvent::BlockOpened {
                 id,
@@ -437,6 +445,9 @@ impl StreamCompletionAccumulator {
         for identity in starts {
             self.record_member_start(identity)?;
         }
+        for identity in content_available {
+            self.record_content_available(identity)?;
+        }
         Ok(())
     }
 
@@ -516,7 +527,8 @@ impl StreamCompletionAccumulator {
         {
             return Err(PureError::LlmError("empty provider part identity".into()));
         }
-        if let Some(old) = self.started_members.get_mut(&key) {
+        if let Some(part) = self.started_members.get_mut(&key) {
+            let old = &mut part.identity;
             if let (ObservedPartIdentity::Provider(old), ObservedPartIdentity::Provider(new)) =
                 (&*old, &identity)
                 && (std::mem::discriminant(&old.item_kind)
@@ -541,6 +553,82 @@ impl StreamCompletionAccumulator {
             .map_err(|error| PureError::LlmError(error.to_string()))?
             .len()
             .saturating_mul(2)
+            .saturating_add(std::mem::size_of::<StartedPart>() + 128);
+        self.presentation_bytes = self
+            .presentation_bytes
+            .checked_add(bytes)
+            .filter(|&bytes| bytes <= MAX_OUTPUT_BYTES)
+            .ok_or_else(|| {
+                PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
+            })?;
+        self.started_members.insert(
+            key,
+            StartedPart {
+                identity: identity.clone(),
+                content_available: false,
+            },
+        );
+        self.pending_starts.push(identity);
+        Ok(())
+    }
+
+    pub(crate) fn take_started_members(&mut self) -> Vec<ObservedPartIdentity> {
+        std::mem::take(&mut self.pending_starts)
+    }
+
+    fn content_available_identities(
+        &self,
+        event: &ModelStreamEvent,
+    ) -> Result<Vec<ObservedPartIdentity>> {
+        Ok(match event {
+            ModelStreamEvent::BlockDelta {
+                kind: kind @ ModelBlockKind::Text { .. },
+                field: ModelBlockField::Text,
+                delta,
+                provider,
+                ..
+            }
+            | ModelStreamEvent::BlockDelta {
+                kind: kind @ ModelBlockKind::ReasoningSummary,
+                field: ModelBlockField::ReasoningSummary,
+                delta,
+                provider,
+                ..
+            } if !delta.is_empty() => vec![observation(*kind, provider.as_ref())?.1],
+            ModelStreamEvent::BlockClosed {
+                kind: kind @ ModelBlockKind::Text { .. },
+                authoritative_content: Some(ModelBlockContent::Text(text)),
+                provider,
+                ..
+            } if !text.is_empty() => vec![observation(*kind, provider.as_ref())?.1],
+            // A reasoning close contains an item-wide summary list, not one part. Its validated
+            // PresentationItem supplies the real per-part identities just as it does for starts.
+            ModelStreamEvent::ReasoningRawDelta { delta, .. } if !delta.is_empty() => {
+                self.started_identities(event)?
+            }
+            ModelStreamEvent::PresentationItem { item, .. } => self
+                .started_identities(event)?
+                .into_iter()
+                .zip(&item.parts)
+                .filter_map(|(identity, part)| (!part.text.is_empty()).then_some(identity))
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    fn record_content_available(&mut self, identity: ObservedPartIdentity) -> Result<()> {
+        let part = self
+            .started_members
+            .get_mut(&part_key(&identity))
+            .ok_or_else(|| PureError::LlmError("content without a model part start".into()))?;
+        if part.content_available {
+            return Ok(());
+        }
+        // The flag belongs to the original call-local start entry. Charge only the transient
+        // handoff identity here; no text or second identity registry is retained.
+        let bytes = serde_json::to_vec(&identity)
+            .map_err(|error| PureError::LlmError(error.to_string()))?
+            .len()
             .saturating_add(std::mem::size_of::<ObservedPartIdentity>() + 128);
         self.presentation_bytes = self
             .presentation_bytes
@@ -549,13 +637,13 @@ impl StreamCompletionAccumulator {
             .ok_or_else(|| {
                 PureError::MemoryError("provider presentation output exceeds 16 MiB".into())
             })?;
-        self.started_members.insert(key, identity.clone());
-        self.pending_starts.push(identity);
+        part.content_available = true;
+        self.pending_content_available.push(identity);
         Ok(())
     }
 
-    pub(crate) fn take_started_members(&mut self) -> Vec<ObservedPartIdentity> {
-        std::mem::take(&mut self.pending_starts)
+    pub(crate) fn take_content_available_members(&mut self) -> Vec<ObservedPartIdentity> {
+        std::mem::take(&mut self.pending_content_available)
     }
 
     pub(crate) fn take_presentation_items(&mut self) -> Vec<CompletionPresentationItem> {
@@ -1087,6 +1175,67 @@ mod member_tests {
     }
 
     #[test]
+    fn authoritative_close_exposes_content_before_any_terminal_presentation_item() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::text_started("text".into(), TraceTextChannel::Final, None),
+            &events,
+        )
+        .unwrap();
+        let starts = acc.take_started_members();
+        assert_eq!(starts.len(), 1);
+        assert!(acc.take_content_available_members().is_empty());
+        acc.apply(
+            ModelStreamEvent::text_completed(
+                "text".into(),
+                TraceTextChannel::Final,
+                Some(" \n".into()),
+                None,
+            ),
+            &events,
+        )
+        .unwrap();
+        assert_eq!(acc.take_content_available_members(), starts);
+        assert!(acc.take_content_available_members().is_empty());
+        assert!(
+            acc.take_completed_member().is_none(),
+            "a block close does not invent an item terminal"
+        );
+    }
+
+    #[test]
+    fn complete_presentation_admits_content_once_per_nonempty_part() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut item = member();
+        item.parts = ["", " ", "summary"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| CompletionPresentationPart {
+                content_index: index as u32,
+                provider_part_id: None,
+                kind: CompletionPresentationPartKind::SummaryText,
+                text: text.into(),
+            })
+            .collect();
+        apply(&mut acc, item.clone()).unwrap();
+        assert_eq!(acc.take_started_members().len(), 3);
+        let available = acc.take_content_available_members();
+        let indexes: Vec<_> = available
+            .iter()
+            .map(|identity| {
+                let ObservedPartIdentity::Provider(part) = identity else {
+                    panic!("provider part");
+                };
+                part.content_index
+            })
+            .collect();
+        assert_eq!(indexes, [1, 2]);
+        apply(&mut acc, item).unwrap();
+        assert!(acc.take_content_available_members().is_empty());
+    }
+
+    #[test]
     fn summary_delta_identity_and_budget_are_checked_before_start() {
         use super::super::event::ProviderBlockIdentity;
         let (events, _) = tokio::sync::broadcast::channel(16);
@@ -1155,11 +1304,13 @@ mod member_tests {
         };
         assert_eq!(identity.item_id.as_ref(), item.provider_item_id);
         assert_eq!(identity.part, ObservedPartKind::SummaryText);
+        assert_eq!(acc.take_content_available_members(), starts);
         let (completed, state) = acc.take_completed_member().unwrap();
         assert_eq!(completed, &item);
         assert_eq!(state, ModelMemberState::Interrupted);
         apply(&mut acc, item.clone()).unwrap();
         assert!(acc.take_started_members().is_empty());
+        assert!(acc.take_content_available_members().is_empty());
         assert!(
             acc.take_completed_member().is_none(),
             "same authority does not resubmit"
@@ -1214,6 +1365,7 @@ mod member_tests {
             let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
             assert!(apply(&mut acc, item).is_err());
             assert!(acc.take_started_members().is_empty());
+            assert!(acc.take_content_available_members().is_empty());
             assert!(acc.take_completed_member().is_none());
             assert!(acc.presentation_items.is_empty());
         }
@@ -1231,6 +1383,7 @@ mod member_tests {
         );
         assert!(acc.take_completed_member().is_none());
         assert!(acc.take_started_members().is_empty());
+        assert!(acc.take_content_available_members().is_empty());
         assert!(acc.presentation_items.is_empty());
     }
 }

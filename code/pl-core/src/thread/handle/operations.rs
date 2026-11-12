@@ -220,6 +220,7 @@ impl ThreadHandle {
             model_members: None,
             pending_model_members: Vec::new(),
             pending_model_member_starts: Vec::new(),
+            pending_model_member_content_available: Vec::new(),
             resources: None,
             retry_plan: None,
             published,

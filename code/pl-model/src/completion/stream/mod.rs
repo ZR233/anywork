@@ -139,6 +139,16 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                             .map_err(|error| PureError::LlmError(error.to_string()))?;
                     }
                 }
+                for identity in accumulator.take_content_available_members() {
+                    if let Some(sender) = members.as_ref() {
+                        // Preserve the reliable first-content position before the next normalized
+                        // event, even if progress coalesces or cancellation arrives while awaiting.
+                        sender
+                            .content_available(generation, identity)
+                            .await
+                            .map_err(|error| PureError::LlmError(error.to_string()))?;
+                    }
+                }
                 if let Some((item, state)) = accumulator.take_completed_member()
                     && let Some(sender) = members.as_ref()
                 {

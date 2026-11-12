@@ -1,4 +1,4 @@
-//! Call-scoped admission of independently ended model members.
+//! Call-scoped admission of model member lifecycle facts.
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,18 @@ pub struct ModelCompletedMember {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelStartedMember {
+    pub turn_id: String,
+    pub attempt_id: String,
+    pub generation: u32,
+    pub identity: ObservedPartIdentity,
+}
+
+/// Reliable evidence that a validated part first has readable public content.
+///
+/// This is independent of completion and carries neither a completion ID nor content bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelContentAvailableMember {
     pub turn_id: String,
     pub attempt_id: String,
     pub generation: u32,
@@ -112,8 +124,15 @@ pub struct ModelMemberSender {
 pub(crate) struct AdmittedMembers {
     pub(crate) completed:
         std::collections::BTreeMap<(u32, String), (OpaquePayload, Option<MemberCharge>)>,
-    pub(crate) started:
-        std::collections::BTreeMap<(u32, StartedKey), (ObservedPartIdentity, Option<MemberCharge>)>,
+    pub(crate) started: std::collections::BTreeMap<(u32, StartedKey), AdmittedPart>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedPart {
+    pub(crate) identity: ObservedPartIdentity,
+    pub(crate) _start_charge: Option<MemberCharge>,
+    pub(crate) content_available: bool,
+    pub(crate) _content_charge: Option<MemberCharge>,
 }
 
 impl AdmittedMembers {
@@ -141,6 +160,7 @@ pub(crate) struct ModelMemberAdmission {
 #[derive(Debug)]
 pub(crate) enum MemberFact {
     Started(ModelStartedMember),
+    ContentAvailable(ModelContentAvailableMember),
     Completed(ModelCompletedMember),
 }
 
@@ -216,7 +236,7 @@ impl ModelMemberSender {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .started
             .get(&(generation, StartedKey::of(&member.identity)))
-            .is_some_and(|(old, _)| same_started_identity(old, &member.identity));
+            .is_some_and(|old| same_started_identity(&old.identity, &member.identity));
         let bytes = if duplicate {
             0
         } else {
@@ -234,6 +254,80 @@ impl ModelMemberSender {
         let (reply, admitted) = oneshot::channel();
         permit.send(ModelMemberAdmission {
             member: MemberFact::Started(member),
+            reply,
+            charge,
+        });
+        admitted.await.map_err(|_| ModelMemberError::Closed)?
+    }
+
+    /// Admits the first readable public content of an already started part on the original slot.
+    ///
+    /// Repeated evidence for the same part is idempotent. As with `start` and `submit`, the producer
+    /// must await the owner's reply after sending, including during cancellation. Success retains a
+    /// reliable fact; it does not complete the part or wait for persistence.
+    ///
+    /// # Errors
+    /// Reports invalid identity, missing or contradictory start, closed ownership, or the original
+    /// typed owner rejection.
+    pub async fn content_available(
+        &self,
+        generation: u32,
+        identity: ObservedPartIdentity,
+    ) -> Result<(), ModelMemberError> {
+        if let ObservedPartIdentity::Provider(part) = &identity
+            && part.item_id.is_empty()
+        {
+            return Err(ModelMemberError::InvalidIdentity);
+        }
+        let permit = self
+            .sender
+            .reserve()
+            .await
+            .map_err(|_| ModelMemberError::Closed)?;
+        let member = ModelContentAvailableMember {
+            turn_id: self.turn_id.to_string(),
+            attempt_id: self.attempt_id.to_string(),
+            generation,
+            identity,
+        };
+        let encoded = encoded_member_bytes(&member).map_err(|source| {
+            ModelMemberError::Rejected(Arc::new(ThreadError::Storage(Arc::new(
+                crate::thread::cold::ColdStoreError {
+                    source: Box::new(source),
+                },
+            ))))
+        })?;
+        let metadata = (2 * (self.turn_id.len() + self.attempt_id.len())
+            + std::mem::size_of::<ModelMemberAdmission>()
+            + std::mem::size_of::<ModelContentAvailableMember>()
+            + 128) as u64;
+        let duplicate = self
+            .registry
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .started
+            .get(&(generation, StartedKey::of(&member.identity)))
+            .is_some_and(|old| {
+                old.content_available && same_started_identity(&old.identity, &member.identity)
+            });
+        let bytes = if duplicate {
+            0
+        } else {
+            encoded.saturating_mul(2).saturating_add(metadata)
+        };
+        let charge = self
+            .output
+            .as_ref()
+            .map(|output| {
+                output.retain_member(bytes).map_err(|error| {
+                    ModelMemberError::Rejected(Arc::new(ThreadError::Storage(Arc::new(error))))
+                })
+            })
+            .transpose()?;
+        let (reply, admitted) = oneshot::channel();
+        permit.send(ModelMemberAdmission {
+            member: MemberFact::ContentAvailable(member),
             reply,
             charge,
         });
