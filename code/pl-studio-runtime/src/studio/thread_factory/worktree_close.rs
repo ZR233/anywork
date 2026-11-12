@@ -63,7 +63,10 @@ impl StudioThreadFactory {
         }
     }
 
-    async fn cleanup_one_owned_worktree(&self, record: &mut AgentCloseRecord) -> Result<()> {
+    pub(super) async fn cleanup_one_owned_worktree(
+        &self,
+        record: &mut AgentCloseRecord,
+    ) -> Result<()> {
         let Some(binding) = record.worktree.clone() else {
             record.worktree_cleanup = AgentWorktreeCleanup::NotApplicable;
             record.error = None;

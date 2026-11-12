@@ -7,7 +7,9 @@ mod agent_evaluation;
 mod agent_operations;
 pub(crate) mod agent_review;
 mod agent_services;
+pub(crate) mod agent_wait;
 mod agents;
+pub(crate) use agents::AgentHost;
 #[cfg(test)]
 #[path = "session/s2_close_regression_tests.rs"]
 mod s2_close_regression_tests;
@@ -698,21 +700,29 @@ impl SessionRuntime {
     pub(crate) fn ensure_agent_admission_open(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let state = self.0.state();
         if let Some(entry) = state.entries.get(id)
-            && crate::studio::agent_close::is_explicitly_closed(&entry.native()?.thread.snapshot())
-                .map_err(|source| ThreadAssemblyError::Resource {
+            && let crate::session::AgentRuntime::Native(native) = &entry.runtime
+            && crate::studio::agent_close::is_explicitly_closed(&native.thread.snapshot()).map_err(
+                |source| ThreadAssemblyError::Resource {
                     operation: "read child close intent",
                     source: source.into(),
-                })?
+                },
+            )?
         {
             return Err(ThreadAssemblyError::Closed);
         }
         if state.closing
             || state.sealed_agents.contains_key(id)
-            || !state.entries.get(id).is_some_and(|entry| {
-                entry.native().is_ok_and(|native| {
-                    native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+            || !state
+                .entries
+                .get(id)
+                .is_some_and(|entry| match &entry.runtime {
+                    crate::session::AgentRuntime::Native(native) => {
+                        native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    }
+                    crate::session::AgentRuntime::Acp(acp) => {
+                        !acp.cancellation.is_cancelled() && acp.session().is_ok()
+                    }
                 })
-            })
         {
             return Err(ThreadAssemblyError::Closed);
         }
@@ -1487,11 +1497,8 @@ impl SessionRuntime {
             .entries
             .get(id)
             .is_some_and(|entry| matches!(entry.runtime, crate::session::AgentRuntime::Acp(_)));
-        if acp {
-            return self.close_thread_for_purpose(id, operation, purpose).await;
-        }
         drop(operation);
-        if purpose == ClosePurpose::Preserve {
+        if !acp && purpose == ClosePurpose::Preserve {
             self.retry_failed_review_deliveries(id)
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {

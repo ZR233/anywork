@@ -120,18 +120,19 @@ impl AgentProfileCatalog {
     /// Automatic mode needs enabled roles, not the availability of their fixed model routes.
     pub(crate) fn executable(&self, mode: pl_protocol::DelegationMode) -> Result<Self> {
         let mut catalog = self.enabled_for_dispatch()?;
-        // Automatic selection may replace a Native route, not turn an unsupported backend into
-        // Native. ACP configurations remain visible in Settings but are never dispatch entries.
-        catalog
-            .profiles
-            .retain(|profile| matches!(profile.binding, AgentBinding::Native(_)));
-        if mode == pl_protocol::DelegationMode::Profile {
-            catalog.profiles.retain(|profile| {
-                !self
+        catalog.profiles.retain(|profile| {
+            if matches!(profile.binding, AgentBinding::Acp(_))
+                && profile.workspace_mode == AgentWorkspaceMode::Review
+            {
+                return false;
+            }
+            // Automatic may replace a Native model route, never an ACP account definition.
+            (mode == pl_protocol::DelegationMode::Automatic
+                && matches!(profile.binding, AgentBinding::Native(_)))
+                || !self
                     .unavailable_profiles
                     .contains(&profile.definition.definition_id)
-            });
-        }
+        });
         Ok(catalog)
     }
 
@@ -154,10 +155,6 @@ impl AgentProfileCatalog {
                     } else {
                         Err(PureError::ConfigError("ACP definition is disabled".into()))
                     }
-                })
-                .and_then(|_| {
-                    crate::studio::delegation::resolve_current_child_route(config, &profile)
-                        .map(|_| ())
                 }),
             AgentBinding::Native(_) => {
                 crate::studio::delegation::resolve_current_child_route(config, &profile).map(|_| ())
@@ -259,7 +256,7 @@ pub fn resolve_profile_route(
 ) -> Result<pl_model::config::ResolvedModelRoute> {
     let AgentBinding::Native(native) = &profile.binding else {
         return Err(PureError::ConfigError(
-            "ACP execution is not supported before S4".into(),
+            "ACP Profile has no Native model route".into(),
         ));
     };
     let route = native

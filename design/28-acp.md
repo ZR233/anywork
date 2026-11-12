@@ -1,6 +1,6 @@
 # 28 - ACP 接入、业务会话与认证
 
-本文定义外部智能体的 ACP（Agent Client Protocol）接入、受管服务器准备、认证、账户额度查询及独立业务会话边界。各 crate 职责遵循 [02 - Crate 边界与职责](./02-crates.md)，用户级定义与迁移遵循 [20 - 配置与凭据管理](./20-config.md)，运行资源所有权遵循 [14](./14-runtime-host.md)。任意符合稳定 ACP v1/stdio 的用户配置服务进入同一实际运行分支；Antigravity 是内置受管启动模板，固定发行限制仅属于该模板，不限制通用 command。独立业务 API 不等于完整 ACP GUI、Host MCP 或混合父子派发已开放，后续内容与协作阶段分别交付；实际完成度和真实供应商能力以验收记录为准。
+本文定义外部智能体的 ACP（Agent Client Protocol）接入、受管服务器准备、认证、账户额度查询、业务会话和 Host MCP 边界。各 crate 职责遵循 [02 - Crate 边界与职责](./02-crates.md)，用户级定义与迁移遵循 [20 - 配置与凭据管理](./20-config.md)，运行资源所有权遵循 [14](./14-runtime-host.md)。任意符合稳定 ACP v1/stdio 的用户配置服务进入同一实际运行分支；Antigravity 是内置受管启动模板，固定发行限制仅属于该模板，不限制通用 command。本文定义目标契约，实际完成度和具体服务的真实工具能力以验收记录为准，协议 fixture 不代表所有供应商兼容。
 
 ## 28.1 接入边界与所有权
 
@@ -156,6 +156,8 @@ Flutter 原生回归使用官方 `integration_test` 与 `WidgetTester`，通过 
 
 ## 28.11 ACP 业务会话与原生内容通路
 
+Host MCP 与混合协作沿本节同一业务会话资源实现，不另建协议连接或 transcript；补充边界见 [28.12](#2812-host-mcp-与宿主指令)。
+
 ### 本机 agy 便利发现
 
 官方 CLI 的 ACP 启动方式是 `agy acp`，已有 CLI 登录态由官方程序自行复用；不使用未经确认的 `--acp` 参数，也不复制凭据或保证所有机器已经登录。进入添加 ACP 编辑流程或显式重新检测时，Rust 宿主沿原 executable 解析与进程监督能力检查 `agy --version`、`agy acp --help`。整个探测共用最多 10 秒预算及合计 64 KiB 输出上限，不创建业务会话、不发 prompt、不下载或登录。取消、超限、错误和退出都必须真实收束进程/管道；探测不能成为注册表外的长期进程。
@@ -205,3 +207,17 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 bool；权限响应才使用 optionId。一次最多一个配置修改在途，prompt/权限/控制继续处理；失败只清本次 pending，保留等待期间已接纳的推送，不恢复发起前快照、不重发、不增加配置 revision、ACK 或回读事务。只有跨桥、请求与实际显示闭环完整时才广告 boolean 能力，不因预留类型而提前声明。未知类别原样保留，未知类型沿 SDK 按项容错，不另写配置 schema parser。
 
 仅在 configOptions 缺失时消费真实旧 modes；通过正式 session/set_mode 和 current_mode_update 处理，不把 modeId 填进 configId 冒用 set_config_option。没有配置选项时沿 Agent 默认，不建设静态 ACP 模型目录、专用 effort 接口或 Native workflow 映射。Client 呈现边界见 [25](./25-frontend-state.md#2521-acp-协议内容与目录消费)。
+
+## 28.12 Host MCP 与宿主指令
+
+需要宿主协作的 ACP 实例在真实 initialize 声明 `mcpCapabilities.http` 后，创建实例独占的 rmcp Streamable HTTP 服务，监听 `127.0.0.1:0` 的固定 `/mcp` 路径。仅将已启动服务传入 `session/new`、`session/load` 或 `session/resume` 的 `mcpServers`。未声明 HTTP 能力时不注入无效地址，普通聊天和作为普通 child 的资格不受影响。能力声明、接收配置与真实模型调用分别记录，不因注入成功推断工具实际可用。
+
+服务的 handler 固定可信调用者、具体运行实例与原 Session 的弱访问入口。成员发布前可以完成协议发现，但业务调用明确返回未就绪；发布后仍逐次校验实例身份、原成员关系与运行资格。每实例随机 bearer 经标准 HTTP headers 传入，域调用前校验；凭据不进入模型内容、工具参数、历史或日志，实例关闭后失效。MCP session header 仅管理传输状态，不能切换成员。每次域调用由宿主生成新的唯一 call ID，MCP request ID 不充当 Native 持久消息 ID。
+
+宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
+
+宿主指令由共享项目指令、实际角色、工作区与已提供的协作能力组成，不套用未支持的 Native workflow。对端声明 `sessionCapabilities.systemPrompt` 时，通过正式 `systemPrompt` 的 `append` 模式传入；未声明时，在用户 prompt 内容前附独立的宿主指令文本块，用户原内容与附件保持独立。两种传递方式使用同一内容来源；不使用 `override` 替换 agent 原指令。
+
+宿主指令要求派发、成员管理、结果等待与关闭使用 `anywork_` 工具。前缀帮助识别，提示词引导选择，两者不构成权限控制。稳定 ACP 没有统一关闭 agent 自带工具的开关；客户端不声明文件或终端能力，只限制由客户端执行的 ACP 方法，不能禁止 agent 自己运行工具。`systemPrompt` 同样不改变工具可用性、MCP 服务、权限或会话配置；具体服务的私有选项不解释成通用禁用策略。
+
+listener、handler 与关闭 join 直接归原 ACP 实例资源，取消等待不转移已受理操作的所有权。关闭顺序遵循 [14](./14-runtime-host.md#142-输入受理与驱动)，旧句柄和旧凭据不能控制重开实例。不建立共享 listener 租约表、持久 cursor 映射、ACP 结果数据库、Native 父伪装或旁路关闭；仅同主机 HTTP，不提供公网、stdio relay 或 experimental MCP-over-ACP。

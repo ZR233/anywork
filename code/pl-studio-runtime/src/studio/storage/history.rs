@@ -1890,6 +1890,27 @@ impl HistoryStore {
         Ok(Some(history.turn))
     }
 
+    /// Latest real terminal effect, using the same partial index as terminal paging.
+    pub(crate) async fn latest_terminal_report_sequence(&self) -> Result<Option<u64>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT last_write_seq FROM history_items
+                 WHERE kind='turn' AND lifecycle='terminal'
+                 ORDER BY last_write_seq DESC, ordinal DESC LIMIT 1",
+                vec![],
+            ))
+            .await?;
+        row.map(|row| {
+            let sequence: i64 = row.try_get("", "last_write_seq")?;
+            u64::try_from(sequence).context("negative terminal report sequence")
+        })
+        .transpose()
+    }
+
     /// Body-free keyset of the real terminal effects that own parent report identities.
     /// The bounded canonical item index is reused; there is no second delivery ledger.
     pub(crate) async fn terminal_report_sequences(&self, after: u64) -> Result<Vec<u64>> {
@@ -1915,6 +1936,44 @@ impl HistoryStore {
                 u64::try_from(sequence).context("negative terminal report sequence")
             })
             .collect()
+    }
+
+    /// Reads complete original reports under the caller's serialized-report byte budget.
+    /// Callers supply the bounded terminal keyset. A report that does not fit stays unreturned and
+    /// therefore cannot advance their cursor; an oversized first report is an explicit error.
+    pub(crate) async fn terminal_reports(
+        &self,
+        sequences: &[u64],
+        max_bytes: usize,
+    ) -> Result<Vec<(u64, pl_core::thread::inbox::ThreadMessage)>> {
+        let mut remaining = max_bytes as u64;
+        let mut reports = Vec::new();
+        for &sequence in sequences {
+            // The receipt is immutable. Its persisted payload is the serialized original
+            // ThreadMessage, so this body-free query bounds both loading and report output.
+            let bytes = self.parent_report_bytes(sequence).await?;
+            if bytes > remaining {
+                ensure!(
+                    !reports.is_empty(),
+                    "terminal report {sequence} exceeds report byte budget ({max_bytes} bytes)"
+                );
+                break;
+            }
+            let report = self.parent_report(sequence).await?.with_context(|| {
+                format!("terminal effect {sequence} has no original parent report")
+            })?;
+            let output_bytes = serde_json::to_vec(&report)?.len() as u64;
+            if output_bytes > remaining {
+                ensure!(
+                    !reports.is_empty(),
+                    "terminal report {sequence} exceeds report byte budget ({max_bytes} bytes)"
+                );
+                break;
+            }
+            remaining -= output_bytes;
+            reports.push((sequence, report));
+        }
+        Ok(reports)
     }
 
     #[cfg(test)]
@@ -4654,6 +4713,7 @@ mod storage_fault_tests {
     async fn terminal_turn_history_is_readable_by_turn_and_rejects_revisions() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
+        assert_eq!(store.latest_terminal_report_sequence().await?, None);
         let terminal = |id: &str, ordinal: u64| {
             ThreadItem::new(
                 format!("turn:{id}"),
@@ -4676,6 +4736,9 @@ mod storage_fault_tests {
         store
             .commit(80, &[terminal("second", 2), terminal("third", 3)], &[])
             .await?;
+        assert_eq!(store.latest_terminal_report_sequence().await?, Some(80));
+        assert_eq!(store.terminal_report_sequences(30).await?, vec![80, 80]);
+        assert!(store.terminal_report_sequences(80).await?.is_empty());
 
         let first = store.items_for_turn("first").await?;
         assert_eq!(first.len(), 1);
@@ -5415,6 +5478,123 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn terminal_report_byte_budget_preserves_unreturned_source_positions() -> Result<()> {
+        use pl_core::{
+            context::{AgentMessageKind, OpaquePayload},
+            thread::inbox::ThreadMessage,
+        };
+        let directory = tempfile::tempdir()?;
+        let store = HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
+        let budget = 64 * 1024;
+        for sequence in 1..=5 {
+            let terminal = ThreadItem::new(
+                format!("turn:{sequence}"),
+                "child".into(),
+                sequence.to_string(),
+                sequence,
+                1,
+                1,
+                1,
+                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+                    pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
+                        Some(1),
+                        1,
+                        pl_protocol::TurnCompletion::Normal,
+                    )),
+                )),
+            );
+            let mut message = ThreadMessage {
+                kind: AgentMessageKind::Report,
+                id: crate::studio::agent_close::terminal_report_id("child", sequence),
+                source_id: "studio.child:child".into(),
+                payload: OpaquePayload::new("pl.studio.turn-report", 1, "")?,
+                context: vec![],
+            };
+            let target_bytes = match sequence {
+                1 | 2 => budget / 2,
+                3 => budget / 2 + 1,
+                4 => budget,
+                _ => budget + 1,
+            };
+            let padding = target_bytes - serde_json::to_vec(&message)?.len();
+            message.payload = OpaquePayload::new(
+                "pl.studio.turn-report",
+                1,
+                format!("{}{}", "原".repeat(padding / 3), "a".repeat(padding % 3)),
+            )?;
+            assert_eq!(serde_json::to_vec(&message)?.len(), target_bytes);
+            let receipts = [FactReceiptWrite {
+                item_id: message.id.clone(),
+                revision: 1,
+                kind: "parentReport",
+                payload: serde_json::to_string(&message)?,
+            }];
+            store
+                .commit_effect(
+                    sequence,
+                    EffectCommit {
+                        current: &test_current(sequence),
+                        completions: &[],
+                        items: &[terminal],
+                        rolled_back_turns: &Default::default(),
+                        identities: &[],
+                        messages: &[],
+                        receipts: &receipts,
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await?;
+        }
+        let first = store
+            .terminal_reports(&store.terminal_report_sequences(0).await?, budget)
+            .await?;
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].0, 1);
+        assert_eq!(first[1].0, 2);
+        assert_eq!(
+            serde_json::to_vec(&first[0].1)?.len() + serde_json::to_vec(&first[1].1)?.len(),
+            budget
+        );
+        assert_eq!(
+            first[0].1.digest(),
+            store.parent_report(1).await?.unwrap().digest()
+        );
+        let second = store
+            .terminal_reports(&store.terminal_report_sequences(first[1].0).await?, budget)
+            .await?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].0, 3);
+        assert_eq!(
+            second[0].1.digest(),
+            store.parent_report(3).await?.unwrap().digest()
+        );
+        let third = store
+            .terminal_reports(&store.terminal_report_sequences(second[0].0).await?, budget)
+            .await?;
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].0, 4);
+        assert_eq!(serde_json::to_vec(&third[0].1)?.len(), budget);
+        let remaining = store.terminal_report_sequences(third[0].0).await?;
+        assert_eq!(remaining, vec![5]);
+        let error = store
+            .terminal_reports(&remaining, budget)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("terminal report 5 exceeds report byte budget (65536 bytes)")
+        );
+        // No-after must also reject a latest report that cannot be returned whole.
+        let latest = store.latest_terminal_report_sequence().await?.unwrap();
+        assert!(store.terminal_reports(&[latest], budget).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn terminal_parent_report_is_atomic_immutable_and_reopens_without_reconstruction()
     -> Result<()> {
         use pl_core::{
@@ -5426,6 +5606,22 @@ mod storage_fault_tests {
             sequence: u64,
             message: &ThreadMessage,
         ) -> Result<()> {
+            let terminal = ThreadItem::new(
+                "turn:original".into(),
+                "child-报告".into(),
+                "original".into(),
+                1,
+                1,
+                1,
+                1,
+                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+                    pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
+                        Some(1),
+                        1,
+                        pl_protocol::TurnCompletion::Normal,
+                    )),
+                )),
+            );
             let receipts = [FactReceiptWrite {
                 item_id: message.id.clone(),
                 revision: 1,
@@ -5438,7 +5634,7 @@ mod storage_fault_tests {
                     EffectCommit {
                         current: &crate::studio::storage::history::test_current(sequence),
                         completions: &[],
-                        items: &[],
+                        items: &[terminal],
                         rolled_back_turns: &Default::default(),
                         identities: &[],
                         messages: &[],
@@ -5466,6 +5662,7 @@ mod storage_fault_tests {
         store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_parent_report BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='parentReport' BEGIN SELECT RAISE(ABORT,'controlled report rejection'); END").await?;
         assert!(commit(&store, 2, &message).await.is_err());
         assert_eq!(store.watermark().await?, 1);
+        assert_eq!(store.latest_terminal_report_sequence().await?, None);
         assert!(store.parent_report(2).await?.is_none());
         store
             .writer()
@@ -5475,6 +5672,8 @@ mod storage_fault_tests {
             .await?;
         commit(&store, 2, &message).await?;
         assert_eq!(store.watermark().await?, 2);
+        assert_eq!(store.latest_terminal_report_sequence().await?, Some(2));
+        assert_eq!(store.terminal_report_sequences(0).await?, vec![2]);
         let mut conflicting = message.clone();
         conflicting.payload =
             OpaquePayload::new("pl.studio.turn-report", 1, "not the original body")?;
@@ -5482,6 +5681,7 @@ mod storage_fault_tests {
         assert_eq!(store.watermark().await?, 2);
         drop(store);
         let reopened = HistoryStore::open(&path, "child-报告").await?;
+        assert_eq!(reopened.latest_terminal_report_sequence().await?, Some(2));
         assert_eq!(
             reopened.parent_report(2).await?.unwrap().digest(),
             message.digest()

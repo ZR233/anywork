@@ -203,6 +203,16 @@ impl SessionRuntime {
         &self,
         terminal: Arc<TerminalDelivery>,
     ) -> Result<()> {
+        if terminal
+            .thread
+            .parent_thread_id
+            .as_deref()
+            .is_some_and(|parent| self.parent_is_acp(parent))
+        {
+            // The source report already belongs to the child's original history handoff.
+            // An ACP parent has no Native inbox or structured-review delivery to acknowledge.
+            return Ok(());
+        }
         let services = self
             .0
             .state()
@@ -426,7 +436,11 @@ impl SessionRuntime {
         &self,
         reviewer: &pl_protocol::Thread,
     ) -> Result<()> {
-        if reviewer.parent_thread_id.is_none() {
+        if reviewer
+            .parent_thread_id
+            .as_deref()
+            .is_none_or(|parent| self.parent_is_acp(parent))
+        {
             return Ok(());
         }
         let services = self

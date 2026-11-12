@@ -90,6 +90,13 @@ pub(super) fn channel() -> (Sender, Observer) {
 }
 
 impl Sender {
+    pub(super) fn close(&mut self) {
+        if let Some(gap) = self.gap() {
+            self.gap.send_replace(Some(gap));
+        }
+        self.sender.take();
+    }
+
     /// The driver must release pending permissions even if the receiver disappears while
     /// the protocol is otherwise quiet. This future owns no state lock.
     pub(super) fn invalidated(&self) -> impl Future<Output = ()> + Send + 'static {

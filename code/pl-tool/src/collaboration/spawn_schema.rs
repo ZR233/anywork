@@ -35,7 +35,7 @@ pub(super) fn declaration(
     }
     let input_schema = top_level_schema(&template, branches)?;
     let description = format!(
-        "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters after whitespace normalization) shown in the child list, and message: the complete self-contained instructions without an application length limit. Top-level properties list the available parameters; select the matching oneOf branch for the chosen profileId. Automatic mode requires modelSelection from a current model query; fixed Profile mode forbids overrides. If the selected model declares effort candidates, modelSelection.effort must explicitly select one; omit it or use null only when the model has no effort parameter. Omission does not inherit a root/Profile effort or select a model default. writablePaths is optional only for directory Profiles: omit it for the whole workspace, or use [] for business read-only access (Thread scratch/artifacts remain writable). reviewTargetAgentId is required only for review Profiles and must be the reviewed direct child's agentId; the host adopts its frozen workspace. The host independently validates permissions, current availability and limits. Open-agent capacity covers the root plus every open and preparing child in the tree; when a spawn is rejected for capacity, close finished agents with close_agent before spawning more. Profile workspace modes: {}.",
+        "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters after whitespace normalization) shown in the child list, and message: the complete self-contained instructions without an application length limit. Top-level properties list the available parameters; select the matching oneOf branch for the chosen profileId. For Native targets, Automatic mode requires modelSelection from a current model query; fixed Profile mode forbids overrides. ACP targets always use their configured account and forbid modelSelection, writablePaths and structured review. If the selected Native model declares effort candidates, modelSelection.effort must explicitly select one; omit it or use null only when the model has no effort parameter. Omission does not inherit a root/Profile effort or select a model default. writablePaths is optional only for Native directory Profiles: omit it for the whole workspace, or use [] for business read-only access (Thread scratch/artifacts remain writable). reviewTargetAgentId is required only for Native review Profiles and must be the reviewed direct child's agentId; the host adopts its frozen workspace. The host independently validates permissions, current availability and limits. Open-agent capacity covers the root plus every open and preparing child in the tree; when a spawn is rejected for capacity, close finished agents with close_agent before spawning more. Profile workspace modes: {}.",
         serde_json::to_string(&modes)?
     );
     Ok(Some(
@@ -193,10 +193,11 @@ fn branch(
             "profileId must be a string schema",
         ))?;
     identity.insert("const".into(), Value::String(profile.profile_id.clone()));
-    if profile.workspace_mode != AgentWorkspaceMode::Directory {
+    let native = profile.backend == pl_protocol::AgentBackendKind::Native;
+    if !native || profile.workspace_mode != AgentWorkspaceMode::Directory {
         properties.remove("writablePaths");
     }
-    if profile.workspace_mode == AgentWorkspaceMode::Review {
+    if native && profile.workspace_mode == AgentWorkspaceMode::Review {
         properties.insert(
             "reviewFeedback".into(),
             super::thread::ReviewFeedback::json_schema(&mut SchemaGenerator::default()).to_value(),
@@ -216,7 +217,7 @@ fn branch(
         properties.remove("reviewTargetAgentId");
         properties.remove("reviewFeedback");
     }
-    if mode == DelegationMode::Automatic {
+    if native && mode == DelegationMode::Automatic {
         let mut generator = schemars::generate::SchemaSettings::default()
             .with(|settings| settings.inline_subschemas = true)
             .into_generator();
@@ -246,4 +247,66 @@ fn branch(
     }
     object.insert("additionalProperties".into(), Value::Bool(false));
     Ok(schema)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_spawn_branches_keep_automatic_selection_native_only() {
+        for mode in [DelegationMode::Automatic, DelegationMode::Profile] {
+            let definition = declaration(
+                &[
+                    AgentSpawnProfile {
+                        profile_id: "native".into(),
+                        backend: pl_protocol::AgentBackendKind::Native,
+                        workspace_mode: AgentWorkspaceMode::Directory,
+                    },
+                    AgentSpawnProfile {
+                        profile_id: "acp".into(),
+                        backend: pl_protocol::AgentBackendKind::Acp,
+                        workspace_mode: AgentWorkspaceMode::Directory,
+                    },
+                ],
+                mode,
+            )
+            .unwrap()
+            .unwrap();
+            let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
+                panic!("spawn must declare JSON input");
+            };
+            let branches = schema["oneOf"].as_array().unwrap();
+            let native = branches
+                .iter()
+                .find(|branch| branch["properties"]["profileId"]["const"] == "native")
+                .unwrap();
+            let acp = branches
+                .iter()
+                .find(|branch| branch["properties"]["profileId"]["const"] == "acp")
+                .unwrap();
+            for field in [
+                "modelSelection",
+                "writablePaths",
+                "reviewTargetAgentId",
+                "reviewFeedback",
+            ] {
+                assert!(
+                    acp["properties"].get(field).is_none(),
+                    "{field} must be rejected"
+                );
+            }
+            assert_eq!(acp["additionalProperties"], false);
+            assert!(native["properties"].get("writablePaths").is_some());
+            assert_eq!(
+                native["properties"].get("modelSelection").is_some(),
+                mode == DelegationMode::Automatic
+            );
+            let required = native["required"].as_array().unwrap();
+            assert_eq!(
+                required.iter().any(|field| field == "modelSelection"),
+                mode == DelegationMode::Automatic
+            );
+        }
+    }
 }

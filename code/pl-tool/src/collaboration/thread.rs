@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub struct AgentSpawnProfile {
     pub profile_id: String,
     pub workspace_mode: AgentWorkspaceMode,
+    pub backend: pl_protocol::AgentBackendKind,
 }
 
 /// A malformed declaration is a catalog failure, never permission to expose a generic schema.
@@ -47,7 +48,7 @@ pub struct AgentMessage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpawn {
     pub profile_id: String,
-    /// Required only in automatic delegation; fixed Profile mode rejects overrides.
+    /// Required only for Native targets in automatic delegation; ACP always rejects overrides.
     #[serde(default)]
     pub model_selection: Option<NewThreadModelRoute>,
     /// Brief task description shown in the child list; required, nonempty, at most 80 Unicode characters.
@@ -442,11 +443,11 @@ mod tests {
         let receipt = SpawnReceipt {
             agent_id: "published-child".into(),
             profile_id: "executor".into(),
-            model: NewThreadModelRoute {
+            model: Some(NewThreadModelRoute {
                 account_id: "account".into(),
                 model_id: "model".into(),
                 effort: None,
-            },
+            }),
             delegation: Default::default(),
             workspace: None,
             message_accepted: false,

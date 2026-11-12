@@ -46,8 +46,19 @@ account_id = "antigravity"
 
 This replaces the whole Native binding, including its route. It references an
 existing user-level ACP definition; do not persist a runtime connection revision
-in the Profile. It has no Native model or instruction placeholders. ACP
-Profiles are visible in management but are currently excluded from child dispatch.
+in the Profile. It has no Native model or instruction placeholders. ACP Profiles
+can dispatch ordinary children when their referenced definition is valid and enabled,
+in both delegation modes. Automatic model selection applies only to Native children;
+do not supply `modelSelection`, Native effort, `writablePaths`, structured review or
+Native workflow arguments to an ACP child. New ACP children use the service's default
+session configuration; later configuration changes belong to that session.
+
+ACP callers receive the `anywork_` collaboration tools only when the service advertises
+HTTP MCP support. The host provides an instance-local authenticated loopback MCP server;
+do not add its transient URL or bearer to a user configuration file. Lack of HTTP MCP
+does not disqualify an ordinary ACP child. Tool prefixes and prompt instructions do not
+disable the service's own tools. If the service advertises `systemPrompt`, host
+instructions use its `append` mode; otherwise they accompany user prompt content.
 
 Use the Agents settings save/reload operation after editing and inspect its
 diagnostics and executable catalog. File validity and route availability differ;

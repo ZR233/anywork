@@ -13,8 +13,21 @@ impl SessionRuntime {
             .clone()
             .context("child close services are unavailable")?;
         let mut roots = BTreeMap::<String, Vec<(usize, pl_protocol::Thread)>>::new();
+        let mut acp = Vec::new();
         for pending in services.store.agent_closes().await? {
             if pending.execution_closed && pending.worktree_cleanup.is_terminal() {
+                continue;
+            }
+            let identity = services.identity(&pending.agent_id)?;
+            if &identity.session_id != self.id() {
+                continue;
+            }
+            if services
+                .events
+                .agent_execution_identity(&pending.agent_id)
+                .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+            {
+                acp.push(pending);
                 continue;
             }
             let thread = services.record(&pending.agent_id).await?;
@@ -28,6 +41,38 @@ impl SessionRuntime {
                 .push((depth, thread));
         }
         let mut failures = Vec::new();
+        for pending in acp {
+            let admission = self.clone();
+            let owner = self.clone();
+            let recovery = services.clone();
+            let id = pending.agent_id.clone();
+            let result = services
+                .operations
+                .run(
+                    pending.root_id.clone(),
+                    format!("resume-acp-close:{id}"),
+                    move || {
+                        ensure!(!admission.0.state().closing, "child close owner is closing");
+                        Ok(())
+                    },
+                    async move {
+                        let operation = owner.agent_operation(&id).await;
+                        let _seal = owner.seal_agent_operation(&id);
+                        recovery
+                            .factory
+                            .begin_acp_child_close(&id, pending.force)
+                            .await?;
+                        owner.close_with_permit(&id, operation).await?;
+                        let (_, error) = recovery.factory.finish_acp_child_close(&id).await?;
+                        ensure!(error.is_none(), "ACP close recovery incomplete: {error:?}");
+                        Ok::<_, anyhow::Error>(())
+                    },
+                )
+                .await;
+            if let Err(error) = result {
+                failures.push(format!("{error:#}"));
+            }
+        }
         for (root, mut targets) in roots {
             targets.sort_by(|left, right| {
                 right

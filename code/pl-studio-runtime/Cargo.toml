@@ -35,6 +35,9 @@ flate2 = { workspace = true }
 schemars = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+axum = { workspace = true }
+http = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 toml = { workspace = true }

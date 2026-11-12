@@ -17,10 +17,18 @@ use pl_tool::collaboration::thread::{
 use std::sync::{Arc, Weak};
 
 #[derive(Debug, Clone)]
-struct AgentHost {
+pub(crate) struct AgentHost {
     registry: Weak<Registry>,
-    identity: pl_protocol::AgentThreadIdentity,
-    resources: Weak<crate::session::NativeResources>,
+    pub(super) identity: pl_protocol::AgentThreadIdentity,
+    resources: AgentHostResources,
+    pub(super) catalog: crate::config::AgentProfileCatalog,
+    selection: pl_protocol::DelegationSettings,
+}
+
+#[derive(Debug, Clone)]
+enum AgentHostResources {
+    Native(Weak<crate::session::NativeResources>),
+    Acp(Weak<crate::studio::runtime::acp_business::AcpResources>),
 }
 
 #[cfg(test)]
@@ -54,7 +62,26 @@ mod future_sizes {
 }
 
 impl AgentHost {
-    fn validate_instance(&self) -> Result<(), ControlError> {
+    pub(crate) fn delegation(&self) -> pl_protocol::DelegationSettings {
+        self.selection
+    }
+
+    pub(crate) fn spawn_profiles(&self) -> Vec<AgentSpawnProfile> {
+        if self.identity.parent_agent_id.is_some() {
+            return Vec::new();
+        }
+        self.catalog
+            .profiles
+            .iter()
+            .map(|profile| AgentSpawnProfile {
+                profile_id: profile.definition.definition_id.clone(),
+                backend: profile.binding.backend(),
+                workspace_mode: profile.workspace_mode,
+            })
+            .collect()
+    }
+
+    pub(super) fn validate_instance(&self) -> Result<(), ControlError> {
         let owner = self.owner()?;
         let state = owner.0.state();
         let id = self.identity.thread_id.as_str();
@@ -62,27 +89,36 @@ impl AgentHost {
             .entries
             .get(id)
             .ok_or_else(|| ControlError::Missing(id.into()))?;
-        let native = entry.native().map_err(|_| ControlError::Closed)?;
-        if state.closing
-            || state.sealed_agents.contains_key(id)
-            || entry.identity != self.identity
-            || !self.resources.ptr_eq(&Arc::downgrade(&native.resources))
-            || !native.ready
-            || native.purpose != super::EntryPurpose::Execution
-            || native.workspace_disposition.is_some()
-            || native.thread.snapshot().lifecycle != ThreadLifecycle::Open
+        if state.closing || state.sealed_agents.contains_key(id) || entry.identity != self.identity
         {
             return Err(ControlError::Closed);
         }
-        if crate::studio::agent_close::is_explicitly_closed(&native.thread.snapshot())
-            .map_err(|source| ControlError::service(super::agent_services::ServiceError(source)))?
-        {
-            return Err(ControlError::Closed);
+        match (&self.resources, &entry.runtime) {
+            (
+                AgentHostResources::Native(resources),
+                crate::session::AgentRuntime::Native(native),
+            ) if resources.ptr_eq(&Arc::downgrade(&native.resources))
+                && native.ready
+                && native.purpose == super::EntryPurpose::Execution
+                && native.workspace_disposition.is_none()
+                && native.thread.snapshot().lifecycle == ThreadLifecycle::Open =>
+            {
+                if crate::studio::agent_close::is_explicitly_closed(&native.thread.snapshot())
+                    .map_err(|source| {
+                        ControlError::service(super::agent_services::ServiceError(source))
+                    })?
+                {
+                    return Err(ControlError::Closed);
+                }
+            }
+            (AgentHostResources::Acp(resources), crate::session::AgentRuntime::Acp(acp))
+                if resources.ptr_eq(&Arc::downgrade(acp)) && !acp.cancellation.is_cancelled() => {}
+            _ => return Err(ControlError::Closed),
         }
         Ok(())
     }
 
-    fn caller(&self, context: &AgentCallContext) -> Result<String, ControlError> {
+    pub(super) fn caller(&self, context: &AgentCallContext) -> Result<String, ControlError> {
         self.validate_instance()?;
         if context.caller != self.identity.agent_id || context.cancellation.is_cancelled() {
             return Err(ControlError::Closed);
@@ -90,18 +126,18 @@ impl AgentHost {
         Ok(self.identity.thread_id.to_string())
     }
 
-    fn target_identity(
+    pub(super) fn target_identity(
         &self,
         target: &str,
     ) -> Result<pl_protocol::AgentThreadIdentity, ControlError> {
         let owner = self.owner()?;
         let state = owner.0.state();
         let agent = pl_protocol::AgentId::new(target).map_err(ControlError::service)?;
-        if let Some(id) = state.by_agent.get(&agent) {
-            let entry = &state.entries[id];
-            if entry.identity.session_id == self.identity.session_id {
-                return Ok(entry.identity.clone());
-            }
+        if let Some(id) = state.by_agent.get(&agent)
+            && let Some(entry) = state.entries.get(id)
+            && entry.identity.session_id == self.identity.session_id
+        {
+            return Ok(entry.identity.clone());
         }
         if let Some(services) = &state.agent_services
             && let Some(identity) = services
@@ -131,7 +167,7 @@ impl AgentHost {
             .ok_or_else(|| ControlError::Missing(thread.into()))
     }
 
-    fn owner(&self) -> Result<SessionRuntime, ControlError> {
+    pub(super) fn owner(&self) -> Result<SessionRuntime, ControlError> {
         self.registry
             .upgrade()
             .map(SessionRuntime)
@@ -141,37 +177,57 @@ impl AgentHost {
 
 fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
     let mut path = Vec::new();
-    let mut cursor = Some(id);
-    let session = state
-        .entries
-        .get(id)
-        .map(|entry| &entry.identity.session_id);
+    let mut cursor = Some(id.to_owned());
+    let mut session = None;
     while let Some(id) = cursor {
-        if path.iter().any(|previous| previous == id) {
+        if path.contains(&id) {
             return Err(ControlError::Ancestry);
         }
-        let entry = state
+        let identity = state
             .entries
-            .get(id)
-            .ok_or_else(|| ControlError::Missing(id.into()))?;
-        if Some(&entry.identity.session_id) != session {
+            .get(&id)
+            .map(|entry| entry.identity.clone())
+            .or_else(|| {
+                state
+                    .agent_services
+                    .as_ref()?
+                    .events
+                    .agent_execution_identity(&id)
+                    .map(|(identity, _, _)| identity)
+            })
+            .ok_or_else(|| ControlError::Missing(id.clone()))?;
+        if session
+            .as_ref()
+            .is_some_and(|session| session != &identity.session_id)
+        {
             return Err(ControlError::Ancestry);
         }
-        path.push(id.to_owned());
-        cursor = State::membership_parent(&state.by_agent, entry);
-        if entry.identity.parent_agent_id.is_some() && cursor.is_none() {
-            return Err(ControlError::Ancestry);
-        }
+        session = Some(identity.session_id.clone());
+        path.push(id);
+        cursor = match identity.parent_agent_id {
+            Some(parent) => Some(
+                state
+                    .by_agent
+                    .get(&parent)
+                    .cloned()
+                    .or_else(|| {
+                        state
+                            .agent_services
+                            .as_ref()?
+                            .events
+                            .member_identity(&identity.session_id, &parent)
+                            .map(|parent| parent.thread_id.to_string())
+                    })
+                    .ok_or(ControlError::Ancestry)?,
+            ),
+            None => None,
+        };
     }
     Ok(path)
 }
 
 fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlError> {
-    if !state.entries.get(caller).is_some_and(|entry| {
-        entry.native().is_ok_and(|native| {
-            native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
-        })
-    }) {
+    if !state.entries.get(caller).is_some_and(member_open) {
         return Err(ControlError::Missing(caller.into()));
     }
     ancestry(state, caller)?;
@@ -187,6 +243,15 @@ fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlEr
         });
     }
     Ok(())
+}
+
+pub(super) fn member_open(entry: &crate::session::AgentInstance) -> bool {
+    match &entry.runtime {
+        crate::session::AgentRuntime::Native(native) => {
+            native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
+        }
+        crate::session::AgentRuntime::Acp(acp) => !acp.cancellation.is_cancelled(),
+    }
 }
 
 /// Lists one in-flight tree member that holds capacity but has no published Thread snapshot.
@@ -293,21 +358,147 @@ async fn cleanup_spawn_failure(
 }
 
 impl AgentHost {
+    async fn spawn_acp_owned(
+        &self,
+        owner: SessionRuntime,
+        context: AgentCallContext,
+        request: AgentSpawn,
+    ) -> Result<AgentSpawnResult, ControlError> {
+        if request.model_selection.is_some()
+            || request.writable_paths.is_some()
+            || request.review_target_agent_id.is_some()
+            || request.review_feedback.is_some()
+        {
+            return Err(ControlError::service(std::io::Error::other(
+                "ACP target forbids modelSelection, writablePaths and structured review",
+            )));
+        }
+        let caller = self.caller(&context)?;
+        let services = owner
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ControlError::Closed)?;
+        let (profile, definition) = services
+            .config
+            .resolve_acp_child_profile(&request.profile_id)
+            .map_err(ControlError::service)?;
+        if profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review {
+            return Err(ControlError::service(std::io::Error::other(
+                "ACP target supports ordinary tasks only",
+            )));
+        }
+        let business = services.acp_business.clone().ok_or(ControlError::Closed)?;
+        let (_, reservation) = owner
+            .reserve_child(&context)
+            .map_err(ControlError::service)?;
+        services
+            .factory
+            .begin_child_preparation(&caller, &reservation.id)
+            .await
+            .map_err(ControlError::service)?;
+        let workspace_owner = owner.0.state().unpublished_children[&reservation.id]
+            .workspace
+            .clone();
+        let child_request = super::ChildThreadRequest {
+            workspace_owner,
+            id: reservation.id.clone(),
+            cancellation: reservation.cancellation.clone(),
+            caller,
+            call_id: context.call_id.clone(),
+            profile_id: request.profile_id.clone(),
+            model_selection: None,
+            delegation: self.selection,
+            task_summary: request.task_summary,
+            writable_paths: None,
+            review_target_agent_id: None,
+            review_feedback: None,
+            review_target: None,
+            review_workspace: None,
+            metadata: OpaquePayload::new(
+                "pl.studio.agent-metadata",
+                1,
+                serde_json::to_string(&request.metadata).map_err(ControlError::service)?,
+            )
+            .map_err(ControlError::service)?,
+        };
+        let preparation = business.open_child(&owner, &child_request, &profile, definition);
+        tokio::pin!(preparation);
+        let result = tokio::select! {
+            result = &mut preparation => result,
+            () = context.cancellation.cancelled() => {
+                reservation.cancellation.cancel();
+                preparation.await
+            }
+        };
+        let (resources, workspace) = match result {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Err(cleanup_spawn_failure(
+                    &owner,
+                    &reservation.id,
+                    ThreadAssemblyError::Resource {
+                        operation: "prepare ACP child",
+                        source: error.into_boxed_dyn_error(),
+                    },
+                )
+                .await);
+            }
+        };
+        let agent = self.target_agent(&owner, &reservation.id)?;
+        let mut receipt = SpawnReceipt {
+            agent_id: agent.to_string(),
+            profile_id: request.profile_id,
+            model: None,
+            delegation: self.selection,
+            workspace: Some(workspace),
+            message_accepted: false,
+            message_sequence: None,
+        };
+        if let Err(error) = services.store.publish_preparation(&reservation.id).await {
+            return Ok(AgentSpawnResult {
+                receipt,
+                message_error: Some(ControlError::service(super::agent_services::ServiceError(
+                    error,
+                ))),
+            });
+        }
+        let delivery = async {
+            if context.cancellation.is_cancelled() {
+                return Err(ControlError::Closed);
+            }
+            let _operation = owner.agent_operation(&reservation.id).await;
+            owner
+                .ensure_agent_admission_open(&reservation.id)
+                .map_err(ControlError::service)?;
+            resources
+                .session()
+                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
+                .submit(vec![pl_protocol::studio::ContentBlock::Text(
+                    pl_acp::session::schema::TextContent::new(request.message),
+                )])
+                .await
+                .map_err(ControlError::service)?;
+            Ok::<_, ControlError>(())
+        }
+        .await;
+        receipt.message_accepted = delivery.is_ok();
+        Ok(AgentSpawnResult {
+            receipt,
+            message_error: delivery.err(),
+        })
+    }
+
     async fn ensure_archive_execution_admission(
         owner: &SessionRuntime,
         id: &str,
     ) -> Result<(), ControlError> {
         let services = { owner.0.state().agent_services.clone() };
         if let Some(services) = services {
-            let record = services
-                .store
-                .read_thread(id)
-                .await
-                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
-                .ok_or_else(|| ControlError::Missing(id.to_owned()))?;
             services
-                .store
-                .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
+                .factory
+                .ensure_member_execution_allowed(id)
                 .await
                 .map_err(|error| {
                     ControlError::service(super::agent_services::ServiceError(error))
@@ -328,25 +519,33 @@ impl AgentHost {
             .ensure_agent_admission_open(&caller)
             .map_err(ControlError::service)?;
         Self::ensure_archive_execution_admission(&owner, &caller).await?;
-        let delegation = {
-            let state = owner.0.state();
-            let caller = state
-                .entries
-                .get(&caller)
-                .ok_or_else(|| ControlError::Missing(caller.clone()))?;
-            crate::studio::delegation::saved(
-                &caller
-                    .native()
-                    .map_err(|_| ControlError::Closed)?
-                    .thread
-                    .snapshot(),
-            )
-            .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
-            .ok_or_else(|| ControlError::Missing("saved delegation selection".into()))?
-        };
+        let delegation = self.selection;
         let factory = owner
             .child_factory(&context)
             .map_err(ControlError::service)?;
+        let declared = self
+            .catalog
+            .profiles
+            .iter()
+            .find(|profile| profile.definition.definition_id == request.profile_id);
+        if matches!(self.resources, AgentHostResources::Acp(_))
+            && (request.review_target_agent_id.is_some()
+                || request.review_feedback.is_some()
+                || declared.is_some_and(|profile| {
+                    profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
+                }))
+        {
+            return Err(ControlError::service(
+                ThreadAssemblyError::UnsupportedBackend {
+                    backend: pl_protocol::AgentBackendKind::Acp,
+                },
+            ));
+        }
+        if declared
+            .is_some_and(|profile| matches!(profile.binding, pl_protocol::AgentBinding::Acp(_)))
+        {
+            return self.spawn_acp_owned(owner, context, request).await;
+        }
         let admission = factory
             .admit(
                 &request.profile_id,
@@ -371,23 +570,11 @@ impl AgentHost {
             .reserve_child(&context)
             .map_err(ControlError::service)?;
         if let Some(services) = { owner.0.state().agent_services.clone() } {
-            let parent = services.record(&caller).await.map_err(|error| {
-                ControlError::service(super::agent_services::ServiceError(error))
-            })?;
             services
-                .store
-                .begin_thread_preparation(
-                    crate::studio::store::thread_preparation::PreparationIdentity {
-                        thread_id: reservation.id.clone(),
-                        workspace_id: parent.workspace_id,
-                        parent_id: Some(caller.clone()),
-                        root_id: parent.root_thread_id,
-                    },
-                )
+                .factory
+                .begin_child_preparation(&caller, &reservation.id)
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
+                .map_err(ControlError::service)?;
         }
         let _review_operation = match review_target_thread.as_deref() {
             Some(target) => Some(owner.agent_operation(target).await),
@@ -558,7 +745,7 @@ impl AgentHost {
         let mut receipt = SpawnReceipt {
             agent_id,
             profile_id: request.profile_id,
-            model,
+            model: Some(model),
             delegation,
             workspace,
             message_accepted: false,
@@ -745,6 +932,49 @@ impl AgentControlHost for AgentHost {
                     ControlError::service(super::agent_services::ServiceError(error))
                 })?;
         }
+        let acp_target = services.as_ref().is_some_and(|services| {
+            services
+                .events
+                .agent_execution_identity(&message.target)
+                .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+        }) || owner
+            .0
+            .state()
+            .entries
+            .get(&message.target)
+            .is_some_and(|entry| matches!(entry.runtime, crate::session::AgentRuntime::Acp(_)));
+        if acp_target {
+            let _operation = owner.agent_operation(&message.target).await;
+            let services = services.as_ref().ok_or(ControlError::Closed)?;
+            let business = services.acp_business.as_ref().ok_or(ControlError::Closed)?;
+            let resources = business
+                .activate_child(&owner, caller, &message.target)
+                .await
+                .map_err(|error| {
+                    ControlError::service(super::agent_services::ServiceError(error))
+                })?;
+            self.validate_instance()?;
+            owner
+                .ensure_agent_admission_open(&message.target)
+                .map_err(ControlError::service)?;
+            let session = resources.session().map_err(|error| {
+                ControlError::service(super::agent_services::ServiceError(error))
+            })?;
+            let current = session.snapshot().await.map_err(ControlError::service)?;
+            let content = vec![pl_protocol::studio::ContentBlock::Text(
+                pl_acp::session::schema::TextContent::new(message.message),
+            )];
+            match current.active_run {
+                Some(run) => session.replace(run, content).await,
+                None => session.submit(content).await,
+            }
+            .map_err(ControlError::service)?;
+            return Ok(AgentSendResult {
+                target: target_agent,
+                message_id: message.id,
+                sequence: None,
+            });
+        }
         if owner.thread(&message.target).is_none() {
             let services = owner.0.state().agent_services.clone();
             if let Some(services) = services {
@@ -831,7 +1061,7 @@ impl AgentControlHost for AgentHost {
         Ok(AgentSendResult {
             target: target_agent,
             message_id: message.id,
-            sequence,
+            sequence: Some(sequence),
         })
     }
 
@@ -842,16 +1072,13 @@ impl AgentControlHost for AgentHost {
         let caller_id = self.caller(&context)?;
         let caller = caller_id.as_str();
         let owner = self.owner()?;
+        let mut acp_members = Vec::new();
         let mut rows = {
             let state = owner.0.state();
             if state.closing {
                 return Err(ControlError::Closed);
             }
-            if !state
-                .entries
-                .get(caller)
-                .is_some_and(|entry| entry.native().is_ok_and(|native| native.ready))
-            {
+            if !state.entries.get(caller).is_some_and(member_open) {
                 return Err(ControlError::Missing(caller.into()));
             }
             let path = ancestry(&state, caller)?;
@@ -873,17 +1100,18 @@ impl AgentControlHost for AgentHost {
                 )?;
             }
             for (id, entry) in &state.entries {
-                let snapshot = entry
-                    .native()
-                    .map_err(|_| ControlError::Closed)?
-                    .thread
-                    .snapshot();
                 if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
-                if !entry.native().map_err(|_| ControlError::Closed)?.ready
-                    && snapshot.lifecycle == ThreadLifecycle::Open
-                {
+                let native = match &entry.runtime {
+                    crate::session::AgentRuntime::Native(native) => native,
+                    crate::session::AgentRuntime::Acp(acp) => {
+                        acp_members.push((entry.identity.clone(), acp.clone()));
+                        continue;
+                    }
+                };
+                let snapshot = native.thread.snapshot();
+                if !native.ready && snapshot.lifecycle == ThreadLifecycle::Open {
                     if !rows.contains_key(id) {
                         push_preparing_row(
                             &state,
@@ -913,6 +1141,37 @@ impl AgentControlHost for AgentHost {
             }
             rows.into_values().collect::<Vec<_>>()
         };
+        for (identity, resources) in acp_members {
+            let mut row = serde_json::json!({
+                "id": identity.agent_id, "parentId": identity.parent_agent_id,
+                "backend": "acp", "deliveryError": resources.delivery_error(),
+                "hostMcp": resources.host_mcp_status().await,
+            });
+            match resources.session() {
+                Ok(session) => match session.snapshot().await {
+                    Ok(snapshot) => {
+                        row["lifecycle"] = serde_json::json!({"kind": if snapshot.closing {"closing"} else {"open"}});
+                        row["activeRun"] = snapshot.active_run.map(|run|
+                            serde_json::json!({"instance":run.instance,"sequence":run.sequence})
+                        ).unwrap_or(serde_json::Value::Null);
+                        row["lastCompleted"] = snapshot.last_completed.map(|completed| {
+                            let result = match completed.result {
+                                Ok(response) => serde_json::json!({"ok": response}),
+                                Err(error) => serde_json::json!({"error": error}),
+                            };
+                            serde_json::json!({
+                                "run":{"instance":completed.run.instance,"sequence":completed.run.sequence},
+                                "completionSequence":completed.completion_sequence,
+                                "result":result,"summary":completed.summary,"truncated":completed.truncated,
+                            })
+                        }).unwrap_or(serde_json::Value::Null);
+                    }
+                    Err(error) => row["snapshotError"] = error.to_string().into(),
+                },
+                Err(error) => row["snapshotError"] = error.to_string().into(),
+            }
+            rows.push(row);
+        }
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = services {
             let loaded = rows
@@ -947,6 +1206,37 @@ impl AgentControlHost for AgentHost {
         owner
             .ensure_agent_admission_open(target)
             .map_err(ControlError::service)?;
+        let acp = {
+            let state = owner.0.state();
+            descendant(&state, caller, target)?;
+            state
+                .entries
+                .get(target)
+                .and_then(|entry| match &entry.runtime {
+                    crate::session::AgentRuntime::Acp(acp) => Some(acp.clone()),
+                    _ => None,
+                })
+        };
+        if let Some(acp) = acp {
+            let session = acp.session().map_err(|error| {
+                ControlError::service(super::agent_services::ServiceError(error))
+            })?;
+            let run = session
+                .snapshot()
+                .await
+                .map_err(ControlError::service)?
+                .active_run
+                .ok_or_else(|| ControlError::StaleExecution(target.into()))?;
+            session
+                .interrupt(run)
+                .await
+                .map_err(ControlError::service)?;
+            return Ok(AgentInterruptResult {
+                target: target_agent,
+                execution_id: format!("{}:{}", run.instance, run.sequence),
+                interrupted: true,
+            });
+        }
         // The parent stops exactly the execution it observed, through the same precise stop the user
         // interfaces use. A superseded identity fails instead of cancelling whatever runs now.
         let (thread, execution) = {
@@ -1025,11 +1315,11 @@ impl AgentControlHost for AgentHost {
                         );
                         Ok(())
                     },
-                    async move {
+                    Box::pin(async move {
                         services
                             .close_child_tree(owner, caller, target_id, options, root_operation)
                             .await
-                    },
+                    }),
                 )
                 .await
                 .map_err(|error| {
@@ -1044,6 +1334,67 @@ impl AgentControlHost for AgentHost {
 }
 
 impl SessionRuntime {
+    fn agent_host(
+        &self,
+        caller: &pl_protocol::AgentThreadIdentity,
+        resources: AgentHostResources,
+        profiles: &crate::config::AgentProfilesSnapshot,
+        selection: pl_protocol::DelegationSettings,
+    ) -> Result<AgentHost, ThreadAssemblyError> {
+        let mut catalog = profiles
+            .catalog
+            .executable(selection.mode)
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "read executable Agent Profile catalog",
+                source: Box::new(source),
+            })?;
+        catalog.profiles.retain(|profile| {
+            profile.definition.definition_id != crate::config::ROOT_AGENT_ROUTE_KEY
+                && !crate::agent::definition::is_root_definition_id(
+                    &profile.definition.definition_id,
+                )
+                && (!matches!(resources, AgentHostResources::Acp(_))
+                    || profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review)
+        });
+        Ok(AgentHost {
+            registry: Arc::downgrade(&self.0),
+            identity: caller.clone(),
+            resources,
+            catalog,
+            selection,
+        })
+    }
+
+    pub(crate) fn acp_agent_host(
+        &self,
+        caller: &pl_protocol::AgentThreadIdentity,
+        resources: &Arc<crate::studio::runtime::acp_business::AcpResources>,
+        profiles: &crate::config::AgentProfilesSnapshot,
+        selection: pl_protocol::DelegationSettings,
+    ) -> Result<AgentHost, ThreadAssemblyError> {
+        self.agent_host(
+            caller,
+            AgentHostResources::Acp(Arc::downgrade(resources)),
+            profiles,
+            selection,
+        )
+    }
+
+    pub(crate) fn native_agent_host(
+        &self,
+        caller: &pl_protocol::AgentThreadIdentity,
+        resources: &Arc<crate::session::NativeResources>,
+        profiles: &crate::config::AgentProfilesSnapshot,
+        selection: pl_protocol::DelegationSettings,
+    ) -> Result<AgentHost, ThreadAssemblyError> {
+        self.agent_host(
+            caller,
+            AgentHostResources::Native(Arc::downgrade(resources)),
+            profiles,
+            selection,
+        )
+    }
+
     pub(crate) fn agent_control_tools_for_thread(
         &self,
         id: &str,
@@ -1079,32 +1430,8 @@ impl SessionRuntime {
         profiles: &crate::config::AgentProfilesSnapshot,
         selection: pl_protocol::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
-        let mut catalog = profiles
-            .catalog
-            .executable(selection.mode)
-            .map_err(|source| ThreadAssemblyError::Resource {
-                operation: "read executable Agent Profile catalog",
-                source: Box::new(source),
-            })?;
-        catalog.profiles.retain(|profile| {
-            profile.definition.definition_id != crate::config::ROOT_AGENT_ROUTE_KEY
-                && !crate::agent::definition::is_root_definition_id(
-                    &profile.definition.definition_id,
-                )
-        });
-        let profiles = catalog
-            .profiles
-            .iter()
-            .map(|profile| AgentSpawnProfile {
-                profile_id: profile.definition.definition_id.clone(),
-                workspace_mode: profile.workspace_mode,
-            })
-            .collect::<Vec<_>>();
-        let host = Arc::new(AgentHost {
-            registry: Arc::downgrade(&self.0),
-            identity: caller.clone(),
-            resources: Arc::downgrade(resources),
-        });
+        let host = Arc::new(self.native_agent_host(caller, resources, profiles, selection)?);
+        let profiles = host.spawn_profiles();
         let mut kinds = vec![
             AgentControlKind::Send,
             AgentControlKind::List,
@@ -1137,7 +1464,7 @@ impl SessionRuntime {
                 );
             }
         }
-        tools.extend(self.agent_query_tools(catalog, selection)?);
+        tools.extend(self.agent_query_tools(host, selection)?);
         Ok(tools)
     }
 }

@@ -27,14 +27,67 @@ impl AgentServices {
             root.parent_agent_id.is_none(),
             "close caller must be an active root"
         );
+        if self
+            .events
+            .agent_execution_identity(&target)
+            .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+        {
+            let operation = owner.agent_operation(&target).await;
+            let _seal = owner.seal_agent_operation(&target);
+            let mut result = self
+                .factory
+                .begin_acp_child_close(&target, options.force)
+                .await?;
+            // The original ACP result-delivery join may need the Native parent's inbox gate.
+            drop(root_operation);
+            let close = owner.close_with_permit(&target, operation).await;
+            let error = match close {
+                Ok(()) => match self.factory.finish_acp_child_close(&target).await {
+                    Ok((fact, failure)) => {
+                        result = fact;
+                        failure
+                    }
+                    Err(failure) => {
+                        self.factory
+                            .record_child_close_error(&target, &failure)
+                            .await?;
+                        Some(state_error(&failure))
+                    }
+                },
+                Err(failure) => {
+                    let failure = anyhow::Error::new(failure);
+                    self.factory
+                        .record_child_close_error(&target, &failure)
+                        .await?;
+                    Some(state_error(&failure))
+                }
+            };
+            result.agent_id = target_identity.agent_id.to_string();
+            return Ok(AgentCloseOutcome {
+                target: target_identity.agent_id.to_string(),
+                agents: vec![result],
+                error,
+            });
+        }
         let target_record = self.record(&target).await?;
-        let mut records = self
-            .store
-            .list_threads_for_root(&caller)
-            .await?
-            .into_iter()
-            .map(|record| (record.id.clone(), pl_protocol::Thread::from(record)))
-            .collect::<BTreeMap<_, _>>();
+        let mut records = BTreeMap::new();
+        for (member, _) in self.factory.directory_rows_for_root(&caller).await? {
+            // Select by public directory identity before reading a Native record. An ACP
+            // root or sibling has no Native projection and is outside this close scope.
+            if !matches!(
+                member.backend,
+                pl_protocol::session::AgentBackend::Native { .. }
+            ) {
+                continue;
+            }
+            let path = self.authorize(&caller, &member.thread_id).await?;
+            if path.contains(&target_identity.agent_id) {
+                records.insert(
+                    member.thread_id.clone(),
+                    self.record(&member.thread_id).await?,
+                );
+            }
+        }
         records.insert(target.clone(), target_record);
         let mut targets = Vec::new();
         for record in records.values() {

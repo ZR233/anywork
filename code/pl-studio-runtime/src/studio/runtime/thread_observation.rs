@@ -34,6 +34,8 @@ use tokio::{
 use crate::studio::storage::thread_writer::{
     HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
 };
+// Read-only source types used with this owner's original report readability watch.
+pub(crate) use crate::studio::storage::{history::HistoryStore, thread_writer::HistoryStatus};
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
@@ -472,6 +474,12 @@ impl Drop for Observation {
 }
 
 impl Observation {
+    /// Subscribe to the original writer incarnation before reading terminal reports.
+    /// A Turn notification alone precedes persistence and is not a readability fence.
+    pub(crate) fn report_changes(&self) -> watch::Receiver<HistoryStatus> {
+        self.state.channel.subscribe()
+    }
+
     async fn join(&self) -> Result<()> {
         self.join_for_purpose(crate::thread_assembler::ClosePurpose::Preserve)
             .await
@@ -1007,10 +1015,18 @@ impl ThreadObservations {
     /// checkpoints plus durable history; no child owner, model or workspace is opened.
     pub(super) async fn reconcile_children(&self, parent: &str) -> Result<()> {
         let services = &self.0.projector;
-        for child in services.store.list_threads_for_root(parent).await? {
-            if child.parent_thread_id.as_deref() != Some(parent) {
+        for member in services.store.read_directory_tree(parent).await? {
+            if !member.is_native() || member.parent_thread_id.as_deref() != Some(parent) {
                 continue;
             }
+            let child =
+                crate::studio::records::thread_projection(&member.session, &member.agent, |id| {
+                    services
+                        .store
+                        .catalog()
+                        .get_agent(id)
+                        .map(|agent| agent.thread_id)
+                })?;
             if services
                 .session_of(&child.id)
                 .and_then(|session| session.thread(&child.id))
@@ -1019,7 +1035,6 @@ impl ThreadObservations {
                 self.synchronize(Some(&child.id)).await?;
                 continue;
             }
-            let child = pl_protocol::Thread::from(child);
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
             let Some(checkpoint) =

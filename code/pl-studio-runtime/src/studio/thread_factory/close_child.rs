@@ -80,26 +80,36 @@ impl StudioThreadFactory {
             worktree_cleanup: AgentWorktreeCleanup::Pending,
             error: None,
         };
+        self.save_child_close_intent(&record).await?;
+        Ok(record)
+    }
+
+    pub(super) async fn save_child_close_intent(&self, record: &AgentCloseRecord) -> Result<()> {
         // The product transaction is the permanent execution seal. A readback error is not rollback.
-        let saved = self.services.store.save_agent_close(&record).await;
+        let saved = self.services.store.save_agent_close(record).await;
         if let Some(binding) = &record.worktree {
-            if let Some(frozen) = self.services.store.workspace_identity(&thread.id).await? {
+            if let Some(frozen) = self
+                .services
+                .store
+                .workspace_identity(&record.agent_id)
+                .await?
+            {
                 ensure!(
                     frozen == binding.identity,
                     "closed child physical identity changed"
                 );
             }
-            match self.services.store.agent_close(&thread.id).await {
-                Ok(Some(actual)) if actual == record => self
+            match self.services.store.agent_close(&record.agent_id).await {
+                Ok(Some(actual)) if &actual == record => self
                     .services
                     .worktrees
-                    .restore_workspace_seal(&thread.id, binding.identity.clone())?,
+                    .restore_workspace_seal(&record.agent_id, binding.identity.clone())?,
                 Ok(None) => {}
                 Ok(_) => anyhow::bail!("close intent changed during save; resources preserved"),
                 Err(error) => {
                     self.services
                         .worktrees
-                        .restore_workspace_seal(&thread.id, binding.identity.clone())?;
+                        .restore_workspace_seal(&record.agent_id, binding.identity.clone())?;
                     return Err(error.context(
                         "close save outcome unresolved; physical workspace remains sealed",
                     ));
@@ -109,9 +119,9 @@ impl StudioThreadFactory {
         saved?;
         self.services
             .product_events
-            .commit_explicit_close(&thread.id)
+            .commit_explicit_close(&record.agent_id)
             .await?;
-        Ok(record)
+        Ok(())
     }
 
     pub(super) fn validate_close_identity(
@@ -310,17 +320,17 @@ impl StudioThreadFactory {
             .parent_thread_id
             .as_deref()
             .ok_or(ThreadAssemblyError::Closed)?;
-        let parent = self.thread_record(parent_id).await?;
-        let root = self.thread_record(&thread.root_thread_id).await?;
+        let parent = self.directory_member(parent_id)?;
+        let root = self.directory_member(&thread.root_thread_id)?;
         if root.parent_thread_id.is_some()
-            || root.id != root.root_thread_id
-            || parent.root_thread_id != root.id
-            || parent.workspace_id != thread.workspace_id
-            || root.workspace_id != thread.workspace_id
-            || parent.workspace_path != thread.workspace_path
-            || root.workspace_path != thread.workspace_path
-            || parent.workspace_mode != thread.workspace_mode
-            || root.workspace_mode != thread.workspace_mode
+            || root.agent.thread_id != root.root_thread_id
+            || parent.root_thread_id != root.agent.thread_id
+            || parent.session.workspace_id != thread.workspace_id
+            || root.session.workspace_id != thread.workspace_id
+            || parent.session.workspace_path != thread.workspace_path
+            || root.session.workspace_path != thread.workspace_path
+            || parent.session.workspace_mode != thread.workspace_mode
+            || root.session.workspace_mode != thread.workspace_mode
         {
             return Err(ThreadAssemblyError::Identity(
                 "closing child directory ancestry changed".into(),

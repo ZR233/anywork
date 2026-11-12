@@ -14,6 +14,7 @@ struct Scenario {
     auth_required: bool,
     server_info: Option<Implementation>,
     expected_server_version: Option<String>,
+    prepare: Option<PrepareOpen>,
 }
 
 impl Default for Scenario {
@@ -35,6 +36,7 @@ impl Default for Scenario {
             auth_required: false,
             server_info: None,
             expected_server_version: None,
+            prepare: None,
         }
     }
 }
@@ -82,6 +84,7 @@ fn configs(value: &str) -> Vec<SessionConfigOption> {
 #[derive(Default)]
 struct PeerState {
     opens: Vec<&'static str>,
+    setups: Vec<(Vec<McpServer>, Option<SystemPrompt>)>,
     prompt_requests: Vec<PromptRequest>,
     prompts: Vec<Responder<PromptResponse>>,
     config_requests: Vec<SetSessionConfigOptionRequest>,
@@ -102,6 +105,7 @@ type PeerShared = Arc<Mutex<PeerState>>;
 enum PeerCommand {
     Updates(Vec<SessionNotification>, oneshot::Sender<()>),
     Complete(StopReason, oneshot::Sender<()>),
+    FailPrompt(RpcError),
     Config {
         before: Option<Vec<SessionConfigOption>>,
         result: Result<Vec<SessionConfigOption>, RpcError>,
@@ -145,6 +149,7 @@ impl Harness {
             intent,
             cleanup,
             expected_server_version: scenario.expected_server_version.clone(),
+            prepare: scenario.prepare.clone(),
         });
         let driver = tokio::spawn(driver.run(client_writer, client_reader));
         let peer_state = state.clone();
@@ -184,6 +189,7 @@ impl Harness {
                 .on_receive_request(async move |request: NewSessionRequest, responder: Responder<NewSessionResponse>, connection: ConnectionTo<Client>| {
                     assert_eq!(request.cwd.to_str(), Some("/workspace/real-business"));
                     peer_lock(&new_state).opens.push("new");
+                    peer_lock(&new_state).setups.push((request.mcp_servers, request.system_prompt));
                     if new_scenario.auth_required { return responder.respond_with_error(RpcError::auth_required()); }
                     connection.send_notification(update("business", text("unbound must not be claimed")))?;
                     responder.respond(NewSessionResponse::new("business")
@@ -192,6 +198,7 @@ impl Harness {
                 .on_receive_request(async move |request: LoadSessionRequest, responder: Responder<LoadSessionResponse>, connection: ConnectionTo<Client>| {
                     assert_eq!(request.session_id.to_string(), "business");
                     peer_lock(&load_state).opens.push("load");
+                    peer_lock(&load_state).setups.push((request.mcp_servers, request.system_prompt));
                     if load_scenario.load_replay {
                         connection.send_notification(update("foreign", text("must not bind")))?;
                         connection.send_notification(update("business", text("replayed before response")))?;
@@ -205,8 +212,9 @@ impl Harness {
                     responder.respond(LoadSessionResponse::new().config_options(load_scenario.config.clone())
                         .modes(load_scenario.modes.clone()))
                 }, agent_client_protocol::on_receive_request!())
-                .on_receive_request(async move |_: ResumeSessionRequest, responder: Responder<ResumeSessionResponse>, _: ConnectionTo<Client>| {
+                .on_receive_request(async move |request: ResumeSessionRequest, responder: Responder<ResumeSessionResponse>, _: ConnectionTo<Client>| {
                     peer_lock(&resume_state).opens.push("resume");
+                    peer_lock(&resume_state).setups.push((request.mcp_servers, request.system_prompt));
                     responder.respond(ResumeSessionResponse::new().config_options(resume_scenario.config.clone())
                         .modes(resume_scenario.modes.clone()))
                 }, agent_client_protocol::on_receive_request!())
@@ -255,6 +263,9 @@ impl Harness {
                                 Some(PeerCommand::Complete(reason, reply)) => {
                                     peer_lock(&peer_state).prompts.remove(0).respond(PromptResponse::new(reason))?;
                                     let _ = reply.send(());
+                                }
+                                Some(PeerCommand::FailPrompt(error)) => {
+                                    peer_lock(&peer_state).prompts.remove(0).respond_with_error(error)?;
                                 }
                                 Some(PeerCommand::Config { before, result, after }) => {
                                     if let Some(before) = before { connection.send_notification(config_update(before))?; }
@@ -417,6 +428,466 @@ fn config_update(options: Vec<SessionConfigOption>) -> SessionNotification {
 
 fn input(value: &str) -> Vec<ContentBlock> {
     vec![ContentBlock::Text(TextContent::new(value))]
+}
+
+fn http_server() -> McpServer {
+    McpServer::Http(
+        McpServerHttp::new("host-tools", "http://127.0.0.1:43129/mcp")
+            .headers(vec![HttpHeader::new("Authorization", "Bearer test-secret")]),
+    )
+}
+
+async fn completion_changed(
+    changes: &mut watch::Receiver<u64>,
+) -> Result<(), watch::error::RecvError> {
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .expect("completion or driver closure must wake waiter")
+}
+
+#[tokio::test]
+async fn snapshot_reads_original_completion_after_driver_exit_before_join() {
+    for ending in ["close", "eof", "driver-drop", "close-timeout"] {
+        let mut harness = Harness::with_cleanup(
+            Open::New,
+            Scenario {
+                close_hangs: ending == "close-timeout",
+                ..Scenario::default()
+            },
+            CleanupBudget::new(Duration::from_millis(50)),
+        );
+        harness.ready().await;
+        let session = harness.session.clone();
+        let mut changes = session.completion_changes();
+        let run = session
+            .submit(input("complete before shutdown"))
+            .await
+            .unwrap();
+        harness.wait(|peer| !peer.prompts.is_empty()).await;
+        harness
+            .updates(vec![update("business", text("original completed summary"))])
+            .await;
+        harness.complete(StopReason::EndTurn).await;
+        completion_changed(&mut changes).await.unwrap();
+        changes.borrow_and_update();
+        let before = session.snapshot().await.unwrap().last_completed.unwrap();
+        assert_eq!(before.run, run);
+        assert_eq!(before.summary, "original completed summary");
+        match ending {
+            "close" | "close-timeout" => session.close().await.unwrap(),
+            "eof" => harness.control.send(PeerCommand::Eof).await.unwrap(),
+            "driver-drop" => harness.driver.abort(),
+            _ => unreachable!(),
+        }
+        // Observe closure and read the source before the resource owner receives Exit.
+        assert!(completion_changed(&mut changes).await.is_err());
+        let after = session.snapshot().await.unwrap();
+        assert!(after.closing, "{ending}");
+        assert!(!after.ready, "{ending}");
+        assert!(after.active_run.is_none());
+        let completed = after.last_completed.unwrap();
+        assert_eq!(completed.run, before.run);
+        assert_eq!(completed.completion_sequence, before.completion_sequence);
+        assert_eq!(completed.result, before.result);
+        assert_eq!(completed.summary, before.summary);
+        assert_eq!(completed.truncated, before.truncated);
+        let mut ui_completions = 0;
+        while let Some(event) =
+            tokio::time::timeout(Duration::from_secs(5), harness.observer.recv())
+                .await
+                .unwrap()
+        {
+            if matches!(event, Event::Completed(value) if value.run == run) {
+                ui_completions += 1;
+            }
+        }
+        assert_eq!(ui_completions, 1, "original observer must drain and close");
+        if ending == "driver-drop" {
+            assert!(harness.driver.await.unwrap_err().is_cancelled());
+            tokio::time::timeout(Duration::from_secs(5), harness.peer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            let exit = harness.join().await;
+            assert_eq!(exit.cleanup_timed_out, ending == "close-timeout");
+            let terminal = exit.last_completed.unwrap();
+            assert_eq!(completed.run, terminal.run);
+            assert_eq!(completed.completion_sequence, terminal.completion_sequence);
+            assert_eq!(completed.result, terminal.result);
+            assert_eq!(completed.summary, terminal.summary);
+            assert_eq!(completed.truncated, terminal.truncated);
+        }
+        assert!(matches!(
+            session.submit(input("after exit")).await,
+            Err(Error::Closed)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn prepared_lifecycle_mcp_and_instructions_reach_real_sdk_requests() {
+    for system_prompt in [false, true] {
+        for intent in [
+            Open::New,
+            Open::Load("business".into()),
+            Open::Resume("business".into()),
+        ] {
+            let calls = Arc::new(AtomicU64::new(0));
+            let callback_calls = calls.clone();
+            let mut scenario = Scenario::default();
+            scenario.capabilities.mcp_capabilities.http = true;
+            if system_prompt {
+                scenario.capabilities.session_capabilities.system_prompt =
+                    Some(SessionSystemPromptCapabilities::new());
+            }
+            scenario.prepare = Some(Arc::new(move |capabilities| {
+                assert!(capabilities.mcp_capabilities.http);
+                assert_eq!(
+                    capabilities.session_capabilities.system_prompt.is_some(),
+                    system_prompt
+                );
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(OpenSetup {
+                        mcp_servers: vec![http_server()],
+                        instructions: Some("Host instructions\n保持原文".into()),
+                    })
+                })
+            }));
+            let mut harness = Harness::new(intent, scenario);
+            harness.ready().await;
+            {
+                let peer = peer_lock(&harness.state);
+                assert_eq!(peer.setups.len(), 1);
+                assert_eq!(peer.setups[0].0, vec![http_server()]);
+                let expected = system_prompt.then(|| {
+                    SystemPrompt::new(input("Host instructions\n保持原文"))
+                        .mode(SystemPromptMode::Append)
+                });
+                assert_eq!(peer.setups[0].1, expected);
+            }
+            let source = input("first user input");
+            let run = harness.session.submit(source.clone()).await.unwrap();
+            harness.wait(|peer| peer.prompts.len() == 1).await;
+            let session = harness.session.clone();
+            let replacement_source = input("second user input");
+            let replacement_content = replacement_source.clone();
+            let replacement =
+                tokio::spawn(async move { session.replace(run, replacement_content).await });
+            harness.wait(|peer| peer.cancels == 1).await;
+            let mut changes = harness.session.completion_changes();
+            assert_eq!(*changes.borrow_and_update(), 0);
+            assert!(
+                harness
+                    .session
+                    .snapshot()
+                    .await
+                    .unwrap()
+                    .last_completed
+                    .is_none()
+            );
+            assert!(
+                !changes.has_changed().unwrap(),
+                "cancel is not a prompt terminal"
+            );
+            harness.complete(StopReason::Cancelled).await;
+            completion_changed(&mut changes).await.unwrap();
+            assert_eq!(*changes.borrow_and_update(), 1);
+            let completed = harness
+                .session
+                .snapshot()
+                .await
+                .unwrap()
+                .last_completed
+                .unwrap();
+            assert_eq!(completed.run, run);
+            let second = replacement.await.unwrap().unwrap();
+            harness.wait(|peer| peer.prompt_requests.len() == 2).await;
+            {
+                let peer = peer_lock(&harness.state);
+                for (request, original) in peer
+                    .prompt_requests
+                    .iter()
+                    .zip([&source, &replacement_source])
+                {
+                    let mut expected = Vec::new();
+                    if !system_prompt {
+                        expected.extend(input("Host instructions\n保持原文"));
+                    }
+                    expected.extend(original.clone());
+                    assert_eq!(request.prompt, expected);
+                }
+            }
+            assert_eq!(source, input("first user input"));
+            assert_eq!(replacement_source, input("second user input"));
+            harness.complete(StopReason::EndTurn).await;
+            completion_changed(&mut changes).await.unwrap();
+            assert_eq!(*changes.borrow_and_update(), 2);
+            assert_eq!(
+                harness
+                    .session
+                    .snapshot()
+                    .await
+                    .unwrap()
+                    .last_completed
+                    .unwrap()
+                    .run,
+                second
+            );
+            // Completion watch does not take the UI's ordered events.
+            assert!(matches!(harness.event().await, Event::Completed(value) if value.run == run));
+            assert!(
+                matches!(harness.event().await, Event::Completed(value) if value.run == second)
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            harness.finish().await;
+            assert!(completion_changed(&mut changes).await.is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn asynchronous_prepare_keeps_receiving_and_does_not_open_until_success() {
+    let release = Arc::new(Notify::new());
+    let gate = release.clone();
+    let calls = Arc::new(AtomicU64::new(0));
+    let callback_calls = calls.clone();
+    let mut harness = Harness::new(
+        Open::Load("business".into()),
+        Scenario {
+            prepare: Some(Arc::new(move |_| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                let gate = gate.clone();
+                Box::pin(async move {
+                    gate.notified().await;
+                    Ok(OpenSetup {
+                        instructions: Some(String::new()),
+                        ..OpenSetup::default()
+                    })
+                })
+            })),
+            ..Scenario::default()
+        },
+    );
+    assert!(matches!(harness.event().await, Event::Initialized(_)));
+    harness
+        .updates(vec![update(
+            "business",
+            text("received during host preparation"),
+        )])
+        .await;
+    assert!(matches!(harness.event().await, Event::Update(_)));
+    assert!(!harness.session.snapshot().await.unwrap().ready);
+    assert!(matches!(
+        harness.session.submit(input("too early")).await,
+        Err(Error::NotReady)
+    ));
+    assert!(peer_lock(&harness.state).opens.is_empty());
+    release.notify_one();
+    harness.ready().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(peer_lock(&harness.state).opens, vec!["load"]);
+    harness
+        .session
+        .submit(input("no empty instruction block"))
+        .await
+        .unwrap();
+    harness.wait(|peer| !peer.prompts.is_empty()).await;
+    assert_eq!(
+        peer_lock(&harness.state).prompt_requests[0].prompt,
+        input("no empty instruction block")
+    );
+    harness.complete(StopReason::EndTurn).await;
+    assert!(matches!(harness.event().await, Event::Completed(_)));
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn invalid_protocol_is_rejected_before_preparation() {
+    use agent_client_protocol::UntypedRole;
+    let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
+    let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
+    // Agent.v1 normalizes initialize responses; the SDK raw role preserves an invalid version.
+    let peer = tokio::spawn(
+        UntypedRole
+            .builder()
+            .on_receive_request(
+                async |_: InitializeRequest,
+                       responder: agent_client_protocol::Responder<InitializeResponse>,
+                       _: agent_client_protocol::ConnectionTo<UntypedRole>| {
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V0))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async |_: NewSessionRequest,
+                       _: agent_client_protocol::Responder<NewSessionResponse>,
+                       _: agent_client_protocol::ConnectionTo<UntypedRole>|
+                       -> Result<(), RpcError> {
+                    panic!("invalid protocol must not send session/new")
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_with(
+                ByteStreams::new(agent_writer.compat_write(), agent_reader.compat()),
+                async |connection| {
+                    connection.incoming_closed().await;
+                    Ok(())
+                },
+            ),
+    );
+    let (session, _observer, driver) = channel(OpenRequest {
+        cwd: "/unused".into(),
+        intent: Open::New,
+        cleanup: CleanupBudget::new(Duration::from_secs(2)),
+        expected_server_version: None,
+        prepare: Some(Arc::new(|_| {
+            panic!("invalid protocol must not invoke prepare")
+        })),
+    });
+    let driver = tokio::spawn(driver.run(client_writer, client_reader));
+    // The official client rejects V0 before producing a typed InitializeResponse.
+    match opened(&session).await {
+        Err(Error::Rpc(error)) => assert_eq!(
+            error.code,
+            agent_client_protocol::ErrorCode::INVALID_REQUEST
+        ),
+        result => panic!("invalid protocol must fail at initialize: {result:?}"),
+    }
+    let exit = tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(exit.reason, ExitReason::OpenFailed(Error::Rpc(error))
+        if error.code == agent_client_protocol::ErrorCode::INVALID_REQUEST)
+    );
+    tokio::time::timeout(Duration::from_secs(5), peer)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn preparation_errors_and_version_rejections_never_send_lifecycle_requests() {
+    for failure in ["server-version", "prepare", "http-capability"] {
+        let calls = Arc::new(AtomicU64::new(0));
+        let callback_calls = calls.clone();
+        let mut scenario = Scenario {
+            prepare: Some(Arc::new(move |_| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if failure == "prepare" {
+                        Err(Error::Rpc(
+                            RpcError::invalid_params().data("host preparation failed"),
+                        ))
+                    } else {
+                        Ok(OpenSetup {
+                            mcp_servers: vec![http_server()],
+                            instructions: None,
+                        })
+                    }
+                })
+            })),
+            ..Scenario::default()
+        };
+        if failure == "server-version" {
+            scenario.expected_server_version = Some("required".into());
+        }
+        let harness = Harness::new(Open::New, scenario);
+        let session = harness.session.clone();
+        let state = harness.state.clone();
+        let mut changes = session.completion_changes();
+        let error = opened(&session).await.unwrap_err();
+        match (failure, error) {
+            ("server-version", Error::ServerVersionMismatch)
+            | ("http-capability", Error::Unsupported) => {}
+            ("prepare", Error::Rpc(error)) => assert_eq!(
+                error,
+                RpcError::invalid_params().data("host preparation failed")
+            ),
+            (_, error) => panic!("unexpected {failure} result: {error:?}"),
+        }
+        let exit = harness.join().await;
+        assert!(matches!(exit.reason, ExitReason::OpenFailed(_)));
+        assert!(peer_lock(&state).opens.is_empty());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            u64::from(matches!(failure, "prepare" | "http-capability"))
+        );
+        assert!(completion_changed(&mut changes).await.is_err());
+        assert_eq!(*changes.borrow(), 0);
+        let snapshot = session.snapshot().await.unwrap();
+        assert!(snapshot.closing);
+        assert!(!snapshot.ready);
+        assert!(snapshot.last_completed.is_none());
+    }
+}
+
+#[tokio::test]
+async fn close_eof_and_driver_cancellation_drop_pending_preparation_and_wake_waiters() {
+    for ending in ["close", "eof", "driver-drop"] {
+        let (dropped, cancelled) = oneshot::channel::<()>();
+        let dropped = Arc::new(Mutex::new(Some(dropped)));
+        let started = Arc::new(Notify::new());
+        let entered = started.clone();
+        let harness = Harness::new(
+            Open::New,
+            Scenario {
+                prepare: Some(Arc::new(move |_| {
+                    let guard = dropped.lock().unwrap().take().expect("prepare called once");
+                    let entered = entered.clone();
+                    Box::pin(async move {
+                        let _guard = guard;
+                        entered.notify_one();
+                        std::future::pending::<Result<OpenSetup, Error>>().await
+                    })
+                })),
+                ..Scenario::default()
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .unwrap();
+        let session = harness.session.clone();
+        let state = harness.state.clone();
+        let mut changes = session.completion_changes();
+        assert!(session.snapshot().await.unwrap().last_completed.is_none());
+        match ending {
+            "close" => session.close().await.unwrap(),
+            "eof" => harness.control.send(PeerCommand::Eof).await.unwrap(),
+            "driver-drop" => harness.driver.abort(),
+            _ => unreachable!(),
+        }
+        if ending == "driver-drop" {
+            assert!(harness.driver.await.unwrap_err().is_cancelled());
+            tokio::time::timeout(Duration::from_secs(5), harness.peer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            let exit = harness.join().await;
+            assert!(!exit.cleanup_timed_out);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), cancelled)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(matches!(
+            opened(&session).await,
+            Err(Error::Closed | Error::Rpc(_))
+        ));
+        assert!(peer_lock(&state).opens.is_empty());
+        assert_eq!(peer_lock(&state).closes, 0);
+        assert!(completion_changed(&mut changes).await.is_err());
+        assert_eq!(*changes.borrow(), 0);
+    }
 }
 
 #[tokio::test]
@@ -744,6 +1215,7 @@ async fn opened_ends_on_eof_close_or_driver_cancellation_before_ready() {
         intent: Open::New,
         cleanup: CleanupBudget::new(Duration::from_secs(1)),
         expected_server_version: None,
+        prepare: None,
     });
     drop(driver);
     drop(observer);
@@ -767,6 +1239,7 @@ async fn opened_preserves_real_sdk_io_failure() {
         intent: Open::New,
         cleanup: CleanupBudget::new(Duration::from_secs(1)),
         expected_server_version: None,
+        prepare: None,
     });
     let exit = tokio::time::timeout(
         Duration::from_secs(5),
@@ -1485,7 +1958,35 @@ async fn disconnected_observer_is_explicit_but_business_remains_live() {
     let snapshot = harness.session.snapshot().await.unwrap();
     assert_eq!(snapshot.observation_gap, Some(Gap::Disconnected));
     assert_eq!(snapshot.active_run, Some(run));
-    harness.complete(StopReason::EndTurn).await;
+    let mut changes = harness.session.completion_changes();
+    assert!(
+        harness
+            .session
+            .snapshot()
+            .await
+            .unwrap()
+            .last_completed
+            .is_none()
+    );
+    harness
+        .control
+        .send(PeerCommand::FailPrompt(RpcError::invalid_params()))
+        .await
+        .unwrap();
+    completion_changed(&mut changes).await.unwrap();
+    assert_eq!(*changes.borrow_and_update(), 1);
+    assert_eq!(
+        harness
+            .session
+            .snapshot()
+            .await
+            .unwrap()
+            .last_completed
+            .unwrap()
+            .result
+            .unwrap_err(),
+        RpcError::invalid_params()
+    );
     harness
         .session
         .list(ListSessionsRequest::new())
@@ -1503,6 +2004,7 @@ async fn disconnected_observer_is_explicit_but_business_remains_live() {
         "still driven"
     );
     harness.finish().await;
+    assert!(completion_changed(&mut changes).await.is_err());
 }
 
 #[tokio::test]
@@ -1588,6 +2090,7 @@ async fn eof_terminates_live_prompt_without_fabricated_completion() {
     harness.ready().await;
     let run = harness.session.submit(input("pending")).await.unwrap();
     harness.wait(|state| !state.prompts.is_empty()).await;
+    let mut changes = harness.session.completion_changes();
     harness.control.send(PeerCommand::Eof).await.unwrap();
     let exit = tokio::time::timeout(Duration::from_secs(5), harness.driver)
         .await
@@ -1597,6 +2100,28 @@ async fn eof_terminates_live_prompt_without_fabricated_completion() {
     assert!(matches!(exit.reason, ExitReason::IncomingClosed));
     assert!(exit.last_completed.is_none() || exit.last_completed.as_ref().unwrap().result.is_err());
     assert!(exit.unfinished_prompt == Some(run) || exit.last_completed.is_some());
+    let snapshot = harness.session.snapshot().await.unwrap();
+    assert!(snapshot.closing);
+    assert!(!snapshot.ready);
+    assert_eq!(snapshot.active_run, exit.unfinished_prompt);
+    assert_eq!(
+        snapshot
+            .last_completed
+            .as_ref()
+            .map(|completed| (&completed.run, &completed.result)),
+        exit.last_completed
+            .as_ref()
+            .map(|completed| (&completed.run, &completed.result)),
+    );
+    let sequence = exit
+        .last_completed
+        .map_or(0, |completed| completed.completion_sequence);
+    // SDK EOF may settle an RPC error, but closure must never invent a completion.
+    if completion_changed(&mut changes).await.is_ok() {
+        assert_eq!(*changes.borrow_and_update(), sequence);
+        assert!(completion_changed(&mut changes).await.is_err());
+    }
+    assert_eq!(*changes.borrow(), sequence);
 }
 
 #[tokio::test]

@@ -673,6 +673,48 @@ impl ConfigRuntime {
     }
 
     /// Resolves role and model together, before allocating workspaces or provider resources.
+    pub(crate) fn resolve_acp_child_profile(
+        &self,
+        profile_id: &str,
+    ) -> ConfigRuntimeResult<(pl_protocol::AgentProfile, super::AcpServiceDefinition)> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        if profile_id == super::ROOT_AGENT_ROUTE_KEY
+            || crate::agent::definition::is_root_definition_id(profile_id)
+        {
+            return Err(PureError::ConfigError("root Profile cannot be dispatched".into()).into());
+        }
+        let profile = self
+            .profiles
+            .read()
+            .catalog
+            .enabled_for_dispatch()?
+            .profiles
+            .into_iter()
+            .find(|profile| profile.enabled && profile.definition.definition_id == profile_id)
+            .ok_or_else(|| {
+                PureError::ConfigError(format!(
+                    "Agent Profile is missing or disabled: {profile_id}"
+                ))
+            })?;
+        let pl_protocol::AgentBinding::Acp(binding) = &profile.binding else {
+            return Err(PureError::ConfigError("ACP Profile binding changed".into()).into());
+        };
+        let definitions = self.read_acp_definitions();
+        let entry = definitions
+            .definitions
+            .get(&binding.account_id)
+            .ok_or_else(|| {
+                PureError::ConfigError(format!("unknown ACP account `{}`", binding.account_id))
+            })?;
+        let definition =
+            self.resolve_acp_definition(&binding.account_id, entry.connection_revision)?;
+        Ok((profile, definition))
+    }
+
+    /// Resolves role and model together, before allocating workspaces or provider resources.
     pub fn resolve_delegated_profile(
         &self,
         profile_id: &str,
@@ -711,9 +753,10 @@ impl ConfigRuntime {
                 ))
             })?;
         if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
-            return Err(
-                PureError::ConfigError("ACP execution is not supported before S4".into()).into(),
-            );
+            return Err(PureError::ConfigError(
+                "ACP Profile requires ACP business preparation".into(),
+            )
+            .into());
         }
         match (mode, selection) {
             (pl_protocol::DelegationMode::Profile, None) => {}
@@ -1439,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_profile_is_configurable_but_rejected_before_native_resolution() {
+    fn acp_profile_dispatch_checks_definitions_in_both_modes_without_native_routes() {
         let (_directory, runtime) = runtime();
         let before = runtime.read().expect("read config");
         let configured = runtime
@@ -1457,7 +1500,7 @@ mod tests {
             enabled: true,
             display_name: "ACP child".into(),
             description: "ACP configuration boundary".into(),
-            when_to_use: "ACP rejection fixture".into(),
+            when_to_use: "ACP dispatch fixture".into(),
             binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
                 account_id: "acp-fixture".into(),
             }),
@@ -1487,18 +1530,43 @@ mod tests {
                     .expect("dispatch view")
                     .profiles
                     .iter()
-                    .all(|profile| profile.definition.definition_id != "acp-child")
+                    .any(|profile| profile.definition.definition_id == "acp-child")
             );
         }
 
         let error = runtime
             .resolve_agent_profile("acp-child")
-            .expect_err("S4 execution is not available");
+            .expect_err("Native resolver must not fabricate an ACP model route");
         assert!(
             error
                 .to_string()
-                .contains("ACP execution is not supported before S4")
+                .contains("ACP Profile requires ACP business preparation")
         );
-        assert_eq!(runtime.read().unwrap().revision, saved.revision);
+        let (_, definition) = runtime
+            .resolve_acp_child_profile("acp-child")
+            .expect("ACP admission");
+        let entry = runtime.read_acp_definitions().definitions["acp-fixture"].clone();
+        let mut disabled = definition;
+        disabled.enabled = false;
+        runtime
+            .save_acp_definition(saved.revision, &disabled, Some(entry.document_revision))
+            .expect("disable definition");
+        for mode in [
+            pl_protocol::DelegationMode::Profile,
+            pl_protocol::DelegationMode::Automatic,
+        ] {
+            assert!(
+                runtime
+                    .agent_profiles_snapshot()
+                    .unwrap()
+                    .catalog
+                    .executable(mode)
+                    .unwrap()
+                    .profiles
+                    .iter()
+                    .all(|profile| profile.definition.definition_id != "acp-child")
+            );
+        }
+        assert!(runtime.resolve_acp_child_profile("acp-child").is_err());
     }
 }

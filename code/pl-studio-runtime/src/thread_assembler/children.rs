@@ -357,13 +357,7 @@ impl super::SessionRuntime {
         let parent = state
             .entries
             .get(&caller)
-            .filter(|entry| {
-                entry.native().is_ok_and(|native| {
-                    native.ready
-                        && native.thread.snapshot().lifecycle
-                            == pl_core::thread::ThreadLifecycle::Open
-                })
-            })
+            .filter(|entry| super::agents::member_open(entry))
             .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
         if parent.identity.parent_agent_id.is_some() {
             return Err(ThreadAssemblyError::ChildDepth);
@@ -394,13 +388,7 @@ impl super::SessionRuntime {
         let parent = state
             .entries
             .get(&caller)
-            .filter(|entry| {
-                entry.native().is_ok_and(|native| {
-                    native.ready
-                        && native.thread.snapshot().lifecycle
-                            == pl_core::thread::ThreadLifecycle::Open
-                })
-            })
+            .filter(|entry| super::agents::member_open(entry))
             .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
         // Studio's current product policy permits only root agents to create children.
         if parent.identity.parent_agent_id.is_some() {

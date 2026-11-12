@@ -9,7 +9,7 @@ impl StudioThreadFactory {
     pub(super) async fn check_bot_spawn_workspace(
         &self,
         request: &ChildThreadRequest,
-        profile: &crate::config::ResolvedAgentProfile,
+        mode: AgentWorkspaceMode,
         root: &crate::studio::records::DirectoryMember,
     ) -> Result<(), ThreadAssemblyError> {
         let Some(bot) = self
@@ -22,7 +22,7 @@ impl StudioThreadFactory {
             return Ok(());
         };
         if root.session.workspace_mode != ThreadWorkspaceMode::Local
-            || profile.profile.workspace_mode == AgentWorkspaceMode::Worktree
+            || mode == AgentWorkspaceMode::Worktree
         {
             return Err(bot_workspace_refusal(
                 &request.id,
@@ -34,7 +34,7 @@ impl StudioThreadFactory {
             None,
         )
         .await?;
-        if profile.profile.workspace_mode == AgentWorkspaceMode::Review {
+        if mode == AgentWorkspaceMode::Review {
             let target = request.review_target_agent_id.as_deref().ok_or_else(|| {
                 bot_workspace_refusal(&request.id, "bot review requires a frozen review target")
             })?;
@@ -438,7 +438,11 @@ mod migration_tests {
         request.id = "allowed-review".into();
         request.review_target_agent_id = Some(target.id.clone());
         factory
-            .check_bot_spawn_workspace(&request, &profile, &factory.directory_member(&root.id)?)
+            .check_bot_spawn_workspace(
+                &request,
+                profile.profile.workspace_mode,
+                &factory.directory_member(&root.id)?,
+            )
             .await?;
         assert!(
             !tokio::fs::try_exists(managed.join(SessionFiles::new(&request.id).root())).await?,

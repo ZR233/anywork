@@ -18,6 +18,7 @@ pub mod accounts;
 mod acp_auth;
 pub(crate) mod acp_business;
 mod acp_detection;
+pub(crate) mod acp_host_mcp;
 mod acp_install;
 mod acp_launch;
 pub use acp_business::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};

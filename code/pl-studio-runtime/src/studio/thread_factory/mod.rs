@@ -1,4 +1,5 @@
 //! Product configuration and shared service leases used to construct core Threads.
+mod acp_child;
 mod bot_workspace;
 mod child_resources;
 mod close_child;
@@ -62,7 +63,42 @@ pub(crate) struct StudioThreadFactory {
     >,
 }
 impl StudioThreadFactory {
-    fn directory_member(
+    pub(crate) async fn ensure_member_execution_allowed(&self, id: &str) -> anyhow::Result<()> {
+        let member = self.directory_member(id)?;
+        anyhow::ensure!(
+            !member.session.archived && !member.agent.explicitly_closed,
+            "agent product membership is not executable"
+        );
+        self.services
+            .store
+            .ensure_archive_execution_allowed(&member.session.workspace_id, Some(id))
+            .await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(member.agent.thread_id.as_str())
+            .await
+    }
+
+    pub(crate) async fn begin_child_preparation(
+        &self,
+        caller: &str,
+        id: &str,
+    ) -> Result<(), crate::thread_assembler::ThreadAssemblyError> {
+        let parent = self.directory_member(caller)?;
+        self.services
+            .store
+            .begin_thread_preparation(
+                crate::studio::store::thread_preparation::PreparationIdentity {
+                    thread_id: id.into(),
+                    workspace_id: parent.session.workspace_id,
+                    parent_id: Some(parent.agent.thread_id),
+                    root_id: parent.root_thread_id,
+                },
+            )
+            .await
+            .map_err(|error| errors::resource_error("record child preparation", error))
+    }
+    pub(in crate::studio) fn directory_member(
         &self,
         id: &str,
     ) -> Result<crate::studio::records::DirectoryMember, crate::thread_assembler::ThreadAssemblyError>
