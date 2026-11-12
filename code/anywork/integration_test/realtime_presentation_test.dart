@@ -46,7 +46,6 @@ import '../test/support/timeline_text_observation.dart';
 import 'support/fixture_gate.dart';
 import 'support/composer_target_diagnostic.dart';
 import 'support/presentation_capture.dart';
-import 'support/realtime_background_observation.dart';
 import 'support/timeline_observation.dart';
 
 const _firstTokenObserverStage = 'realtime-first-token';
@@ -1550,8 +1549,9 @@ final class _RealtimeScene {
       }
       expect(record.contentSource, isA<CompletedOriginal>());
       final member = record.atom;
-      expect(member.source, isA<BackgroundResultChatSource>());
-      expect(member.delivery, ChatDeliveryKind.independent);
+      expect(member.source, head?.record.atom.source ?? single.atom!.source);
+      expect(member.source, isA<ForegroundTurnChatSource>());
+      expect(member.delivery, ChatDeliveryKind.foreground);
       expect(member.lifecycle, isA<TerminalChatAtom>());
       expect(
         (member.lifecycle as TerminalChatAtom).outcome,
