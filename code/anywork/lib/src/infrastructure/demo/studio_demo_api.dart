@@ -1236,6 +1236,7 @@ class DemoStudioTransport extends StudioTransport
     ),
   };
   final Map<String, int> _threadMcpGenerations = {};
+  final Map<String, int> _threadLspRevisions = {};
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
   int _projectDirectoryRevision = 1;
@@ -4562,6 +4563,9 @@ class DemoStudioTransport extends StudioTransport
       ThreadMcpTopic(:final threadId) => ThreadMcpBaseline(
         _demoThreadMcp(threadId),
       ),
+      ThreadLspTopic(:final threadId) => ThreadLspBaseline(
+        _demoThreadLsp(threadId),
+      ),
       LspTopic() => LspBaseline(_demoLspState()),
       SkillsTopic(:final workspaceId) => SkillsBaseline(
         _demoSkillsState(workspaceId, _skillsRevision),
@@ -4600,6 +4604,7 @@ class DemoStudioTransport extends StudioTransport
       RecoveryBaseline(:final state) => state.revision,
       McpCatalogBaseline(:final state) => state.revision,
       ThreadMcpBaseline(:final state) => state.generation,
+      ThreadLspBaseline(:final state) => state.revision,
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
@@ -6461,6 +6466,39 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId) async =>
+      _demoThreadLsp(threadId);
+
+  @override
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) async {
+    final current = _demoThreadLsp(threadId);
+    if (current.bindingId != bindingId) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'Stale LSP binding',
+        retryable: false,
+        correlationId: 'demo-stale-lsp-binding',
+      );
+    }
+    if (!current.servers.any((server) => server.id == serverId)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'LSP server not found in thread binding',
+        retryable: false,
+        correlationId: 'demo-thread-lsp-server-not-found',
+      );
+    }
+    _threadLspRevisions[threadId] = current.revision + 1;
+    final snapshot = _demoThreadLsp(threadId);
+    _publishProductPayload(ThreadLspStateChangedPayload(snapshot));
+    return snapshot;
+  }
+
+  @override
   Future<LspStateSnapshot> readLspState() async => _demoLspState();
 
   @override
@@ -6972,6 +7010,16 @@ class DemoStudioTransport extends StudioTransport
           toolCount: 4,
         ),
       ],
+    );
+  }
+
+  ThreadLspStateSnapshot _demoThreadLsp(String threadId) {
+    final fixtureExists = threadId == 'thread-main';
+    return ThreadLspStateSnapshot(
+      threadId: threadId,
+      revision: _threadLspRevisions[threadId] ?? 1,
+      bindingId: fixtureExists ? 'demo-binding-thread-main' : null,
+      servers: fixtureExists ? _demoLspState().servers : const [],
     );
   }
 

@@ -4,7 +4,6 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
-import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
@@ -50,9 +49,10 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
       }
     });
     ref.listen(threadMcpProvider(threadId), (_, _) => _scheduleRefresh());
-    ref.listen(lspStoreProvider, (_, _) => _scheduleRefresh());
     return _project();
   }
+
+  void refreshObservedLsp() => _scheduleRefresh();
 
   void _scheduleRefresh() {
     if (_refreshScheduled) return;
@@ -80,7 +80,22 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
         .runtime
         ?.activeSkills;
     final mcp = ref.read(threadMcpProvider(threadId));
-    final lsp = ref.read(lspStoreProvider);
+    final lspState = ref
+        .read(anyworkClientProvider)
+        .existingThreadLsp(threadId)
+        ?.state;
+    final lspSnapshot = lspState?.value;
+    final bindingId = lspSnapshot?.bindingId;
+    final lspErrors = <String, String>{
+      for (final entry in _errors.entries)
+        if (entry.key.startsWith('lsp:$bindingId:'))
+          'lsp:${entry.key.substring('lsp:$bindingId:'.length)}': entry.value,
+    };
+    final lspPending = <String>{
+      for (final key in _pending)
+        if (key.startsWith('lsp:$bindingId:'))
+          'lsp:${key.substring('lsp:$bindingId:'.length)}',
+    };
     return StartedItemsState(
       skills: skills ?? const [],
       mcp: [
@@ -103,22 +118,21 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
           ),
       ],
       lsp: [
-        for (final server in lsp.value?.servers ?? const <LspServerStateView>[])
+        for (final server
+            in lspSnapshot?.servers ?? const <LspServerStateView>[])
           _lspService(server),
       ],
       mcpSync: mcp.sync,
-      lspSync: switch (lsp.value?.state) {
-        FailedObservedResource<LspStateData>(:final error) ||
-        DegradedObservedResource<LspStateData>(
-          :final error,
-        ) => DomainSyncStatus(
-          phase: DomainSyncPhase.failed,
-          errorMessage: error.message,
-        ),
-        _ => lsp.sync,
-      },
-      pending: Set.unmodifiable(_pending),
-      errors: Map.unmodifiable(_errors),
+      lspSync: lspState?.sync ?? const DomainSyncStatus(),
+      pending: Set.unmodifiable({
+        ..._pending.where((key) => !key.startsWith('lsp:')),
+        ...lspPending,
+      }),
+      errors: Map.unmodifiable({
+        for (final entry in _errors.entries)
+          if (!entry.key.startsWith('lsp:')) entry.key: entry.value,
+        ...lspErrors,
+      }),
     );
   }
 
@@ -130,13 +144,20 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
             .reconnectThreadMcp(threadId: threadId, serverId: serverId);
       });
 
-  Future<void> reconnectLsp(String serverId) => _run('lsp:$serverId', () {
+  Future<void> reconnectLsp(String serverId) {
     final client = ref.read(anyworkClientProvider);
-    if (client.selection.state.selectedProjectId == null) {
-      throw StateError('No workspace selected');
-    }
-    return client.directoryCommands.resetLspServer(serverId);
-  });
+    final snapshot = client.existingThreadLsp(threadId)?.state.value;
+    final bindingId = snapshot?.bindingId;
+    if (bindingId == null)
+      return Future.error(StateError('No active LSP binding'));
+    return _run('lsp:$bindingId:$serverId', () async {
+      await client.directoryCommands.resetThreadLspServer(
+        threadId: threadId,
+        bindingId: bindingId,
+        serverId: serverId,
+      );
+    });
+  }
 
   Future<void> compact() => _run(
     'compact',
@@ -166,14 +187,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   }
 
   void _publishCommands() {
-    final current = state.asData?.value;
-    if (current == null) return;
-    state = AsyncData(
-      current.copyWith(
-        pending: Set.unmodifiable(_pending),
-        errors: Map.unmodifiable(_errors),
-      ),
-    );
+    _refresh();
   }
 }
 

@@ -3276,6 +3276,34 @@ class FrbStudioTransport
   }
 
   @override
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId) async {
+    await _ensureReady();
+    return _threadLspStateFromFrb(
+      await _bridgeCall(() => frb.readThreadLspState(threadId: threadId)),
+    );
+  }
+
+  @override
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) async {
+    await _ensureReady();
+    return _threadLspStateFromFrb(
+      await _bridgeCall(
+        () => frb.resetThreadLspServer(
+          input: frb_thread_lsp_types.ThreadLspResetInput(
+            threadId: threadId,
+            bindingId: bindingId,
+            serverId: serverId,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<LspStateSnapshot> readLspState() async {
     await _ensureReady();
     return _lspStateFromFrb(await _bridgeCall(frb.readLspState));

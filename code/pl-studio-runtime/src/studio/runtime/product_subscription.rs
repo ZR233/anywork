@@ -126,6 +126,9 @@ impl StudioRuntime {
             StudioProductTopic::ThreadMcp { thread_id } => StudioProductBaselineState::ThreadMcp(
                 Box::new(self.read_thread_mcp(thread_id).await?),
             ),
+            StudioProductTopic::ThreadLsp { thread_id } => StudioProductBaselineState::ThreadLsp(
+                Box::new(self.read_thread_lsp_state(thread_id).await?),
+            ),
             StudioProductTopic::Lsp => {
                 StudioProductBaselineState::Lsp(Box::new(self.read_lsp_state().await))
             }

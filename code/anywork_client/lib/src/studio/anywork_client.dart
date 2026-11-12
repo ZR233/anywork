@@ -440,6 +440,7 @@ class AnyworkClient {
   final bootstrapState = LatestValue(const StudioBootstrapState());
   final Map<McpScope, McpStore> _mcpCatalogs = {};
   final Map<String, ThreadMcpStore> _threadMcp = {};
+  final Map<String, ThreadLspStore> _threadLsp = {};
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
   final Map<String, ChildInteractionStore> _childInteractions = {};
@@ -481,6 +482,7 @@ class AnyworkClient {
   McpStore? existingMcpCatalog(McpScope scope) =>
       scope is HostMcpScope ? mcp : _mcpCatalogs[scope];
   ThreadMcpStore? existingThreadMcp(String threadId) => _threadMcp[threadId];
+  ThreadLspStore? existingThreadLsp(String threadId) => _threadLsp[threadId];
   SkillsStore? existingSkills(String workspaceId) => _skills[workspaceId];
   SessionCostsStore? existingSessionCosts(String rootThreadId) =>
       _sessionCosts[rootThreadId];
@@ -490,6 +492,8 @@ class AnyworkClient {
       List.unmodifiable(_mcpCatalogs.values);
   Iterable<ThreadMcpStore> get ownedThreadMcp =>
       List.unmodifiable(_threadMcp.values);
+  Iterable<ThreadLspStore> get ownedThreadLsp =>
+      List.unmodifiable(_threadLsp.values);
   Iterable<SkillsStore> get ownedSkills => List.unmodifiable(_skills.values);
   Iterable<SessionCostsStore> get ownedSessionCosts =>
       List.unmodifiable(_sessionCosts.values);
@@ -504,6 +508,10 @@ class AnyworkClient {
   ThreadMcpStore threadMcp(String threadId) => _threadMcp.putIfAbsent(
     threadId,
     () => _mirror(() => ThreadMcpStore(threadId)),
+  );
+  ThreadLspStore threadLsp(String threadId) => _threadLsp.putIfAbsent(
+    threadId,
+    () => _mirror(() => ThreadLspStore(threadId)),
   );
 
   SkillsStore skills(String workspaceId) => _skills.putIfAbsent(

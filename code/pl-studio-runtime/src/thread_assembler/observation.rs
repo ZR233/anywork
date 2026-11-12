@@ -363,7 +363,7 @@ impl SessionRuntime {
                 .map(|binding| binding.lifetime.clone())
         });
         if let Some(lifetime) = &lifetime {
-            lifetime.cancellation.cancel();
+            lifetime.cancel();
         }
         if purpose == ClosePurpose::Delete {
             thread.prepare_close_for_deletion();

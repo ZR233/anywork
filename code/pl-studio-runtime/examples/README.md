@@ -161,6 +161,13 @@ root/child 身份、实际 route/delegation、时间、水位来源及 SHA-256�
 Task 候选完成必须来自当前完整 `agentDirectory`、各会话快照、最新持久化 Turn、
 无 active Turn/activity/execution/pending interaction，以及工作流 `Terminal` 且
 `current_state_id=completed`；`current_run=None` 不是完成，历史 failed Turn 留给观察者判断，允许 root 返修。
+目录身份可能先于执行所有者和首个持久检查点出现。准备期采样沿公开 State 基线读取，
+不以目录 Idle、空基线或尚无 checkpoint 推断完成；不存在的成员与真正的存储/权限失败分别处理。
+State 来源资格失效时，只依据类型化 `ConversationResyncRequired` 结束旧段并重新打开基线，
+保留每段的起止、失效原因及覆盖范围，不匹配诊断文字、不重放业务命令。
+新段独立校验基线、通知序列和终态 anchor，不继承旧段游标、revision 或终态缓存。
+来源失效后的重建不因过程覆盖不完整而中止仍可观察的任务，但跨段缺口始终使整体事件区间不完整；
+工作流完成、持久化导出和事件连续性分别记录，不能以新的终态快照弥补旧段缺口。
 清单的 `rootWorkflow` 与 `rootWorkflowSnapshotRevision` 保留最后实际观察的工作流及其快照提交修订号，
 与采集的 `termination` 分开：工作流已 completed 但采集欠证据时如实列出欠项，超时不抹掉该工作流事实。
 候选全树空闲后，通过既有 `synchronize_thread_observation` 逐成员同步产品投影和历史移交水位，
@@ -198,9 +205,11 @@ simple 的空闲终态只代表该观察结束，不能证明任务成功。任�
 场景时长只解析一次，在异步准备前建立同一个绝对 deadline，覆盖准备 Git、运行前取证、初始化和实际观察；
 小量 rev-parse 输出也最多读取 64 KiB，完整原文仍受 Evidence 总预算约束。每次新观察、
 决议准入和 simple/Task 完成声明前后都重核 deadline/中断。只读观察等待允许按该边界取消；
-可能准备资源或产生副作用的 initialize/open/create/subscribe/resolve 已准入后等待真实返回，
+可能准备执行资源或产生副作用的 initialize/open_project/create/resolve 已准入后等待真实返回，
 拿到返回值的 owner 再决定停止，不丢弃责任。`scenarioElapsedMillis`、`admittedOperations`
 分别记录场景耗时和已准入操作耗时及返回时停止状态。
+State open 仅登记被动读取，不创建执行所有者，可按同一边界取消；已返回的 feed 必须显式 close，
+事件 worker 仍由原采集所有者停止并 join，不因取消一次读取而丢弃写入任务。
 
 场景停止后不再提交业务决定。末端事件确认与最终证据导出（包括 after Git 取证）共享独立的
 **绝对 30 秒总预算**，不按页、Thread 或文件重置；读取超时后记录具体未完成项，停止新增导出。
@@ -221,6 +230,17 @@ simple 的空闲终态只代表该观察结束，不能证明任务成功。任�
 写文件正常结束本身都不代表完整。
 若 EOF 发生在已消费的目标锚点之后，可复用该精确匹配来确认此前的区间；清单保留
 `streamEnded=true`。EOF 前没有匹配锚点时不能成立，也不在 EOF 后假造新通知。
+
+`events.jsonl` 按 `{segment, update}` 保存原公开事件，按 `{segment, invalidated}` 保存
+类型化来源失效的原公开错误体；`segment` 从 0 开始，与 `manifest.events[].segments` 顺序对应。
+各段保留 `startedAt/endedAt`、首帧 revision、消费末端、目标、匹配水位、错误及 `invalidated`；
+manifest 事件项的顶层首帧、水位和目标只描述最新段，不混合不同来源的 revision。
+`captureComplete` 表示最新段已消费精确目标且 feed、文件写入任务均正常关闭并 join，
+`intervalComplete` 表示整体事件区间连续完整；来源失效后的新基线不能将后者恢复为 true。
+既有 `complete` 继续要求整体区间完整并参与 `evidenceComplete` 判定。
+`files.jsonl` 中事件文件的 `complete` 只表示上述捕获及落盘完整性，不代表跨段无缺口。
+因此可以同时观察到业务 workflow 已 completed、`captureComplete=true`，
+但 `intervalComplete=false`、`evidenceComplete=false`；工具仍保留非零退出，报告不得合并这几种结论。
 
 证据包括 `root-thread.json`、`directory/`、`samples/`、`pending/`、`decision-inputs/`、
 `decision-receipts/`、每个 Thread 的 `events.jsonl` / `snapshot.json`、逐页 Turn 与 timeline，

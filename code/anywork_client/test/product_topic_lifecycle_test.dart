@@ -6,6 +6,10 @@ import 'package:test/test.dart';
 final class _TopicTransport implements StudioTransport {
   final List<_TopicSource> sources = [];
   final List<Completer<_TopicSource>> _opened = [];
+  final threadLspResetRequests =
+      <({String threadId, String bindingId, String serverId})>[];
+  final threadLspResetStarted = Completer<void>();
+  Completer<ThreadLspStateSnapshot>? threadLspResetResult;
 
   Future<_TopicSource> opened(int index) {
     if (sources.length > index) return Future.value(sources[index]);
@@ -20,6 +24,27 @@ final class _TopicTransport implements StudioTransport {
     sources.add(source);
     if (_opened.length > index) _opened[index].complete(source);
     return source;
+  }
+
+  @override
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) {
+    threadLspResetRequests.add((
+      threadId: threadId,
+      bindingId: bindingId,
+      serverId: serverId,
+    ));
+    if (!threadLspResetStarted.isCompleted) {
+      threadLspResetStarted.complete();
+    }
+    final result = threadLspResetResult;
+    if (result == null) {
+      throw StateError('Unexpected thread LSP reset without a result gate');
+    }
+    return result.future;
   }
 
   @override
@@ -149,6 +174,32 @@ ProductTopicDataFrame _childEvent(
   ),
 );
 
+LspServerStateView _threadLspServer(LspServerState state) => LspServerStateView(
+  id: 'same-server',
+  displayName: 'same-server',
+  configurationPath: null,
+  phase: 'ready',
+  state: state,
+);
+
+ProductTopicBaselineFrame _threadLspBaseline(ThreadLspStateSnapshot snapshot) =>
+    ProductTopicBaselineFrame(
+      topic: ThreadLspTopic(threadId: snapshot.threadId),
+      revision: snapshot.revision,
+      state: ThreadLspBaseline(snapshot),
+    );
+
+ProductTopicDataFrame _threadLspEvent(ThreadLspStateSnapshot snapshot) =>
+    ProductTopicDataFrame(
+      topic: ThreadLspTopic(threadId: snapshot.threadId),
+      event: ProductTopicEventEnvelope(
+        eventId: 'thread-lsp-${snapshot.threadId}-${snapshot.revision}',
+        sequence: BigInt.from(snapshot.revision),
+        createdAt: DateTime.utc(2026),
+        payload: ThreadLspStateChangedPayload(snapshot),
+      ),
+    );
+
 void main() {
   test(
     'scoped topic demand installs mirrors before the first native callback',
@@ -200,6 +251,89 @@ void main() {
       expect((await client.close()).complete, isTrue);
     },
   );
+
+  test('thread LSP late reset receipt cannot replace a newer empty binding snapshot', () async {
+    final transport = _TopicTransport();
+    final client = AnyworkClient(transport: transport, clientId: 'thread-lsp');
+    final leaseA = client.channels.acquireThreadLsp('thread-a');
+    final leaseB = client.channels.acquireThreadLsp('thread-b');
+    final sourceA = await transport.opened(0);
+    final sourceB = await transport.opened(1);
+    final initialA = ThreadLspStateSnapshot(
+      threadId: 'thread-a',
+      revision: 10,
+      bindingId: 'binding-a',
+      servers: [
+        _threadLspServer(const LspCheckingState(message: 'A initializing')),
+      ],
+    );
+    final initialB = ThreadLspStateSnapshot(
+      threadId: 'thread-b',
+      revision: 4,
+      bindingId: 'binding-b',
+      servers: [
+        _threadLspServer(
+          const LspUnavailableState(
+            checkedAt: 1,
+            code: 'B',
+            message: 'B unavailable',
+            retryable: true,
+          ),
+        ),
+      ],
+    );
+    sourceA.emit(_threadLspBaseline(initialA));
+    sourceB.emit(_threadLspBaseline(initialB));
+    final storeA = client.existingThreadLsp('thread-a')!;
+    final storeB = client.existingThreadLsp('thread-b')!;
+    expect(storeA.state.value, same(initialA));
+    expect(storeB.state.value, same(initialB));
+    expect(storeA.state.value!.servers.single.id, 'same-server');
+    expect(storeB.state.value!.servers.single.id, 'same-server');
+
+    final resetResult = Completer<ThreadLspStateSnapshot>();
+    transport.threadLspResetResult = resetResult;
+    final reset = client.directoryCommands.resetThreadLspServer(
+      threadId: 'thread-a',
+      bindingId: 'binding-a',
+      serverId: 'same-server',
+    );
+    await transport.threadLspResetStarted.future;
+    expect(transport.threadLspResetRequests, [
+      (threadId: 'thread-a', bindingId: 'binding-a', serverId: 'same-server'),
+    ]);
+
+    final retiredA = const ThreadLspStateSnapshot(
+      threadId: 'thread-a',
+      revision: 12,
+      bindingId: null,
+      servers: [],
+    );
+    sourceA.emit(_threadLspEvent(retiredA));
+    expect(storeA.state.revision, 12);
+    expect(storeA.state.value, same(retiredA));
+    expect(storeB.state.value, same(initialB));
+
+    final lateSuccess = ThreadLspStateSnapshot(
+      threadId: 'thread-a',
+      revision: 11,
+      bindingId: 'binding-a',
+      servers: [initialA.servers.single],
+    );
+    resetResult.complete(lateSuccess);
+    expect(await reset, same(lateSuccess));
+    expect(storeA.state.revision, 12);
+    expect(storeA.state.value, same(retiredA));
+    expect(storeA.state.value!.servers, isEmpty);
+    expect(storeB.state.revision, 4);
+    expect(storeB.state.value, same(initialB));
+
+    await leaseA.release();
+    await leaseB.release();
+    expect(sourceA.cancelCalls, 1);
+    expect(sourceB.cancelCalls, 1);
+    expect((await client.close()).complete, isTrue);
+  });
 
   test(
     'child interactions topics are per-host mirrors with revision ordering',

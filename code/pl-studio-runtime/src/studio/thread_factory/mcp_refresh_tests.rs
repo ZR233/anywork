@@ -26,10 +26,7 @@ fn owner(
     let runtime = McpRuntime::new(connector);
     let owner = ThreadMcpOwner::new(
         id.into(),
-        Arc::new(ThreadToolLifetime {
-            gate: Arc::new(tokio::sync::Mutex::new(())),
-            cancellation: CancellationToken::new(),
-        }),
+        Arc::new(ThreadToolLifetime::default()),
         scope,
         root.into(),
         None,

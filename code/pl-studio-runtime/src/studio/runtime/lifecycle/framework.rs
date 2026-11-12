@@ -5,6 +5,86 @@ use super::super::background_task::{self, BackgroundTask};
 use super::super::lsp_state::health;
 
 impl StudioRuntime {
+    pub(in crate::studio::runtime) async fn refresh_thread_lsp_states(&self) -> Result<()> {
+        let _refresh = self.external_runtimes.lsp_state.thread_refresh().await;
+        let bindings = self.thread_factory.binding_snapshots();
+        let known_ids = bindings
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for (thread_id, binding) in bindings {
+            let lease = binding.lsp_lease.as_ref();
+            let endpoint =
+                super::super::lsp_state::execution_endpoint(binding.project.ssh_alias.as_deref());
+            let root = lease.map(|lease| lease.workspace_root().to_path_buf());
+            let captured_binding_id = binding.lsp_binding_id.clone();
+            let should_read = captured_binding_id.is_some()
+                && !binding.target_invalidated
+                && !binding.lifetime.cancellation.is_cancelled()
+                && lease.is_some_and(|lease| !lease.is_closed());
+            let servers = if should_read {
+                let registry = self.external_runtimes.lsp.execution_scope(&endpoint);
+                let snapshots = registry
+                    .snapshots_for_workspace(root.as_ref().expect("lease root").as_path())
+                    .await;
+                let observed_at = crate::studio::ids::unix_seconds();
+                snapshots
+                    .iter()
+                    .map(|server| crate::StudioLspServer {
+                        state: super::super::lsp_state::lsp_server_state(server, observed_at),
+                        id: server.id.clone(),
+                        configuration_path: server.configuration_path.clone(),
+                        phase: super::super::lsp_state::lsp_lifecycle_phase(server.phase).into(),
+                        display_name: server.display_name.clone(),
+                        extensions: server.extensions.clone(),
+                        language_ids: server.language_ids.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            #[cfg(test)]
+            self.external_runtimes
+                .lsp_state
+                .pause_after_thread_snapshot_for_test(&servers)
+                .await;
+            let _commit = self.external_runtimes.lsp_state.thread_commit().await;
+            let expected = (
+                &binding.incarnation,
+                captured_binding_id.as_deref(),
+                Some(endpoint.as_str()),
+                root.as_deref(),
+            );
+            let published_thread_id = thread_id.clone();
+            let published_binding_id = captured_binding_id.clone();
+            self.thread_factory
+                .commit_lsp_projection(&thread_id, Some(expected), |valid| {
+                    self.external_runtimes.lsp_state.commit_thread(
+                        published_thread_id,
+                        valid.then(|| published_binding_id.expect("valid binding has ID")),
+                        if valid { servers } else { Vec::new() },
+                    )
+                });
+        }
+        for thread_id in self.external_runtimes.lsp_state.thread_ids() {
+            if !known_ids.contains(&thread_id) {
+                let _commit = self.external_runtimes.lsp_state.thread_commit().await;
+                let published_thread_id = thread_id.clone();
+                self.thread_factory
+                    .commit_lsp_projection(&thread_id, None, |valid| {
+                        if !valid {
+                            self.external_runtimes.lsp_state.commit_thread(
+                                published_thread_id,
+                                None,
+                                Vec::new(),
+                            );
+                        }
+                    });
+            }
+        }
+        Ok(())
+    }
+
     pub(in crate::studio::runtime) fn check_thread_read_access(
         &self,
         thread: &pl_protocol::Thread,
@@ -81,6 +161,7 @@ impl StudioRuntime {
         }
         let runtime = self.clone();
         let mut updates = self.external_runtimes.lsp.subscribe();
+        let binding_updates = self.thread_factory.lsp_binding_updates();
         // Threads can prepare services without navigating through project activation.
         // Establish the initial published cut before forwarding background lifecycle changes.
         {
@@ -98,13 +179,28 @@ impl StudioRuntime {
                 tracing::warn!(%error, "failed to publish initial LSP observed state");
             }
         }
+        if let Err(error) = self.refresh_thread_lsp_states().await {
+            tracing::warn!(%error, "failed to publish initial Thread LSP states");
+        }
         *watcher = Some(BackgroundTask::new(tokio::spawn(async move {
-            while let Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
-                updates.recv().await
-            {
+            let binding_updates = binding_updates.notified_owned();
+            tokio::pin!(binding_updates);
+            loop {
+                tokio::select! {
+                    event = updates.recv() => match event {
+                        Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                    _ = &mut binding_updates => {
+                        binding_updates.set(runtime.thread_factory.lsp_binding_updates().notified_owned());
+                    }
+                }
                 let health = health(&runtime.external_runtimes.lsp).await;
                 if let Err(error) = runtime.external_runtimes.lsp_state.refresh(health).await {
                     tracing::warn!(%error, "failed to refresh LSP observed state");
+                }
+                if let Err(error) = runtime.refresh_thread_lsp_states().await {
+                    tracing::warn!(%error, "failed to refresh Thread LSP states");
                 }
             }
         })));

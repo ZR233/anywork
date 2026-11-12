@@ -94,6 +94,8 @@ pub enum StudioErrorReason {
     StaleReadScope,
     /// Native completed-history peer uses a missing or unsupported protocol.
     ProtocolVersionMismatch,
+    /// The Thread's LSP association changed or was released before this operation was accepted.
+    StaleLspBinding,
 }
 
 impl StudioErrorReason {
@@ -115,6 +117,7 @@ impl StudioErrorReason {
             Self::StaleContent => "staleContent",
             Self::StaleReadScope => "staleReadScope",
             Self::ProtocolVersionMismatch => "protocolVersionMismatch",
+            Self::StaleLspBinding => "staleLspBinding",
         }
     }
 }

@@ -81,7 +81,7 @@ pub(super) async fn thread(
         directory: prefix.clone(),
         ..ThreadExport::default()
     });
-    let snapshot = budget.read(runtime.thread_snapshot(id)).await?;
+    let snapshot = super::super::state::snapshot(runtime, id, budget).await?;
     manifest.thread_exports[export_index].snapshot_revision = Some(snapshot.revision);
     manifest.thread_exports[export_index].storage = snapshot.storage.clone();
     evidence.json(&format!("{prefix}/snapshot.json"), id, &snapshot)?;

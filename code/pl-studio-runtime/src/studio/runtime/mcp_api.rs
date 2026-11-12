@@ -11,6 +11,105 @@ use super::StudioRuntime;
 use crate::config::McpDocumentError;
 
 impl StudioRuntime {
+    /// Reads the already-published LSP association projection for a known Thread.
+    pub async fn read_thread_lsp_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<crate::protocol::StudioThreadLspStateSnapshot> {
+        self.read_protocol_thread(thread_id).await?;
+        Ok(self
+            .external_runtimes
+            .lsp_state
+            .read_thread(thread_id)
+            .await)
+    }
+
+    /// Resets one server through the current Thread binding and returns its new published cut.
+    pub async fn reset_thread_lsp_server(
+        &self,
+        request: pl_protocol::studio::ThreadLspResetRequest,
+    ) -> Result<crate::protocol::StudioThreadLspStateSnapshot> {
+        self.read_protocol_thread(&request.thread_id).await?;
+        let stale = || {
+            anyhow::Error::new(
+                pl_protocol::studio::StudioError::new(
+                    pl_protocol::studio::StudioErrorCode::Conflict,
+                    "The Thread LSP binding is no longer current",
+                    false,
+                )
+                .with_reason(
+                    pl_protocol::studio::StudioErrorReason::StaleLspBinding,
+                    serde_json::json!({}),
+                ),
+            )
+        };
+        let (gate, cancellation) = match self.thread_factory.tool_operation(&request.thread_id) {
+            Ok(operation) => operation,
+            Err(crate::thread_assembler::ThreadAssemblyError::Thread(
+                pl_core::thread::ThreadError::Closed,
+            )) => return Err(stale()),
+            Err(error) => return Err(anyhow::Error::from(error)),
+        };
+        let _operation = gate.lock().await;
+        if cancellation.is_cancelled() {
+            return Err(stale());
+        }
+        let binding = self
+            .thread_factory
+            .binding_snapshot(&request.thread_id)
+            .ok_or_else(stale)?;
+        let lease = binding
+            .lsp_lease
+            .as_ref()
+            .filter(|lease| !lease.is_closed());
+        if binding.target_invalidated
+            || binding.lifetime.cancellation.is_cancelled()
+            || binding.lsp_binding_id.as_deref() != Some(&request.binding_id)
+            || lease.is_none()
+        {
+            return Err(stale());
+        }
+        let lease = lease.expect("checked active lease");
+        let endpoint = super::lsp_state::execution_endpoint(binding.project.ssh_alias.as_deref());
+        let registry = self.external_runtimes.lsp.execution_scope(&endpoint);
+        let root = lease.workspace_root().to_path_buf();
+        let members = registry.snapshots_for_workspace(&root).await;
+        if !members.iter().any(|server| server.id == request.server_id) {
+            return Err(anyhow::Error::new(
+                pl_protocol::studio::StudioError::not_found("LSP server"),
+            ));
+        }
+        if cancellation.is_cancelled()
+            || self
+                .thread_factory
+                .binding_snapshot(&request.thread_id)
+                .is_none_or(|current| {
+                    !std::sync::Arc::ptr_eq(&current.incarnation, &binding.incarnation)
+                        || current.lsp_binding_id.as_deref() != Some(&request.binding_id)
+                        || current.target_invalidated
+                        || current.lifetime.cancellation.is_cancelled()
+                        || current
+                            .lsp_lease
+                            .as_ref()
+                            .is_none_or(pl_lsp::runtime::LspWorkspaceLease::is_closed)
+                })
+        {
+            return Err(stale());
+        }
+        registry
+            .reset_lsp(pl_lsp::runtime::LspScope::Server {
+                workspace_root: root,
+                server_id: request.server_id,
+            })
+            .await?;
+        self.refresh_thread_lsp_states().await?;
+        Ok(self
+            .external_runtimes
+            .lsp_state
+            .read_thread(&request.thread_id)
+            .await)
+    }
+
     /// 读取指定环境作用域的 MCP 配置目录快照。
     pub fn read_mcp_catalog(&self, scope: &McpScope) -> Result<McpCatalogSnapshot> {
         Ok(self.config_runtime.mcp_catalog_snapshot(scope)?)

@@ -33,6 +33,7 @@ pub enum StudioProductTopic {
     Recovery,
     McpCatalog { scope: pl_protocol::McpScope },
     ThreadMcp { thread_id: String },
+    ThreadLsp { thread_id: String },
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
@@ -68,6 +69,9 @@ impl StudioProductTopic {
             Self::ThreadMcp { thread_id } if thread_id.trim().is_empty() => {
                 Err(scope_error("threadMcp", "threadId"))
             }
+            Self::ThreadLsp { thread_id } if thread_id.trim().is_empty() => {
+                Err(scope_error("threadLsp", "threadId"))
+            }
             Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
                 Err(scope_error("skills", "workspaceId"))
             }
@@ -94,6 +98,9 @@ impl StudioProductTopic {
                 scope: state.scope.clone(),
             },
             StudioProductEventKind::ThreadMcpStateChanged(state) => Self::ThreadMcp {
+                thread_id: state.thread_id.clone(),
+            },
+            StudioProductEventKind::ThreadLspStateChanged(state) => Self::ThreadLsp {
                 thread_id: state.thread_id.clone(),
             },
             StudioProductEventKind::LspStateChanged(_) => Self::Lsp,
@@ -149,6 +156,7 @@ pub enum StudioProductBaselineState {
     Recovery(Box<StudioRecoveryStateSnapshot>),
     McpCatalog(Box<pl_protocol::McpCatalogSnapshot>),
     ThreadMcp(Box<pl_protocol::ThreadMcpStateSnapshot>),
+    ThreadLsp(Box<crate::protocol::StudioThreadLspStateSnapshot>),
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
     ThreadModeCatalog(Box<pl_protocol::ThreadModeCatalogSnapshot>),
@@ -178,6 +186,7 @@ impl StudioProductBaselineState {
             Self::Recovery(state) => revision_of(&state.state),
             Self::McpCatalog(state) => state.revision,
             Self::ThreadMcp(state) => state.generation,
+            Self::ThreadLsp(state) => state.revision,
             Self::Lsp(state) => revision_of(&state.state),
             Self::Skills(state) => revision_of(&state.state),
             Self::ThreadModeCatalog(state) => state.revision,

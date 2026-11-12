@@ -36,7 +36,7 @@ impl NativeResources {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(lifetime) = lifetime {
-            lifetime.cancellation.cancel();
+            lifetime.cancel();
         }
         if let Some(mcp) = mcp {
             mcp.cancel_producers();

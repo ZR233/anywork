@@ -153,6 +153,13 @@ impl ProductEventBus {
         self.emit(StudioProductEventKind::ThreadMcpStateChanged(state))
     }
 
+    pub fn emit_thread_lsp_state(
+        &self,
+        state: crate::protocol::StudioThreadLspStateSnapshot,
+    ) -> StudioProductEventEnvelope {
+        self.emit(StudioProductEventKind::ThreadLspStateChanged(state))
+    }
+
     pub fn emit_lsp_state(&self, state: StudioLspStateSnapshot) -> StudioProductEventEnvelope {
         self.emit(StudioProductEventKind::LspStateChanged(state))
     }

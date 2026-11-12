@@ -548,6 +548,7 @@ String describeBridgeProductTopic(ProductTopic topic) {
     McpCatalogTopic(:final scope) =>
       scope is HostMcpScope ? 'mcpCatalog:host' : 'mcpCatalog:${scope.key}',
     ThreadMcpTopic(:final threadId) => 'threadMcp:$threadId',
+    ThreadLspTopic(:final threadId) => 'threadLsp:$threadId',
     LspTopic() => 'lsp',
     SkillsTopic(:final workspaceId) => 'skills:$workspaceId',
     ThreadModeCatalogTopic() => 'threadModeCatalog',

@@ -110,6 +110,10 @@ impl CatalogSources {
                 format!("thread-mcp:{}", value.thread_id),
                 serde_json::json!(value.generation),
             )),
+            StudioProductEventKind::ThreadLspStateChanged(value) => Some((
+                format!("thread-lsp:{}", value.thread_id),
+                serde_json::json!(value.revision),
+            )),
             StudioProductEventKind::ThreadDirectoryChanged(_)
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)

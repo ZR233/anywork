@@ -50,6 +50,7 @@ pub(in crate::studio) struct StudioThreadServices {
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
     services: StudioThreadServices,
+    lsp_binding_updates: Arc<tokio::sync::Notify>,
     scopes: Arc<
         std::sync::Mutex<
             std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
@@ -84,6 +85,59 @@ impl StudioThreadFactory {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .and_then(std::sync::Weak::upgrade)
+    }
+
+    pub(crate) fn notify_lsp_binding_changed(&self) {
+        self.lsp_binding_updates.notify_one();
+    }
+
+    /// Runs a synchronous projection commit while the current resource/binding and lifetime
+    /// qualification are locked in the required order. `None` means a captured identity was
+    /// replaced, or a retirement was superseded by a new binding.
+    pub(crate) fn commit_lsp_projection<R>(
+        &self,
+        thread_id: &str,
+        captured: Option<(
+            &Arc<()>,
+            Option<&str>,
+            Option<&str>,
+            Option<&std::path::Path>,
+        )>,
+        commit: impl FnOnce(bool) -> R,
+    ) -> Option<R> {
+        let Some(scope) = self.resource_scope(thread_id) else {
+            return captured.is_none().then(|| commit(false));
+        };
+        let bindings = scope
+            .binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(binding) = bindings.as_ref() else {
+            return captured.is_none().then(|| commit(false));
+        };
+        let Some((incarnation, binding_id, endpoint, root)) = captured else {
+            return None;
+        };
+        if !Arc::ptr_eq(&binding.incarnation, incarnation)
+            || binding.lsp_binding_id.as_deref() != binding_id
+        {
+            return None;
+        }
+        let _qualification = binding.lifetime.qualification_guard();
+        let lease = binding.lsp_lease.as_ref();
+        let valid = binding_id.is_some()
+            && !binding.target_invalidated
+            && !binding.lifetime.cancellation.is_cancelled()
+            && lease.is_some_and(|lease| {
+                !lease.is_closed()
+                    && Some(lease.workspace_root()) == root
+                    && crate::studio::runtime::lsp_state::execution_endpoint(
+                        binding.project.ssh_alias.as_deref(),
+                    )
+                    .as_str()
+                        == endpoint.unwrap_or_default()
+            });
+        Some(commit(valid))
     }
 
     pub(crate) fn bind_resource_scope(
@@ -128,9 +182,14 @@ impl StudioThreadFactory {
     pub(in crate::studio) fn new(services: StudioThreadServices) -> Self {
         Self {
             services,
+            lsp_binding_updates: Arc::new(tokio::sync::Notify::new()),
             scopes: Default::default(),
             initial_routes: Default::default(),
         }
+    }
+
+    pub(crate) fn lsp_binding_updates(&self) -> Arc<tokio::sync::Notify> {
+        self.lsp_binding_updates.clone()
     }
 
     pub(in crate::studio) fn stage_initial_route(

@@ -458,9 +458,15 @@ impl Collection {
         self.evidence
             .check_limit(self.threads.len() < MAX_THREADS, "thread budget exceeded")?;
         scene.check()?;
-        let admitted = std::time::Instant::now();
-        let stream = runtime.open_conversation_state_feed(id).await;
-        scene.returned("open_conversation_state_feed", admitted, manifest);
+        let stream = loop {
+            let admitted = std::time::Instant::now();
+            let stream = super::state::open(runtime, id, scene).await;
+            scene.returned("open_conversation_state_feed", admitted, manifest);
+            match stream {
+                Err(error) if super::state::resync_error(&error).is_some() => continue,
+                result => break result,
+            }
+        };
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
@@ -471,11 +477,12 @@ impl Collection {
             }
         };
         if let Err(error) = scene.check() {
+            stream.request_close();
             drop(stream);
             return Err(error);
         }
         let index = self.threads.len();
-        let writer = EventWriter::start(stream, &self.evidence, id, index)?;
+        let writer = EventWriter::start(stream, runtime, scene, &self.evidence, id, index)?;
         self.threads.insert(id.into(), index);
         self.writers.push(writer);
         scene.check()?;
@@ -549,9 +556,10 @@ impl Collection {
             match writer.finish(target, cleanup).await {
                 Ok(coverage) => {
                     if !coverage.complete {
-                        manifest
-                            .unfinished
-                            .push(format!("{id} event interval unknown: {:?}", coverage.error));
+                        manifest.unfinished.push(format!(
+                            "{id} event interval incomplete: intervalComplete={}, error={:?}",
+                            coverage.interval_complete, coverage.error
+                        ));
                     }
                     manifest.events.push(coverage);
                 }
@@ -667,9 +675,7 @@ async fn sample_member(
     root: &str,
     scene: &Boundary,
 ) -> Result<MemberSample> {
-    let snapshot = scene
-        .read(runtime.thread_snapshot(&member.thread_id))
-        .await?;
+    let snapshot = super::state::snapshot(runtime, &member.thread_id, scene).await?;
     let id = &snapshot.thread.id;
     anyhow::ensure!(
         id == &member.thread_id && snapshot.thread.root_thread_id == root,

@@ -8,6 +8,7 @@ import 'package:anywork_client/studio_client.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
+import '../../presentation/providers/thread_lsp_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/settings_store.dart';
 import '../../presentation/providers/skills_store.dart';
@@ -68,6 +69,9 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ),
         ThreadMcpTopic(:final threadId) => ref.watch(
           threadMcpProvider(threadId).select((state) => state.sync),
+        ),
+        ThreadLspTopic(:final threadId) => ref.watch(
+          threadLspStoreProvider(threadId).select((state) => state.sync),
         ),
         LspTopic() => ref.watch(lspStoreProvider.select((state) => state.sync)),
         SkillsTopic(:final workspaceId) => ref.watch(

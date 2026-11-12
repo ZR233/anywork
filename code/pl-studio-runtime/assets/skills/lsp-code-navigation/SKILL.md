@@ -10,17 +10,22 @@ Use this workflow for code questions as well as edits, without waiting for the
 user to mention LSP. Language skills provide project/build context; this skill
 owns the common workflow, while `studio-config` owns anywork's configuration format.
 
-**Complete the workflow before answering:** obtain a relevant semantic result,
-or report an observed blocking failure/explicit permission restriction. An empty
-server list or absence of query tools **before configuration** is expected, not
-a reason to skip setup. Do not replace authorized setup with a text-only answer.
+Prefer semantic queries when the answer depends on symbol resolution, inferred
+types or cross-file relationships. Choose the useful steps below rather than
+turning every file read into a setup exercise. An empty server list means setup
+may be needed, not that the language is unsupported. If preparation or a query is
+blocked, continue independent investigation and distinguish source-based inference
+from semantic evidence; successful tool use is not a prerequisite for every answer.
 
 ## 1. Check context and permission
 
-Identify the actual execution workspace, language, project roots, installed
-SDK/toolchain and the build context relevant to the question. Check the native
-LSP status and reuse a suitable healthy server. Confirm existing options match
-the task before relying on conditional or generated code.
+Identify the actual execution workspace, target files, language projects and
+relevant SDK/build context. A language project may be nested inside the workspace;
+the absence of a manifest at the workspace root does not mean there is no project.
+Trace the target file to its manifest and workspace membership rather than assuming
+the shell directory, repository root and language project root are interchangeable.
+Check native LSP status and reuse a suitable healthy server. Readiness alone does
+not establish that it analyzes the intended project or conditional/generated code.
 
 Before declaring sources absent, check the execution root, manifest paths and
 search filters or ignore rules. An empty default file listing can exclude an
@@ -35,22 +40,15 @@ Do not invent such a restriction from your own “read-only analysis” commenta
 Do not install programs, execute untrusted project code or expand access without
 authorization.
 
-Planning is not a blanket ban on preparation. Within existing authorization and
-write permissions, the root or an explicitly tasked preparation executor may
-configure the minimal, reversible project tooling needed to investigate code
-before the business implementation plan is approved. This is not permission to
-implement business changes or edit real user settings or credentials. When
-environment configuration is itself the requested deliverable, its implementation
-approval still applies.
-
-For shared prerequisites, one writable preparation owner can configure and
-verify the service before independent explorers use it. Read-only explorers
-reuse a suitable service and query their own symbols; they report missing setup
-to the parent rather than writing configuration or treating their role's
-restriction as a planning-wide ban. Hand off the execution workspace, config
-source, analysis context, meaningful query result and remaining blockers.
-Independent worktrees need their own scope check; shared checkouts do not share
-session scratch. Continue unrelated investigation while preparation is pending.
+For shared prerequisites, let the root or a tasked writable preparation owner
+handle minimal, reversible setup within existing authorization. Planning alone
+does not forbid that preparation, but it does not authorize business changes,
+real user settings or credentials; requested configuration deliverables retain
+their approval boundary. Read-only explorers reuse the environment and query their
+own symbols, reporting missing setup to the parent rather than writing it.
+Hand off the actual workspace, config source, analysis context, observed results
+and remaining gaps, not just "ready". Independent worktrees need their own scope
+check; shared checkouts do not share session scratch.
 
 ## 2. Prepare only what the task needs
 
@@ -72,10 +70,10 @@ official documentation. Do not add optional tuning from memory; omit unnecessary
 options when their contract is uncertain. Readiness does not validate arbitrary
 server-specific fields or prove that an optional setting took effect.
 
-Once the executable and required invocation/options are known, **write the
-missing workspace server document**, using the current anywork format. Then
-observe initialization and proceed to discovery below. If package resolution is
-needed, use the project's authorized preparation command; a missing generated
+When setup is useful and authorized, use the verified executable and options to
+write the missing workspace server document in the current anywork format.
+Observe initialization and discover the query interface. If package resolution
+is needed, use the project's authorized preparation command; a missing generated
 package file alone does not establish that preparation is impossible.
 
 Preserve unrelated configuration. Follow
@@ -106,8 +104,17 @@ tool names or substitute an SDK command for the semantic query.
 Use a relevant definition, hover/type, references, implementation or supported
 call query. Text search can locate candidates and surrounding code, but does not
 resolve imports, inferred types, trait dispatch or conditional compilation.
-Check the returned source location and symbol/type against the question's context;
-empty results, a server process or listed tools alone do not prove success.
+For position queries, read the target file's relevant lines and place the cursor
+inside the intended identifier, or use a symbol query's returned source position.
+Keep each file's path and own line numbers together: numbering across concatenated
+files is not a position in any one file. Follow the advertised character encoding
+and coordinate base rather than counting output prefixes or bytes.
+
+Check the returned declaration and type against the intended symbol. A jump from
+an import path to a library is not evidence that a function call resolved. For an
+invalid position or unexpected empty result, reread that file's local context and
+correct the position before blaming initialization or repeating the request.
+An empty result, server process or listed tools alone do not prove success.
 
 For example, a cross-file method query should reach its declaring source and
 identify its signature/type. A conditional Rust call should resolve to the branch
@@ -120,8 +127,7 @@ retries, and inspect the eventual result; do not rewrite source to provoke an
 update. For persistent failure, inspect the actual configuration, initialization
 or query error and fix its cause within scope. Keep ordinary development available.
 
-Before finishing, obtain a meaningful semantic result or identify the concrete
-permission, executable, configuration or query obstacle. Do not stop at “not
-configured” or the skill index merely because the code is short. Report what was
-queried, the relevant locations and any remaining uncertainty without overstating
-unverified branches or platforms.
+Report useful semantic results and relevant locations when obtained. Otherwise
+explain the observed permission, executable, project, configuration or query gap,
+and what the available source evidence does establish. Do not claim unavailability
+from an empty initial catalog, or overstate unverified branches and platforms.

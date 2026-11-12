@@ -340,6 +340,12 @@ abstract class StudioTransport
     required String threadId,
     String? serverId,
   });
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId);
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  });
   Future<LspStateSnapshot> readLspState();
   Future<LspStateSnapshot> probeLspServer(String workspaceId);
   Future<LspStateSnapshot> resetLspServer(String workspaceId, String serverId);

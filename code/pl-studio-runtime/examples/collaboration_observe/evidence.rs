@@ -165,6 +165,7 @@ pub struct StreamWatermark {
 #[serde(rename_all = "camelCase")]
 pub struct EventCoverage {
     pub thread_id: String,
+    /// Top-level watermarks and anchors describe only the latest segment.
     pub initial_snapshot_revision: Option<u64>,
     pub consumed_last: Option<StreamWatermark>,
     pub target: Option<TurnAnchor>,
@@ -172,14 +173,208 @@ pub struct EventCoverage {
     pub join_elapsed_millis: u128,
     pub stream_ended: bool,
     pub complete: bool,
+    pub interval_complete: bool,
+    pub capture_complete: bool,
+    pub segments: Vec<EventSegment>,
     pub error: Option<String>,
     pub source: &'static str,
+}
+
+impl EventCoverage {
+    fn record_error(&mut self, error: String) {
+        self.complete = false;
+        self.interval_complete = false;
+        self.error = Some(match self.error.take() {
+            Some(previous) => format!("{previous}; {error}"),
+            None => error,
+        });
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSegment {
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub initial_snapshot_revision: Option<u64>,
+    pub consumed_last: Option<StreamWatermark>,
+    pub target: Option<TurnAnchor>,
+    pub matched_at: Option<StreamWatermark>,
+    pub complete: bool,
+    pub error: Option<String>,
+    pub invalidated: Option<pl_protocol::studio::StudioError>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum EventRecord<'a> {
+    Update {
+        segment: usize,
+        update: &'a pl_protocol::ThreadSubscriptionUpdate,
+    },
+    Invalidated {
+        segment: usize,
+        invalidated: &'a pl_protocol::studio::StudioError,
+    },
+}
+
+impl EventRecord<'_> {
+    fn write(&self, file: &mut EvidenceFile) -> Result<()> {
+        serde_json::to_writer(&mut *file, self)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        Ok(())
+    }
 }
 
 struct EventProgress {
     coverage: EventCoverage,
     anchors: std::collections::BTreeMap<(String, u64), (pl_protocol::TurnState, StreamWatermark)>,
     eof: bool,
+    segment_started_at: i64,
+}
+
+impl EventProgress {
+    fn new(id: &str) -> Result<Self> {
+        Ok(Self {
+            coverage: EventCoverage {
+                thread_id: id.into(),
+                initial_snapshot_revision: None,
+                consumed_last: None,
+                target: None,
+                matched_at: None,
+                join_elapsed_millis: 0,
+                stream_ended: false,
+                complete: false,
+                interval_complete: true,
+                capture_complete: false,
+                segments: Vec::new(),
+                error: None,
+                source: "liveOrRetainedPublicApiCannotDistinguish",
+            },
+            anchors: Default::default(),
+            eof: false,
+            segment_started_at: unix_seconds()?,
+        })
+    }
+
+    fn match_target(&mut self, anchor: TurnAnchor) -> Result<bool> {
+        self.coverage.target = Some(anchor.clone());
+        if self.coverage.initial_snapshot_revision.is_some()
+            && self.coverage.error.is_none()
+            && let Some((terminal_state, watermark)) = self.anchors.get(&anchor.key())
+            && *terminal_state == anchor.terminal_state
+        {
+            self.coverage.matched_at = Some(*watermark);
+            self.coverage.complete = self.coverage.interval_complete;
+            return Ok(true);
+        }
+        anyhow::ensure!(
+            !self.eof,
+            "event stream ended before the requested terminal anchor"
+        );
+        Ok(false)
+    }
+
+    fn observe(&mut self, event: pl_protocol::ThreadSubscriptionUpdate) -> Result<()> {
+        match event {
+            pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                completed_history_version,
+                snapshot,
+            } => {
+                anyhow::ensure!(
+                    completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                    "unsupported completed-history protocol version"
+                );
+                anyhow::ensure!(
+                    self.coverage.initial_snapshot_revision.is_none(),
+                    "unexpected second event baseline"
+                );
+                self.coverage.initial_snapshot_revision = Some(snapshot.revision);
+            }
+            pl_protocol::ThreadSubscriptionUpdate::Notification { notification } => {
+                let baseline = self
+                    .coverage
+                    .initial_snapshot_revision
+                    .context("notification before first snapshot")?;
+                let previous = self.coverage.consumed_last;
+                anyhow::ensure!(
+                    notification.base_revision == previous.map_or(baseline, |last| last.revision)
+                        && notification.base_revision.checked_add(1) == Some(notification.revision)
+                        && previous.is_none_or(|last| last.epoch == notification.epoch),
+                    "event revision/epoch gap"
+                );
+                anyhow::ensure!(
+                    !matches!(
+                        notification.notification,
+                        pl_protocol::ThreadNotification::Lagged { .. }
+                    ),
+                    "event stream reported lag"
+                );
+                let watermark = StreamWatermark {
+                    epoch: notification.epoch,
+                    revision: notification.revision,
+                };
+                self.coverage.consumed_last = Some(watermark);
+                if let pl_protocol::ThreadNotification::TurnCompleted { turn }
+                | pl_protocol::ThreadNotification::TurnUpdated { turn } =
+                    notification.notification
+                    && turn.state.is_terminal()
+                {
+                    let key = TurnAnchor::from_turn(&turn)?.key();
+                    anyhow::ensure!(
+                        self.anchors.contains_key(&key) || self.anchors.len() < 1024,
+                        "terminal anchor cache budget exceeded (1024)"
+                    );
+                    if let Some((previous, _)) = self.anchors.get(&key) {
+                        anyhow::ensure!(
+                            previous == &turn.state,
+                            "terminal Turn changed without revision"
+                        );
+                    }
+                    self.anchors.entry(key).or_insert((turn.state, watermark));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn end_segment(&mut self, invalidated: Option<pl_protocol::studio::StudioError>) -> Result<()> {
+        self.coverage.segments.push(EventSegment {
+            started_at: self.segment_started_at,
+            ended_at: unix_seconds()?,
+            initial_snapshot_revision: self.coverage.initial_snapshot_revision,
+            consumed_last: self.coverage.consumed_last,
+            target: self.coverage.target.clone(),
+            matched_at: self.coverage.matched_at,
+            complete: self.coverage.matched_at.is_some()
+                && invalidated.is_none()
+                && self.coverage.error.is_none(),
+            error: self.coverage.error.clone(),
+            invalidated,
+        });
+        Ok(())
+    }
+
+    fn invalidate(&mut self, error: &anyhow::Error, file: &mut EvidenceFile) -> Result<()> {
+        let reason = super::state::resync_error(error).context("not a State resync")?;
+        self.end_segment(Some(reason.clone()))?;
+        EventRecord::Invalidated {
+            segment: self.coverage.segments.len() - 1,
+            invalidated: reason,
+        }
+        .write(file)?;
+        self.coverage.interval_complete = false;
+        self.coverage.complete = false;
+        self.coverage.initial_snapshot_revision = None;
+        self.coverage.consumed_last = None;
+        self.coverage.target = None;
+        self.coverage.matched_at = None;
+        self.eof = false;
+        self.anchors.clear();
+        self.segment_started_at = unix_seconds()?;
+        Ok(())
+    }
 }
 
 pub struct EventWriter {
@@ -578,48 +773,33 @@ impl EvidenceFile {
 impl EventWriter {
     pub fn start(
         mut stream: pl_studio_runtime::ConversationStateFeed,
+        runtime: &pl_studio_runtime::StudioRuntime,
+        scene: &super::Boundary,
         sink: &Evidence,
         id: &str,
         index: usize,
     ) -> Result<Self> {
-        let mut file = sink.create(&format!("threads/{index:03}/events.jsonl"), id)?;
-        let progress = Arc::new(Mutex::new(EventProgress {
-            coverage: EventCoverage {
-                thread_id: id.into(),
-                initial_snapshot_revision: None,
-                consumed_last: None,
-                target: None,
-                matched_at: None,
-                join_elapsed_millis: 0,
-                stream_ended: false,
-                complete: false,
-                error: None,
-                source: "liveOrRetainedPublicApiCannotDistinguish",
-            },
-            anchors: Default::default(),
-            eof: false,
-        }));
+        let progress = EventProgress::new(id).inspect_err(|_| stream.request_close())?;
+        let mut file = sink
+            .create(&format!("threads/{index:03}/events.jsonl"), id)
+            .inspect_err(|_| stream.request_close())?;
+        let progress = Arc::new(Mutex::new(progress));
         let (pulse, changed) = tokio::sync::watch::channel(0u64);
         let (target, mut targets) = tokio::sync::watch::channel::<Option<TurnAnchor>>(None);
         let stop = tokio_util::sync::CancellationToken::new();
         let worker_progress = progress.clone();
         let worker_stop = stop.clone();
+        let runtime = runtime.clone();
+        let scene = scene.clone();
+        let thread_id = id.to_owned();
+        let worker_id = thread_id.clone();
         let handle = tokio::spawn(async move {
             let result: Result<()> = async {
                 loop {
                     if let Some(anchor) = targets.borrow().clone() {
-                        let key = anchor.key();
-                        let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
-                        if state.coverage.initial_snapshot_revision.is_some() && state.coverage.error.is_none()
-                            && let Some((terminal_state, watermark)) = state.anchors.get(&key).cloned()
-                            && terminal_state == anchor.terminal_state {
-                            state.coverage.target = Some(anchor);
-                            state.coverage.matched_at = Some(watermark);
-                            state.coverage.complete = true;
-                            break;
-                        }
-                        state.coverage.target = Some(anchor);
-                        anyhow::ensure!(!state.eof, "event stream ended before the requested terminal anchor");
+                        let matched = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?.match_target(anchor)?;
+                        pulse.send_modify(|value| *value = value.saturating_add(1));
+                        if matched { break; }
                     }
                     if worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?.eof {
                         // EOF after a cached anchor does not erase that already consumed prefix.
@@ -630,13 +810,44 @@ impl EventWriter {
                     }
                     // recv owns only observation state. Cancellation may discard an unclaimed tail,
                     // never resources or a decision. Only an already confirmed prefix is complete.
+                    // Scene admission governs reopening below, not an owned feed's lifetime:
+                    // the collector declares its target or stop under the separate cleanup budget.
                     let has_baseline = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?.coverage.initial_snapshot_revision.is_some();
                     let event = tokio::select! {
                         _ = worker_stop.cancelled() => break,
                         // First-frame assembly takes its baseline before awaiting usage. A target
                         // wake must not cancel that assembly and destroy the initial snapshot.
                         changed = targets.changed(), if has_baseline => { changed.context("event target control closed")?; continue; },
-                        event = stream.recv() => event?,
+                        event = stream.recv() => event,
+                    };
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(error) if super::state::resync_error(&error).is_some() => {
+                            stream.close().await?;
+                            {
+                                let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
+                                state.invalidate(&error, &mut file)?;
+                            }
+                            pulse.send_modify(|value| *value = value.saturating_add(1));
+                            loop {
+                                let opened = tokio::select! {
+                                    biased;
+                                    _ = worker_stop.cancelled() => break,
+                                    opened = super::state::open(&runtime, &worker_id, &scene) => opened,
+                                };
+                                match opened {
+                                    Ok(next) => { stream = next; break; }
+                                    Err(error) if super::state::resync_error(&error).is_some() => {
+                                        let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
+                                        state.invalidate(&error, &mut file)?;
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            }
+                            if worker_stop.is_cancelled() { break; }
+                            continue;
+                        }
+                        Err(error) => return Err(error),
                     };
                     let Some(event) = event else {
                         let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
@@ -645,41 +856,18 @@ impl EventWriter {
                         pulse.send_modify(|value| *value = value.saturating_add(1));
                         continue;
                     };
-                    serde_json::to_writer(&mut file, &event)?;
-                    file.write_all(b"\n")?;
-                    file.flush()?;
+                    let segment = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?.coverage.segments.len();
+                    EventRecord::Update { segment, update: &event }.write(&mut file)?;
                     {
                         let mut state = worker_progress.lock().map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
-                        match event {
-                            pl_protocol::ThreadSubscriptionUpdate::Snapshot { completed_history_version, snapshot } => {
-                                anyhow::ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
-                                    "unsupported completed-history protocol version");
-                                anyhow::ensure!(state.coverage.initial_snapshot_revision.is_none(), "unexpected second event baseline");
-                                state.coverage.initial_snapshot_revision = Some(snapshot.revision);
-                            }
-                            pl_protocol::ThreadSubscriptionUpdate::Notification { notification } => {
-                                let baseline = state.coverage.initial_snapshot_revision.context("notification before first snapshot")?;
-                                let previous = state.coverage.consumed_last;
-                                anyhow::ensure!(notification.base_revision == previous.map_or(baseline, |last| last.revision)
-                                    && notification.base_revision.checked_add(1) == Some(notification.revision)
-                                    && previous.is_none_or(|last| last.epoch == notification.epoch), "event revision/epoch gap");
-                                anyhow::ensure!(!matches!(notification.notification, pl_protocol::ThreadNotification::Lagged { .. }), "event stream reported lag");
-                                let watermark = StreamWatermark { epoch: notification.epoch, revision: notification.revision };
-                                state.coverage.consumed_last = Some(watermark);
-                                if let pl_protocol::ThreadNotification::TurnCompleted { turn } | pl_protocol::ThreadNotification::TurnUpdated { turn } = notification.notification
-                                    && turn.state.is_terminal() {
-                                    let key = TurnAnchor::from_turn(&turn)?.key();
-                                    anyhow::ensure!(state.anchors.contains_key(&key) || state.anchors.len() < 1024, "terminal anchor cache budget exceeded (1024)");
-                                    if let Some((previous, _)) = state.anchors.get(&key) { anyhow::ensure!(previous == &turn.state, "terminal Turn changed without revision"); }
-                                    state.anchors.entry(key).or_insert((turn.state, watermark));
-                                }
-                            }
-                        }
+                        state.observe(event)?;
                     }
                     pulse.send_modify(|value| *value = value.saturating_add(1));
                 }
                 Ok(())
             }.await;
+            let closed = stream.close().await;
+            let result = combine_write_result(result, closed, "State feed close");
             drop(stream);
             let complete = {
                 let mut state = worker_progress
@@ -688,18 +876,23 @@ impl EventWriter {
                 if let Err(error) = &result {
                     state.coverage.error = Some(format!("{error:#}"));
                 }
-                if !state.coverage.complete && state.coverage.error.is_none() {
+                if state.coverage.matched_at.is_none() && state.coverage.error.is_none() {
                     state.coverage.error =
                         Some("observation stopped before confirmed terminal anchor".into());
                 }
-                state.coverage.complete && result.is_ok()
+                state.end_segment(None)?;
+                state.coverage.capture_complete =
+                    state.coverage.matched_at.is_some() && result.is_ok();
+                state.coverage.interval_complete &= state.coverage.capture_complete;
+                state.coverage.complete = state.coverage.interval_complete;
+                state.coverage.capture_complete
             };
             pulse.send_modify(|value| *value = value.saturating_add(1));
             let finish = file.finish(complete);
             combine_write_result(result, finish, "event writer")
         });
         Ok(Self {
-            thread_id: id.into(),
+            thread_id,
             progress,
             changed,
             stop,
@@ -730,7 +923,13 @@ impl EventWriter {
                 self.target.send_replace(Some(anchor));
             }
             Ok(_) => (),
-            Err(error) => failure = Some(format!("terminal anchor unavailable: {error:#}")),
+            Err(error) => {
+                let error = format!("terminal anchor unavailable: {error:#}");
+                failure = Some(match failure {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error,
+                });
+            }
         }
         while failure.is_none() {
             if let Err(error) = budget.check() {
@@ -740,7 +939,7 @@ impl EventWriter {
             {
                 match self.progress.lock() {
                     Ok(state) => {
-                        if state.coverage.complete {
+                        if state.coverage.matched_at.is_some() {
                             break;
                         }
                         if state.coverage.error.is_some() {
@@ -781,20 +980,27 @@ impl EventWriter {
             .map_err(|_| anyhow::anyhow!("event progress poisoned"))?;
         state.coverage.join_elapsed_millis = joining.elapsed().as_millis();
         if let Some(error) = failure {
-            state.coverage.complete = false;
-            state.coverage.error = Some(error);
+            state.coverage.record_error(error);
         }
         match joined {
             Ok(Ok(())) => (),
             Ok(Err(error)) => {
-                state.coverage.complete = false;
-                state.coverage.error = Some(format!("writer: {error:#}"));
+                state.coverage.capture_complete = false;
+                state.coverage.record_error(format!("writer: {error:#}"));
             }
             Err(error) => {
-                state.coverage.complete = false;
-                state.coverage.error = Some(format!("writer join: {error}"));
+                state.coverage.capture_complete = false;
+                state.coverage.record_error(format!("writer join: {error}"));
             }
         }
         Ok(state.coverage.clone())
     }
 }
+
+#[cfg(test)]
+#[path = "evidence_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "cold_hot_tests.rs"]
+mod cold_hot_tests;

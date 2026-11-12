@@ -7,6 +7,8 @@ mod git;
 mod inputs;
 #[path = "collaboration_observe/observe.rs"]
 mod observe;
+#[path = "collaboration_observe/state.rs"]
+mod state;
 
 use anyhow::Result;
 use evidence::{Evidence, Manifest, Termination};
@@ -15,6 +17,7 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// Shared absolute admission boundary. Only resource-free observation waits use `read`.
+#[derive(Clone)]
 pub struct Boundary {
     deadline: tokio::time::Instant,
     interrupt: CancellationToken,

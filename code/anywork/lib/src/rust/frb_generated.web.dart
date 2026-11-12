@@ -66,6 +66,7 @@ import 'api/studio/types/settings.dart';
 import 'api/studio/types/shutdown.dart';
 import 'api/studio/types/ssh.dart';
 import 'api/studio/types/thread_activity.dart';
+import 'api/studio/types/thread_lsp.dart';
 import 'api/studio/types/thread_preparation.dart';
 import 'api/studio/types/thread_stream.dart';
 import 'api/studio/types/thread_stream/item.dart';
@@ -1320,6 +1321,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_thread_directory_window(dynamic raw);
 
   @protected
+  BridgeThreadLspStateSnapshot
+  dco_decode_box_autoadd_bridge_thread_lsp_state_snapshot(dynamic raw);
+
+  @protected
   BridgeThreadMcpHealthSnapshot
   dco_decode_box_autoadd_bridge_thread_mcp_health_snapshot(dynamic raw);
 
@@ -1505,6 +1510,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SubscriptionUsageDto dco_decode_box_autoadd_subscription_usage_dto(
+    dynamic raw,
+  );
+
+  @protected
+  ThreadLspResetInput dco_decode_box_autoadd_thread_lsp_reset_input(
     dynamic raw,
   );
 
@@ -3397,6 +3407,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadLspStateSnapshot dco_decode_bridge_thread_lsp_state_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeThreadMcpAvailabilityDescriptor
   dco_decode_bridge_thread_mcp_availability_descriptor(dynamic raw);
 
@@ -4869,6 +4884,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SubscriptionUsageDto dco_decode_subscription_usage_dto(dynamic raw);
 
   @protected
+  ThreadLspResetInput dco_decode_thread_lsp_reset_input(dynamic raw);
+
+  @protected
   int dco_decode_u_16(dynamic raw);
 
   @protected
@@ -6316,6 +6334,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadLspStateSnapshot
+  sse_decode_box_autoadd_bridge_thread_lsp_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadMcpHealthSnapshot
   sse_decode_box_autoadd_bridge_thread_mcp_health_snapshot(
     SseDeserializer deserializer,
@@ -6557,6 +6581,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SubscriptionUsageDto sse_decode_box_autoadd_subscription_usage_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ThreadLspResetInput sse_decode_box_autoadd_thread_lsp_reset_input(
     SseDeserializer deserializer,
   );
 
@@ -9013,6 +9042,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeThreadLspStateSnapshot sse_decode_bridge_thread_lsp_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeThreadMcpAvailabilityDescriptor
   sse_decode_bridge_thread_mcp_availability_descriptor(
     SseDeserializer deserializer,
@@ -10821,6 +10855,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ThreadLspResetInput sse_decode_thread_lsp_reset_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int sse_decode_u_16(SseDeserializer deserializer);
 
   @protected
@@ -12459,6 +12498,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_thread_lsp_state_snapshot(
+    BridgeThreadLspStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_thread_mcp_health_snapshot(
     BridgeThreadMcpHealthSnapshot self,
     SseSerializer serializer,
@@ -12728,6 +12773,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_subscription_usage_dto(
     SubscriptionUsageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_thread_lsp_reset_input(
+    ThreadLspResetInput self,
     SseSerializer serializer,
   );
 
@@ -15708,6 +15759,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_thread_lsp_state_snapshot(
+    BridgeThreadLspStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_thread_mcp_availability_descriptor(
     BridgeThreadMcpAvailabilityDescriptor self,
     SseSerializer serializer,
@@ -17819,6 +17876,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_subscription_usage_dto(
     SubscriptionUsageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_thread_lsp_reset_input(
+    ThreadLspResetInput self,
     SseSerializer serializer,
   );
 

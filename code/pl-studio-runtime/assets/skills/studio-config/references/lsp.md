@@ -77,9 +77,16 @@ Multiple servers may claim the same language. Select one with the query's
 `serverId`; without an explicit selection, multiple matching servers produce an
 ambiguity error with candidates rather than a guessed priority.
 
-Detection is not recursive. For a monorepo without a relevant root marker,
-omit it or choose a real root marker, then configure the server's project roots
-according to its own contract. Do not invent a detection path to a nested package.
+Detection is a workspace eligibility filter, not a language-project locator, and
+is not recursive. For nested projects, first locate the target files' actual
+manifests and workspace membership. Keep server documents at the execution
+workspace's configuration location; placing them in an arbitrary package does not
+change this Thread's configuration scope. If a language marker exists only below
+the workspace root, do not use that filename as a root-only filter. Omit detection
+or choose a real root marker, then check how the server includes those projects
+using its own documented discovery or configuration. Starting a server with no
+filter does not prove project coverage. Do not invent a detection path to a nested
+package or copy another project's paths and settings.
 
 ## Select server parameters from development needs
 

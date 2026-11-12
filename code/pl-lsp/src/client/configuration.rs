@@ -1,12 +1,10 @@
-use std::path::Path;
-
 use lsp_types::{
     CallHierarchyClientCapabilities, ClientCapabilities, ConfigurationParams,
-    DidChangeWatchedFilesParams, DocumentSymbolClientCapabilities, FileChangeType, FileEvent,
-    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams,
-    MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities,
-    WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceFolder,
+    DocumentSymbolClientCapabilities, GeneralClientCapabilities, GotoCapability,
+    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
+    TextDocumentClientCapabilities, WindowClientCapabilities, WorkDoneProgressParams,
+    WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::Value;
 
@@ -60,16 +58,6 @@ pub(crate) fn workspace_configuration_response(
             .map(|item| driver.configuration_response(item.section.as_deref()))
             .collect(),
     )
-}
-
-pub(crate) fn watched_file_event_params(
-    path: &Path,
-    typ: FileChangeType,
-    style: crate::host::LspPathStyle,
-) -> LspResult<DidChangeWatchedFilesParams> {
-    Ok(DidChangeWatchedFilesParams {
-        changes: vec![FileEvent::new(file_uri(path, style)?, typ)],
-    })
 }
 
 fn client_capabilities() -> ClientCapabilities {

@@ -396,6 +396,20 @@ class LspStateSnapshot extends ObservedStateSnapshot<LspStateData> {
   List<LspServerStateView> get servers => _data.servers;
 }
 
+class ThreadLspStateSnapshot {
+  const ThreadLspStateSnapshot({
+    required this.threadId,
+    required this.revision,
+    required this.bindingId,
+    this.servers = const [],
+  });
+
+  final String threadId;
+  final int revision;
+  final String? bindingId;
+  final List<LspServerStateView> servers;
+}
+
 class SkillsStateData {
   const SkillsStateData({
     required this.configFingerprint,

@@ -1,14 +1,11 @@
 use std::path::Path;
-use std::sync::atomic::Ordering;
 
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    FileChangeType, Position, Range, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
-    VersionedTextDocumentIdentifier,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Position,
+    Range, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
 };
 
-use super::configuration::watched_file_event_params;
 use super::connection::LspClient;
 use super::uri::parse_uri;
 use crate::runtime::{LspResult, LspRuntimeError};
@@ -203,8 +200,7 @@ impl LspClient {
         } else {
             self.diagnostics.restore_subtree(path).await;
         }
-        self.notify_watched_file_event(path, FileChangeType::CHANGED)
-            .await
+        Ok(())
     }
 
     pub(crate) async fn file_deleted(&self, path: &Path) -> LspResult<()> {
@@ -224,24 +220,7 @@ impl LspClient {
                 failure.get_or_insert(error);
             }
         }
-        if let Err(error) = self
-            .notify_watched_file_event(path, FileChangeType::DELETED)
-            .await
-        {
-            failure.get_or_insert(error);
-        }
         failure.map_or(Ok(()), Err)
-    }
-
-    async fn notify_watched_file_event(&self, path: &Path, typ: FileChangeType) -> LspResult<()> {
-        if !self.initialized.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        self.notify(
-            "workspace/didChangeWatchedFiles",
-            watched_file_event_params(path, typ, self.path_style())?,
-        )
-        .await
     }
 
     async fn read_document(&self, path: &Path) -> LspResult<String> {
