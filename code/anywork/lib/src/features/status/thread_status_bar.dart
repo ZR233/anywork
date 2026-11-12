@@ -103,9 +103,10 @@ class ThreadStatusBar extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(color: context.colors.surface),
       child: SizedBox(
+        width: double.infinity,
         height: 38,
         // No width thresholds hide entries. Extremely narrow windows can scroll
-        // the small icon strip, retaining keyboard and pointer access.
+        // the compact strip, retaining keyboard and pointer access.
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -198,10 +199,22 @@ class ThreadThroughputReadout extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final projection = ref.watch(statusThroughputProjectionProvider(threadId));
+    return TokenThroughputReadout(tokensPerSecond: projection?.tokensPerSecond);
+  }
+}
+
+class TokenThroughputReadout extends StatelessWidget {
+  const TokenThroughputReadout({required this.tokensPerSecond, super.key});
+
+  final double? tokensPerSecond;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = context.tokenThroughputLabel(tokensPerSecond);
     return StatusBarItem(
       icon: Icons.speed_outlined,
-      label:
-          '${context.l10n.statusLastConfirmedAgentTokenSpeed}: ${context.tokenThroughputLabel(projection?.tokensPerSecond)}',
+      text: text,
+      label: '${context.l10n.statusLastConfirmedAgentTokenSpeed}: $text',
     );
   }
 }
@@ -224,14 +237,38 @@ class _WorkflowRuntimeConnector extends ConsumerWidget {
         : run.modeDisplayName;
     return KeyedSubtree(
       key: ValueKey('workflow-runtime-${run.runId}'),
-      child: StatusBarItem(
+      child: WorkflowStatusReadout(
         key: ValueKey('workflow-state-${run.currentStateId}'),
-        icon: run.terminal ? Icons.check_circle_outline : Icons.route_outlined,
-        label:
-            '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}',
+        stateTitle: stateTitle,
+        modeName: modeName,
+        deleted: deleted,
+        terminal: run.terminal,
       ),
     );
   }
+}
+
+class WorkflowStatusReadout extends StatelessWidget {
+  const WorkflowStatusReadout({
+    required this.stateTitle,
+    required this.modeName,
+    this.deleted = false,
+    this.terminal = false,
+    super.key,
+  });
+
+  final String stateTitle;
+  final String modeName;
+  final bool deleted;
+  final bool terminal;
+
+  @override
+  Widget build(BuildContext context) => StatusBarItem(
+    icon: terminal ? Icons.check_circle_outline : Icons.route_outlined,
+    text: stateTitle,
+    label:
+        '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}',
+  );
 }
 
 class _StatusOverflow extends StatefulWidget {
