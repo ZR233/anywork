@@ -282,6 +282,8 @@ void main() {
     await scene.until(
       () =>
           tester.widget<MenuAnchor>(menu).controller?.isOpen == true &&
+          tester.widget<MenuAnchor>(menu).childFocusNode?.hasPrimaryFocus ==
+              true &&
           find
                   .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
                   .evaluate()
@@ -706,6 +708,11 @@ void main() {
       final client = scene.graph.client;
       final project = fixture.project;
       final deletedThreadId = fixture.thread.id;
+      final target = fixture.threadSnapshot(deletedThreadId);
+      if (target == null) {
+        throw StateError('Delete target has no canonical metadata');
+      }
+      final targetTitle = target.title;
       final query = DirectoryQuery(workspaceId: project.id);
       final directory = client.threadDirectory.observeThreads(
         query,
@@ -812,7 +819,7 @@ void main() {
         );
         final dialogL10n = tester.element(dialog).l10n;
         expect(
-          find.text(dialogL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
+          find.text(dialogL10n.sidebarDeleteSessionConfirmTitle(targetTitle)),
           findsOneWidget,
         );
         expect(
