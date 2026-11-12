@@ -36,20 +36,13 @@
 //!   must surface a typed `progress` diagnostic and a non-zero exit.
 //! * `dart-error-fallback` — an unwritable `ANYWORK_HOME/studio/logs` must fall back
 //!   to the isolated `TMPDIR` and still record stage/correlation/stack.
-//! * `native-subtree-reclamation` — a scenario-owned stdio MCP server and its
-//!   SIGTERM-ignoring grandchild are proven live before any close, then the
-//!   isolate is blocked and the native host forces the process out at
-//!   the single 30-second deadline (exit code 1) while the product supervisor
-//!   reclaims the whole subtree before this harness intervenes.
-//! * `lsp-subtree-reclamation` — asynchronous preparation starts the
-//!   scenario-owned fake LSP server (declared in a standalone LSP document) and its
-//!   SIGTERM-ignoring grandchild; both are proven live, then the isolate is
-//!   blocked and the same forced 30-second native exit must let the product
-//!   reclaim them.
-//! * `tool-subtree-reclamation` — a real background `exec` turn runs the
-//!   scenario-owned `--tool-peer` and its SIGTERM-ignoring grandchild; both are
-//!   proven live, then the isolate is blocked and the same forced 30-second
-//!   native exit must let the product reclaim them.
+//! * `mcp-forced-exit-boundary`, `lsp-forced-exit-boundary`, and
+//!   `tool-forced-exit-boundary` prove each owned protocol/tool process and its
+//!   SIGTERM-ignoring descendant live before blocking the isolate, then judge
+//!   the real forced exit at the single 30-second deadline. Native Executor
+//!   ownership cannot run destructors after this abrupt exit. The report keeps
+//!   descendants seen at root exit, monitor results and harness intervention;
+//!   it does not label forced-exit descendant reclamation as a product guarantee.
 //! * `concurrent-stop` — a home that declares the scenario-owned stdio MCP
 //!   server runs one background `exec` turn, so a single turn starts two
 //!   independent supervised resources. Before taking the exclusive writer lock
@@ -1391,14 +1384,15 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
                     "forcedKill": forced_kill,
+                    "descendantCleanupContract": "unconfirmed_after_forced_application_exit",
                 }))?,
             )?;
             phases.push(PhaseRecord {
-                name: "native-subtree-reclamation",
+                name: "mcp-forced-exit-boundary",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned stdio MCP server and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned stdio MCP server and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline with descendants and any harness reclamation recorded separately; abrupt application exit does not confirm Executor descendant cleanup: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1417,17 +1411,9 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "mcp-reclamation did not exit at the single 30-second deadline (measured from the real arm): {:?}",
                 native.elapsed
             );
-            ensure!(
-                native.reclaimed_descendants.is_empty(),
-                "the product leaked the MCP subtree and the harness had to reclaim it: {:?}",
-                native.reclaimed_descendants
-            );
-            ensure!(
-                reclamation["stillAlive"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty),
-                "an MCP business pid was still alive at the observation deadline: {reclamation}"
-            );
+            // Issue #397 deliberately removes the per-business subreaper worker.
+            // The blocked isolate never requests coordinated Executor shutdown;
+            // do not turn a harness cleanup into a claim about product ownership.
             write_sanitized_log(&log, &output.join("shutdown-mcp-gui.log"))?;
         }
 
@@ -1522,14 +1508,15 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
                     "forcedKill": forced_kill,
+                    "descendantCleanupContract": "unconfirmed_after_forced_application_exit",
                 }))?,
             )?;
             phases.push(PhaseRecord {
-                name: "lsp-subtree-reclamation",
+                name: "lsp-forced-exit-boundary",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned fake LSP server (started by the real `lsp_query` tool turn) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned fake LSP server (started by the real `lsp_query` tool turn) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline with descendants and any harness reclamation recorded separately; abrupt application exit does not confirm Executor descendant cleanup: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1548,17 +1535,9 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "lsp-reclamation did not exit at the single 30-second deadline (measured from the real arm): {:?}",
                 native.elapsed
             );
-            ensure!(
-                native.reclaimed_descendants.is_empty(),
-                "the product leaked the LSP subtree and the harness had to reclaim it: {:?}",
-                native.reclaimed_descendants
-            );
-            ensure!(
-                reclamation["stillAlive"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty),
-                "an LSP business pid was still alive at the observation deadline: {reclamation}"
-            );
+            // Issue #397 deliberately removes the per-business subreaper worker.
+            // The blocked isolate never requests coordinated Executor shutdown;
+            // do not turn a harness cleanup into a claim about product ownership.
             write_sanitized_log(&log, &output.join("shutdown-lsp-gui.log"))?;
         }
 
@@ -1650,14 +1629,15 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                     "reclaimedDescendants": native.reclaimed_descendants,
                     "monitor": reclamation,
                     "forcedKill": forced_kill,
+                    "descendantCleanupContract": "unconfirmed_after_forced_application_exit",
                 }))?,
             )?;
             phases.push(PhaseRecord {
-                name: "tool-subtree-reclamation",
+                name: "tool-forced-exit-boundary",
                 status: "executed",
                 coverage: "executed",
                 detail: format!(
-                    "after the scenario-owned background `exec` tool (started by the real supervised tool worker) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline while its supervisor reclaimed the whole subtree before this harness intervened: {}",
+                    "after the scenario-owned background `exec` tool (started by the native Executor) and its SIGTERM-ignoring grandchild were proven live, the thin native assembly hung the isolate and the native host forced the process out (exit 1) at the single 30-second deadline with descendants and any harness reclamation recorded separately; abrupt application exit does not confirm Executor descendant cleanup: {}",
                     native.summary()
                 ),
                 exit_code: native.code,
@@ -1676,17 +1656,9 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 "tool-reclamation did not exit at the single 30-second deadline (measured from the real arm): {:?}",
                 native.elapsed
             );
-            ensure!(
-                native.reclaimed_descendants.is_empty(),
-                "the product leaked the tool subtree and the harness had to reclaim it: {:?}",
-                native.reclaimed_descendants
-            );
-            ensure!(
-                reclamation["stillAlive"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty),
-                "a tool business pid was still alive at the observation deadline: {reclamation}"
-            );
+            // Issue #397 deliberately removes the per-business subreaper worker.
+            // The blocked isolate never requests coordinated Executor shutdown;
+            // do not turn a harness cleanup into a claim about product ownership.
             write_sanitized_log(&log, &output.join("shutdown-tool-gui.log"))?;
         }
 
@@ -2012,16 +1984,19 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         serde_json::to_vec_pretty(&serde_json::Value::Object(diagnostics))?,
     )?;
 
-    // Every requirement the Linux acceptance did not actually execute is listed
-    // here with the real reason; nothing skipped is written as passed. The
-    // round-2 gaps (MCP/LSP/tool subtree reclamation, init/bridge/subscription
-    // faults, temp fallback) are now implemented as phases above; only the
-    // approved Windows-only not-run remains.
-    let gaps = vec![GapRecord {
-        requirement: "windows-native-acceptance",
-        reason: "the user specified Linux as the acceptance platform; the Windows Job Object reclamation path was not executed (approved as not-run, not a Linux gap)",
-        interface_needs: "a Windows host to run the same --preset shutdown phases",
-    }];
+    // Platform coverage and an intentionally excluded guarantee stay explicit.
+    let gaps = vec![
+        GapRecord {
+            requirement: "non-linux-native-acceptance",
+            reason: "this task executes native behavior on Linux; Windows and macOS are compile-only",
+            interface_needs: "a native behavior run on the corresponding platform",
+        },
+        GapRecord {
+            requirement: "descendant-reclamation-after-forced-application-exit",
+            reason: "the isolate never starts coordinated shutdown; native process-group ownership has no surviving per-process supervisor after abrupt application exit",
+            interface_needs: "outside issue #397; actual descendants and harness cleanup remain in each forced-exit report",
+        },
+    ];
 
     // Machine checks are `passed` only for the requirements this Linux run
     // actually executed; skipped requirements are `notCovered`, never assumed.
@@ -2035,14 +2010,15 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         "runtimeUnavailableClose": if phases.iter().any(|phase| phase.name == "runtime-unavailable") { "executed" } else { "notCovered" },
         "storageLockReopen": if phases.iter().any(|phase| phase.name == "storage-lock") { "executed" } else { "notCovered" },
         "serviceUnresponsive": if phases.iter().any(|phase| phase.name == "service-unresponsive") { "executed" } else { "notCovered" },
-        "nativeSubtreeReclamation": if phases.iter().any(|phase| phase.name == "native-subtree-reclamation") { "executed" } else { "notCovered" },
+        "mcpForcedExitBoundary": if phases.iter().any(|phase| phase.name == "mcp-forced-exit-boundary") { "executed" } else { "notCovered" },
         "closeDuringInit": if phases.iter().any(|phase| phase.name == "close-during-init") { "executed" } else { "notCovered" },
         "bridgeUnavailable": if phases.iter().any(|phase| phase.name == "bridge-unavailable") { "executed" } else { "notCovered" },
         "subscriptionCancelFault": if phases.iter().any(|phase| phase.name == "subscription-fault") { "executed" } else { "notCovered" },
         "dartErrorTempFallback": if phases.iter().any(|phase| phase.name == "dart-error-fallback") { "executed" } else { "notCovered" },
-        "lspSubtreeReclamation": if phases.iter().any(|phase| phase.name == "lsp-subtree-reclamation") { "executed" } else { "notCovered" },
-        "toolSubtreeReclamation": if phases.iter().any(|phase| phase.name == "tool-subtree-reclamation") { "executed" } else { "notCovered" },
+        "lspForcedExitBoundary": if phases.iter().any(|phase| phase.name == "lsp-forced-exit-boundary") { "executed" } else { "notCovered" },
+        "toolForcedExitBoundary": if phases.iter().any(|phase| phase.name == "tool-forced-exit-boundary") { "executed" } else { "notCovered" },
         "concurrentResourceStop": if phases.iter().any(|phase| phase.name == "concurrent-stop") { "executed" } else { "notCovered" },
+        "descendantReclamationAfterForcedExit": "notGuaranteed",
         "windowsNativeAcceptance": "notrun",
         "humanVerdict": "pending",
     });
