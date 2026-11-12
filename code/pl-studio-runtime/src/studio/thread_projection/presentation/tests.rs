@@ -958,11 +958,21 @@ fn missing_work_time_stays_unknown_after_later_measured_intervals() -> Result<()
 }
 
 #[test]
+fn members_have_a_bounded_head_delta_and_no_inline_saved_bodies() -> Result<()> {
+    bounded_head_delta_and_deferred_bodies(1_000)
+}
+
+#[test]
+#[ignore = "十万成员规模检查，由 Rust Scale Checks 定时或手动运行"]
 fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies() -> Result<()> {
+    bounded_head_delta_and_deferred_bodies(100_000)
+}
+
+fn bounded_head_delta_and_deferred_bodies(member_count: u64) -> Result<()> {
     let mut s = state();
-    for index in 0..100_000 {
+    for index in 0..member_count {
         let mut member = atom(&format!("tool-{index}"), ChatAtomKind::ToolCall, true);
-        let effect = index + 1 + u64::from(index == 99_999);
+        let effect = index + 1 + u64::from(index + 1 == member_count);
         member.lifecycle = ChatAtomLifecycle::Terminal {
             started: Some(at(effect)),
             ended: Some(at(effect)),
@@ -972,10 +982,10 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
         member.payload = Some(PayloadData::Inline {
             bytes: vec![42; 1024],
         });
-        if index == 99_999 {
+        if index + 1 == member_count {
             member.lifecycle = ChatAtomLifecycle::Terminal {
-                started: Some(at(100_000)),
-                ended: Some(at(100_001)),
+                started: Some(at(member_count)),
+                ended: Some(at(member_count + 1)),
                 outcome: ChatTerminalOutcome::Completed,
             };
             let mut started = member.clone();
@@ -983,12 +993,12 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
             started.payload = None;
             started.finished_at = None;
             started.lifecycle = ChatAtomLifecycle::Active {
-                started: Some(at(100_000)),
+                started: Some(at(member_count)),
                 status: ChatActiveStatus::Running,
             };
-            s.prepare(100_000, 100_000, &[started], &[], &[])?;
+            s.prepare(member_count, member_count as i64, &[started], &[], &[])?;
         }
-        let measured = matches!(index, 0 | 99 | 9_999 | 99_999);
+        let measured = matches!(index, 0 | 99 | 9_999) || index + 1 == member_count;
         if measured {
             s.begin_cost_observation();
         }
@@ -1008,7 +1018,7 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
             eprintln!(
                 "PRESENTATION_COST {}",
                 serde_json::json!({
-                    "event": if index == 99_999 { "existing_member_terminal" } else { "direct_member_terminal" },
+                    "event": if index + 1 == member_count { "existing_member_terminal" } else { "direct_member_terminal" },
                     "members": s.members.len(), "open_heads": s.blocks.len(),
                     "retained_estimate_bytes": s.retained_bytes(),
                     "head_json_bytes": serde_json::to_vec(delta.blocks[0].header.as_ref())?.len(),
@@ -1037,15 +1047,21 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
     assert_eq!(s.members.len(), 0);
     let cut = s.capture(None, 1, 0, 1);
     assert_eq!(cut.open.len(), 1);
-    assert_eq!(summary(&cut.open[0]).total, 100_000);
+    assert_eq!(summary(&cut.open[0]).total, member_count);
     assert!(s.retained_bytes() < 4096);
     let mut text = atom("text", ChatAtomKind::Text, false);
     text.lifecycle = ChatAtomLifecycle::Active {
-        started: Some(at(100_002)),
+        started: Some(at(member_count + 2)),
         status: ChatActiveStatus::Running,
     };
     s.begin_cost_observation();
-    let delta = s.prepare(100_002, 100_002, &[text], &[], &[])?;
+    let delta = s.prepare(
+        member_count + 2,
+        i64::try_from(member_count + 2)?,
+        &[text],
+        &[],
+        &[],
+    )?;
     let visits = s.finish_cost_observation();
     assert_eq!(
         visits.members.reads, 0,
@@ -1067,10 +1083,10 @@ fn hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies
             "head_writes":visits.heads.writes, "unique_heads":visits.heads.keys.len(),
         })
     );
-    assert_eq!(delta.members.len(), 1); // No fold/rewrite of the 100k saved member heads.
+    assert_eq!(delta.members.len(), 1); // No fold/rewrite of saved member heads.
     assert_eq!(delta.blocks.len(), 2);
     assert_eq!(delta.published_through, 1);
-    s.confirm(100_002);
+    s.confirm(member_count + 2);
     assert_eq!(s.members.len(), 1);
     eprintln!(
         "PRESENTATION_COST {}",
