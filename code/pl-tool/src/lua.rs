@@ -354,7 +354,7 @@ pub fn sdk(
                 ..
             } => {
                 let mut line = format!(
-                    "tools[{name:?}](args) -- {description}\nargs JSON schema: {input_schema}"
+                    "tools[{name:?}](args) -- {description}\nPass a Lua table with key=value; argument validation schema (JSON): {input_schema}"
                 );
                 if let Some(output) = output_schema {
                     line.push_str(&format!("\nreturns JSON schema: {output}"));
@@ -367,7 +367,9 @@ pub fn sdk(
                 output_schema,
                 ..
             } => {
-                let mut line = format!("tools[{name:?}](text) -- {description}");
+                let mut line = format!(
+                    "tools[{name:?}](text) -- {description}\nPass one Lua string, not a table or JSON wrapper. Example: local text = [=[content]=]; return tools[{name:?}](text)"
+                );
                 if let Some(output) = output_schema {
                     line.push_str(&format!("\nreturns JSON schema: {output}"));
                 }
