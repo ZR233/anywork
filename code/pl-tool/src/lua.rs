@@ -270,26 +270,6 @@ impl Tool for LuaTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn selected_output_including_diagnostics_respects_utf8_byte_budget() {
-        for maximum in [1, 8, 64, 8192] {
-            for error in [None, Some("错误".repeat(4096))] {
-                let result = pl_tool_lua::ExecOutput {
-                    output: "中间".repeat(8192),
-                    model_output_bytes: maximum,
-                    error,
-                };
-                let text = super::selected_text(&result);
-                assert!(!text.is_empty());
-                assert!(text.len() <= maximum);
-                assert_eq!(result.output.len(), 49152);
-            }
-        }
-    }
-}
-
 /// Projects the same authored schemas used for dispatch, in deterministic catalog order.
 pub fn sdk(
     declarations: impl IntoIterator<Item = (String, OpaquePayload)>,
@@ -328,4 +308,24 @@ pub fn project_catalog(declarations: &[pl_core::model::ModelToolDeclaration]) ->
         pl_model::completion::ToolCallPolicy::DirectOnly,
     );
     pl_model::runtime::thread_tool_declaration(&spec).expect("host Lua declaration encodes")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn selected_output_including_diagnostics_respects_utf8_byte_budget() {
+        for maximum in [1, 8, 64, 8192] {
+            for error in [None, Some("错误".repeat(4096))] {
+                let result = pl_tool_lua::ExecOutput {
+                    output: "中间".repeat(8192),
+                    model_output_bytes: maximum,
+                    error,
+                };
+                let text = super::selected_text(&result);
+                assert!(!text.is_empty());
+                assert!(text.len() <= maximum);
+                assert_eq!(result.output.len(), 49152);
+            }
+        }
+    }
 }
