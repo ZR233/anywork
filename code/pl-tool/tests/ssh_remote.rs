@@ -83,7 +83,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let cached = manager
         .open_workspace_host("validation", workspace.clone())
         .await?;
-    anyhow::ensure!(host.identity() == cached.identity());
+    anyhow::ensure!(host.files.is_same_binding(&cached.files));
     drop(cached);
     let files = Arc::new(host.files.clone());
     if scope == "lsp" {
@@ -92,6 +92,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         let observed = async {
             let environment = run_remote(
                 &host.git,
+                host.files.canonical_path(),
                 vec!["sh".into(), "-c".into(), "printf '%s' \"$PATH\"".into()],
             )
             .await?;
@@ -338,6 +339,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 
     let environment = run_remote(
         &host.git,
+        host.files.canonical_path(),
         vec!["sh".into(), "-c".into(), "printf '%s' \"$PATH\"".into()],
     )
     .await?;
@@ -367,7 +369,12 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         })
         .await?;
     if let Ok(tool) = std::env::var("PURE_SSH_TEST_TOOL") {
-        let output = run_remote(&host.git, vec![tool, "--version".into()]).await?;
+        let output = run_remote(
+            &host.git,
+            host.files.canonical_path(),
+            vec![tool, "--version".into()],
+        )
+        .await?;
         anyhow::ensure!(
             output.status == 0,
             "configured remote tool must be discoverable"
@@ -409,6 +416,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     // Git/worktree 没有归档读者，直传结果不应继承 exec 的磁盘额度。
     let large = run_remote(
         &host.git,
+        host.files.canonical_path(),
         vec![
             "sh".into(),
             "-c".into(),
@@ -424,17 +432,17 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 
     let mut connection_state = manager.subscribe_state("validation").await;
     use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let mut tree = host.commands.spawn(CommandSpawnRequest {
         start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
-        process_id: "reconnect-tree".into(),
-        command: "sleep 60 & child=$!; echo $child > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"; kill $child; wait $child 2>/dev/null; exit 0".into(),
-        cwd:host.files.canonical_path().into(), output_target: CommandOutputTarget::new(format!("{}/reconnect.log",host.files.canonical_path()), "reconnect.log",format!("{}/reconnect.stderr.log",host.files.canonical_path()),"reconnect.stderr.log"),
+        process_id: "closed-connection-process".into(),
+        command: "printf '%s' \"$$\" > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"".into(),
+        cwd:host.files.canonical_path().into(), output_target: CommandOutputTarget::new(format!("{}/disconnect.log",host.files.canonical_path()), "disconnect.log",format!("{}/disconnect.stderr.log",host.files.canonical_path()),"disconnect.stderr.log"),
         capture_limit_bytes: 1024 * 1024,
     }).await?;
     let mut stdout = BufReader::new(tree.take_stdout().expect("command stdout"));
     let mut stderr = tree.take_stderr().expect("command stderr");
-    let mut stdin = tree.take_stdin().expect("command stdin");
+    let stdin = tree.take_stdin().expect("command stdin");
     let mut line = String::new();
     stdout.read_line(&mut line).await?;
     anyhow::ensure!(
@@ -443,43 +451,39 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     );
     manager.reconnect_server("validation").await?;
     wait_until_ready(&mut connection_state).await?;
-    let reconnected = manager.open_workspace_host("validation", workspace).await?;
+    let reconnected = manager
+        .open_workspace_host("validation", workspace.clone())
+        .await?;
     anyhow::ensure!(
-        host.identity() == reconnected.identity(),
-        "attachment replacement changed physical workspace identity"
+        !host.files.is_same_binding(&reconnected.files),
+        "a new connection must have a new immutable executor identity"
     );
-    stdin.write_all(b"once\n").await?;
+    anyhow::ensure!(
+        files.inspect_path(".".into(), None).await.is_err(),
+        "old file handles must not discover a new connection"
+    );
     drop(stdin);
-    let (output, errors, exit) = tokio::join!(
-        async {
-            let mut text = String::new();
-            stdout.read_to_string(&mut text).await?;
-            anyhow::Ok(text)
-        },
-        async {
-            let mut bytes = Vec::new();
-            stderr.read_to_end(&mut bytes).await?;
-            anyhow::Ok(bytes)
-        },
-        tree.wait()
-    );
-    anyhow::ensure!(output? == "continued:once\n" && errors?.is_empty());
-    anyhow::ensure!(exit.map_err(anyhow::Error::msg)?.exit_code == Some(0));
-    println!(
-        "same-instance reconnect: original process, stdin, output and workspace identity PASS"
-    );
-    let reconnected_files = Arc::new(reconnected.files);
-    let cleanup_check = run_remote(
-        &reconnected.git,
-        vec![
-            "sh".into(),
-            "-c".into(),
-            "if kill -0 \"$(cat tree.pid)\" 2>/dev/null; then echo alive; else echo dead; fi"
-                .into(),
-        ],
-    )
+    let (output, _errors, root_result) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            async {
+                let mut text = String::new();
+                let result = stdout.read_to_string(&mut text).await;
+                (text, result)
+            },
+            async {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).await
+            },
+            tree.wait()
+        )
+    })
     .await?;
-    anyhow::ensure!(cleanup_check.stdout.trim() == "dead");
+    anyhow::ensure!(
+        !output.0.contains("continued:"),
+        "a disconnected command must never be continued on the new server"
+    );
+    println!("old connection ended; root observation={root_result:?}; new executor is distinct");
+    let reconnected_files = Arc::new(reconnected.files);
 
     let transfer_bytes = std::env::var("PURE_SSH_TEST_TRANSFER_BYTES")
         .ok()
@@ -490,7 +494,9 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let (reached, at_gate) = tokio::sync::oneshot::channel();
     let (resume, continued) = tokio::sync::oneshot::channel();
     let uploader = reconnected_files.clone();
-    let upload_started = std::time::Instant::now();
+    reconnected_files
+        .write_bytes_atomic("streamed.bin".into(), None, b"preserved")
+        .await?;
     let mut upload = tokio::spawn(async move {
         let mut source = remote_stream::GatedPattern::new(transfer_bytes, reached, continued);
         uploader
@@ -504,30 +510,64 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     });
     tokio::select! {
         reached = at_gate => reached?,
-        result = &mut upload => { anyhow::bail!("upload completed before the reconnect gate: {result:?}"); }
+        result = &mut upload => { anyhow::bail!("upload completed before the disconnect gate: {result:?}"); }
     }
     remote_manager::verify_single_business_channel("file-transfer-active")?;
     let restoring = std::time::Instant::now();
     manager.reconnect_server("validation").await?;
-    let recovery_seconds = restoring.elapsed().as_secs_f64();
-    remote_manager::verify_single_business_channel("replacement-attached")?;
+    let new_connection_seconds = restoring.elapsed().as_secs_f64();
+    remote_manager::verify_single_business_channel("new-connection-ready")?;
     resume
         .send(())
         .map_err(|_| anyhow::anyhow!("upload source retired early"))?;
-    anyhow::ensure!(upload.await?? == transfer_bytes);
-    let upload_seconds = upload_started.elapsed().as_secs_f64();
-    let download_started = std::time::Instant::now();
+    anyhow::ensure!(
+        upload.await?.is_err(),
+        "in-flight transfer must fail with its original connection, without replay"
+    );
     anyhow::ensure!(
         reconnected_files
-            .copy_file_to("streamed.bin", &mut tokio::io::sink())
+            .inspect_path(".".into(), None)
+            .await
+            .is_err()
+    );
+    let reconnected_files = Arc::new(manager.open_workspace("validation", workspace).await?);
+    anyhow::ensure!(
+        reconnected_files
+            .read_text(WorkspaceFileReadRequest {
+                path: "streamed.bin".into(),
+                cwd: None
+            })
+            .await?
+            == "preserved"
+    );
+    let upload_started = std::time::Instant::now();
+    let mut source = tokio::io::repeat(0xa5).take(transfer_bytes);
+    anyhow::ensure!(
+        reconnected_files
+            .copy_file_from(
+                "streamed.bin",
+                pl_tool::workspace::WriteMode::Overwrite,
+                transfer_bytes,
+                &mut source
+            )
             .await?
             == transfer_bytes
     );
+    let upload_seconds = upload_started.elapsed().as_secs_f64();
+    let download_started = std::time::Instant::now();
+    let mut sink = remote_stream::PatternSink::default();
+    anyhow::ensure!(
+        reconnected_files
+            .copy_file_to("streamed.bin", &mut sink)
+            .await?
+            == transfer_bytes
+    );
+    anyhow::ensure!(sink.bytes == transfer_bytes);
     println!(
         "{}",
         serde_json::json!({"scenario":"ssh-streaming-transfer", "bytes":transfer_bytes,
         "uploadSeconds":upload_seconds, "downloadSeconds":download_started.elapsed().as_secs_f64(),
-        "recoverySeconds":recovery_seconds, "wholeFileResident":false, "sha256Match":true})
+        "newConnectionSeconds":new_connection_seconds, "wholeFileResident":false, "verifiedPattern":true})
     );
 
     for path in [
@@ -542,7 +582,8 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         "expected-path.json",
         "tracked.txt",
         "tree.pid",
-        "reconnect.log",
+        "disconnect.log",
+        "disconnect.stderr.log",
         "streamed.bin",
     ] {
         if reconnected_files
@@ -775,6 +816,7 @@ async fn validate_git(
     assert_eq!(
         run_remote(
             backend,
+            files.canonical_path(),
             vec!["git".to_string(), "init".to_string(), "-q".to_string()]
         )
         .await?
@@ -805,7 +847,12 @@ async fn validate_git(
         ],
         vec!["git", "worktree", "remove", "-f", ".anywork/worktree"],
     ] {
-        let output = run_remote(backend, args.into_iter().map(str::to_string).collect()).await?;
+        let output = run_remote(
+            backend,
+            files.canonical_path(),
+            args.into_iter().map(str::to_string).collect(),
+        )
+        .await?;
         anyhow::ensure!(output.status == 0, "git failed: {}", output.stderr);
     }
     Ok(())
@@ -984,7 +1031,10 @@ root = "{workspaceRoot}/init"
         .await?;
     let registry = LspRuntimeRegistry::new();
     let workspace_root = PathBuf::from(files.canonical_path());
-    let host: Arc<dyn LspHostBackend> = Arc::new(host);
+    let host: Arc<dyn LspHostBackend> = Arc::new(pl_lsp::host::ExecutorLspHost::new(
+        host.files.executor().clone(),
+        host.files.canonical_path(),
+    )?);
     registry
         .configure_workspace_from_directory(&workspace_root, Some(host), None)
         .await;
@@ -1018,8 +1068,13 @@ root = "{workspaceRoot}/init"
 
 async fn run_remote(
     backend: &pl_tool::execution::ExecutorExecutionBackend,
+    cwd: &str,
     command: Vec<String>,
 ) -> anyhow::Result<pl_tool::execution::ExecutionOutput> {
+    anyhow::ensure!(
+        cwd.starts_with('/'),
+        "remote fixture requires an explicit absolute target cwd"
+    );
     let (program, args) = command
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("remote command must not be empty"))?;
@@ -1027,7 +1082,7 @@ async fn run_remote(
         .run(ExecutionRequest {
             program: PathBuf::from(program),
             args: args.to_vec(),
-            cwd: PathBuf::from("."),
+            cwd: PathBuf::from(cwd),
             env: Default::default(),
             timeout: Some(Duration::from_secs(30)),
         })

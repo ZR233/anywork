@@ -131,6 +131,29 @@ impl ExecutorWorkspaceFileBackend {
                 .await;
         }
     }
+    /// Resolves a tool locator on its target under the same invocation policy as file reads.
+    pub async fn resolve_query_path(
+        &self,
+        path: &str,
+        require_file: bool,
+    ) -> std::result::Result<TargetPath, WorkspaceFileError> {
+        let target = self
+            .bound(self.path_request(path.into(), None)?, true)
+            .await?;
+        if require_file
+            && !self
+                .executor
+                .fs()
+                .metadata(&target)
+                .await?
+                .is_some_and(|metadata| metadata.is_file)
+        {
+            return Err(WorkspaceFileError::Policy(
+                "query path is not an existing regular file".into(),
+            ));
+        }
+        Ok(target)
+    }
     pub async fn inspect_path(
         &self,
         path: String,

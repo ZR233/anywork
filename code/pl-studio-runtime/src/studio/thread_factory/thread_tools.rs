@@ -324,7 +324,7 @@ impl StudioThreadFactory {
             .unwrap_or_else(|| self.services.local_executor.clone());
         let binding = StudioCommandBinding {
             commands: pl_tool::command::ExecutorCommandBackend::new(
-                executor,
+                executor.clone(),
                 workspace.root().to_str().ok_or_else(|| {
                     ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
                 })?,
@@ -489,15 +489,12 @@ impl StudioThreadFactory {
         if config.runtime.tool_capabilities.lsp {
             let lsp_started = std::time::Instant::now();
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", "starting");
-            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
-                Some(host) => Some(Arc::new(host.clone())),
-                None => root.to_str().and_then(|root| {
-                    pl_lsp::host::ExecutorLspHost::new(self.services.local_executor.clone(), root)
-                        .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                        .map_err(|error| tracing::warn!(%error, "LSP host preparation failed"))
-                        .ok()
-                }),
-            };
+            let root_str = root.to_str().ok_or_else(|| {
+                ThreadAssemblyError::Identity("LSP workspace path is not UTF-8".into())
+            })?;
+            let host = pl_lsp::host::ExecutorLspHost::new(executor.clone(), root_str)
+                .map_err(|error| resource_error("bind LSP executor", error))?;
+            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = Some(Arc::new(host));
             let defaults = remote
                 .is_none()
                 .then(|| self.services.store.paths().home().join("lsp/host"));
@@ -506,13 +503,12 @@ impl StudioThreadFactory {
             if matches!(&preparation, CatalogPreparation::Refresh { .. }) {
                 lsp.refresh_workspace_configuration(&root).await;
             }
-            let paths = match &remote {
-                Some(host) => pl_tool::lsp::LspPathBinding::Remote {
-                    workspace: workspace.clone(),
-                    files: Arc::new(host.files.clone()),
-                },
-                None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
-            };
+            let files = pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
+                executor.clone(),
+                root_str,
+            )
+            .map_err(|error| resource_error("bind LSP paths", error))?;
+            let paths = pl_tool::lsp::LspPathBinding::new(workspace.clone(), files);
             tools = tools.with_lsp(lsp.clone(), paths).await?;
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", elapsed_ms = lsp_started.elapsed().as_millis() as u64, "completed");
         }

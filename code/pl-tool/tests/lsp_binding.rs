@@ -76,7 +76,10 @@ async fn hosted_lsp_tools_share_registry_and_preserve_path_authorization() -> an
         .configure_workspace(root.path(), Some(host), [("fixture".into(), config)].into())
         .await;
     wait_ready(&registry, root.path(), "fixture").await?;
-    let paths = LspPathBinding::Local(ToolWorkspace::new(AgentWorkspace::local(root.path())));
+    let workspace = ToolWorkspace::new(AgentWorkspace::local(root.path()));
+    let files =
+        pl_tool::workspace_file::ExecutorWorkspaceFileBackend::confined(workspace.clone()).await?;
+    let paths = LspPathBinding::new(workspace, files);
     let capabilities = ThreadLspTool::new(
         registry.clone(),
         paths.clone(),

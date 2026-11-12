@@ -6,7 +6,6 @@ pub use pl_protocol::remote::{RemoteDirectoryEntry, RemoteDirectoryListing, Remo
 
 mod error;
 
-mod lsp;
 mod manager;
 pub(crate) mod path;
 mod skill;
@@ -37,5 +36,3 @@ pub struct RemoteWorkspaceHost {
     pub git: crate::execution::ExecutorExecutionBackend,
     pub execution_environment: ExecutionEnvironment,
 }
-
-pub(crate) use lsp::resolve_lsp_query_path;

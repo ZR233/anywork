@@ -65,7 +65,10 @@ impl StudioRuntime {
             let settings = self.config_runtime.read()?;
             lsp.configure_workspace_from_directory(
                 &workspace_root,
-                Some(Arc::new(host.clone())),
+                Some(Arc::new(pl_lsp::host::ExecutorLspHost::new(
+                    host.files.executor().clone(),
+                    host.files.canonical_path(),
+                )?)),
                 None,
             )
             .await;
@@ -205,7 +208,10 @@ impl StudioRuntime {
                 .await?;
             (
                 std::path::PathBuf::from(host.files.canonical_path()),
-                Some(Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>),
+                Some(Arc::new(pl_lsp::host::ExecutorLspHost::new(
+                    host.files.executor().clone(),
+                    host.files.canonical_path(),
+                )?) as Arc<dyn pl_lsp::host::LspHostBackend>),
                 None,
             )
         } else {

@@ -27,7 +27,10 @@ fn exclusive(source: &Path, target: &Path) -> io::Result<()> {
     // synchronous call. These APIs do not retain pointers; errno is read immediately.
     #[cfg(target_os = "linux")]
     let result = unsafe {
-        libc::renameat2(
+        // Rust's bundled musl can omit the libc wrapper even though the kernel
+        // operation exists. Invoke that same syscall directly, with no fallback.
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source.as_ptr(),
             libc::AT_FDCWD,
