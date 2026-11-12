@@ -39,7 +39,7 @@ pub(crate) enum Command {
     ManualGui(ToolOptions),
     /// Run the anywork desktop app.
     RunGui(RunGuiOptions),
-    /// Build release artifacts for the current desktop OS.
+    /// Build the current desktop app (release by default).
     BuildGui(BuildGuiOptions),
     /// Stage or verify a platform release; finalize Windows signatures.
     ReleaseGui {
@@ -185,6 +185,9 @@ impl LogLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Args)]
 pub(crate) struct BuildGuiOptions {
+    /// Build a debug bundle without staging release artifacts.
+    #[arg(long)]
+    pub(crate) debug: bool,
     /// Build with ANYWORK_DEMO=true.
     #[arg(long)]
     pub(crate) demo: bool,

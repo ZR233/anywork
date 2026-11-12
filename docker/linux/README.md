@@ -95,7 +95,8 @@ bash docker/linux/scripts/run.sh "$image" cargo test --locked -p pl-xtask
 
 GitHub 的触发、权限、registry 登录和 artifact 交接属于 `.github/workflows/`
 的适配层，不是本目录脚本的运行前提。镜像制作监听 `rust-toolchain.toml` 与实际环境
-输入：PR 验证自身候选但不发布，受信分支通过验证后发布，不覆盖相同输入标签。
+输入：PR 验证自身候选但不发布，`main` 的环境输入变化或显式手动运行通过验证后发布，
+不覆盖相同输入标签。普通功能分支 push 不额外启动镜像发布，避免与 PR 候选构建重复。
 普通消费者直接拉取匹配的 digest；仅未发布的 PR 环境通过当次运行的构件传递候选。
 应用发布与 RC 不在构建时补装环境。
 

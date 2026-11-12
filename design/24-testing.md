@@ -2,24 +2,26 @@
 
 本文描述现有测试基础设施、模拟对端、观察工具与证据边界，不规定开发工作流、允许新增测试的范围或每次修改的必跑清单。命令入口见 [AGENTS.md](../AGENTS.md)，方法可参考 `test-quality`；CI 的实际执行以工作流配置为准。
 
-`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。轻量路径分类决定适用职责：说明文档只需文档策略；普通 Flutter/Dart 界面、资源及测试只选择 Linux 前端验证及其镜像解析；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。混合变更取职责并集，未知路径、无法分类的差异、协作规则、CI、工具链、fixture、依赖锁文件及高影响配置保守选择完整适用检查。
+`PR Quality Gate` 在 PR、`merge_group` 与 `main` 推送时总是启动，并对同一 `github.sha`（PR 为合并测试提交）执行检查，不用顶层路径过滤跳过整个 required workflow。路径分类按实际消费者选择职责：协作说明、技能说明和普通文档只需文档策略；发布元数据和发布脚本只需发布配置检查；Client 与 App 分别选择自己的前端检查；桥接、原生 runner、生命周期和构建输入选择对应生成、集成或平台编译。嵌入 Runtime 的技能与资源仍是产品输入，不按仓库协作说明跳过。混合变更取职责并集，重命名与复制同时检查来源和目标路径；未知路径、不完整差异、共享 CI、工具链和产品 fixture 保守选择完整适用检查。
+
+同一 PR 的新提交取消其旧运行。`main` 推送按该次推送差异选任务，因此保留各次运行：不能让后一次仅修改文档的推送取消前一次尚未完成的代码检查。镜像发布只由 `main` 的环境输入变化或显式 `workflow_dispatch` 启动；功能分支由 PR 内的环境解析、候选构建和 smoke 验证，不再额外触发镜像发布。
 
 | PR 检查职责 | 执行与证据边界 |
 | --- | --- |
-| 独立工具接口与作者特性 | 分别编译/运行无默认特性、typed、typed+macros 及宏诊断，独立下游验证纯消费方与重命名依赖；workspace 特性合并不证明独立性。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
-| Flutter 静态、Client、应用单元和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖，检查 Dart 格式、分析、Client 契约与 UI 导入闭包，并运行 SDK-only Client、应用 `test/unit` 和 `test/ui`；应用测试无设备、无 Rust bridge，纯界面分支不调用 Cargo/FRB，不准备原生构建环境 |
+| 独立工具接口与作者特性 | 无默认特性和 typed-only 独立运行，typed+macros 与宏诊断由 workspace 测试覆盖一次；外部 downstream 保留重命名依赖与脱离 workspace 的消费证明。工具集合 downstream 用一次 `cargo test --all-targets` 覆盖编译与媒体执行，不先重复 check。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
+| Flutter 静态、Client、应用单元和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖。`pr-quality-flutter.sh --client` 执行 SDK-only 依赖边界、格式、分析和 Client 测试；`--app` 执行 App 格式、分析、Client/UI 导入闭包及一次 `flutter test --no-pub test/unit test/ui`。Client 生产接口或被 App 复用的 `test/support/` 变化同时检查 App，单改 Client 用例或 App 时只运行所属范围。无参数仍检查两者；应用测试无设备、无 Rust bridge |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
-| Linux 构建输入 | 工程工具与双架构 helper 在同一准备作业复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
+| Linux 构建输入 | 生成检查需要工程工具；原生集成和 GUI 编译才需要双架构 helper。仅平台 Clippy 不触发准备作业，也不因其 skipped 而连带跳过。工程工具与所需 helper 复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
 | Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；每个 runner 内顺序复用 acceptance 与对应配置的 bridge，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
-| Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui` 两类检查，复用现有路径分类分别选择。Rust 生产输入改动选择两者；明确的独立 Rust 集成测试源码改动只选择 clippy；仅平台 runner 等非 Rust 改动只选择相应编译。helper 与 Flutter 工具链只在生产 GUI 编译时恢复，不运行 Rust、Flutter UI、desktop 或 native 测试，不追加标签触发的界面验收或独立成品检查 |
+| Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui --debug` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。debug 仍编译真实 App、Rust bridge、插件与 helper 资源，保留链接与平台装配检查；不在每个 PR 重复做 release 优化和打包。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
-Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 clippy 与 GUI 编译成功只证明当前源码通过对应宿主的静态检查并可生成程序，不证明该宿主的 Rust 运行行为、原生窗口生命周期、AppKit 终止、签名或发布验收；平台专属测试入口仍可用于显式验证，RC/稳定发布保留各自职责。
+Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 Clippy 与 debug GUI 编译成功只证明对应宿主的静态检查、编译和链接，不证明 release/AOT、该宿主的运行行为、原生窗口生命周期、AppKit 终止或签名。`build-gui` 默认仍为 release；RC/稳定发布继续构建并验证 release 成品。debug 输出只留在 Flutter 的 build 目录，不写入 `dist/anywork-release`，不能作为发布输入。
 
-纯 Rust 集成测试路径只包括普通 `code/pl-*/tests/` 下的 `.rs` 文件，不包括 `support/` 共享装配、fixture crate、工程工具、验收工具或构建配置。共享测试装配、高影响输入与未知路径仍保守选择完整适用检查；混合生产改动恢复生产编译职责，不因同时包含测试而缩减覆盖。平台作业是否需要运行，与其中是否需要生产 GUI 编译分别由分类结果决定。
+纯 Rust 集成测试路径按 crate 根 `tests/` 的结构识别，包含其专用 helper 和 fixture 数据；不能仅凭 `src/` 中的文件名含 test 推断它不会参与生产构建。产品共享 fixture、工程工具、验收工具和共享构建配置仍保守检查。混合生产改动恢复生产编译职责，不因同时包含测试而缩减覆盖。平台作业是否运行，与其中是否需要 GUI 编译分别由分类结果决定。
 
-集成分片沿用同一发现、full/smoke 与显式启用规则，按稳定排序后的序号分配；所有分片无重叠且完整覆盖未分片的选择集合，不维护第二份场景名单。分片索引从零开始，必须与正数分片总数成对提供；索引越界、空分片或与单场景选择混用均失败，列举与执行消费同一选择结果。各分片的失败、取消与缺失均阻止 gate 通过，各自保留报告与日志，但不归档隔离配置、home 或数据库。
+集成分片沿用同一发现、full/smoke 与显式启用规则，按稳定排序后的序号分配；所有分片无重叠且完整覆盖未分片的选择集合，不维护第二份场景名单。分片索引从零开始，必须与正数分片总数成对提供；索引越界、空分片或与单场景选择混用均失败，列举与执行消费同一选择结果。各分片的失败、取消与缺失均阻止 gate 通过，各自保留报告与日志，但不归档隔离配置、home 或数据库。真实账号入口 `acp_real_login`、`chatgpt_real_login` 和 `acp_agy_conversation` 只在对应环境显式启用时进入 full；agy 要求 `ANYWORK_AGY_LIVE=1`，不先构建原生程序再靠测试内 skip 报成功。desktop smoke 保留真实跨层的 `wait_events`。
 
 Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，避免构建缓存恢复的旧目录阻止新测试启动。报告与日志从同一本次输出归档，旧目录不作为通过证据，也不通过删除共享缓存解决路径冲突。
 
@@ -394,7 +396,7 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 
 ### ChatGPT 登录与额度
 
-账户认证和额度界面的回归使用官方 `integration_test/chatgpt_auth_test.dart`：真实 AppGraph、Client、路由、Riverpod 和生产组件，只控制外部认证／额度回复，覆盖取消与迟到事件、重复点击、认证切换、保存身份、额度刷新、页面返回、删除后新建不复用身份。原预览组件认证测试和草稿认证测试的有效覆盖迁入该旅程，删除旧测例；协议签名、凭据轮换和网络归属仍在 Rust／纯 Client 所有者边界验证。Windows 凭据协调器另以唯一测试别名验证跨配置同名冲突不覆盖、大体积 OAuth 保存与重新打开、事务清理，不触碰用户已有别名。该旅程纳入 desktop smoke 和 full，也可通过 `cargo xtask test-project --suite desktop --case chatgpt_auth` 单独运行；真实账号授权仅在下述显式人工验收中进行。
+账户认证和额度界面的受控回归位于 `test/ui/chatgpt_auth_test.dart`，ACP 认证旅程位于 `test/ui/acp_auth_test.dart`：使用真实 AppGraph、Client、路由、Riverpod 和生产组件，只控制外部认证／额度回复，覆盖取消与迟到事件、重复点击、认证切换、保存身份、额度刷新、页面返回、删除后新建不复用身份。这些旅程不连接 Rust/FRB，也不验证原生窗口，由官方 widget 测试执行即可；共享受控 transport 位于 `test/support/`，不再为它们构建原生桌面程序。协议签名、凭据轮换和网络归属仍在 Rust／纯 Client 所有者边界验证；纯 Client 编码断言归 Client 测试。Windows 凭据协调器另以唯一测试别名验证跨配置同名冲突不覆盖、大体积 OAuth 保存与重新打开、事务清理，不触碰用户已有别名。真实账号授权仍由下述显式原生验收验证。
 
 真实人工验收也由 `cargo xtask test-project --suite desktop --case chatgpt_real_login` 启动，使用隔离的应用数据根和系统凭据关联。`ANYWORK_CHATGPT_ACCEPTANCE=login` 完成官方浏览器授权、真实保存、额度和在线模型查询；同一数据根的 `restart` 阶段重新加载凭据并查询。该场景须显式选择并提供阶段变量，不进入默认 CI 套件。WidgetTester 操作生产控件，人只操作官方浏览器的账户、验证码和同意授权，不依赖 Driver、requestData 脚本或固定人工等待期限。`ANYWORK_CHATGPT_EVIDENCE` 指定工具产物目录，截图在编码前遮蔽 email／workspace；列表通过生产搜索框筛选验收账户，不采集其他账户的余额。两次运行分别检查生产关闭报告的 completed、clean、drained；实际平台、授权、额度与推理覆盖独立报告。
 

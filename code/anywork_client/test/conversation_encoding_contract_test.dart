@@ -1,6 +1,6 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_encoding.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   const source = ForegroundTurnChatSource(turnId: '轮次🐱');
@@ -49,15 +49,15 @@ void main() {
       'textChannel': null,
       'startedAt': null,
       'finishedAt': null,
-      'contents': [],
+      'contents': <Object?>[],
       'payload': {
         'kind': 'inline',
-        'bytes': [0, 34, 255],
+        'bytes': <int>[0, 34, 255],
       },
     },
   };
   test('canonical entry preserves Unicode, distinct payload identity and FrozenNone', () {
-    final value = atom(InlinePayload(bytes: [0, 34, 255]));
+    final value = atom(InlinePayload(bytes: <int>[0, 34, 255]));
     expect(chatAtomToJson(value), inlineEntry['value']);
     expect(chatAtomToJson(value).containsKey('sourceState'), isFalse);
     final entry = CompletedEntry(

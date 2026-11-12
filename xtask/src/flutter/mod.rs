@@ -695,7 +695,6 @@ fn run_gui_args<'a>(
 pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let app_dir = paths::studio_app_dir(&workspace_root);
-    let dist_dir = paths::release_dist_dir(&workspace_root);
     let target = DesktopTarget::current()?;
     let app_version = studio_version::read(&app_dir)?;
     print_context(&workspace_root, &app_dir);
@@ -711,9 +710,13 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
-    let args = build_gui_args(target, &version_define);
-    let bridge_artifacts =
-        prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Release)?;
+    let configuration = if options.debug {
+        BridgeConfiguration::Debug
+    } else {
+        BridgeConfiguration::Release
+    };
+    let args = build_gui_args(target, &version_define, configuration);
+    let bridge_artifacts = prepare_bridge_artifacts(&workspace_root, demo_mode, configuration)?;
     run_flutter_with_process_mode(
         &workspace_root,
         &app_dir,
@@ -727,7 +730,16 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         },
     )?;
 
+    if options.debug {
+        println!(
+            "Debug build complete. Output: {}",
+            target.native_bundle_dir(&app_dir, false).display()
+        );
+        return Ok(());
+    }
+
     let artifact_dir = target.release_artifact_dir(&app_dir);
+    let dist_dir = paths::release_dist_dir(&workspace_root);
 
     let clean_mode = if options.no_clean {
         DistCleanMode::KeepExisting
@@ -737,11 +749,19 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
     copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)
 }
 
-fn build_gui_args(target: DesktopTarget, version_define: &str) -> Vec<&str> {
+fn build_gui_args(
+    target: DesktopTarget,
+    version_define: &str,
+    configuration: BridgeConfiguration,
+) -> Vec<&str> {
     vec![
         "build",
         target.flutter_name(),
-        "--release",
+        match configuration {
+            BridgeConfiguration::Debug => "--debug",
+            BridgeConfiguration::Profile => "--profile",
+            BridgeConfiguration::Release => "--release",
+        },
         version_define,
         "--no-pub",
     ]

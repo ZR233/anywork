@@ -17,19 +17,28 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
 
-import 'support/chatgpt_scene_transport.dart';
-import 'support/observed.dart';
+import '../support/chatgpt_scene_transport.dart';
+import '../support/pump_client_future.dart';
+import '../support/observed.dart';
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized().framePolicy =
-      LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
   WidgetController.hitTestWarningShouldBeFatal = true;
 
   testWidgets(
     'ChatGPT auth, cancellation, account identity and quota journey',
     (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      Future<void> observe<T>(
+        ValueObservation<T> source,
+        bool Function(T) predicate,
+      ) => pumpClientFuture(
+        tester,
+        untilObserved(source, predicate),
+        'ChatGPT canonical observation',
+      );
+
       final transport = ChatGptSceneTransport();
       final graph = AppGraph(
         transport: transport,
@@ -51,16 +60,28 @@ void main() {
         if (transport.pendingUsage != null) transport.completeUsage();
         await tester.pumpWidget(const SizedBox());
         router.dispose();
-        await summaries.release();
-        final closed = await graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 30)),
+        await pumpClientFuture(
+          tester,
+          summaries.release(),
+          'ChatGPT summaries release',
+        );
+        final closed = await pumpClientFuture(
+          tester,
+          graph.close(
+            deadline: DateTime.now().add(const Duration(seconds: 30)),
+          ),
+          'ChatGPT authentication graph close',
         );
         expect(closed.unresolved, isEmpty);
         container.dispose();
         tester.testTextInput.unregister();
       });
-      await graph.initialize();
-      await untilObserved(graph.accounts.state, (value) => value.loaded);
+      await pumpClientFuture(
+        tester,
+        graph.initialize(),
+        'ChatGPT graph initialize',
+      );
+      await observe(graph.accounts.state, (value) => value.loaded);
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
@@ -84,6 +105,19 @@ void main() {
         expect(finder, findsOneWidget, reason: key);
         await tester.ensureVisible(finder);
         await tester.pump();
+        // Details uses MaterialPage, which slides in from the right. Vertical
+        // ensureVisible cannot wait for that translation, and tapping while the
+        // center is still off-stage is fatal in this suite.
+        final hitTestable = finder.hitTestable();
+        for (var frame = 0; frame < 128; frame++) {
+          if (hitTestable.evaluate().isNotEmpty) break;
+          if (frame == 127) {
+            fail(
+              '$key was never hit-testable; center=${tester.getCenter(finder)}',
+            );
+          }
+          await tester.pump(const Duration(milliseconds: 16));
+        }
         await tester.tap(finder);
         if (duplicate) await tester.tap(finder);
         await tester.pump();
@@ -117,7 +151,7 @@ void main() {
           'CHATGPT_JOURNEY login expected=$phase '
           'observed=${graph.accounts.chatGptLogin(id).value.value?.phase}',
         );
-        await untilObserved(graph.accounts.chatGptLogin(id), (resource) {
+        await observe(graph.accounts.chatGptLogin(id), (resource) {
           if (resource.failure case final error?) throw error;
           return resource.value?.phase == phase;
         });
@@ -129,7 +163,7 @@ void main() {
         domain.NativeAccountIdentity identity,
       ) async {
         debugPrint('CHATGPT_JOURNEY quota expected=$phase');
-        await untilObserved(graph.accountUsage.state, (resource) {
+        await observe(graph.accountUsage.state, (resource) {
           if (resource.failure case final error?) throw error;
           return resource.value?[identity]?.phase == phase;
         });
@@ -142,7 +176,7 @@ void main() {
 
       Future<void> openOpenAi() async {
         await tap('account-add');
-        await untilObserved(
+        await observe(
           graph.accounts.state,
           (value) => value.templates.isUsable,
         );
@@ -232,7 +266,7 @@ void main() {
       await login(domain.ChatGptLoginPhase.succeeded);
       await tap('account-save', duplicate: true);
       debugPrint('CHATGPT_JOURNEY save submitted');
-      await untilObserved(
+      await observe(
         graph.accounts.state,
         (value) => value.account(identity)?.chatgptAccount != null,
       );
@@ -330,7 +364,7 @@ void main() {
       await tester.pumpAndSettle();
       await field('name', '订阅账户改名');
       await tap('account-save');
-      await untilObserved(
+      await observe(
         graph.accounts.state,
         (value) => value.account(identity)?.name == '订阅账户改名',
       );
@@ -350,7 +384,7 @@ void main() {
       await field('credential', 'fresh-api-key');
       expect(editor().canSave, isTrue);
       await tap('account-save');
-      await untilObserved(
+      await observe(
         graph.accounts.details(identity),
         (resource) =>
             resource.value is domain.NativeAccountDetails &&
@@ -374,7 +408,7 @@ void main() {
           matching: find.byType(FilledButton),
         ),
       );
-      await untilObserved(
+      await observe(
         graph.accounts.state,
         (value) => value.account(identity) == null,
       );

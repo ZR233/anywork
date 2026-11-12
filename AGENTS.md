@@ -130,11 +130,12 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   ```powershell
   cargo xtask run-gui [--demo] [--capture] [--inspect]
   cargo xtask run-gui --release
-  cargo xtask build-gui [--demo] [--no-clean] [--check-generated]
+  cargo xtask build-gui [--debug] [--demo] [--no-clean] [--check-generated]
   cargo xtask test-project --suite desktop|native [--set smoke|full]
   ```
 
 - `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。依赖升级必须手动运行对应的依赖更新命令并审查提交新的 lockfile。
+- `build-gui` 默认构建 release 并收集到 `dist/anywork-release`；`--debug` 同时选择 Flutter 与 Rust bridge 的 debug 配置，只保留 Flutter 原始 build 输出，用于日常平台编译检查，不作为发布输入。RC 与稳定发布继续使用默认 release 构建。
 - CI 可直接执行同次源码预编译并已核验摘要、平台/环境与编译工作区身份的 xtask，继续使用其原生构建、生成与测试子命令；缺失或身份错误必须失败，不以重新编译或旧缓存掩盖交接失败。普通本地命令仍使用上述 Cargo 入口。
 - Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
 

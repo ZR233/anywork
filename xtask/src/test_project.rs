@@ -18,7 +18,7 @@ use crate::flutter;
 use crate::studio_acceptance;
 
 /// Desktop smoke is the unique subset of the discovered full set.
-const DESKTOP_SMOKE_IDS: &[&str] = &["wait_events", "chatgpt_auth"];
+const DESKTOP_SMOKE_IDS: &[&str] = &["wait_events"];
 /// Native smoke covers the current automatic exit/reopen preset.
 const NATIVE_SMOKE_IDS: &[&str] = &["shutdown"];
 
@@ -285,6 +285,7 @@ fn desktop_env_ready(id: &str) -> bool {
         }
         "acp_real_login" => env_present("ANYWORK_ACP_ACCEPTANCE"),
         "chatgpt_real_login" => env_present("ANYWORK_CHATGPT_ACCEPTANCE"),
+        "acp_agy_conversation" => std::env::var("ANYWORK_AGY_LIVE").is_ok_and(|value| value == "1"),
         _ => true,
     }
 }
@@ -294,7 +295,10 @@ fn env_present(name: &str) -> bool {
 }
 
 fn desktop_opt_in(id: &str) -> bool {
-    matches!(id, "acp_real_login" | "chatgpt_real_login")
+    matches!(
+        id,
+        "acp_real_login" | "chatgpt_real_login" | "acp_agy_conversation"
+    )
 }
 
 fn wait_acceptance_preset(
@@ -556,8 +560,7 @@ fn rustc_version() -> Result<String> {
 mod tests {
     use super::{
         CaseTarget, DESKTOP_SMOKE_IDS, DiscoveredCase, ProjectSet, ProjectSuite,
-        desktop_harness_preset, discover_desktop_cases, native_cases, select_cases, shard_cases,
-        validate_shard_options,
+        discover_desktop_cases, native_cases, select_cases, shard_cases, validate_shard_options,
     };
     use std::fs;
     use std::path::Path;
@@ -600,14 +603,10 @@ mod tests {
         let discovered = vec![
             desktop_case("conversation_read_work"),
             desktop_case("wait_events"),
-            desktop_case("chatgpt_auth"),
         ];
         let full = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Full, None)?;
         let smoke = select_cases(&discovered, ProjectSuite::Desktop, ProjectSet::Smoke, None)?;
-        assert_eq!(
-            case_ids(&full),
-            ["conversation_read_work", "wait_events", "chatgpt_auth"]
-        );
+        assert_eq!(case_ids(&full), ["conversation_read_work", "wait_events"]);
         assert_eq!(case_ids(&smoke), DESKTOP_SMOKE_IDS);
         Ok(())
     }
@@ -615,12 +614,12 @@ mod tests {
     #[test]
     fn filtered_cases_are_stably_partitioned_across_shards() -> anyhow::Result<()> {
         let discovered = vec![
-            desktop_case("chatgpt_auth"),
             desktop_case("chatgpt_real_login"),
             desktop_case("delta"),
             desktop_case("wait_events"),
             desktop_case("alpha"),
             desktop_case("acp_real_login"),
+            desktop_case("acp_agy_conversation"),
             desktop_case("charlie"),
             desktop_case("bravo"),
         ];
@@ -635,6 +634,10 @@ mod tests {
                 selected_ids.contains(&"chatgpt_real_login"),
                 set == ProjectSet::Full && super::desktop_env_ready("chatgpt_real_login")
             );
+            assert_eq!(
+                selected_ids.contains(&"acp_agy_conversation"),
+                set == ProjectSet::Full && super::desktop_env_ready("acp_agy_conversation")
+            );
             let expected = case_ids(&selected)
                 .into_iter()
                 .map(str::to_owned)
@@ -648,8 +651,9 @@ mod tests {
                 case_ids(&shard_cases(reversed, None, None)?)
             );
             let mut assigned = std::collections::BTreeSet::new();
-            for index in 0..2 {
-                let shard = shard_cases(selected.clone(), Some(index), Some(2))?;
+            let shard_count = selected.len().min(2);
+            for index in 0..shard_count {
+                let shard = shard_cases(selected.clone(), Some(index), Some(shard_count))?;
                 assert!(shard.windows(2).all(|pair| pair[0].id <= pair[1].id));
                 for id in case_ids(&shard).into_iter().map(str::to_owned) {
                     assert!(
@@ -661,7 +665,7 @@ mod tests {
                 reversed.reverse();
                 assert_eq!(
                     case_ids(&shard),
-                    case_ids(&shard_cases(reversed, Some(index), Some(2))?)
+                    case_ids(&shard_cases(reversed, Some(index), Some(shard_count))?)
                 );
             }
             assert_eq!(assigned, expected);
@@ -713,33 +717,6 @@ mod tests {
                 .to_string()
                 .contains("desktop full discovery is empty")
         );
-    }
-
-    #[test]
-    fn desktop_harness_names_the_unique_preset() {
-        assert_eq!(desktop_harness_preset("wait_events"), Some("wait-events"));
-        assert_eq!(
-            desktop_harness_preset("conversation_read_work"),
-            Some("conversation-read-work")
-        );
-        assert_eq!(
-            desktop_harness_preset("question_history"),
-            Some("question-history")
-        );
-        assert_eq!(
-            desktop_harness_preset("realtime_presentation"),
-            Some("realtime-presentation")
-        );
-        assert_eq!(
-            desktop_harness_preset("timeline_presentation"),
-            Some("timeline-history")
-        );
-        assert_eq!(
-            desktop_harness_preset("timeline_concept"),
-            Some("timeline-concept")
-        );
-        assert_eq!(desktop_harness_preset("sidebar"), Some("sidebar-query"));
-        assert_eq!(desktop_harness_preset("session_open"), None);
     }
 
     #[test]
