@@ -885,7 +885,10 @@ impl StudioThreadFactory {
                 let resolved = self.resolve_mcp_owner_snapshot(owner)?;
                 if let Some(target_id) = server_id {
                     let target = resolved.servers.get(target_id).ok_or_else(|| {
-                        anyhow::anyhow!("MCP server '{target_id}' is unknown or disabled in this Thread")
+                        pl_protocol::studio::StudioError::invalid_argument(format!(
+                            "MCP server '{target_id}' is not enabled in Thread '{}'",
+                            owner.thread_id
+                        ))
                     })?;
                     anyhow::ensure!(
                         target.server.status_kind != pl_tool::mcp::config::McpServerStatusKind::MissingCredential,

@@ -542,6 +542,13 @@ async fn invalid_reconnect_preserves_pending_optional_preparation() -> Result<()
             .await
             .context("invalid reconnect waited for the unrelated optional handshake")?
             .expect_err("a missing reconnect target must be rejected");
+            let public = rejected
+                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .context("invalid reconnect must preserve its public error classification")?;
+            assert_eq!(
+                public.code,
+                pl_protocol::studio::StudioErrorCode::InvalidArgument
+            );
             assert!(rejected.to_string().contains("not enabled"), "{rejected:#}");
             assert!(!server.gate.release.is_cancelled());
             assert_eq!(
