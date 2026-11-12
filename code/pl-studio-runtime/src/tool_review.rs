@@ -81,6 +81,10 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
     let inference_id = crate::studio::new_id("review");
     let invocation = ModelInvocationContext::new(Default::default())
         .with_events(events)
+        .with_prompt_cache_scope(pl_model::runtime::PromptCacheScope::auxiliary(
+            &request.thread_id,
+            "tool-review",
+        ))
         .with_trace_metadata(pl_model::completion::CompletionTraceContext {
             session_id: request.thread_id,
             turn_id: request.turn_id,

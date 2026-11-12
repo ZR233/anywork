@@ -34,7 +34,9 @@ pub(super) async fn compact_context(
         }
         OpenAiCompactionMode::RemoteV2 => {}
     }
-    let (mut body, mut headers) = build_compaction_body(provider, &request)?;
+    let prompt_cache_key = provider.prompt_cache_key(&context)?;
+    let (mut body, mut headers) =
+        build_compaction_body(provider, &request, prompt_cache_key.as_deref())?;
     let input = body
         .get_mut("input")
         .and_then(Value::as_array_mut)
@@ -100,6 +102,7 @@ pub(super) async fn compact_context(
 fn build_compaction_body(
     provider: &InvocationRunner,
     request: &ModelCompactionRequest,
+    prompt_cache_key: Option<&str>,
 ) -> Result<(Map<String, Value>, HashMap<String, String>)> {
     let model_info = provider.model().clone();
     let effective_capabilities = model_info
@@ -118,7 +121,7 @@ fn build_compaction_body(
         instruction_role,
         &completion,
         &model_info,
-        request.prompt_cache_key.as_deref(),
+        prompt_cache_key,
         false,
     )?
     else {

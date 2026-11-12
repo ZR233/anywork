@@ -64,8 +64,8 @@ async fn main() -> Result<()> {
             summary: None,
         }),
     );
-    let thread =
-        ThreadHandle::start("cache-observation".into(), factory.open_session().await?).unwrap();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    let thread = ThreadHandle::start(thread_id.clone(), factory.open_session().await?).unwrap();
     let text = |s: String| ContextContent::Text { text: Arc::from(s) };
     let stable = (0..512)
         .map(|n| format!("固定合成材料 {n}: 此材料只用于观察缓存，没有其他任务。\n"))
