@@ -23,24 +23,9 @@ impl StudioRuntime {
         helper_source: crate::worker_assets::RemoteHelperSource,
         ssh_config: Option<crate::SshConfigFile>,
     ) -> Result<Self> {
+        let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
-        // Resolve the supervised local worker *before* creating any store-derived owner, so a
-        // helper resolution failure can never leave partially-constructed owners (writer, updater,
-        // attachment drafts, ...) behind. Resolution is deliberately non-fatal: a host with no
-        // local stdio MCP server must still boot, and the connector fails loudly at connect time
-        // when the supervisor is missing — there is no bare shell/PATH fallback.
-        #[cfg(target_os = "linux")]
-        let stdio_worker = match crate::worker_assets::local_worker(helper_source.clone()).await {
-            Ok(worker) => Some(worker),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "local MCP worker is unavailable; local stdio servers will fail to start until the helper is installed"
-                );
-                None
-            }
-        };
         // 进程级共享 writer 先于所有 owner 构造：ProductEventBus 与
         // ThreadRepository 共用同一 write-behind 队列。
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -72,7 +57,7 @@ impl StudioRuntime {
             store.clone(),
             config_runtime.clone(),
             product_events.clone(),
-            helper_source.clone(),
+            local_executor.clone(),
         );
         // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
         // 同一 Settings command 锁，因此不会有提交落在两者之间。
@@ -85,28 +70,20 @@ impl StudioRuntime {
         let acp_detection = super::super::acp_detection::AcpLocalDetectionRuntime::new(
             store.clone(),
             product_events.clone(),
-            helper_source.clone(),
+            local_executor.clone(),
         );
         let updater = StudioUpdateRuntime::new(product_events.clone())?;
         let lsp_state = LspStateRuntime::new(product_events.clone());
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
         // The configuration owner established and loaded the one canonical Mode manager.
         let thread_modes = config_runtime.thread_mode_manager();
-        // Linux stdio MCP servers have no unsupervised fallback: when the host resolved the same
-        // supervised worker resource used by local tool exec, inject it; otherwise the connector
-        // fails loud for any local stdio server (and empty MCP hosts still boot).
-        #[cfg(target_os = "linux")]
-        let mcp_connector = {
-            let mut connector = McpConnector::default();
-            if let Some(worker) = stdio_worker {
-                connector = connector.with_stdio_worker(worker);
-            }
-            connector
-        };
-        #[cfg(not(target_os = "linux"))]
-        let mcp_connector = McpConnector::default();
+        let mcp_connector = McpConnector::default().with_executor(local_executor.clone());
         let lsp = pl_lsp::runtime::LspRuntimeRegistry::new();
-        let skills = SkillCatalogRuntime::new(product_events.clone(), system_skills_dir);
+        let skills = SkillCatalogRuntime::new(
+            product_events.clone(),
+            system_skills_dir,
+            local_executor.clone(),
+        );
         let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_factory = crate::studio::thread_factory::StudioThreadFactory::new(
             crate::studio::thread_factory::StudioThreadServices {
@@ -117,6 +94,7 @@ impl StudioRuntime {
                 config_runtime: config_runtime.clone(),
                 mcp_connector,
                 lsp_runtime: lsp.clone(),
+                local_executor: local_executor.clone(),
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
@@ -202,9 +180,7 @@ impl StudioRuntime {
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             acp_detection,
-            acp_workers: std::sync::Arc::new(super::super::acp_worker::WorkerSource::new(
-                helper_source.clone(),
-            )),
+            acp_workers: std::sync::Arc::new(pl_remote_helper::Executor::clone(&local_executor)),
             model_performance,
             updater,
             activation: Default::default(),
@@ -217,8 +193,6 @@ impl StudioRuntime {
             shutdown_run: Default::default(),
             early_exit_issues: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             title_tasks: Default::default(),
-            #[cfg(target_os = "linux")]
-            helper_source,
             profiles_forwarder: Default::default(),
             bot_host: None,
         };

@@ -188,51 +188,6 @@ impl AgentWorkspace {
         })
     }
 
-    /// Validates a backend-relative write target against the assigned workspace boundary.
-    pub fn ensure_relative_path_writable(
-        &self,
-        cwd: Option<&str>,
-        path: &str,
-    ) -> pl_protocol::Result<()> {
-        if self.mutability == WorkspaceMutability::ReadOnly {
-            return Err(pl_protocol::PureError::ToolExecutionFailed {
-                tool: "workspace".to_string(),
-                error: "agent workspace is read-only".to_string(),
-            });
-        }
-        let Some(writable_paths) = &self.writable_paths else {
-            return Ok(());
-        };
-        let relative = normalize_workspace_relative_path(cwd, path)?;
-        let workspace_root = comparable_policy_path(&self.root);
-        let target = if relative == "." {
-            workspace_root.clone()
-        } else if workspace_root == "/" {
-            format!("/{relative}")
-        } else {
-            format!("{workspace_root}/{relative}")
-        };
-        let allowed = writable_paths
-            .iter()
-            .chain(self.session_write_allowances().iter())
-            .any(|path| {
-                let path = comparable_policy_path(path);
-                path == target
-                    || target
-                        .strip_prefix(&path)
-                        .is_some_and(|suffix| suffix.starts_with('/'))
-            });
-        if allowed {
-            return Ok(());
-        }
-        Err(pl_protocol::PureError::ToolExecutionFailed {
-            tool: "workspace".to_string(),
-            error: format!(
-                "workspace path '{relative}' is outside the directory Agent writablePaths boundary"
-            ),
-        })
-    }
-
     fn session_write_allowances(&self) -> Vec<PathBuf> {
         let Some(files) = &self.session_files else {
             return Vec::new();
@@ -241,47 +196,5 @@ impl AgentWorkspace {
             self.root.join(files.scratch()),
             self.root.join(files.artifacts()),
         ]
-    }
-}
-
-fn normalize_workspace_relative_path(cwd: Option<&str>, path: &str) -> pl_protocol::Result<String> {
-    let mut parts = Vec::new();
-    for source in cwd
-        .filter(|cwd| !cwd.trim().is_empty() && *cwd != ".")
-        .into_iter()
-        .chain(std::iter::once(path))
-    {
-        if source.starts_with('/') || source.contains('\\') {
-            return Err(pl_protocol::PureError::ToolExecutionFailed {
-                tool: "workspace".to_string(),
-                error: "workspace mutation paths must be workspace-relative".to_string(),
-            });
-        }
-        for component in source.split('/') {
-            match component {
-                "" | "." => {}
-                ".." => {
-                    return Err(pl_protocol::PureError::ToolExecutionFailed {
-                        tool: "workspace".to_string(),
-                        error: "workspace mutation path must not escape the project".to_string(),
-                    });
-                }
-                value => parts.push(value),
-            }
-        }
-    }
-    Ok(if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    })
-}
-
-fn comparable_policy_path(path: &std::path::Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
-    if value == "/" {
-        value
-    } else {
-        value.trim_end_matches('/').to_string()
     }
 }

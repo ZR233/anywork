@@ -7,9 +7,6 @@ use std::time::Duration;
 mod barrier_tests;
 #[path = "../../../../pl-tool/tests/support/binding_host.rs"]
 mod binding_host;
-#[cfg(target_os = "linux")]
-#[path = "../../../../pl-tool/tests/support/helper.rs"]
-mod helper;
 #[expect(dead_code, reason = "shared real stdio protocol fixture")]
 #[path = "../../../../pl-tool/tests/support/mcp_stdio.rs"]
 mod mcp_stdio;
@@ -25,8 +22,6 @@ fn owner(
 ) -> Result<Arc<ThreadMcpOwner>> {
     factory.bind_resource_scope(id, resources)?;
     let connector = factory.services.mcp_connector.clone();
-    #[cfg(target_os = "linux")]
-    let connector = connector.with_stdio_worker(helper::remote_helper_executable().to_path_buf());
     let runtime = McpRuntime::new(connector);
     let owner = ThreadMcpOwner::new(
         id.into(),

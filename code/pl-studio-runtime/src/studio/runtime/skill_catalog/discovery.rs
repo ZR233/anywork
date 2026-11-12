@@ -6,20 +6,19 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::studio::ids::unix_seconds;
-use anyhow::{Error, Result};
+use anyhow::{Context, Error, Result};
 use pl_protocol::{ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation};
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{
     FrozenSkillCatalog, SkillCatalog, SkillDiscoverySources, SkillProviderRequest,
 };
 
-use super::remote;
 use super::{SkillCatalogRuntime, SkillsStateData, SkillsStateSnapshot};
 
 /// 一次显式发现的 provider 来源。
 enum DiscoverySource {
     Local,
-    Remote(Arc<pl_tool::remote::RemoteWorkspaceFileBackend>),
+    Remote(Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>),
 }
 
 impl SkillCatalogRuntime {
@@ -49,7 +48,7 @@ impl SkillCatalogRuntime {
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
+        remote_backend: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
     ) -> Result<SkillsStateSnapshot> {
         self.discover_from_source(
             workspace_id,
@@ -88,7 +87,7 @@ impl SkillCatalogRuntime {
         workspace_root: &Path,
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
-        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+        remote: Option<Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>>,
     ) -> Result<Option<(Arc<FrozenSkillCatalog>, SkillDiscoverySources)>> {
         let source = remote.map_or(DiscoverySource::Local, DiscoverySource::Remote);
         let (snapshot, sources) = self
@@ -133,43 +132,37 @@ impl SkillCatalogRuntime {
 
         let workspace_root = workspace_root.to_path_buf();
         let config = config.clone();
-        let discovered = match source {
-            DiscoverySource::Local => {
-                let system_skills_dir = self
-                    .system_skills_dir
-                    .as_ref()
-                    .map(|path| path.as_ref().clone());
-                self.registry
-                    .discover(SkillProviderRequest {
+        let discovered = async {
+            let files = match source {
+                DiscoverySource::Local => {
+                    let executor = self
+                        .local_executor
+                        .as_ref()
+                        .map_err(|error| anyhow::anyhow!(error.clone()))?
+                        .clone();
+                    Arc::new(pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
+                        executor,
+                        workspace_root
+                            .to_str()
+                            .context("Skill workspace path is not UTF-8")?,
+                    )?)
+                }
+                DiscoverySource::Remote(files) => files,
+            };
+            self.registry
+                .discover_project(
+                    SkillProviderRequest {
                         workspace_root,
                         config,
-                        system_dir: system_skills_dir,
+                        system_dir: self.system_skills_dir(),
                         cancellation,
-                    })
-                    .await
-                    .map_err(Error::from)
-            }
-            DiscoverySource::Remote(remote_backend) => {
-                // 系统目录通过 explicit provider 注册，request 不再携带 system_dir。
-                let system_skills_dir = self.system_skills_dir();
-                let (registry, registrations) = remote::remote_workspace_registry(
-                    &config,
-                    system_skills_dir.as_deref(),
-                    remote_backend,
-                )?;
-                let discovered = registry
-                    .discover(SkillProviderRequest {
-                        workspace_root,
-                        config,
-                        system_dir: None,
-                        cancellation,
-                    })
-                    .await
-                    .map_err(Error::from);
-                drop(registrations);
-                discovered
-            }
-        };
+                    },
+                    files,
+                )
+                .await
+                .map_err(Error::from)
+        }
+        .await;
         let catalog = match discovered {
             Ok(catalog) => catalog,
             Err(error) => {

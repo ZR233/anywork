@@ -38,12 +38,6 @@ impl ToolPathPolicy {
         })
     }
 
-    pub(crate) fn with_host_access(&self) -> Self {
-        let mut policy = self.clone();
-        policy.allow_workspace_escape = true;
-        policy
-    }
-
     pub fn root(&self) -> &Path {
         &self.root_canonical
     }

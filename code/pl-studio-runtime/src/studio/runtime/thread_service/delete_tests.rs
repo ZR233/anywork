@@ -1082,7 +1082,7 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
 -> Result<()> {
     use crate::{
         agent::worktree::{
-            LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
         },
         studio::{
             agent_host::worktree_lease::{
@@ -1118,7 +1118,9 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
         let project = runtime.open_project(&repository).await?;
         let manager = WorktreeManager::new(
             repository.clone(),
-            std::sync::Arc::new(LocalWorktreeBackend::default()),
+            std::sync::Arc::new(ExecutorWorktreeBackend::new(
+                pl_remote_helper::Executor::local()?,
+            )),
         );
         let head = manager.resolve_head(&repository).await?;
         let owner_id = if root_owned {

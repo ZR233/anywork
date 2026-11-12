@@ -424,9 +424,7 @@ async fn idle_stdio_exit_is_published_and_explicit_reset_recovers() -> anyhow::R
         Some(temp.path().to_string_lossy().into_owned()),
         McpExecutionContext::Host,
     );
-    let runtime = McpRuntime::new(
-        McpConnector::default().with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-    );
+    let runtime = McpRuntime::new(McpConnector::default());
     let handle = runtime.handle();
     let servers = BTreeMap::from([("stdio".into(), config)]);
     handle.reconcile(servers.clone()).await?;
@@ -486,9 +484,7 @@ async fn old_stdio_notifications_and_failure_cannot_invalidate_a_reset_session()
         Some(temp.path().to_string_lossy().into_owned()),
         McpExecutionContext::Host,
     );
-    let runtime = McpRuntime::new(
-        McpConnector::default().with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-    );
+    let runtime = McpRuntime::new(McpConnector::default());
     let handle = runtime.handle();
     let servers = BTreeMap::from([("stdio".into(), config)]);
     handle.reconcile(servers.clone()).await?;

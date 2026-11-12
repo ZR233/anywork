@@ -118,7 +118,7 @@ async fn private_worktrees(
 ) -> Result<Vec<std::path::PathBuf>> {
     use crate::{
         agent::worktree::{
-            LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
         },
         studio::agent_host::worktree_lease::{
             WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
@@ -126,7 +126,9 @@ async fn private_worktrees(
     };
     let manager = WorktreeManager::new(
         repository.to_owned(),
-        Arc::new(LocalWorktreeBackend::default()),
+        Arc::new(ExecutorWorktreeBackend::new(
+            pl_remote_helper::Executor::local()?,
+        )),
     );
     let head = manager.resolve_head(repository).await?;
     let mut paths = Vec::new();

@@ -1,7 +1,4 @@
 //! Opt-in compatibility check against an installed official Dart SDK.
-#[cfg(target_os = "linux")]
-#[path = "support/helper.rs"]
-mod helper;
 use pl_tool::mcp::{
     McpConnectRequest, McpConnector,
     config::{
@@ -49,8 +46,6 @@ async fn official_dart_sdk_roots_and_analysis() -> anyhow::Result<()> {
         }))?,
     };
     let connector = McpConnector::default();
-    #[cfg(target_os = "linux")]
-    let connector = connector.with_stdio_worker(helper::remote_helper_executable().to_path_buf());
     let session = tokio::time::timeout(
         Duration::from_secs(40),
         connector.connect(McpConnectRequest {

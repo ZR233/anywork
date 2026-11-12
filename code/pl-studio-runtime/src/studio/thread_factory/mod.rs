@@ -40,6 +40,7 @@ pub(in crate::studio) struct StudioThreadServices {
     pub config_runtime: crate::config::ConfigRuntime,
     pub mcp_connector: pl_tool::mcp::McpConnector,
     pub lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry,
+    pub local_executor: pl_remote_helper::Executor,
     pub skills: crate::studio::runtime::SkillCatalogRuntime,
     pub thread_modes: crate::mode::ThreadModeManager,
     pub ssh_manager: Arc<pl_tool::remote::SshManager>,
@@ -63,6 +64,10 @@ pub(crate) struct StudioThreadFactory {
     >,
 }
 impl StudioThreadFactory {
+    pub(in crate::studio) fn local_executor(&self) -> pl_remote_helper::Executor {
+        self.services.local_executor.clone()
+    }
+
     fn directory_member(
         &self,
         id: &str,

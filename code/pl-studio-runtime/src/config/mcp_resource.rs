@@ -13,11 +13,11 @@ use pl_protocol::{
     McpDocumentRef, McpEffectiveSource, McpExecutionLocation, McpScope, PureError, Result,
     UpdateMcpDocumentRequest,
 };
+use pl_tool::command::ExecutorCommandBackend;
 use pl_tool::mcp::config::{
     EffectiveMcpServerConfig, McpExecutionContext, McpServerMutationPolicy, McpServerSourceKind,
     McpServerStatusKind, McpServerTransport, validate_mcp_identifier,
 };
-use pl_tool::remote::RemoteCommandBackend;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
@@ -375,7 +375,7 @@ impl McpCatalogResource {
         scope: &McpScope,
         workspace_root: &Path,
         host_base_cwd: &Path,
-        remote_commands: Option<Arc<RemoteCommandBackend>>,
+        remote_commands: Option<Arc<ExecutorCommandBackend>>,
     ) -> Result<BTreeMap<String, ResolvedThreadMcpServer>> {
         let scoped = self.effective_servers_for_scope(paths, models, scope)?;
         resolve_scoped_servers_for_thread(
@@ -394,7 +394,7 @@ impl McpCatalogResource {
         scope: &McpScope,
         workspace_root: &Path,
         host_base_cwd: &Path,
-        remote_commands: Option<Arc<RemoteCommandBackend>>,
+        remote_commands: Option<Arc<ExecutorCommandBackend>>,
     ) -> Result<ResolvedThreadMcpSnapshot> {
         self.read_catalog(paths, models, scope)?;
         let (scoped, authorization, catalog_revision) = {
@@ -1791,7 +1791,7 @@ pub fn resolve_scoped_servers_for_thread(
     scope: &McpScope,
     workspace_root: &Path,
     host_base_cwd: &Path,
-    remote_commands: Option<Arc<RemoteCommandBackend>>,
+    remote_commands: Option<Arc<ExecutorCommandBackend>>,
 ) -> Result<BTreeMap<String, ResolvedThreadMcpServer>> {
     let mut resolved = BTreeMap::new();
     for (id, mut entry) in scoped {

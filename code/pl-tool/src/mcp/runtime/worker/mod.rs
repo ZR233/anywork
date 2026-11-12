@@ -916,7 +916,7 @@ impl RuntimeWorker {
         }
     }
 
-    /// 关闭全部 generation 的 session 并确认整树回收。
+    /// 关闭全部 generation 的 session 并确认各协议 owner 与受管根进程退出。
     ///
     /// 独立 session 的关闭并发发出，任一 hang 不会阻止其它 session 收到 cancel；只有
     /// 确认回收的 session 才从 generation 中移除，未确认的 owner 由 `ConnectedMcp`

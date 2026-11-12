@@ -8,12 +8,14 @@ pub(crate) const PATCH_RETRY_GUIDANCE: &str = "Recovery: read the target file ag
 #[error("{message}")]
 pub struct PatchError {
     message: String,
+    failure: Option<crate::PatchFailure>,
 }
 
 impl PatchError {
     pub fn new(message: impl std::fmt::Display) -> Self {
         Self {
             message: message.to_string(),
+            failure: None,
         }
     }
 
@@ -23,5 +25,16 @@ impl PatchError {
 
     pub fn into_message(self) -> String {
         self.message
+    }
+
+    pub fn failure(&self) -> Option<&crate::PatchFailure> {
+        self.failure.as_ref()
+    }
+
+    pub(crate) fn from_failure(failure: crate::PatchFailure) -> Self {
+        Self {
+            message: failure.diagnostic.clone(),
+            failure: Some(failure),
+        }
     }
 }

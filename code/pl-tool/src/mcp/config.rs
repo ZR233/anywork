@@ -1,6 +1,6 @@
 //! Resolved MCP connection options. Provider and product policy belong to the host.
 use crate::approval::ToolEffect;
-use crate::remote::RemoteCommandBackend;
+use crate::command::ExecutorCommandBackend;
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,7 +11,7 @@ pub enum McpExecutionContext {
     #[default]
     Host,
     Remote {
-        commands: RemoteCommandBackend,
+        commands: ExecutorCommandBackend,
     },
 }
 
@@ -36,9 +36,7 @@ impl Hash for McpExecutionContext {
             Self::Remote { commands } => {
                 1u8.hash(state);
                 commands.canonical_workspace_path().hash(state);
-                if let Some(session) = commands.client().session() {
-                    session.instance_id.hash(state);
-                }
+                commands.executor().id().hash(state);
             }
         }
     }

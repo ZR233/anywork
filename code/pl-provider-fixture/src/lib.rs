@@ -3931,9 +3931,12 @@ fn shutdown_tool_command() -> String {
 /// concurrent subtree's pids can never be confused with the earlier
 /// tool-reclamation record.
 fn shutdown_concurrent_tool_command() -> String {
-    shutdown_peer_command(
-        "ANYWORK_SHUTDOWN_CONCURRENT_TOOL_COORD",
-        "../shutdown-concurrent-tool-coord.json",
+    format!(
+        "{} --inherit-process-group",
+        shutdown_peer_command(
+            "ANYWORK_SHUTDOWN_CONCURRENT_TOOL_COORD",
+            "../shutdown-concurrent-tool-coord.json",
+        )
     )
 }
 

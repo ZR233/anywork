@@ -23,9 +23,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::acp_worker::{AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim, WorkerSource};
+use super::acp_worker::{AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim};
 use crate::studio::{ProductEventBus, StudioStore};
-use crate::worker_assets::RemoteHelperSource;
+use pl_remote_helper::Executor;
 
 #[derive(Clone)]
 pub(crate) struct AcpLocalDetectionRuntime {
@@ -40,7 +40,7 @@ pub(crate) struct AcpLocalDetectionAcceptance {
 struct Inner {
     store: StudioStore,
     events: ProductEventBus,
-    source: WorkerSource,
+    source: Executor,
     slot: Mutex<Slot>,
     /// Test-only launch inputs, never a process-global PATH or user config edit.
     #[cfg(test)]
@@ -75,16 +75,12 @@ struct Resources {
 }
 
 impl AcpLocalDetectionRuntime {
-    pub(crate) fn new(
-        store: StudioStore,
-        events: ProductEventBus,
-        helper_source: RemoteHelperSource,
-    ) -> Self {
+    pub(crate) fn new(store: StudioStore, events: ProductEventBus, executor: Executor) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
                 events,
-                source: WorkerSource::new(helper_source),
+                source: executor,
                 slot: Mutex::new(Slot {
                     closed: false,
                     snapshot: AcpLocalDetectionSnapshot {

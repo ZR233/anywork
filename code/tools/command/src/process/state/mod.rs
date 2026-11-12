@@ -4,12 +4,10 @@ mod draining;
 mod final_state;
 mod running;
 mod terminating;
-use crate::process::{CommandCaptureOffsets, CommandCaptureStream};
 pub use draining::DrainingCommandProcess;
 pub use final_state::FinalCommandProcess;
 pub use running::RunningCommandProcess;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 pub use terminating::TerminatingCommandProcess;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,35 +73,6 @@ impl CommandTerminationReason {
     }
 }
 
-/// One accepted capture chunk a failed capture has not stored yet, in acceptance order.
-///
-/// It keeps the stream the bytes came from, so the repair restores the correct raw file, and the exact
-/// accepted bytes, so a retry re-materializes them verbatim instead of re-running the command. The
-/// bytes are shared with the reader that accepted them, so retaining the plan never copies output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureRepairChunk {
-    /// Stream whose raw file receives the pending bytes.
-    pub stream: CommandCaptureStream,
-    /// The accepted chunk the failed capture could not store.
-    pub pending: Arc<[u8]>,
-}
-
-/// The exact accepted capture bytes a failed capture left off the fragment, with its committed offset.
-///
-/// A capture write that fails may leave the fragment short of the bytes already accepted and
-/// published live, and the *other* stream's reader may already have accepted a following chunk. This
-/// names the offset the backend last confirmed — the fragment is truncated back to it — and every
-/// accepted chunk the capture did not store, in acceptance order, so one retry re-materializes exactly
-/// those bytes, idempotently and without ever re-running the command. The plan is bounded by the
-/// operation's shared capture budget, never by the accumulated output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureRepair {
-    /// Length of the capture fragment the backend last confirmed: truncate back here before replaying.
-    pub confirmed: CommandCaptureOffsets,
-    /// Accepted chunks the failed capture did not store, in the order they were accepted.
-    pub chunks: Vec<CaptureRepairChunk>,
-}
-
 /// 一条运行中的命令为什么不再继续捕获。
 ///
 /// 类别是 reader 手里已有的值，调用方不需要解析诊断文本就能把它交给自己的存储边界或工具结果，
@@ -118,15 +87,13 @@ pub enum CommandCaptureFailure {
         /// 本 operation 生效的落盘上限（字节）。
         limit_bytes: u64,
         /// 已被接纳（因此已保留、最终由归档保存）的存储成本。
-        charged_bytes: u64,
+        charged_bytes: Option<u64>,
         /// 被拒绝接纳的存储成本；这些字节从未进入修复计划。
-        refused_bytes: u64,
+        refused_bytes: Option<u64>,
     },
     /// A capture write or flush to disk failed.
     ///
-    /// The accepted bytes the failed append could not store are named by the snapshot's
-    /// [`CaptureRepair`], so a retry re-materializes exactly those bytes instead of archiving a short
-    /// fragment as if it were whole.
+    /// Previously observed root exit remains valid; no capture replay is attempted.
     Write {
         message: String,
     },
@@ -153,7 +120,7 @@ impl CommandCaptureFailure {
                 charged_bytes,
                 refused_bytes,
             } => format!(
-                "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
+                "command output exceeded the {limit_bytes}-byte per-command capture limit: confirmed stored bytes: {charged_bytes:?}, observed refused bytes: {refused_bytes:?}"
             ),
             Self::Flush { message } => format!("command output capture flush failed: {message}"),
             Self::Write { message } => format!("command output capture failed: {message}"),

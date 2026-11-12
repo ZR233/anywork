@@ -37,7 +37,7 @@ pub(super) enum EnvironmentError {
     InvalidSnapshot,
 }
 
-pub(super) fn bootstrap() -> Result<(), EnvironmentError> {
+pub(super) fn bootstrap_mode(mode: &str) -> Result<(), EnvironmentError> {
     // Resolve NSS before constructing Tokio: the lookup may perform blocking IO.
     let shell = shell::detect()?;
     let executable = std::env::current_exe()?;
@@ -48,7 +48,7 @@ pub(super) fn bootstrap() -> Result<(), EnvironmentError> {
     drop(runtime);
     // Re-exec preserves SSH stdio and PID without set_var in a multithreaded process.
     Err(std::process::Command::new(executable)
-        .arg("--serve")
+        .arg(mode)
         .env_clear()
         .envs(environment)
         .exec()

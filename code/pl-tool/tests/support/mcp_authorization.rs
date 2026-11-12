@@ -1,5 +1,5 @@
 //! Real Thread admission against real local peers, not direct token comparison alone.
-use super::{binding_host, helper, stdio};
+use super::{binding_host, stdio};
 use pl_agent_tool::ToolHandle;
 use pl_core::{
     context::OpaquePayload,
@@ -184,10 +184,7 @@ impl ModelSession for FrozenResponse {
 }
 
 fn runtime() -> McpRuntimeHandle {
-    McpRuntime::new(
-        McpConnector::default().with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-    )
-    .handle()
+    McpRuntime::new(McpConnector::default()).handle()
 }
 
 fn servers(

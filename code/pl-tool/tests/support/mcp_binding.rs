@@ -1,4 +1,4 @@
-use super::{binding_host, helper, stdio};
+use super::{binding_host, stdio};
 use pl_agent_tool::ToolHandle;
 use pl_core::{
     model::DynModelSession,
@@ -53,9 +53,7 @@ async fn frozen_peer_descriptor_and_results_survive_the_new_handle() -> anyhow::
     let root = tempfile::tempdir()?;
     let script =
         stdio::write_python_mcp_server(root.path(), "binding-peer.py", stdio::STDIO_MCP_SCRIPT);
-    let runtime = McpRuntime::new(
-        McpConnector::default().with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-    );
+    let runtime = McpRuntime::new(McpConnector::default());
     let runtime = runtime.handle();
     let servers = |tag: &str| {
         BTreeMap::from([(
@@ -187,10 +185,7 @@ async fn independent_resource_tools_execute_only_on_frozen_resource_assignments(
     let script =
         stdio::write_python_mcp_server(root.path(), "resources-peer.py", stdio::STDIO_MCP_SCRIPT);
     let log = root.path().join("requests.jsonl");
-    let runtime = McpRuntime::new(
-        McpConnector::default().with_stdio_worker(helper::remote_helper_executable().to_path_buf()),
-    )
-    .handle();
+    let runtime = McpRuntime::new(McpConnector::default()).handle();
     let servers = |resources: bool| {
         BTreeMap::from([(
             "resources-peer".into(),
