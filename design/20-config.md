@@ -301,7 +301,7 @@ Studio 维护两段相互独立的顶层联网搜索配置：
 
 ## 20.13 LSP 服务器配置
 
-会话在实际执行工作区的 `.anywork/lsp/<server-id>.toml` 发现服务器，每个文件声明一个服务器，文件名与 `id` 相同，ID 只允许 ASCII 字母、数字、`-`、`_` 和 `.`，不允许路径分隔符或 `.` / `..`。不递归搜索父目录或其他会话目录。无文档表示没有配置，不自动加入 rust-analyzer。SSH 读取远端工作区同一位置并在远端执行；worktree 使用自己的执行目录。
+会话在实际执行工作区的 `.anywork/lsp/<server-id>.toml` 发现服务器，每个文件声明一个服务器，文件名与 `id` 相同，ID 只允许 ASCII 字母、数字、`-`、`_` 和 `.`，不允许路径分隔符或 `.` / `..`。不递归搜索父目录或其他会话目录。无文档表示没有配置，不自动加入 rust-analyzer。本地和 SSH 都由冻结的公共执行绑定读取同一相对位置并在目标机器执行；worktree 使用自己的执行目录。连接关闭不会自动替换语言服务器、文件句柄或技能定位符；用户显式新建执行绑定后重新准备。
 
 文档有独立正整数 `schema_version = 1`，必须声明 `id`、`command` 和非空 `language_ids`；可选字段为 `args`、`env`、`display_name`、`detection`、`extensions`、`operations`、`initialization_options`、`settings`。未知字段、版本、空命令和无效 ID 作为该文档的局部错误。`detection` 为相对工作区根的文件名或单段通配符，空列表总是匹配；`operations` 缺省为全部查询操作。
 

@@ -663,11 +663,12 @@ impl ServiceStopJob {
 /// 单个服务关闭任务的常驻槽位；被 runtime 持有，跨阶段与跨重试保留。
 pub(crate) type ServiceStopSlot = Arc<tokio::sync::Mutex<Option<ServiceStopJob>>>;
 
-/// runtime 常驻的三个外部服务关闭槽位。
+/// runtime 常驻的执行资源关闭槽位。
 #[derive(Clone, Default)]
 pub(crate) struct ServiceStopSlots {
     pub(crate) lsp: ServiceStopSlot,
     pub(crate) ssh: ServiceStopSlot,
+    pub(crate) executor: ServiceStopSlot,
 }
 
 /// 一个并发阶段的真实结果。
@@ -839,6 +840,7 @@ mod stage_order {
     pub(super) const ACP_INSTALL: usize = 19;
     pub(super) const ACCOUNT_USAGE: usize = 20;
     pub(super) const ACP_LOCAL_DETECTION: usize = 21;
+    pub(super) const EXECUTOR: usize = 22;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1497,6 +1499,27 @@ impl StudioRuntime {
                 });
                 return outcomes;
             }
+            // Session 和 LSP 均已交还其进程后，关闭本地执行器并等待受管任务收束。
+            // 常驻槽位保留真实任务；上层等待超时不会丢弃后台回收的所有权。
+            let executor_job = ensure_service_stop(&ssh_runtime.service_stops.executor, {
+                let executor = ssh_runtime.thread_factory.local_executor();
+                move || {
+                    ServiceStopJob::spawn(async move {
+                        executor.close().await.map_err(anyhow::Error::from)
+                    })
+                }
+            })
+            .await;
+            outcomes.push(
+                join_service_outcome(
+                    budget,
+                    stage_order::EXECUTOR,
+                    "executor",
+                    executor_job,
+                    Some(SERVICE_STAGE_LIMIT),
+                )
+                .await,
+            );
             let ssh_job = ensure_service_stop(&ssh_runtime.service_stops.ssh, {
                 let ssh = ssh_runtime.ssh_manager.clone();
                 move || {

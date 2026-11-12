@@ -16,9 +16,9 @@ use pl_lsp::runtime::{LspLifecyclePhase, LspRuntimeRegistry};
 use pl_tool::{
     execution::{ExecutionBackend, ExecutionRequest},
     lsp::{LspPathBinding, LspToolKind, ThreadLspTool},
-    remote::{RemoteWorkspaceHost, SshConfigFile, SshManager, SshServerProfile},
+    remote::{SshConfigFile, SshManager, SshServerProfile, SshWorkspaceBinding},
     workspace::{AgentWorkspace, ToolWorkspace, WorkspaceMutability, WriteMode},
-    workspace_file::{WorkspaceFileBackend, WorkspaceFileWriteRequest, WorkspacePolicyBackend},
+    workspace_file::{WorkspaceFileBackend, WorkspaceFileWriteRequest},
 };
 use serde_json::{Value, json};
 use std::{
@@ -66,16 +66,16 @@ async fn write(
 }
 
 async fn run(
-    host: &RemoteWorkspaceHost,
+    host: &SshWorkspaceBinding,
     program: &str,
     args: Vec<String>,
 ) -> anyhow::Result<String> {
     let output = host
-        .git
+        .git()
         .run(ExecutionRequest {
             program: program.into(),
             args,
-            cwd: ".".into(),
+            cwd: host.execution.root().into(),
             env: Default::default(),
             timeout: Some(Duration::from_secs(60)),
         })
@@ -102,18 +102,22 @@ fn source(project: &str, language: &str, revision: &str) -> String {
     }
 }
 
-fn tool(registry: &LspRuntimeRegistry, host: &RemoteWorkspaceHost) -> ThreadLspTool {
+fn lsp_host(host: &SshWorkspaceBinding) -> anyhow::Result<Arc<pl_lsp::host::ExecutorLspHost>> {
+    Ok(Arc::new(pl_lsp::host::ExecutorLspHost::new(
+        host.files().executor().clone(),
+        host.files().canonical_path(),
+    )?))
+}
+
+fn tool(registry: &LspRuntimeRegistry, host: &SshWorkspaceBinding) -> ThreadLspTool {
     let workspace = ToolWorkspace::new(AgentWorkspace::confined(
-        host.files.canonical_path(),
+        host.files().canonical_path(),
         WorkspaceMutability::ReadWrite,
     ))
     .with_lsp_runtime(Some(registry.clone()));
     ThreadLspTool::new(
         registry.clone(),
-        LspPathBinding::Remote {
-            workspace,
-            files: Arc::new(host.files.clone()),
-        },
+        LspPathBinding::new(workspace, host.files()),
         LspToolKind::Query,
         LspToolKind::Query.declaration(),
     )
@@ -225,7 +229,7 @@ async fn ready(
 
 // Inspect only executables in this task's isolated SDK directory. No global
 // process-name matching, killing, or reading unrelated command lines is used.
-async fn processes(host: &RemoteWorkspaceHost, sdk: &Path) -> anyhow::Result<Vec<Value>> {
+async fn processes(host: &SshWorkspaceBinding, sdk: &Path) -> anyhow::Result<Vec<Value>> {
     let script = r#"import json, os, pathlib, sys
 prefix = sys.argv[1].rstrip('/') + '/'
 found = []
@@ -250,17 +254,19 @@ print(json.dumps(found))
 }
 
 async fn prepare(
-    host: &RemoteWorkspaceHost,
+    host: &SshWorkspaceBinding,
     project: &str,
     remote_root: &Path,
 ) -> anyhow::Result<()> {
     // Raw files are used only before acquiring any LSP lease/opening documents.
     // Mutations of opened source below must use the production policy backend.
     for directory in ["src", "lib", ".anywork/lsp"] {
-        host.files.create_directory(directory.into(), None).await?;
+        host.files()
+            .create_directory(directory.into(), None)
+            .await?;
     }
     write(
-        &host.files,
+        &host.files(),
         "Cargo.toml",
         format!(
             "[package]\nname = \"lsp_project_{project}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"
@@ -268,14 +274,19 @@ async fn prepare(
     )
     .await?;
     write(
-        &host.files,
+        &host.files(),
         "pubspec.yaml",
         format!("name: lsp_project_{project}\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n"),
     )
     .await?;
-    write(&host.files, "src/lib.rs", source(project, "rust", "before")).await?;
     write(
-        &host.files,
+        &host.files(),
+        "src/lib.rs",
+        source(project, "rust", "before"),
+    )
+    .await?;
+    write(
+        &host.files(),
         "lib/sample.dart",
         source(project, "dart", "before"),
     )
@@ -293,12 +304,12 @@ async fn prepare(
     );
     // Both directories deliberately use identical server IDs. Directory identity,
     // not a project-specific server ID, must isolate their production processes.
-    write(&host.files, ".anywork/lsp/rust.toml", format!(
+    write(&host.files(), ".anywork/lsp/rust.toml", format!(
         "schema_version = 1\nid = \"rust\"\ncommand = {}\nlanguage_ids = [\"rust\"]\nextensions = [\"rs\"]\ndetection = [\"Cargo.toml\"]\noperations = [\"hover\"]\n{env}[initialization_options]\ncheckOnSave = false\n[initialization_options.cargo]\nsysrootSrc = {}\n[initialization_options.cargo.buildScripts]\nenable = false\n",
         quoted(&required("PURE_SSH_LSP_RUST_ANALYZER")?)?,
         quoted(&required("PURE_SSH_LSP_RUST_SRC")?)?,
     )).await?;
-    write(&host.files, ".anywork/lsp/dart.toml", format!(
+    write(&host.files(), ".anywork/lsp/dart.toml", format!(
         "schema_version = 1\nid = \"dart\"\ncommand = {}\nargs = [\"language-server\", \"--cache\", \"{{workspaceRoot}}/.dart-cache\"]\nlanguage_ids = [\"dart\"]\nextensions = [\"dart\"]\ndetection = [\"pubspec.yaml\"]\noperations = [\"hover\"]\n{env}",
         quoted(&required("PURE_SSH_LSP_DART")?)?,
     )).await?;
@@ -343,9 +354,9 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
             })
             .await?;
         let base = manager
-            .open_workspace_host("real-lsp-acceptance", required("PURE_SSH_LSP_ROOT")?)
+            .open_workspace_binding("real-lsp-acceptance", required("PURE_SSH_LSP_ROOT")?)
             .await?;
-        let remote_root = PathBuf::from(base.files.canonical_path());
+        let remote_root = PathBuf::from(base.files().canonical_path());
         let sdk = remote_root.join("sdk");
         for (name, program) in [
             ("rust-analyzer", required("PURE_SSH_LSP_RUST_ANALYZER")?),
@@ -365,24 +376,26 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
             evidence.push(json!({"program": name, "version": version}));
         }
         for directory in ["project-a", "project-b", "home"] {
-            base.files.create_directory(directory.into(), None).await?;
+            base.files()
+                .create_directory(directory.into(), None)
+                .await?;
         }
         let a = manager
-            .open_workspace_host(
+            .open_workspace_binding(
                 "real-lsp-acceptance",
                 remote_root.join("project-a").display().to_string(),
             )
             .await?;
         let b = manager
-            .open_workspace_host(
+            .open_workspace_binding(
                 "real-lsp-acceptance",
                 remote_root.join("project-b").display().to_string(),
             )
             .await?;
         prepare(&a, "a", &remote_root).await?;
         prepare(&b, "b", &remote_root).await?;
-        let root_a = PathBuf::from(a.files.canonical_path());
-        let root_b = PathBuf::from(b.files.canonical_path());
+        let root_a = PathBuf::from(a.files().canonical_path());
+        let root_b = PathBuf::from(b.files().canonical_path());
         // Never replace an existing alias or follow an existing directory as a
         // destination. Any pre-existing path fails without touching user data.
         run(
@@ -397,30 +410,29 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
         )
         .await?;
         let a_alias = manager
-            .open_workspace_host(
+            .open_workspace_binding(
                 "real-lsp-acceptance",
                 remote_root.join("project-a-alias").display().to_string(),
             )
             .await?;
         ensure!(
-            Path::new(a_alias.files.canonical_path()) == root_a,
+            Path::new(a_alias.files().canonical_path()) == root_a,
             "alias did not canonicalize to directory A"
         );
         ensure!(
-            a_alias.files.workspace_id() != a.files.workspace_id(),
-            "alias reused A1's workspace lease instead of opening a distinct handle"
+            a_alias.files().is_same_binding(&a.files()),
+            "alias did not resolve to the same executor and canonical directory"
         );
         evidence.push(json!({
-            "phase": "distinct-workspace-leases",
+            "phase": "canonical-alias-binding",
             "canonicalRoot": root_a,
-            "a1WorkspaceId": a.files.workspace_id(),
-            "a2WorkspaceId": a_alias.files.workspace_id(),
+            "executorId": a.files().executor().id().to_string(),
         }));
         let a1 = registry
-            .acquire_workspace(&root_a, Some(Arc::new(a.clone())), None)
+            .acquire_workspace(&root_a, Some(lsp_host(&a)?), None)
             .await?;
         let b1 = registry
-            .acquire_workspace(&root_b, Some(Arc::new(b.clone())), None)
+            .acquire_workspace(&root_b, Some(lsp_host(&b)?), None)
             .await?;
         ready(&registry, &root_a, &mut evidence).await?;
         ready(&registry, &root_b, &mut evidence).await?;
@@ -430,10 +442,10 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
         both(&only_b, "agent-b1", "b", "before", &mut evidence).await?;
         let before_a2 = processes(&base, &sdk).await?;
         evidence.push(json!({"phase": "before-a2-alias-acquire", "processes": before_a2}));
-        // A is already serving A1. A2 has a distinct temporary workspace lease
-        // in the same logical SSH session; acquiring it must not restart A.
+        // A is already serving A1. A2 resolves its alias through the same
+        // concrete executor; acquiring another user must not restart A.
         let a2 = registry
-            .acquire_workspace(&root_a, Some(Arc::new(a_alias.clone())), None)
+            .acquire_workspace(&root_a, Some(lsp_host(&a_alias)?), None)
             .await?;
         ready(&registry, &root_a, &mut evidence).await?;
         let second_a = tool(&registry, &a_alias);
@@ -449,7 +461,7 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
         };
         ensure!(
             a_pids(&before_a2) == a_pids(&running),
-            "a distinct workspace lease in the same session restarted directory A"
+            "another user of the same execution binding restarted directory A"
         );
         for root in [&root_a, &root_b] {
             ensure!(
@@ -466,7 +478,7 @@ async fn ssh_real_rust_dart_directory_leases() -> anyhow::Result<()> {
         // Exercise the production post-write ToolWorkspace notification boundary.
         // Do not use raw a.files or manually notify the registry here: a query's
         // own disk refresh must not substitute for the successful mutation path.
-        let policy_files = WorkspacePolicyBackend::new(Arc::new(a.files.clone()), workspace);
+        let policy_files = a.files().with_workspace(workspace);
         write(&policy_files, "src/lib.rs", source("a", "rust", "after")).await?;
         write(
             &policy_files,

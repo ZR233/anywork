@@ -32,7 +32,7 @@ pub(super) struct PreparedThreadTools {
     pub tools: StudioThreadTools,
     pub hosted: Vec<pl_model::runtime::HostedTool>,
     pub environment: pl_tool::environment::ExecutionEnvironment,
-    pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub remote: Option<pl_tool::remote::SshWorkspaceBinding>,
     pub workspace: ToolWorkspace,
     pub lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
 }
@@ -42,7 +42,7 @@ pub(super) enum CatalogPreparation {
     Refresh {
         lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
         commands: Option<crate::thread_assembler::StudioCommandProcesses>,
-        remote: Option<Box<pl_tool::remote::RemoteWorkspaceHost>>,
+        remote: Option<Box<pl_tool::remote::SshWorkspaceBinding>>,
         policy_key: String,
         policies: std::collections::BTreeMap<
             String,
@@ -256,7 +256,7 @@ impl StudioThreadFactory {
                     Some(server) => Some(
                         self.services
                             .ssh_manager
-                            .open_workspace_host(server, root.to_string_lossy().into_owned())
+                            .open_workspace_binding(server, root.to_string_lossy().into_owned())
                             .await
                             .map_err(|error| {
                                 resource_error("open child remote workspace", error)
@@ -274,7 +274,7 @@ impl StudioThreadFactory {
                 crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
                     &host.profile,
                 )),
-                host.files.canonical_path().into(),
+                host.files().canonical_path().into(),
             ),
             None => match verified_local {
                 Some(proof) => Ok(proof.identity()),
@@ -308,11 +308,22 @@ impl StudioThreadFactory {
         self.services
             .worktrees
             .preserve_workspace_resources(thread_id, identity);
+        let executor = remote
+            .as_ref()
+            .map(|host| host.execution.executor().clone())
+            .unwrap_or_else(|| self.services.local_executor.clone());
+        let execution = pl_tool::command::WorkspaceExecutionBinding::new(
+            executor.clone(),
+            root.to_str().ok_or_else(|| {
+                ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
+            })?,
+        )
+        .map_err(|error| resource_error("bind Thread execution workspace", error))?;
         if verified_local.is_some() {
             super::session_files::verify_existing_session_files(workspace.root(), thread_id)
                 .await?;
         } else {
-            super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
+            super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
         }
         let shell_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", "starting");
@@ -338,33 +349,28 @@ impl StudioThreadFactory {
         } else {
             Default::default()
         };
-        let binding = match &remote {
-            Some(host) => StudioCommandBinding::Remote {
-                host: host.clone(),
-                workspace: workspace.clone(),
-            },
-            None => StudioCommandBinding::Local {
-                workspace: workspace.clone(),
-                environment: environment.clone(),
-                child_environment,
-                access: match config.runtime.permission_mode {
-                    crate::approval::PermissionMode::FullAccess
-                        if workspace.workspace().boundary().allows_host_paths() =>
-                    {
-                        pl_tool::exec::CommandAccess::HostGranted
-                    }
-                    crate::approval::PermissionMode::AutoReview
-                    | crate::approval::PermissionMode::RequestApproval
-                        if workspace.workspace().boundary().allows_host_paths() =>
-                    {
-                        pl_tool::exec::CommandAccess::HostApproval
-                    }
-                    crate::approval::PermissionMode::FullAccess
-                    | crate::approval::PermissionMode::AutoReview
-                    | crate::approval::PermissionMode::RequestApproval => {
-                        pl_tool::exec::CommandAccess::WorkspaceOnly
-                    }
-                },
+        let binding = StudioCommandBinding {
+            commands: execution
+                .commands(environment.clone())
+                .with_child_environment(child_environment),
+            workspace: workspace.clone(),
+            access: match config.runtime.permission_mode {
+                crate::approval::PermissionMode::FullAccess
+                    if workspace.workspace().boundary().allows_host_paths() =>
+                {
+                    pl_tool::exec::CommandAccess::HostGranted
+                }
+                crate::approval::PermissionMode::AutoReview
+                | crate::approval::PermissionMode::RequestApproval
+                    if workspace.workspace().boundary().allows_host_paths() =>
+                {
+                    pl_tool::exec::CommandAccess::HostApproval
+                }
+                crate::approval::PermissionMode::FullAccess
+                | crate::approval::PermissionMode::AutoReview
+                | crate::approval::PermissionMode::RequestApproval => {
+                    pl_tool::exec::CommandAccess::WorkspaceOnly
+                }
             },
         };
         let commands = match &preparation {
@@ -402,22 +408,13 @@ impl StudioThreadFactory {
             let git =
                 pl_tool::git::GitWorkspaceConfig::local(root.clone()).with_native_credentials();
             let credentials = Arc::new(pl_tool::git::NoGitCredentialProvider);
-            tools = match &remote {
-                Some(host) => tools.with_git(StudioGitBinding {
-                    config: git,
-                    backend: Arc::new(host.git.clone()),
-                    credentials,
-                    kinds: pl_tool::git::GitToolKind::all().to_vec(),
-                    authorization: workspace.authorization(),
-                })?,
-                None => tools.with_git(StudioGitBinding {
-                    config: git,
-                    backend: Arc::new(pl_tool::execution::LocalExecutionBackend),
-                    credentials,
-                    kinds: pl_tool::git::GitToolKind::all().to_vec(),
-                    authorization: workspace.authorization(),
-                })?,
-            };
+            tools = tools.with_git(StudioGitBinding {
+                config: git,
+                backend: Arc::new(execution.git()),
+                credentials,
+                kinds: pl_tool::git::GitToolKind::all().to_vec(),
+                authorization: workspace.authorization(),
+            })?;
         }
         if config.runtime.tool_capabilities.mcp {
             let mcp_started = std::time::Instant::now();
@@ -455,7 +452,7 @@ impl StudioThreadFactory {
                         &root,
                         &config.skills,
                         cancellation.clone(),
-                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                        Some(Arc::new(execution.files())),
                     )
                     .await
                     .map_err(|error| resource_error("refresh Thread skill catalog", error))?;
@@ -469,7 +466,7 @@ impl StudioThreadFactory {
                         &root,
                         &config.skills,
                         cancellation.clone(),
-                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                        Some(Arc::new(execution.files())),
                     )
                     .await
                     .map_err(|error| resource_error("discover child skills", error))?
@@ -509,37 +506,12 @@ impl StudioThreadFactory {
                 }
                 CatalogPreparation::Initial => None,
             };
-            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = match &remote {
-                Some(host) => Some(Arc::new(host.clone())),
-                None => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        match crate::worker_assets::local_worker(helper_source.clone()).await {
-                            Ok(worker) => pl_tool::lsp::LocalLspHostBackend::new(
-                                root.clone(),
-                                worker,
-                            )
-                            .map(|host| {
-                                Some(Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                            })
-                            .unwrap_or_else(|error| {
-                                tracing::warn!(%error, "LSP host preparation failed");
-                                None
-                            }),
-                            Err(error) => pl_tool::lsp::LocalLspHostBackend::unavailable(
-                                root.clone(),
-                                format!("LSP supervised worker preparation failed: {error}"),
-                            )
-                            .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-                            .ok(),
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        None
-                    }
-                }
-            };
+            let root_str = root.to_str().ok_or_else(|| {
+                ThreadAssemblyError::Identity("LSP workspace path is not UTF-8".into())
+            })?;
+            let host = pl_lsp::host::ExecutorLspHost::new(executor.clone(), root_str)
+                .map_err(|error| resource_error("bind LSP executor", error))?;
+            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = Some(Arc::new(host));
             let defaults = remote
                 .is_none()
                 .then(|| self.services.store.paths().home().join("lsp/host"));
@@ -557,13 +529,12 @@ impl StudioThreadFactory {
                     }
                 }
             };
-            let paths = match &remote {
-                Some(host) => pl_tool::lsp::LspPathBinding::Remote {
-                    workspace: workspace.clone(),
-                    files: Arc::new(host.files.clone()),
-                },
-                None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
-            };
+            let files = pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
+                executor.clone(),
+                root_str,
+            )
+            .map_err(|error| resource_error("bind LSP paths", error))?;
+            let paths = pl_tool::lsp::LspPathBinding::new(workspace.clone(), files);
             tools = tools.with_lsp(lsp.clone(), paths).await?;
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", elapsed_ms = lsp_started.elapsed().as_millis() as u64, "completed");
         }

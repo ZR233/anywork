@@ -154,7 +154,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
 - `run-gui --demo` 不作为人工实验的默认入口，也不能证明真实 bridge、持久化或 provider 行为。纯界面使用官方预览，业务使用隔离真实产品；人工结论独立记录，默认为待评审。
-- `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
+- `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，正常退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。显式阻塞隔离层并触发应用强制退出的故障场景按统一执行器契约记录后代及裁判介入，不把该阶段的裁判回收列为产品保证。
 - AI 运行时观察优先通过官方 Dart/Flutter MCP / Inspector 操作 Flutter 层，重复功能验证使用 `WidgetTester` / `integration_test`。Windows、Linux 共用这些接口；Linux 没有显示服务时用 Xvfb 提供原生启动环境，Windows 原生验证仍需可运行桌面应用的会话。平台窗口、IME、托盘等边界按需使用真实键盘/指针或系统工具；不把 Flutter 层截图外推为系统行为验证。专用工具可覆盖时不使用 Computer Use。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
 
 ### GUI 生成文件
@@ -228,9 +228,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo xtask test-project --suite desktop --set smoke
   ```
 
-- Linux 外部 helper 模式需要与源码匹配的生产 worker 位于 PATH，可用
-  `cargo install --path code/pl-remote-helper --locked` 安装或更新。
-  桌面 xtask 构建将 worker 作为 Flutter bundle 资源分发，不嵌入 bridge；两种宿主均不使用裸 shell 后备路径。
+- 本地命令、MCP、LSP 与 ACP 通过 `pl-remote-helper` library 的 native Executor 创建业务进程，不要求 PATH 中存在监督 worker。SSH 使用与源码匹配的前台 `pl-remote-helper --stdio` server；桌面 xtask 将远端 server 资产作为 Flutter bundle 资源分发，不嵌入 bridge，不使用其他传输后备路径。
 
 - 不默认启用 `--all-features`。性能与真实外部服务观察按明确目标和授权显式选择，不将费用、凭据或机器敏感采样带入普通检查；不保留专项实验 example、永久截图脚本或第二套业务运行时。
 - 真实模型与 GUI 观察遵循统一实验方法，按边界选择载体；模拟通过不等于真实供应商兼容，人工结论独立记录，默认为待评审。

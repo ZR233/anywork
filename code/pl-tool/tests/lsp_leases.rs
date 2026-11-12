@@ -1,11 +1,9 @@
 #![cfg(target_os = "linux")]
 //! Directory sharing and interruption must never strand a physical LSP owner.
+use pl_lsp::host::ExecutorLspHost;
 use pl_lsp::runtime::LspRuntimeRegistry;
-use pl_tool::lsp::LocalLspHostBackend;
+use pl_remote_helper::Executor;
 use std::{path::Path, sync::Arc, time::Duration};
-
-#[path = "support/helper.rs"]
-mod helper;
 
 async fn fixture(root: &Path, delay: u32) -> anyhow::Result<()> {
     let directory = root.join(".anywork/lsp");
@@ -22,10 +20,10 @@ async fn fixture(root: &Path, delay: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn host(root: &Path) -> anyhow::Result<Arc<LocalLspHostBackend>> {
-    Ok(Arc::new(LocalLspHostBackend::new(
-        root,
-        helper::remote_helper_executable().to_owned(),
+fn host(executor: &Executor, root: &Path) -> anyhow::Result<Arc<ExecutorLspHost>> {
+    Ok(Arc::new(ExecutorLspHost::new(
+        executor.clone(),
+        root.to_str().unwrap(),
     )?))
 }
 
@@ -38,12 +36,13 @@ async fn requests(root: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
 
 #[tokio::test]
 async fn users_share_one_service_and_final_close_serializes_reacquisition() -> anyhow::Result<()> {
+    let executor = Executor::local()?;
     let root = tempfile::tempdir()?;
     fixture(root.path(), 0).await?;
     let registry = LspRuntimeRegistry::new();
     let view = registry.execution_scope("local");
     let observed: anyhow::Result<()> = async {
-        let primary_host = host(root.path())?;
+        let primary_host = host(&executor, root.path())?;
         let primary_owner = Arc::downgrade(&primary_host);
         let first = view
             .acquire_workspace(root.path(), Some(primary_host), None)
@@ -51,7 +50,7 @@ async fn users_share_one_service_and_final_close_serializes_reacquisition() -> a
         let clone = first.clone();
         let second = registry
             .execution_scope("local")
-            .acquire_workspace(root.path(), Some(host(root.path())?), None)
+            .acquire_workspace(root.path(), Some(host(&executor, root.path())?), None)
             .await?;
         tokio::time::timeout(Duration::from_secs(20), first.wait_initialized()).await??;
         anyhow::ensure!(view.has_ready_servers(root.path()).await);
@@ -66,7 +65,7 @@ async fn users_share_one_service_and_final_close_serializes_reacquisition() -> a
             "another Thread still owns the service"
         );
         second
-            .refresh_configuration(Some(host(root.path())?), None)
+            .refresh_configuration(Some(host(&executor, root.path())?), None)
             .await?;
         tokio::time::timeout(Duration::from_secs(20), second.wait_initialized()).await??;
         anyhow::ensure!(
@@ -81,7 +80,7 @@ async fn users_share_one_service_and_final_close_serializes_reacquisition() -> a
         // close starts reclamation even before the returned future is polled.
         let closing = second.close();
         let third = view
-            .acquire_workspace(root.path(), Some(host(root.path())?), None)
+            .acquire_workspace(root.path(), Some(host(&executor, root.path())?), None)
             .await?;
         closing.await?;
         anyhow::ensure!(
@@ -121,11 +120,12 @@ async fn users_share_one_service_and_final_close_serializes_reacquisition() -> a
 
 #[tokio::test]
 async fn interrupted_initialization_drop_is_tracked_until_global_shutdown() -> anyhow::Result<()> {
+    let executor = Executor::local()?;
     let root = tempfile::tempdir()?;
     fixture(root.path(), 60).await?;
     let registry = LspRuntimeRegistry::new();
     let view = registry.execution_scope("local");
-    let primary_host = host(root.path())?;
+    let primary_host = host(&executor, root.path())?;
     let owner = Arc::downgrade(&primary_host);
     let lease = view
         .acquire_workspace(root.path(), Some(primary_host), None)

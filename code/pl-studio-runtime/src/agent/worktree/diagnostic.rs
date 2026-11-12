@@ -1,5 +1,5 @@
 //! Worktree-specific safe failure facts, not a general-purpose secret sanitizer.
-use super::{RemoteClientError, RemoteDownloadError, RemoteExecutionError, WorktreeError};
+use super::{ExecutionFailure, WorkspaceDownloadError, WorktreeError};
 
 impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
@@ -28,28 +28,23 @@ impl WorktreeError {
                 git_operation(args),
                 safe_command_cause(stderr)
             ),
-            Self::LocalIo { operation, source } => format!(
-                "{operation}: filesystem {:?}; os_code={:?}",
-                source.kind(),
-                source.raw_os_error()
-            ),
-            Self::Remote { operation, source } => format!("{operation}: {}", remote_code(source)),
-            Self::RemoteExecution { args, source } => {
+            Self::Target { operation, source } => format!("{operation}: {}", file_cause(source)),
+            Self::Execution { args, source } => {
                 format!("git {}: {}", git_operation(args), execution_cause(source))
             }
-            Self::RemoteDownload { operation, source } => {
+            Self::Download { operation, source } => {
                 format!("{operation}: {}", download_cause(source))
             }
-            Self::RemoteFile { operation, source } => format!(
+            Self::File { operation, source } => format!(
                 "{operation}: {}",
                 match source {
                     crate::PureError::Io(error) => format!(
-                        "remote file I/O {:?}; os_code={:?}",
+                        "target file I/O {:?}; os_code={:?}",
                         error.kind(),
                         error.raw_os_error()
                     ),
-                    crate::PureError::PermissionDenied(_) => "remote file permission denied".into(),
-                    _ => "remote file operation failed; no structured cause is available".into(),
+                    crate::PureError::PermissionDenied(_) => "target file permission denied".into(),
+                    _ => "target file operation failed; no structured cause is available".into(),
                 }
             ),
             Self::InvalidResource(_) => "worktree backend or owned-path validation failed".into(),
@@ -59,73 +54,51 @@ impl WorktreeError {
 }
 
 /// Preserve the transfer phase and typed cause without reflecting paths or arbitrary helper text.
-pub(super) fn download_cause(error: &RemoteDownloadError) -> String {
+pub(super) fn download_cause(error: &WorkspaceDownloadError) -> String {
     match error {
-        RemoteDownloadError::Path(_) => "remote file path invalid or outside workspace".into(),
-        RemoteDownloadError::Read { offset, source } => {
-            format!("remote file read at byte {offset}: {}", remote_code(source))
-        }
-        RemoteDownloadError::Inconsistent { offset } => {
-            format!("remote file transfer range or checksum inconsistent at byte {offset}")
-        }
-        RemoteDownloadError::Response(_) => {
-            "remote file transfer: unexpected helper response (details withheld)".into()
-        }
-        RemoteDownloadError::Write { offset, source } => format!(
-            "remote file buffer at byte {offset}: filesystem {:?}; os_code={:?}",
+        WorkspaceDownloadError::Path(source) => file_cause(source),
+        WorkspaceDownloadError::Open(source) => execution_error(source),
+        WorkspaceDownloadError::Io(source) | WorkspaceDownloadError::Read(source) => format!(
+            "file transfer IO {:?}; os={:?}",
             source.kind(),
             source.raw_os_error()
         ),
-        RemoteDownloadError::TooLarge { total, limit } => {
-            format!("remote file transfer size limit exceeded; bytes={total}; limit={limit}")
+        WorkspaceDownloadError::TooLarge { limit } => {
+            format!("file transfer exceeds {limit} bytes")
         }
+        WorkspaceDownloadError::Incomplete => "file transfer incomplete".into(),
     }
 }
-
-/// Render the one upstream execution error tree without reflecting arbitrary transport text.
-pub(super) fn execution_cause(error: &RemoteExecutionError) -> String {
+pub(super) fn execution_cause(error: &ExecutionFailure) -> String {
     match error {
-        RemoteExecutionError::WorkingDirectory => {
-            "remote working directory invalid or outside workspace".into()
-        }
-        RemoteExecutionError::Spawn { source } => format!("remote spawn: {}", remote_code(source)),
-        RemoteExecutionError::OutputMissing => {
-            "remote output acquisition: output stream missing".into()
-        }
-        RemoteExecutionError::UnexpectedCapture => {
-            "remote output collection: unexpected capture receipt".into()
-        }
-        RemoteExecutionError::Read { source } => format!(
-            "remote output read: {:?}; os_code={:?}",
-            source.kind(),
-            source.raw_os_error()
+        ExecutionFailure::Spawn(source) => format!(
+            "spawn {:?}: {}",
+            source.knowledge,
+            execution_error(&source.cause)
         ),
-        RemoteExecutionError::Wait { .. } => {
-            "remote wait: cause unknown (upstream provides only unstructured text)".into()
-        }
-        RemoteExecutionError::TimedOut {
-            settlement_error: None,
-        } => "remote timeout; process exit and output drain completed".into(),
-        RemoteExecutionError::TimedOut {
-            settlement_error: Some(error),
-        } => format!(
-            "remote timeout; process/output settlement failed: {}",
-            execution_cause(error)
-        ),
+        ExecutionFailure::Execution(source) => execution_error(source),
+        ExecutionFailure::TimedOut => "command timed out; cleanup is owned by the executor".into(),
     }
 }
-
-pub(super) fn remote_code(error: &RemoteClientError) -> String {
+fn execution_error(error: &pl_remote_helper::ExecutionError) -> String {
+    use pl_remote_helper::ExecutionError;
     match error {
-        RemoteClientError::ManagerClosing => "SSH ManagerClosing".into(),
-        RemoteClientError::Disconnected => "SSH Disconnected".into(),
-        RemoteClientError::HeartbeatTimeout => "SSH HeartbeatTimeout".into(),
-        RemoteClientError::Cancelled => "SSH Cancelled before admission".into(),
-        RemoteClientError::AuthenticationFailed(_) => "SSH AuthenticationFailed".into(),
-        RemoteClientError::Protocol(_) => {
-            "SSH Protocol failure (unclassified details withheld)".into()
+        ExecutionError::Io { source, .. } => {
+            format!("IO {:?}; os={:?}", source.kind(), source.raw_os_error())
         }
-        RemoteClientError::Remote { code, .. } => format!("remote helper {code:?}"),
+        ExecutionError::TargetIo(source) => {
+            format!("target IO {:?}; os={:?}", source.kind, source.raw_os_error)
+        }
+        ExecutionError::InvalidInput(_) => "invalid execution input".into(),
+        ExecutionError::Disconnected(_) => "execution disconnected; result may be unknown".into(),
+        ExecutionError::Protocol(_) | ExecutionError::ProtocolMismatch { .. } => {
+            "execution protocol failure".into()
+        }
+        ExecutionError::Cancelled => "execution cancelled".into(),
+        ExecutionError::CollectFailed { cause, .. } => {
+            format!("output incomplete: {}", execution_error(cause))
+        }
+        ExecutionError::Http(_) => "HTTP egress failed".into(),
     }
 }
 
@@ -179,5 +152,16 @@ pub(super) fn git_operation(args: &str) -> &'static str {
         (Some("status"), _) => "status --porcelain=v1 --untracked-files=all --ignored=matching",
         (Some("branch"), _) => "branch",
         _ => "inspection",
+    }
+}
+
+pub(super) fn file_cause(error: &pl_tool::workspace_file::WorkspaceFileError) -> String {
+    use pl_tool::workspace_file::WorkspaceFileError;
+    match error {
+        WorkspaceFileError::Execution(source) => execution_error(source),
+        WorkspaceFileError::Removal(source) => {
+            format!("removal unconfirmed: {}", execution_error(source))
+        }
+        WorkspaceFileError::Policy(_) => "workspace path policy rejected".into(),
     }
 }

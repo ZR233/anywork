@@ -15,52 +15,31 @@ use std::sync::Arc;
 
 /// Explicit physical command binding chosen from the current product configuration.
 #[derive(Debug)]
-pub enum StudioCommandBinding {
-    Local {
-        workspace: pl_tool::workspace::ToolWorkspace,
-        environment: pl_tool::environment::ExecutionEnvironment,
-        child_environment: std::collections::BTreeMap<String, String>,
-        access: CommandAccess,
-    },
-    Remote {
-        host: pl_tool::remote::RemoteWorkspaceHost,
-        workspace: pl_tool::workspace::ToolWorkspace,
-    },
+pub struct StudioCommandBinding {
+    pub commands: pl_tool::command::ExecutorCommandBackend,
+    pub workspace: pl_tool::workspace::ToolWorkspace,
+    pub access: CommandAccess,
 }
 
 /// Physical command controllers remain unique per Thread across catalog refreshes.
 #[derive(Debug, Clone)]
-pub(crate) enum StudioCommandProcesses {
-    Local(Arc<pl_tool::command::CommandProcessManager<pl_tool::command::LocalCommandBackend>>),
-    Remote(Arc<pl_tool::command::CommandProcessManager<pl_tool::remote::RemoteCommandBackend>>),
-}
+pub(crate) struct StudioCommandProcesses(
+    Arc<pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>>,
+);
 #[derive(Debug, Clone)]
-pub(crate) enum WeakCommandProcesses {
-    Local(
-        std::sync::Weak<
-            pl_tool::command::CommandProcessManager<pl_tool::command::LocalCommandBackend>,
-        >,
-    ),
-    Remote(
-        std::sync::Weak<
-            pl_tool::command::CommandProcessManager<pl_tool::remote::RemoteCommandBackend>,
-        >,
-    ),
-}
+pub(crate) struct WeakCommandProcesses(
+    std::sync::Weak<
+        pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>,
+    >,
+);
 impl StudioCommandProcesses {
     pub(crate) fn downgrade(&self) -> WeakCommandProcesses {
-        match self {
-            Self::Local(manager) => WeakCommandProcesses::Local(Arc::downgrade(manager)),
-            Self::Remote(manager) => WeakCommandProcesses::Remote(Arc::downgrade(manager)),
-        }
+        WeakCommandProcesses(Arc::downgrade(&self.0))
     }
 }
 impl WeakCommandProcesses {
     pub(crate) fn upgrade(&self) -> Option<StudioCommandProcesses> {
-        match self {
-            Self::Local(manager) => manager.upgrade().map(StudioCommandProcesses::Local),
-            Self::Remote(manager) => manager.upgrade().map(StudioCommandProcesses::Remote),
-        }
+        self.0.upgrade().map(StudioCommandProcesses)
     }
 }
 
@@ -156,10 +135,6 @@ impl StudioThreadTools {
         options: StudioWorkspaceTools,
         mut commands: Option<StudioCommandProcesses>,
     ) -> Result<Self, ThreadAssemblyError> {
-        // The local worker exists only on Linux; other platforms drop the field
-        // via `..` so it never becomes an unused binding.
-        #[cfg(target_os = "linux")]
-        let helper_source = options.helper_source.clone();
         let StudioWorkspaceTools {
             binding,
             store,
@@ -168,140 +143,60 @@ impl StudioThreadTools {
             ..
         } = options;
         let mut registrations = Vec::new();
-        match binding {
-            StudioCommandBinding::Local {
+        let StudioCommandBinding {
+            commands: backend,
+            workspace,
+            access,
+        } = binding;
+        let execution = backend.binding();
+        let files = Arc::new(execution.files().with_workspace(workspace.clone()));
+        if capabilities.exec {
+            let exec_definition = ThreadBuiltin::Exec.declaration();
+            let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
+            let exec = prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
+            let stdin =
+                prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)?;
+            let archive = store.command_archive(files.clone(), host_scratch);
+            let processes = command_processes(&commands, backend)?;
+            commands = Some(StudioCommandProcesses(processes.clone()));
+            registrations.extend(
+                ThreadExecTool::from_process_manager(
+                    processes,
+                    Arc::new(archive),
+                    access,
+                    exec_definition,
+                )
+                .registrations(exec, stdin, stdin_definition),
+            );
+        }
+        if capabilities.workspace_files {
+            for &kind in pl_tool::workspace_file::WorkspaceMutationKind::all() {
+                let definition = kind.definition();
+                let prepared = prepare_registration(
+                    definition.name(),
+                    &definition,
+                    ToolCallPolicy::DirectOnly,
+                )?;
+                let tool = pl_tool::workspace_file::WorkspaceMutationTool::new(
+                    kind,
+                    definition,
+                    files.clone(),
+                    workspace.clone(),
+                );
+                registrations.push(
+                    prepared
+                        .attach(ToolHandle::new(tool))
+                        .with_presentation_contract(ToolPresentationContract::new(
+                            mutation_presentation_contract(kind),
+                        ))
+                        .with_authorization(workspace.authorization()),
+                );
+            }
+            registrations.extend(file_tools(
+                files,
                 workspace,
-                environment,
-                child_environment,
-                access,
-            } => {
-                if capabilities.exec {
-                    let exec_definition = ThreadBuiltin::Exec.declaration();
-                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-                    let exec =
-                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
-                    let stdin = prepare_registration(
-                        "write_stdin",
-                        &stdin_definition,
-                        ToolCallPolicy::DirectOnly,
-                    )?;
-                    let processes = match &commands {
-                        Some(StudioCommandProcesses::Local(processes)) => processes.clone(),
-                        Some(StudioCommandProcesses::Remote(_)) => {
-                            return Err(ThreadAssemblyError::Identity(
-                                "physical command binding changed; reactivate this Thread".into(),
-                            ));
-                        }
-                        None => {
-                            let backend = pl_tool::command::LocalCommandBackend::new(
-                                workspace.root().to_path_buf(),
-                            )
-                            .with_execution_environment(environment)
-                            .with_child_environment(child_environment);
-                            #[cfg(target_os = "linux")]
-                            let backend = backend.with_worker_executable(
-                                crate::worker_assets::local_worker(helper_source).await?,
-                            );
-                            Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                                backend,
-                            )))
-                        }
-                    };
-                    commands = Some(StudioCommandProcesses::Local(processes.clone()));
-                    registrations.extend(
-                        ThreadExecTool::from_process_manager(
-                            processes,
-                            Arc::new(store.local_command_archive()),
-                            access,
-                            exec_definition,
-                        )
-                        .registrations(exec, stdin, stdin_definition),
-                    );
-                }
-                if capabilities.workspace_files {
-                    let files = Arc::new(
-                        pl_tool::workspace_file::LocalWorkspaceFileBackend::confined(
-                            workspace.clone(),
-                        )
-                        .await?,
-                    );
-                    registrations.extend(local_mutation_tools(workspace.clone())?);
-                    registrations.extend(file_tools(
-                        files,
-                        workspace,
-                        Arc::new(super::media::MediaHost(store.clone())),
-                    )?);
-                }
-            }
-            StudioCommandBinding::Remote { host, workspace } => {
-                if capabilities.exec {
-                    let exec_definition = ThreadBuiltin::Exec.declaration();
-                    let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-                    let exec =
-                        prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
-                    let stdin = prepare_registration(
-                        "write_stdin",
-                        &stdin_definition,
-                        ToolCallPolicy::DirectOnly,
-                    )?;
-                    let archive = store
-                        .remote_command_archive(Arc::new(host.files.clone()), host_scratch.clone());
-                    let processes = match &commands {
-                        Some(StudioCommandProcesses::Remote(processes)) => processes.clone(),
-                        Some(StudioCommandProcesses::Local(_)) => {
-                            return Err(ThreadAssemblyError::Identity(
-                                "physical command binding changed; reactivate this Thread".into(),
-                            ));
-                        }
-                        None => Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                            host.commands.clone(),
-                        ))),
-                    };
-                    commands = Some(StudioCommandProcesses::Remote(processes.clone()));
-                    registrations.extend(
-                        ThreadExecTool::from_process_manager(
-                            processes,
-                            Arc::new(archive),
-                            CommandAccess::WorkspaceOnly,
-                            exec_definition,
-                        )
-                        .registrations(exec, stdin, stdin_definition),
-                    );
-                }
-                if capabilities.workspace_files {
-                    for &kind in pl_tool::remote::RemoteMutationKind::all() {
-                        let definition = kind.definition();
-                        let prepared = prepare_registration(
-                            definition.name(),
-                            &definition,
-                            ToolCallPolicy::DirectOnly,
-                        )?;
-                        let tool = pl_tool::remote::RemoteWorkspaceMutationTool::new(
-                            kind,
-                            definition,
-                            Arc::new(host.files.clone()),
-                            workspace.clone(),
-                        );
-                        registrations.push(
-                            prepared
-                                .attach(ToolHandle::new(tool))
-                                .with_presentation_contract(ToolPresentationContract::new(
-                                    remote_mutation_presentation_contract(kind),
-                                ))
-                                .with_authorization(workspace.authorization()),
-                        );
-                    }
-                    let files = pl_tool::workspace_file::WorkspacePolicyBackend::new(
-                        Arc::new(host.files.clone()),
-                        workspace.clone(),
-                    );
-                    registrations.extend(file_tools(
-                        Arc::new(files),
-                        workspace,
-                        Arc::new(super::media::MediaHost(store.clone())),
-                    )?);
-                }
-            }
+                Arc::new(super::media::MediaHost(store.clone())),
+            )?);
         }
         if capabilities.ask_user {
             let ask_user = prepare_native_tool::<pl_tool::ask_user::AskUserTool>()?;
@@ -625,69 +520,17 @@ impl StudioThreadTools {
     }
 }
 
-fn remote_mutation_presentation_contract(
-    kind: pl_tool::remote::RemoteMutationKind,
+fn mutation_presentation_contract(
+    kind: pl_tool::workspace_file::WorkspaceMutationKind,
 ) -> &'static str {
     match kind {
-        pl_tool::remote::RemoteMutationKind::CreateDirectory => "builtin.create_directory@1",
-        pl_tool::remote::RemoteMutationKind::Delete => "builtin.delete_path@1",
-        pl_tool::remote::RemoteMutationKind::Copy => "builtin.copy_path@1",
-        pl_tool::remote::RemoteMutationKind::Move => "builtin.move_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::CreateDirectory => {
+            "builtin.create_directory@1"
+        }
+        pl_tool::workspace_file::WorkspaceMutationKind::Delete => "builtin.delete_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::Copy => "builtin.copy_path@1",
+        pl_tool::workspace_file::WorkspaceMutationKind::Move => "builtin.move_path@1",
     }
-}
-
-fn local_mutation_tools(
-    workspace: pl_tool::workspace::ToolWorkspace,
-) -> Result<Vec<Registration>, ThreadAssemblyError> {
-    use pl_tool::file::{CopyPathTool, CreateDirectoryTool, DeletePathTool, MovePathTool};
-    let authority = workspace.authorization();
-    let create = prepare_native_tool::<CreateDirectoryTool>()?;
-    let create_registration = prepare_registration(
-        "create_directory",
-        create.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    let delete = prepare_native_tool::<DeletePathTool>()?;
-    let delete_registration = prepare_registration(
-        "delete_path",
-        delete.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    let copy = prepare_native_tool::<CopyPathTool>()?;
-    let copy_registration =
-        prepare_registration("copy_path", copy.definition(), ToolCallPolicy::DirectOnly)?;
-    let move_path = prepare_native_tool::<MovePathTool>()?;
-    let move_registration = prepare_registration(
-        "move_path",
-        move_path.definition(),
-        ToolCallPolicy::DirectOnly,
-    )?;
-    Ok(vec![
-        create_registration
-            .attach(ToolHandle::new(
-                create.attach(CreateDirectoryTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.create_directory@1"))
-            .with_authorization(authority.clone()),
-        delete_registration
-            .attach(ToolHandle::new(
-                delete.attach(DeletePathTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.delete_path@1"))
-            .with_authorization(authority.clone()),
-        copy_registration
-            .attach(ToolHandle::new(
-                copy.attach(CopyPathTool::new(workspace.clone())),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.copy_path@1"))
-            .with_authorization(authority.clone()),
-        move_registration
-            .attach(ToolHandle::new(
-                move_path.attach(MovePathTool::new(workspace)),
-            ))
-            .with_presentation_contract(ToolPresentationContract::new("builtin.move_path@1"))
-            .with_authorization(authority),
-    ])
 }
 
 fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
@@ -768,4 +611,22 @@ fn file_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
             .with_authorization(authorization),
     );
     Ok(tools)
+}
+
+fn command_processes(
+    existing: &Option<StudioCommandProcesses>,
+    backend: pl_tool::command::ExecutorCommandBackend,
+) -> Result<
+    Arc<pl_tool::command::CommandProcessManager<pl_tool::command::ExecutorCommandBackend>>,
+    ThreadAssemblyError,
+> {
+    match existing {
+        Some(existing) if existing.0.backend().is_same_binding(&backend) => Ok(existing.0.clone()),
+        Some(_) => Err(ThreadAssemblyError::Identity(
+            "physical execution binding changed; reactivate this Thread".into(),
+        )),
+        None => Ok(Arc::new(pl_tool::command::CommandProcessManager::new(
+            Arc::new(backend),
+        ))),
+    }
 }

@@ -78,5 +78,6 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_write_file_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_filesystem::write_file::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
+    pl_tool_filesystem::write_file::definition::<FileCapability<super::ExecutorWorkspaceFileBackend>>(
+    )
 }

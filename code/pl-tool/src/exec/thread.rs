@@ -12,12 +12,11 @@ use pl_core::tool::{
 };
 use sha2::{Digest, Sha256};
 
-use super::MAX_MODEL_BODY_BYTES;
 use crate::command::{
     CommandBackend,
     process_manager::{
-        CommandCaptureFailure, CommandOutputSnapshot, CommandProcessFinalResult,
-        CommandProcessManager, CommandStartRequest,
+        CommandOutputSnapshot, CommandProcessFinalResult, CommandProcessManager,
+        CommandStartRequest,
     },
 };
 use pl_tool_command::exec::ExecOutcome;
@@ -127,20 +126,11 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
     }
 }
 
-/// Typed obligation that re-saves a command capture the archive could not store.
-///
-/// It first re-materializes any accepted bytes a failed capture append could not write — truncating
-/// the fragment back to the offset it was at before the failed append and re-appending exactly that
-/// chunk — so a retry never archives a short fragment as if it were whole. It then re-runs the *same*
-/// archive call with the *same* capture snapshot, so retrying re-saves the exact accepted bytes under
-/// their stable content-addressed identity: it never reruns the command, and a repeated retry
-/// produces the same reference instead of a duplicate. A successful retry also names the committed
-/// tool result — by the same call id it was committed under — so the durable reference reaches that
-/// result instead of becoming an orphan the UI and cold recovery cannot locate.
+/// Retry retaining the same confirmed prefix in desktop history. Never reconstruct
+/// unknown capture bytes, append to the target file or execute the command again.
 #[derive(Debug)]
-struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
+struct ArchiveRetentionObligation<A: CommandOutputArchive> {
     archive: Arc<A>,
-    backend: Arc<B>,
     thread_id: String,
     call_id: String,
     snapshot: CommandOutputSnapshot,
@@ -148,10 +138,9 @@ struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
     stream: crate::command::CommandCaptureStream,
 }
 
-impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B> {
+impl<A: CommandOutputArchive> ArchiveRetentionObligation<A> {
     fn new(
         archive: Arc<A>,
-        backend: Arc<B>,
         thread_id: &str,
         call_id: &str,
         snapshot: CommandOutputSnapshot,
@@ -160,7 +149,6 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
     ) -> Self {
         Self {
             archive,
-            backend,
             thread_id: thread_id.to_owned(),
             call_id: call_id.to_owned(),
             snapshot,
@@ -170,7 +158,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
     }
 }
 
-impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B> {
+impl<A: CommandOutputArchive> ArchiveRetentionObligation<A> {
     fn capture_path(&self) -> &std::path::Path {
         match self.stream {
             crate::command::CommandCaptureStream::Stdout => &self.snapshot.capture_file,
@@ -179,9 +167,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
     }
 }
 
-impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
-    for ArchiveRetentionObligation<A, B>
-{
+impl<A: CommandOutputArchive> OutputRetryObligation for ArchiveRetentionObligation<A> {
     fn identity(&self) -> String {
         // The capture path is the stable identity of one operation's accepted output: the live report
         // and the return path both name the same fragment, so the owner attaches one obligation even
@@ -191,8 +177,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
     }
     fn retry(&self) -> OutputRetryFuture<'_> {
         Box::pin(async move {
-            let (reference, _) = super::capture_retention::retain(
-                &*self.backend,
+            let reference = super::capture_retention::retain(
                 &*self.archive,
                 &self.thread_id,
                 &self.snapshot,
@@ -213,23 +198,9 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
     }
 
     fn received_bytes(&self) -> u64 {
-        // The bytes this operation really accepted: the fragment the backend last confirmed writing,
-        // plus every accepted chunk still owed. Both are facts the obligation already carries, so the
-        // reported size never depends on a fragment-length read that could fail and understate it.
-        let committed = self.snapshot.capture_offsets.get(self.stream);
-        let pending: u64 = self
-            .snapshot
-            .capture_repair()
-            .map(|repair| {
-                repair
-                    .chunks
-                    .iter()
-                    .filter(|chunk| chunk.stream == self.stream)
-                    .map(|chunk| chunk.pending.len() as u64)
-                    .sum()
-            })
-            .unwrap_or(0);
-        committed.saturating_add(pending)
+        self.snapshot
+            .confirmed_bytes(self.stream)
+            .expect("archive obligations require a confirmed prefix")
     }
 
     fn location(&self) -> String {
@@ -327,15 +298,15 @@ pub enum ExecFailure {
     /// 这是预期内的容量终止，不是可靠保存故障：它不欠任何可靠保存义务，进程管理器也不会为它
     /// 挂 `OutputRetryObligation`，因此不会触发无限 repair。
     #[error(
-        "command output exceeded the {limit_bytes}-byte per-command capture limit: {charged_bytes} bytes of capture were stored and {refused_bytes} bytes of observed storage cost were refused"
+        "command output exceeded the {limit_bytes}-byte per-command capture limit: confirmed stored bytes: {charged_bytes:?}, observed refused bytes: {refused_bytes:?}"
     )]
     OutputLimitExceeded {
         /// 本 operation 生效的落盘上限（字节）。
         limit_bytes: u64,
         /// 已接纳（因此已保留）的存储成本。
-        charged_bytes: u64,
+        charged_bytes: Option<u64>,
         /// 被拒绝接纳的存储成本。
-        refused_bytes: u64,
+        refused_bytes: Option<u64>,
     },
 }
 
@@ -355,7 +326,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = safe_identity(&context.call_id);
-        let (observer, previews, failures) = super::progress::ExecOutputObserver::channel();
+        let (observer, previews) = super::progress::ExecOutputObserver::channel();
         let tool = pl_tool_command::exec::ExecTool::new(self.definition.clone());
         let execution = tool.execute(
             input.content().to_owned(),
@@ -376,51 +347,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 cancellation: context.cancellation.clone(),
             },
         );
-        // Report a capture failure through the running call's reliable channel the moment the reader
-        // observes it — before the process tree finishes terminating and draining — so other
-        // model/tool admission is blocked while this call is still in flight, not only when `drive`
-        // returns. The same obligation is reported again on the return path below, so stopping this
-        // task here can never lose the report.
-        let reporter = tokio::spawn({
-            let processes = self.processes.clone();
-            let archive = self.archive.clone();
-            let thread_id = context.thread_id.clone();
-            let call_id = context.call_id.clone();
-            let tasks = context.tasks.clone();
-            // The reporter needs its own handle: `task_id` is still borrowed by the running
-            // `execution` future below, so it cannot be moved into this task.
-            let report_task_id = task_id.clone();
-            async move {
-                let mut failures = failures;
-                while let Some(failure) = failures.recv().await {
-                    let Some(snapshot) = processes
-                        .snapshot(&report_task_id, MAX_MODEL_BODY_BYTES)
-                        .await
-                    else {
-                        continue;
-                    };
-                    for stream in [
-                        crate::command::CommandCaptureStream::Stdout,
-                        crate::command::CommandCaptureStream::Stderr,
-                    ] {
-                        if let Some(fault) = capture_output_fault(
-                            &failure,
-                            archive.clone(),
-                            processes.backend(),
-                            &thread_id,
-                            &call_id,
-                            &snapshot,
-                            stream,
-                        ) {
-                            report_output_storage_fault(tasks.as_ref(), &fault).await;
-                        }
-                    }
-                }
-            }
-        });
         let result = super::progress::drive(execution, previews, context.tasks.as_ref()).await;
-        reporter.abort();
-        let _ = reporter.await;
         let mut result = result.map_err(|error| match error {
             pl_tool_command::exec::ExecError::InvalidInput(error) => {
                 super::ExecInputError(error).into_tool_error()
@@ -430,35 +357,17 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             }
         })?;
         let snapshot = &mut result.snapshot;
-        // Build the typed output fault the moment the capture failed and report it through the running
-        // call's reliable channel *before* the archive and projection, so other model/tool admission is
-        // blocked immediately instead of only when this call unwinds. A write or read failure keeps its
-        // retriable obligation (re-save the accepted capture). 命中声明的单命令捕获上限不算可靠保存
-        // 故障，因此这里不产出存储故障：已接纳字节留在捕获里走正常归档，工具结果给出 typed 的容量
-        // 终止，准入照常继续。
-        let mut capture_fault = None;
         let mut resources = Vec::new();
         let mut archive_error = None;
         for stream in [
             crate::command::CommandCaptureStream::Stdout,
             crate::command::CommandCaptureStream::Stderr,
         ] {
-            if let Some(failure) = &snapshot.output_failure
-                && let Some(fault) = capture_output_fault(
-                    failure,
-                    self.archive.clone(),
-                    self.processes.backend(),
-                    &context.thread_id,
-                    &context.call_id,
-                    snapshot,
-                    stream,
-                )
-            {
-                report_output_storage_fault(context.tasks.as_ref(), &fault).await;
-                capture_fault.get_or_insert(fault);
+            // A disconnected or abandoned stream has no trustworthy prefix to retain.
+            if snapshot.confirmed_bytes(stream).is_none() {
+                continue;
             }
             match super::capture_retention::retain(
-                &*self.processes.backend(),
                 &*self.archive,
                 &context.thread_id,
                 snapshot,
@@ -466,15 +375,11 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             )
             .await
             {
-                Ok((reference, confirmed)) => {
-                    snapshot.capture_offsets.set(stream, confirmed);
-                    resources.push((stream, reference));
-                }
+                Ok(reference) => resources.push((stream, reference)),
                 Err(error) => {
                     let error = attach_archive_obligation(
                         error,
                         self.archive.clone(),
-                        self.processes.backend(),
                         &context.thread_id,
                         &context.call_id,
                         snapshot,
@@ -513,10 +418,10 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             ExecOutcome::Cancelled => {
                 Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output))
             }
-            ExecOutcome::CaptureFailed => {
-                let fault = capture_fault.expect("capture failure carries its host storage fault");
-                Err(ToolError::new((*fault).clone()).with_output(output))
-            }
+            ExecOutcome::CaptureFailed => Err(ToolError::new(ExecFailure::Process(
+                snapshot.message.clone(),
+            ))
+            .with_output(output)),
             ExecOutcome::OutputLimit(limit) => {
                 Err(ToolError::new(ExecFailure::OutputLimitExceeded {
                     limit_bytes: limit.limit_bytes,
@@ -534,57 +439,14 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
     }
 }
 
-/// Builds the typed storage fault for one capture failure, with its retriable obligation when owed.
-///
-/// The category travels as a value, so core never parses the diagnostic text to classify it. A write or
-/// read failure carries the obligation that re-materializes the exact accepted plan, so the Thread's
-/// pause is only released once those bytes are really stored.
-///
-/// 命中所声明的单命令落盘上限是**预期容量终止**，不是可靠保存故障：命令是按自己的上限被有意停下
-/// 的，已接纳字节仍在捕获里由正常归档路径保存，因此这里不产出 `OutputStorageFault`，也就不挂
-/// `OutputRetryObligation`、不暂停准入、不会因为同一条上限反复重试而 repair 不止。容量终止由
-/// [`CommandCaptureFailure::OutputLimitExceeded`] 与 [`ExecFailure::OutputLimitExceeded`] 表达。
-fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
-    failure: &CommandCaptureFailure,
-    archive: Arc<A>,
-    backend: Arc<B>,
-    thread_id: &str,
-    call_id: &str,
-    snapshot: &CommandOutputSnapshot,
-    stream: crate::command::CommandCaptureStream,
-) -> Option<Arc<OutputStorageFault>> {
-    let kind = match failure {
-        CommandCaptureFailure::OutputLimitExceeded { .. } => return None,
-        CommandCaptureFailure::Write { .. }
-        | CommandCaptureFailure::Flush { .. }
-        | CommandCaptureFailure::Read { .. } => StorageFaultKind::WriteFailed,
-    };
-    let source = ColdStoreError {
-        source: Box::new(std::io::Error::other(failure.message())),
-    };
-    let fault = OutputStorageFault::new(kind, Arc::new(source));
-    Some(Arc::new(fault.with_obligation(Arc::new(
-        ArchiveRetentionObligation::new(
-            archive,
-            backend,
-            thread_id,
-            call_id,
-            snapshot.clone(),
-            kind,
-            stream,
-        ),
-    ))))
-}
-
 /// Attaches the archive's retriable obligation to an archive failure that named it.
 ///
 /// Only a failure that already arrived as a typed [`OutputStorageFault`] is rebuilt with the
 /// obligation; any other archive error (invalid media, integrity, a plain policy refusal) is returned
 /// unchanged, because it is not a reliable-output storage obligation the owner could retry.
-fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
+fn attach_archive_obligation<A: CommandOutputArchive>(
     error: ToolError,
     archive: Arc<A>,
-    backend: Arc<B>,
     thread_id: &str,
     call_id: &str,
     snapshot: &CommandOutputSnapshot,
@@ -597,7 +459,6 @@ fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
     let source = fault.source.clone();
     let obligation: Arc<dyn OutputRetryObligation> = Arc::new(ArchiveRetentionObligation::new(
         archive,
-        backend,
         thread_id,
         call_id,
         snapshot.clone(),

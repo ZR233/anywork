@@ -35,52 +35,52 @@ impl SessionFiles {
         &self.thread_key
     }
 
+    /// Portable relative spelling also used by a Windows host's Linux executor.
+    /// Native filesystem APIs on each supported host accept these separators.
+    fn relative(&self, suffix: &str) -> PathBuf {
+        let root = format!(".anywork/sessions/{}", self.thread_key);
+        PathBuf::from(if suffix.is_empty() {
+            root
+        } else {
+            format!("{root}/{suffix}")
+        })
+    }
     /// `.anywork/sessions/<thread-key>` relative to the workspace root.
     pub fn root(&self) -> PathBuf {
-        PathBuf::from(".anywork")
-            .join("sessions")
-            .join(&self.thread_key)
+        self.relative("")
     }
-
-    /// Disposable execution files. Artifacts are deliberately outside this directory.
+    /// Disposable execution files; artifacts live outside this directory.
     pub fn temp(&self) -> PathBuf {
-        self.root().join("temp")
+        self.relative("temp")
     }
-
-    /// Temporary scripts, probes, and intermediate files for this Thread.
     pub fn scratch(&self) -> PathBuf {
         self.temp()
     }
-
-    /// Outputs that are not yet at a user-specified location.
     pub fn artifacts(&self) -> PathBuf {
-        self.root().join("artifacts")
+        self.relative("artifacts")
     }
-
-    /// Command capture directories for this Thread.
     pub fn commands(&self) -> PathBuf {
-        self.temp().join("commands")
+        self.relative("temp/commands")
     }
-
-    /// Input materializations, not the reliable attachment store.
     pub fn uploads(&self) -> PathBuf {
-        self.temp().join("uploads")
+        self.relative("temp/uploads")
     }
-
-    /// An optional, lazily created Python environment. Never relocate an old venv.
+    /// An optional lazily created Python environment. Existing environments are not relocated.
     pub fn python_environment(&self) -> PathBuf {
-        self.temp().join(".venv")
+        self.relative("temp/.venv")
     }
-
-    /// Model-readable command capture path for one call.
-    ///
-    /// `call_id` is the opaque call physical key (`task-` plus SHA-256) or any call
-    /// identity. Raw call/process identifiers never appear as path components, and an
-    /// already opaque `task-{hex}` key is reused rather than hashed again.
+    /// Model-readable raw stdout for this call. Opaque keys are reused without rehashing.
     pub fn command_output(&self, call_id: &str) -> PathBuf {
-        self.commands()
-            .join(opaque_call_key(call_id))
-            .join("stdout.log")
+        self.relative(&format!(
+            "temp/commands/{}/stdout.log",
+            opaque_call_key(call_id)
+        ))
+    }
+    pub fn command_stderr_output(&self, call_id: &str) -> PathBuf {
+        self.relative(&format!(
+            "temp/commands/{}/stderr.log",
+            opaque_call_key(call_id)
+        ))
     }
 }
 

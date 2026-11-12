@@ -19,6 +19,7 @@ impl ExecResult {
     pub fn outcome(&self) -> ExecOutcome {
         match self.snapshot.state.final_result() {
             Some(CommandProcessFinalResult::Cancelled) => ExecOutcome::Cancelled,
+            Some(CommandProcessFinalResult::TimedOut) => ExecOutcome::Failed,
             _ if matches!(
                 self.snapshot.output_failure,
                 Some(

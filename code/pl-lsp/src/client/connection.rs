@@ -17,7 +17,7 @@ use super::status::LspClientStatus;
 use super::transport::LspTransport;
 type ClientTask = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 use crate::driver::LspServerDriver;
-use crate::host::{LspChild, LspHostBackend};
+use crate::host::{LspHostBackend, LspHostProcess};
 use crate::runtime::{LspResult, LspRuntimeError, ResolvedLspServer};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -26,7 +26,7 @@ pub(crate) struct LspClient {
     pub(super) server: ResolvedLspServer,
     pub(super) driver: Arc<dyn LspServerDriver>,
     pub(super) host: Option<Arc<dyn LspHostBackend>>,
-    pub(super) child: Arc<Mutex<Option<LspChild>>>,
+    pub(super) child: Arc<Mutex<Option<LspHostProcess>>>,
     pub(super) transport: Mutex<Option<LspTransport>>,
     pub(super) rpc: RwLock<Option<RpcClient>>,
     pub(super) opened_files: Mutex<HashMap<PathBuf, OpenDocument>>,

@@ -1,31 +1,6 @@
-//! Host-owned process transitions and capture plan.
+//! Product task transitions over independent root and capture completions.
 use super::{CommandProcessState, HeadTailBuffer, INTERNAL_BUFFER_BYTES, StreamKind};
-use crate::command::{CommandCaptureOffsets, CommandCaptureStream};
 pub use pl_tool_command::process::state::*;
-use std::sync::Arc;
-
-/// Decision the operation's shared capture plan makes for one read chunk.
-///
-/// Accepting is the single serialization point for both streams: a chunk joins the bounded plan in
-/// the exact order it was read, before it is published, so anything the live observer saw is retained
-/// even if the other stream's append fails first. A chunk read after the first fault, or one that
-/// would exceed the shared budget, is refused instead of joining the plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CaptureAcceptance {
-    /// The chunk joined the bounded plan and is now published and queued for the single writer.
-    Accepted,
-    /// 本 operation 的落盘上限已满；该 chunk 被拒绝，不进入修复计划。
-    ///
-    /// 载荷把"上限是多少、已保留多少、被拒多少"一并交回，让终止原因与返回快照都能完整说明
-    /// 这次容量终止，而不是只留下"计划满了"这一句。
-    OutputLimitExceeded {
-        limit_bytes: u64,
-        charged_bytes: u64,
-        refused_bytes: u64,
-    },
-    /// A capture fault already stopped admission; the chunk is refused.
-    Faulted,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CommandProcessTransition {
@@ -45,23 +20,11 @@ pub(super) enum CommandProcessTransition {
 }
 
 impl CommandProcessState {
-    /// Builds the running state with the capture fragment the backend already confirmed.
-    ///
-    /// `capture_committed_len` is that confirmed length (the prepared header before any chunk), so a
-    /// later repair truncates back to a fact the backend reported instead of a length read that could
-    /// fail and be mistaken for "nothing written".
-    ///
-    /// `capture_limit_bytes` 是本 operation 生效的单命令落盘上限，启动时由 backend 声明或取 PL
-    /// 默认值；此后不再变化，因此快照与终止原因都引用同一个事实。
-    ///
-    /// `model_output_bytes_cap` 是同一个 backend 声明的模型可见输出字节上限；`None` 表示沿用
-    /// 既有截断语义。两者是不同的边界：前者约束**磁盘**，后者约束进入模型上下文的**正文**。
+    /// Freeze output budgets; target capture is not known before its completion.
     pub(super) fn new(
         stdout_open: bool,
         stderr_open: bool,
-        capture_committed_len: u64,
         capture_limit_bytes: u64,
-        capture_ownership: crate::command::CommandCaptureOwnership,
         model_output_bytes_cap: Option<u64>,
     ) -> Self {
         Self {
@@ -75,19 +38,9 @@ impl CommandProcessState {
             output_revision: 0,
             exit: None,
             capture_limit_bytes,
-            capture_ownership,
-            producer_capture: None,
-            capture_charged_bytes: capture_committed_len,
-            capture_received_bytes: capture_committed_len,
-            capture_refused_bytes: 0,
+            capture_result: None,
+            capture_completion_observed: false,
             model_output_bytes_cap,
-            capture_offsets: CommandCaptureOffsets {
-                stdout: capture_committed_len,
-                stderr: 0,
-            },
-            capture_pending: std::collections::VecDeque::new(),
-            capture_write_failed: false,
-            capture_drained: false,
             output_failure: None,
         }
     }
@@ -111,147 +64,49 @@ impl CommandProcessState {
         self.output_revision
     }
 
-    /// 把一个已读 chunk 接纳进本 operation 有界、共享、有序的捕获计划。
-    ///
-    /// 计划是两个流唯一的序列化点：chunk 按读取顺序在**发布之前**入队，因此观察者已经看到的字节
-    /// 一定已保留，即使另一个流的 append 先失败。首个故障之后读到的 chunk 一律拒绝。
-    ///
-    /// `storage_cost` 是 backend 对"把这个 chunk 落盘"的估算（见
-    /// [`CommandBackend::capture_storage_cost`](crate::command::CommandBackend::capture_storage_cost)），
-    /// 在接纳**之前**计入共享额度：会超出本 operation 上限的 chunk 根本不入队，因此计划与
-    /// 磁盘占用被同一个上限约束。这里只拒绝而不写盘，所以容量终止不会被伪装成 IO 失败。
-    pub(super) fn accept_capture(
-        &mut self,
-        stream: CommandCaptureStream,
-        chunk: &[u8],
-        storage_cost: u64,
-    ) -> CaptureAcceptance {
-        // Producer 已在物理写入前执行预算；客户端仅排空已获接纳的有界传输流。
-        // 两个 HeadTailBuffer 与传输窗口约束驻留内存，不再以累计传输量代算磁盘用量。
-        if self.capture_ownership == crate::command::CommandCaptureOwnership::Producer {
-            return CaptureAcceptance::Accepted;
-        }
-        if self.capture_write_failed || self.output_failure.is_some() {
-            self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
-            return CaptureAcceptance::Faulted;
-        }
-        if storage_cost > self.capture_limit_bytes - self.capture_charged_bytes {
-            self.capture_refused_bytes = self.capture_refused_bytes.saturating_add(storage_cost);
-            return CaptureAcceptance::OutputLimitExceeded {
-                limit_bytes: self.capture_limit_bytes,
-                charged_bytes: self.capture_charged_bytes,
-                refused_bytes: self.capture_refused_bytes,
-            };
-        }
-        self.capture_charged_bytes += storage_cost;
-        self.capture_received_bytes += chunk.len() as u64;
-        self.capture_pending.push_back(CaptureRepairChunk {
-            stream,
-            pending: Arc::from(chunk),
-        });
-        CaptureAcceptance::Accepted
-    }
-
-    pub(super) fn complete_producer_capture(
-        &mut self,
-        receipt: crate::command::CommandCaptureReceipt,
-    ) -> Result<(), String> {
-        if self.capture_ownership != crate::command::CommandCaptureOwnership::Producer
-            || receipt.limit_bytes != self.capture_limit_bytes
-            || receipt.charged_bytes > receipt.limit_bytes
-            || receipt.confirmed.total() > receipt.captured_bytes
-            || receipt.captured_bytes > receipt.charged_bytes
+    pub(super) fn observe_capture(&mut self, capture: pl_remote_helper::CaptureResult) {
+        use crate::command::{
+            CommandCaptureIoError, CommandCaptureResult, CommandCaptureState, CommandCapturedStream,
+        };
+        let convert = |stream: pl_remote_helper::CapturedStream| CommandCapturedStream {
+            state: match stream.state {
+                pl_remote_helper::CaptureState::Complete => CommandCaptureState::Complete,
+                pl_remote_helper::CaptureState::LimitExceeded => CommandCaptureState::LimitExceeded,
+                pl_remote_helper::CaptureState::IoFailed => CommandCaptureState::IoFailed,
+                pl_remote_helper::CaptureState::Incomplete => CommandCaptureState::Incomplete,
+            },
+            confirmed_bytes: stream.confirmed_bytes,
+            error: stream.error.map(|error| CommandCaptureIoError {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            }),
+        };
+        let capture = CommandCaptureResult {
+            stdout: convert(capture.stdout),
+            stderr: convert(capture.stderr),
+        };
+        if capture.stdout.state == CommandCaptureState::LimitExceeded
+            || capture.stderr.state == CommandCaptureState::LimitExceeded
         {
-            return Err("producer capture receipt violates ownership or budget".into());
+            self.record_capture_failure(CommandCaptureFailure::OutputLimitExceeded {
+                limit_bytes: self.capture_limit_bytes,
+                charged_bytes: capture.confirmed_total(),
+                refused_bytes: None,
+            });
+        } else if !capture.complete() {
+            self.record_capture_failure(CommandCaptureFailure::Read {
+                message: format!(
+                    "capture incomplete: {:?}/{:?}",
+                    capture.stdout.state, capture.stderr.state
+                ),
+            });
         }
-        self.capture_offsets = receipt.confirmed;
-        self.producer_capture = Some(receipt);
-        if receipt.refused_bytes > 0 {
-            let failure = CommandCaptureFailure::OutputLimitExceeded {
-                limit_bytes: receipt.limit_bytes,
-                charged_bytes: receipt.charged_bytes,
-                refused_bytes: receipt.refused_bytes,
-            };
-            self.record_capture_failure(failure.clone());
-            self.apply_transition(CommandProcessTransition::OutputFailed { failure });
-        }
-        Ok(())
+        self.capture_result = Some(capture);
+        self.capture_completion_observed = true;
+        self.promote_drained_final();
     }
-
-    /// 本 operation 生效的单命令落盘上限。
-    pub(super) fn capture_limit_bytes(&self) -> u64 {
-        self.capture_limit_bytes
-    }
-
-    /// Manager 返回已接纳的存储成本；Producer 只返回实际写入者交回的事实。
-    pub(super) fn capture_usage(&self) -> Option<crate::command::CommandCaptureReceipt> {
-        match self.capture_ownership {
-            crate::command::CommandCaptureOwnership::Manager => {
-                Some(crate::command::CommandCaptureReceipt {
-                    captured_bytes: self.capture_received_bytes,
-                    limit_bytes: self.capture_limit_bytes,
-                    confirmed: self.capture_offsets,
-                    charged_bytes: self.capture_charged_bytes,
-                    refused_bytes: self.capture_refused_bytes,
-                })
-            }
-            crate::command::CommandCaptureOwnership::Producer => self.producer_capture,
-        }
-    }
-
-    /// 本 operation 生效的模型可见输出字节上限；`None` 表示沿用既有截断语义。
     pub(super) fn model_output_bytes_cap(&self) -> Option<u64> {
         self.model_output_bytes_cap
-    }
-
-    /// The accepted chunk at the front of the plan, without removing it.
-    pub(super) fn front_capture(&self) -> Option<CaptureRepairChunk> {
-        self.capture_pending.front().cloned()
-    }
-
-    /// Confirms the front chunk was stored and the fragment is now `committed_len` bytes long.
-    pub(super) fn confirm_front_capture(&mut self, committed_len: u64) {
-        if let Some(chunk) = self.capture_pending.pop_front() {
-            self.capture_offsets.set(chunk.stream, committed_len);
-        }
-    }
-
-    /// Marks that a capture write failed, so no further chunk may be appended.
-    pub(super) fn fault_capture_write(&mut self) {
-        self.capture_write_failed = true;
-    }
-
-    pub(super) fn capture_write_faulted(&self) -> bool {
-        self.capture_write_failed
-    }
-
-    /// Whether the plan still holds an accepted chunk the writer has not stored yet.
-    pub(super) fn capture_pending_is_empty(&self) -> bool {
-        self.capture_pending.is_empty()
-    }
-
-    /// Records that the operation's single capture writer has drained the plan and stopped.
-    ///
-    /// The terminal result is only published once this is set, so no snapshot can report the exit as
-    /// final while the writer still owes accepted bytes to disk.
-    pub(super) fn mark_capture_drained(&mut self) {
-        self.capture_drained = true;
-    }
-
-    /// The exact accepted bytes a failed capture must re-materialize, in acceptance order.
-    ///
-    /// `None` means every accepted chunk the backend confirmed is already on disk, so no repair is
-    /// owed. `committed_len` is always the backend's last confirmed length: an append that could not
-    /// report a length keeps the previous one, so the plan never falls back to a fragment-length read
-    /// that could fail and be mistaken for "nothing to repair".
-    pub(super) fn capture_repair(&self) -> Option<CaptureRepair> {
-        if self.capture_pending.is_empty() {
-            return None;
-        }
-        Some(CaptureRepair {
-            confirmed: self.capture_offsets,
-            chunks: self.capture_pending.iter().cloned().collect(),
-        })
     }
 
     /// Records the reason the durable capture could not continue, before the process is terminated.
@@ -267,6 +122,24 @@ impl CommandProcessState {
         }
         if let Some(first) = &self.output_failure {
             let message = first.message();
+            if let CommandProcessLifecycle::Draining(state) = &self.lifecycle
+                && matches!(
+                    state.result(),
+                    CommandProcessFinalResult::Succeeded { .. }
+                        | CommandProcessFinalResult::Failed {
+                            failure: CommandProcessFailure::Exited { .. }
+                        }
+                )
+            {
+                self.lifecycle = CommandProcessLifecycle::Draining(DrainingCommandProcess::new(
+                    CommandProcessFinalResult::Failed {
+                        failure: CommandProcessFailure::Output {
+                            message: message.clone(),
+                            exit_code: self.exit.as_ref().and_then(|exit| exit.exit_code),
+                        },
+                    },
+                ));
+            }
             self.record_output_error(message);
         }
     }
@@ -286,6 +159,20 @@ impl CommandProcessState {
 
     pub(super) fn apply_transition(&mut self, transition: CommandProcessTransition) {
         match transition {
+            CommandProcessTransition::TimeOut
+                if matches!(self.lifecycle, CommandProcessLifecycle::Draining(_)) =>
+            {
+                self.lifecycle = CommandProcessLifecycle::Draining(DrainingCommandProcess::new(
+                    CommandProcessFinalResult::TimedOut,
+                ));
+            }
+            CommandProcessTransition::Cancel
+                if matches!(self.lifecycle, CommandProcessLifecycle::Draining(_)) =>
+            {
+                self.lifecycle = CommandProcessLifecycle::Draining(DrainingCommandProcess::new(
+                    CommandProcessFinalResult::Cancelled,
+                ));
+            }
             CommandProcessTransition::TimeOut
                 if matches!(self.lifecycle, CommandProcessLifecycle::Running(_)) =>
             {
@@ -374,10 +261,8 @@ impl CommandProcessState {
                         self.stderr.finish_text();
                     }
                 }
-                // The final result is published here only once the capture writer has settled the
-                // plan: a stream closing is not enough on its own, because the writer may still owe
-                // the accepted bytes to disk.
-                if self.capture_drained
+                // Root exit, preview EOF and capture completion must all have been observed.
+                if self.capture_completion_observed
                     && self.output_streams_closed()
                     && let CommandProcessLifecycle::Draining(state) = &self.lifecycle
                 {
@@ -393,22 +278,17 @@ impl CommandProcessState {
     }
 
     fn finish_or_drain(&mut self, result: CommandProcessFinalResult) {
-        // Draining keeps the operation non-final until the capture writer has settled, so a snapshot
-        // never reports the process exit as final while accepted bytes are still owed to disk.
-        self.lifecycle = if self.capture_drained && self.output_streams_closed() {
+        // Root exit remains visible while the target capture and preview streams settle.
+        self.lifecycle = if self.capture_completion_observed && self.output_streams_closed() {
             CommandProcessLifecycle::Final(FinalCommandProcess::new(result))
         } else {
             CommandProcessLifecycle::Draining(DrainingCommandProcess::new(result))
         };
     }
 
-    /// Promotes a drained, stream-closed operation from `Draining` to `Final`.
-    ///
-    /// The capture writer calls this after it settles the plan, so an operation whose process already
-    /// exited (or whose streams closed after the exit) becomes final without waiting for another
-    /// transition that may never come.
+    /// Publish a final product task only after both output observations settle.
     pub(super) fn promote_drained_final(&mut self) {
-        if !(self.capture_drained && self.output_streams_closed()) {
+        if !(self.capture_completion_observed && self.output_streams_closed()) {
             return;
         }
         let result = match &self.lifecycle {

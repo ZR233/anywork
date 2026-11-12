@@ -3,7 +3,6 @@ use std::{error::Error, fmt};
 use pl_tool_git::GitError;
 
 use super::HostGitExecutionError;
-use crate::remote::RemoteExecutionError;
 
 /// A public Git diagnostic that retains its private, typed domain failure.
 ///
@@ -58,14 +57,9 @@ fn public_diagnostic(tool: &'static str, error: &GitError) -> String {
         }
         GitError::Askpass { tool, message, .. } => format!("tool {tool}: {message}"),
         GitError::Capability { source, .. } => {
-            if let Some(HostGitExecutionError(source)) =
+            if let Some(HostGitExecutionError(_source)) =
                 source.downcast_ref::<HostGitExecutionError>()
             {
-                // RemoteExecutionError explicitly guarantees a safe outer
-                // Display, but not a safe source chain or arbitrary backend.
-                if let Some(remote) = source.downcast_ref::<RemoteExecutionError>() {
-                    return format!("tool {tool}: {remote}");
-                }
                 format!("tool {tool}: git command execution failed")
             } else {
                 format!("tool {tool}: git credential provider failed")

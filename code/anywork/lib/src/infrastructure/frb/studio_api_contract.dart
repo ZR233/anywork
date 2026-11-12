@@ -1871,8 +1871,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );
@@ -1889,8 +1887,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );
@@ -1907,8 +1903,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );

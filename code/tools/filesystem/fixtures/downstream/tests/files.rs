@@ -500,11 +500,11 @@ fn raw_patch_results_and_partial_failure_are_not_reexecuted() {
         )
         .await
         .unwrap_err();
-        assert!(error.message().contains("Changes applied before failure:"));
-        assert!(error.message().contains("M a"));
+        assert!(error.diagnostic.contains("Changes applied before failure:"));
+        assert!(error.diagnostic.contains("M a"));
         assert!(
             error
-                .message()
+                .diagnostic
                 .contains("Recovery: read the target file again")
         );
         assert_eq!(fs::read_to_string(files.path("a")).unwrap(), "changed\n");

@@ -24,6 +24,8 @@ pub struct SkillCatalogRuntime {
     pub(super) events: Option<crate::ProductEventBus>,
     pub(super) system_skills_dir: Option<Arc<PathBuf>>,
     pub(super) registry: SkillRegistry,
+    pub(super) local_executor:
+        std::result::Result<pl_remote_helper::Executor, pl_remote_helper::ExecutionError>,
     _provider_registrations: Vec<Arc<SkillProviderRegistration>>,
 }
 
@@ -59,12 +61,17 @@ impl SkillsStateSnapshot {
 
 impl SkillCatalogRuntime {
     /// Creates the Studio catalog owner with its product-owned system Skills directory.
-    pub fn new(events: crate::ProductEventBus, system_skills_dir: PathBuf) -> Self {
+    pub fn new(
+        events: crate::ProductEventBus,
+        system_skills_dir: PathBuf,
+        executor: pl_remote_helper::Executor,
+    ) -> Self {
         let (registry, provider_registrations) = local_registry(Some(&system_skills_dir));
         Self {
             command_lock: Arc::new(Mutex::new(())),
             states: Arc::new(RwLock::new(BTreeMap::new())),
             events: Some(events),
+            local_executor: Ok(executor),
             system_skills_dir: Some(Arc::new(system_skills_dir)),
             registry,
             _provider_registrations: provider_registrations,
@@ -91,6 +98,7 @@ impl Default for SkillCatalogRuntime {
             command_lock: Arc::new(Mutex::new(())),
             states: Arc::new(RwLock::new(BTreeMap::new())),
             events: None,
+            local_executor: pl_remote_helper::Executor::local(),
             system_skills_dir: None,
             registry,
             _provider_registrations: provider_registrations,
@@ -111,7 +119,7 @@ fn local_registry(
     let registry = SkillRegistry::new();
     let mut registrations = Vec::new();
     if let Ok(registration) = registry
-        .register(Arc::new(FileSystemSkillProvider::new()))
+        .register(Arc::new(FileSystemSkillProvider::configured_readonly()))
         .map(Arc::new)
         .map_err(|error| tracing::error!(%error, "failed to register filesystem Skill provider"))
     {

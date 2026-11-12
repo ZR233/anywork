@@ -1,10 +1,7 @@
 use std::fmt;
 use std::future::Future;
-use std::sync::Arc;
 
 use pl_protocol::Result;
-
-use crate::workspace::ToolWorkspace;
 
 /// workspace 文件工具的统一后端。
 ///
@@ -19,6 +16,19 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
         Self: Sized,
     {
         None
+    }
+
+    /// Executor-backed targets override this with one target-side operation. Non-executor
+    /// integrations retain the shared grammar through their narrow file capability.
+    fn apply_patch(
+        &self,
+        cwd: String,
+        patch: &str,
+    ) -> impl Future<Output = std::result::Result<pl_patch::PatchReport, pl_patch::PatchFailure>> + Send
+    where
+        Self: Sized,
+    {
+        super::patch::apply_via_files(self, cwd, patch)
     }
 
     fn default_cwd(&self) -> impl Future<Output = Result<String>> + Send;
@@ -76,79 +86,6 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
         path: String,
         cwd: Option<String>,
     ) -> impl Future<Output = Result<()>> + Send;
-}
-
-/// 为 host-provided workspace backend 统一施加冻结的 Agent 文件写策略。
-#[derive(Debug, Clone)]
-pub struct WorkspacePolicyBackend<B> {
-    backend: Arc<B>,
-    workspace: ToolWorkspace,
-}
-
-impl<B> WorkspacePolicyBackend<B> {
-    pub fn new(backend: Arc<B>, workspace: ToolWorkspace) -> Self {
-        Self { backend, workspace }
-    }
-}
-
-impl<B> WorkspaceFileBackend for WorkspacePolicyBackend<B>
-where
-    B: WorkspaceFileBackend,
-{
-    async fn default_cwd(&self) -> Result<String> {
-        self.backend.default_cwd().await
-    }
-
-    async fn local_file_path(&self, request: WorkspaceFileStatRequest) -> Result<Option<String>> {
-        self.backend.local_file_path(request).await
-    }
-
-    async fn stat_optional(
-        &self,
-        request: WorkspaceFileStatRequest,
-    ) -> Result<Option<WorkspaceFileStat>> {
-        self.backend.stat_optional(request).await
-    }
-
-    async fn read_text(&self, request: WorkspaceFileReadRequest) -> Result<String> {
-        self.backend.read_text(request).await
-    }
-
-    async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
-        self.backend.read_bytes(request).await
-    }
-
-    async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
-        self.workspace
-            .ensure_relative_path_writable(request.cwd.as_deref(), &request.path)?;
-        let path = self
-            .workspace
-            .root()
-            .join(request.cwd.as_deref().unwrap_or(""))
-            .join(&request.path);
-        self.backend.write_text(request).await?;
-        self.workspace.notify_changed(&path).await;
-        Ok(())
-    }
-
-    async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> Result<()> {
-        self.workspace
-            .ensure_relative_path_writable(request.cwd.as_deref(), &request.path)?;
-        let path = self
-            .workspace
-            .root()
-            .join(request.cwd.as_deref().unwrap_or(""))
-            .join(&request.path);
-        self.backend.remove_file(request).await?;
-        self.workspace.notify_deleted(&path).await;
-        Ok(())
-    }
-
-    async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
-        self.workspace
-            .ensure_relative_path_writable(cwd.as_deref(), &path)?;
-        self.backend.create_directory(path, cwd).await
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

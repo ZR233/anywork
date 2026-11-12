@@ -32,10 +32,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use bytes::Bytes;
 use futures::StreamExt;
-use pl_protocol::remote::{
-    REMOTE_PROCESS_LEASE_TTL, RemoteCapture, RemoteErrorCode, RemoteHttpHeader,
-    RemoteHttpRequestHead, RemoteProcessLeaseId, RemoteRequest, RemoteResponse, RemoteSpawnRequest,
-};
+use pl_remote_helper::http::{HttpHeader, HttpRequest};
 use pl_tool::mcp::config::{
     EffectiveMcpServerConfig, McpExecutionContext, McpServerConfig, McpServerMutationPolicy,
     McpServerSourceKind, McpServerStatusKind, McpServerTransport,
@@ -49,7 +46,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpClient;
 /// - T09: `McpRuntimeHandle::shutdown()` timing out on a slow-exiting session retains the close
 ///   task; a subsequent `shutdown()` joins the same close task and returns `Ok(())`.
 #[tokio::test]
-async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<()> {
+async fn prepare_generation_cancellation_and_owned_protocol_shutdown() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     let temp = tempfile::tempdir()?;
     let script = write_python_mcp_server(temp.path(), "server.py", STDIO_MCP_SCRIPT);
@@ -69,7 +66,7 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
     );
     slow_env.insert("MCP_HANG_INITIALIZE".to_owned(), "1".to_owned());
 
-    let connector = McpConnector::default().with_stdio_worker(executable.to_path_buf());
+    let connector = McpConnector::default();
     let runtime = McpRuntime::new(connector);
     let handle = runtime.handle();
 
@@ -124,104 +121,54 @@ async fn t08_t09_prepare_generation_shutdown_and_retry_join() -> anyhow::Result<
         "in-flight connecting session leaked PID {slow_pid}"
     );
 
-    // --- T09: First shutdown() times out, second shutdown() joins in-flight close and succeeds ---
-    // Hold the real remote SIGTERM handler until the first 80ms shutdown returns.
-    // Once released, the handler still delays exit by the original 400ms.
+    // A protocol shutdown is idempotent and affects only its own Child. Root
+    // termination uses the managed process contract; it does not promise SIGTERM.
     let helper_instance = support::Helper::start(executable).await?;
-    let remote_commands = helper_instance
-        .client
-        .open_command_backend(helper_instance.root.path().to_string_lossy().into_owned())
-        .await?;
-    let remote_script = write_python_mcp_server(
-        helper_instance.root.path(),
-        "remote_slow.py",
-        STDIO_MCP_SCRIPT,
-    );
-    let exit_marker = helper_instance.root.path().join("exited.marker");
-    let term_started_marker = helper_instance.root.path().join("terminating.marker");
-    let term_release_marker = helper_instance
-        .root
-        .path()
-        .join("release-termination.marker");
-    let mut delayed_env = BTreeMap::new();
-    delayed_env.insert("MCP_IGNORE_TERM_MS".to_owned(), "400".to_owned());
-    delayed_env.insert(
-        "MCP_EXIT_MARKER".to_owned(),
-        exit_marker.to_string_lossy().into_owned(),
-    );
-    delayed_env.insert(
-        "MCP_TERM_STARTED_MARKER".to_owned(),
-        term_started_marker.to_string_lossy().into_owned(),
-    );
-    delayed_env.insert(
-        "MCP_TERM_RELEASE_MARKER".to_owned(),
-        term_release_marker.to_string_lossy().into_owned(),
-    );
-
-    let short_connector = McpConnector::default()
-        .with_stdio_worker(executable.to_path_buf())
-        .with_close_timeout(Duration::from_millis(80));
-    let retry_runtime = McpRuntime::new(short_connector);
+    let remote_script =
+        write_python_mcp_server(helper_instance.root.path(), "remote.py", STDIO_MCP_SCRIPT);
+    let pid_file = helper_instance.root.path().join("server.pid");
+    let mut environment = BTreeMap::new();
+    environment.insert("MCP_PID_FILE".into(), pid_file.to_str().unwrap().into());
+    let retry_runtime = McpRuntime::new(McpConnector::default());
     let retry_handle = retry_runtime.handle();
-
-    let mut retry_servers = BTreeMap::new();
-    retry_servers.insert(
-        "delayed".to_owned(),
-        stdio_effective_config(
-            "delayed",
-            &remote_script,
-            Vec::new(),
-            delayed_env,
-            None,
-            McpExecutionContext::Remote {
-                commands: remote_commands,
-            },
-        ),
-    );
-    retry_handle.reconcile(retry_servers).await?;
-
-    let first_shutdown_handle = retry_handle.clone();
-    let first_shutdown_task = tokio::spawn(async move { first_shutdown_handle.shutdown().await });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !term_started_marker.exists() && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let handler_started = term_started_marker.exists();
-    let first_shutdown = first_shutdown_task.await;
-    // Release even if readiness, the join, or the original timeout assertion fails.
-    std::fs::write(&term_release_marker, b"release")?;
-    let first_shutdown = first_shutdown?;
-    assert!(
-        handler_started,
-        "remote stdio server must enter its real SIGTERM handler"
-    );
-    assert!(
-        first_shutdown.is_err(),
-        "first shutdown with 80ms close_timeout should report timeout while process takes 400ms"
-    );
-
-    // Wait for the process to finish its 400ms SIGTERM handler and exit.
-    tokio::time::sleep(Duration::from_millis(500)).await;
     retry_handle
-        .shutdown()
-        .await
-        .expect("second shutdown must join the completed close task and return Ok(())");
-    assert!(
-        exit_marker.exists(),
-        "remote stdio server must have completed its termination handler"
-    );
+        .reconcile(
+            [(
+                "remote".into(),
+                stdio_effective_config(
+                    "remote",
+                    &remote_script,
+                    Vec::new(),
+                    environment,
+                    None,
+                    McpExecutionContext::Remote {
+                        commands: helper_instance.commands()?,
+                    },
+                ),
+            )]
+            .into(),
+        )
+        .await?;
+    let mut unrelated = helper_instance
+        .executor
+        .command("/bin/cat")
+        .stdin(pl_remote_helper::Stdio::Piped)
+        .spawn()
+        .await?;
+    let pid: u32 = std::fs::read_to_string(pid_file)?.trim().parse()?;
+    retry_handle.shutdown().await?;
+    retry_handle.shutdown().await?;
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    assert!(unrelated.try_wait()?.is_none());
+    unrelated.kill().await?;
 
     helper_instance.close().await?;
     Ok(())
 }
 
-/// T10 & T11:
-/// - T10: Remote stdio MCP forwards `program`, `args` (spaces, quotes, newlines, `$VAR`, `;`),
-///   `env`, and `cwd` without shell expansion and without capture files.
-/// - T11: Remote process lease renewal keeps the process alive, and stopping renewal expires
-///   and terminates the process after `REMOTE_PROCESS_LEASE_TTL`.
+/// Exact argv/cwd/env and instance-owned protocol lifetime over one connection.
 #[tokio::test]
-async fn t10_t11_remote_stdio_passthrough_and_process_lease() -> anyhow::Result<()> {
+async fn remote_stdio_passthrough_and_independent_child_lifecycle() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     let helper_instance = support::Helper::start(executable).await?;
     let sub_cwd = helper_instance.root.path().join("sub dir");
@@ -229,10 +176,7 @@ async fn t10_t11_remote_stdio_passthrough_and_process_lease() -> anyhow::Result<
     let script =
         write_python_mcp_server(helper_instance.root.path(), "mcp_echo.py", STDIO_MCP_SCRIPT);
 
-    let remote_commands = helper_instance
-        .client
-        .open_command_backend(helper_instance.root.path().to_string_lossy().into_owned())
-        .await?;
+    let remote_commands = helper_instance.commands()?;
 
     let tricky_args = vec![
         "arg with spaces".to_owned(),
@@ -243,7 +187,7 @@ async fn t10_t11_remote_stdio_passthrough_and_process_lease() -> anyhow::Result<
     let mut env = BTreeMap::new();
     env.insert("SPECIAL_ENV".to_owned(), "val=\"1\" & $2".to_owned());
 
-    let connector = McpConnector::default().with_stdio_worker(executable.to_path_buf());
+    let connector = McpConnector::default();
     let config = stdio_effective_config(
         "remote-stdio",
         &script,
@@ -292,96 +236,22 @@ async fn t10_t11_remote_stdio_passthrough_and_process_lease() -> anyhow::Result<
 
     session.close().await?;
 
-    // --- T11: Process lease renewal and expiry ---
-    let lease_pid_file = helper_instance.root.path().join("leased.pid");
-    let lease_id = RemoteProcessLeaseId("lease-test-1".to_owned());
-    let spawn_req = RemoteSpawnRequest {
-        process_id: "leased-proc".to_owned(),
-        workspace_id: helper_instance.workspace.clone(),
-        program: "/bin/sh".to_owned(),
-        arguments: vec![
-            "-c".to_owned(),
-            format!("echo $$ > '{}'; sleep 120", lease_pid_file.display()),
-        ],
-        remove_environment: Vec::new(),
-        cwd: ".".to_owned(),
-        environment: BTreeMap::new(),
-        capture: RemoteCapture::None,
-        remaining_timeout_ms: None,
-        process_lease: Some(lease_id.clone()),
-    };
-    let reply = helper_instance
-        .client
-        .request(RemoteRequest::Spawn(spawn_req), &[])
+    // Closing one protocol process must leave an unrelated child and connection alive.
+    let mut unrelated = helper_instance
+        .executor
+        .command("/bin/cat")
+        .stdin(pl_remote_helper::Stdio::Piped)
+        .spawn()
         .await?;
-    assert!(matches!(
-        reply.response,
-        RemoteResponse::ProcessSpawned { .. }
-    ));
-
-    // Renew with wrong lease_id must fail with InvalidRequest.
-    let bad_renew = helper_instance
-        .client
-        .request(
-            RemoteRequest::RenewProcessLease {
-                process_id: "leased-proc".to_owned(),
-                lease_id: RemoteProcessLeaseId("wrong-lease".to_owned()),
-            },
-            &[],
-        )
-        .await;
-    assert!(
-        matches!(
-            bad_renew,
-            Err(pl_tool::remote::RemoteClientError::Remote {
-                code: RemoteErrorCode::InvalidRequest,
-                ..
-            })
-        ),
-        "mismatched lease_id must be rejected: {bad_renew:?}"
-    );
-
-    // Valid renewal succeeds.
-    let good_renew = helper_instance
-        .client
-        .request(
-            RemoteRequest::RenewProcessLease {
-                process_id: "leased-proc".to_owned(),
-                lease_id: lease_id.clone(),
-            },
-            &[],
-        )
-        .await?;
-    assert!(matches!(good_renew.response, RemoteResponse::Ack));
-
-    // Wait for PID file, then stop renewing and wait for REMOTE_PROCESS_LEASE_TTL expiry.
-    while !lease_pid_file.exists() {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let leased_pid: u32 = std::fs::read_to_string(&lease_pid_file)?.trim().parse()?;
-    assert!(std::path::Path::new(&format!("/proc/{leased_pid}")).exists());
-
-    let wait_reply = tokio::time::timeout(
-        REMOTE_PROCESS_LEASE_TTL + Duration::from_secs(6),
-        helper_instance.client.request(
-            RemoteRequest::WaitProcess {
-                process_id: "leased-proc".to_owned(),
-            },
-            &[],
-        ),
-    )
-    .await??;
-    let RemoteResponse::ProcessExited(exit) = wait_reply.response else {
-        anyhow::bail!("expected ProcessExited after lease expiry");
-    };
+    assert!(unrelated.try_wait()?.is_none());
+    unrelated.kill().await?;
     assert_eq!(
-        exit.failure.as_ref().map(|e| e.code),
-        Some(RemoteErrorCode::SessionExpired),
-        "expired process lease must record SessionExpired: {exit:?}"
-    );
-    assert!(
-        !std::path::Path::new(&format!("/proc/{leased_pid}")).exists(),
-        "helper must terminate the process tree when process lease expires"
+        helper_instance
+            .executor
+            .command("/bin/true")
+            .status()
+            .await?,
+        pl_remote_helper::ProcessExit::Code(0)
     );
 
     helper_instance.close().await?;
@@ -621,11 +491,7 @@ async fn handle_mcp_delete(State(state): State<MockMcpHttpState>, headers: Heade
 async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     let executable = helper::remote_helper_executable();
     let helper_instance = support::Helper::start(executable).await?;
-    let remote_commands = helper_instance
-        .client
-        .open_command_backend(helper_instance.root.path().to_string_lossy().into_owned())
-        .await?;
-    let baseline_stats = support::heartbeat(&helper_instance.client).await?;
+    let remote_commands = helper_instance.commands()?;
 
     let state = MockMcpHttpState::default();
     let app = Router::new()
@@ -693,65 +559,72 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     });
 
     // 1. Multi-value request/response headers preserved, redirects not followed, mid-body abort RST_STREAM.
-    let multi_resp = helper_instance
-        .client
-        .http_exchange(
-            RemoteHttpRequestHead {
+    let mut multi_resp = helper_instance
+        .executor
+        .http()
+        .execute(
+            HttpRequest {
                 method: "GET".to_owned(),
                 url: format!("http://{addr}/multi-headers"),
                 headers: vec![
-                    RemoteHttpHeader {
+                    HttpHeader {
                         name: "x-multi".to_owned(),
                         value: b"first".to_vec(),
                     },
-                    RemoteHttpHeader {
+                    HttpHeader {
                         name: "x-multi".to_owned(),
                         value: b"second".to_vec(),
                     },
                 ],
                 bearer_token_env_var: None,
             },
-            Bytes::new(),
+            Box::pin(tokio::io::empty()),
         )
         .await?;
     let set_cookies: Vec<&[u8]> = multi_resp
+        .head
         .headers
         .iter()
         .filter(|h| h.name.eq_ignore_ascii_case("set-cookie"))
         .map(|h| h.value.as_slice())
         .collect();
     assert_eq!(set_cookies, vec![b"a=1".as_slice(), b"b=2".as_slice()]);
-    let multi_body = multi_resp.collect_body(1024).await?;
+    let mut multi_body = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut multi_resp.body, &mut multi_body).await?;
     assert_eq!(&multi_body[..], b"first,second");
 
     let redirect_resp = helper_instance
-        .client
-        .http_exchange(
-            RemoteHttpRequestHead {
+        .executor
+        .http()
+        .execute(
+            HttpRequest {
                 method: "GET".to_owned(),
                 url: format!("http://{addr}/redirect"),
                 headers: Vec::new(),
                 bearer_token_env_var: None,
             },
-            Bytes::new(),
+            Box::pin(tokio::io::empty()),
         )
         .await?;
-    assert_eq!(redirect_resp.status, StatusCode::FOUND);
-    let _ = redirect_resp.collect_body(1024).await?;
+    assert_eq!(redirect_resp.head.status, StatusCode::FOUND.as_u16());
+    drop(redirect_resp);
 
-    let abort_resp = helper_instance
-        .client
-        .http_exchange(
-            RemoteHttpRequestHead {
+    let mut abort_resp = helper_instance
+        .executor
+        .http()
+        .execute(
+            HttpRequest {
                 method: "GET".to_owned(),
                 url: format!("http://{addr}/mid-body-abort"),
                 headers: Vec::new(),
                 bearer_token_env_var: None,
             },
-            Bytes::new(),
+            Box::pin(tokio::io::empty()),
         )
         .await?;
-    let abort_collect = abort_resp.collect_body(1024).await;
+    let mut aborted = Vec::new();
+    let abort_collect =
+        tokio::io::AsyncReadExt::read_to_end(&mut abort_resp.body, &mut aborted).await;
     assert!(
         abort_collect.is_err(),
         "upstream mid-body failure must surface as a stream error, not clean EOF"
@@ -792,7 +665,7 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
         },
     };
 
-    let connector = McpConnector::default().with_stdio_worker(executable.to_path_buf());
+    let connector = McpConnector::default();
     let session = connector
         .connect(McpConnectRequest {
             server_id: "remote-http".to_owned(),
@@ -827,7 +700,8 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     session.close().await?;
 
     // 3. Verify 401 AuthRequired, 403 InsufficientScope, DELETE session, and T13 oversized SSE fast failure.
-    let http_client = pl_tool::mcp::RemoteStreamableHttpClient::new(helper_instance.client.clone());
+    let http_client =
+        pl_tool::mcp::ExecutorStreamableHttpClient::new(helper_instance.executor.clone());
     let uri: Arc<str> = Arc::from(mcp_url.as_str());
 
     let init_msg = rmcp::model::ClientJsonRpcMessage::Request(rmcp::model::JsonRpcRequest {
@@ -928,19 +802,18 @@ async fn t12_t13_remote_streamable_http_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(state.get_stream_requests.load(Ordering::SeqCst), 1);
 
     drop(sse_stream);
-    // T13: Verify helper resources return to baseline (zero active transfers/processes, single connection).
-    let stats = support::heartbeat(&helper_instance.client).await?;
-    assert_eq!(stats.processes, baseline_stats.processes);
-    assert_eq!(stats.transfers, baseline_stats.transfers);
-    assert_eq!(stats.cursors, baseline_stats.cursors);
-    assert_eq!(stats.workspaces, baseline_stats.workspaces);
+    // The connection remains available after all HTTP response owners were released.
     assert_eq!(
-        stats.retained_operations,
-        baseline_stats.retained_operations
+        helper_instance
+            .executor
+            .command("/bin/true")
+            .status()
+            .await?,
+        pl_remote_helper::ProcessExit::Code(0)
     );
-    assert_eq!(stats.active_connections, baseline_stats.active_connections);
 
     server_task.abort();
+    assert!(server_task.await.unwrap_err().is_cancelled());
     helper_instance.close().await?;
     Ok(())
 }

@@ -1,90 +1,63 @@
-//! Large directory listing must not kill the shared helper transport.
+//! Large incremental directory reads share the production foreground connection.
 #![cfg(target_os = "linux")]
-
-use anyhow::ensure;
-use pl_protocol::remote::{
-    REMOTE_PROTOCOL_VERSION, RemotePathRequest, RemoteRequest, RemoteResponse,
-};
-use pl_tool::remote::RemoteClient;
-use std::process::Stdio;
-use tokio::io::AsyncReadExt;
-
 #[path = "support/helper.rs"]
 mod helper;
-
+#[path = "support/remote.rs"]
+mod support;
+use tokio::io::AsyncReadExt;
 #[tokio::test]
-async fn large_directory_listing_keeps_shared_transport() -> anyhow::Result<()> {
-    let executable = helper::remote_helper_executable();
-    let count = 1000;
-    let root = tempfile::tempdir()?;
-    for index in 0..count {
-        std::fs::write(
-            root.path()
+async fn large_directory_reader_can_be_cancelled_without_closing_shared_executor()
+-> anyhow::Result<()> {
+    let helper = support::Helper::start(helper::remote_helper_executable()).await?;
+    for index in 0..1000 {
+        tokio::fs::write(
+            helper
+                .root
+                .path()
                 .join(format!("entry-{index:04}-{}", "x".repeat(180))),
             b"fixture",
-        )?;
+        )
+        .await?;
     }
-    let mut child = tokio::process::Command::new(executable)
-        .arg("--serve")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let client =
-        RemoteClient::from_streams(child.stdout.take().unwrap(), child.stdin.take().unwrap())
+    let observed = async {
+        let mut reader = helper.files.open_directory(".".into()).await?;
+        let first = reader.next().await?.unwrap();
+        assert!(first.name.starts_with("entry-"));
+        drop(reader);
+        let output = helper
+            .executor
+            .command("/bin/echo")
+            .arg("other")
+            .output()
             .await?;
-    let stderr = child.stderr.take().unwrap();
-    let diagnostic = tokio::spawn(async move {
+        assert_eq!(output.stdout, b"other\n");
+        let mut reader = helper.files.open_directory(".".into()).await?;
+        let mut names = std::collections::BTreeSet::new();
+        while let Some(entry) = reader.next().await? {
+            assert!(names.insert(entry.name));
+        }
+        assert_eq!(names.len(), 1000);
+        let path = helper.executor.path(
+            helper
+                .root
+                .path()
+                .join(names.first().unwrap())
+                .to_str()
+                .unwrap(),
+        )?;
         let mut bytes = Vec::new();
-        let mut stderr = stderr.take(16 * 1024);
-        let mut buffer = [0; 1024];
-        loop {
-            let count = stderr.read(&mut buffer).await?;
-            if count == 0 {
-                break;
-            }
-            eprint!("{}", String::from_utf8_lossy(&buffer[..count]));
-            bytes.extend_from_slice(&buffer[..count]);
-        }
-        anyhow::Ok(String::from_utf8_lossy(&bytes).into_owned())
-    });
-    let outcome = async {
-        eprintln!("phase=hello");
-        client.request(RemoteRequest::Hello { protocol_version: REMOTE_PROTOCOL_VERSION }, &[]).await?;
-        eprintln!("phase=workspace");
-        let opened = client.request(RemoteRequest::OpenWorkspace { path: root.path().to_string_lossy().into_owned() }, &[]).await?;
-        let RemoteResponse::WorkspaceOpened(workspace) = opened.response else { anyhow::bail!("unexpected workspace response") };
-        let target = RemotePathRequest { workspace_id: workspace.workspace_id, path: ".".into() };
-        eprintln!("phase=directory");
-        let listing = client.request(RemoteRequest::ListDirectory(target.clone()), &[]).await;
-        let heartbeat = client.request(RemoteRequest::Heartbeat, &[]).await;
-        let stat = client.request(RemoteRequest::Stat(target), &[]).await;
-        println!("{}", serde_json::json!({"scenario":"large-directory-isolation", "entries":count, "listingOk":listing.is_ok(), "heartbeatOk":heartbeat.is_ok(), "statOk":stat.is_ok(), "disconnected":client.is_disconnected()}));
-        ensure!(heartbeat.is_ok() && stat.is_ok(), "directory response killed shared transport: {listing:?}");
-        let RemoteResponse::Directory(mut page) = listing?.response else { anyhow::bail!("directory did not return a page"); };
-        let mut seen = page.entries.len();
-        let mut pages = 1;
-        while let Some(cursor) = page.next_cursor {
-            eprintln!("phase=next-page page={pages}");
-            let reply = client.request(RemoteRequest::ContinueDirectory { cursor }, &[]).await?;
-            let RemoteResponse::Directory(next) = reply.response else { anyhow::bail!("expected continuation page"); };
-            page = next;
-            seen += page.entries.len();
-            pages += 1;
-        }
-        ensure!(seen == count, "directory pagination dropped or duplicated entries");
-        client.request(RemoteRequest::Heartbeat, &[]).await?;
-        println!("{}", serde_json::json!({"scenario":"complete-directory", "entries":seen, "pages":pages}));
+        helper
+            .executor
+            .fs()
+            .read(&path)
+            .await?
+            .read_to_end(&mut bytes)
+            .await?;
+        assert_eq!(bytes, b"fixture");
         anyhow::Ok(())
-    }.await;
-    eprintln!("phase=close");
-    let close = client.close().await;
-    let status = child.wait().await?;
-    let diagnostic = diagnostic.await??;
-    eprintln!("helper_status={status}; diagnostic={diagnostic}");
-    outcome?;
-    close?;
-    println!("REMOTE_DIRECTORY_ISOLATION=PASS");
-    Ok(())
+    }
+    .await;
+    let closed = helper.close().await;
+    observed?;
+    closed
 }

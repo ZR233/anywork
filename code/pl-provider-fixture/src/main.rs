@@ -51,6 +51,9 @@ struct Args {
     /// acceptance can prove the product reclaims its own subprocess subtree.
     #[arg(long)]
     mcp_stdio: bool,
+    /// Use an in-group descendant for coordinated native cancellation.
+    #[arg(long)]
+    inherit_process_group: bool,
     /// Run the scenario-owned fake LSP server instead of the HTTP fixture.
     ///
     /// The product starts this through its supervised worker when a matching
@@ -134,6 +137,7 @@ async fn main() -> Result<()> {
             .context("--coord-file is required with --mcp-stdio")?;
         return pl_provider_fixture::run_mcp_stdio(pl_provider_fixture::McpStdioOptions {
             coord_file,
+            inherit_process_group: args.inherit_process_group,
         });
     }
     if args.lsp_stdio {
@@ -143,6 +147,7 @@ async fn main() -> Result<()> {
             .context("--coord-file is required with --lsp-stdio")?;
         return pl_provider_fixture::run_lsp_stdio(pl_provider_fixture::LspStdioOptions {
             coord_file,
+            inherit_process_group: args.inherit_process_group,
         });
     }
     if args.tool_peer {
@@ -152,6 +157,7 @@ async fn main() -> Result<()> {
             .context("--coord-file is required with --tool-peer")?;
         return pl_provider_fixture::run_tool_peer(pl_provider_fixture::ToolPeerOptions {
             coord_file,
+            inherit_process_group: args.inherit_process_group,
         });
     }
     if args.feishu {

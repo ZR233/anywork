@@ -9,7 +9,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
-use crate::studio::runtime::acp_worker::{AcpSpawnRequest, AcpWorker, Reclaim, WorkerSource};
+use crate::studio::runtime::acp_worker::{AcpSpawnRequest, AcpWorker, Reclaim};
+use pl_remote_helper::Executor;
 
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
@@ -116,7 +117,7 @@ impl AcpResources {
     pub(super) async fn start(
         &self,
         launch: AcpSpawnRequest,
-        workers: &WorkerSource,
+        workers: &Executor,
         usage: WorkspaceUsageLease,
     ) -> Result<()> {
         let mut owned = self.owned.lock().await;

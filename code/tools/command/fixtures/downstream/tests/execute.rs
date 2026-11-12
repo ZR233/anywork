@@ -4,7 +4,7 @@
 use pl_agent_tool::Tool;
 use pl_tool_command::exec::{ExecContext, ExecTool, exec_definition};
 use pl_tool_command::process::{
-    CancellationToken, CommandCaptureOffsets, CommandCaptureReceipt, CommandInputOutcome,
+    CancellationToken, CommandCaptureResult, CommandCapturedStream,CommandCaptureState, CommandInputOutcome,
     CommandInputReceipt, CommandOutputSnapshot, CommandProcessFinalResult, CommandProcessLifecycle,
     FinalCommandProcess, InputRequest, InputTarget, ProcessExecutor, ProcessInput, ProcessRequest,
     RunningCommandProcess, StdinCloseState,
@@ -58,16 +58,13 @@ fn observation() -> CommandOutputSnapshot {
         output_revision: 0,
         exit_code: None,
         signal: None,
-        supervision_failure: None,
         input_receipt: None,
         stdout_text_lossy: false,
         stderr_text_lossy: false,
         output_artifacts: vec![],
         output_failure: None,
-        capture_plan: None,
-        capture_offsets: CommandCaptureOffsets::default(),
+        capture: None,
         capture_limit_bytes: 16 * 1024 * 1024,
-        capture_usage: None,
         model_output_bytes_cap: None,
     }
 }
@@ -101,17 +98,8 @@ impl ProcessExecutor for PipeOwner {
         snapshot.stderr.content = String::from_utf8(output.stderr).unwrap();
         snapshot.stdout.original_length = snapshot.stdout.content.len();
         snapshot.stderr.original_length = snapshot.stderr.content.len();
-        snapshot.capture_offsets = CommandCaptureOffsets {
-            stdout: snapshot.stdout.original_length as u64,
-            stderr: snapshot.stderr.original_length as u64,
-        };
-        snapshot.capture_usage = Some(CommandCaptureReceipt {
-            captured_bytes: snapshot.capture_offsets.total(),
-            limit_bytes: snapshot.capture_limit_bytes,
-            confirmed: snapshot.capture_offsets,
-            charged_bytes: snapshot.capture_offsets.total(),
-            refused_bytes: 0,
-        });
+        let stream=|bytes|CommandCapturedStream{state:CommandCaptureState::Complete,confirmed_bytes:Some(bytes),error:None};
+        snapshot.capture=Some(CommandCaptureResult{stdout:stream(snapshot.stdout.original_length as u64),stderr:stream(snapshot.stderr.original_length as u64)});
         Ok(snapshot)
     }
 }
@@ -135,8 +123,6 @@ impl ProcessInput for PipeOwner {
         let mut snapshot = observation();
         snapshot.input_receipt = Some(CommandInputReceipt {
             accepted_bytes: request.chars.len() as u64,
-            remote_confirmed_bytes: None,
-            delivery_pending: false,
             close_state: Some(StdinCloseState::Closed),
             outcome: CommandInputOutcome::Complete,
             detail: None,
@@ -188,7 +174,6 @@ async fn exec_and_stdin_use_one_actual_pipe_and_preserve_domain_output() {
     );
     let receipt = snapshot.input_receipt.unwrap();
     assert_eq!(receipt.accepted_bytes, 7);
-    assert_eq!(receipt.remote_confirmed_bytes, None);
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), running)
         .await
         .unwrap()

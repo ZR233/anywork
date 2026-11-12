@@ -27,7 +27,7 @@ class StatisticsConnectionStatus extends StatelessWidget {
     final label = (message == null || message.isEmpty)
         ? (failed
               ? context.l10n.settingsSshStateFailed
-              : context.l10n.settingsSshStateReconnecting)
+              : context.l10n.settingsSyncStateReconnecting)
         : message;
     return Padding(
       padding: const EdgeInsets.only(top: 12),

@@ -24818,17 +24818,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SshConnectionSnapshotDto dco_decode_ssh_connection_snapshot_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return SshConnectionSnapshotDto(
       alias: dco_decode_String(arr[0]),
       state: dco_decode_String(arr[1]),
       helperVersion: dco_decode_opt_String(arr[2]),
       architecture: dco_decode_opt_String(arr[3]),
-      attempt: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      delaySeconds: dco_decode_opt_box_autoadd_u_64(arr[5]),
-      errorCode: dco_decode_opt_String(arr[6]),
-      errorMessage: dco_decode_opt_String(arr[7]),
+      errorCode: dco_decode_opt_String(arr[4]),
+      errorMessage: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -43964,8 +43962,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_state = sse_decode_String(deserializer);
     var var_helperVersion = sse_decode_opt_String(deserializer);
     var var_architecture = sse_decode_opt_String(deserializer);
-    var var_attempt = sse_decode_opt_box_autoadd_u_32(deserializer);
-    var var_delaySeconds = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_errorCode = sse_decode_opt_String(deserializer);
     var var_errorMessage = sse_decode_opt_String(deserializer);
     return SshConnectionSnapshotDto(
@@ -43973,8 +43969,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       state: var_state,
       helperVersion: var_helperVersion,
       architecture: var_architecture,
-      attempt: var_attempt,
-      delaySeconds: var_delaySeconds,
       errorCode: var_errorCode,
       errorMessage: var_errorMessage,
     );
@@ -60270,8 +60264,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.state, serializer);
     sse_encode_opt_String(self.helperVersion, serializer);
     sse_encode_opt_String(self.architecture, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.attempt, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.delaySeconds, serializer);
     sse_encode_opt_String(self.errorCode, serializer);
     sse_encode_opt_String(self.errorMessage, serializer);
   }

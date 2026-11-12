@@ -4,7 +4,7 @@ use pl_agent_tool::Tool;
 use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
 use pl_lsp::{catalog::LspUserServerConfig, query::LspQueryOperation, runtime::LspRuntimeRegistry};
 use pl_tool::{
-    lsp::{LocalLspHostBackend, LspPathBinding, LspToolKind, ThreadLspTool},
+    lsp::{LspPathBinding, LspToolKind, ThreadLspTool},
     workspace::{AgentWorkspace, ToolWorkspace},
 };
 use std::{
@@ -12,8 +12,8 @@ use std::{
     sync::Arc,
 };
 
-#[path = "support/helper.rs"]
-mod helper;
+use pl_lsp::host::ExecutorLspHost;
+use pl_remote_helper::Executor;
 
 fn context() -> CallContext {
     CallContext {
@@ -71,16 +71,16 @@ async fn hosted_lsp_tools_share_registry_and_preserve_path_authorization() -> an
         ..Default::default()
     };
     let registry = LspRuntimeRegistry::new();
-    let host = Arc::new(LocalLspHostBackend::new(
-        root.path(),
-        helper::remote_helper_executable().to_owned(),
-    )?);
+    let host = local_host(root.path())?;
     write_config(root.path(), "fixture", config).await?;
     let _lease = registry
         .acquire_workspace(root.path(), Some(host), None)
         .await?;
     wait_ready(&registry, root.path(), "fixture").await?;
-    let paths = LspPathBinding::Local(ToolWorkspace::new(AgentWorkspace::local(root.path())));
+    let workspace = ToolWorkspace::new(AgentWorkspace::local(root.path()));
+    let files =
+        pl_tool::workspace_file::ExecutorWorkspaceFileBackend::confined(workspace.clone()).await?;
+    let paths = LspPathBinding::new(workspace, files);
     let capabilities = ThreadLspTool::new(
         registry.clone(),
         paths.clone(),
@@ -266,9 +266,9 @@ async fn wait_log(
     .await?
 }
 fn local_host(root: &Path) -> anyhow::Result<Arc<dyn pl_lsp::host::LspHostBackend>> {
-    Ok(Arc::new(LocalLspHostBackend::new(
-        root,
-        helper::remote_helper_executable().to_owned(),
+    Ok(Arc::new(ExecutorLspHost::new(
+        Executor::local()?,
+        root.to_str().unwrap(),
     )?))
 }
 
@@ -398,13 +398,14 @@ async fn refresh_preserves_unchanged_and_cancels_superseded_generations() -> any
     let config = fixture_config("fixture", "requests.jsonl");
     let path = write_config(root.path(), "fixture", config.clone()).await?;
     let registry = LspRuntimeRegistry::new();
+    let host = local_host(root.path())?;
     let lease = registry
-        .acquire_workspace(root.path(), Some(local_host(root.path())?), None)
+        .acquire_workspace(root.path(), Some(host.clone()), None)
         .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, root.path(), "fixture").await?;
         lease
-            .refresh_configuration(Some(local_host(root.path())?), None)
+            .refresh_configuration(Some(host.clone()), None)
             .await?;
         for _ in 0..10 {
             let _ = registry.snapshots_for_workspace(root.path()).await;
@@ -414,7 +415,7 @@ async fn refresh_preserves_unchanged_and_cancels_superseded_generations() -> any
         // this proves the unchanged member passed a completed merge, not just the old state.
         tokio::fs::write(root.path().join(".anywork/lsp/broken.toml"), "invalid").await?;
         lease
-            .refresh_configuration(Some(local_host(root.path())?), None)
+            .refresh_configuration(Some(host.clone()), None)
             .await?;
         wait_phase(&registry, root.path(), "broken", Phase::Failed).await?;
         let messages = log_messages(&root.path().join("requests.jsonl")).await?;
@@ -559,17 +560,13 @@ async fn exited_servers_are_not_routed_and_status_reads_do_not_restart_them() ->
 }
 
 #[tokio::test]
-async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyhow::Result<()> {
-    use pl_lsp::runtime::LspLifecyclePhase as Phase;
+async fn empty_binding_is_idempotent() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let registry = LspRuntimeRegistry::new();
-    let unavailable = Arc::new(LocalLspHostBackend::unavailable(
-        root.path(),
-        "supervisor preparation failed: fixture reason",
-    )?);
+    let host = local_host(root.path())?;
     let mut updates = registry.subscribe();
     let lease = registry
-        .acquire_workspace(root.path(), Some(unavailable.clone()), None)
+        .acquire_workspace(root.path(), Some(host.clone()), None)
         .await?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -590,7 +587,7 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
     let mut additional_users = Vec::new();
     for _ in 0..5 {
         let user = registry
-            .acquire_workspace(root.path(), Some(unavailable.clone()), None)
+            .acquire_workspace(root.path(), Some(host.clone()), None)
             .await?;
         additional_users.push(user);
         anyhow::ensure!(
@@ -605,7 +602,7 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
         "identical empty binding must not publish Loading again"
     );
     lease
-        .refresh_configuration(Some(unavailable.clone()), None)
+        .refresh_configuration(Some(host.clone()), None)
         .await?;
     lease.wait_initialized().await?;
     anyhow::ensure!(
@@ -615,38 +612,7 @@ async fn empty_binding_is_idempotent_and_unavailable_host_can_recover() -> anyho
             .is_empty(),
         "an empty rescan must not introduce a server or Loading state"
     );
-    let path = write_config(
-        root.path(),
-        "fixture",
-        fixture_config("fixture", "recovered.jsonl"),
-    )
-    .await?;
-    registry.notify_file_changed(&path).await;
-    let observed: anyhow::Result<()> = async {
-        wait_phase(&registry, root.path(), "fixture", Phase::Failed).await?;
-        let snapshots = registry.snapshots_for_workspace(root.path()).await;
-        anyhow::ensure!(
-            snapshots[0].availability_message.as_deref().is_some_and(
-                |message| message.contains("supervisor preparation failed: fixture reason")
-            )
-        );
-        anyhow::ensure!(
-            snapshots[0].configuration_path.as_deref() == Some(path.to_string_lossy().as_ref())
-        );
-        anyhow::ensure!(
-            !root.path().join("recovered.jsonl").exists(),
-            "unavailable host must not launch a fallback process"
-        );
-        lease
-            .refresh_configuration(Some(local_host(root.path())?), None)
-            .await?;
-        wait_ready(&registry, root.path(), "fixture").await?;
-        Ok(())
-    }
-    .await;
-    let shutdown = registry.shutdown().await;
-    observed?;
-    shutdown?;
+    registry.shutdown().await?;
     Ok(())
 }
 
@@ -748,43 +714,16 @@ async fn workspace_catalogs_are_isolated_and_ambiguous_servers_require_selection
 }
 
 #[tokio::test]
-async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> anyhow::Result<()> {
+async fn local_host_identity_tracks_executor_and_does_not_restart_shared_processes()
+-> anyhow::Result<()> {
     use pl_lsp::host::LspHostBackend;
-    use std::{
-        os::fd::AsRawFd,
-        sync::atomic::{AtomicBool, Ordering},
-    };
-    #[derive(Debug)]
-    struct OwnedWorker {
-        _image: std::fs::File,
-        path: PathBuf,
-        dropped: Arc<AtomicBool>,
-    }
-    impl AsRef<Path> for OwnedWorker {
-        fn as_ref(&self) -> &Path {
-            &self.path
-        }
-    }
-    impl Drop for OwnedWorker {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::Release);
-        }
-    }
     let root = tempfile::tempdir()?;
-    let image = std::fs::File::open(helper::remote_helper_executable())?;
-    let path = PathBuf::from(format!("/proc/self/fd/{}", image.as_raw_fd()));
-    let dropped = Arc::new(AtomicBool::new(false));
-    let worker = OwnedWorker {
-        _image: image,
-        path,
-        dropped: dropped.clone(),
-    };
-    let host = Arc::new(LocalLspHostBackend::new(root.path(), worker)?);
-    let first_identity = host.identity();
-    anyhow::ensure!(
-        !dropped.load(Ordering::Acquire),
-        "constructing a host must retain the worker object, not only copy its path"
-    );
+    let executor = Executor::local()?;
+    let host = Arc::new(ExecutorLspHost::new(
+        executor.clone(),
+        root.path().to_str().unwrap(),
+    )?);
+    let identity = host.identity();
     tokio::fs::write(root.path().join("source.fixture"), "fixture source").await?;
     let registry = LspRuntimeRegistry::new();
     write_config(
@@ -798,35 +737,19 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
         .await?;
     let observed: anyhow::Result<()> = async {
         wait_ready(&registry, root.path(), "fixture").await?;
-        anyhow::ensure!(!dropped.load(Ordering::Acquire));
-        let next_image = std::fs::File::open(helper::remote_helper_executable())?;
-        let next_path = PathBuf::from(format!("/proc/self/fd/{}", next_image.as_raw_fd()));
-        let next_dropped = Arc::new(AtomicBool::new(false));
-        let next_host = Arc::new(LocalLspHostBackend::new(
-            root.path(),
-            OwnedWorker {
-                _image: next_image,
-                path: next_path,
-                dropped: next_dropped.clone(),
-            },
+        let next = Arc::new(ExecutorLspHost::new(
+            executor.clone(),
+            root.path().to_str().unwrap(),
         )?);
-        anyhow::ensure!(
-            next_host.identity() == first_identity,
-            "re-materialized worker leases are not new execution hosts"
-        );
+        anyhow::ensure!(next.identity() == identity);
         let mut updates = registry.subscribe();
         let _second_user = registry
-            .acquire_workspace(root.path(), Some(next_host), None)
+            .acquire_workspace(root.path(), Some(next), None)
             .await?;
         anyhow::ensure!(
-            next_dropped.load(Ordering::Acquire),
-            "the unused replacement lease must release without disturbing the active owner"
-        );
-        anyhow::ensure!(
             updates.try_recv().is_err(),
-            "identical host reconstruction must not publish lifecycle updates"
+            "same execution binding must not restart LSP"
         );
-        anyhow::ensure!(!dropped.load(Ordering::Acquire));
         let result = registry
             .query_in_workspace(
                 root.path(),
@@ -843,16 +766,22 @@ async fn local_host_retains_file_descriptor_worker_lease_until_shutdown() -> any
             )
             .await?;
         anyhow::ensure!(result.success && result.result.contains("fixture hover"));
+        let replacement = Executor::local()?;
+        let replacement_host =
+            ExecutorLspHost::new(replacement.clone(), root.path().to_str().unwrap())?;
+        anyhow::ensure!(
+            replacement_host.identity() != identity,
+            "new executor must not revive old handles"
+        );
+        replacement.close().await?;
         Ok(())
     }
     .await;
     let shutdown = registry.shutdown().await;
+    let close = executor.close().await;
     observed?;
     shutdown?;
-    anyhow::ensure!(
-        dropped.load(Ordering::Acquire),
-        "the worker lease must release after all host/process owners close"
-    );
+    close?;
     Ok(())
 }
 
@@ -888,10 +817,9 @@ async fn missing_program_failure_does_not_make_registry_shutdown_fail() -> anyho
             .unwrap();
         anyhow::ensure!(
             failure
-                .last_error
+                .availability_message
                 .as_deref()
-                .is_some_and(|error| error.contains("business process launch failed")
-                    && error.contains("Some(2)")),
+                .is_some_and(|error| error.contains("NotStarted") && error.contains("os error 2")),
             "startup cause must remain observable after successful resource cleanup: {failure:?}"
         );
         anyhow::ensure!(
@@ -1056,8 +984,9 @@ async fn explicit_retry_recovers_unchanged_configuration_without_restarting_heal
     )
     .await?;
     let registry = LspRuntimeRegistry::new();
+    let host = local_host(directory.path())?;
     let lease = registry
-        .acquire_workspace(directory.path(), Some(local_host(directory.path())?), None)
+        .acquire_workspace(directory.path(), Some(host.clone()), None)
         .await?;
     let observed: anyhow::Result<()> = async {
         wait_phase(&registry, directory.path(), "fixture", Phase::Failed).await?;
@@ -1078,7 +1007,7 @@ async fn explicit_retry_recovers_unchanged_configuration_without_restarting_heal
         )
         .await?;
         lease
-            .refresh_configuration(Some(local_host(directory.path())?), None)
+            .refresh_configuration(Some(host.clone()), None)
             .await?;
         wait_phase(&registry, directory.path(), "scan-marker", Phase::Failed).await?;
         anyhow::ensure!(
