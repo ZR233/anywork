@@ -244,6 +244,11 @@ Linux 主进程的退出计时以实际停止运行为界，已进入 zombie 状
 
 官方依据：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、[Widget 测试](https://docs.flutter.dev/cookbook/testing/widget/introduction)、[`matchesGoldenFile`](https://api.flutter.dev/flutter/flutter_test/matchesGoldenFile.html)。现役 SDK 的具体参数以其 CLI 帮助为准。
 
+预览入口与合成数据独立放在 `code/anywork_previews`，通过普通 Pub path dependency 引用应用的生产组件。
+官方预览器以该开发包为分析根，避免每次更新都扫描应用测试和生成文件；应用的完整分析范围不缩减。
+应用测试只通过 dev dependency 复用预览素材。启动包装仅准备标准 Pub 覆盖并透传参数、终端输入输出，
+预览发现、浏览器和热更新由 Flutter 管理，具体依赖准备见构建技能。
+
 ## 24.2 模拟对端与真实模型观察
 
 本地模拟供应商服务（`pl-provider-fixture`）同时支撑自动化测试与 GUI 人工验收：仅监听本地回环动态端口，按固定提示词、协议及期望轮次返回预设的 HTTP/SSE 或 WebSocket 事件流，严格校验请求关键字段、调用顺序与鉴权头，对未登记或错序请求直接返回失败。模拟服务仅证明当前实现与约定协议样本的行为一致，不替代真实厂商线上接口兼容性验证。
@@ -270,10 +275,15 @@ Linux 主进程的退出计时以实际停止运行为界，已进入 zombie 状
 
 Linux 准备阶段在直接 child 已回收、所属构建进程组已消失后重读最终阶段日志，
 确认没有跨过产品启动边界，才按“产品未启动”收束；查询失败仍是未知，不把 root 退出当作整树退出。
-这项准备阶段的完成判断限于 Linux，其他宿主保留原生 owner／退出报告屏障；
+Windows 每次验收启动使用独立 Job，依赖负责在子进程恢复执行前完成关联并保留显式 creation flags；
+这不等同于创建进程时的原子 Job 关联。root 状态、终止请求与 Job 为空分别观察；
+取消准备时终止该 Job，在原清理预算内确认 root 已回收且活动进程数为零，再重读最终阶段日志。
+Job 查询使用 Windows 官方 accounting API，失败保持未知；不以完成端口通知、`taskkill` 成功或 PID 快照代证完成。
+进程级 Job 只作最后后备，不能用于判断单次准备树为空。等待预算属于调用方，析构不启动第二轮等待。
+Linux／Windows 跨过产品启动边界后仍要求原生 owner／退出报告屏障；其他宿主始终保留该屏障。
+Windows 后台 launcher 没有可定向的控制台信号；产品 VM 就绪后，EOF／取消收尾复用已有
+产品退出请求，并与 Job 完成查询共享原清理期限，不重启等待预算，原会话仍判失败。
 缺少报告时保持失败及回收未确认，不用不存在的报告证明成功。
-Windows 现有进程级 Job 只作最后后备，不能代替单次 GUI 准备树的完成证明，
-也不能以 `taskkill` 的一次成功结果或停机后的 PID 快照代证整树收束。
 
 本地模拟 GUI 人工验收由独立工程工具 `pl-studio-acceptance` 编排（通过 `cargo xtask manual-gui --preset` 按需编译并透传参数，复用 `pl-dev-support` 的路径与进程树管理，并在服务就绪计时前完成固件编译）。真实厂商与模型的原生人工观察使用 `cargo xtask run-gui` 读取用户已有配置，不能把模拟供应商结果外推为真实模型行为。按实际入口核对真实窗口截图、界面组件树（widget tree）、权威快照、必要请求/诊断和所属进程真实回收；没有模拟服务的观察不虚构模拟请求记录。脚本退出码仅表示采集流程完成，最终视觉与交互结论由人工核查截图后独立判定（默认标记为“待评审”）。
 

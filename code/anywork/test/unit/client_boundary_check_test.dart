@@ -73,6 +73,12 @@ void main() {
       rule: 'UI-02',
     ),
     (
+      name: 'Separate preview package cannot hide a Provider',
+      path: 'code/anywork_previews/lib/src/features/settings/accounts/previews/fixture.dart',
+      source: "import 'package:flutter_riverpod/flutter_riverpod.dart';",
+      rule: 'UI-02',
+    ),
+    (
       name: 'Account Widget cannot import AppGraph through a relative path',
       path: '${_accountsFeature}widgets/fixture.dart',
       source: "import '../../../../app/app_graph.dart';",
@@ -496,6 +502,22 @@ void ignore() {
     expect(
       diagnostics.map((d) => d.message).join('\n'),
       contains('flutter_rust_bridge'),
+    );
+  });
+
+  test('UI import closure follows the development preview package', () {
+    const entry = 'code/anywork/test/ui/page_test.dart';
+    const preview = 'code/anywork_previews/lib/src/fixture.dart';
+    final sources = <String, String>{
+      entry: "import 'package:anywork_previews/src/fixture.dart';",
+      preview: "import 'package:anywork/src/rust/frb_generated.dart';",
+    };
+    expect(
+      checkUiImportClosure(
+        entries: [entry],
+        read: (path) => sources[path],
+      ).map((diagnostic) => diagnostic.rule),
+      contains('UI-FRB'),
     );
   });
 

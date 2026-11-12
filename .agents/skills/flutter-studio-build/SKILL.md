@@ -30,7 +30,8 @@ xtask 已定义的 `target/manual-gui/` 证据输出仍遵循工具入口，临�
 
 ## 标准入口
 
-所有 GUI 构建和运行都从仓库根目录通过 xtask 执行：
+原生 GUI 构建和运行从仓库根目录通过 xtask 执行；官方组件预览只借助项目入口准备依赖，
+也支持准备后直接使用 Flutter CLI，详见[预览入口](references/widget-preview.md)：
 
 ```powershell
 cargo xtask run-gui

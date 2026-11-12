@@ -99,9 +99,13 @@ if args == ["pub", "deps", "--json"]:
             ) else "anywork"
             self.assertEqual(Path(cwd), self.root / "code" / package)
         self.assertEqual(
-            [tool for tool, args, _ in calls
-             if args == ["pub", "get", "--enforce-lockfile"]],
-            ["dart", "flutter"],
+            [[tool, args] for tool, args, _ in calls if args[:2] == ["pub", "get"]],
+            [
+                ["dart", ["pub", "get", "--enforce-lockfile"]],
+                ["flutter", ["pub", "get", "--enforce-lockfile"]],
+                ["flutter", ["pub", "get", "--enforce-lockfile",
+                             "--directory", "../anywork_previews"]],
+            ],
         )
         self.assertEqual(
             [[tool, args] for tool, args, _ in calls
@@ -205,12 +209,15 @@ if args == ["pub", "deps", "--json"]:
         self.assertTrue(all(tool == "dart" for tool, _, _ in self.sdk_calls()))
 
     def test_app_failure_propagates_to_wrapper(self):
-        self.environment["FAIL_COMMAND"] = "flutter test --no-pub test/unit test/ui"
-        result = self.run_entry()
-        self.assertEqual(result.returncode, 23)
-        calls = self.sdk_calls()
-        self.assertEqual(calls[-1][0:2],
-                         ["flutter", ["test", "--no-pub", "test/unit", "test/ui"]])
+        for args in (
+            ["pub", "get", "--enforce-lockfile", "--directory", "../anywork_previews"],
+            ["test", "--no-pub", "test/unit", "test/ui"],
+        ):
+            with self.subTest(args=args):
+                self.environment["FAIL_COMMAND"] = "flutter " + " ".join(args)
+                result = self.run_entry()
+                self.assertEqual(result.returncode, 23)
+                self.assertEqual(self.sdk_calls()[-1][0:2], ["flutter", args])
 
     def test_dependency_command_failure_cannot_pass_the_pipeline(self):
         self.environment["FAIL_COMMAND"] = "dart pub deps --json"

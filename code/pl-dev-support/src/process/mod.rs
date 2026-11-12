@@ -21,6 +21,9 @@ mod unix;
 mod windows;
 
 #[cfg(windows)]
+pub use windows::OwnedChild;
+
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// A resident command's real termination, observed by its direct parent.

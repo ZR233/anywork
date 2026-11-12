@@ -59,6 +59,9 @@ _POLICY_EXACT = frozenset(
         "Cargo.lock",
         "Cargo.toml",
         "rust-toolchain.toml",
+        "code/anywork_previews/analysis_options.yaml",
+        "code/anywork_previews/pubspec.lock",
+        "code/anywork_previews/pubspec.yaml",
     }
 )
 _POLICY_PREFIXES = (
@@ -195,7 +198,9 @@ def classify_path(path: str) -> frozenset[str]:
             tags.add("rust_production")
     if not pure_test and (path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES)):
         tags.add("bridge")
-    if path.startswith("code/anywork/") and not path.startswith("code/anywork/rust/"):
+    if _has_prefix(path, ("code/anywork/", "code/anywork_previews/")) and not path.startswith(
+        "code/anywork/rust/"
+    ):
         tags.add("flutter")
     if path.startswith("code/anywork_client/"):
         tags.add("client")

@@ -118,6 +118,7 @@ class PlanFromPathsTest(unittest.TestCase):
             "code/anywork/test/unit/frb_adapter/frb_timeline_adapter_test.dart",
             "code/anywork/analysis_options.yaml",
             "code/anywork/dart_test.yaml",
+            "code/anywork_previews/lib/src/features/shell/previews/sidebar_previews.dart",
         ):
             with self.subTest(path=path):
                 plan = self.plan(path)
@@ -233,6 +234,9 @@ class PlanFromPathsTest(unittest.TestCase):
             [".github/workflows/pr-quality.yml"],
             ["docker/linux/Dockerfile"],
             ["Cargo.lock"],
+            ["code/anywork_previews/analysis_options.yaml"],
+            ["code/anywork_previews/pubspec.lock"],
+            ["code/anywork_previews/pubspec.yaml"],
             ["code/pl-provider-fixture/src/lib.rs"],
             ["code/pl-studio-acceptance/src/manual_gui/mod.rs"],
             ["xtask/src/test_project.rs", "design/24-testing.md"],
