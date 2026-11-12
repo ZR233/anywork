@@ -175,6 +175,98 @@ async fn reconnect_cancellation_and_close_release_the_original_owner_command_bou
 }
 
 #[tokio::test]
+async fn failed_reconnect_preserves_current_lease_during_same_configuration_preparation()
+-> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+    let fixture = close_factory(&store)?;
+    let factory = &fixture.factory;
+    let peer = temp.path().join("peer.py");
+    std::fs::write(&peer, mcp_stdio::STDIO_MCP_SCRIPT)?;
+    for id in ["fixture", "unrelated"] {
+        fixture
+            .config
+            .create_mcp_document(&CreateMcpDocumentRequest {
+                scope: McpScope::Host,
+                id: id.into(),
+                raw_toml: format!(
+                    "schema_version = 1\nid = '{id}'\nkind = 'server'\nenabled = true\n\
+                 transport = 'stdio'\ncommand = 'python3'\nargs = {}\n\
+                 startup_timeout_secs = 5\n[env]\nSPECIAL_ENV = '{id}'\nMCP_NO_RESOURCES = '1'\n",
+                    serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?,
+                ),
+            })?;
+    }
+    let resources = Arc::new(NativeResources::default());
+    let current = owner(
+        factory,
+        &resources,
+        "failed-reset",
+        McpScope::Host,
+        temp.path(),
+    )?;
+    let result = async {
+        factory
+            .refresh_mcp_for_owner(&current, CancellationToken::new())
+            .await?;
+        let before = current.runtime.acquire_turn_lease().await?;
+        let sibling_tools: Vec<_> = before
+            .tools()
+            .iter()
+            .filter(|tool| tool.server_id == "unrelated")
+            .cloned()
+            .collect();
+        anyhow::ensure!(!sibling_tools.is_empty());
+        // Only a new process sees this failure; the sibling's established session stays live.
+        std::fs::write(&peer, "import sys\nsys.exit(1)\n")?;
+        let error = factory
+            .reconnect_mcp_for_owner(&current, Some("fixture"), CancellationToken::new())
+            .await
+            .expect_err("replacement handshake must fail");
+        anyhow::ensure!(error.to_string().contains("remains unavailable"));
+        let resolved = factory.resolve_mcp_owner_snapshot(&current)?;
+        // This is the preparation performed for the next actual model step. Unchanged
+        // configuration must reuse the current lease without starting optional peers again.
+        let next = current
+            .prepare_required(
+                resolved.servers,
+                Some(resolved.authorization),
+                None,
+                &fixture.events,
+                &CancellationToken::new(),
+            )
+            .await?;
+        anyhow::ensure!(
+            next.generation() == before.generation(),
+            "same-configuration preparation started a new generation after failed reconnect"
+        );
+        anyhow::ensure!(
+            next.tools() == sibling_tools,
+            "failed target was re-exposed or an unrelated session was removed"
+        );
+        let snapshot = current.read_snapshot();
+        anyhow::ensure!(
+            snapshot.servers.iter().any(|server| server.id == "fixture"
+                && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Unavailable),
+            "next model preparation changed the failed target state: {snapshot:?}"
+        );
+        anyhow::ensure!(
+            snapshot
+                .servers
+                .iter()
+                .any(|server| server.id == "unrelated"
+                    && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Available)
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let closed = current.close(&fixture.events).await;
+    result?;
+    closed?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn cancelled_accepted_reconnect_recovers_projection_and_preserves_sibling_sessions()
 -> anyhow::Result<()> {
     use pl_agent_tool::Tool;

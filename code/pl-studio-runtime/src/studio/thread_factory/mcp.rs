@@ -896,6 +896,7 @@ impl StudioThreadFactory {
                     );
                 }
                 self.ensure_mcp_authorization(owner, &resolved.authorization)?;
+                let configuration_changed = !owner.matches_servers(&resolved.servers);
                 owner.pause_projection();
                 owner.finish_preparation().await
                     .map_err(|error| resource_error("finish MCP preparation before reconnect", error))?;
@@ -918,6 +919,12 @@ impl StudioThreadFactory {
                     // A failed candidate must never be presented as a successful new session,
                     // even if the old generation is retained by the runtime for cleanup.
                     owner.publish_reconnect_failure(server_id, &self.services.product_events);
+                    if !configuration_changed {
+                        // The worker already stopped target admission in the retained
+                        // generation. This terminal projection lets later model steps keep
+                        // its remaining tools without preparing optional servers again.
+                        owner.resume_projection();
+                    }
                     return Err(anyhow::Error::new(source)
                         .context("MCP reconnect failed; the target remains unavailable"));
                 }
