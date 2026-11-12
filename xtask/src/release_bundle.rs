@@ -74,6 +74,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             copy_file(&source_path, &destination_path)?;
         }
     }
+    fs::set_permissions(destination, fs::metadata(source)?.permissions())?;
     Ok(())
 }
 
@@ -126,6 +127,7 @@ mod tests {
         )?;
         symlink("A", source.join("Versions/Current"))?;
         symlink("Versions/Current/Engine", source.join("Engine"))?;
+        fs::set_permissions(source.join("Versions/A"), fs::Permissions::from_mode(0o750))?;
         // KeepExisting must also replace existing links without following them.
         for _ in 0..2 {
             copy(&source, &destination, BundleKind::PreserveAll)?;
@@ -138,6 +140,13 @@ mod tests {
                 std::path::Path::new("Versions/Current/Engine")
             );
             assert_eq!(fs::read(destination.join("Engine"))?, b"native library");
+            assert_eq!(
+                fs::metadata(destination.join("Versions/A"))?
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o750
+            );
             assert_eq!(
                 fs::metadata(destination.join("Engine"))?
                     .permissions()

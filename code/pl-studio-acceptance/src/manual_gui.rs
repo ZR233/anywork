@@ -784,6 +784,24 @@ fn desktop_test_command_with_handoff(
     preparation: Option<&OsStr>,
     xtask: Option<&OsStr>,
 ) -> Result<Command> {
+    let mut command = xtask_command_with_handoff(workspace, preparation, xtask)?;
+    command.arg("test-project");
+    Ok(command)
+}
+
+fn xtask_command(workspace: &Path) -> Result<Command> {
+    xtask_command_with_handoff(
+        workspace,
+        env::var_os("ANYWORK_DESKTOP_TEST_PREPARATION").as_deref(),
+        env::var_os("ANYWORK_DESKTOP_TEST_XTASK").as_deref(),
+    )
+}
+
+fn xtask_command_with_handoff(
+    workspace: &Path,
+    preparation: Option<&OsStr>,
+    xtask: Option<&OsStr>,
+) -> Result<Command> {
     let mut command = match (preparation, xtask) {
         (None, None) => {
             let mut command = Command::new("cargo");
@@ -801,7 +819,7 @@ fn desktop_test_command_with_handoff(
             "ANYWORK_DESKTOP_TEST_PREPARATION and ANYWORK_DESKTOP_TEST_XTASK must be set together and non-empty"
         ),
     };
-    command.current_dir(workspace).arg("test-project");
+    command.current_dir(workspace);
     Ok(command)
 }
 
