@@ -10,7 +10,8 @@ shift
 arguments=(run --rm --init --pull=never --user "$(id -u):$(id -g)"
     --mount "type=bind,src=$root,dst=$root" --workdir "$root")
 # Only explicit non-secret build controls cross the host/container boundary.
-for variable in CARGO_INCREMENTAL CARGO_BUILD_JOBS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG; do
+for variable in CARGO_INCREMENTAL CARGO_BUILD_JOBS CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG \
+    ANYWORK_CI_TEST_INPUTS GITHUB_RUN_ID LINUX_BUILD_IMAGE; do
     if [[ -v $variable ]]; then
         arguments+=(--env "$variable=${!variable}")
     fi

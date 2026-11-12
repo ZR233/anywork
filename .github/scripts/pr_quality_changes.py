@@ -372,6 +372,8 @@ def _finish(
     for flag, job in jobs_by_flag:
         if flags[flag] or (flag == "flutter_checks" and flags["client_checks"]):
             required.append(job)
+    if flags["linux_desktop"] or flags["linux_native"]:
+        required.append("linux-test-inputs")
     return {
         **flags,
         "required_jobs": tuple(required),

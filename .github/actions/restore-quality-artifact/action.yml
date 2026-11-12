@@ -1,8 +1,8 @@
 name: Restore PR quality input
-description: Verify a same-run tool or helper archive before exposing it to a consumer.
+description: Verify a same-run tool, helper or test input archive before exposing it to a consumer.
 inputs:
   kind:
-    description: tool or helpers.
+    description: tool, helpers or tests.
     required: true
   artifact-id:
     description: Exact same-run producer artifact ID.
@@ -29,7 +29,7 @@ runs:
         INPUT_KIND: ${{ inputs.kind }}
       run: |
         set -euo pipefail
-        case "$INPUT_KIND" in tool|helpers) ;; *) echo "Invalid quality input kind" >&2; exit 1 ;; esac
+        case "$INPUT_KIND" in tool|helpers|tests) ;; *) echo "Invalid quality input kind" >&2; exit 1 ;; esac
         python3 .github/scripts/pr_quality_handoff.py require-id "$INPUT_ID"
     - name: Download the exact archive
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -49,13 +49,17 @@ runs:
         set -euo pipefail
         archive="$RUNNER_TEMP/quality-$INPUT_KIND/quality.tar.gz"
         common=(--archive "$archive" --sha256 "$INPUT_SHA256" --source-sha "$INPUT_SOURCE")
-        if [ "$INPUT_KIND" = tool ]; then
+        if [ "$INPUT_KIND" = tool ] || [ "$INPUT_KIND" = tests ]; then
           # Cargo cache restores may retain or clean target/ci-tools; keep this run's input outside it.
-          python3 .github/scripts/pr_quality_handoff.py restore-tool "${common[@]}" \
+          python3 .github/scripts/pr_quality_handoff.py "restore-$INPUT_KIND" "${common[@]}" \
             --workspace "$INPUT_WORKSPACE" --environment "$INPUT_ENVIRONMENT" \
             --expected-environment "${LINUX_BUILD_IMAGE:?exact Linux environment must be restored first}" \
-            --destination output/ci-quality-tool
-          echo "PR_QUALITY_XTASK=$GITHUB_WORKSPACE/output/ci-quality-tool/pl-xtask" >> "$GITHUB_ENV"
+            --destination "output/ci-quality-$INPUT_KIND"
+          if [ "$INPUT_KIND" = tool ]; then
+            echo "PR_QUALITY_XTASK=$GITHUB_WORKSPACE/output/ci-quality-tool/pl-xtask" >> "$GITHUB_ENV"
+          else
+            echo "ANYWORK_CI_TEST_INPUTS=$GITHUB_WORKSPACE/output/ci-quality-tests" >> "$GITHUB_ENV"
+          fi
         else
           python3 .github/scripts/pr_quality_handoff.py restore-helpers "${common[@]}" \
             --destination dist/remote-helper
