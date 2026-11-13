@@ -11,6 +11,7 @@ pl-model = { workspace = true }
 pl-protocol = { workspace = true }
 pl-provider-fixture = { workspace = true }
 pl-studio-runtime = { workspace = true }
+pl-tool = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 eventsource-stream = { workspace = true }
