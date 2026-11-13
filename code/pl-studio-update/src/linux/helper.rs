@@ -87,6 +87,22 @@ async fn abort(child: &mut Child, input: ChildStdin) -> Result<(), StudioUpdateE
     Ok(())
 }
 
+async fn reap_committed_child(
+    child: &mut Child,
+    mut output: BufReader<tokio::process::ChildStdout>,
+) -> Result<std::process::ExitStatus, StudioUpdateError> {
+    // A failed reply/ACK delivery may leave the privileged helper writing its
+    // terminal result. Drain it before waiting so pipe backpressure cannot
+    // prevent exit. On read failure, closing the pipe still lets it settle.
+    let drained = tokio::io::copy(&mut output, &mut tokio::io::sink()).await;
+    drop(output);
+    let result = child.wait().await.map_err(io_error);
+    if let Err(error) = drained {
+        tracing::warn!(%error, "failed to drain committed installer output");
+    }
+    result
+}
+
 async fn supervise(
     input: &mut (impl tokio::io::AsyncBufRead + Unpin),
     output: &mut (impl tokio::io::AsyncWrite + Unpin),
@@ -152,7 +168,7 @@ async fn supervise(
     // privileged child. EOF is an abort before commit, never an install intent.
     let status = if committed {
         drop(privileged_input);
-        child.wait().await.map_err(io_error)?
+        reap_committed_child(&mut child, privileged_output).await?
     } else {
         abort(&mut child, privileged_input).await?;
         if child
@@ -405,6 +421,33 @@ fn unknown_outcome(error: impl Into<String>) -> StudioUpdateError {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn committed_child_is_reaped_even_when_its_reply_reader_failed() {
+        let mut child = Command::new("head")
+            .args(["-c", "131072", "/dev/zero"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let output = BufReader::new(child.stdout.take().unwrap());
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            reap_committed_child(&mut child, output),
+        )
+        .await;
+        if result.is_err() {
+            let _ = child.kill().await;
+            child.wait().await.unwrap();
+        }
+        assert!(
+            result
+                .expect("committed installer blocked on its unread output")
+                .unwrap()
+                .success()
+        );
+        assert!(child.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn handoff_rejects_mutable_or_foreign_descriptors_and_seals_prevent_replacement() {
