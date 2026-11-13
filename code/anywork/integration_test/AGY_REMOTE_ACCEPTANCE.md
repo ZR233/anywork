@@ -139,6 +139,11 @@ scratch 中准备好的目录；不能占用 1420 端口。
   保存 phase、activeRun、lastCompleted、受理 run、真实 tool call ID/名称/status、
   最后正式调用及进行中调用。必要 rawInput/rawOutput 采用白名单化正式投影：
   保留 taskID、任务终态、stdin receipt、wait_agent cursor/generation/run/完成序号；
+  分别记录可选 rawOutput 的缺值／显式 null 和正式 tool content 的块类型。工具结果
+  可以来自可用 rawOutput，或同一 toolCallId 的正式 content 中唯一完整 JSON 容器
+  （对象或数组）文本块；对象／数组仍按具体工具的原结果 schema 校验。
+  不从 assistant 消息、标题、Markdown 片段或递归猜测的包装中提取回执。非 JSON、
+  多个候选、字段不足或未知包装均明确失败，不以独立归档结果补造协议受理回执。
   不导出任意命令正文、stdout/stderr/summary 正文、MCP 启动 env、authorization、
   capability、登录链接或凭据。已知合成过程命令和 marker stdin 可保留，其他正文脱敏。
   既有报告和截图只属于本次真实运行，截图不能代证 SSH 任务退出。

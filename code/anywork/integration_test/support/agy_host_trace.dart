@@ -1,9 +1,11 @@
 import 'dart:convert';
 
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-// Decode only the formal ACP raw values and MCP structuredContent envelope.
+// Decode only formal ACP raw values or one same-call JSON content container,
+// followed by the existing single MCP structuredContent envelope.
 // Unknown provider wrappers fail visibly; assistant prose is never evidence.
 final class AgyHostTrace {
   AgyHostTrace(Iterable<AcpConversationContentItem> content)
@@ -42,6 +44,12 @@ final class AgyHostTrace {
           'name': call.fields.name,
           'canonicalName': canonicalName(call.fields.name),
           'status': call.fields.status?.name,
+          'outputEvidence': _outputOrigin(
+            call,
+            _contentContainers(call)
+                .map((candidate) => candidate.index)
+                .toList(),
+          ),
         },
     ];
   }
@@ -50,8 +58,26 @@ final class AgyHostTrace {
       _object(_value(call.fields.rawInput), 'ACP tool rawInput');
 
   dynamic output(AcpConversationToolItem call) {
-    var value = _value(call.fields.rawOutput);
-    if (value is String) value = jsonDecode(value);
+    dynamic value;
+    if (_hasRawOutput(call)) {
+      value = _value(call.fields.rawOutput);
+      if (value is String) {
+        try {
+          value = jsonDecode(value);
+        } on FormatException {
+          throw StateError('Invalid formal rawOutput JSON; body not logged');
+        }
+      }
+    } else {
+      final candidates = _contentContainers(call);
+      if (candidates.length != 1) {
+        throw StateError(
+          'Expected exactly one same-call formal JSON container content block; '
+          'found ${candidates.length}',
+        );
+      }
+      value = candidates.single.value;
+    }
     if (value is Map<String, dynamic> &&
         value.containsKey('structuredContent')) {
       expect(value['isError'], isNot(true), reason: 'Host MCP tool failed');
@@ -292,6 +318,9 @@ final class AgyHostTrace {
         'name': call.fields.name,
         'canonicalName': canonicalName(call.fields.name),
         'status': call.fields.status?.name,
+        'rawOutputState': _rawOutputState(call.fields.rawOutput),
+        'rawOutputType': call.fields.rawOutput?.runtimeType.toString(),
+        ..._contentDiagnostics(call, safeCommands, markers),
         if (canonicalName(call.fields.name) != null) ...{
           'rawInput': _diagnosticJson(
             _value(call.fields.rawInput),
@@ -307,6 +336,113 @@ final class AgyHostTrace {
       },
   ];
 }
+
+bool _hasRawOutput(AcpConversationToolItem call) =>
+    call.fields.rawOutput != null && call.fields.rawOutput is! AcpJsonNull;
+
+String _rawOutputState(AcpJsonValue? value) => switch (value) {
+  null => 'missing',
+  AcpJsonNull() => 'explicitNull',
+  _ => 'value',
+};
+
+({bool decodable, dynamic value}) _wholeJson(String text) {
+  try {
+    return (decodable: true, value: jsonDecode(text));
+  } on FormatException {
+    return (decodable: false, value: null);
+  }
+}
+
+List<({int index, dynamic value})> _contentContainers(
+  AcpConversationToolItem call,
+) {
+  final candidates = <({int index, dynamic value})>[];
+  for (final (index, block) in (call.fields.content ?? []).indexed) {
+    if (block case AcpToolContentView(
+      content: AcpTextContentView(:final text),
+    )) {
+      final decoded = _wholeJson(text);
+      if (decoded.value case final Map<String, dynamic> value) {
+        candidates.add((index: index, value: value));
+      } else if (decoded.value case final List<dynamic> value) {
+        candidates.add((index: index, value: value));
+      }
+    }
+  }
+  return candidates;
+}
+
+Map<String, Object?> _outputOrigin(
+  AcpConversationToolItem call,
+  List<int> candidates,
+) => {
+  'source': _hasRawOutput(call)
+      ? 'rawOutput'
+      : candidates.length == 1
+      ? 'content.text.jsonContainer'
+      : 'unavailable',
+  if (!_hasRawOutput(call)) ...{
+    'jsonContainerCandidateCount': candidates.length,
+    if (candidates.length == 1) 'contentIndex': candidates.single,
+  },
+};
+
+Map<String, Object?> _contentDiagnostics(
+  AcpConversationToolItem call,
+  Set<String> safeCommands,
+  Set<String> markers,
+) {
+  final blocks = <Map<String, Object?>>[];
+  final candidates = <int>[];
+  for (final (index, block) in (call.fields.content ?? []).indexed) {
+    final data = <String, Object?>{
+      'index': index,
+      'type': block.runtimeType.toString(),
+    };
+    if (block case AcpToolContentView(:final content)) {
+      data['contentType'] = content.runtimeType.toString();
+      if (content case AcpTextContentView(:final text)) {
+        final decoded = _wholeJson(text);
+        final isContainer =
+            decoded.value is Map<String, dynamic> || decoded.value is List;
+        if (isContainer) candidates.add(index);
+        data.addAll({
+          'utf16Length': text.length,
+          'utf8Bytes': utf8.encode(text).length,
+          'sha256': sha256.convert(utf8.encode(text)).toString(),
+          'jsonDecodable': decoded.decodable,
+          'jsonType': decoded.decodable ? _jsonType(decoded.value) : null,
+          'jsonContainerCandidate': isContainer,
+          if (isContainer &&
+              AgyHostTrace.canonicalName(call.fields.name) != null)
+            'jsonProjection': _diagnosticJson(
+              decoded.value,
+              safeCommands,
+              markers,
+            ),
+        });
+      }
+    }
+    // Diff, Terminal and nontext content retain only their explicit types.
+    blocks.add(data);
+  }
+  return {
+    'contentState': call.fields.content == null ? 'missing' : 'present',
+    'contentBlocks': blocks,
+    'outputEvidence': _outputOrigin(call, candidates),
+  };
+}
+
+String _jsonType(dynamic value) => switch (value) {
+  null => 'null',
+  Map() => 'object',
+  List() => 'array',
+  String() => 'string',
+  bool() => 'boolean',
+  num() => 'number',
+  _ => throw StateError('Unsupported decoded JSON type'),
+};
 
 // Keep formal task/report identities and state, not arbitrary tool text. This
 // whitelist deliberately excludes MCP launch env, headers, authorization,

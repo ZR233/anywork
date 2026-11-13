@@ -128,6 +128,7 @@ class Fixture {
 const prompt = 'question\n保持空白 ';
 const secret = 'SYNTHETIC-HOST-INSTRUCTIONS-DO-NOT-EXPORT';
 void main() {
+  _defineToolContentTests();
   test('real Client publishes immutable submission before prompt; prefixed chunked echo stays independent', () async {
     final f = await Fixture.open(replay: 'older stage');
     final capture = AgySubmissionEvidence(
@@ -385,4 +386,456 @@ void main() {
       },
     });
   });
+}
+
+const marker = 'PROBE_A';
+AcpToolContentView text(String s) =>
+    AcpToolContentView(content: AcpTextContentView(text: s));
+Map<String, dynamic> call(
+  dynamic output, {
+  String name = 'anywork_exec_command',
+  List<AcpToolCallContentView>? blocks,
+  AcpJsonValue? raw,
+  bool partial = false,
+}) => {
+  'name': name,
+  'input': {'command': 'probe-stdin'},
+  'blocks':
+      blocks ??
+      [
+        text(jsonEncode({'structuredContent': output, 'isError': false})),
+      ],
+  'raw': ?raw,
+  'partial': partial,
+};
+Future<AgyHostTrace> trace(
+  List<Map<String, dynamic>> specs, {
+  bool assistant = false,
+}) async {
+  final fixture = await Fixture.open();
+  if (assistant) {
+    push(
+      fixture.source,
+      update(
+        const AcpAgentMessageChunkView(
+          AcpContentChunkView(
+            content: AcpTextContentView(text: '{"taskId":"task:assistant"}'),
+          ),
+        ),
+      ),
+    );
+  }
+  for (var i = 0; i < specs.length; i++) {
+    final s = specs[i];
+    final id = AcpToolCallId('content-call-$i');
+    final blocks = s['blocks'] as List<AcpToolCallContentView>?;
+    final rawOutput = s['raw'] as AcpJsonValue?;
+    if (s['partial'] == true) {
+      push(
+        fixture.source,
+        update(
+          AcpToolCallChangedView(
+            AcpToolCallUpdateView(
+              toolCallId: id,
+              fields: AcpToolCallUpdateFieldsView(
+                name: s['name'],
+                title: s['title'] ?? 'Fixture',
+                kind: AcpToolKindView.execute,
+                status: AcpToolCallStatusView.completed,
+                rawInput: raw(s['input'] ?? {}),
+                rawOutput: rawOutput,
+                content: blocks,
+              ),
+            ),
+          ),
+        ),
+      );
+    } else {
+      push(
+        fixture.source,
+        update(
+          AcpToolCallSessionUpdateView(
+            AcpToolCallView(
+              toolCallId: id,
+              title: s['title'] ?? 'Fixture',
+              name: s['name'],
+              kind: AcpToolKindView.execute,
+              status: AcpToolCallStatusView.completed,
+              rawInput: raw(s['input'] ?? {}),
+              rawOutput: rawOutput,
+              content: blocks ?? const [],
+            ),
+          ),
+        ),
+      );
+    }
+  }
+  await fixture.owner.source.waitFor(
+    (s) =>
+        s.content.whereType<AcpConversationToolItem>().length == specs.length,
+  );
+  return AgyHostTrace(fixture.owner.state.content);
+}
+
+List<Map<String, Object?>> diag(AgyHostTrace t) => t.diagnostics(
+  safeCommands: {'probe-stdin', 'probe-cancel'},
+  markers: {marker},
+);
+Map<String, dynamic> page(
+  String id,
+  String status,
+  Map<String, dynamic> payload,
+) => {
+  'archiveError': null,
+  'task': {'taskId': id, 'status': status},
+  'result': {
+    'format': 'pl.host.tool-result',
+    'version': 1,
+    'nextCursor': null,
+    'content': jsonEncode({
+      'is_error': status != 'succeeded',
+      'value': payload,
+    }),
+  },
+};
+Map<String, dynamic> lifecycleCall(
+  String name,
+  Map<String, dynamic> input,
+  dynamic value,
+) => {
+  'name': 'mcp_anywork_$name',
+  'input': input,
+  'blocks': [text(jsonEncode(value))],
+};
+void _defineToolContentTests() {
+  test('usable raw keeps map, JSON string, list and one structuredContent layer; content not preferred', () async {
+    final cases = <AcpJsonValue>[
+      raw({'taskId': 'task:raw'}),
+      raw(
+        jsonEncode({
+          'structuredContent': {'taskId': 'task:raw'},
+          'isError': false,
+        }),
+      ),
+      raw({
+        'structuredContent': [
+          {'taskId': 'task:raw'},
+        ],
+        'isError': false,
+      }),
+    ];
+    final t = await trace([
+      for (final raw in cases)
+        call(null, raw: raw, blocks: [text('{"taskId":"task:wrong"}')]),
+    ]);
+    expect(t.output(t.calls[0]), {'taskId': 'task:raw'});
+    expect(t.output(t.calls[1]), {'taskId': 'task:raw'});
+    expect(t.output(t.calls[2]), [
+      {'taskId': 'task:raw'},
+    ]);
+    expect(
+      diag(t).map((r) => (r['outputEvidence'] as Map)['source']),
+      everyElement('rawOutput'),
+    );
+  });
+  test('missing and explicit-null raw accept only same-call full JSON object and retain source', () async {
+    final t = await trace([
+      call(
+        {'taskId': 'task:missing'},
+        blocks: [text('  {"taskId":"task:missing"} \n')],
+      ),
+      call({'taskId': 'task:null'}, raw: const AcpJsonNull()),
+    ]);
+    expect(t.output(t.calls[0]), {'taskId': 'task:missing'});
+    expect(t.output(t.calls[1]), {'taskId': 'task:null'});
+    final d = diag(t);
+    expect(d.map((r) => r['rawOutputState']), ['missing', 'explicitNull']);
+    expect(
+      d.map((r) => (r['outputEvidence'] as Map)['source']),
+      everyElement('content.text.jsonContainer'),
+    );
+    expect(
+      d.map((r) => (r['outputEvidence'] as Map)['contentIndex']),
+      everyElement(0),
+    );
+    expect(
+      t.verifyCompletedHostCalls().map(
+        (r) => (r['outputEvidence'] as Map)['source'],
+      ),
+      everyElement('content.text.jsonContainer'),
+    );
+  });
+  test('prose, fences, substrings, JSON strings and primitives are not container evidence', () async {
+    final texts = [
+      secret,
+      '```json\n{"taskId":"task:fake"}\n```',
+      'prefix {"taskId":"task:fake"}',
+      jsonEncode('{"taskId":"task:fake"}'),
+      'null',
+      'true',
+      '1',
+    ];
+    final t = await trace([
+      for (final s in texts) call(null, blocks: [text(s)]),
+    ]);
+    for (final c in t.calls) {
+      expect(() => t.output(c), throwsStateError);
+    }
+    final d = diag(t);
+    expect(
+      d.every((r) => (r['outputEvidence'] as Map)['source'] == 'unavailable'),
+      isTrue,
+    );
+    expect(jsonEncode(d).contains(secret), isFalse);
+  });
+  test(
+    'title, assistant and another toolCallId cannot supply a missing output',
+    () async {
+      final t = await trace([
+        {
+          'name': 'anywork_exec_command',
+          'title': '{"taskId":"task:title"}',
+          'input': {},
+          'partial': true,
+        },
+        call({'taskId': 'task:other'}),
+      ], assistant: true);
+      expect(() => t.output(t.calls[0]), throwsStateError);
+      expect(t.output(t.calls[1]), {'taskId': 'task:other'});
+      final d = diag(t);
+      expect(d.first['contentState'], 'missing');
+      expect(d.last['contentState'], 'present');
+    },
+  );
+  test(
+    'two JSON object candidates, including identical objects, fail',
+    () async {
+      final t = await trace([
+        call(null, blocks: [text('{"taskId":"task:x"}'), text('{}')]),
+        call(null, blocks: [text('{}'), text('{}')]),
+      ]);
+      for (final c in t.calls) {
+        expect(() => t.output(c), throwsStateError);
+      }
+      final d = diag(t);
+      expect(
+        d.map(
+          (r) => (r['outputEvidence'] as Map)['jsonContainerCandidateCount'],
+        ),
+        everyElement(2),
+      );
+    },
+  );
+  test('non-null raw cannot fallback even if null after decode, malformed or unknown', () async {
+    final t = await trace([
+      call(
+        null,
+        raw: raw({
+          'mystery': {'taskId': 'task:wrapped'},
+        }),
+      ),
+      call(null, raw: const AcpJsonString('null')),
+      call(null, raw: const AcpJsonString(secret)),
+    ]);
+    expect(t.output(t.calls[0]), {
+      'mystery': {'taskId': 'task:wrapped'},
+    });
+    expect(t.output(t.calls[1]), isNull);
+    Object? failure;
+    try {
+      t.output(t.calls[2]);
+    } catch (e) {
+      failure = e;
+    }
+    expect(failure, isA<StateError>());
+    expect(failure.toString().contains(secret), isFalse);
+    for (final c in t.calls.take(2)) {
+      expect(
+        () => AgyHostTrace([c]).verifyTasks(marker, (k) => 'probe-$k'),
+        throwsA(anyOf(isA<TestFailure>(), isA<StateError>())),
+      );
+    }
+    expect(
+      diag(t).map((r) => (r['outputEvidence'] as Map)['source']),
+      everyElement('rawOutput'),
+    );
+  });
+  test('unknown content wrapper, missing fields and nested structuredContent fail business checks', () async {
+    for (final output in [
+      {
+        'mystery': {'taskId': 'task:x'},
+      },
+      {},
+      {
+        'structuredContent': {'taskId': 'task:x'},
+      },
+    ]) {
+      final t = await trace([call(output)]);
+      expect(t.output(t.calls.single), output);
+      expect(
+        () => t.verifyTasks(marker, (k) => 'probe-$k'),
+        throwsA(isA<TestFailure>()),
+      );
+    }
+  });
+  test('diff, terminal, URI and nontext contents retain only types; secrets never exported', () async {
+    final metadata = AcpJsonObject({'TOKEN': const AcpJsonString(secret)});
+    final blocks = <AcpToolCallContentView>[
+      text('Login https://secret.invalid/$secret'),
+      AcpToolDiffView(
+        path: secret,
+        newText: secret,
+        oldText: secret,
+        meta: metadata,
+      ),
+      AcpToolTerminalView(
+        terminalId: const AcpTerminalId(secret),
+        meta: metadata,
+      ),
+      const AcpToolContentView(
+        content: AcpResourceLinkView(
+          name: secret,
+          uri: 'https://secret.invalid/token',
+        ),
+      ),
+      text(
+        jsonEncode({
+          'taskId': 'task:identity',
+          'targetTaskId': 'task:parent',
+          'cursor': 'cursor',
+          'reports': [
+            {
+              'generation': 'generation',
+              'run': {'instance': 1, 'sequence': 2},
+              'completionSequence': 3,
+              'summary': secret,
+            },
+          ],
+          'stdout': secret,
+          'stderr': {'content': secret},
+          'env': {'TOKEN': secret},
+          'authorization': secret,
+          'url': 'https://secret.invalid/token',
+        }),
+      ),
+    ];
+    final t = await trace([call(null, blocks: blocks)]);
+    expect((t.output(t.calls.single) as Map)['taskId'], 'task:identity');
+    final d = diag(t).single;
+    final shape = d['contentBlocks'] as List;
+    expect(shape, hasLength(5));
+    expect((d['outputEvidence'] as Map)['contentIndex'], 4);
+    expect(shape[1], {'index': 1, 'type': 'AcpToolDiffView'});
+    expect(shape[2], {'index': 2, 'type': 'AcpToolTerminalView'});
+    expect(shape[3], {
+      'index': 3,
+      'type': 'AcpToolContentView',
+      'contentType': 'AcpResourceLinkView',
+    });
+    final json = shape[4]['jsonProjection'] as Map;
+    expect(json['taskId'], 'task:identity');
+    expect(json['targetTaskId'], 'task:parent');
+    expect((json['reports'] as List).single['run'], {
+      'instance': 1,
+      'sequence': 2,
+    });
+    expect(jsonEncode(d).contains(secret), isFalse);
+    expect(jsonEncode(d).contains('secret.invalid'), isFalse);
+  });
+  test('formal content carries exact get_tool_task HostResult and unchanged full task assertions', () async {
+    const stdin = 'task:stdin';
+    const cancel = 'task:cancel';
+    final t = await trace([
+      lifecycleCall(
+        'anywork_exec_command',
+        {'command': 'probe-stdin'},
+        {'taskId': stdin},
+      ),
+      lifecycleCall('anywork_list_tool_tasks', {}, [
+        {'taskId': stdin},
+      ]),
+      lifecycleCall(
+        'anywork_write_stdin',
+        {'taskId': stdin, 'chars': '$marker-stdin\n', 'closeStdin': true},
+        {
+          'targetTaskId': stdin,
+          'inputReceipt': {
+            'acceptedBytes': utf8.encode('$marker-stdin\n').length,
+            'outcome': 'complete',
+            'closeState': 'closed',
+          },
+        },
+      ),
+      lifecycleCall('anywork_wait', {
+        'taskIds': [stdin],
+      }, {}),
+      lifecycleCall('anywork_get_tool_task', {
+        'taskId': stdin,
+        'resultCursor': 0,
+      }, page(stdin, 'succeeded', {'processStarted': true, 'exitCode': 0})),
+      lifecycleCall(
+        'anywork_exec_command',
+        {'command': 'probe-cancel'},
+        {'taskId': cancel},
+      ),
+      lifecycleCall('anywork_list_tool_tasks', {}, [
+        {'taskId': cancel},
+      ]),
+      lifecycleCall(
+        'anywork_cancel_tool_task',
+        {'taskId': cancel},
+        {'taskId': cancel, 'cancellation': 'requested'},
+      ),
+      lifecycleCall('anywork_wait', {
+        'taskIds': [cancel],
+      }, {}),
+      lifecycleCall(
+        'anywork_get_tool_task',
+        {'taskId': cancel, 'resultCursor': 0},
+        page(cancel, 'cancelled', {
+          'output': {
+            'processStarted': true,
+            'diagnostic': {'code': 'exec.cancelled'},
+          },
+        }),
+      ),
+    ]);
+    final result = t.verifyTasks(marker, (k) => 'probe-$k');
+    expect(result['stdinTaskId'], stdin);
+    expect(result['cancelTaskId'], cancel);
+  });
+  test('explicit MCP errors are not successful content results', () async {
+    final t = await trace([
+      call(
+        null,
+        blocks: [
+          text(
+            jsonEncode({
+              'isError': true,
+              'structuredContent': {'taskId': 'task:x'},
+            }),
+          ),
+        ],
+      ),
+    ]);
+    expect(() => t.output(t.calls.single), throwsA(isA<TestFailure>()));
+  });
+  test(
+    'unknown service metadata remains visible but cannot impersonate Host name',
+    () async {
+      final t = await trace([
+        call({
+          'taskId': 'task:foreign',
+        }, name: 'mcp_other_anywork_exec_command'),
+      ]);
+      final d = diag(t).single;
+      expect(t.named('anywork_exec_command'), isEmpty);
+      expect(d['canonicalName'], isNull);
+      expect(d['contentBlocks'], hasLength(1));
+      expect(
+        (d['contentBlocks'] as List).single.containsKey('jsonProjection'),
+        isFalse,
+      );
+    },
+  );
 }
