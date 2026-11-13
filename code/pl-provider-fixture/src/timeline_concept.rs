@@ -734,7 +734,7 @@ mod tests {
                 let send = |text: String| {
                     let mut input = vec![json!({"role":"user","content":[{"type":"input_text","text":text}]})];
                     if text.starts_with("realtime-") && text.contains("-call") {
-                        input.push(json!({"type":"function_call_output","call_id":text,"output":"{\"state\":{\"kind\":\"final\"}}"}));
+                        input.push(json!({"type":"function_call_output","call_id":text,"output":"{\"exitCode\":0}"}));
                     }
                     client.post(&url).json(&json!({"model":"fixture-model","stream":true,"input":input})).send()
                 };
@@ -1175,6 +1175,82 @@ mod tests {
         }));
         items.push(json!({"role":"user","content":media}));
         json!({"model":"fixture-model","stream":true,"input":items})
+    }
+
+    #[test]
+    fn lua_images_wait_for_selected_receipts_and_their_own_background_media() {
+        let step = tool_images_step();
+        let RequestMatch::ToolImages {
+            images, outputs, ..
+        } = step.request
+        else {
+            unreachable!()
+        };
+        let source = tool_images_request();
+        let mut body = json!({"input":[{"role":"user","content":"image request"}]});
+        for id in images
+            .iter()
+            .map(|image| image.call_id.as_str())
+            .chain(["concept-image-failed"])
+        {
+            body["input"].as_array_mut().unwrap().push(json!({
+                "type":"function_call", "call_id":id, "name":"exec", "arguments":"{}"
+            }));
+            body["input"].as_array_mut().unwrap().push(json!({
+                "type":"function_call_output", "call_id":id, "output":tool_running_receipt(id)
+            }));
+        }
+        assert_eq!(
+            crate::tool_images_pending(&body, &images, &outputs)
+                .unwrap()
+                .len(),
+            4
+        );
+        for (completed, index) in [2, 0, 1].into_iter().enumerate() {
+            let image = &images[index];
+            body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
+                {"type":"input_text","text":format!("Task task:{} for tool exec finished: Succeeded.", image.call_id)},
+                {"type":"input_text","text":json!({"original":{"contentDigest":format!("sha256:{}",image.png_sha256)}}).to_string()},
+                source["input"][4]["content"][index * 2 + 1]
+            ]}));
+            assert_eq!(
+                crate::tool_images_pending(&body, &images, &outputs)
+                    .unwrap()
+                    .len(),
+                3 - completed
+            );
+        }
+        body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
+            {"type":"input_text","text":"Task task:concept-image-failed for tool exec finished: Failed."},
+            {"type":"input_text","text":"Lua execution failed: image source is not a regular file"}
+        ]}));
+        assert_eq!(
+            crate::tool_images_pending(&body, &images, &outputs),
+            Some(Vec::new())
+        );
+        let mut wrong_notice = body.clone();
+        wrong_notice["input"][9]["content"][0]["text"] =
+            "Task task:unrelated for tool exec finished: Succeeded.".into();
+        let mut wrong_receipt = body.clone();
+        wrong_receipt["input"][9]["content"][1]["text"] = "{}".into();
+        let mut wrong_png = body.clone();
+        wrong_png["input"][9]["content"][2]["image_url"] = "data:image/png;base64,broken!".into();
+        let mut duplicate = body.clone();
+        duplicate["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(body["input"][9].clone());
+        let mut unrelated = body.clone();
+        unrelated["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"user","content":"later unrelated input"}));
+        for malformed in [wrong_notice, wrong_receipt, wrong_png, duplicate, unrelated] {
+            assert_eq!(
+                crate::tool_images_pending(&malformed, &images, &outputs),
+                None
+            );
+        }
     }
 
     #[tokio::test]

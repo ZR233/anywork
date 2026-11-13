@@ -4986,15 +4986,20 @@ fn tool_images_pending(
     outputs: &[(String, String)],
 ) -> Option<Vec<String>> {
     let items = body["input"].as_array()?;
-    if images.is_empty()
-        || !outputs
-            .iter()
-            .all(|(id, marker)| tool_output_contains(body, id, marker))
-    {
+    if images.is_empty() {
         return None;
     }
+    let pending_outputs = pending_programs(body, outputs)?;
     let last_user = items.iter().rposition(|item| item["role"] == "user")?;
     let mut last_user_verified = false;
+    let mut verified_deliveries = Vec::new();
+    for (id, _) in outputs {
+        if let Some(delivery) = program_terminal_message(body, id) {
+            let index = items.iter().position(|item| std::ptr::eq(item, delivery))?;
+            last_user_verified |= index == last_user;
+            verified_deliveries.push(index);
+        }
+    }
     let mut pending = Vec::new();
     let mut previous_result = None;
     let mut previous_media = None;
@@ -5009,12 +5014,7 @@ fn tool_images_pending(
         }
         previous_result = Some(position);
         let output = result["output"].as_str()?;
-        let selected_receipt = serde_json::from_str::<Value>(output)
-            .ok()
-            .is_some_and(|receipt| {
-                receipt["original"]["contentDigest"].as_str()
-                    == Some(format!("sha256:{}", image.png_sha256).as_str())
-            });
+        let selected_receipt = image_receipt_matches(output, &image.png_sha256);
         if output.is_empty() || selected_receipt {
             let label = format!(
                 "Image from view_image call {}: pl.studio.resource:{}",
@@ -5046,7 +5046,9 @@ fn tool_images_pending(
             previous_media = Some(position);
             immediate_media.push(position);
         } else if output == tool_running_receipt(&image.call_id) {
-            let prefix = format!("Task task:{} for tool view_image finished: ", image.call_id);
+            let lua = call_is_lua(body, &image.call_id);
+            let tool = if lua { "exec" } else { "view_image" };
+            let prefix = format!("Task task:{} for tool {tool} finished: ", image.call_id);
             let deliveries = items
                 .iter()
                 .enumerate()
@@ -5061,14 +5063,20 @@ fn tool_images_pending(
             let parts = delivery["content"].as_array()?;
             if deliveries.len() != 1
                 || delivery_index <= position
-                || parts.len() != 2
+                || parts.len() != if lua { 3 } else { 2 }
                 || parts[0]["type"] != "input_text"
                 || parts[0]["text"] != format!("{prefix}Succeeded.")
-                || !png_image_matches(&parts[1], &image.png_sha256)
+                || (lua
+                    && (parts[1]["type"] != "input_text"
+                        || !parts[1]["text"]
+                            .as_str()
+                            .is_some_and(|text| image_receipt_matches(text, &image.png_sha256))))
+                || !png_image_matches(&parts[if lua { 2 } else { 1 }], &image.png_sha256)
             {
                 return None;
             }
             last_user_verified |= delivery_index == last_user;
+            verified_deliveries.push(delivery_index);
         } else {
             return None;
         }
@@ -5084,13 +5092,30 @@ fn tool_images_pending(
             return None;
         }
         last_user_verified |= message_index == last_user;
+        verified_deliveries.push(message_index);
+    }
+    pending.extend(pending_outputs);
+    let last_result = previous_result?;
+    if items.iter().enumerate().any(|(index, item)| {
+        index > last_result && item["role"] == "user" && !verified_deliveries.contains(&index)
+    }) {
+        return None;
     }
     // Old media cannot complete this step after an unrelated new input.
     // Before a first delivery, the original input precedes the tool receipts.
-    if !last_user_verified && (pending.is_empty() || last_user > previous_result?) {
+    if !last_user_verified && (pending.is_empty() || last_user > last_result) {
         return None;
     }
     Some(pending)
+}
+
+fn image_receipt_matches(text: &str, digest: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .is_some_and(|receipt| {
+            receipt["original"]["contentDigest"].as_str()
+                == Some(format!("sha256:{digest}").as_str())
+        })
 }
 
 fn prompt(body: &Value) -> Option<&str> {
