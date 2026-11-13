@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 
 import 'agy_host_trace.dart';
 import 'agy_remote_workspace.dart';
+import 'agy_submission_evidence.dart';
 import 'production_studio_harness.dart';
 
 Future<void> runAgyAcceptancePhases({
@@ -68,6 +69,15 @@ final class _Phases {
   String phase = 'before-first-prompt';
   AcpRunIdView? admittedRun;
   final Set<AcpRunIdView> observedRuns = {};
+  AgySubmissionEvidence? submission;
+  Object? watchError;
+  StackTrace? watchStack;
+
+  void checkWatch() {
+    if (watchError case final error?) {
+      Error.throwWithStackTrace(error, watchStack!);
+    }
+  }
 
   String get threadId => owner.state.target!.threadId;
   Set<String> get markers =>
@@ -129,6 +139,8 @@ final class _Phases {
       'lastFormalToolCall': calls.isEmpty ? null : calls.last,
       'localOwnedProcesses': processes.evidence,
       'samplingErrors': samplingErrors,
+      'watchErrorType': watchError?.runtimeType.toString(),
+      'userInputEvidence': submission?.diagnostics(),
     };
     await File(p.join(scene.harness.artifacts.path, '$name.json'))
         .writeAsString(
@@ -142,27 +154,35 @@ final class _Phases {
     final session = owner.state.remoteSessionId;
     final observedCalls = <String>{};
     final watch = owner.source.watch((state) {
-      if (state.activeRun case final run?) {
-        admittedRun ??= run;
-        observedRuns.add(run);
-      }
-      // Event-driven incremental process sampling, including a child while its
-      // wait_agent call is in flight. Keep and join every sampling future.
-      for (final call in state.content.whereType<AcpConversationToolItem>()) {
-        final key = '${call.toolCallId.value}:${call.fields.status?.name}';
-        if (!observedCalls.add(key)) continue;
-        final sampledPhase = phase;
-        samples = samples.then((_) async {
-          try {
-            await sample();
-          } catch (error) {
-            samplingErrors.add({
-              'phase': sampledPhase,
-              'toolCallId': call.toolCallId.value,
-              'errorType': error.runtimeType.toString(),
-            });
-          }
-        });
+      try {
+        submission?.observe(state);
+        if (state.activeRun case final run?) {
+          admittedRun ??= run;
+          observedRuns.add(run);
+        }
+        // Event-driven incremental process sampling, including a child while its
+        // wait_agent call is in flight. Keep and join every sampling future.
+        for (final call in state.content.whereType<AcpConversationToolItem>()) {
+          final key = '${call.toolCallId.value}:${call.fields.status?.name}';
+          if (!observedCalls.add(key)) continue;
+          final sampledPhase = phase;
+          samples = samples.then((_) async {
+            try {
+              await sample();
+            } catch (error) {
+              samplingErrors.add({
+                'phase': sampledPhase,
+                'toolCallId': call.toolCallId.value,
+                'errorType': error.runtimeType.toString(),
+              });
+            }
+          });
+        }
+      } catch (error, stack) {
+        // LatestValue routes listener exceptions to the Zone. Retain the
+        // original failure here and surface it in the awaited phase flow.
+        watchError ??= error;
+        watchStack ??= stack;
       }
     });
     Object? primary;
@@ -220,6 +240,7 @@ final class _Phases {
           remote!.processCommand('shutdown'),
         );
       }
+      checkWatch();
       expect(samplingErrors, isEmpty);
       expect(scene.tester.takeException(), isNull);
     } catch (error, stack) {
@@ -295,8 +316,12 @@ final class _Phases {
       evidence['remoteProcessExitChecks'] = remote?.exitEvidence;
       evidence['cleanupErrors'] = cleanupErrors;
       evidence['samplingErrors'] = samplingErrors;
+      evidence['watchErrorType'] = watchError?.runtimeType.toString();
       evidence['verdict'] =
-          primary == null && cleanupErrors.isEmpty && samplingErrors.isEmpty
+          primary == null &&
+              watchError == null &&
+              cleanupErrors.isEmpty &&
+              samplingErrors.isEmpty
           ? (remote == null
                 ? 'text-scenario-passed'
                 : 'acp-remote-scenario-passed')
@@ -306,6 +331,7 @@ final class _Phases {
     if (primary != null) Error.throwWithStackTrace(primary, primaryStack!);
     expect(cleanupErrors, isEmpty);
     expect(samplingErrors, isEmpty);
+    checkWatch();
   }
 
   Future<void> guard(String stage, Future<void> Function() action) async {
@@ -341,6 +367,12 @@ final class _Phases {
     try {
       expect(owner.state.activeRun, isNull);
       expect(owner.state.sendPending, isFalse);
+      checkWatch();
+      submission = AgySubmissionEvidence(
+        expectedPrompt: spec.prompt,
+        before: owner.state,
+      );
+      expect(submission!.startIndex, startIndex);
       if (draft.state.draft != spec.prompt) {
         await scene.tester.enterText(
           find.byKey(ValueKey(AcpViewKeyValues.composerInput(threadId))),
@@ -358,6 +390,7 @@ final class _Phases {
       );
       await scene.until(
         () {
+          checkWatch();
           final state = owner.state;
           expect(
             state.error == null,
@@ -387,6 +420,9 @@ final class _Phases {
         timeout: Duration(seconds: remote == null ? 120 : 240),
       );
       final completed = owner.state.lastCompleted!;
+      checkWatch();
+      submission!.verify();
+      result['userInputEvidence'] = submission!.diagnostics();
       expect(completed.run, admittedRun);
       expect(completed.completionSequence, greaterThan(beforeSequence));
       expect(completed.result, isA<AcpSuccessView<AcpPromptResponseView>>());
@@ -397,16 +433,6 @@ final class _Phases {
       expect(owner.state.sendPending, isFalse);
       expect(draft.state.draft, isEmpty);
       final newContent = owner.state.content.skip(startIndex).toList();
-      final users = newContent
-          .whereType<AcpConversationMessageItem>()
-          .where((message) => message.kind == AcpConversationMessageKind.user)
-          .toList();
-      expect(users, hasLength(1));
-      expect(
-        _text(users.single) == spec.prompt,
-        isTrue,
-        reason: 'Phase user echo differs; body not logged',
-      );
       final assistants = newContent
           .whereType<AcpConversationMessageItem>()
           .where(

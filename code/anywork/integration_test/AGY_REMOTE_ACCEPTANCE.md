@@ -25,8 +25,12 @@ marker 分别为同一运行前缀加 `A`、`B`、`C`。每阶段独立有界 **
 
 每阶段先记录前一 completionSequence/run，再观察本次真实受理的 `activeRun`，
 仅接受相同新 run 且 completionSequence 严格增加的成功完成；上一阶段的 idle 或
-lastCompleted 不能充当新阶段完成。同一 session/target 身份、阶段用户原文与最终
-assistant marker 都须匹配。各阶段只用自己的新 tool call 集验证，再最终重验全阶段来源。
+lastCompleted 不能充当新阶段完成。同一 session/target 身份与最终 assistant marker 都须
+匹配；阶段用户原文在 UI 草稿及 Client 实际提交时的临时消息上逐字核对，不能用前一阶段
+消息代替。正式 user_message_chunk 会接管临时显示，也可能回显宿主指令等协议输入，
+不假定其拼接文本等于 UI 草稿；独立记录正式显示的分块类型、长度、摘要与差异位置，
+不导出宿主指令正文，不从回显猜测本次实际发送内容。各阶段只用自己的新 tool call 集
+验证，再最终重验全阶段来源。
 
 完整场景保留以下必要断言：
 
@@ -138,6 +142,9 @@ scratch 中准备好的目录；不能占用 1420 端口。
   不导出任意命令正文、stdout/stderr/summary 正文、MCP 启动 env、authorization、
   capability、登录链接或凭据。已知合成过程命令和 marker stdin 可保留，其他正文脱敏。
   既有报告和截图只属于本次真实运行，截图不能代证 SSH 任务退出。
+- 工具名只接受正式 name 字段。保留原始名称和 toolCallId，对本次已证实的
+  `mcp_anywork_anywork_*` 仅去掉一次 `mcp_anywork_`，与原始 `anywork_*` 对应；
+  不任意剥前缀，不从 title 或模型正文推断，不把其他服务的同名工具算作 Host MCP。
 - 成功与失败均在同一 finally 路径显式 await closeMember 回执，再独立 await 原
   harness shutdown，并用同一组增量身份核对进程退出。只结束测试等待不算业务回收；
   原阶段错误优先保留，诊断与清理错误另记，不能用清理成功抹去阶段失败。

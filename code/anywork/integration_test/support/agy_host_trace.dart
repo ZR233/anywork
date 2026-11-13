@@ -12,15 +12,19 @@ final class AgyHostTrace {
   final List<AcpConversationToolItem> calls;
 
   List<AcpConversationToolItem> named(String name) =>
-      calls.where((call) => call.fields.name == name).toList();
+      calls.where((call) => canonicalName(call.fields.name) == name).toList();
+
+  static String? canonicalName(String? raw) {
+    if (raw == null) return null;
+    if (raw.startsWith('mcp_anywork_anywork_')) {
+      return raw.substring('mcp_anywork_'.length);
+    }
+    return raw.startsWith('anywork_') ? raw : null;
+  }
 
   List<Map<String, Object?>> verifyCompletedHostCalls() {
     final hostCalls = calls
-        .where(
-          (call) => (call.fields.name ?? call.fields.title ?? '').contains(
-            'anywork_',
-          ),
-        )
+        .where((call) => canonicalName(call.fields.name) != null)
         .toList();
     expect(
       hostCalls,
@@ -36,6 +40,7 @@ final class AgyHostTrace {
         {
           'toolCallId': call.toolCallId.value,
           'name': call.fields.name,
+          'canonicalName': canonicalName(call.fields.name),
           'status': call.fields.status?.name,
         },
     ];
@@ -285,8 +290,9 @@ final class AgyHostTrace {
       {
         'toolCallId': call.toolCallId.value,
         'name': call.fields.name,
+        'canonicalName': canonicalName(call.fields.name),
         'status': call.fields.status?.name,
-        if (call.fields.name?.startsWith('anywork_') == true) ...{
+        if (canonicalName(call.fields.name) != null) ...{
           'rawInput': _diagnosticJson(
             _value(call.fields.rawInput),
             safeCommands,
@@ -407,7 +413,11 @@ dynamic _diagnosticJson(
           ? value
           : {'redacted': true, 'length': value.length};
     }
-    if (key == 'summary' || key == 'content') {
+    if (key == 'summary' ||
+        key == 'content' ||
+        key == 'stdout' ||
+        key == 'stderr' ||
+        key == 'data') {
       return {
         'redacted': true,
         'length': value.length,
