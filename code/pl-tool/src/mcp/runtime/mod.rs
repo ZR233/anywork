@@ -82,8 +82,12 @@ impl McpRuntime {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (updates, _) = broadcast::channel(64);
         let notification_commands = commands.clone();
-        let connector = connector.with_tool_list_changed(move |server_id| {
-            let _ = notification_commands.send(RuntimeCommand::ToolListChanged { server_id });
+        let connector = connector.with_tool_list_changed(move |server_id, identity, event| {
+            let _ = notification_commands.send(RuntimeCommand::ConnectionEvent {
+                server_id,
+                identity,
+                event,
+            });
         });
         let shutdown_completion = ShutdownCompletion::default();
         let handle = McpRuntimeHandle {
@@ -569,12 +573,14 @@ pub(super) enum RuntimeCommand {
         reply: oneshot::Sender<Result<Value>>,
     },
     MarkUnavailable {
-        generation: McpGeneration,
+        identity: Arc<super::connector::ConnectionIdentity>,
         server_id: String,
         error: String,
     },
-    ToolListChanged {
+    ConnectionEvent {
         server_id: String,
+        identity: Arc<super::connector::ConnectionIdentity>,
+        event: super::connector::ConnectionEvent,
     },
     Shutdown {
         reply: oneshot::Sender<Result<()>>,

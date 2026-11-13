@@ -1,13 +1,11 @@
 //! Shared MCP stdio framing over a concrete executor Child.
 use super::{
     ConnectedMcp, McpConnectRequest, ToolListChangedSink, client_handler, connection_config_error,
-    connection_error, discovery_lifecycle, stderr_capture::StderrCapture,
+    connection_error, startup_lifecycle, stderr_capture::StderrCapture,
 };
 use crate::mcp::config::McpExecutionContext;
 use pl_protocol::Result;
-use rmcp::{
-    model::ProtocolVersion, service::ClientServiceExt, transport::async_rw::AsyncRwTransport,
-};
+use rmcp::transport::async_rw::AsyncRwTransport;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 pub(super) async fn connect(
@@ -93,12 +91,9 @@ pub(super) async fn connect(
 
     let stderr = stderr.map(|stderr| StderrCapture::spawn(stderr, &config.env));
     let transport = AsyncRwTransport::new_client(stdout, stdin);
-    let handshake = client_handler(
-        &request.server_id,
-        ProtocolVersion::V_2026_07_28,
-        tool_list_changed,
-    )
-    .serve_with_lifecycle(transport, discovery_lifecycle());
+    let (protocol_version, lifecycle) = startup_lifecycle(config.startup_mode);
+    let handshake = client_handler(&request.server_id, protocol_version, tool_list_changed)
+        .serve_observed(transport, lifecycle);
     let service = tokio::select! {
         biased;
         () = cancel.cancelled() => {

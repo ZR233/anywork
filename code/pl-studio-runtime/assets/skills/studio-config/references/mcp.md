@@ -38,6 +38,8 @@ kind = "server"
 transport = "stdio"
 command = "dart"
 args = ["mcp-server"]
+startup_mode = "initialize"
+startup_timeout_secs = 60
 ```
 
 `transport` is required in the document. `command` must be nonblank. These fields
@@ -47,6 +49,7 @@ are optional:
 | --- | --- | --- |
 | `enabled` | boolean, `true` | Desired enablement |
 | `required` | boolean, `false` | An enabled server must finish connection and tool discovery before a new Thread can start |
+| `startup_mode` | `"auto"`, `"initialize"` or `"discover"`, `"auto"` | Select the official SDK handshake for this server, on Host or SSH and either transport |
 | `args` | string array, `[]` | Separate arguments, not a shell command |
 | `env` | string-to-string table, `{}` | Additional process environment |
 | `cwd` | nonblank string, omitted | Process working directory |
@@ -67,6 +70,16 @@ tools enter later model steps, not an already-sent request. Set top-level
 credentials, startup failure or timeout then rejects initial Thread preparation.
 `enabled = false` takes precedence and does not start or wait for that server.
 Existing documents without `required` remain valid and default to optional.
+
+`auto` preserves SDK automatic discovery and its internal discovery window.
+`initialize` directly negotiates the 2025 protocol; `discover` directly negotiates
+the modern protocol. Choose the server's documented mode when known. The current
+official Dart server uses `initialize`; its cold startup can also need a longer
+overall timeout, as in the example. Increasing `startup_timeout_secs` alone does
+not change the SDK's internal automatic discovery window. Handshake failures stay
+visible and do not trigger a switch to another startup mode. Changing this field
+replaces only the affected connection through the normal configuration update.
+Omitted fields preserve the existing `auto` behavior; document schema remains 1.
 
 Omitted `cwd` uses the Thread workspace for Host-local or SSH-override stdio.
 Inherited Host stdio in an SSH Thread uses the Host base directory. Host relative
@@ -171,6 +184,28 @@ If configuration changes while discovery is running, the obsolete refresh may
 return an expiration error instead of a success receipt for the old revision.
 Inspect the current configuration and Thread state before refreshing again.
 Deleted or disabled capabilities cannot be reauthorized by a late old tool list.
+
+For a broken connection, call `reconnect_mcp` with the exact configured server ID,
+for example `{"serverId":"dart"}`. It rebuilds only that server in the calling
+Thread, through the same owner as the Thread's reconnect action. A nonempty
+`serverId` is required; unknown, disabled or credential-missing targets are
+rejected. It accepts no other Thread, endpoint, command, path or credential
+override and does not edit configuration. Inspect the actual connection state,
+runtime generation and tool-directory installation status; scheduled installation
+is not proof that the next tool schema has already been delivered.
+
+Reconnection creates a new protocol session and does not replay tool calls.
+Server-side state such as Dart package roots and runtime/debug connections must
+be set up again using the newly discovered tools. A request timeout or tool
+error alone does not prove the connection died or that a remote side effect did
+not happen. Do not resend an uncertain operation merely because reconnection
+succeeded.
+
+Each parent, child and sibling Thread owns its own MCP client and stdio process,
+even when configuration definitions or an SSH helper channel are shared. Register
+Dart roots separately in each Thread. Closing or reconnecting one Thread must not
+change another's roots or debugging session. Independent HTTP client sessions do
+not isolate global state that an external server itself chooses to share.
 
 `discover_tools` remains a read-only search of the calling Thread's frozen tool
 directory, not a reload operation. After refresh, discover the actual updated

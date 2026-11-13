@@ -23,13 +23,15 @@ pub(super) fn filter_tool_definitions(tools: Vec<Tool>, config: &McpServerConfig
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    tools
+    let mut tools: Vec<_> = tools
         .into_iter()
         .filter(|tool| {
             let name = tool.name.as_ref();
             enabled.as_ref().is_none_or(|names| names.contains(name)) && !disabled.contains(name)
         })
-        .collect()
+        .collect();
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools
 }
 
 pub(super) fn serialize_optional<T: serde::Serialize>(value: &Option<T>) -> Option<Value> {
