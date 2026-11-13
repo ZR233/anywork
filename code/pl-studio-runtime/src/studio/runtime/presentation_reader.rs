@@ -40,23 +40,22 @@ impl ConversationReader {
     ) -> Result<DisplayReadCut> {
         let permit = self.resources().await?;
         let resources = permit.as_ref().ok_or_else(cancelled)?;
-        let cut = if let Some(source) = resources
-            .source
-            .as_ref()
-            .and_then(|s| s.current_conversation())
+        use crate::studio::conversation_store::{ReadCut, ReadRequest};
+        let cut = match resources
+            .conversation
+            .capture(ReadRequest::Display {
+                before: live_before,
+                limit: live_limit,
+                after: pending_after,
+                pending: pending_limit,
+            })
+            .await?
         {
-            let owner = source
-                .presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let boundary = pending_after.unwrap_or_else(|| {
-                owner
-                    .capture(None, 0, 0, 0)
-                    .published
-                    .saturating_sub(pending_limit as u64)
-            });
-            let cut = owner.capture(live_before, live_limit, boundary, pending_limit);
-            DisplayReadCut {
+            ReadCut::Ready {
+                source,
+                display: Some(cut),
+                ..
+            } => DisplayReadCut {
                 published: cut.published,
                 durable: cut.durable,
                 revision: cut.revision,
@@ -67,34 +66,35 @@ impl ConversationReader {
                     .flatten(),
                 open: cut.open,
                 pending: cut.pending,
-            }
-        } else {
-            match resources.database_id.as_deref() {
-                Some(database) => {
-                    let stored = resources
-                        .history
-                        .display_cut(database, live_before, live_limit)
-                        .await?;
-                    DisplayReadCut {
-                        published: stored.published,
-                        durable: stored.published,
-                        revision: stored.effect,
-                        execution_present: false,
-                        current_work_id: stored.current_work_id,
-                        open: stored.open,
-                        pending: Vec::new(),
-                    }
-                }
-                None => DisplayReadCut {
-                    published: 0,
-                    durable: 0,
-                    revision: 0,
+            },
+            ReadCut::Cold(Some(snapshot)) => {
+                let stored = snapshot
+                    .display_cut(
+                        resources.database_id.as_deref().ok_or_else(resync)?,
+                        live_before,
+                        live_limit,
+                    )
+                    .await?;
+                DisplayReadCut {
+                    published: stored.published,
+                    durable: stored.published,
+                    revision: stored.effect,
                     execution_present: false,
-                    current_work_id: None,
-                    open: Vec::new(),
+                    current_work_id: stored.current_work_id,
+                    open: stored.open,
                     pending: Vec::new(),
-                },
+                }
             }
+            ReadCut::Cold(None) => DisplayReadCut {
+                published: 0,
+                durable: 0,
+                revision: 0,
+                execution_present: false,
+                current_work_id: None,
+                open: Vec::new(),
+                pending: Vec::new(),
+            },
+            ReadCut::Ready { .. } => unreachable!("display request captures its display cut"),
         };
         self.ensure()?;
         ensure!(cut.durable <= cut.published, resync());
@@ -382,17 +382,7 @@ impl ConversationReader {
             );
         }
         // Register before reading any header/page. Token wakes are filtered by the block revision.
-        let changed = resources
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation())
-            .map(|source| {
-                source
-                    .presentation
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .subscribe_members()
-            });
+        let changed = Some(resources.conversation.content_changes());
         Ok(DisplayMembers {
             observation: ReadObservation::new(self.clone(), changed),
             reference,
@@ -423,25 +413,24 @@ impl ConversationReader {
             DisplayMemberWindow::Latest => None,
             DisplayMemberWindow::Before { member_order } => Some(member_order),
         };
-        let hot = if let Some(source) = resources
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation())
+        use crate::studio::conversation_store::{ReadCut, ReadRequest};
+        let (hot, cold_snapshot) = match resources
+            .conversation
+            .capture(ReadRequest::Members {
+                block: &reference.block_id,
+                before,
+                limit: demand.max_items as usize + 1,
+            })
+            .await?
         {
-            let owner = source
-                .presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let header = owner.member_cut(&reference.block_id, before, 0);
-            if header.as_ref().is_some_and(|cut| {
-                delivered == Some((cut.header.revision, fixed_snapshot || cut.header.sealed))
-            }) {
-                return Ok(None);
-            }
-            owner.member_cut(&reference.block_id, before, demand.max_items as usize + 1)
-        } else {
-            None
+            ReadCut::Ready { members, .. } => (members, None),
+            ReadCut::Cold(snapshot) => (None, snapshot),
         };
+        if hot.as_ref().is_some_and(|cut| {
+            delivered == Some((cut.header.revision, fixed_snapshot || cut.header.sealed))
+        }) {
+            return Ok(None);
+        }
         #[cfg(test)]
         if let Some(barrier) = cut_barrier.take() {
             // The owner lock is already released; retain the real cut while the test commits.
@@ -472,15 +461,29 @@ impl ConversationReader {
                             .min(cut.header.next_member.saturating_add(1))
                     })
                     .or(before);
-                let saved = resources
-                    .history
-                    .display_member_page(
-                        &reference.database_id,
-                        &reference.block_id,
-                        saved_before,
-                        demand.max_items as usize + 1,
-                    )
-                    .await?;
+                let saved = match cold_snapshot {
+                    Some(snapshot) => {
+                        snapshot
+                            .display_member_page(
+                                &reference.database_id,
+                                &reference.block_id,
+                                saved_before,
+                                demand.max_items as usize + 1,
+                            )
+                            .await?
+                    }
+                    None => {
+                        resources
+                            .history
+                            .display_member_page(
+                                &reference.database_id,
+                                &reference.block_id,
+                                saved_before,
+                                demand.max_items as usize + 1,
+                            )
+                            .await?
+                    }
+                };
                 match overlay {
                     Some(cut) => {
                         let mut members =

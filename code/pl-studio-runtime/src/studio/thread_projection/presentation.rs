@@ -199,6 +199,16 @@ pub(in crate::studio) struct PresentationState {
     retained: u64,
 }
 
+/// 本 effect 的展示计划只携带受影响行、必要冻结观察和可发布前缀。
+/// 未触及的组和耐久历史不复制到准备阶段。
+pub(in crate::studio) struct PresentationPlan {
+    next: PresentationState,
+    delta: Arc<PreparedDisplayDelta>,
+    keys: BTreeSet<String>,
+    positions: BTreeSet<(u64, u64)>,
+    old_work: Option<u64>,
+}
+
 // JSON's tuple encoding is unambiguous, including the typed source discriminant.
 pub(in crate::studio) fn member_key(atom: &ChatAtom) -> Result<String> {
     Ok(serde_json::to_string(&(
@@ -431,6 +441,7 @@ impl PresentationState {
         self.retained
     }
 
+    #[cfg(test)]
     pub fn subscribe_members(&mut self) -> tokio::sync::watch::Receiver<u64> {
         self.changes
             .get_or_insert_with(|| tokio::sync::watch::channel(self.member_change).0)
@@ -877,7 +888,200 @@ impl PresentationState {
         )
     }
 
+    #[cfg(test)]
     pub fn prepare_visible(
+        &mut self,
+        effect: u64,
+        committed_at: i64,
+        input: DisplayInput<'_>,
+        completions: &[Arc<ChatItem>],
+        capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+    ) -> Result<Arc<PreparedDisplayDelta>> {
+        let (next, delta) = self.plan_visible(effect, committed_at, input, completions, capture)?;
+        self.apply_visible(next);
+        Ok(delta)
+    }
+
+    pub(super) fn plan_visible(
+        &self,
+        effect: u64,
+        committed_at: i64,
+        input: DisplayInput<'_>,
+        completions: &[Arc<ChatItem>],
+        capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+    ) -> Result<(PresentationPlan, Arc<PreparedDisplayDelta>)> {
+        let planned;
+        let requests = if let Some(requests) = input.observations {
+            requests
+        } else {
+            planned = self.observation_requests(effect, input.facts, input.visible)?;
+            &planned
+        };
+        let mut next = Self {
+            database: self.database.clone(),
+            open_work: self.open_work,
+            published: self.published,
+            durable: self.durable,
+            revision: self.revision,
+            member_change: self.member_change,
+            next_order: self.next_order,
+            applied_effect: self.applied_effect,
+            retained: self.retained,
+            ..Default::default()
+        };
+        let mut keys = BTreeSet::new();
+        let mut positions = BTreeSet::new();
+        let mut orders = BTreeSet::new();
+        for atom in input
+            .facts
+            .iter()
+            .chain(input.visible.iter().map(|text| &text.atom))
+        {
+            let key = member_key(atom)?;
+            if let Some(position) = self.location(&key) {
+                positions.insert(position);
+                orders.insert(position.0);
+            }
+            let candidate_id = block_identity(&self.database, atom, &key)?;
+            if let Some(order) = self.by_id.get(&candidate_id) {
+                next.by_id.insert(candidate_id, *order);
+            }
+            keys.insert(key);
+        }
+        for (_, member) in requests.values() {
+            if let Some(order) = self.by_id.get(&member.block_id) {
+                positions.insert((*order, member.head.member_order));
+                orders.insert(*order);
+            }
+            keys.insert(member.association_key.clone());
+        }
+        if let Some(order) = self.open_work {
+            orders.insert(order);
+        }
+        for position in &positions {
+            if let Some(member) = self.members.get(position) {
+                next.members.insert(*position, member.clone());
+                if !member.terminal {
+                    next.unfinished_members.insert(*position);
+                }
+            }
+        }
+        for key in &keys {
+            if let Some(position) = self.current_work_rows.get(key) {
+                next.current_work_rows.insert(key.clone(), *position);
+            }
+            if let Some(position) = self.open_texts.get(key) {
+                next.open_texts.insert(key.clone(), *position);
+            }
+        }
+        // 只有真正能够在本次变化后排出的前缀需要进入计划。
+        // 第一个不会被本批改变的开放块仍阻挡后缀，不能为准备复制整个列表。
+        for (order, header) in self.blocks.range(..) {
+            next.blocks.insert(*order, header.clone());
+            next.by_id.insert(header.id.clone(), *order);
+            if !header.sealed && !orders.contains(order) {
+                break;
+            }
+        }
+        for order in orders {
+            if let Some(header) = self.blocks.get(&order) {
+                next.blocks.insert(order, header.clone());
+                next.by_id.insert(header.id.clone(), order);
+            }
+        }
+        let delta = next.fold_visible(
+            effect,
+            committed_at,
+            DisplayInput {
+                facts: input.facts,
+                visible: input.visible,
+                observations: Some(requests),
+            },
+            completions,
+            capture,
+        )?;
+        Ok((
+            PresentationPlan {
+                next,
+                delta: delta.clone(),
+                keys,
+                positions,
+                old_work: self.open_work,
+            },
+            delta,
+        ))
+    }
+
+    pub(super) fn apply_visible(&mut self, plan: PresentationPlan) {
+        let PresentationPlan {
+            next,
+            delta,
+            keys,
+            positions,
+            old_work,
+        } = plan;
+        for key in keys {
+            self.current_work_rows.remove(&key);
+            self.open_texts.remove(&key);
+        }
+        if old_work != next.open_work {
+            self.current_work_rows.clear();
+        }
+        for position in positions {
+            self.unfinished_members.remove(&position);
+        }
+        self.current_work_rows.extend(next.current_work_rows);
+        self.open_texts.extend(next.open_texts);
+        self.unfinished_members.extend(next.unfinished_members);
+        for block in &delta.blocks {
+            let order = block.header.block_order;
+            self.by_id.insert(block.header.id.clone(), order);
+            if block.published.is_some() {
+                self.blocks.remove(&order);
+            } else {
+                self.blocks.insert(order, block.header.clone());
+            }
+        }
+        for header in &delta.remove_empty {
+            self.blocks.remove(&header.block_order);
+            self.by_id.remove(&header.id);
+            let positions = self
+                .members
+                .range((header.block_order, 0)..=(header.block_order, u64::MAX))
+                .map(|(position, _)| *position)
+                .collect::<Vec<_>>();
+            for position in positions {
+                self.members.remove(&position);
+            }
+        }
+        for member in &delta.members {
+            let order = self.by_id[&member.block_id];
+            self.members
+                .insert((order, member.head.member_order), member.clone());
+        }
+        for (order, header) in next.frozen_headers.range(..) {
+            self.frozen_headers.insert(*order, header.clone());
+        }
+        self.retired.extend(next.retired);
+        self.pending.extend(next.pending);
+        self.observations.extend(next.observations);
+        self.observation_batches.extend(next.observation_batches);
+        self.terminal_batches.extend(next.terminal_batches);
+        self.open_work = next.open_work;
+        self.published = next.published;
+        self.revision = next.revision;
+        self.member_change = next.member_change;
+        self.next_order = next.next_order;
+        self.applied_effect = next.applied_effect;
+        self.retained = next.retained;
+        if let Some(changes) = &self.changes
+            && *changes.borrow() != self.member_change
+        {
+            changes.send_replace(self.member_change);
+        }
+    }
+
+    fn fold_visible(
         &mut self,
         effect: u64,
         committed_at: i64,
@@ -1186,11 +1390,6 @@ impl PresentationState {
                 .sum::<u64>(),
         );
         self.applied_effect = effect;
-        if let Some(changes) = &self.changes
-            && *changes.borrow() != self.member_change
-        {
-            changes.send_replace(self.member_change);
-        }
         Ok(Arc::new(delta))
     }
 

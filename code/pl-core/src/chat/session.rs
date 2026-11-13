@@ -2,9 +2,10 @@
 //!
 //! [`Session`] 是一个注册会话内完成事实、pending 与统一读取的唯一所有者，保持产品无关：
 //!
-//! - [`Session::publish_batch`] 整批校验稳定身份与载荷，在短临界区内分配连续的正 `append_seq`
-//!   并把整批原子加入可查询集合，返回同一份冻结 `Arc` 记录供 writer 提交；同一身份同载荷幂等且
-//!   不重复分配序号，异载荷是类型化冲突，已持久身份同样按此规则检查；
+//! - 普通新事实用 [`Session::prepare_fresh`] 和 [`Session::admit_prepared`] 同步内存准入，宿主在
+//!   可靠业务接纳边界证明身份并串行化发布；完成与展示共享一次原子提交。
+//! - 未知身份、导入和重放用 [`Session::publish_batch`] 校验历史身份及载荷；同身份同载荷幂等，
+//!   异载荷为类型化冲突，已持久身份同样检查。两条入口共用完成原件、索引和序号分配规则；
 //! - [`Session::confirm_durable`] 只在 writer 真实提交了连续前缀后回收 pending；保存确认不发
 //!   内容事件，也不改变任何已发布记录；
 //! - 读取不在这里：见 `read` 模块的互不重叠区间读取。锁的纪律固定为锁内只做同步、有界的工作，
@@ -210,7 +211,103 @@ impl fmt::Debug for Session {
     }
 }
 
+/// 尚未发布的内存准入计划；其中原件尚不能作为可读完成事实公开。
+pub struct ChatAdmission {
+    epoch: TimelineEpoch,
+    expected_head: u64,
+    records: Arc<[Arc<ChatItem>]>,
+    fresh: Vec<Arc<ChatItem>>,
+    seed: ChatPublicationSeed,
+}
+impl ChatAdmission {
+    pub fn records(&self) -> &Arc<[Arc<ChatItem>]> {
+        &self.records
+    }
+    pub fn head_seq(&self) -> u64 {
+        self.seed.head_seq
+    }
+}
+
 impl Session {
+    /// 初始化完成序号种子。执行宿主在开放新事实准入之前调用一次。
+    pub async fn initialize(&self) -> Result<(), ChatError> {
+        self.ensure_initialized().await
+    }
+
+    /// 为已可靠接纳的新事实准备内存批次；不查询历史、不消耗序号。
+    ///
+    /// 宿主必须在 effect/input/message 接纳边界证明身份为新，并串行化准备及提交。
+    /// 未知外部身份、导入或重放使用 `publish_batch` 的历史校验入口。
+    pub fn prepare_fresh(&self, batch: Vec<ChatDraft>) -> Result<ChatAdmission, ChatError> {
+        let drafts = collapse_batch(batch)?;
+        let state = self.lock_timeline();
+        if !state.initialized {
+            return Err(ChatError::InvalidArgument(
+                "completion admission is not initialized".into(),
+            ));
+        }
+        let mut seed = ChatPublicationSeed {
+            head_seq: state.head,
+            last_visible: state.last_visible.clone(),
+        };
+        let mut records = Vec::with_capacity(drafts.len());
+        let mut fresh = Vec::with_capacity(drafts.len());
+        let mut contents = BTreeMap::new();
+        for draft in drafts {
+            if let Some(record) = state.pending_record(&draft.item_id) {
+                if !draft_matches_record(&draft, &record) {
+                    return Err(ChatError::Conflict(draft.item_id));
+                }
+                records.push(record);
+                continue;
+            }
+            for (key, content) in draft.contents.iter() {
+                if state
+                    .pending_content(key)
+                    .is_some_and(|old| old != *content)
+                    || contents
+                        .insert(key.clone(), content.clone())
+                        .is_some_and(|old| old != *content)
+                {
+                    return Err(ChatError::Conflict(key.key.clone()));
+                }
+            }
+            let (seq, run) = seed.advance(&draft.read_hint)?;
+            let record = Arc::new(ChatItem::complete(draft, seq, run));
+            records.push(record.clone());
+            fresh.push(record);
+        }
+        records.sort_by_key(|record| record.header.append_seq);
+        Ok(ChatAdmission {
+            epoch: self.epoch(),
+            expected_head: state.head,
+            records: records.into(),
+            fresh,
+            seed,
+        })
+    }
+
+    /// 一次提交已经准备好的批次。宿主同步应用其已验证投影，再发完成通知。
+    /// 准备后若其他发布者推进了 head，原计划明确失败且不修改任何状态。
+    pub fn admit_prepared(
+        &self,
+        plan: ChatAdmission,
+        apply: impl FnOnce(),
+    ) -> Result<Arc<[Arc<ChatItem>]>, ChatError> {
+        let mut state = self.lock_timeline();
+        if plan.epoch != self.epoch() || plan.expected_head != state.head {
+            return Err(ChatError::StaleContent);
+        }
+        for record in plan.fresh {
+            state.insert(record);
+        }
+        state.head = plan.seed.head_seq;
+        state.last_visible = plan.seed.last_visible;
+        apply();
+        self.0.changed.send_replace(state.head);
+        Ok(plan.records)
+    }
+
     /// 以宿主注入的不透明运行代际构建会话。
     ///
     /// 宿主在**每次**构建（含重启、重建）Session 时提供一个新的唯一 epoch；Core 不生成也不解释

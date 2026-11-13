@@ -323,7 +323,7 @@ pub(in crate::studio) struct PreparedEffect {
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
     display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) items: Vec<ThreadItem>,
+    pub(in crate::studio) items: Arc<[ThreadItem]>,
     /// The frozen completion records this batch published atomically before the handoff.
     ///
     /// The completion session allocated their `append_seq` in one short critical section and keeps
@@ -341,7 +341,7 @@ pub(in crate::studio) struct PreparedEffect {
         Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
-        Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+        Arc<[crate::thread_assembler::review_delivery::ReviewDeliveryFact]>,
 }
 
 fn review_delivery_facts(
@@ -396,10 +396,8 @@ impl PreparedEffect {
     /// `terminal_retention` is excluded here because that managed owner carries its one charge.
     /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
     ///
-    /// Shell contract: the value includes each item's and the report's own shell, but not the
-    /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
-    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method. Even an empty
-    /// content batch retains its prepared accounting material and its corresponding charge.
+    /// 条目使用共享的 Arc 切片，本估算已包含条目与报告本身的外壳；没有 Vec 预留容量。
+    /// 即使内容批次为空，也保留准备好的记账资料及其对应预算。
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let parent_report = self.parent_report_retained_bytes();
         let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
@@ -1676,12 +1674,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1754,12 +1752,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         self.retain(state);
         Ok(prepared)
@@ -1881,7 +1879,9 @@ impl LiveProjection {
             .filter(|item| matches!(item.state(), ThreadItemState::Turn(_)) && item.is_terminal())
             .map(|item| item.id.clone())
             .collect();
-        let (mut existing, restored) = self.resolve(thread, ids, &terminal_turns).await?;
+        let (mut existing, restored) = self
+            .resolve(thread, ids, &terminal_turns, effect.sequence)
+            .await?;
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -2250,6 +2250,68 @@ impl LiveProjection {
     }
 
     /// Publishes only the retained batch's original drafts. Every wait belongs to that batch.
+    pub(in crate::studio) fn plan_display(
+        &self,
+        prepared: &PreparedEffect,
+        records: &[Arc<ChatItem>],
+    ) -> anyhow::Result<(
+        super::presentation::PresentationPlan,
+        Arc<super::presentation::PreparedDisplayDelta>,
+    )> {
+        let presentation = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let display_facts = prepared
+            .display_atom_updates
+            .iter()
+            .filter(|atom| presentation.accepts_update(atom))
+            .chain(prepared.current.atom_facts.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        presentation.plan_visible(
+            prepared.sequence,
+            prepared.committed_at,
+            super::presentation::DisplayInput {
+                facts: &display_facts,
+                visible: &prepared.display_text_visible,
+                observations: Some(&prepared.display_observation_plan),
+            },
+            records,
+            |member| {
+                prepared
+                    .display_observations
+                    .get(&member.association_key)
+                    .ok_or_else(|| anyhow::anyhow!("boundary has no retained effect observation"))?
+                    .freeze()
+            },
+        )
+    }
+
+    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationPlan) {
+        self.presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apply_visible(plan);
+    }
+
+    pub(in crate::studio) fn complete_prepared(
+        prepared: &mut PreparedEffect,
+        records: Arc<[Arc<ChatItem>]>,
+        display: Arc<super::presentation::PreparedDisplayDelta>,
+    ) {
+        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
+        prepared.display = Some(display);
+        prepared.display_atom_updates = Arc::from([]);
+        prepared.display_text_visible = Arc::from([]);
+        prepared.display_observation_plan = Arc::new(BTreeMap::new());
+        prepared.display_observations = Arc::new(BTreeMap::new());
+        prepared.completions = records;
+        prepared.completion_drafts = None;
+    }
+
+    /// 明确的恢复／重放入口；普通新批次由 Store 的同步准入负责。
+    #[cfg(test)]
     pub(in crate::studio) async fn publish_prepared(
         &mut self,
         chat: &Session,
@@ -2807,6 +2869,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         ids: impl IntoIterator<Item = String>,
         terminal_turns: &BTreeSet<String>,
+        effect: u64,
     ) -> Result<ResolvedIdentities, ProjectionError> {
         let mut existing = BTreeMap::new();
         let mut restored = BTreeSet::new();
@@ -2837,8 +2900,14 @@ impl LiveProjection {
                 existing.insert(id, item);
                 continue;
             }
-            // Only a reliable identity miss reaches storage. Streaming frames and retained
-            // identities stay entirely in memory.
+            if self
+                .order_index
+                .as_ref()
+                .is_some_and(|index| index.is_new_reservation(&id, effect))
+            {
+                continue;
+            }
+            // Unknown and restored identities retain their explicit history validation.
             let history = self
                 .execution_history
                 .as_ref()

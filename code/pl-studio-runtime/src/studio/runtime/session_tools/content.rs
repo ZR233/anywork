@@ -21,6 +21,7 @@ const WINDOW: u32 = 32 * 1024;
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestBoundary {
+    BeforeOpen,
     FirstSet,
     SearchRead,
     SearchCommit,
@@ -209,7 +210,11 @@ impl ReadOwners {
         let feed = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
             _=cancelled(cancel)=>return Err(search_cancelled()),
-            result=runtime.open_conversation_feed(session, scope, demand)=>result?,
+            result=async {
+                #[cfg(test)]
+                self.test_boundary(TestBoundary::BeforeOpen, session).await;
+                runtime.open_conversation_feed(session, scope, demand).await
+            }=>result?,
         };
         let reader = feed.reader().clone();
         let resource = Arc::new(ReadResource {
@@ -1744,8 +1749,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_interrupts_first_open_and_first_set_and_failed_join_keeps_original_owner()
     -> Result<()> {
-        use crate::studio::runtime::thread_observation::ThreadLiveFeed;
-        use std::{sync::Arc, time::Duration};
+        use std::time::Duration;
 
         let env = support::Environment::new(vec![], vec![]).await?;
         let result = async {
@@ -1754,12 +1758,9 @@ mod tests {
                 .create_thread(&env.project.id, "tool open cancellation")
                 .await?;
             let session = &thread.id;
-            let slot = env.runtime.thread_observations.observation_slot(session);
-            let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-            let feed = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
-            slot.install(feed.clone());
-            let waiting = feed.arm_first_open_wait();
             let owners = ReadOwners::default();
+            let (waiting, _release_open) =
+                owners.arm_test_boundary(TestBoundary::BeforeOpen, 0).await;
             let (opened, closed) = tokio::time::timeout(Duration::from_secs(3), async {
                 tokio::join!(
                     owners.open(&env.runtime, session, demand(1).unwrap(), None, None),
@@ -1774,7 +1775,6 @@ mod tests {
             closed?;
             assert!(owners.readers.lock().await.is_empty());
             assert_eq!(owners.permits.available_permits(), MAX_READ_SCOPES);
-            slot.retire(&feed);
 
             // After a real feed is acquired, cancellation must join both registered owners.
             let owners = ReadOwners::default();
@@ -1794,7 +1794,7 @@ mod tests {
             assert!(owners.readers.lock().await.is_empty());
             assert_eq!(owners.permits.available_permits(), MAX_READ_SCOPES);
 
-            // Fail the first receive via real epoch invalidation, and fail its first join once.
+            // Fail the first receive via explicit read revocation, and fail its first join once.
             let owners = ReadOwners::default();
             let (entered, release) = owners.arm_test_boundary(TestBoundary::FirstSet, 0).await;
             let (opened, id) = tokio::time::timeout(Duration::from_secs(3), async {
@@ -1805,8 +1805,7 @@ mod tests {
                         owners.readers.lock().await[&id]
                             .close_fault
                             .store(true, Ordering::Release);
-                        slot.install(feed.clone());
-                        slot.retire(&feed);
+                        owners.readers.lock().await[&id].reader.invalidate();
                         let _ = release.send(());
                         Ok::<_, anyhow::Error>(id)
                     }
@@ -1836,7 +1835,6 @@ mod tests {
     #[tokio::test]
     async fn search_new_scope_failures_and_cancellation_release_capacity_and_retain_failed_join()
     -> Result<()> {
-        use crate::studio::runtime::thread_observation::ThreadLiveFeed;
         use std::time::Duration;
 
         let env = support::Environment::new(
@@ -1855,20 +1853,12 @@ mod tests {
             let session = &thread.thread.id;
             support::completed_prompt(&env.runtime, session, "search-new-scope").await?;
             let owners = ReadOwners::default();
-            let slot = env.runtime.thread_observations.observation_slot(session);
-            let original = slot
-                .capture()
-                .0
-                .source
-                .context("fixture has no live owner")?;
-            let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-            let replacement = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
             let input = || {
                 serde_json::from_value::<SearchInput>(
                     serde_json::json!({"sessionId":session,"query":"absent search needle"}),
                 )
             };
-            // More than the entire quota: both cancellation and a real epoch read error must reclaim
+            // More than the entire quota: both cancellation and an explicit read revocation must reclaim
             // scopes that have never been transferred in a successful ToolOutput.
             for attempt in 0..MAX_READ_SCOPES + 2 {
                 let cancel = CancellationToken::new();
@@ -1883,9 +1873,7 @@ mod tests {
                             if attempt % 2 == 0 {
                                 cancel.cancel();
                             } else {
-                                slot.install(replacement.clone());
-                                slot.retire(&replacement);
-                                slot.install(original.clone());
+                                owners.readers.lock().await[&id].reader.invalidate();
                             }
                             let _ = release.send(());
                             Ok::<_, anyhow::Error>(id)
@@ -1917,9 +1905,7 @@ mod tests {
                         owners.readers.lock().await[&id]
                             .close_fault
                             .store(true, Ordering::Release);
-                        slot.install(replacement.clone());
-                        slot.retire(&replacement);
-                        slot.install(original.clone());
+                        owners.readers.lock().await[&id].reader.invalidate();
                         let _ = release.send(());
                         Ok::<_, anyhow::Error>(id)
                     }
@@ -1947,7 +1933,6 @@ mod tests {
     #[tokio::test]
     async fn search_borrows_input_until_cross_session_result_commit_and_retries_original_cleanup()
     -> Result<()> {
-        use crate::studio::runtime::thread_observation::ThreadLiveFeed;
         use std::time::Duration;
 
         // A real successful first search stops inside the text window budget, not at a forged cursor.
@@ -2032,11 +2017,7 @@ mod tests {
                         assert_eq!(owners.readers.lock().await.len(), 2);
                         assert_eq!(owners.readers.lock().await[&new_id].reader.thread_id(), older.id);
                         if fail_read {
-                            let slot = env.runtime.thread_observations.observation_slot(&older.id);
-                            let (_owner, progress) = tokio::sync::watch::channel(Default::default());
-                            let replacement = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
-                            slot.install(replacement.clone());
-                            slot.retire(&replacement);
+                            owners.readers.lock().await[&new_id].reader.invalidate();
                         } else {
                             cancel.cancel();
                         }

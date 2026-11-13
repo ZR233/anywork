@@ -1495,6 +1495,7 @@ mod tests {
                 assert!(older.live.is_none());
                 feed.reader().close().await?;
                 feed.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1546,6 +1547,7 @@ mod tests {
                 persist(&h, &turn).await?;
                 assert_eq!(turn.display.as_ref().unwrap().published_through, 0);
                 assert!(turn.display.as_ref().unwrap().blocks.is_empty());
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1576,13 +1578,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn cold_resting_member_snapshot_seals_observation_without_freezing_work() -> Result<()>
-        {
+        async fn resting_member_observation_survives_execution_replacement_without_freezing_work()
+        -> Result<()> {
             use pl_core::chat::{ChatError, ChatHistory};
-            use pl_protocol::{
-                DisplayBlockState,
-                studio::{StudioError, StudioErrorReason},
-            };
+            use pl_protocol::DisplayBlockState;
 
             let env = Environment::new(vec![], vec![]).await?;
             let result = async {
@@ -1622,6 +1621,7 @@ mod tests {
                     (before.open[0].next_member, before.open[0].unfinished),
                     (2, 0)
                 );
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1644,13 +1644,13 @@ mod tests {
                     .await?;
                 let page = latest.next().await?.context("fixed cold member page")?;
                 assert!(
-                    page.sealed,
-                    "a saved-only bounded observation must seal before its finite EOF"
+                    !page.sealed,
+                    "execution retirement must not seal a mutable business block"
                 );
                 assert_eq!(page.revision, before.open[0].revision);
                 assert_eq!(page.entries, [expected[1].clone()]);
                 assert_eq!(page.before, Some(2));
-                assert!(latest.next().await?.is_none());
+                assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
                 let mut older = reader
                     .open_display_members(
                         reference.clone(),
@@ -1659,10 +1659,10 @@ mod tests {
                     )
                     .await?;
                 let prefix = older.next().await?.context("fixed cold prefix")?;
-                assert!(prefix.sealed);
+                assert!(!prefix.sealed);
                 assert_eq!(prefix.entries, [expected[0].clone()]);
                 assert!(prefix.before.is_none());
-                assert!(older.next().await?.is_none());
+                assert!(futures::poll!(Box::pin(older.next()).as_mut()).is_pending());
                 older.close().await?;
                 let after = h
                     .history
@@ -1734,29 +1734,14 @@ mod tests {
                     .thread_observations
                     .observation_slot(&h.thread.id)
                     .install(h.source.clone());
-                let changed = captured_cold
+                let unchanged = captured_cold
                     .next()
-                    .await
-                    .expect_err("a new source invalidates a cold qualification");
-                assert_eq!(
-                    changed
-                        .downcast_ref::<StudioError>()
-                        .context("typed continuity error")?
-                        .reason(),
-                    Some(StudioErrorReason::ConversationResyncRequired.label())
-                );
+                    .await?
+                    .context("same Store after execution replacement")?;
+                assert_eq!(unchanged.entries, [expected[1].clone()]);
+                assert!(!unchanged.sealed);
                 captured_cold.close().await?;
-                let changed = latest
-                    .next()
-                    .await
-                    .expect_err("even fixed EOF must recheck the original source epoch");
-                assert_eq!(
-                    changed
-                        .downcast_ref::<StudioError>()
-                        .context("typed continuity error after EOF")?
-                        .reason(),
-                    Some(StudioErrorReason::ConversationResyncRequired.label())
-                );
+                assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
                 latest.close().await?;
                 reader.close().await?;
                 feed.close().await?;
@@ -2086,6 +2071,7 @@ mod tests {
                 assert_eq!(hot.blocks[0].source.as_ref(), Some(&original.source));
                 hot_feed.close().await?;
                 hot_reader.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -2208,6 +2194,7 @@ mod tests {
                 reader.read_business_refs().await?;
                 reader.close().await?;
                 hot_members.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)

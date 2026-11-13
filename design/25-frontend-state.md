@@ -29,13 +29,15 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| 不可变原件、冻结展示块与成员索引 | Rust Session/HistoryStore 及原 live 展示 owner | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
+| 不可变原件、冻结展示块与成员索引 | Rust ConversationStore 及其共享 Session/HistoryStore | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
 | 原生 OpenAI 登录状态与待保存授权 | Rust 原生认证所有者 | 账号 Repository 的类型化观察；共享 Native 编辑器只持有认证选择与登录身份 | `loginId + editorId + accountId`；显式取消、编辑意图丢弃或应用关闭，保存按 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证) 认领 |
 | 已加载展示 item 与阅读/跟随意图 | Flutter 呈现 owner | item 引用、item/成员分页边界、展示控制器与局部 UI | Thread + 展示 item 代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
+
+Native 内容读句柄绑定稳定会话 Store 与数据库身份。执行所有者退出或更换不更换仍被读者持有的数据源，也不因此撤销内容游标；执行状态自身的资格仍按原执行生命周期判断。冷读取与执行初始化使用同一生命周期切面，初始化中的读取等待原恢复结果，失败明确返回。页面只关闭自己的读取资格，不取消可靠保存。现役内容推送及传输确认协议继续由原适配层维护，未引入新的客户端观察协议。
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
 

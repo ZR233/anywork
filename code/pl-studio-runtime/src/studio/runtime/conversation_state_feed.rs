@@ -2054,8 +2054,19 @@ mod tests {
                 .runtime
                 .create_thread(&env.project.id, "retained State qualification")
                 .await?;
-            let mut feed = env.runtime.open_conversation_state_feed(&thread.id).await?;
+            // 先结算真实启动边界，再用同一个受控接收端验证合成终态。
+            // 启动中的 Runtime/Storage 事件不能与本用例人工推进的水位混用。
+            env.runtime
+                .synchronize_thread_observation(&thread.id)
+                .await?;
+            let mut feed = env
+                .runtime
+                .open_conversation_state_feed(&thread.id)
+                .await
+                .context("open settled State qualification")?;
             let _snapshot = feed.recv().await?.context("initial State snapshot")?;
+            let (events, state) = tokio::sync::broadcast::channel(1);
+            feed.state = Some(StateReceiver::new(state, Default::default()));
             assert!(feed.pending.is_empty());
             let uncovered = feed
                 .applied
@@ -2121,8 +2132,7 @@ mod tests {
                     Some(ThreadSubscriptionUpdate::Notification { .. })
                 ));
             }
-            let (events, state) = tokio::sync::broadcast::channel(1);
-            feed.state = Some(StateReceiver::new(state, Default::default()));
+
             events.send(ThreadLiveEvent::UnframedCommit {
                 sequence: feed.applied + 1,
             })?;

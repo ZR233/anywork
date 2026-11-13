@@ -15,6 +15,70 @@ use support::{
 };
 
 #[tokio::test]
+async fn fresh_admission_is_ram_only_and_abandoned_plans_do_not_consume_sequences() {
+    use std::sync::atomic::Ordering;
+    let history = Stored::default();
+    let session = Session::new(history.clone(), epoch("fresh-admission"));
+    session.initialize().await.unwrap();
+    history.fail_read_item.store(true, Ordering::SeqCst);
+    history.fail_validation.store(true, Ordering::SeqCst);
+    let abandoned = session
+        .prepare_fresh(vec![draft("original", "冻结正文")])
+        .unwrap();
+    assert_eq!(abandoned.records()[0].header.append_seq, 1);
+    drop(abandoned);
+    assert_eq!(session.head_seq(), 0);
+    let plan = session
+        .prepare_fresh(vec![draft("original", "冻结正文")])
+        .unwrap();
+    let original = plan.records()[0].clone();
+    let published = session.admit_prepared(plan, || {}).unwrap();
+    assert!(Arc::ptr_eq(&original, &published[0]));
+    let retry = session
+        .prepare_fresh(vec![draft("original", "冻结正文")])
+        .unwrap();
+    assert!(Arc::ptr_eq(&original, &retry.records()[0]));
+    session.admit_prepared(retry, || {}).unwrap();
+    assert_eq!(session.head_seq(), 1);
+    assert_eq!(history.reads.item.load(Ordering::SeqCst), 0);
+    assert!(history.reads.validations.lock().unwrap().is_empty());
+    assert!(history.fail_read_item.load(Ordering::SeqCst));
+    assert!(history.fail_validation.load(Ordering::SeqCst));
+    assert!(matches!(
+        session.prepare_fresh(vec![draft("original", "另一正文")]),
+        Err(ChatError::Conflict(_))
+    ));
+    let stale = session
+        .prepare_fresh(vec![draft("later", "旧计划")])
+        .unwrap();
+    let next = session
+        .prepare_fresh(vec![draft("other", "已提交")])
+        .unwrap();
+    session.admit_prepared(next, || {}).unwrap();
+    assert!(matches!(
+        session.admit_prepared(stale, || panic!("stale plan applied")),
+        Err(ChatError::StaleContent)
+    ));
+    assert_eq!(session.head_seq(), 2);
+    history.fail_read_item.store(false, Ordering::SeqCst);
+    history.fail_validation.store(false, Ordering::SeqCst);
+    history.insert(original.as_ref().clone());
+    session.confirm_durable(1).unwrap();
+    let replayed = session
+        .publish_batch(vec![draft("original", "冻结正文")])
+        .await
+        .unwrap();
+    assert_eq!(replayed[0].header.append_seq, 1);
+    assert_eq!(session.head_seq(), 2);
+    assert!(matches!(
+        session
+            .publish_batch(vec![draft("original", "冲突正文")])
+            .await,
+        Err(ChatError::Conflict(_))
+    ));
+}
+
+#[tokio::test]
 async fn a_stale_identity_read_cannot_republish_a_concurrently_committed_record() {
     let stored = Stored::default();
     let gate = Arc::new(HistoryGate::new());

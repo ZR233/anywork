@@ -1,5 +1,5 @@
 //! Independent, revocable read qualification. Queries never take the feed's receive/credit lock.
-use super::thread_observation::{ObservationSlot, ThreadLiveFeed};
+use super::thread_observation::ObservationSlot;
 use crate::studio::storage::history::HistoryStore;
 use crate::studio::thread_projection::current_page;
 use anyhow::{Result, ensure};
@@ -26,8 +26,8 @@ pub(super) struct ReadLease {
     pub effect_cut: u64,
     presentation_ceiling: OnceLock<u64>,
     pub slot: Arc<ObservationSlot>,
-    pub epoch: u64,
     cancel: CancellationToken,
+    runtime_closed: CancellationToken,
     resources: RwLock<Option<ReadResources>>,
     resync: AtomicBool,
 }
@@ -36,7 +36,7 @@ pub(super) struct ReadResources {
     pub history: HistoryStore,
     pub session: core::Session,
     pub database_id: Option<String>,
-    pub source: Option<Arc<ThreadLiveFeed>>,
+    pub conversation: crate::studio::conversation_store::ConversationReadHandle,
     pub thread: Thread,
     pub recovery: crate::studio::StudioRecoveryRegistry,
 }
@@ -203,19 +203,12 @@ impl ConversationReader {
     pub async fn read_business_refs(&self) -> Result<ThreadBusinessRefs> {
         let guard = self.resources().await?;
         let resources = guard.as_ref().ok_or_else(cancelled)?;
-        let source = resources
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
-        let references = if let Some(source) = source {
-            source.current.business_refs()
-        } else {
-            let references = tokio::select! { biased;
-                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-                references = resources.history.read_business_refs() => references?,
-            };
-            references.unwrap_or_else(ThreadBusinessRefs::empty)
+        let current = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            current = resources.conversation.current_state() => current?,
         };
+        let references =
+            current.map_or_else(ThreadBusinessRefs::empty, |current| current.business_refs());
         self.ensure()?;
         Ok(references)
     }
@@ -225,7 +218,7 @@ impl ConversationReader {
         ceiling: u64,
         effect_cut: u64,
         slot: Arc<ObservationSlot>,
-        epoch: u64,
+        runtime_closed: CancellationToken,
         resources: ReadResources,
     ) -> Self {
         let reader = Self {
@@ -237,8 +230,8 @@ impl ConversationReader {
                 effect_cut,
                 presentation_ceiling: OnceLock::new(),
                 slot,
-                epoch,
-                cancel: CancellationToken::new(),
+                cancel: runtime_closed.child_token(),
+                runtime_closed,
                 resync: AtomicBool::new(false),
                 resources: RwLock::new(Some(resources)),
             }),
@@ -253,13 +246,24 @@ impl ConversationReader {
         &self.inner.id
     }
     pub(crate) fn ensure(&self) -> Result<()> {
+        if self.inner.runtime_closed.is_cancelled() {
+            self.invalidate();
+            return Err(resync());
+        }
         if self.inner.resync.load(Ordering::Acquire) {
             return Err(resync());
         }
         if self.inner.cancel.is_cancelled() {
             return Err(cancelled());
         }
-        if !self.inner.slot.is_current(self.inner.epoch) {
+        let identity_changed = self.inner.resources.try_read().ok().is_some_and(|guard| {
+            guard.as_ref().is_some_and(|resources| {
+                !resources
+                    .conversation
+                    .identity_matches(resources.database_id.as_deref())
+            })
+        });
+        if identity_changed {
             self.invalidate();
             return Err(resync());
         }
@@ -302,6 +306,10 @@ impl ConversationReader {
         };
         self.ensure()?;
         if let Some(resources) = read.as_ref() {
+            tokio::select! { biased;
+                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+                ready = resources.conversation.wait_initialization() => ready?,
+            }
             resources
                 .recovery
                 .ensure_thread_read_access(&resources.thread)?;
@@ -448,10 +456,7 @@ impl ConversationReader {
     ) -> Result<()> {
         let guard = self.resources().await?;
         let resources = guard.as_ref().ok_or_else(cancelled)?;
-        let source = resources
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
+        let source = resources.conversation.current_conversation();
         let mut states = known.to_vec();
         if let Some(source) = source {
             states.extend(
@@ -531,10 +536,7 @@ impl ConversationReader {
             from_seq: None,
             through_seq: self.inner.ceiling,
         };
-        let source = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
+        let source = r.conversation.current_conversation();
         annotate_sources(
             &mut batch.entries,
             &r.history,
@@ -572,10 +574,7 @@ impl ConversationReader {
         }
         .ok_or_else(|| core::ChatError::NotFound(record_id.into()))?;
         let mut entries = entries(vec![item], &budget.database_id)?;
-        let current = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
+        let current = r.conversation.current_conversation();
         annotate_sources(
             &mut entries,
             &r.history,
@@ -668,9 +667,8 @@ impl ConversationReader {
         .len();
         budget.manifest_cursor = Some(serde_json::from_str(&token)?);
         let active = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation())
+            .conversation
+            .current_conversation()
             .map(|source| source.current.clone());
         let entries = active
             .as_ref()
@@ -779,10 +777,7 @@ impl ConversationReader {
             r.database_id.as_deref() == Some(reference.database_id.as_str()),
             core::ChatError::StaleContent
         );
-        let source = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
+        let source = r.conversation.current_conversation();
         if let ContentTarget::Body { owner, key } = &reference.target {
             if matches!(owner, ContentOwner::DisplayObservation { .. }) {
                 let content_key = core::ChatContentKey {
@@ -816,7 +811,7 @@ impl ConversationReader {
             let cold = if source.is_none()
                 && matches!(owner, ContentOwner::Current { domain, .. } if domain == "collection:interactions")
             {
-                r.history.cold_current_state().await?
+                r.conversation.current_state().await?
             } else {
                 None
             };
@@ -935,10 +930,7 @@ impl ConversationReader {
                 }
             })
             .transpose()?;
-        let source = r
-            .source
-            .as_ref()
-            .and_then(|source| source.current_conversation());
+        let current = r.conversation.current_state().await?.ok_or_else(stale)?;
         let encode = |after| {
             self.token(
                 r,
@@ -948,13 +940,7 @@ impl ConversationReader {
                 },
             )
         };
-        let page = if let Some(source) = source {
-            current_page(&source.current, reference, after.as_deref(), demand, encode)?
-        } else {
-            r.history
-                .page_current(reference, after.as_deref(), demand, &encode)
-                .await?
-        };
+        let page = current_page(&current, reference, after.as_deref(), demand, encode)?;
         self.ensure()?;
         ensure!(
             serde_json::to_vec(&page)?.len() <= demand.max_bytes as usize,
@@ -977,7 +963,7 @@ impl ConversationReader {
             r.database_id.as_deref() == Some(reference.database_id.as_str()),
             core::ChatError::StaleContent
         );
-        let changed = r.source.as_ref().map(|source| source.content_changes());
+        let changed = Some(r.conversation.content_changes());
         Ok(ContentWatch {
             observation: ReadObservation::new(self.clone(), changed),
             reference: reference.clone(),
@@ -1059,7 +1045,6 @@ pub(super) struct ReadObservation {
     changed: Option<watch::Receiver<u64>>,
     /// Fixed at registration; dropping a live watch during close/seal cannot grant this status.
     fixed_snapshot: bool,
-    slot_changed: watch::Receiver<u64>,
     initial: bool,
     cancel: CancellationToken,
 }
@@ -1067,14 +1052,12 @@ pub(super) struct ReadObservation {
 impl ReadObservation {
     /// Register the domain watch before construction/capturing the first query window.
     pub(super) fn new(reader: ConversationReader, changed: Option<watch::Receiver<u64>>) -> Self {
-        let (_, slot_changed) = reader.inner.slot.capture();
         let cancel = reader.inner.cancel.child_token();
         let fixed_snapshot = changed.is_none();
         Self {
             reader,
             changed,
             fixed_snapshot,
-            slot_changed,
             initial: true,
             cancel,
         }
@@ -1121,10 +1104,6 @@ impl ReadObservation {
         };
         tokio::select! { biased;
             _ = self.cancel.cancelled() => return Err(self.cancelled()),
-            _ = self.slot_changed.changed() => {
-                self.reader.invalidate();
-                return Err(resync());
-            },
             result = changed.changed() => ensure!(result.is_ok(), resync()),
         }
         self.reader.ensure()?;

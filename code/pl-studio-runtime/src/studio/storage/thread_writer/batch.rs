@@ -1,6 +1,25 @@
 //! Private scheduling and transaction candidates over the original reliable queue.
 
 use super::*;
+
+/// 只能由本 writer 在真实事务成功后构造的确认区间。
+pub(in crate::studio) struct CommittedBatch {
+    database_id: String,
+    effect: u64,
+    append_seq: Option<u64>,
+}
+
+impl CommittedBatch {
+    pub(in crate::studio) fn database_id(&self) -> &str {
+        &self.database_id
+    }
+    pub(in crate::studio) fn effect(&self) -> u64 {
+        self.effect
+    }
+    pub(in crate::studio) fn append_seq(&self) -> Option<u64> {
+        self.append_seq
+    }
+}
 use crate::studio::storage::history::{CheckpointEffect, FactReceiptWrite};
 
 const WINDOW: Duration = Duration::from_millis(20);
@@ -197,6 +216,10 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             .map_err(|error| classified(pl_protocol::studio::HistoryFault::BlobFailed, error))?;
     }
     let history = history_store(inner).await?;
+    let database_id = history
+        .conversation_database_id()
+        .await?
+        .context("writer database identity is missing")?;
     let commits: Vec<_> = effects
         .iter()
         .zip(&candidates)
@@ -283,13 +306,16 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
     );
     // There are no await points in local settlement. On a rejected transaction none of these
     // actions run; on an interrupted acknowledgement the frozen prefix/baseline is retried.
-    if let Some(last) = effects
+    let append_seq = effects
         .iter()
         .rev()
         .find_map(|effect| effect.prepared.completions.last())
-    {
-        inner.chat.confirm_durable(last.header.append_seq)?;
-    }
+        .map(|item| item.header.append_seq);
+    inner.conversation.confirm_committed(&CommittedBatch {
+        database_id,
+        effect: effects.last().expect("nonempty batch").sequence,
+        append_seq,
+    })?;
     for ((effect, candidate), accounting) in effects.iter().zip(candidates).zip(accounting) {
         super::super::state::clear_checkpoint_recovery(&inner.thread.id);
         if let Some(accounting) = accounting {

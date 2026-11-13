@@ -5,6 +5,7 @@ mod agent_host;
 pub mod benchmark;
 pub(crate) mod catalog;
 mod conversation_identity;
+pub(crate) mod conversation_store;
 pub(crate) mod delegation;
 pub(crate) mod entity;
 mod ids;

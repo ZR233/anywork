@@ -99,6 +99,7 @@ impl StudioStore {
 
     /// One session per live Thread, shared by the writer and every content reader.
     /// Opening a cold view does not activate a Thread or create a database file.
+    #[cfg(test)]
     pub(crate) async fn chat_session(
         &self,
         thread_id: &str,
@@ -108,21 +109,45 @@ impl StudioStore {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn chat_session_for(
         &self,
         workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
-        if let Some(active) = self.thread_persistence.chat_session(thread_id) {
+        Ok(self
+            .conversation_store_for(workspace_id, thread_id)
+            .await?
+            .session()
+            .clone())
+    }
+
+    pub(crate) async fn conversation_store(
+        &self,
+        thread_id: &str,
+    ) -> anyhow::Result<std::sync::Arc<crate::studio::conversation_store::ConversationStore>> {
+        if let Some(active) = self.thread_persistence.conversation_store(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(
+        let paths = self.registered_session_paths(thread_id)?;
+        self.conversation_store_for(paths.workspace_id(), thread_id)
+            .await
+    }
+
+    pub(crate) async fn conversation_store_for(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<std::sync::Arc<crate::studio::conversation_store::ConversationStore>> {
+        if let Some(active) = self.thread_persistence.conversation_store(thread_id) {
+            return Ok(active);
+        }
+        let session = crate::studio::conversation_store::ConversationStore::new(
             self.history_for(workspace_id, thread_id).await?,
-            pl_core::chat::TimelineEpoch::new(crate::studio::ids::new_id("timeline"))?,
-        );
+        )?;
         Ok(self
             .thread_persistence
-            .install_chat_session(thread_id, session))
+            .install_conversation_store(thread_id, session))
     }
 
     pub(crate) fn state_for(

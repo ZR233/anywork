@@ -2230,6 +2230,12 @@ pub(crate) mod tests {
         );
 
         let (store, mut flush_entered) = ProbeStore::open(true);
+        // 该局部资源 fixture 没有产品目录，但仍显式提供同一工作区的稳定会话所有者。
+        let _conversation = factory
+            .services
+            .store
+            .conversation_store_for("early-close-project", &owner.thread_id)
+            .await?;
         member_with_probe(session, &owner.thread_id, None, Some(&store), root).await?;
         let member = session
             .observed_thread(&owner.thread_id)
