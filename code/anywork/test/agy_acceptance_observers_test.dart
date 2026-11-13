@@ -4,130 +4,15 @@ import 'dart:convert';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../anywork_client/test/support/acp_business_port.dart';
+import 'support/acp_acceptance_fixture.dart';
 import '../integration_test/support/agy_submission_evidence.dart';
 import '../integration_test/support/agy_host_trace.dart';
-
-const remote = AcpRemoteSessionId('fixture-remote');
-final target = AcpSessionTargetView(
-  sessionId: 'fixture-session',
-  agentId: 'fixture-agent',
-  threadId: 'fixture-thread',
-  instance: BigInt.one,
-);
-final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
-AcpSessionFrameView event(AcpSessionEventView v) => AcpEventFrameView(v);
-AcpSessionFrameView update(AcpSessionUpdateView v) => event(
-  AcpUpdateEventView(AcpSessionNotificationView(sessionId: remote, update: v)),
-);
-AcpSessionFrameView user(String text) => update(
-  AcpUserMessageChunkView(
-    AcpContentChunkView(content: AcpTextContentView(text: text)),
-  ),
-);
-void push(ControlledAcpObservation source, AcpSessionFrameView frame) {
-  final pending = source.read;
-  if (pending != null && !pending.isCompleted) {
-    pending.complete(frame);
-  } else {
-    source.frames.add(frame);
-  }
-}
-
-AcpJsonValue raw(dynamic value) => switch (value) {
-  null => const AcpJsonNull(),
-  bool v => AcpJsonBool(v),
-  int v => AcpJsonInteger(BigInt.from(v)),
-  String v => AcpJsonString(v),
-  List v => AcpJsonArray(v.map(raw)),
-  Map v => AcpJsonObject(v.map((k, v) => MapEntry(k.toString(), raw(v)))),
-  _ => throw StateError('unsupported fixture value'),
-};
-
-class Fixture {
-  Fixture(this.source, this.port, this.client, this.owner);
-  final ControlledAcpObservation source;
-  final ControlledAcpBusinessPort port;
-  final AcpSessionClient client;
-  final AcpConversationSession owner;
-  static Future<Fixture> open({String? replay}) async {
-    final source = ControlledAcpObservation([
-      AcpAcceptedFrameView(target: target, hasObservation: true),
-      if (replay != null) user(replay),
-      event(AcpReadyEventView(AcpNewSessionResponseView(sessionId: remote))),
-      const AcpSettledFrameView(AcpSuccessView<void>(null)),
-    ]);
-    final port = ControlledAcpBusinessPort()
-      ..sources.add(source)
-      ..run = run;
-    final client = AcpSessionClient(port: port);
-    addTearDown(client.dispose);
-    final owner = await client.openConversation(
-      OpenAcpSessionRequestView(
-        accountId: 'fixture',
-        expectedConnectionRevision: BigInt.one,
-        workspaceId: 'fixture-workspace',
-        threadId: target.threadId,
-        intent: const AcpLoadIntentView(remote),
-      ),
-    );
-    await owner.source.waitFor((s) => s.ready && !s.openPending);
-    return Fixture(source, port, client, owner);
-  }
-
-  Future<void> complete() async {
-    push(
-      source,
-      event(
-        AcpCompletedEventView(
-          AcpCompletedRunView(
-            run: run,
-            completionSequence: BigInt.one,
-            result: const AcpSuccessView(
-              AcpPromptResponseView(stopReason: AcpStopReasonView.endTurn),
-            ),
-            summary: 'fixture',
-            truncated: false,
-          ),
-        ),
-      ),
-    );
-    await owner.source.waitFor(
-      (s) => s.lastCompleted != null && s.activeRun == null,
-    );
-  }
-
-  Future<AgyHostTrace> calls(List<Map<String, dynamic>> specs) async {
-    for (var i = 0; i < specs.length; i++) {
-      final s = specs[i];
-      push(
-        source,
-        update(
-          AcpToolCallSessionUpdateView(
-            AcpToolCallView(
-              toolCallId: AcpToolCallId('fixture-call-$i'),
-              title: s['title'] ?? 'Fixture',
-              name: s['name'],
-              kind: AcpToolKindView.execute,
-              status: AcpToolCallStatusView.completed,
-              rawInput: raw(s['input']),
-              rawOutput: raw(s['output']),
-            ),
-          ),
-        ),
-      );
-    }
-    await owner.source.waitFor(
-      (s) =>
-          s.content.whereType<AcpConversationToolItem>().length == specs.length,
-    );
-    return AgyHostTrace(owner.state.content);
-  }
-}
+import '../integration_test/support/agy_load_only.dart';
 
 const prompt = 'question\n保持空白 ';
 const secret = 'SYNTHETIC-HOST-INSTRUCTIONS-DO-NOT-EXPORT';
 void main() {
+  _defineLoadOnlyTests();
   _defineToolContentTests();
   test('real Client publishes immutable submission before prompt; prefixed chunked echo stays independent', () async {
     final f = await Fixture.open(replay: 'older stage');
@@ -836,6 +721,172 @@ void _defineToolContentTests() {
         (d['contentBlocks'] as List).single.containsKey('jsonProjection'),
         isFalse,
       );
+    },
+  );
+}
+
+AgyLoadRequest request() =>
+    AgyLoadRequest(threadId: target.threadId, sessionId: remote.value);
+const caps = AcpAgentCapabilitiesView(
+  image: false,
+  audio: false,
+  embeddedContext: false,
+  loadSession: true,
+  listSessions: false,
+  resumeSession: true,
+);
+void _defineLoadOnlyTests() {
+  test('selector rejects incomplete/non-opted-in load and leaves normal mode untouched', () {
+    expect(AgyLoadRequest.fromEnvironment({}), isNull);
+    expect(
+      () => AgyLoadRequest.fromEnvironment({
+        'ANYWORK_AGY_LIVE': '1',
+        'ANYWORK_AGY_LOAD_THREAD': 't',
+      }),
+      throwsStateError,
+    );
+    expect(
+      () => AgyLoadRequest.fromEnvironment({
+        'ANYWORK_AGY_LOAD_THREAD': 't',
+        'ANYWORK_AGY_LOAD_SESSION': 's',
+      }),
+      throwsStateError,
+    );
+    expect(
+      AgyLoadRequest.fromEnvironment({
+        'ANYWORK_AGY_LIVE': '1',
+        'ANYWORK_AGY_LOAD_THREAD': 't',
+        'ANYWORK_AGY_LOAD_SESSION': 's',
+      })!.sessionId,
+      's',
+    );
+  });
+  test('real Client Load-only fixture sends no prompt and retains intermediate tool updates', () async {
+    final fixture = await Fixture.open();
+    final events = <Map<String, Object?>>[];
+    final observer = AgyLoadObservation(
+      request(),
+      (event) =>
+          events.add(jsonDecode(jsonEncode(event)) as Map<String, dynamic>),
+    );
+    final watch = fixture.owner.source.watch(
+      observer.observe,
+      fireImmediately: true,
+    );
+    addTearDown(watch.cancel);
+    push(fixture.source, event(const AcpInitializedEventView(caps)));
+    push(
+      fixture.source,
+      update(
+        AcpToolCallSessionUpdateView(
+          AcpToolCallView(
+            toolCallId: const AcpToolCallId('historic-tool'),
+            name: 'mcp_anywork_anywork_exec_command',
+            title: 'Historical',
+            kind: AcpToolKindView.execute,
+            status: AcpToolCallStatusView.inProgress,
+          ),
+        ),
+      ),
+    );
+    await fixture.owner.source.waitFor(
+      (s) => s.content.whereType<AcpConversationToolItem>().isNotEmpty,
+    );
+    push(
+      fixture.source,
+      update(
+        AcpToolCallChangedView(
+          AcpToolCallUpdateView(
+            toolCallId: const AcpToolCallId('historic-tool'),
+            fields: AcpToolCallUpdateFieldsView(
+              status: AcpToolCallStatusView.completed,
+              content: const [
+                AcpToolContentView(
+                  content: AcpTextContentView(
+                    text: '{"taskId":"task:historical","summary":"SYNTHETIC-SECRET"}',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await fixture.owner.source.waitFor(
+      (s) =>
+          s.content.whereType<AcpConversationToolItem>().single.fields.status ==
+          AcpToolCallStatusView.completed,
+    );
+    observer.verify();
+    expect(events.length, greaterThanOrEqualTo(4));
+    expect(
+      events.any(
+        (e) => (e['toolCalls'] as List).any((c) => c['status'] == 'inProgress'),
+      ),
+      isTrue,
+    );
+    expect(
+      events.any(
+        (e) => (e['toolCalls'] as List).any(
+          (c) => c['status'] == 'completed' && c['contentBlocks'].isNotEmpty,
+        ),
+      ),
+      isTrue,
+    );
+    expect(jsonEncode(events).contains('SYNTHETIC-SECRET'), isFalse);
+    expect(fixture.port.calls.map((c) => c.$1), ['open']);
+    expect(
+      (fixture.port.calls.single.$2 as OpenAcpSessionRequestView).intent,
+      isA<AcpLoadIntentView>(),
+    );
+  });
+  test(
+    'actual new Client send is detected and latched, not accepted as replay',
+    () async {
+      final fixture = await Fixture.open();
+      final observer = AgyLoadObservation(request(), (_) {});
+      final watch = fixture.owner.source.watch(
+        observer.observe,
+        fireImmediately: true,
+      );
+      addTearDown(watch.cancel);
+      await fixture.owner.send(const [
+        AcpTextContentView(text: 'synthetic negative test'),
+      ]);
+      expect(observer.verify, throwsStateError);
+    },
+  );
+  test(
+    'wrong identity and unsupported Load fail without sending a prompt',
+    () async {
+      final fixture = await Fixture.open();
+      final wrong = AgyLoadObservation(
+        const AgyLoadRequest(threadId: 'wrong', sessionId: 'wrong'),
+        (_) {},
+      );
+      wrong.observe(fixture.owner.state);
+      expect(wrong.verify, throwsStateError);
+      final observer = AgyLoadObservation(request(), (_) {});
+      final watch = fixture.owner.source.watch(observer.observe);
+      addTearDown(watch.cancel);
+      push(
+        fixture.source,
+        event(
+          const AcpInitializedEventView(
+            AcpAgentCapabilitiesView(
+              image: false,
+              audio: false,
+              embeddedContext: false,
+              loadSession: false,
+              listSessions: false,
+              resumeSession: false,
+            ),
+          ),
+        ),
+      );
+      await fixture.owner.source.waitFor((s) => s.capabilities != null);
+      expect(observer.verify, throwsStateError);
+      expect(fixture.port.calls.map((c) => c.$1), ['open']);
     },
   );
 }

@@ -21,7 +21,7 @@ marker 分别为同一运行前缀加 `A`、`B`、`C`。每阶段独立有界 **
 | --- | --- |
 | A | 文件／位置挑战、STDIN/EOF、长命令取消；要求原任务终态与独立文件／进程回读，再取得 root 新 run 的成功终态 |
 | B | 同账号 ACP child、wait_agent 原报告身份及关闭 child、独立 child 挑战回读；不重做 A，不启动关闭测试任务 |
-| C | 第三个任务的真实受理、list 和一次 1 ms wait 证明仍运行；root 此时明确结束本阶段，不能继续等该业务任务终态，随后由测试关闭成员并核对回收 |
+| C | 第三个任务的真实受理、list 和一次 1 ms wait 证明仍运行；最后只读 list_agents 核对原宿主调用计数，再明确结束本阶段，不继续等业务任务终态，随后由测试关闭成员并核对回收 |
 
 每阶段先记录前一 completionSequence/run，再观察本次真实受理的 `activeRun`，
 仅接受相同新 run 且 completionSequence 严格增加的成功完成；上一阶段的 idle 或
@@ -88,6 +88,8 @@ export ANYWORK_AGY_ARGS='["acp"]'
 export ANYWORK_AGY_SSH_ALIAS='<已有SSH Host别名>'
 export ANYWORK_AGY_SSH_TARGET='<明确授权的user@host>'
 export ANYWORK_AGY_PROJECT='<目标上新建独占anywork-agy-*项目的规范绝对路径>'
+export RUST_LOG='warn,pl_studio_runtime::acp_host_call_evidence=trace'
+unset ANYWORK_LOG_LEVEL
 
 cargo xtask test-project --suite desktop --case acp_agy_conversation \
   --output "$ANYWORK_AGY_ARTIFACTS/test-project-report"
@@ -105,6 +107,41 @@ scratch 中准备好的目录；不能占用 1420 端口。
 `ANYWORK_AGY_PROJECT=$ANYWORK_AGY_SANDBOX/project`，且不设置两个 SSH 环境变量。
 
 ## 独立证据与失败收束
+
+### 无 prompt 的原会话加载采证
+
+正式工具结果在最终显示中缺失时，先停止新增模型请求。仅在明确授权下，复用同一个
+官方桌面 case 和 `ProductionStudioHarness`，设置 `ANYWORK_AGY_LOAD_THREAD` 与
+`ANYWORK_AGY_LOAD_SESSION`，对所指定的本次独占隔离 home 中原 thread 调用公开
+`openAcpConversation(threadId, resume: false)`。这条分支只执行官方 SDK `session/load`，
+不创建账号、项目或替代会话，不发送 prompt，不使用 New/Resume 兜底，不复制认证。
+
+该分支的 sandbox/home 必须仍为原本次独占目录；允许真实产品加载所需的正常状态写回，
+不手工修改目录事实、closed 标志或数据库。输出必须进入全新的 artifacts 和 `--output`
+目录，旧报告、截图、资源和其他失败现场不覆盖。身份、加载能力、错误／gap、逐次观察到
+的正式工具形状和来源另存；新实例的 replay 不能倒填成原 live 通过。
+
+加载无能力、原引用不可恢复、认证／权限失败或未重放所需内容时，保存原错误并停止，
+不扩大到其他用户会话。任何原会话主动运行迹象均失败并关闭。成功或失败均显式关闭成员
+和 harness、等待所属进程收束；无 prompt 的控制请求也不是无资源副作用的文件读取。
+
+需要分辨类型解码前的实际通知时，先用受控 peer 核验既有 SDK／rmcp 日志，再另行授权
+仅在本次独占进程启用对应 `RUST_LOG` target，不能对日常 Studio 全局打开载荷日志。
+SDK 的 env/header 擦除不等于通用凭据过滤；rmcp 的请求／结果日志可能含完整业务内容。
+保留滚动日志及实际退出／排空事实，只有脱敏白名单投影可以对外发布。日志缺失不能补零。
+Host MCP 返回、日志中生成响应、传输发送、代理消费和 ACP 显示分别是不同边界；日志
+不是对端 ACK，MCP request id、宿主 call id 和 ACP toolCallId 也不能合成同一种身份。
+
+业务回执可从原 Host MCP handler 的定向 `pl_studio_runtime::acp_host_call_evidence=trace`
+事件核对；该路径同时覆盖 HTTP 和 stdio IPC，不要求外部代理把结果重发到 ACP 显示。
+事件只表达真实宿主领域返回，按进程、绑定 caller、宿主调用 ID 和原参数关联，不能把它
+填回不存在的 ACP rawOutput。日志缺失／重复／调用集合不符或尚未排空时不通过；不得
+改变业务控制来制造完整记录。只使用本次隔离合成数据，原日志私下保全，脱敏后再交付。
+阶段 C 的最后一个宿主操作读取现有 `list_agents`：本次 root 的原 `observedToolCalls`
+（包含该查询自身）须等于三个阶段捕获的 root 返回数；child 则与原 wait_agent 返回的
+计数分别核对。这补充日志集合检查，不把短暂文件稳定声明为 logger 队列深度为零。
+
+### 新会话业务场景
 
 - Studio 通过公开 Client 打开带 SSH 身份的项目；界面选择 ACP、创建会话、
   变更配置和发送提示都使用真实生产控件与 `WidgetTester`。

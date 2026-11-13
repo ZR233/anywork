@@ -220,6 +220,8 @@ initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rm
 
 领域端口只交付工具目录和执行调用。目录项与可调用绑定由同一装配结果产生，`HostInvocation` 携带该实例目录中的工具身份和参数，`HostResult` 携带结构化结果及业务错误标记；不维护另一份九项操作枚举或名称白名单。目录直接投影原作者声明，不回解 `ToolDefinition`，不复制 schema；Grammar/Text 输入只在 MCP 边界以明确的字符串字段承载原文。MCP 握手、request ID、通知和结果封装由官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
 
+对端工具通知不必回显 HostResult。隔离验收需要核对原返回值时，按 [24](./24-testing.md) 使用原 handler 的定向 TRACE 诊断；它不新增执行通路或产品结果镜像，不修改 ACP 更新，不把宿主 call ID 伪装为 MCP／ACP ID，也不改变任务的受理、取消和关闭语义。普通会话不依赖或读取该日志。
+
 IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝远程连接并限定本机用户的 named pipe，复用锁定 Tokio、h2 与 prost。每个 h2 stream 对应一次目录读取或执行调用，protobuf 外层承载原 JSON 参数/结果；收发上限为 4 MiB，超限明确失败，不截断。h2 负责并发关联、流控、reset 和连接关闭，不新增请求账本、业务 deadline、重放、重连或结果缓存，也不把产品调用塞入 SSH helper 协议。
 
 原实例固定可信 caller、具体运行代次及原 Session 的弱访问入口；成员发布前允许发现、拒绝域调用，发布后逐次校验原资格。HTTP bearer 经标准 header 校验；stdio 只从 `ANYWORK_HOST_IPC_ENDPOINT`、`ANYWORK_HOST_IPC_CAPABILITY` 临时环境取得本地 IPC 端点与每实例随机 capability，不放入 argv。IPC 每次请求验证 capability，连接不能更换调用者；调用参数不能提供可信 caller 或 call ID。真实 call ID 由原运行时生成，MCP/IPC request ID 不充当持久消息 ID。凭据不进入模型内容、参数、持久配置、历史或日志，实例关闭后失效。

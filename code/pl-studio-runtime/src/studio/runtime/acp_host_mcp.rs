@@ -615,6 +615,12 @@ impl HostTools for Handler {
             call_id: crate::studio::ids::new_id("acp-call"),
             cancellation,
         };
+        // Normal calls retain no payload copy; this evidence is explicitly opt-in.
+        let evidence = tracing::enabled!(
+            target: "pl_studio_runtime::acp_host_call_evidence",
+            tracing::Level::TRACE
+        )
+        .then(|| (arguments.clone(), context.call_id.clone()));
         // Keep the dispatch union's large retirement/cold-activation states on the heap at
         // this transport boundary, rather than inlining them through rmcp's request poll
         // frames. This changes allocation, not operation ownership or cancellation.
@@ -627,6 +633,23 @@ impl HostTools for Handler {
             Ok(value) => value,
             Err(error) => (serde_json::json!({ "error": error.to_string() }), true),
         };
+        if let Some((arguments, host_call_id)) = evidence {
+            tracing::trace!(
+                target: "pl_studio_runtime::acp_host_call_evidence",
+                record_json = %serde_json::json!({
+                    "kind": "acp_host_call_result",
+                    "version": 1,
+                    "pid": std::process::id(),
+                    "callerAgentId": self.caller.as_str(),
+                    "hostCallId": host_call_id,
+                    "toolId": request.tool_id,
+                    "arguments": arguments,
+                    "value": &value,
+                    "isError": error,
+                }),
+                "host_mcp_call_result"
+            );
+        }
         Ok(HostResult {
             value,
             is_error: error,
@@ -657,6 +680,8 @@ impl Handler {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use anyhow::{Context, Result, ensure};
     use pl_acp::session::schema;
     use reqwest::{Client, StatusCode, header};
@@ -666,6 +691,64 @@ mod tests {
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 
     use super::HostMcp;
+
+    #[derive(Clone, Default)]
+    struct EvidenceBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for EvidenceBuffer {
+        type Writer = tracing_subscriber::fmt::writer::MutexGuardWriter<'writer, Vec<u8>>;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            tracing_subscriber::fmt::MakeWriter::make_writer(self.0.as_ref())
+        }
+    }
+
+    fn capture_evidence(buffer: EvidenceBuffer, filter: &str) -> tracing::subscriber::DefaultGuard {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .without_time()
+            .with_ansi(false)
+            .with_writer(buffer)
+            .finish();
+        tracing::subscriber::set_default(subscriber)
+    }
+
+    fn evidence_records(buffer: &EvidenceBuffer) -> Result<Vec<Value>> {
+        let text = String::from_utf8(buffer.0.lock().unwrap().clone())?;
+        text.lines()
+            .filter(|line| line.contains("pl_studio_runtime::acp_host_call_evidence"))
+            .map(|line| {
+                let (_, record) = line
+                    .split_once("host_mcp_call_result record_json=")
+                    .context("complete host call evidence field must be last on one line")?;
+                serde_json::from_str(record).context("host call evidence JSON")
+            })
+            .collect()
+    }
+
+    fn check_evidence(
+        record: &Value,
+        caller: &str,
+        tool: &str,
+        arguments: &Value,
+        value: &Value,
+        is_error: bool,
+    ) -> Result<()> {
+        ensure!(record.as_object().context("evidence object")?.len() == 9);
+        ensure!(record["kind"] == "acp_host_call_result" && record["version"] == 1);
+        ensure!(record["pid"] == std::process::id());
+        ensure!(record["callerAgentId"] == caller);
+        ensure!(
+            record["hostCallId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("acp-call-"))
+        );
+        ensure!(record["toolId"] == tool);
+        ensure!(record["arguments"] == *arguments);
+        ensure!(record["value"] == *value);
+        ensure!(record["isError"] == is_error);
+        Ok(())
+    }
 
     #[derive(Clone)]
     struct HttpMcp {
@@ -1256,10 +1339,12 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ipc_calls_original_host_without_an_http_mcp_listener() -> Result<()> {
         use pl_studio_mcp::{HostInvocation, HostTools, ipc::IpcClient};
 
+        let evidence = EvidenceBuffer::default();
+        let _disabled = capture_evidence(evidence.clone(), "warn");
         let fixture = Fixture::new("mcp-http").await?;
         let mut target = None;
         let mut service = None;
@@ -1348,6 +1433,15 @@ mod tests {
                 !listed.is_error && listed.value.to_string().contains(&open.target.agent_id),
                 "IPC did not read the original member directory"
             );
+            ensure!(
+                evidence_records(&evidence)?.is_empty(),
+                "default warn filter emitted a host call payload"
+            );
+            // These fixtures stay on this OS thread, including the existing spawned handlers.
+            let _enabled = capture_evidence(
+                evidence.clone(),
+                "warn,pl_studio_runtime::acp_host_call_evidence=trace",
+            );
             let profiles = ipc
                 .invoke(
                     HostInvocation {
@@ -1362,13 +1456,62 @@ mod tests {
                 !profiles.is_error && profiles.value.is_object(),
                 "profile domain query failed"
             );
+            let records = evidence_records(&evidence)?;
+            ensure!(
+                records.len() == 1,
+                "one IPC call must emit one evidence record"
+            );
+            check_evidence(
+                &records[0],
+                &open.target.agent_id,
+                "anywork_list_agent_profiles",
+                &json!({}),
+                &profiles.value,
+                profiles.is_error,
+            )?;
+            let forged = json!({
+                "callerAgentId":"forged-caller",
+                "hostCallId":"forged-host-call",
+                "requestId":"forged-mcp-request",
+                "toolCallId":"forged-acp-tool",
+                "nested":{"text":"first\n第二行","items":[1,true,null]}
+            });
+            let failed = ipc
+                .invoke(
+                    HostInvocation {
+                        tool_id: "anywork_list_agents".into(),
+                        arguments: forged.as_object().unwrap().clone(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await?;
+            ensure!(
+                failed.is_error,
+                "invalid original domain arguments unexpectedly succeeded"
+            );
+            let records = evidence_records(&evidence)?;
+            ensure!(
+                records.len() == 2,
+                "two enabled IPC calls must emit two records"
+            );
+            check_evidence(
+                &records[1],
+                &open.target.agent_id,
+                "anywork_list_agents",
+                &forged,
+                &failed.value,
+                failed.is_error,
+            )?;
+            ensure!(records[0]["hostCallId"] != records[1]["hostCallId"]);
+            ensure!(records[1]["hostCallId"] != forged["hostCallId"]);
+            ensure!(records[1]["callerAgentId"] != forged["callerAgentId"]);
             ensure!(
                 service
                     .as_ref()
                     .unwrap()
                     .observed_counter()
                     .load(std::sync::atomic::Ordering::Acquire)
-                    == 2,
+                    == 3,
                 "domain call count differs"
             );
             service.as_mut().unwrap().close().await?;
@@ -1405,8 +1548,13 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn http_auth_tools_and_instance_shutdown_are_isolated() -> Result<()> {
+        let evidence = EvidenceBuffer::default();
+        let _capture = capture_evidence(
+            evidence.clone(),
+            "warn,pl_studio_runtime::acp_host_call_evidence=trace",
+        );
         let fixture = Fixture::new("replay").await?;
         let mut target = None;
         let mut services = Vec::new();
@@ -1505,6 +1653,19 @@ mod tests {
                     || profiles["result"]["content"].is_array(),
                 "profile query did not return a result"
             );
+            let records = evidence_records(&evidence)?;
+            ensure!(
+                records.len() == 1,
+                "one HTTP call must emit one evidence record"
+            );
+            check_evidence(
+                &records[0],
+                &target.agent_id,
+                "anywork_list_agent_profiles",
+                &json!({}),
+                &profiles["result"]["structuredContent"],
+                false,
+            )?;
 
             second.initialize().await?;
             let child_tools = second.request("tools/list", json!({})).await?;
@@ -1568,6 +1729,10 @@ mod tests {
                         .as_ref()
                         .is_ok_and(|response| response.status().is_success()),
                 "second closed endpoint remained usable"
+            );
+            ensure!(
+                evidence_records(&evidence)?.len() == 1,
+                "catalog requests and rejected calls must not duplicate domain evidence"
             );
             Ok::<_, anyhow::Error>(())
         }

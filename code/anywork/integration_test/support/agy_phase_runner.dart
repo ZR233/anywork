@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 
 import 'agy_host_trace.dart';
+import 'agy_host_evidence.dart';
 import 'agy_remote_workspace.dart';
 import 'agy_submission_evidence.dart';
 import 'production_studio_harness.dart';
@@ -72,6 +73,9 @@ final class _Phases {
   AgySubmissionEvidence? submission;
   Object? watchError;
   StackTrace? watchStack;
+  AgyHostEvidenceLog? hostEvidence;
+  final List<AgyHostRecord> rootDomainCalls = [];
+  final Map<String, List<AgyHostRecord>> childDomainCalls = {};
 
   void checkWatch() {
     if (watchError case final error?) {
@@ -141,6 +145,10 @@ final class _Phases {
       'samplingErrors': samplingErrors,
       'watchErrorType': watchError?.runtimeType.toString(),
       'userInputEvidence': submission?.diagnostics(),
+      'lastCompleteHostLogSnapshot': hostEvidence?.diagnostics(
+        safeCommands,
+        markers,
+      ),
     };
     await File(p.join(scene.harness.artifacts.path, '$name.json'))
         .writeAsString(
@@ -188,6 +196,22 @@ final class _Phases {
     Object? primary;
     StackTrace? primaryStack;
     try {
+      if (remote != null) {
+        if (Platform.environment['RUST_LOG'] != agyHostEvidenceFilter) {
+          throw StateError(
+            'Remote acceptance requires the isolated Host TRACE filter',
+          );
+        }
+        final home = Platform.environment['ANYWORK_HOME'];
+        if (home == null) throw StateError('Missing isolated Studio home');
+        hostEvidence = AgyHostEvidenceLog(
+          home: Directory(home),
+          guiPid: pid,
+          rootCaller: target.agentId,
+        );
+        await hostEvidence!.read();
+        evidence['businessResultSource'] = 'host-domain-trace';
+      }
       await sample(requireAgy: remote != null);
       await snapshot('before-first-prompt');
       final stages = remote == null
@@ -227,16 +251,21 @@ final class _Phases {
         evidence['runningBeforeClose'] = await remote!.verifyShutdownStarted();
         final trace = AgyHostTrace(owner.state.content);
         evidence['finalHostToolCalls'] = trace.verifyCompletedHostCalls();
-        evidence['finalTasks'] = trace.verifyTasks(
+        final domain = AgyHostCalls(rootDomainCalls)..verifyGeneratedResults();
+        evidence['finalHostDomainCalls'] = domain.diagnostics(
+          safeCommands,
+          markers,
+        );
+        evidence['finalTasks'] = domain.verifyTasks(
           '${marker}A',
           remote!.processCommand,
         );
-        evidence['finalChild'] = trace.verifyChild(
+        evidence['finalChild'] = domain.verifyChild(
           childProfileId,
           '${marker}B',
           target.agentId,
         );
-        evidence['finalShutdownTask'] = trace.verifyShutdown(
+        evidence['finalShutdownTask'] = domain.verifyShutdown(
           remote!.processCommand('shutdown'),
         );
       }
@@ -301,6 +330,12 @@ final class _Phases {
         await closeHarness();
         evidence['harnessShutdownCompleted'] = true;
       });
+      if (hostEvidence != null) {
+        await guard('host-evidence-after-close', () async {
+          evidence['hostEvidenceAfterClose'] = await hostEvidence!
+              .verifyDrained();
+        });
+      }
       if (remote != null) {
         await guard('remote-process-exit', () async {
           evidence['remoteExitedAfterClose'] = await remote!
@@ -455,26 +490,52 @@ final class _Phases {
       result['completion'] = _completed(completed);
       if (remote != null) {
         result['hostToolCalls'] = trace.verifyCompletedHostCalls();
+        final domain = await hostEvidence!.matchPhase(
+          trace,
+          owner.state.target!.agentId,
+        );
+        rootDomainCalls.addAll(domain.records);
+        result['hostCollectionMatch'] = domain.collectionEvidence;
+        result['hostDomainCalls'] = domain.diagnostics(safeCommands, markers);
+        domain.verifyGeneratedResults();
         switch (spec.id) {
           case 'A':
-            result['taskLifecycle'] = trace.verifyTasks(
+            result['taskLifecycle'] = domain.verifyTasks(
               spec.marker,
               remote!.processCommand,
             );
             result['readback'] = await remote!.verifyPhaseA(spec.marker);
           case 'B':
-            result['childReport'] = trace.verifyChild(
+            final child = domain.verifyChild(
               childProfileId,
               spec.marker,
               owner.state.target!.agentId,
             );
+            result['childReport'] = child;
+            final childId = child['agentId'] as String;
+            hostEvidence!.bindCaller(childId);
+            final childCalls = await hostEvidence!.claimChild(
+              childId,
+              child['childObservedHostToolCalls'] as int,
+            );
+            childDomainCalls[childId] = childCalls.records;
+            result['childHostDomainCalls'] = childCalls.diagnostics(
+              safeCommands,
+              markers,
+            );
+            childCalls.verifyGeneratedResults();
             result['readback'] = await remote!.verifyPhaseB(spec.marker);
           case 'C':
-            result['shutdownTask'] = trace.verifyShutdown(
+            result['shutdownTask'] = domain.verifyShutdown(
               remote!.processCommand('shutdown'),
+            );
+            result['rootHostCounter'] = domain.verifyCallerCounter(
+              owner.state.target!.agentId,
+              rootDomainCalls.length,
             );
             result['readback'] = await remote!.verifyShutdownStarted();
         }
+        result['hostEvidenceDrained'] = await hostEvidence!.verifyDrained();
       }
       final assistantIndex = owner.state.content.lastIndexWhere(
         (item) =>

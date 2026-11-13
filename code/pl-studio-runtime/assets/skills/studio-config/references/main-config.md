@@ -7,6 +7,25 @@ to create accounts from templates and preserve their provider-specific metadata.
 External edits require explicit settings reload; Settings saves validate and write
 atomically. A successful save is not proof of provider, usage API or MCP health.
 
+## Desktop diagnostic logging
+
+Desktop diagnostics read the Studio host's startup environment, not the SSH
+workspace or an ACP definition's `env`. A valid `ANYWORK_LOG_LEVEL` (`error`,
+`warn`, `info`, `debug`, `trace`) takes precedence over `RUST_LOG`; otherwise
+`RUST_LOG` accepts tracing EnvFilter directives. The default is `warn`. Restart
+the isolated application to apply startup logging changes; settings reload does
+not replace its process-wide subscriber.
+
+`pl_studio_runtime::acp_host_call_evidence=trace` records the original Host MCP
+domain result with its bound caller and host call ID in the existing log. It is
+disabled at the default level. A global `trace` level also enables this target and
+may record complete arguments and results, as may protocol-library TRACE logs.
+Use payload tracing only for explicitly authorized, disposable synthetic-data
+acceptance processes; do not enable it for everyday conversations or upload raw
+logs. To select a narrow target, leave `ANYWORK_LOG_LEVEL` unset and use a scoped
+`RUST_LOG` directive in that process's launch environment. This is not an ACP/MCP
+configuration key, a business result store, a recovery mechanism or a peer ACK.
+
 ## Noninteractive CLI execution
 
 `anywk exec` requires explicit `--studio-home`, `--cwd`, `--account`, `--model`

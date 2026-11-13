@@ -14,6 +14,7 @@ import 'package:path/path.dart' as p;
 
 import 'support/agy_remote_workspace.dart';
 import 'support/agy_phase_runner.dart';
+import 'support/agy_load_only.dart';
 import 'support/presentation_capture.dart';
 import 'support/production_studio_harness.dart';
 
@@ -30,6 +31,11 @@ void main() {
     (tester) async {
       if (Platform.environment['ANYWORK_AGY_LIVE'] != '1') {
         throw StateError('Explicit live opt-in requires ANYWORK_AGY_LIVE=1');
+      }
+      final load = AgyLoadRequest.fromEnvironment(Platform.environment);
+      if (load != null) {
+        await runAgyLoadOnly(binding: binding, request: load);
+        return;
       }
       String requiredEnvironment(String name) {
         final value = Platform.environment[name]?.trim();
