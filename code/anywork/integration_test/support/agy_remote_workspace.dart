@@ -353,6 +353,52 @@ final class LinuxProcessIdentity {
   final int parentPid;
   final String? kernelState;
   String? executable;
+  String? lastExecutable;
+  String? executableReadStatus;
+  final List<Map<String, Object?>> executableReadObservations = [];
+
+  // proc_pid_exe is a procfs link, not a promise that its raw target can be
+  // canonicalized as an existing filesystem path (deleted/memfd images).
+  // Return liveness only from PID/starttime, never from an exe read failure.
+  Future<bool> readExecutable() async {
+    Future<LinuxProcessIdentity?> current() async {
+      final stat = await _readIfPresent(File('/proc/$pid/stat'));
+      return stat == null ? null : LinuxProcessIdentity.parse(stat);
+    }
+
+    bool same(LinuxProcessIdentity? value, String stage) {
+      if (value != null && sameProcess(value)) return true;
+      executableReadStatus = value == null ? 'exited-$stage' : 'reused-$stage';
+      executableReadObservations.add({
+        'status': executableReadStatus,
+        if (value != null) 'observedStartTime': value.startTime,
+      });
+      return false;
+    }
+
+    if (!same(await current(), 'before-read')) return false;
+    String? raw;
+    FileSystemException? error;
+    try {
+      raw = await Link('/proc/$pid/exe').target();
+    } on FileSystemException catch (failure) {
+      error = failure;
+      executableReadObservations.add({
+        'status': 'exe-read-error',
+        'errorType': failure.runtimeType.toString(),
+        'osErrorCode': failure.osError?.errorCode,
+      });
+    }
+    if (!same(await current(), 'during-read')) return false;
+    if (error != null) {
+      executableReadStatus = 'unknown';
+      return true;
+    }
+    executable ??= raw;
+    lastExecutable = raw;
+    executableReadStatus = 'verified-raw-link';
+    return true;
+  }
 
   factory LinuxProcessIdentity.parse(String stat) {
     final end = stat.lastIndexOf(')');
@@ -384,6 +430,11 @@ final class LinuxProcessIdentity {
     'parentPid': parentPid,
     if (kernelState != null) 'kernelState': kernelState,
     if (executable != null) 'executable': executable,
+    if (lastExecutable != null) 'lastExecutable': lastExecutable,
+    if (executableReadStatus != null)
+      'executableReadStatus': executableReadStatus,
+    if (executableReadObservations.isNotEmpty)
+      'executableReadObservations': executableReadObservations,
   };
 }
 
@@ -424,25 +475,18 @@ final class AgyLocalProcesses {
         if (text == null) continue;
         final identity = LinuxProcessIdentity.parse(text);
         if (identity.parentPid != parent) continue;
-        try {
-          identity.executable = await Link('/proc/$child/exe')
-              .resolveSymbolicLinks();
-          sawAgy |= identity.executable == agyExecutable;
-        } on FileSystemException {
-          final latest = await _readIfPresent(stat);
-          if (latest != null) {
-            final current = LinuxProcessIdentity.parse(latest);
-            // A zombie has no exe link but remains an owned process identity;
-            // it must still disappear before the final exit check can pass.
-            if (identity.sameProcess(current) && current.kernelState != 'Z') {
-              rethrow;
-            }
-          }
-        }
-        _owned.putIfAbsent('$child:${identity.startTime}', () => identity);
-        final still = await _readIfPresent(stat);
-        if (still != null &&
-            identity.sameProcess(LinuxProcessIdentity.parse(still))) {
+        // Retain the original identity before touching exe. An unknown exe
+        // remains owned and must pass the same final exit check.
+        final owned = _owned.putIfAbsent(
+          '$child:${identity.startTime}',
+          () => identity,
+        );
+        final alive = await owned.readExecutable();
+        sawAgy |=
+            alive &&
+            owned.executableReadStatus == 'verified-raw-link' &&
+            owned.lastExecutable == agyExecutable;
+        if (alive) {
           await descendants(child);
         }
       }
@@ -472,15 +516,9 @@ final class AgyLocalProcesses {
       final stat = File('/proc/${identity.pid}/stat');
       final text = await _readIfPresent(stat);
       final current = text == null ? null : LinuxProcessIdentity.parse(text);
-      final same = current != null && identity.sameProcess(current);
+      var same = current != null && identity.sameProcess(current);
       if (same) {
-        try {
-          current.executable = await Link('/proc/${identity.pid}/exe')
-              .resolveSymbolicLinks();
-        } on FileSystemException {
-          // Still record the original live stat; never treat a failed exe read
-          // as proof that the original PID/starttime has exited.
-        }
+        same = await current.readExecutable();
       }
       exitEvidence.add({
         'original': identity.evidence,
