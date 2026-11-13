@@ -68,6 +68,7 @@ cargo xtask build-gui --check-generated
 完整程序包独立复制并在每次启动前校验，入口或 capture 不同的程序包互不覆盖。
 该准备不供 profile/demo、独立调用或其他 CI 作业消费；失效与损坏直接失败，不能用跳过构建参数替代。
 Linux CI 另通过同次 workflow 的受控交接共享验收工具、debug bridge 和 release 模拟供应商二进制；逐文件核对 profile、摘要及源码、镜像、工具链、工作区和运行编号，损坏直接失败。它不共享可变构建目录或场景状态。
+执行编译的作业管理 Cargo 缓存；默认 CI desktop 分片与 native 作业只恢复同次产物，不恢复或保存 Rust 缓存。同一 job 内的步骤共享本地 `target`，无需额外交接整份目录；没有上游编译产物的独立验证作业保留自身缓存。
 具体身份、计时与清理边界见[原生 GUI 观察与隔离](../../../design/24-testing.md#243-原生-gui-观察与隔离)。
 
 普通运行和构建不执行生成器或可写格式化。Riverpod、Freezed、本地化或 FRB 的生成与一致性检查入口为：

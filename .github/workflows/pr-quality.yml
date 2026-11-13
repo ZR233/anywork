@@ -497,14 +497,7 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
+      # This consumer uses same-run Rust binaries; only producers need Cargo caches.
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -623,14 +616,7 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
+      # This consumer uses same-run Rust binaries; only producers need Cargo caches.
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
