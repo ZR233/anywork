@@ -1,5 +1,6 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -98,6 +99,31 @@ void main() {
               .expanded,
           isTrue,
         );
+        final headerRow = tester.widget<TimelineActivityRow>(
+          find
+              .descendant(of: card, matching: find.byType(TimelineActivityRow))
+              .first,
+        );
+        expect(headerRow.icon, Icons.hourglass_empty);
+        expect(
+          headerRow.indicatorStyle,
+          TimelineActivityIndicatorStyle.rotating,
+        );
+        expect(find.byIcon(Icons.hourglass_empty), findsOneWidget);
+        expect(find.byType(TimelineRestingCat), findsNothing);
+        final hourglass = find.byIcon(Icons.hourglass_empty);
+        final spinning = find.ancestor(
+          of: hourglass,
+          matching: find.byType(RotationTransition),
+        );
+        if (terminal == ThreadWaitStateView.cancelled) {
+          expect(spinning, findsNothing);
+        } else {
+          final turns = tester.widget<RotationTransition>(spinning).turns;
+          final before = turns.value;
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(turns.value, isNot(before));
+        }
         final originalIntent = input.value.intent;
         input.value = ThreadWaitPresentationView(
           state: terminal,
@@ -106,6 +132,15 @@ void main() {
         );
         await tester.pump();
         expect(find.byKey(const ValueKey('timeline-wait-pulse')), findsNothing);
+        expect(find.byIcon(Icons.hourglass_empty), findsNothing);
+        expect(
+          find.byIcon(switch (terminal) {
+            ThreadWaitStateView.ready => Icons.check_rounded,
+            ThreadWaitStateView.timedOut => Icons.hourglass_bottom,
+            _ => Icons.remove_rounded,
+          }),
+          findsOneWidget,
+        );
         final details = tester.widget<TimelineWaitDetails>(
           find.byType(TimelineWaitDetails),
         );

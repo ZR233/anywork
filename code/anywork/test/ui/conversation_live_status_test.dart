@@ -1776,6 +1776,8 @@ void main() {
               findsNothing,
             );
             await tester.pump(const Duration(milliseconds: 120));
+          case TimelineActivityIndicatorStyle.rotating:
+            fail('${stage.name} 活动栏不得使用等待条目的旋转沙漏样式');
         }
       }
       await tester.pumpWidget(const SizedBox.shrink());

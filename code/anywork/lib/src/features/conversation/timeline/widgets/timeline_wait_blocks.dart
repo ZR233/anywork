@@ -52,6 +52,9 @@ class TimelineWaitPanel extends StatelessWidget {
                     : _waitStateColor(context, presentation.state),
                 label: rowLabel,
                 active: waiting && !staticObservation,
+                indicatorStyle: waiting
+                    ? TimelineActivityIndicatorStyle.rotating
+                    : TimelineActivityIndicatorStyle.restingCat,
                 expanded: expanded,
                 tooltip: subtitle,
               ),
@@ -374,7 +377,7 @@ IconData _waitTargetIcon(String? toolName) {
 
 IconData _waitStateIcon(ThreadWaitStateView state) {
   return switch (state) {
-    ThreadWaitStateView.waiting => Icons.schedule,
+    ThreadWaitStateView.waiting => Icons.hourglass_empty,
     ThreadWaitStateView.ready ||
     ThreadWaitStateView.elapsed => Icons.check_rounded,
     ThreadWaitStateView.timedOut => Icons.hourglass_bottom,

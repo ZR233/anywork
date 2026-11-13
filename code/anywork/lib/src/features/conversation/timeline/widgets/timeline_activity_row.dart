@@ -10,6 +10,7 @@ enum TimelineActivityIndicatorStyle {
   writing,
   circularProgress,
   compactingZip,
+  rotating,
 }
 
 /// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
@@ -482,6 +483,9 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
       TimelineCompactingZipIcon.duration,
     TimelineActivityIndicatorStyle.circularProgress ||
     TimelineActivityIndicatorStyle.restingCat => TimelineRestingCat.duration,
+    TimelineActivityIndicatorStyle.rotating => const Duration(
+      milliseconds: 1200,
+    ),
   };
 
   static final _writingStroke = TweenSequence<Offset>([
@@ -508,6 +512,7 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
   bool get _usesLocalTicker =>
       widget.style == TimelineActivityIndicatorStyle.writing ||
       widget.style == TimelineActivityIndicatorStyle.compactingZip ||
+      widget.style == TimelineActivityIndicatorStyle.rotating ||
       (widget.style == TimelineActivityIndicatorStyle.restingCat &&
           _sharedCat == null);
 
@@ -596,6 +601,21 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
             color: widget.color,
             size: widget.zipSize,
           ),
+        TimelineActivityIndicatorStyle.rotating =>
+          _animate
+              ? RotationTransition(
+                  turns: _motion,
+                  child: Icon(
+                    widget.icon,
+                    size: widget.staticIconSize,
+                    color: widget.color,
+                  ),
+                )
+              : Icon(
+                  widget.icon,
+                  size: widget.staticIconSize,
+                  color: widget.color,
+                ),
         TimelineActivityIndicatorStyle.restingCat => TimelineRestingCat(
           progress: _usesSharedCat ? _sharedCat!.progress : _motion,
           color: widget.color,
