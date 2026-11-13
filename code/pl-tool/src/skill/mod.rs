@@ -1,6 +1,6 @@
 mod config;
 mod tools;
-pub use config::{SkillsConfig, SystemSkillsConfig};
+pub use config::{SkillSearchOptions, SkillsConfig, SystemSkillsConfig};
 pub use tools::*;
 
 mod catalog;

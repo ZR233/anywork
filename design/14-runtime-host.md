@@ -2,6 +2,8 @@
 
 本文定义业务会话的运行资源所有权、Native `Thread` 装配、激活、输入受理、步骤限制、后台工具任务交付与消息唤醒机制。内核契约见 [16](./16-core-contracts.md)，状态与历史存储见 [15](./15-session-storage.md)。
 
+生产宿主包括 Desktop、HttpServer 与 Cli，均消费同一运行时装配和资源关闭所有者。Cli 的 `anywk` 入口使用显式数据根、严格启动、环境凭据和一次任务终态观察，契约见 [29](./29-cli-harbor.md)；它不通过 Test 身份绕过生产边界，也不创建另一套执行循环。
+
 ## 14.1 统一装配与激活
 
 运行资源按 `StudioRuntime → SessionRuntime → AgentInstance → AgentRuntime` 组合拥有，实际资源只有 `Native` 与 `Acp` 两个具体分支。应用持有活动会话集合与共享服务；业务会话负责本会话的执行准入、准备任务、成员资源和受管关闭；成员实例引用目录冻结的 `SessionId`、`AgentId`、`parent_agent_id`、默认 `ThreadId` 与后端绑定，并拥有本次物化资格。Native 分支组合原有内核句柄、工具资源、观察任务和保存责任；ACP 分支拥有受管业务进程、SDK 驱动、当前运行资格、待决权限及工作区使用租约。各后端独占自身执行状态，不在公共成员层复制轮次、工具状态或检查点。

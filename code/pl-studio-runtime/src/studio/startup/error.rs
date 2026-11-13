@@ -2,6 +2,8 @@ use sea_orm::{DbErr, RuntimeErr, SqlxError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StudioStartupErrorKind {
+    Configuration,
+    RecoveryRequired,
     PersistentData,
     Migration,
     Environment,
@@ -34,7 +36,14 @@ impl StudioStartupError {
 
     pub(crate) fn input(step: &'static str, source: impl Into<anyhow::Error>) -> Self {
         let source = source.into();
-        let kind = if has_document_chain_error(&source) {
+        let kind = if source.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<crate::ConfigRuntimeError>(),
+                Some(crate::ConfigRuntimeError::RequiredConfiguration { .. })
+            )
+        }) {
+            StudioStartupErrorKind::Configuration
+        } else if has_document_chain_error(&source) {
             StudioStartupErrorKind::Internal
         } else if has_environment_error(&source) {
             StudioStartupErrorKind::Environment

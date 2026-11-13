@@ -93,6 +93,23 @@ impl SkillCatalogRuntime {
         let (snapshot, sources) = self
             .discover_from_source(workspace_id, workspace_root, config, cancellation, source)
             .await?;
+        // Last-good data may remain visible in Settings, but cannot authorize a new model input.
+        let error = match &snapshot.state {
+            pl_protocol::ObservedResource::Degraded(state) => Some(state.error()),
+            pl_protocol::ObservedResource::Failed(state) => Some(state.error()),
+            _ => None,
+        };
+        if let Some(error) = error {
+            return Err(pl_protocol::PureError::ConfigError(format!(
+                "{}: {}",
+                error.code, error.message
+            ))
+            .into());
+        }
+        anyhow::ensure!(
+            snapshot.state.kind() == ObservedResourceKind::Ready,
+            "Skill preparation did not publish a complete catalog"
+        );
         Ok(snapshot
             .catalog_for_turn()
             .map(|catalog| (catalog, sources)))
@@ -111,7 +128,7 @@ impl SkillCatalogRuntime {
             () = cancellation.cancelled() => anyhow::bail!("Skill discovery cancelled"),
             command = self.command_lock.lock() => command,
         };
-        let fingerprint = skills_fingerprint(config)?;
+        let fingerprint = self.fingerprint(config)?;
         let previous = self.read(workspace_id).await;
         let revision = previous.state.revision();
         let operation_id = format!("skills-discover-{}", revision.saturating_add(1));
@@ -281,9 +298,12 @@ fn catalog_content_eq(left: &SkillCatalog, right: &SkillCatalog) -> bool {
     left.project_dir == right.project_dir && left.skills == right.skills
 }
 
-pub(in crate::studio::runtime) fn skills_fingerprint(config: &SkillsConfig) -> Result<String> {
-    let serialized = serde_json::to_vec(config)?;
-    let mut hasher = DefaultHasher::new();
-    serialized.hash(&mut hasher);
-    Ok(format!("{:x}", hasher.finish()))
+impl SkillCatalogRuntime {
+    pub(in crate::studio::runtime) fn fingerprint(&self, config: &SkillsConfig) -> Result<String> {
+        let serialized = serde_json::to_vec(config)?;
+        let mut hasher = DefaultHasher::new();
+        serialized.hash(&mut hasher);
+        self.search_options.hash(&mut hasher);
+        Ok(format!("{:x}", hasher.finish()))
+    }
 }

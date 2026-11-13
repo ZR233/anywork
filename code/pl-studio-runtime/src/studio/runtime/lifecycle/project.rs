@@ -64,7 +64,7 @@ impl StudioRuntime {
                 "ssh:{server_id}:{}:{}:{}",
                 workspace_root.display(),
                 host.files().executor().id().to_string().as_str(),
-                super::super::skill_catalog::skills_fingerprint(&settings.config.skills)?,
+                self.skills.fingerprint(&settings.config.skills)?,
             );
             let _activation_command = self.activation.command_lock.lock().await;
             if self
@@ -100,7 +100,7 @@ impl StudioRuntime {
         let fingerprint = format!(
             "{}:{}",
             workspace_root.display(),
-            super::super::skill_catalog::skills_fingerprint(&settings.config.skills)?,
+            self.skills.fingerprint(&settings.config.skills)?,
         );
         let _activation_command = self.activation.command_lock.lock().await;
         if self

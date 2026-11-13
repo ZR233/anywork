@@ -1,6 +1,6 @@
 //! Studio Settings 命令层：把各类设置更新请求写入配置 runtime 并发布 canonical snapshot。
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
     CommandEffectPoint, CreateAccountRequest, RemoveAccountModelRequest, RemoveAccountRequest,
@@ -866,16 +866,20 @@ pub(super) fn validated_route(
     let account_id = account_id.trim();
     let model_id = model_id.trim();
     let account_key = AccountId::new(account_id)?;
-    let account = config
-        .models
-        .accounts
-        .get(&account_key)
-        .with_context(|| format!("{subject} references missing account: {account_id}"))?;
+    let account = config.models.accounts.get(&account_key).ok_or_else(|| {
+        pl_protocol::studio::StudioError::invalid_argument(format!(
+            "{subject} references missing account: {account_id}"
+        ))
+    })?;
     let models = account.effective_models(None)?;
     let model = models
         .iter()
         .find(|model| model.model_id == model_id)
-        .with_context(|| format!("{subject} references missing model: {account_id}.{model_id}"))?;
+        .ok_or_else(|| {
+            pl_protocol::studio::StudioError::invalid_argument(format!(
+                "{subject} references missing model: {account_id}.{model_id}"
+            ))
+        })?;
     let resolved_effort = match effort.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => {
             if !model
@@ -883,9 +887,10 @@ pub(super) fn validated_route(
                 .iter()
                 .any(|candidate| candidate == value)
             {
-                bail!(
+                return Err(pl_protocol::studio::StudioError::invalid_argument(format!(
                     "{subject} uses unsupported effort '{value}' for model {account_id}.{model_id}"
-                );
+                ))
+                .into());
             }
             Some(value.to_string())
         }

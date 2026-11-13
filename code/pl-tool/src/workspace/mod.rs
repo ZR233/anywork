@@ -14,7 +14,7 @@ pub use session_files::SessionFiles;
 pub use session_temp::{SessionRemovalError, SessionTempBackend};
 mod path_policy;
 pub mod path_safety;
-pub use path_policy::{PathAccess, ToolPathPolicy};
+pub use path_policy::{PathAccess, ToolPathPolicy, resolve_absolute_path};
 
 mod instructions;
 

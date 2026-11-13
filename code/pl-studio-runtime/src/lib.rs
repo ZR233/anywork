@@ -46,7 +46,9 @@ pub use pl_tool::remote::{
     SshConfigEntry, SshConfigFile, SshConnectionSnapshot, SshConnectionState, SshServerProfile,
 };
 
-pub use pl_tool::skill::{SkillCatalog, SkillMetadata, SkillResourceBase, SkillSourceKind};
+pub use pl_tool::skill::{
+    SkillCatalog, SkillMetadata, SkillResourceBase, SkillSearchOptions, SkillSourceKind,
+};
 
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
@@ -56,7 +58,7 @@ pub use config::{
     UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
 pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
-pub use error_mapping::studio_error_from_anyhow;
+pub use error_mapping::{studio_error_from_anyhow, studio_error_from_anyhow_ref};
 pub use first_run::{
     AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
 };
@@ -99,12 +101,12 @@ pub use studio::{
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
-    StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
-    StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioUpdateActivity,
-    StudioUpdatePreparationResult, StudioUpdateStateSnapshot, StudioWorktreeInspection,
-    StudioWorktreeRecoveryPreview, ThreadMetadataObservation, ThreadPreparationObserver,
-    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, ThreadsObservation,
-    TimelineEvent, TimelineFeed, WorkspaceRecord,
+    StudioStartupError, StudioStartupErrorKind, StudioStartupPolicy, StudioStartupRecovery,
+    StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
+    StudioUpdateActivity, StudioUpdatePreparationResult, StudioUpdateStateSnapshot,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
+    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
+    ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
 };
 pub use worker_assets::RemoteHelperSource;
 

@@ -45,6 +45,57 @@ mod startup_fault_tests {
         }
     }
 
+    #[tokio::test]
+    async fn strict_startup_preserves_pending_recovery_without_resuming_it() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let home = temporary.path();
+        std::fs::write(home.join("config.toml"), b"original configuration")?;
+        let backup = crate::studio::startup::StartupBackup::begin(home, "strict fixture".into())?;
+        let recovery = backup.report();
+        drop(backup);
+        let journal = std::fs::read(home.join("startup-recovery.toml"))?;
+        let archive = std::path::PathBuf::from(recovery.backup_path).join("original/config.toml");
+        let original = std::fs::read(&archive)?;
+        let error = StudioRuntime::initialize(StudioRuntimeOptions::cli(home))
+            .await
+            .err()
+            .expect("strict recovery must fail");
+        assert_eq!(error.kind, StudioStartupErrorKind::RecoveryRequired);
+        assert_eq!(std::fs::read(home.join("startup-recovery.toml"))?, journal);
+        assert_eq!(std::fs::read(archive)?, original);
+        assert!(!home.join("config.toml").exists());
+        assert_eq!(std::fs::read_dir(home.join("startup-backups"))?.count(), 1);
+        let paths = StudioPaths::resolve(Some(home.into()))?;
+        let _lock = crate::studio::runtime_lock::RuntimeLock::acquire(
+            &paths.runtime_lock(),
+            StudioHostKind::Cli,
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn strict_missing_configuration_closes_storage_and_never_creates_defaults() -> Result<()>
+    {
+        let temporary = tempfile::tempdir()?;
+        let home = temporary.path();
+        let error = StudioRuntime::initialize(StudioRuntimeOptions::cli(home))
+            .await
+            .err()
+            .expect("strict config required");
+        assert_eq!(error.kind, StudioStartupErrorKind::Configuration);
+        assert!(!home.join("config.toml").exists());
+        assert!(!home.join("mcp").exists());
+        assert!(!home.join("startup-backups").exists());
+        let paths = StudioPaths::resolve(Some(home.into()))?;
+        let _lock = crate::studio::runtime_lock::RuntimeLock::acquire(
+            &paths.runtime_lock(),
+            StudioHostKind::Cli,
+        )?;
+        let storage = crate::StudioStore::prepare_database(&paths.database()).await?;
+        storage.close().await?;
+        Ok(())
+    }
+
     async fn recover_defaults(
         home: &Path,
         broken: &Path,

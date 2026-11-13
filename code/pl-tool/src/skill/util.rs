@@ -57,6 +57,22 @@ pub(super) fn agents_user_skills_dir() -> Result<PathBuf> {
     Ok(agents_user_skills_dir_from_home(&user_home_dir()?))
 }
 
+pub(super) fn validate_explicit_skill_directory(path: &Path) -> Result<()> {
+    if !path.is_absolute()
+        || !metadata_if_real(path)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?
+            .is_some_and(|metadata| metadata.is_dir())
+    {
+        return Err(PureError::ConfigError(format!(
+            "explicit Skill source must be an existing, unlinked absolute directory: {}",
+            path.display()
+        )));
+    }
+    // Opening and advancing checks access now; discovery repeats this check before each scan.
+    std::fs::read_dir(path)?.next().transpose()?;
+    Ok(())
+}
+
 pub(super) fn agents_user_skills_dir_from_home(home: &Path) -> PathBuf {
     home.join(".agents").join("skills")
 }

@@ -5179,6 +5179,7 @@ pub(crate) mod storage_fault_tests {
                 events.clone(),
                 store.paths().home().join("isolated-test-skills"),
                 pl_remote_helper::Executor::local()?,
+                Default::default(),
             ),
             thread_modes: config.thread_mode_manager(),
             ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),

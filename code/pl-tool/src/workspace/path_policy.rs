@@ -226,6 +226,17 @@ fn existing_ancestor_and_tail(candidate: &Path) -> std::io::Result<(PathBuf, Pat
     }
 }
 
+/// Resolves a host argument once, without following filesystem links or changing cwd.
+pub fn resolve_absolute_path(base: &Path, path: &Path) -> pl_protocol::Result<PathBuf> {
+    let joined = base.join(path);
+    if !base.is_absolute() || !joined.is_absolute() {
+        return Err(PureError::ConfigError(
+            "path requires an absolute base and cannot be drive-relative".into(),
+        ));
+    }
+    Ok(lexical_normalize(&joined))
+}
+
 fn lexical_normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {

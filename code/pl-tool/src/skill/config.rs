@@ -1,6 +1,49 @@
 //! Skill discovery options supplied by the host. This module performs no persistence.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// Immutable host policy, never serialized into the user's SkillsConfig.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SkillSearchOptions {
+    pub include_default_user_dir: bool,
+    pub additional_dirs: Vec<PathBuf>,
+}
+
+impl Default for SkillSearchOptions {
+    fn default() -> Self {
+        Self {
+            include_default_user_dir: true,
+            additional_dirs: Vec::new(),
+        }
+    }
+}
+
+impl SkillSearchOptions {
+    /// Resolves explicit collection roots against the original host cwd and keeps the first duplicate.
+    pub fn resolve(
+        include_default_user_dir: bool,
+        directories: impl IntoIterator<Item = PathBuf>,
+        startup_cwd: &Path,
+    ) -> pl_protocol::Result<Self> {
+        let mut additional_dirs = Vec::new();
+        for directory in directories {
+            let expanded = match directory.to_str() {
+                Some(text) => super::util::expand_home(text)?,
+                None => directory,
+            };
+            let resolved = crate::workspace::resolve_absolute_path(startup_cwd, &expanded)?;
+            super::util::validate_explicit_skill_directory(&resolved)?;
+            if !additional_dirs.contains(&resolved) {
+                additional_dirs.push(resolved);
+            }
+        }
+        Ok(Self {
+            include_default_user_dir,
+            additional_dirs,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

@@ -23,6 +23,7 @@ impl StudioRuntime {
         helper_source: crate::worker_assets::RemoteHelperSource,
         host_mcp_source: crate::host_mcp_assets::HostMcpSource,
         ssh_config: Option<crate::SshConfigFile>,
+        skill_search: pl_tool::skill::SkillSearchOptions,
     ) -> Result<Self> {
         let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
@@ -84,6 +85,7 @@ impl StudioRuntime {
             product_events.clone(),
             system_skills_dir,
             local_executor.clone(),
+            skill_search,
         );
         let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_factory = crate::studio::thread_factory::StudioThreadFactory::new(
