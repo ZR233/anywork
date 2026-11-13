@@ -1,4 +1,6 @@
-use crate::api::studio::bridge_runtime::{active_bridge, exit_latch_armed, lifecycle_gate};
+use crate::api::studio::bridge_runtime::{
+    active_bridge, exit_latch_armed, installed_bridge, lifecycle_gate,
+};
 use crate::api::studio::convert::runtime::bridge_preparation_result;
 use crate::api::studio::types::{BridgeError, BridgeShutdownIssue, BridgeUpdatePreparationResult};
 use anyhow::Result;
@@ -62,7 +64,12 @@ impl BridgeStudioUpdateOperation {
         self.inner
             .wait()
             .await
-            .map_err(|error| BridgeError::from(anyhow::anyhow!("{error}")))
+            .map_err(|error| BridgeError::from(anyhow::anyhow!("{error}")))?;
+        installed_bridge()?
+            .studio
+            .abort_cancelled_studio_update_installation()
+            .await
+            .map_err(BridgeError::from)
     }
 
     pub async fn finish_preparation(&self) -> Result<BridgeUpdatePreparationResult, BridgeError> {

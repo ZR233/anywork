@@ -14,12 +14,21 @@ futures = { workspace = true }
 reqwest = { workspace = true }
 downlowd = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 semver = { workspace = true }
 url = { workspace = true }
 minisign-verify = { workspace = true }
 fs4 = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.6", features = ["fs", "process", "event"] }
+# Share keyring's runtime-agnostic backend. Enabling `tokio` also switches
+# zbus::blocking in the existing credential store to a nested Tokio runtime.
+zbus = "5.19.0"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

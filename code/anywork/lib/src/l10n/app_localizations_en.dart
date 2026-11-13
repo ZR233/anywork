@@ -3267,7 +3267,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String settingsStudioUpdateDisabled(String version) {
-    return 'Version $version. Automatic checks run only in Windows release builds.';
+    return 'Version $version. Automatic updates are unavailable for this platform or build.';
   }
 
   @override

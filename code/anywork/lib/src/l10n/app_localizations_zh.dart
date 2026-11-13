@@ -3104,7 +3104,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String settingsStudioUpdateDisabled(String version) {
-    return '当前版本 $version。仅 Windows 正式版会自动检查更新。';
+    return '当前版本 $version。当前平台或构建不支持自动更新。';
   }
 
   @override

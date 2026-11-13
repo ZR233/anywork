@@ -21845,11 +21845,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return BridgeUpdaterStateSnapshot(
       activity: dco_decode_bridge_updater_activity(arr[0]),
       readyUpdate: dco_decode_opt_box_autoadd_bridge_ready_update(arr[1]),
+      installationError: dco_decode_opt_box_autoadd_bridge_state_error(arr[2]),
     );
   }
 
@@ -39695,9 +39696,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_readyUpdate = sse_decode_opt_box_autoadd_bridge_ready_update(
       deserializer,
     );
+    var var_installationError = sse_decode_opt_box_autoadd_bridge_state_error(
+      deserializer,
+    );
     return BridgeUpdaterStateSnapshot(
       activity: var_activity,
       readyUpdate: var_readyUpdate,
+      installationError: var_installationError,
     );
   }
 
@@ -56596,6 +56601,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_updater_activity(self.activity, serializer);
     sse_encode_opt_box_autoadd_bridge_ready_update(
       self.readyUpdate,
+      serializer,
+    );
+    sse_encode_opt_box_autoadd_bridge_state_error(
+      self.installationError,
       serializer,
     );
   }

@@ -4,6 +4,19 @@ use super::super::StudioRuntime;
 use super::super::{AccountUsageStateSnapshot, StudioUpdateStateSnapshot};
 
 impl StudioRuntime {
+    /// Desktop startup input, before bootstrap or any update command is admitted.
+    pub async fn record_studio_update_installation_failure(&self, message: String) -> Result<()> {
+        self.updater.record_installation_failure(message).await
+    }
+
+    pub async fn abort_cancelled_studio_update_installation(&self) -> Result<()> {
+        self.updater.abort_cancelled_installation().await
+    }
+
+    pub async fn abort_studio_update_installation(&self) -> Result<()> {
+        self.updater.abort_installation().await
+    }
+
     pub async fn read_account_usage_state(&self) -> AccountUsageStateSnapshot {
         self.account_usage.read().await
     }
@@ -36,15 +49,12 @@ impl StudioRuntime {
     }
 
     /// 仅在统一退出已确认全部资源安全停止后交接本进程持有的安装包。
-    pub async fn launch_studio_update_on_exit(
-        &self,
-        mode: pl_studio_update::StudioUpdateLaunch,
-    ) -> Result<Option<String>> {
+    pub async fn launch_studio_update_on_exit(&self) -> Result<Option<String>> {
         anyhow::ensure!(
             self.runtime_snapshot().await?.state.is_stopped(),
             "Studio runtime has not stopped cleanly"
         );
-        self.updater.launch_ready_on_exit(mode).await
+        self.updater.launch_ready_on_exit().await
     }
 
     pub async fn prepare_studio_update(

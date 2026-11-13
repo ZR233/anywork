@@ -22,3 +22,6 @@ base64 = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Threading"] }

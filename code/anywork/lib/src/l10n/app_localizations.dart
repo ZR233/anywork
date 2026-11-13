@@ -5874,7 +5874,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStudioUpdateDisabled.
   ///
   /// In en, this message translates to:
-  /// **'Version {version}. Automatic checks run only in Windows release builds.'**
+  /// **'Version {version}. Automatic updates are unavailable for this platform or build.'**
   String settingsStudioUpdateDisabled(String version);
 
   /// No description provided for @settingsStudioUpdateCurrent.

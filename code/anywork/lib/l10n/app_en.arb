@@ -1588,7 +1588,7 @@
   "settingsDeepSeekWebFetchConfigured": "Fetch configured",
   "settingsDeepSeekWebFetchEffective": "Fetch effective",
   "settingsStudioUpdateTitle": "anywork update",
-  "settingsStudioUpdateDisabled": "Version {version}. Automatic checks run only in Windows release builds.",
+  "settingsStudioUpdateDisabled": "Version {version}. Automatic updates are unavailable for this platform or build.",
   "@settingsStudioUpdateDisabled": {
     "placeholders": {
       "version": {

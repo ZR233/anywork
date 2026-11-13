@@ -1614,6 +1614,9 @@ UpdaterStateSnapshot updaterStateFromFrb(
   frb.BridgeUpdaterStateSnapshot snapshot,
 ) => UpdaterStateSnapshot(
   activity: _updaterActivityFromFrb(snapshot.activity),
+  installationError: snapshot.installationError == null
+      ? null
+      : _updaterErrorFromFrb(snapshot.installationError!),
   readyUpdate: snapshot.readyUpdate == null
       ? null
       : ReadyStudioUpdate(

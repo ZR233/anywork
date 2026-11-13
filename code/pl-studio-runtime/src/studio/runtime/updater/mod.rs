@@ -38,24 +38,40 @@ pub enum StudioUpdatePreparationResult {
 type UpdatePublisher = Arc<dyn Fn(StudioUpdateStateSnapshot) + Send + Sync>;
 
 enum InstallerLease {
-    Verified(pl_studio_update::PreparedStudioUpdate),
+    Verified(Box<pl_studio_update::PreparedStudioUpdate>),
     #[cfg(test)]
     Test {
         _lease: std::fs::File,
     },
 }
 impl InstallerLease {
-    fn launch(
-        &mut self,
-        mode: pl_studio_update::StudioUpdateLaunch,
-    ) -> Result<(), pl_studio_update::StudioUpdateError> {
+    async fn launch(&mut self) -> Result<(), pl_studio_update::StudioUpdateError> {
         match self {
-            Self::Verified(installer) => installer.launch(mode),
+            Self::Verified(installer) => installer.launch().await,
             #[cfg(test)]
             Self::Test { .. } => Err(pl_studio_update::StudioUpdateError::new(
                 StudioUpdateErrorCode::UnsupportedPlatform,
                 "test installer leases cannot launch processes",
             )),
+        }
+    }
+
+    async fn abort_install(&mut self) -> Result<(), pl_studio_update::StudioUpdateError> {
+        match self {
+            Self::Verified(installer) => installer.abort_install().await,
+            #[cfg(test)]
+            Self::Test { .. } => Ok(()),
+        }
+    }
+
+    async fn prepare_install(
+        &mut self,
+        cancellation: &StudioUpdateCancellation,
+    ) -> Result<(), pl_studio_update::StudioUpdateError> {
+        match self {
+            Self::Verified(installer) => installer.prepare_install(cancellation).await,
+            #[cfg(test)]
+            Self::Test { .. } => Ok(()),
         }
     }
 }
@@ -69,15 +85,9 @@ struct PreparedUpdate {
 }
 
 impl PreparedUpdate {
-    fn selection(&mut self) -> Option<&str> {
-        if self
-            .selection_cancellation
-            .as_ref()
-            .is_some_and(StudioUpdateCancellation::is_cancelled)
-        {
-            self.selected_version = None;
-            self.selection_cancellation = None;
-        }
+    fn selection(&self) -> Option<&str> {
+        // Cancellation is only a signal. Keep the reservation until the owner
+        // has joined the platform handoff and released it explicitly.
         self.selected_version.as_deref()
     }
 }
@@ -114,6 +124,46 @@ pub(crate) struct StudioUpdateRuntime {
 }
 
 impl StudioUpdateRuntime {
+    pub(crate) async fn record_installation_failure(&self, message: String) -> Result<()> {
+        let mut state = self.state.write().await;
+        anyhow::ensure!(
+            state.revision() == 0 && matches!(state.activity, StudioUpdateActivity::Idle(_)),
+            "installation outcome must precede updater publication"
+        );
+        state.installation_error = Some(StateError {
+            code: "installerFailed".into(),
+            message,
+            retryable: true,
+        });
+        Ok(())
+    }
+
+    pub(crate) async fn abort_cancelled_installation(&self) -> Result<()> {
+        let mut prepared = self.prepared.lock().await;
+        if prepared
+            .selection_cancellation
+            .as_ref()
+            .is_some_and(StudioUpdateCancellation::is_cancelled)
+        {
+            if let Some((_, InstallerLease::Verified(installer))) = prepared.installer.as_mut() {
+                installer.abort_install().await?;
+            }
+            prepared.selected_version = None;
+            prepared.selection_cancellation = None;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn abort_installation(&self) -> Result<()> {
+        let mut prepared = self.prepared.lock().await;
+        if let Some((_, InstallerLease::Verified(installer))) = prepared.installer.as_mut() {
+            installer.abort_install().await?;
+        }
+        prepared.selected_version = None;
+        prepared.selection_cancellation = None;
+        Ok(())
+    }
+
     pub(crate) fn new(events: crate::ProductEventBus) -> Result<Self> {
         Self::with_publisher(Arc::new(move |state| {
             events.emit_updater_state(state);
@@ -126,7 +176,13 @@ impl StudioUpdateRuntime {
             #[cfg(test)]
             test_io: None,
             active: Arc::new(Mutex::new(None)),
-            state: Arc::new(RwLock::new(StudioUpdateStateSnapshot::idle(unix_seconds()))),
+            state: Arc::new(RwLock::new(
+                if pl_studio_update::StudioUpdatePlatform::current().is_some() {
+                    StudioUpdateStateSnapshot::idle(unix_seconds())
+                } else {
+                    StudioUpdateStateSnapshot::disabled(unix_seconds())
+                },
+            )),
             events,
             prepared: Arc::new(Mutex::new(PreparedUpdate::default())),
         })
@@ -140,6 +196,7 @@ impl StudioUpdateRuntime {
         &self,
         cancellation: &StudioUpdateCancellation,
     ) -> Result<()> {
+        self.abort_cancelled_installation().await?;
         let round = {
             let mut active = self.active.lock().await;
             if active.is_some() || self.prepared.lock().await.selection().is_some() {
@@ -153,6 +210,10 @@ impl StudioUpdateRuntime {
     /// A retained scheduler owns one round at a time; UI cancellation never cancels `stop`.
     pub(crate) async fn run_automatic(&self, stop: StudioUpdateCancellation) {
         automatic::schedule(&stop, || async {
+            if let Err(error) = self.abort_cancelled_installation().await {
+                self.publish_owner_failure(&error).await;
+                return;
+            }
             let round = {
                 let mut active = self.active.lock().await;
                 if active.is_some() || self.prepared.lock().await.selection().is_some() {
@@ -195,6 +256,7 @@ impl StudioUpdateRuntime {
         if cancellation.is_cancelled() {
             return Ok(StudioUpdatePreparationResult::Cancelled);
         }
+        self.abort_cancelled_installation().await?;
         let round = {
             let mut active = self.active.lock().await;
             let mut prepared = self.prepared.lock().await;
@@ -255,9 +317,39 @@ impl StudioUpdateRuntime {
                 .as_ref()
                 .is_some_and(|(ready, _)| ready.update.version == version)
         {
-            return Ok(StudioUpdatePreparationResult::Ready {
-                version: version.to_string(),
-            });
+            let installer = &mut prepared
+                .installer
+                .as_mut()
+                .expect("selected installer exists")
+                .1;
+            match installer.prepare_install(&cancellation).await {
+                Ok(()) if !cancellation.is_cancelled() => {
+                    return Ok(StudioUpdatePreparationResult::Ready {
+                        version: version.to_string(),
+                    });
+                }
+                result => {
+                    installer.abort_install().await?;
+                    prepared.selected_version = None;
+                    prepared.selection_cancellation = None;
+                    drop(prepared);
+                    let error = result.err().unwrap_or_else(|| {
+                        pl_studio_update::StudioUpdateError::new(
+                            StudioUpdateErrorCode::Cancelled,
+                            "update installation cancelled",
+                        )
+                    });
+                    let cancelled = cancellation.is_cancelled()
+                        || error.code() == StudioUpdateErrorCode::Cancelled;
+                    let failure = state_error(&error);
+                    self.publish_owner_failure(&error.into()).await;
+                    return Ok(if cancelled {
+                        StudioUpdatePreparationResult::Cancelled
+                    } else {
+                        StudioUpdatePreparationResult::Failed { error: failure }
+                    });
+                }
+            }
         }
         prepared.selected_version = None;
         prepared.selection_cancellation = None;
@@ -376,7 +468,7 @@ impl StudioUpdateRuntime {
         self.updater
             .download(update, events, cancellation)
             .await
-            .map(InstallerLease::Verified)
+            .map(|installer| InstallerLease::Verified(Box::new(installer)))
     }
 
     async fn check(
@@ -542,21 +634,21 @@ impl StudioUpdateRuntime {
         Ok(())
     }
 
-    pub(crate) async fn launch_ready_on_exit(
-        &self,
-        mode: pl_studio_update::StudioUpdateLaunch,
-    ) -> Result<Option<String>> {
+    pub(crate) async fn launch_ready_on_exit(&self) -> Result<Option<String>> {
         let active = self.active.lock().await;
         anyhow::ensure!(active.is_none(), "update round is still running at exit");
         let mut prepared = self.prepared.lock().await;
         if let Some(version) = &prepared.launched_version {
             return Ok(Some(version.clone()));
         }
+        if prepared.selection().is_none() {
+            return Ok(None);
+        }
         let Some((ready, installer)) = prepared.installer.as_mut() else {
             return Ok(None);
         };
         let version = ready.update.version.clone();
-        installer.launch(mode)?;
+        installer.launch().await?;
         prepared.launched_version = Some(version.clone());
         drop(prepared);
         let current = self.read().await;
@@ -749,6 +841,7 @@ mod tests {
     }
     fn update(version: &str) -> StudioUpdate {
         StudioUpdate {
+            platform: pl_studio_update::StudioUpdatePlatform::WindowsX86_64,
             version: version.into(),
             published_at: 1,
             notes_url: "https://example.test/notes".into(),
@@ -769,6 +862,9 @@ mod tests {
     ) -> Result<(tempfile::TempDir, StudioUpdateRuntime, Arc<TestIo>)> {
         let temp = tempfile::tempdir()?;
         let mut owner = StudioUpdateRuntime::with_publisher(Arc::new(|_| {}))?;
+        // Injected IO exercises the scheduler independently of this test host's
+        // production update capability (including unsupported macOS builds).
+        *owner.state.write().await = StudioUpdateStateSnapshot::idle(unix_seconds());
         let path = temp.path().join("verified-installer");
         std::fs::write(&path, "test installer lease")?;
         let io = Arc::new(TestIo {
@@ -1140,5 +1236,43 @@ mod tests {
             StudioUpdateActivity::UpToDate(_)
         ));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn updater_imports_installation_failure_before_bootstrap_and_keeps_it_through_first_check()
+     {
+        let (_temp, owner, _io) = fixture(
+            vec![CheckStep::Value(Ok(StudioUpdateCheck::UpToDate))],
+            vec![],
+        )
+        .await
+        .unwrap();
+        owner
+            .record_installation_failure("PackageKit installation failed".into())
+            .await
+            .unwrap();
+        let baseline = owner.read().await;
+        assert_eq!(baseline.revision(), 0);
+        assert_eq!(
+            baseline.installation_error.as_ref().unwrap().message,
+            "PackageKit installation failed"
+        );
+        owner
+            .check_cancellable(&StudioUpdateCancellation::new())
+            .await
+            .unwrap();
+        let checked = owner.read().await;
+        assert!(matches!(
+            checked.activity,
+            StudioUpdateActivity::UpToDate(_)
+        ));
+        assert!(checked.revision() > baseline.revision());
+        assert_eq!(checked.installation_error, baseline.installation_error);
+        assert!(
+            owner
+                .record_installation_failure("late receipt".into())
+                .await
+                .is_err()
+        );
     }
 }

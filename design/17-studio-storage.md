@@ -763,3 +763,9 @@ RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置�
 原 HistoryChannel 看门狗覆盖最老未保存队首：尚未 prepared 为 projection_prepare，已准备未提交为 writer_queue，真实 SQL 在途为 sql_commit。复用现役 NO_PROGRESS_WINDOW、HistoryFault::NoProgress、故障代次和 pressure；队列为空不报保存停滞，只有队首前进/真实阶段转换重置单调时钟，普通通知、后来入队和查询不重置。prepared_through 只表示连续准备前缀，不取最大序号掩盖缺口。既有明确 Storage 错误不被覆盖，触发后保留材料、预算、writer 所有权和显式恢复义务，唤醒固定目标等待报错；SQL 未退出不能报告已取消或释放资源。
 
 诊断在原模块 span 记录可获得的 thread/execution/request/generation、stage/单调起点、head/admitted/prepared/durable、flush_target、pending_count/bytes、fault_kind/error_source 和脱敏有限原因链。未知保持 None，不用汇总最小水位或 0 伪造；不新增全局可变监控表、writer、消息总线、队列容量或超时配置。结构修复及确定性交错不等于已定位 Windows 原现场首因，网络等待与本地确认等待分别取证。
+
+## 17.20 更新缓存与安装结果
+
+更新包属于可重建缓存，不写入用户配置或会话库。Windows 沿用 `%LOCALAPPDATA%/anywork/updates`，Linux 使用 `$XDG_CACHE_HOME/anywork/updates`（默认 `~/.cache/anywork/updates`）。普通退出保留包，重新使用必须完整验证长度、SHA-256 与 Minisign。内存 `Ready` 租约不能由缓存路径或安装结果文件恢复。
+
+Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/update-result.json`（默认 `~/.local/state/anywork/update-result.json`），目录仅供当前用户访问。下一次启动接纳并消费该结果，只作为更新状态里的安装错误，不推导包管理器安装成功或可安装包租约；立即检查不抹除该错误。root 暂存目录仅保存已授权本轮安装包，安装事务真实结束且完成点已知时由所属辅助程序清理；PackageKit 丢失或结果未知时保留输入，不将断连视为停止读取。

@@ -286,12 +286,18 @@ class _StatusOverflow extends StatefulWidget {
 }
 
 class _StatusOverflowState extends State<_StatusOverflow> {
-  final _controller = MenuController();
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) => MenuAnchor(
     key: const ValueKey('status-overflow'),
-    controller: _controller,
+    childFocusNode: _focusNode,
     menuChildren: [
       if (widget.effort case final effort? when effort.trim().isNotEmpty)
         Padding(
@@ -301,14 +307,12 @@ class _StatusOverflowState extends State<_StatusOverflow> {
       if (widget.showPlanEntry)
         MenuItemButton(
           key: StudioDriverKeys.statusPlanEntry,
-          onPressed: () {
-            _controller.close();
-            widget.onOpenPlan?.call();
-          },
+          onPressed: widget.onOpenPlan,
           child: Text(context.l10n.statusPlanEntry),
         ),
     ],
     builder: (context, controller, child) => IconButton(
+      focusNode: _focusNode,
       tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
       onPressed: () =>
           controller.isOpen ? controller.close() : controller.open(),

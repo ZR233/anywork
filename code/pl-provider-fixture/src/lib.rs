@@ -87,6 +87,7 @@ mod mcp_stdio;
 pub use mcp_stdio::{McpStdioOptions, run_mcp_stdio};
 
 mod stdio_peer;
+pub use stdio_peer::proc_start_ticks;
 
 mod lsp_stdio;
 pub use lsp_stdio::{LspStdioOptions, run_lsp_stdio};
@@ -3644,10 +3645,7 @@ pub fn gui_shutdown_script() -> Vec<Step> {
 }
 
 fn shutdown_tool_command() -> String {
-    let peer = std::env::current_exe().expect("shutdown fixture executable");
-    let coord =
-        std::env::var("ANYWORK_SHUTDOWN_TOOL_COORD").expect("shutdown tool coordination path");
-    format!("'{}' --tool-peer --coord-file '{}'", peer.display(), coord)
+    std::env::var("ANYWORK_SHUTDOWN_TOOL_COMMAND").expect("shutdown tool command")
 }
 
 /// Appends steps with a positional index while keeping the script a single list.

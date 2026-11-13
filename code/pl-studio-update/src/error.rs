@@ -14,6 +14,7 @@ pub enum StudioUpdateErrorCode {
     Cancelled,
     CancellationTooLate,
     InstallerLaunchFailed,
+    InstallerOutcomeUnknown,
     Io,
 }
 
@@ -31,6 +32,7 @@ impl StudioUpdateErrorCode {
             Self::Cancelled => "cancelled",
             Self::CancellationTooLate => "cancellationTooLate",
             Self::InstallerLaunchFailed => "installerLaunchFailed",
+            Self::InstallerOutcomeUnknown => "installerOutcomeUnknown",
             Self::Io => "io",
         }
     }

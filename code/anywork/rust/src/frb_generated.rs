@@ -22993,9 +22993,13 @@ impl SseDecode for crate::api::studio::types::updater::BridgeUpdaterStateSnapsho
             <Option<crate::api::studio::types::updater::BridgeReadyUpdate>>::sse_decode(
                 deserializer,
             );
+        let mut var_installationError = <Option<
+            crate::api::studio::types::runtime::BridgeStateError,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::updater::BridgeUpdaterStateSnapshot {
             activity: var_activity,
             ready_update: var_readyUpdate,
+            installation_error: var_installationError,
         };
     }
 }
@@ -44509,6 +44513,7 @@ impl flutter_rust_bridge::IntoDart
         [
             self.activity.into_into_dart().into_dart(),
             self.ready_update.into_into_dart().into_dart(),
+            self.installation_error.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -57331,6 +57336,10 @@ impl SseEncode for crate::api::studio::types::updater::BridgeUpdaterStateSnapsho
         );
         <Option<crate::api::studio::types::updater::BridgeReadyUpdate>>::sse_encode(
             self.ready_update,
+            serializer,
+        );
+        <Option<crate::api::studio::types::runtime::BridgeStateError>>::sse_encode(
+            self.installation_error,
             serializer,
         );
     }

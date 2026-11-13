@@ -75,7 +75,6 @@ void main() {
           StudioExitCoordinator(
             transport,
             (_) {},
-            readyUpdateVersion: () => '2.0.0',
             onBeginExit: (version, restart) => notices.add((version, restart)),
             closeClient: (_) async {
               closes++;
@@ -83,9 +82,15 @@ void main() {
             },
           ),
         );
-        final first = StudioExitCoordinator.requestExit(intent: firstIntent);
+        final first = StudioExitCoordinator.requestExit(
+          intent: firstIntent,
+          updateVersion: '2.0.0',
+        );
         expect(notices, [
-          ('2.0.0', firstIntent == StudioExitIntent.updateRestart),
+          (
+            firstIntent == StudioExitIntent.updateRestart ? '2.0.0' : null,
+            firstIntent == StudioExitIntent.updateRestart,
+          ),
         ]);
         final competing = StudioExitCoordinator.requestExit(
           intent: firstIntent == StudioExitIntent.exit
@@ -96,7 +101,7 @@ void main() {
         await transport.entered.future;
         expect(
           shown,
-          1,
+          firstIntent == StudioExitIntent.updateRestart ? 1 : 0,
           reason: 'An update exit must reveal its notice even from the tray',
         );
         expect(transport.intent, firstIntent);

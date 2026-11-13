@@ -3,6 +3,7 @@ use super::error::{StudioUpdateError, StudioUpdateErrorCode, io_error};
 use super::manifest::validate_update;
 use super::types::{StudioUpdate, StudioUpdateEvent};
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "linux"))]
 use std::process::Command;
 
 use tokio::io::AsyncWriteExt;
@@ -15,8 +16,15 @@ const MAX_SIGNATURE_BYTES: u64 = 16 * 1024;
 /// 已验证的安装包及只读租约；Windows 上拒绝其他进程写入或删除该文件。
 /// 租约必须保持至安装器真正派生，不能从持久化状态或路径重新构造。
 pub struct PreparedStudioUpdate {
+    #[cfg(not(target_os = "linux"))]
     path: PathBuf,
     lease: Option<std::fs::File>,
+    #[cfg(target_os = "linux")]
+    linux: Option<crate::linux::LinuxHandoff>,
+    #[cfg(target_os = "linux")]
+    update: StudioUpdate,
+    #[cfg(target_os = "linux")]
+    signature: String,
 }
 
 struct CachedInstaller {
@@ -24,25 +32,62 @@ struct CachedInstaller {
     lock: std::fs::File,
 }
 
-#[derive(Clone, Copy)]
-pub enum StudioUpdateLaunch {
-    Restart,
-    OnExit,
-}
-
 impl PreparedStudioUpdate {
+    /// Cancel an uncommitted platform handoff and wait for all its processes.
+    pub async fn abort_install(&mut self) -> Result<(), StudioUpdateError> {
+        #[cfg(target_os = "linux")]
+        if let Some(handoff) = self.linux.as_mut() {
+            handoff.abort().await?;
+            self.linux = None;
+        }
+        Ok(())
+    }
+
+    /// Prepare the platform handoff before entering the bounded shutdown path.
+    pub async fn prepare_install(
+        &mut self,
+        cancellation: &StudioUpdateCancellation,
+    ) -> Result<(), StudioUpdateError> {
+        cancellation.check()?;
+        #[cfg(target_os = "linux")]
+        if self.linux.is_none() {
+            self.linux = Some(
+                crate::linux::prepare(
+                    self.lease.as_ref().ok_or_else(cancelled_error)?,
+                    &self.update,
+                    &self.signature,
+                    cancellation,
+                )
+                .await?,
+            );
+        }
+        Ok(())
+    }
+
     /// 交接给独立安装器；安装器等待当前进程退出后才开始安装。
     ///
     /// # Errors
     /// 当前平台不支持安装，或操作系统拒绝创建安装器进程。
-    pub fn launch(&mut self, mode: StudioUpdateLaunch) -> Result<(), StudioUpdateError> {
+    pub async fn launch(&mut self) -> Result<(), StudioUpdateError> {
         if self.lease.is_none() {
             return Err(StudioUpdateError::new(
                 StudioUpdateErrorCode::CancellationTooLate,
                 "the verified installer has already been handed off",
             ));
         }
-        launch_installer(&self.path, mode)?;
+        #[cfg(target_os = "linux")]
+        self.linux
+            .as_mut()
+            .ok_or_else(|| {
+                StudioUpdateError::new(
+                    StudioUpdateErrorCode::InstallerLaunchFailed,
+                    "Linux installation has not been authorized",
+                )
+            })?
+            .commit()
+            .await?;
+        #[cfg(not(target_os = "linux"))]
+        launch_installer(&self.path)?;
         self.lease.take();
         Ok(())
     }
@@ -121,6 +166,8 @@ async fn lease_verified_installer(
 ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
     let public_key = updater.public_key;
     let asset = update.installer.clone();
+    #[cfg(target_os = "linux")]
+    let update = update.clone();
     tokio::task::spawn_blocking(move || {
         let CachedInstaller {
             path,
@@ -137,8 +184,15 @@ async fn lease_verified_installer(
         let signature_text = std::fs::read_to_string(signature_path(&path)).map_err(io_error)?;
         super::verification::verify(&mut lease, &asset, public_key, &signature_text)?;
         Ok(PreparedStudioUpdate {
+            #[cfg(not(target_os = "linux"))]
             path,
             lease: Some(lease),
+            #[cfg(target_os = "linux")]
+            linux: None,
+            #[cfg(target_os = "linux")]
+            update,
+            #[cfg(target_os = "linux")]
+            signature: signature_text,
         })
     })
     .await
@@ -157,7 +211,16 @@ async fn prepare_installer(
     cancellation: &StudioUpdateCancellation,
 ) -> Result<CachedInstaller, StudioUpdateError> {
     cancellation.check()?;
-    let version_dir = updater.cache_dir.join(&update.version);
+    let version_dir = updater
+        .cache_dir
+        .as_ref()
+        .ok_or_else(|| {
+            StudioUpdateError::new(
+                StudioUpdateErrorCode::Io,
+                "the user cache directory is unavailable",
+            )
+        })?
+        .join(&update.version);
     tokio::fs::create_dir_all(&version_dir)
         .await
         .map_err(io_error)?;
@@ -352,7 +415,8 @@ fn signature_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn launch_installer(path: &Path, mode: StudioUpdateLaunch) -> Result<(), StudioUpdateError> {
+#[cfg(not(target_os = "linux"))]
+fn launch_installer(path: &Path) -> Result<(), StudioUpdateError> {
     if !cfg!(target_os = "windows") {
         return Err(StudioUpdateError::new(
             StudioUpdateErrorCode::UnsupportedPlatform,
@@ -360,7 +424,7 @@ fn launch_installer(path: &Path, mode: StudioUpdateLaunch) -> Result<(), StudioU
         ));
     }
     let mut command = Command::new(path);
-    command.args(installer_arguments(mode));
+    command.args(installer_arguments());
     command.arg(format!("/ANYWORKWAITPID={}", std::process::id()));
     pl_remote_helper::process::configure_handoff_std_command(&mut command);
     command.spawn().map(|_| ()).map_err(|error| {
@@ -371,16 +435,14 @@ fn launch_installer(path: &Path, mode: StudioUpdateLaunch) -> Result<(), StudioU
     })
 }
 
-fn installer_arguments(mode: StudioUpdateLaunch) -> [&'static str; 5] {
+#[cfg(not(target_os = "linux"))]
+fn installer_arguments() -> [&'static str; 5] {
     [
         "/SILENT",
         "/NORESTART",
         "/NORESTARTAPPLICATIONS",
         "/NOCLOSEAPPLICATIONS",
-        match mode {
-            StudioUpdateLaunch::Restart => "/ANYWORKUPDATE=1",
-            StudioUpdateLaunch::OnExit => "/ANYWORKUPDATE=exit",
-        },
+        "/ANYWORKUPDATE=1",
     ]
 }
 
@@ -432,7 +494,7 @@ mod tests {
         // A non-readable signature must fail before any existing installer is removed.
         std::fs::create_dir(signature_path(&installer)).unwrap();
         let mut updater = StudioUpdater::new_default().unwrap();
-        updater.cache_dir = directory.path().to_path_buf();
+        updater.cache_dir = Some(directory.path().to_path_buf());
         let (progress, _) = tokio::sync::mpsc::unbounded_channel();
         let result = prepare_installer(
             &updater,

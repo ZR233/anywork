@@ -41,9 +41,11 @@ function Get-StudioReleaseAssetNames {
         $setup
         "$setup.minisig"
         'latest.json'
+        'latest-v2.json'
         'SHA256SUMS.txt'
         "anywork-$Version-linux-x86_64.deb"
         "anywork-$Version-linux-x86_64.deb.sha256"
+        "anywork-$Version-linux-x86_64.deb.minisig"
         "anywork-$Version-macos-arm64.zip"
         "anywork-$Version-macos-arm64.zip.sha256"
     )

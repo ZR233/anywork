@@ -769,7 +769,27 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
     } else {
         DistCleanMode::Clean
     };
-    copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)
+    copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)?;
+    #[cfg(target_os = "linux")]
+    if target == DesktopTarget::Linux && matches!(demo_mode, DemoMode::Native) {
+        let helper = remote_helper::native_binary(
+            &workspace_root,
+            "pl-studio-update",
+            host_mcp::current_target()?,
+        )?;
+        fs::create_dir_all(dist_dir.join("libexec"))?;
+        fs::copy(helper, dist_dir.join("libexec/anywork-update-helper"))?;
+        let policy = "io.github.zr233.anywork.update.policy";
+        let destination = dist_dir.join("share/polkit-1/actions");
+        fs::create_dir_all(&destination)?;
+        fs::copy(
+            workspace_root
+                .join("code/pl-studio-update/assets")
+                .join(policy),
+            destination.join(policy),
+        )?;
+    }
+    Ok(())
 }
 
 fn build_gui_args(

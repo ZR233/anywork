@@ -42,6 +42,26 @@ struct NativeExit {
     reclaimed_descendants: Vec<u32>,
 }
 
+pub(super) fn tool_command(executable: &Path, coord: &Path) -> String {
+    use pl_tool::environment::{ExecutionEnvironment, ShellDialect};
+
+    let executable = executable.to_string_lossy();
+    let coord = coord.to_string_lossy();
+    match ExecutionEnvironment::detect_local().shell {
+        ShellDialect::Pwsh | ShellDialect::PowerShell => format!(
+            "& '{}' --tool-peer --coord-file '{}'",
+            executable.replace('\'', "''"),
+            coord.replace('\'', "''")
+        ),
+        ShellDialect::Cmd => format!("\"\"{executable}\" --tool-peer --coord-file \"{coord}\"\""),
+        ShellDialect::Bash | ShellDialect::Sh => format!(
+            "{} --tool-peer --coord-file {}",
+            pl_tool::shell::shell_quote_word(&executable),
+            pl_tool::shell::shell_quote_word(&coord)
+        ),
+    }
+}
+
 pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> Result<()> {
     let ready: FixtureReady =
         serde_json::from_slice(&fs::read(context.working.join("fixture-ready.json"))?)?;
@@ -258,10 +278,5 @@ fn identity(pid: u32) -> Result<ProcessIdentity> {
 }
 
 fn start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat[stat.rfind(')')? + 1..]
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()
+    pl_provider_fixture::proc_start_ticks(pid)
 }
