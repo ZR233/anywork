@@ -27,6 +27,7 @@ pub(super) struct ReadLease {
     presentation_ceiling: OnceLock<u64>,
     pub slot: Arc<ObservationSlot>,
     cancel: CancellationToken,
+    runtime_closed: CancellationToken,
     resources: RwLock<Option<ReadResources>>,
     resync: AtomicBool,
 }
@@ -217,6 +218,7 @@ impl ConversationReader {
         ceiling: u64,
         effect_cut: u64,
         slot: Arc<ObservationSlot>,
+        runtime_closed: CancellationToken,
         resources: ReadResources,
     ) -> Self {
         let reader = Self {
@@ -228,7 +230,8 @@ impl ConversationReader {
                 effect_cut,
                 presentation_ceiling: OnceLock::new(),
                 slot,
-                cancel: CancellationToken::new(),
+                cancel: runtime_closed.child_token(),
+                runtime_closed,
                 resync: AtomicBool::new(false),
                 resources: RwLock::new(Some(resources)),
             }),
@@ -243,6 +246,10 @@ impl ConversationReader {
         &self.inner.id
     }
     pub(crate) fn ensure(&self) -> Result<()> {
+        if self.inner.runtime_closed.is_cancelled() {
+            self.invalidate();
+            return Err(resync());
+        }
         if self.inner.resync.load(Ordering::Acquire) {
             return Err(resync());
         }

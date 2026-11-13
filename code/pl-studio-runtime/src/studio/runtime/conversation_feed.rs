@@ -264,6 +264,7 @@ impl StudioRuntime {
             head,
             effect_cut,
             slot,
+            self.thread_observations.read_lifetime(),
             ReadResources {
                 history,
                 session,

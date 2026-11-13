@@ -659,6 +659,10 @@ impl ThreadObservations {
         self.0.delivery_closed.cancel();
     }
 
+    pub(super) fn read_lifetime(&self) -> tokio_util::sync::CancellationToken {
+        self.0.delivery_closed.clone()
+    }
+
     fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
         for (_, observation) in self.observations(Some(id)) {
             if observation.thread.same_instance(thread) {
@@ -1099,6 +1103,19 @@ impl ThreadObservations {
     }
 
     pub(super) async fn finish(&self) -> Result<()> {
+        // 执行实例更换保留内容资格；整个运行时结束则封闭旧资格并等待在途读取。
+        self.close_deliveries();
+        let slots = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for slot in slots {
+            slot.close_readers().await?;
+        }
         self.synchronize(None).await?;
         let observations = self
             .observations(None)
