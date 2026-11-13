@@ -538,6 +538,9 @@ async fn activity_token_cost_visits_only_active_parts_without_summary() -> Resul
         let activity = projection.current.activity().context("summary activity")?;
         assert_eq!(activity.summary, "LAST_SUMMARY");
         assert_eq!(activity.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
+        let cut = projection.presentation.lock().unwrap().capture(None, 8, 0, 8);
+        let work = cut.open.iter().find(|header| Some(&header.id) == cut.current_work_id.as_ref()).context("open Work")?;
+        assert_eq!(work.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
         sender.edit_parts(|parts| {
             let first = parts[COMPLETED + 1].clone();
             parts[COMPLETED + 1] = parts[COMPLETED + 2].clone();
@@ -655,7 +658,7 @@ async fn reliable_permission_status_changes_update_display_without_rewriting_sta
             task::{TaskRecord, TaskStatus},
         },
     };
-    use pl_protocol::{ChatActiveStatus, DisplayBlockBody};
+    use pl_protocol::ChatActiveStatus;
 
     let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
     let result = async {
@@ -786,9 +789,9 @@ async fn reliable_permission_status_changes_update_display_without_rewriting_sta
                 }))?,
             )?,
         };
-        for (sequence, status, waiting, running) in [
-            (2, PermissionState::Pending, 1, 0),
-            (3, PermissionState::Allowed, 0, 1),
+        for (sequence, status, waiting) in [
+            (2, PermissionState::Pending, 1),
+            (3, PermissionState::Allowed, 0),
         ] {
             permission.state = status;
             permission.revision = sequence - 1;
@@ -814,18 +817,8 @@ async fn reliable_permission_status_changes_update_display_without_rewriting_sta
                 .unwrap()
                 .member_cut(&block_id, None, 2)
                 .context("hot member cut")?;
-            let DisplayBlockBody::Work { summary, .. } = &cut.header.body else {
-                panic!("work")
-            };
-            assert_eq!(
-                (
-                    summary.total,
-                    summary.terminal,
-                    summary.waiting,
-                    summary.running
-                ),
-                (1, 0, waiting, running)
-            );
+            assert_eq!(cut.header.next_member, 1);
+            assert_eq!(cut.header.unfinished, 1);
             assert!(cut.header.revision > previous_revision);
             previous_revision = cut.header.revision;
             assert_eq!(
@@ -975,8 +968,8 @@ async fn reliable_text_visibility_hands_off_work_without_a_new_atomic_completion
         first.model_member_starts = vec![started("R")].into();
         let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
         assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
-            pl_protocol::DisplayBlockBody::Work { summary, .. }
-            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms.is_none()));
+            pl_protocol::DisplayBlockBody::Work { timing, .. }
+            if timing.started_at == first.committed_at && timing.finished_at.is_none()));
         started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
         let receipt = ModelMemberReceipt {
@@ -1013,10 +1006,10 @@ async fn reliable_text_visibility_hands_off_work_without_a_new_atomic_completion
             let cut = owner.capture(None, 8, 0, 8);
             assert_eq!(cut.published, 0);
             assert!(
-                matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { summary, .. }
-                if summary.total == 1 && summary.terminal == 1
-                    && summary.created_at == Some(first.committed_at)
-                    && summary.elapsed_ms.is_none())
+                matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
+                if cut.open[0].next_member == 1 && cut.open[0].unfinished == 0
+                    && timing.started_at == first.committed_at
+                    && timing.finished_at.is_none())
             );
         }
         let mut text = started("T");
@@ -1034,8 +1027,8 @@ async fn reliable_text_visibility_hands_off_work_without_a_new_atomic_completion
         let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
             .find(|block| block.published.is_some()).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
-            pl_protocol::DisplayBlockBody::Work { summary, .. }
-            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms.is_none()));
+            pl_protocol::DisplayBlockBody::Work { timing, .. }
+            if timing.started_at == first.committed_at && timing.finished_at == Some(third.committed_at)));
         let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
         assert_eq!(cold_work[0].body, frozen_work.header.body);
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;

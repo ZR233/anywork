@@ -44,19 +44,10 @@ void main() {
           );
         }
 
-        await adapter.applyTimeline(
-          displayBatch([displayWork('first', 1, total: 1)]),
-        );
+        await adapter.applyTimeline(displayBatch([displayWork('first', 1)]));
         await tester.pumpWidget(display());
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
-        expect(
-          tester
-              .widget<TimelineActivityIndicator>(
-                find.byType(TimelineActivityIndicator),
-              )
-              .active,
-          isFalse,
-        );
+        expect(find.byType(TimelineActivityIndicator), findsNothing);
         expect(find.byType(TimelineRestingCat), findsNothing);
         expect(find.byType(TimelineWritingIndicator), findsNothing);
         expect(built, 0);
@@ -71,7 +62,7 @@ void main() {
         final token = unit.expansion.bodyGeneration;
         await adapter.applyTimeline(
           displayBatch(
-            [displayWork('second', 2, total: 2)],
+            [displayWork('second', 2)],
             placement: ChatPlacement.append,
             from: 1,
           ),
@@ -79,14 +70,7 @@ void main() {
         await tester.pumpWidget(display());
         expect(controller.messages, hasLength(2));
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
-        expect(
-          tester
-              .widget<TimelineActivityIndicator>(
-                find.byType(TimelineActivityIndicator),
-              )
-              .active,
-          isFalse,
-        );
+        expect(find.byType(TimelineActivityIndicator), findsNothing);
         expect(tester.element(find.byType(_Body)), same(first));
         expect(unit.expansion.bodyGeneration, same(token));
         expect(retired, 0);
@@ -104,13 +88,11 @@ void main() {
     );
 
     testWidgets(
-      'authoritative large block count requires zero unrequested member reads ($language)',
+      'collapsed Work timing requires zero unrequested member reads ($language)',
       (tester) async {
         final controller = InMemoryChatController();
         final adapter = TimelineMessageController(controller, generation: 1);
-        await adapter.applyTimeline(
-          displayBatch([displayWork('large', 1, total: 100000)]),
-        );
+        await adapter.applyTimeline(displayBatch([displayWork('large', 1)]));
         var reads = 0;
         await tester.pumpWidget(
           MaterialApp(
@@ -145,7 +127,7 @@ void main() {
 
 String _runTitle(WidgetTester tester, int count) {
   final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-  return l10n.timelineGroupRecord;
+  return l10n.timelineGroupWorkedSeconds(1);
 }
 
 class _Body extends StatefulWidget {

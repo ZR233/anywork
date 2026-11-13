@@ -41,15 +41,12 @@ pub(in crate::studio) async fn watermarks(db: &impl ConnectionTrait) -> Result<(
 
 pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeader) -> Result<()> {
     ensure!(
-        header.version == 3 && header.block_order > 0 && !header.id.is_empty(),
+        header.version == 4 && header.block_order > 0 && !header.id.is_empty(),
         "invalid display header"
     );
     if let Some(pos) = header.history_pos {
         ensure!(
-            pos > 0
-                && (header.legacy || header.boundary.is_some())
-                && header.sealed
-                && !header.skip_display,
+            pos > 0 && header.boundary.is_some() && header.sealed && !header.skip_display,
             "published display header is not ready"
         );
     }
@@ -63,22 +60,18 @@ pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeade
             "display Single completion differs"
         );
     }
-    if let DisplayBlockBody::Work { summary, members } = &header.body {
+    if let DisplayBlockBody::Work { timing, members } = &header.body {
         ensure!(
-            members.block_id == header.id
-                && summary.total == header.next_member
-                && summary.total
-                    == summary
-                        .terminal
-                        .checked_add(header.unfinished)
-                        .context("display counter overflow")?
-                && header.unfinished
-                    == summary
-                        .running
-                        .checked_add(summary.waiting)
-                        .and_then(|n| n.checked_add(summary.unavailable))
-                        .context("display counter overflow")?,
-            "display summary/member counters differ"
+            members.block_id == header.id,
+            "display member owner differs"
+        );
+        ensure!(
+            header.sealed == timing.finished_at.is_some(),
+            "display timing and boundary differ"
+        );
+        ensure!(
+            header.unfinished <= header.next_member,
+            "display unfinished count exceeds members"
         );
     }
     Ok(())

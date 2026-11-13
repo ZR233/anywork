@@ -3719,12 +3719,6 @@ abstract class AppLocalizations {
   /// **'Previous work is unfinished and has not resumed'**
   String get timelineGroupUnrestored;
 
-  /// No description provided for @timelineGroupTransferredCount.
-  ///
-  /// In en, this message translates to:
-  /// **'{count} transferred'**
-  String timelineGroupTransferredCount(int count);
-
   /// No description provided for @timelineReasoningSummary.
   ///
   /// In en, this message translates to:
@@ -11313,47 +11307,23 @@ abstract class AppLocalizations {
   /// **'The interaction details have an invalid format.'**
   String get interactionDetailsInvalidFormat;
 
-  /// No description provided for @timelineGroupWorking.
-  ///
-  /// In en, this message translates to:
-  /// **'Working'**
-  String get timelineGroupWorking;
-
   /// No description provided for @timelineGroupUnfinished.
   ///
   /// In en, this message translates to:
   /// **'Work unfinished'**
   String get timelineGroupUnfinished;
 
+  /// No description provided for @timelineGroupWorking.
+  ///
+  /// In en, this message translates to:
+  /// **'Working'**
+  String get timelineGroupWorking;
+
   /// No description provided for @timelineGroupRecord.
   ///
   /// In en, this message translates to:
   /// **'Work record'**
   String get timelineGroupRecord;
-
-  /// No description provided for @timelineGroupMemberCount.
-  ///
-  /// In en, this message translates to:
-  /// **'{count} items'**
-  String timelineGroupMemberCount(int count);
-
-  /// No description provided for @timelineGroupFailedCount.
-  ///
-  /// In en, this message translates to:
-  /// **'{count} failed'**
-  String timelineGroupFailedCount(int count);
-
-  /// No description provided for @timelineGroupStoppedCount.
-  ///
-  /// In en, this message translates to:
-  /// **'{count} stopped'**
-  String timelineGroupStoppedCount(int count);
-
-  /// No description provided for @timelineGroupCompletedCount.
-  ///
-  /// In en, this message translates to:
-  /// **'{count} completed'**
-  String timelineGroupCompletedCount(int count);
 
   /// No description provided for @timelineGroupActiveCount.
   ///

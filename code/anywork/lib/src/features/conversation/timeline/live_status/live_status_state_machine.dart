@@ -58,8 +58,7 @@ abstract final class LiveStatusStateMachine {
   static bool _needsRestoration(LiveDisplayBlock block) {
     if (block.state != DisplayBlockState.open) return false;
     return switch (block.body) {
-      WorkDisplayBlock(:final summary) =>
-        summary.hasUnfinishedOrUnavailableMembers,
+      WorkDisplayBlock() => block.hasUnfinishedMembers,
       SingleDisplayBlock(:final record) =>
         record.atom.lifecycle is ActiveChatAtom ||
             (record.contentSource is FrozenObservation &&
@@ -68,7 +67,7 @@ abstract final class LiveStatusStateMachine {
   }
 
   /// 普通活动沿原 State 合并到明确的当前尾组；不把来源或成员状态当活动。
-  /// 审批、存储故障等关键提示以及 unavailable 组仍保持独立呈现。
+  /// 审批、存储故障等关键提示仍保持独立呈现。
   static ({String blockId, ExecutionLiveNotice notice})? mergeableWorkNotice({
     required LiveDisplayWindow? live,
     required List<LiveStatusNotice> notices,
@@ -78,10 +77,6 @@ abstract final class LiveStatusStateMachine {
     }
     final latest = currentWork(live);
     if (latest == null) return null;
-    final summary = (latest.body as WorkDisplayBlock).summary;
-    if (summary.unavailable != 0) {
-      return null;
-    }
     for (final notice in notices) {
       if (notice is! ExecutionLiveNotice) continue;
       final view = notice.view;

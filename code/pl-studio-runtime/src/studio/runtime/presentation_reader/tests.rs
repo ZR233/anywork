@@ -25,13 +25,15 @@ fn reference() -> DisplayBlockRef {
 
 fn head(order: u64) -> LiveDisplayBlock {
     LiveDisplayBlock {
+        has_unfinished_members: false,
+        thinking_summary: None,
         id: format!("block-{order}"),
         block_order: order,
         source: Some(ChatSourceId::ForegroundTurn {
             turn_id: "turn".into(),
         }),
         body: DisplayBlockBody::Work {
-            summary: Box::default(),
+            timing: Default::default(),
             members: reference(),
         },
         state: pl_protocol::DisplayBlockState::Open,
@@ -337,7 +339,7 @@ async fn v364_member_cut_survives_commit_confirm_cleanup_before_its_sqlite_read(
         let captured_head = Arc::downgrade(&cut.open[0]);
         assert!(matches!(
             &cut.open[0].body,
-            DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (2, 2)
+            DisplayBlockBody::Work { timing: summary, .. } if summary.finished_at.is_none()
         ));
         assert_eq!(
             h.projection.presentation().lock().unwrap().resident_member_count(),
@@ -393,7 +395,7 @@ async fn v364_member_cut_survives_commit_confirm_cleanup_before_its_sqlite_read(
             assert_eq!((cut.published, cut.durable), (0, 0));
             assert!(matches!(
                 &cut.open[0].body,
-                DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (2, 2)
+                DisplayBlockBody::Work { timing: summary, .. } if summary.finished_at.is_none()
             ));
             drop(cut);
             assert_eq!(captured_head.strong_count(), 1, "the actual query retains its captured head");
@@ -421,7 +423,7 @@ async fn v364_member_cut_survives_commit_confirm_cleanup_before_its_sqlite_read(
         assert_eq!(latest_cut.current_work_id.as_deref(), Some(reference.block_id.as_str()));
         assert!(matches!(
             &latest_cut.open[0].body,
-            DisplayBlockBody::Work { summary, .. } if (summary.total, summary.terminal) == (3, 3)
+            DisplayBlockBody::Work { timing: summary, .. } if summary.finished_at.is_none()
         ));
         assert!(!latest_cut.open[0].sealed);
         assert_eq!(

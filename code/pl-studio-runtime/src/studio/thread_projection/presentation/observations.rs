@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct PreparedObservation {
     pub member: Arc<DisplayMemberWrite>,
     pub contents: Vec<Arc<ChatContent>>,
-    pub thinking_summary: Option<String>,
 }
 
 pub(super) fn prepare(
@@ -108,7 +107,6 @@ pub(super) fn prepare(
         captured.insert(key, content).is_none(),
         "boundary payload identity conflicts"
     );
-    let thinking_summary = material_summary(&atom, &captured)?;
     let mut member = previous.clone();
     member.head.record.atom = atom;
     member.head.record.content_source = DisplayContentSource::FrozenObservation {
@@ -118,6 +116,5 @@ pub(super) fn prepare(
     Ok(PreparedObservation {
         member: Arc::new(member),
         contents: captured.into_values().collect(),
-        thinking_summary,
     })
 }

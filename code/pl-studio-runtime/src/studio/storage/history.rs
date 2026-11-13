@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 21;
+const HISTORY_SCHEMA_VERSION: i64 = 22;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
@@ -3237,7 +3237,7 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
-    if matches!(schema::version(db).await?, 19..=21) {
+    if matches!(schema::version(db).await?, 22..=22) {
         // A current fixture may also contain an open Work with no immutable completion.
         // Prove every original/display collection empty before dropping any current display structure.
         for table in [
@@ -3261,10 +3261,7 @@ pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTra
              ALTER TABLE history_meta DROP COLUMN display_published_through;
              ALTER TABLE history_meta DROP COLUMN display_applied_effect;
              DELETE FROM seaql_migrations
-             WHERE version IN ('m20261109_000001_display_snapshots',
-                               'm20261111_000001_display_observations',
-                               'm20261112_000001_history_tool_work',
-                               'm20261112_000001_visible_tail_workgroups');
+             WHERE version IN ('m20261113_000001_work_snapshots');
              UPDATE history_meta SET schema_version=18 WHERE id=1;",
         )
         .await?;

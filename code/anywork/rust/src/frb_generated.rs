@@ -9556,15 +9556,6 @@ impl SseDecode for Box<crate::api::studio::types::thread_stream::BridgeTurn> {
     }
 }
 
-impl SseDecode for Box<crate::api::studio::types::presentation::BridgeWorkSummary> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        return Box::new(
-            <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_decode(deserializer),
-        );
-    }
-}
-
 impl SseDecode for Box<crate::api::studio::types::response::StartNewThreadResponse> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -16427,15 +16418,16 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
         let mut tag_ = <i32>::sse_decode(deserializer);
         match tag_ {
             0 => {
-                let mut var_summary = <Box<
-                    crate::api::studio::types::presentation::BridgeWorkSummary,
-                >>::sse_decode(deserializer);
+                let mut var_timing =
+                    <crate::api::studio::types::presentation::BridgeWorkTiming>::sse_decode(
+                        deserializer,
+                    );
                 let mut var_members =
                     <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_decode(
                         deserializer,
                     );
                 return crate::api::studio::types::presentation::BridgeDisplayBlockBody::Work {
-                    summary: var_summary,
+                    timing: var_timing,
                     members: var_members,
                 };
             }
@@ -17037,12 +17029,16 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayBlo
             <crate::api::studio::types::presentation::BridgeDisplayBlockState>::sse_decode(
                 deserializer,
             );
+        let mut var_hasUnfinishedMembers = <bool>::sse_decode(deserializer);
+        let mut var_thinkingSummary = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::presentation::BridgeLiveDisplayBlock {
             id: var_id,
             block_order: var_blockOrder,
             source: var_source,
             body: var_body,
             state: var_state,
+            has_unfinished_members: var_hasUnfinishedMembers,
+            thinking_summary: var_thinkingSummary,
         };
     }
 }
@@ -23372,41 +23368,14 @@ impl SseDecode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
     }
 }
 
-impl SseDecode for crate::api::studio::types::presentation::BridgeWorkSummary {
+impl SseDecode for crate::api::studio::types::presentation::BridgeWorkTiming {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_total = <u64>::sse_decode(deserializer);
-        let mut var_terminal = <u64>::sse_decode(deserializer);
-        let mut var_running = <u64>::sse_decode(deserializer);
-        let mut var_waiting = <u64>::sse_decode(deserializer);
-        let mut var_unavailable = <u64>::sse_decode(deserializer);
-        let mut var_failed = <u64>::sse_decode(deserializer);
-        let mut var_cancelled = <u64>::sse_decode(deserializer);
-        let mut var_transferred = <u64>::sse_decode(deserializer);
-        let mut var_createdAt = <Option<i64>>::sse_decode(deserializer);
-        let mut var_elapsedMs = <Option<u64>>::sse_decode(deserializer);
-        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_startedAt = <i64>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
-        let mut var_durationMs = <Option<u64>>::sse_decode(deserializer);
-        let mut var_thinkingSummary = <Option<String>>::sse_decode(deserializer);
-        let mut var_thinkingContent =
-            <Option<crate::api::studio::types::chat::BridgeContentRef>>::sse_decode(deserializer);
-        return crate::api::studio::types::presentation::BridgeWorkSummary {
-            total: var_total,
-            terminal: var_terminal,
-            running: var_running,
-            waiting: var_waiting,
-            unavailable: var_unavailable,
-            failed: var_failed,
-            cancelled: var_cancelled,
-            transferred: var_transferred,
-            created_at: var_createdAt,
-            elapsed_ms: var_elapsedMs,
+        return crate::api::studio::types::presentation::BridgeWorkTiming {
             started_at: var_startedAt,
             finished_at: var_finishedAt,
-            duration_ms: var_durationMs,
-            thinking_summary: var_thinkingSummary,
-            thinking_content: var_thinkingContent,
         };
     }
 }
@@ -36648,11 +36617,11 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
             crate::api::studio::types::presentation::BridgeDisplayBlockBody::Work {
-                summary,
+                timing,
                 members,
             } => [
                 0.into_dart(),
-                summary.into_into_dart().into_dart(),
+                timing.into_into_dart().into_dart(),
                 members.into_into_dart().into_dart(),
             ]
             .into_dart(),
@@ -37530,6 +37499,8 @@ impl flutter_rust_bridge::IntoDart
             self.source.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
+            self.has_unfinished_members.into_into_dart().into_dart(),
+            self.thinking_summary.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -45018,36 +44989,23 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::BridgeWorkSummary {
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::BridgeWorkTiming {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.total.into_into_dart().into_dart(),
-            self.terminal.into_into_dart().into_dart(),
-            self.running.into_into_dart().into_dart(),
-            self.waiting.into_into_dart().into_dart(),
-            self.unavailable.into_into_dart().into_dart(),
-            self.failed.into_into_dart().into_dart(),
-            self.cancelled.into_into_dart().into_dart(),
-            self.transferred.into_into_dart().into_dart(),
-            self.created_at.into_into_dart().into_dart(),
-            self.elapsed_ms.into_into_dart().into_dart(),
             self.started_at.into_into_dart().into_dart(),
             self.finished_at.into_into_dart().into_dart(),
-            self.duration_ms.into_into_dart().into_dart(),
-            self.thinking_summary.into_into_dart().into_dart(),
-            self.thinking_content.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeWorkSummary
+    for crate::api::studio::types::presentation::BridgeWorkTiming
 {
 }
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::presentation::BridgeWorkSummary>
-    for crate::api::studio::types::presentation::BridgeWorkSummary
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::presentation::BridgeWorkTiming>
+    for crate::api::studio::types::presentation::BridgeWorkTiming
 {
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeWorkSummary {
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeWorkTiming {
         self
     }
 }
@@ -46843,13 +46801,6 @@ impl SseEncode for Box<crate::api::studio::types::thread_stream::BridgeTurn> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::studio::types::thread_stream::BridgeTurn>::sse_encode(*self, serializer);
-    }
-}
-
-impl SseEncode for Box<crate::api::studio::types::presentation::BridgeWorkSummary> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <crate::api::studio::types::presentation::BridgeWorkSummary>::sse_encode(*self, serializer);
     }
 }
 
@@ -52234,12 +52185,12 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {
             crate::api::studio::types::presentation::BridgeDisplayBlockBody::Work {
-                summary,
+                timing,
                 members,
             } => {
                 <i32>::sse_encode(0, serializer);
-                <Box<crate::api::studio::types::presentation::BridgeWorkSummary>>::sse_encode(
-                    summary, serializer,
+                <crate::api::studio::types::presentation::BridgeWorkTiming>::sse_encode(
+                    timing, serializer,
                 );
                 <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_encode(
                     members, serializer,
@@ -52714,6 +52665,8 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveDisplayBlo
         <crate::api::studio::types::presentation::BridgeDisplayBlockState>::sse_encode(
             self.state, serializer,
         );
+        <bool>::sse_encode(self.has_unfinished_members, serializer);
+        <Option<String>>::sse_encode(self.thinking_summary, serializer);
     }
 }
 
@@ -57512,27 +57465,11 @@ impl SseEncode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
     }
 }
 
-impl SseEncode for crate::api::studio::types::presentation::BridgeWorkSummary {
+impl SseEncode for crate::api::studio::types::presentation::BridgeWorkTiming {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <u64>::sse_encode(self.total, serializer);
-        <u64>::sse_encode(self.terminal, serializer);
-        <u64>::sse_encode(self.running, serializer);
-        <u64>::sse_encode(self.waiting, serializer);
-        <u64>::sse_encode(self.unavailable, serializer);
-        <u64>::sse_encode(self.failed, serializer);
-        <u64>::sse_encode(self.cancelled, serializer);
-        <u64>::sse_encode(self.transferred, serializer);
-        <Option<i64>>::sse_encode(self.created_at, serializer);
-        <Option<u64>>::sse_encode(self.elapsed_ms, serializer);
-        <Option<i64>>::sse_encode(self.started_at, serializer);
+        <i64>::sse_encode(self.started_at, serializer);
         <Option<i64>>::sse_encode(self.finished_at, serializer);
-        <Option<u64>>::sse_encode(self.duration_ms, serializer);
-        <Option<String>>::sse_encode(self.thinking_summary, serializer);
-        <Option<crate::api::studio::types::chat::BridgeContentRef>>::sse_encode(
-            self.thinking_content,
-            serializer,
-        );
     }
 }
 

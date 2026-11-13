@@ -503,7 +503,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 ### 25.15.1 唯一尾组的呈现与读取所有权
 
-Native presentation v3 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
+Native presentation v4 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
 
 实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不为组件测试保留另一套归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。
 

@@ -364,7 +364,7 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
         ),
         ("DisplayBlockRef", &["databaseId", "blockId"][..]),
         ("DisplayRecord", &["atom", "contentSource"][..]),
-        ("WorkSummary", &["unavailable"][..]),
+        ("WorkTiming", &["startedAt", "finishedAt"][..]),
     ] {
         let required = schemas[schema]["required"]
             .as_array()

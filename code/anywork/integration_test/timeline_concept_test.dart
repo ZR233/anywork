@@ -741,7 +741,6 @@ final class _ConceptScene {
             'historyPos': unit.historyPos,
             'presentation': unit.body is WorkDisplayBlock ? 'work' : 'single',
             'memberBlockId': unit.memberReference?.blockId,
-            'total': unit.summary?.total,
             'mountedMemberIds': [
               for (final atom in membersOf(unit.id)) atom.id,
             ],
@@ -799,9 +798,7 @@ final class _ConceptScene {
 
   void expectOverlapState(String workBlockId, {String? streamingAtomId}) {
     final work = observed.unit(workBlockId);
-    expect(work.summary!.total, 2);
-    expect(work.summary!.terminal, 1);
-    expect(work.summary!.running, 1);
+
     if (streamingAtomId == null) {
       expect(work.state, DisplayBlockState.open);
       expect(work.historyPos, isNull);
@@ -1679,7 +1676,7 @@ final class _ConceptScene {
         await observed.loadOlderMemberPage(display, timeout: remaining());
         olderPageCommands++;
       }
-      expect(ids, hasLength(unit.summary!.total));
+      expect(ids, isNotEmpty);
       final observations =
           (report['memberPageObservations'] ??= <Map<String, Object?>>[])
               as List<Map<String, Object?>>;
@@ -1694,10 +1691,7 @@ final class _ConceptScene {
         'reachedEarliestMember': true,
       });
       _recordMemberInventory('earliest-member', id, original: display);
-      final heads = await observed.readMemberInventory(
-        unit,
-        expectedCount: unit.summary!.total,
-      );
+      final heads = await observed.readMemberInventory(unit);
       expect(heads.map((head) => head.record.atom.id).toSet(), ids);
       return heads.map((head) => head.record.atom.id).toList();
     } catch (error) {
@@ -1742,7 +1736,7 @@ final class _ConceptScene {
           {
             'id': unit.id,
             'blockId': unit.memberReference!.blockId,
-            'ordinal': unit.summary!.total,
+            'startedAt': unit.timing!.startedAt,
           },
       ],
     };
@@ -1857,10 +1851,7 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) async {
-    final seed = await observed.readFixtureAtoms(
-      unit,
-      expectedCount: unit.summary!.total,
-    );
+    final seed = await observed.readFixtureAtoms(unit);
     final source = seed.first.source;
     final records = await collectDisplayRecords(observed, source: source);
     final originals = records
@@ -1882,7 +1873,7 @@ final class _ConceptScene {
     expect(display.error, isNull);
     expect(display.atoms, isNotEmpty);
     expect(display.atoms.length, lessThanOrEqualTo(12));
-    expect(unit.summary!.total, greaterThanOrEqualTo(1));
+
     expect(atoms.map((atom) => atom.id).toSet(), hasLength(atoms.length));
     expect(atoms.map((atom) => atom.source).toSet(), {source});
     expect(
@@ -2137,7 +2128,7 @@ final class _ConceptScene {
       'workgroup',
       () =>
           observed.liveWork.length == 1 &&
-          observed.liveWork.single.summary!.total == 1,
+          observed.liveWork.single.hasUnfinishedMembers,
     );
     final initialWork = observed.liveWork.single;
     final g1 = initialWork.id;
@@ -2169,10 +2160,7 @@ final class _ConceptScene {
     await reach(
       'group-idle',
       () => observed.liveWork.any(
-        (unit) =>
-            unit.id == g1 &&
-            unit.summary!.total == 4 &&
-            unit.summary!.terminal == 4,
+        (unit) => unit.id == g1 && !unit.hasUnfinishedMembers,
       ),
     );
     final firstWork = observed.unit(g1);
@@ -2291,8 +2279,7 @@ final class _ConceptScene {
     await reach(
       'second-group-idle',
       () => observed.liveWork.any(
-        (unit) =>
-            unit.id == g2 && unit.summary!.terminal == unit.summary!.total,
+        (unit) => unit.id == g2 && !unit.hasUnfinishedMembers,
       ),
     );
     expect(main.any((unit) => unit.id == g2), isFalse);
@@ -2614,10 +2601,9 @@ final class _ConceptScene {
 
   Future<void> showImageContinuation(TimelineDisplayUnit imageWork) async {
     final owner = lease;
-    final source = (await observed.readFixtureAtoms(
-      imageWork,
-      expectedCount: imageWork.summary!.total,
-    )).firstWhere((atom) => atom.source is ForegroundTurnChatSource).source;
+    final source = (await observed.readFixtureAtoms(imageWork))
+        .firstWhere((atom) => atom.source is ForegroundTurnChatSource)
+        .source;
     expect(source, isA<ForegroundTurnChatSource>());
     final turnId = (source as ForegroundTurnChatSource).turnId;
     final observation = <String, Object?>{
@@ -2819,10 +2805,7 @@ final class _ConceptScene {
       return value;
     }
 
-    final atoms = await observed.readFixtureAtoms(
-      unit,
-      expectedCount: unit.summary!.total,
-    );
+    final atoms = await observed.readFixtureAtoms(unit);
     while (true) {
       remaining();
       expect(display.blockReference, unit.memberReference);
@@ -3010,7 +2993,12 @@ final class _ConceptScene {
     expect(page.sealed, isTrue);
     expect(page.before, isNull);
     expect(page.entries, hasLength(2));
-    final summary = work.summary!;
+    final timing = work.timing!;
+    expect(
+      timing.finishedAt,
+      isNotNull,
+      reason: '正文开始输出即固定工作组结束时间，组内未完成推理不延迟封存',
+    );
     final bodies = <List<String>>[];
     for (final head in page.entries) {
       final value = await readDisplayRecord(lease, head.record);
@@ -3031,7 +3019,7 @@ final class _ConceptScene {
         'databaseId': work.memberReference!.databaseId,
         'blockId': work.memberReference!.blockId,
       },
-      'summary': workSummaryEvidence(summary),
+      'timing': workTimingEvidence(timing),
       'heads': [
         for (final head in page.entries)
           {
@@ -3050,7 +3038,7 @@ final class _ConceptScene {
       'a07-reasoning-start',
       () =>
           observed.liveWork.length == 1 &&
-          observed.liveWork.single.summary!.total == 1,
+          observed.liveWork.single.hasUnfinishedMembers,
     );
     final work = observed.liveWork.single;
     final ref = work.memberReference!;
@@ -3072,10 +3060,7 @@ final class _ConceptScene {
     await reach(
       'a07-b-terminal',
       () => observed.liveWork.any(
-        (unit) =>
-            unit.id == work.id &&
-            unit.summary!.total == 2 &&
-            unit.summary!.terminal == 1,
+        (unit) => unit.id == work.id && unit.hasUnfinishedMembers,
       ),
     );
     final earlyHeads = await observed.readMemberInventory(
@@ -3113,6 +3098,14 @@ final class _ConceptScene {
     );
     final text = (textBlock.body as SingleDisplayBlock).record.atom;
     expect(text.lifecycle, isA<ActiveChatAtom>());
+    expect(
+      timelineGroupTitleText(
+        tester,
+        timelineGroupTitleFinder(tester, observed.groupHeader(work.id)),
+      ),
+      startsWith('工作了'),
+      reason: '正文首个内容已输出时，前组立即呈现封存耗时',
+    );
     final frozenCut = await _overlapFrozenCut(frozen);
     Future<void> unchanged() async {
       expect(lease, same(owner));
@@ -3327,7 +3320,7 @@ final class _ConceptScene {
     expect(endUnit.historyPos, isNull);
     expect(lease.live.value!.currentWorkId, endUnit.id);
     expect(main.where((unit) => unit.id == endUnit.id), isEmpty);
-    expect(endUnit.summary!.terminal, endUnit.summary!.total);
+
     final handoff = <String, Object?>{
       'sourceTurnId': source.turnId,
       'frozenCut': frozenCut,
@@ -3405,10 +3398,7 @@ final class _ConceptScene {
     await observed.closeWork(
       lease.groupDisplays.singleWhere((d) => d.unitId == oldId),
     );
-    final ends = await observed.readMemberInventory(
-      observed.unit(endId),
-      expectedCount: observed.unit(endId).summary!.total,
-    );
+    final ends = await observed.readMemberInventory(observed.unit(endId));
     final end = ends.singleWhere(
       (head) => head.memberKey == saved['lateMemberKey'],
     );
@@ -3457,8 +3447,7 @@ final class _ConceptScene {
     await reach(
       'a14-before-empty',
       () => liveWork().any((block) {
-        final summary = (block.body as WorkDisplayBlock).summary;
-        return summary.total == 1 && summary.terminal == 1;
+        return !block.hasUnfinishedMembers;
       }),
     );
     final before = liveWork().single;
@@ -3470,9 +3459,7 @@ final class _ConceptScene {
     await reach(
       'a14-after-empty',
       () => liveWork().any(
-        (block) =>
-            block.id == before.id &&
-            (block.body as WorkDisplayBlock).summary.total == 2,
+        (block) => block.id == before.id && !block.hasUnfinishedMembers,
       ),
     );
     // This is the bridge/page handoff. Original preservation and member paging
@@ -3996,7 +3983,7 @@ final class _ConceptScene {
     final imageGroup = main.singleWhere((unit) => unit.id == imageWorkItemId);
     try {
       expect(imageGroup.body, isA<WorkDisplayBlock>());
-      expect(imageGroup.summary!.total, greaterThan(0));
+
       expect(imageGroup.state, DisplayBlockState.sealed);
       expect(imageGroup.atom, isNull);
       expect(imageGroup.memberReference, isNotNull);

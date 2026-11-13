@@ -71,11 +71,6 @@ async fn seed_members(
     for header in headers {
         header.next_member = through;
         header.revision = through;
-        let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
-            unreachable!()
-        };
-        summary.total = through;
-        summary.terminal = through;
         db.execute_raw(statement(
             "UPDATE conversation_display_blocks SET header=? WHERE block_id=?",
             vec![serde_json::to_vec(header)?.into(), header.id.clone().into()],
@@ -89,10 +84,9 @@ async fn seed_members(
 async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_members()
 -> Result<()> {
     let (_dir, db) =
-        crate::studio::storage::history::schema::display_snapshots::tests::fixture().await?;
-    crate::studio::storage::history::schema::display_snapshots::upgrade(&db).await?;
-    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
-    crate::studio::storage::history::schema::visible_tail_workgroups::upgrade(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -129,7 +123,8 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
         effect_seq: 2,
         suborder: 0,
     });
-    if let DisplayBlockBody::Work { members, .. } = &mut frozen.body {
+    if let DisplayBlockBody::Work { timing, members } = &mut frozen.body {
+        timing.finished_at = Some(20);
         members.block_id = frozen.id.clone();
     }
     seed_history(&db, &frozen, &seed.members[0], 0, 20).await?;
@@ -142,11 +137,12 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
     open.history_pos = None;
     open.boundary = None;
     open.sealed = false;
-    if let DisplayBlockBody::Work { members, .. } = &mut open.body {
+    if let DisplayBlockBody::Work { timing, members } = &mut open.body {
+        timing.finished_at = None;
         members.block_id = open.id.clone();
     }
     db.execute_raw(statement(
-        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,updated_effect,header) VALUES(?,?,21,NULL,2,?)",
+        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header) VALUES(?,?,21,NULL,0,2,?)",
         vec![open.id.clone().into(), serde_json::to_string(&open.source)?.into(), serde_json::to_vec(&open)?.into()]
     )).await?;
     let mut headers = [frozen.clone(), open];
@@ -227,6 +223,8 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
         let live = heads
             .into_iter()
             .map(|header| LiveDisplayBlock {
+                has_unfinished_members: false,
+                thinking_summary: None,
                 id: header.id,
                 block_order: header.block_order,
                 source: Some(header.source),
@@ -307,10 +305,9 @@ async fn display_sql_cost_is_bounded_across_frozen_history_and_hundred_thousand_
 async fn v364_hundred_thousand_terminal_rows_commit_and_release_before_any_boundary() -> Result<()>
 {
     let (_dir, db) =
-        crate::studio::storage::history::schema::display_snapshots::tests::fixture().await?;
-    crate::studio::storage::history::schema::display_snapshots::upgrade(&db).await?;
-    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
-    crate::studio::storage::history::schema::visible_tail_workgroups::upgrade(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",

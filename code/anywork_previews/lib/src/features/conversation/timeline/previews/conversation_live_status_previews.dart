@@ -59,7 +59,7 @@ Widget liveStatusGroupPreview({
   if (history) {
     return CompletionRunView(
       id: 'preview-history',
-      summary: TimelinePreviewFixtures.workSummary(2),
+      timing: TimelinePreviewFixtures.workTiming(),
       initiallyExpanded: false,
       location: WorkDisplayLocation.history,
       childBuilder: (_) => Column(
@@ -73,23 +73,12 @@ Widget liveStatusGroupPreview({
   }
   if (idle) {
     return _ActivityPreview(
+      thinkingSummary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
       activity: const ConversationActivityView(
         identity: 'preview-group-idle',
         kind: ConversationActivityKind.thinking,
       ),
-      summary: const WorkSummary(
-        unavailable: 0,
-        total: 2,
-        terminal: 2,
-        running: 0,
-        waiting: 0,
-        failed: 0,
-        cancelled: 0,
-        transferred: 0,
-        createdAt: 100,
-        elapsedMs: 125000,
-        thinkingSummary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
-      ),
+      timing: const WorkTiming(startedAt: 100, finishedAt: null),
       childBuilder: (_) => const Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -138,19 +127,7 @@ Widget liveStatusGroupPreview({
               ),
             ],
           ),
-    summary: WorkSummary(
-      unavailable: 0,
-      total: thinkingOnly ? 1 : 2,
-      terminal: 0,
-      running: thinkingOnly ? 1 : 2,
-      waiting: 0,
-      failed: 0,
-      cancelled: 0,
-      transferred: 0,
-      createdAt: 100,
-      elapsedMs: 125000,
-      thinkingSummary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界',
-    ),
+    timing: WorkTiming(startedAt: 100, finishedAt: null),
     childBuilder: (_) => Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -363,18 +340,7 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
           identity: 'preview-failed-call-thinking',
           kind: ConversationActivityKind.thinking,
         ),
-        summary: const WorkSummary(
-          unavailable: 0,
-          total: 2,
-          terminal: 2,
-          running: 0,
-          waiting: 0,
-          failed: 1,
-          cancelled: 0,
-          transferred: 0,
-          createdAt: 154,
-          elapsedMs: 71000,
-        ),
+        timing: const WorkTiming(startedAt: 154, finishedAt: null),
         childBuilder: (_) => const TimelineToolDetails(
           item: TimelineToolPresentation(
             id: 'preview-failed-call',
@@ -446,18 +412,7 @@ Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
   ConversationActivityBar(
     children: [
       _ActivityPreview(
-        summary: const WorkSummary(
-          unavailable: 0,
-          total: 1,
-          terminal: 0,
-          running: 0,
-          waiting: 1,
-          failed: 0,
-          cancelled: 0,
-          transferred: 0,
-          createdAt: 100,
-          elapsedMs: 125000,
-        ),
+        timing: const WorkTiming(startedAt: 100, finishedAt: null),
         childBuilder: (_) => TimelineWaitDetails(
           identity: 'preview-wait-member',
           presentation: ThreadWaitPresentationView(
@@ -556,19 +511,7 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
           kind: ConversationActivityKind.thinking,
           thinkingSummary: '核对运行期选择器锁定规则',
         ),
-        summary: const WorkSummary(
-          unavailable: 0,
-          total: 3,
-          terminal: 3,
-          running: 0,
-          waiting: 0,
-          failed: 0,
-          cancelled: 0,
-          transferred: 0,
-          createdAt: 100,
-          elapsedMs: 125000,
-          thinkingSummary: '核对运行期选择器锁定规则',
-        ),
+        timing: const WorkTiming(startedAt: 100, finishedAt: null),
         childBuilder: (_) => const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -576,7 +519,7 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
             TimelineReasoningView(
               summary: '梳理会话共享组件与锁定边界',
               startedAt: 100,
-              finishedAt: 225,
+              finishedAt: null,
               body: ConversationCurrentWindowView(
                 id: 'summary-body',
                 text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
@@ -585,11 +528,11 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
             TimelineReasoningView(
               summary: '核对运行期选择器锁定规则',
               startedAt: 100,
-              finishedAt: 225,
+              finishedAt: null,
             ),
             TimelineReasoningView(
               startedAt: 100,
-              finishedAt: 225,
+              finishedAt: null,
               body: ConversationCurrentWindowView(
                 id: 'body-only',
                 text: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。',
@@ -670,19 +613,7 @@ Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
                 ),
               ],
             ),
-            summary: const WorkSummary(
-              unavailable: 0,
-              total: 1,
-              terminal: 0,
-              running: 1,
-              waiting: 0,
-              failed: 0,
-              cancelled: 0,
-              transferred: 0,
-              createdAt: 213,
-              elapsedMs: 12000,
-              thinkingSummary: '运行 UI 组件与集成测试套件',
-            ),
+            timing: const WorkTiming(startedAt: 213, finishedAt: null),
             childBuilder: (_) => const TimelineToolDetails(
               item: TimelineToolPresentation(
                 id: 'preview-next-group-cmd',
@@ -706,27 +637,19 @@ class _ActivityPreview extends StatelessWidget {
     required this.childBuilder,
     this.initiallyExpanded = false,
     this.activity,
-    this.summary = const WorkSummary(
-      unavailable: 0,
-      total: 1,
-      terminal: 0,
-      running: 1,
-      waiting: 0,
-      failed: 0,
-      cancelled: 0,
-      transferred: 0,
-      createdAt: 100,
-      elapsedMs: 125000,
-    ),
+    this.timing = const WorkTiming(startedAt: 100),
+    this.thinkingSummary,
   });
   final WidgetBuilder childBuilder;
   final bool initiallyExpanded;
   final ConversationActivityView? activity;
-  final WorkSummary summary;
+  final WorkTiming timing;
+  final String? thinkingSummary;
   @override
   Widget build(BuildContext context) => CompletionRunView(
     id: 'preview-live-work',
-    summary: summary,
+    timing: timing,
+    thinkingSummary: thinkingSummary,
     activity: activity,
     location: WorkDisplayLocation.live,
     executionPresent: true,
@@ -764,18 +687,7 @@ class _SealedToolWorkGroupPreviewState
       id: 'sealed-tool-preview-group',
       historyPos: 2,
       body: WorkDisplayBlock(
-        summary: const WorkSummary(
-          unavailable: 0,
-          total: 2,
-          terminal: 2,
-          running: 0,
-          waiting: 0,
-          failed: 1,
-          cancelled: 0,
-          transferred: 0,
-          createdAt: 1735689600,
-          elapsedMs: 125000,
-        ),
+        timing: const WorkTiming(startedAt: 1735689600, finishedAt: 1735689725),
         members: const DisplayBlockRef(
           databaseId: 'preview',
           blockId: 'sealed-tool-preview-group',

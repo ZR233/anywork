@@ -35,18 +35,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
         state: DisplayBlockState.open,
         source: ForegroundTurnChatSource(turnId: 'preview-turn'),
         body: WorkDisplayBlock(
-          summary: WorkSummary(
-            total: 1,
-            terminal: 1,
-            running: 0,
-            waiting: 0,
-            failed: 0,
-            cancelled: 0,
-            transferred: 1,
-            unavailable: 0,
-            createdAt: 1000,
-            elapsedMs: 428000,
-          ),
+          timing: WorkTiming(startedAt: 1000),
           members: DisplayBlockRef(
             databaseId: 'preview',
             blockId: 'model-request-wait',

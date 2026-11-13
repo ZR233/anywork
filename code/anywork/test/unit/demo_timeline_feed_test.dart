@@ -33,8 +33,7 @@ void main() {
     expect(batch.live!.historyThrough, 3);
     expect(batch.live!.blocks, isEmpty);
     final work = batch.blocks[1].body as WorkDisplayBlock;
-    expect(work.summary.total, 2);
-    expect(work.summary.terminal, 2);
+    expect(work.timing.finishedAt, isNotNull);
     final members = await feed.openDisplayMembers(
       reference: work.members,
       window: const LatestDisplayMembers(),
@@ -78,7 +77,7 @@ void main() {
         DisplayBlock(
           id: ref.blockId,
           historyPos: 4,
-          body: WorkDisplayBlock(summary: displaySummary(3), members: ref),
+          body: WorkDisplayBlock(timing: displayTiming(), members: ref),
         ),
         displaySingle(entry, historyPos: 5),
       ],
@@ -238,9 +237,25 @@ void main() {
         }
         batches.add(batch);
         for (final live in batch.live?.blocks ?? <LiveDisplayBlock>[]) {
-          if (live.body case WorkDisplayBlock(:final summary)
-              when summary.total == 1 && summary.terminal == 1) {
-            if (!originalBeforeSeal.isCompleted) {
+          if (live.body case WorkDisplayBlock(:final members)
+              when turnId != null &&
+                  live.id == '$turnId:work' &&
+                  !live.hasUnfinishedMembers) {
+            final reader = await feed.openDisplayMembers(
+              reference: members,
+              window: const LatestDisplayMembers(),
+              demand: chatDemand,
+            );
+            final page = await reader.next();
+            await reader.close();
+            final completedReasoning =
+                page?.entries.any(
+                  (member) =>
+                      member.record.atom.id == '$turnId:reasoning' &&
+                      member.record.contentSource is CompletedOriginal,
+                ) ??
+                false;
+            if (completedReasoning && !originalBeforeSeal.isCompleted) {
               originalBeforeSeal.complete(
                 await feed.reader.readCompleted(
                   recordId: '$turnId:reasoning',
@@ -285,18 +300,8 @@ void main() {
     final snapshots = [
       for (final b in batches) ...?b.live?.blocks.where((b) => b.id == workId),
     ];
-    expect(
-      snapshots.any(
-        (b) =>
-            (b.body as WorkDisplayBlock).summary.total == 2 &&
-            (b.body as WorkDisplayBlock).summary.terminal == 1,
-      ),
-      isTrue,
-    );
-    expect(
-      snapshots.any((b) => (b.body as WorkDisplayBlock).summary.terminal == 2),
-      isTrue,
-    );
+    expect(snapshots.any((b) => b.hasUnfinishedMembers), isTrue);
+    expect(snapshots.any((b) => !b.hasUnfinishedMembers), isTrue);
     final handoff = batches.firstWhere(
       (b) => b.blocks.any((b) => b.id == workId),
     );
@@ -305,7 +310,7 @@ void main() {
     final sealedWork =
         handoff.blocks.firstWhere((b) => b.id == workId).body
             as WorkDisplayBlock;
-    expect(sealedWork.summary.terminal, 2);
+    expect(sealedWork.timing.finishedAt, isNotNull);
     final members = await feed.openDisplayMembers(
       reference: sealedWork.members,
       window: const LatestDisplayMembers(),
@@ -416,7 +421,18 @@ void main() {
       }
       await feed.acknowledge(events.current.deliverySequence);
     }
-    expect((sealed.body as WorkDisplayBlock).summary.cancelled, 1);
+    final stoppedMembers = await feed.openDisplayMembers(
+      reference: (sealed.body as WorkDisplayBlock).members,
+      window: const LatestDisplayMembers(),
+      demand: chatDemand,
+    );
+    final stoppedPage = (await stoppedMembers.next())!;
+    expect(
+      (stoppedPage.entries.single.record.atom.lifecycle as TerminalChatAtom)
+          .outcome,
+      ChatTerminalOutcome.cancelled,
+    );
+    await stoppedMembers.close();
     await feed.close();
     await state.close();
   });
@@ -563,7 +579,7 @@ void main() {
         databaseId: api.conversationDatabaseId(_thread),
         blockId: 'seal-unchanged-work',
       );
-      final body = WorkDisplayBlock(summary: displaySummary(1), members: ref);
+      final body = WorkDisplayBlock(timing: displayTiming(), members: ref);
       final member = DisplayMemberHead(
         memberKey: 'already-terminal',
         memberOrder: 1,
@@ -651,7 +667,7 @@ void main() {
         databaseId: api.conversationDatabaseId(_thread),
         blockId: 'stable-$conflict',
       );
-      final work = WorkDisplayBlock(summary: displaySummary(1), members: ref);
+      final work = WorkDisplayBlock(timing: displayTiming(), members: ref);
       final single = SingleDisplayBlock(
         visibility: SingleVisibility.content,
         record: DisplayRecord(
@@ -846,10 +862,7 @@ void main() {
           LiveDisplayBlock(
             id: ref.blockId,
             blockOrder: 1,
-            body: WorkDisplayBlock(
-              summary: displaySummary(1, terminal: 0, running: 1),
-              members: ref,
-            ),
+            body: WorkDisplayBlock(timing: displayTiming(), members: ref),
             state: DisplayBlockState.open,
           ),
         ],

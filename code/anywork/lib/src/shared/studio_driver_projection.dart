@@ -461,10 +461,10 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
     final item = chatItemPresentationOf(message);
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: atom?.finishedAt ?? unit.summary?.finishedAt,
+      sealedAt: atom?.finishedAt ?? unit.timing?.finishedAt,
       compatibility: 'current',
       omittedBytes: null,
-      kind: unit.summary == null ? atom?.kind.name ?? 'single' : 'work',
+      kind: unit.timing == null ? atom?.kind.name ?? 'single' : 'work',
       status: 'history',
       text: item == null ? '' : _timelineItemFacts(item).text,
       channel: atom?.textChannel?.name,

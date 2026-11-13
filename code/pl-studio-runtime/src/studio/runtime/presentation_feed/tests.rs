@@ -15,7 +15,7 @@ fn demand(max_items: u32) -> ReadDemand {
 
 fn body(id: &str) -> DisplayBlockBody {
     DisplayBlockBody::Work {
-        summary: Box::default(),
+        timing: Default::default(),
         members: DisplayBlockRef {
             database_id: "database".into(),
             block_id: id.into(),
@@ -43,6 +43,8 @@ fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
             .map(|order| {
                 let id = format!("block-{order}");
                 LiveDisplayBlock {
+                    has_unfinished_members: false,
+                    thinking_summary: None,
                     body: body(&id),
                     id,
                     block_order: *order,
@@ -91,12 +93,8 @@ fn split_handoff_keeps_fixed_target_and_unpublished_live_until_last_frame() -> R
 fn unchanged_p_delivers_live_without_history_and_without_requiring_atomic_h() -> Result<()> {
     let mut delivery = TimelineDelivery::new(4);
     let mut changed = live(4, &[5]);
-    let DisplayBlockBody::Work { summary, .. } = &mut changed.blocks[0].body else {
-        unreachable!()
-    };
-    summary.total = 2;
-    summary.terminal = 1;
-    summary.running = 1;
+    changed.blocks[0].thinking_summary = Some("new bounded thought".into());
+    changed.blocks[0].has_unfinished_members = true;
     delivery.capture(changed.clone())?;
     let frame = delivery.append(Vec::new(), demand(1))?;
     assert!(frame.blocks.is_empty());

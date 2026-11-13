@@ -32,10 +32,7 @@ impl MigratorTraitSelf for Published11 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|step| {
@@ -69,10 +66,7 @@ impl MigratorTraitSelf for Published12 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|step| {

@@ -46,7 +46,7 @@ void main() {
     final collapsedHeaderIcon = tester.widget<Icon>(
       find.descendant(of: header, matching: find.byType(Icon)).first,
     );
-    expect(collapsedHeaderIcon.icon, Icons.work_outline);
+    expect(collapsedHeaderIcon.icon, Icons.chevron_right_rounded);
 
     await tester.tap(header);
     await tester.pumpAndSettle();
@@ -60,7 +60,7 @@ void main() {
             find.descendant(of: header, matching: find.byType(Icon)).first,
           )
           .icon,
-      collapsedHeaderIcon.icon,
+      Icons.keyboard_arrow_down_rounded,
     );
     expect(tester.takeException(), isNull);
   });
@@ -84,9 +84,8 @@ void main() {
       Finder workHeader(int index) =>
           find.byKey(ValueKey('completion-run-header:spacing-group-$index'));
       for (final work in tester.widgetList<CompletionRunView>(workHeaders)) {
-        expect(work.summary.total, 3);
-        expect(work.summary.terminal, 3);
-        expect(work.summary.elapsedMs, 125000);
+        expect(work.timing.startedAt, 100);
+        expect(work.timing.finishedAt, 225);
         expect(work.location, WorkDisplayLocation.history);
         expect(work.initiallyExpanded, isFalse);
       }

@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    ChatAtom, ChatFactPosition, ChatPlacement, ChatSourceId, ContentRef,
+    ChatAtom, ChatFactPosition, ChatPlacement, ChatSourceId,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
-pub const PRESENTATION_VERSION: u32 = 3;
+pub const PRESENTATION_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -17,30 +17,12 @@ pub struct DisplayBlockRef {
     pub block_id: String,
 }
 
-/// Incremental counters and evidence-based time; never a collection of members.
+/// The Work block's creation-to-boundary interval, in Unix seconds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkSummary {
-    pub total: u64,
-    pub terminal: u64,
-    pub running: u64,
-    pub waiting: u64,
-    pub failed: u64,
-    pub cancelled: u64,
-    pub transferred: u64,
-    /// Legacy observations whose state at the boundary cannot be proved.
-    pub unavailable: u64,
-    /// First member creation's reliable effect time, in Unix seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<i64>,
-    /// A proven display interval. Long-lived open tails do not use wall elapsed time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub elapsed_ms: Option<u64>,
-    pub started_at: Option<i64>,
+pub struct WorkTiming {
+    pub started_at: i64,
     pub finished_at: Option<i64>,
-    pub duration_ms: Option<u64>,
-    pub thinking_summary: Option<String>,
-    pub thinking_content: Option<ContentRef>,
 }
 
 /// Indirection keeps queued heads compact without changing the serialized body.
@@ -52,7 +34,7 @@ pub struct WorkSummary {
 )]
 pub enum DisplayBlockBody {
     Work {
-        summary: Box<WorkSummary>,
+        timing: WorkTiming,
         members: DisplayBlockRef,
     },
     Single {
@@ -118,6 +100,8 @@ pub struct LiveDisplayBlock {
     pub source: Option<ChatSourceId>,
     pub body: DisplayBlockBody,
     pub state: DisplayBlockState,
+    pub has_unfinished_members: bool,
+    pub thinking_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -240,7 +224,7 @@ mod tests {
 
     fn work(id: &str) -> DisplayBlockBody {
         DisplayBlockBody::Work {
-            summary: Box::default(),
+            timing: WorkTiming::default(),
             members: DisplayBlockRef {
                 database_id: "db".into(),
                 block_id: id.into(),
@@ -251,6 +235,8 @@ mod tests {
     #[test]
     fn live_source_round_trips_and_missing_old_evidence_stays_unknown() {
         let mut block = LiveDisplayBlock {
+            has_unfinished_members: false,
+            thinking_summary: None,
             id: "opaque-block".into(),
             block_order: 1,
             source: None,
@@ -287,21 +273,22 @@ mod tests {
     }
 
     #[test]
-    fn work_creation_and_elapsed_evidence_round_trip_without_backfilling_old_heads() {
-        let old = serde_json::to_value(WorkSummary::default()).unwrap();
-        assert!(old.get("createdAt").is_none());
-        assert!(old.get("elapsedMs").is_none());
-        let mut summary: WorkSummary = serde_json::from_value(old).unwrap();
-        assert_eq!(summary.created_at, None);
-        assert_eq!(summary.elapsed_ms, None);
-        summary.created_at = Some(1_700_000_000);
-        summary.elapsed_ms = Some(125_000);
-        let wire = serde_json::to_value(&summary).unwrap();
-        assert_eq!(wire["createdAt"], 1_700_000_000_i64);
-        assert_eq!(wire["elapsedMs"], 125_000_u64);
+    fn work_timing_requires_the_current_two_timestamp_shape() {
+        let timing = WorkTiming {
+            started_at: 1000,
+            finished_at: Some(1125),
+        };
+        let wire = serde_json::to_value(&timing).unwrap();
         assert_eq!(
-            serde_json::from_value::<WorkSummary>(wire).unwrap(),
-            summary
+            wire,
+            serde_json::json!({"startedAt": 1000, "finishedAt": 1125})
+        );
+        assert_eq!(serde_json::from_value::<WorkTiming>(wire).unwrap(), timing);
+        assert!(
+            serde_json::from_value::<WorkTiming>(
+                serde_json::json!({"createdAt": 1000, "elapsedMs": 125000})
+            )
+            .is_err()
         );
     }
 
@@ -313,7 +300,7 @@ mod tests {
             wire,
             serde_json::json!({
                 "kind": "work",
-                "summary": WorkSummary::default(),
+                "timing": WorkTiming::default(),
                 "members": {"databaseId": "db", "blockId": "work"},
             })
         );
@@ -378,6 +365,8 @@ mod tests {
                 execution_present: true,
                 current_work_id: None,
                 blocks: vec![LiveDisplayBlock {
+                    has_unfinished_members: false,
+                    thinking_summary: None,
                     id: "g1".into(),
                     block_order: 1,
                     source: None,
@@ -406,6 +395,8 @@ mod tests {
                 current_work_id: Some("tail".into()),
                 older: None,
                 blocks: vec![LiveDisplayBlock {
+                    has_unfinished_members: false,
+                    thinking_summary: None,
                     id: "tail".into(),
                     block_order: 1,
                     source: None,

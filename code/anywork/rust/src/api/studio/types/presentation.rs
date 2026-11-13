@@ -1,9 +1,6 @@
 //! Mechanical FRB projection of the product presentation protocol.
 
-use super::{
-    BridgeChatAtom, BridgeChatFactPosition, BridgeChatPlacement, BridgeChatSourceId,
-    BridgeContentRef,
-};
+use super::{BridgeChatAtom, BridgeChatFactPosition, BridgeChatPlacement, BridgeChatSourceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeDisplayBlockState {
@@ -38,28 +35,15 @@ pub struct BridgeDisplayBlockRef {
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeWorkSummary {
-    pub total: u64,
-    pub terminal: u64,
-    pub running: u64,
-    pub waiting: u64,
-    pub unavailable: u64,
-    pub failed: u64,
-    pub cancelled: u64,
-    pub transferred: u64,
-    pub created_at: Option<i64>,
-    pub elapsed_ms: Option<u64>,
-    pub started_at: Option<i64>,
+pub struct BridgeWorkTiming {
+    pub started_at: i64,
     pub finished_at: Option<i64>,
-    pub duration_ms: Option<u64>,
-    pub thinking_summary: Option<String>,
-    pub thinking_content: Option<BridgeContentRef>,
 }
 
 #[derive(Debug, Clone)]
 pub enum BridgeDisplayBlockBody {
     Work {
-        summary: Box<BridgeWorkSummary>,
+        timing: BridgeWorkTiming,
         members: BridgeDisplayBlockRef,
     },
     Single {
@@ -88,6 +72,8 @@ pub struct BridgeLiveDisplayBlock {
     pub source: Option<BridgeChatSourceId>,
     pub body: BridgeDisplayBlockBody,
     pub state: BridgeDisplayBlockState,
+    pub has_unfinished_members: bool,
+    pub thinking_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -100,7 +100,7 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 原 writer 在一个事务保存 effect、checkpoint/context、原件、内容、展示增量及水位，任一失败整批回滚。精确重放复用同冻结材料和原提交凭据；不允许 OR REPLACE、无条件旧头覆盖、OR IGNORE 吞冲突或异步修复队列。同一 writer 批次可合并同一小头中间写值，但保留所有成员和原业务增量。
 
-成功确认只对应实际批次，不等 GUI ACK、不制造展示事件。长期尾组保留小头、聚合计数、下一 member_order、未结束关联和未保存责任；按每批实际变动位置释放已耐久 terminal 行及正文驻留引用，复用 sparse overlay/成员索引，不等封组、不每次 COMMIT 扫全组。已释放事实靠原准入/effect 位置及处理水位幂等，不新建永久全会话 ID 缓存。查询沿短锁捕获切点、共享引用与其后 SQLite 短读快照补齐，不跨 await 持投影锁。
+成功确认只对应实际批次，不等 GUI ACK、不制造展示事件。长期尾组保留小头、内部未完成计数、下一 member_order、未结束关联和未保存责任；按每批实际变动位置释放已耐久 terminal 行及正文驻留引用，复用 sparse overlay/成员索引，不等封组、不每次 COMMIT 扫全组。已释放事实靠原准入/effect 位置及处理水位幂等，不新建永久全会话 ID 缓存。查询沿短锁捕获切点、共享引用与其后 SQLite 短读快照补齐，不跨 await 持投影锁。
 
 ## 26.4 展示快照、冷打开与恢复
 
@@ -123,11 +123,12 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 
 热 current 头和摘要直接读内存；成员轻量头按序页读。历史/冷成员从展示索引读取，不用原完成 seq 范围猜组。明确请求的成员正文、payload 与媒体才按 completion_id/ContentRef 走原 RAM 优先、SQLite 补齐及范围预算。
 
-冷打开直接恢复保存的小头、唯一 open_work、计数、下一位置和必要未结束关联，不加载所有已耐久终态成员、不扫描原历史或完整 checkpoint/context、不激活执行。全 Terminal 的开放尾组静态 Resting，不标未恢复；仅冷源且有未收束/不可用成员为 Unrestored。sealed 待发布块永不恢复更新资格。Core 的真实中断/恢复事实仍按唯一尾组接纳；无执行 owner 不造业务终态，不启动计时。Applied 后坏结构或引用明确拒绝并保原件，不在线重建。
+冷打开直接恢复保存的小头、唯一 open_work、计数、下一位置和必要未结束关联，不加载所有已耐久终态成员、不扫描原历史或完整 checkpoint/context、不激活执行。全 Terminal 的开放尾组静态 Resting，不标未恢复；仅冷源且有未收束/不可用成员为 Unrestored。sealed 待发布块永不恢复更新资格。Core 的真实中断/恢复事实仍按唯一尾组接纳；无执行 owner 不造业务终态；经过时间仍按未封口组的开始时间计算。Applied 后坏结构或引用明确拒绝并保原件，不在线重建。
 
 ## 26.5 展示协议与同切面交付
 
-公共展示协议为 presentation_version=3，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/history_pos/body；LiveDisplayBlock 携 id/block_order/body 和 Open/Sealed 资格。body 为 Work（增量 WorkSummary/成员引用）或 Single（DisplayRecord 与 SingleVisibility）。WorkSummary 保留原增量计数、有据时间及有界摘要；冻结后的 running/waiting 是边界观察数，不代表现时执行。
+公共展示协议为 presentation_version=4，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/history_pos/body。Work 仅持 WorkTiming（必填 startedAt、可空 finishedAt，均为 Unix 秒）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
+
 
 LiveDisplayWindow 携 revision、history_through=P、execution_present、current_work_id、有界 blocks 和 older。current_work_id 由 Rust owner 唯一确定，规范最新窗口必须包含它指向的未 sealed Work；预算不足明确 InvalidDemand，不丢头让客户端猜。旧页只描述该页，不写回规范最新身份。更早窗口保留原读取资格与结构代次；token 不换代，stale 只刷新受影响 live 窗口。execution_present 只证明资源存在，不证明正在工作。
 
@@ -172,7 +173,7 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始/�
 
 共享形状统一为 `DisplayRecord { atom, start_fact: Option<ChatFactPosition>, end_fact: Option<ChatFactPosition>, content_source }`，Single 持一份 record，成员头持 member_key/order 及 record，不另复制可空 completion_id。`DisplayContentSource` 为 CurrentAtom、FrozenObservation{captured_at: Option<i64>, available: bool} 或 CompletedOriginal{completion_id: String}；FrozenObservation.available=false 明确旧切面不可用，不能授予动态内容读取资格。公开 payload/Body 引用在捕获时重写到 `ContentOwner::DisplayObservation{block_id,member_key}` 的独立 owner，沿原内容存储和权限读取；真实完成原件和媒体资源继续原身份。Live 的 `DisplayBlockState` 为 Open 或 Sealed，后者只表示已冻结待发布，不是 closing 等待成员结束。事实引用仅表示该展示行实际接纳的事实：跨组 terminal-only 新行的 start_fact 为 None，即使 atom 保留原执行 started 时间也不能声称本组收到过开始。
 
-`available=false` 不仅约束正文：无法证明的旧等待/运行状态、公开参数和摘要也不得呈现为边界事实，显示中性“旧边界观察不可用”；能证明尚未终态时可同时说明“封存时尚未结束”。WorkSummary 增加 `unavailable` 计数，此类未知观察不计入 running/waiting，也不借较新摘要或计时填补。新边界捕获必须完整，不能以 Unavailable 掩盖捕获失败。
+`available=false` 不仅约束正文：无法证明的旧等待/运行状态、公开参数和摘要也不得呈现为边界事实，显示中性“旧边界观察不可用”；能证明尚未终态时可同时说明“封存时尚未结束”。不可用证据属于具体成员，不维护组级未知、运行或等待计数，也不借较新摘要填补。新边界捕获必须完整，不能以 Unavailable 掩盖捕获失败。
 
 `DisplayMembers` 是查询 scope 交出的有界只读观察能力，声明在 Client 公开会话领域接口；transport 使用同一能力类型。Feature 通过公开查询 API 使用它，不为取得类型导入底层传输端口。
 
@@ -201,25 +202,22 @@ Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加�
 ### 折叠呈现与文案
 
 - 真实实时正文或压缩记录已经承担当前前台轮次的展示时，不再叠加同类普通活动提示。接管仅适用于执行在场、开放块内的当前活跃记录，记录与提示须同属当前前台轮次且类型匹配；压缩状态只保留原记录的一行图标、标题与可靠计时。缺少对应记录、冻结观察、终态、跨轮次或冷读记录均不能接管提示；带错误的提示以及停止、审批、存储故障等关键提示仍独立保留，不按文案去重。
-- 实时 Work 初次呈现默认折叠；每个折叠组只有一行：左侧 `32×32` 定宽槽承载语义图标或真实活动指示，中间为 `15px` 单行有界思考摘要（支持单行 Markdown，无链接或媒体手势）或当前状态短文案，右侧对齐 `12.5px` 可靠成员数或真实阶段时钟及展开入口。不再为同一组叠加一行普通“思考中”提示和一行“工作记录 · N 项”，也不默认展示成员列表、计数明细或终端输出。摘要单行省略，完整语义仍可通过无障碍说明或提示访问。
+- 实时 Work 初次呈现默认折叠；每个折叠组只有一行：左侧 `32×32` 定宽槽承载语义图标或真实活动指示，中间为 `15px` 单行有界思考摘要（支持单行 Markdown，无链接或媒体手势）或当前状态短文案，右侧对齐 `12.5px` 组开始至当前时刻的经过时间及展开入口。不再为同一组叠加一行普通“思考中”提示和一行“工作记录 · N 项”，也不默认展示成员列表、计数明细或终端输出。摘要单行省略，完整语义仍可通过无障碍说明或提示访问。
 - 准备、思考及压缩使用同一固定顶行几何呈现对应轻量状态；压缩不伪造工作组。已有同源当前正文 renderer 时不再叠加普通“正在输出”。上一正文可靠结束后，权威 owner 清除该正文活动资格及旧摘要，不从有界窗口缺正文推断无活动，也不从已有 response parts 推断仍在输出。
 - 普通活动提示归属于 current_work_id 指向的开放 Work，活动内容来自原 State，不要求来源/Turn 相同。普通提示不能覆盖真实保存、停止、审批、错误和冷源提示；缺真实活动不播放动画。有可靠组摘要时可复用原单行摘要/展开组件，旧失败、取消与 Transferred 不替换真实活动阶段。来源字段与成员计数不推导执行状态；无 activeTurnId 的纯后台活动仍正常呈现。
-- 摘要被明确标为 unavailable 时，不具有普通活动提示的吸收资格；提示继续使用原独立状态面，不能把缺证据当成活动或完成。
-- 已封存待发布段及已冻结历史 Work 位于 Timeline 工作区且默认折叠，主标题保持纯文本“工作了 2 分 5 秒”（缺可靠时长证据时回退“工作记录”）等同口径完成态文案，不展示思考摘要，也不以“工作记录 · N 项”、裸小数秒或原始进度数替代。组内调用失败同样不改变标题颜色与图标，真实结果保留在成员详情和可访问摘要；取消、交接等结果保留必要的语义图标、短标记或可访问摘要；正常停止保持中性，不伪装错误或成功。
+- 已封存待发布段及已冻结历史 Work 位于 Timeline 工作区且默认折叠，主标题保持纯文本“工作了 2 分 5 秒”等同口径完成态文案，不展示思考摘要，也不以“工作记录 · N 项”、裸小数秒或原始进度数替代。组内调用失败同样不改变标题颜色与图标，真实结果、取消和交接均保留在具体成员详情与其可访问说明；正常停止保持中性，不伪装错误或成功。
 - 点击才展开原成员窗口；按稳定 block_id 保存的用户展开意图跨 live→history 交接保持，不能因“默认折叠”强制收起用户已打开的组。实时展开区沿原有界阅读区滚动；历史展开内容跟随主时间线，不另设固定 186 像素高的小型纵向滚动容器。
 - 窄窗和大字号下优先压缩或省略摘要，保留图标、时长与可操作的展开入口，不靠缩小字号、重复标题换行或裁掉操作掩盖溢出。复用现有主题、字体、图标和交互组件，不另造预览专用外观。
 
 ### 组计时口径与所有权
 
-组头 `createdAt` 保留第一条信息创建的真实 effect 时间，后加入、折叠、展开与重开不重置；它是创建证据，不是持续活动的时钟起点。长期开放尾组可以闲置，不能用创建时刻推导实际工作耗时。
+工作组创建时由原 owner 写入 startedAt，真实可见边界封口时写入 finishedAt。正文首个内容开始输出即封存前组，不等正文完成，也不等待组内尚未完成的成员。两者随原 PreparedEffect 和唯一 writer 的快照事务保存；同一组的开始不被后加入成员、切换阶段、展开或重开重置，结束只写一次，晚到终态不能修改已封口时间。
 
-当前尾组的可靠计数与真实活动阶段分别呈现；组开放不等于时钟持续运行，闲置与跨重开的间隔不得计入工作时间。
-
-创建与冻结事实随原 PreparedEffect、唯一 writer 和展示快照同事务保存；重放使用同时间事实。开放尾组可能跨夜，不用 now-created_at 或最后保存 elapsed_ms 把闲置算工作时间。首版不增加计时领域：组头可靠显示成员数，单成员沿真实原件耗时，当前阶段沿原活动时钟；不能排除闲置的组累计耗时隐藏。已冻结且有可靠依据的旧耗时维持解释。时钟不写展示表、推 revision、遍历成员或操作 Main。
+未封口实时右侧显示 now−startedAt，包含空闲、暂停及隔夜间隔；封口后使用 finishedAt−startedAt，标题为“工作了 2 分 5 秒”。这是一段完整经过时间，不表示模型或 CPU 的累计活动时长，动画仍只由真实活动决定。隐藏界面停止周期唤醒，重新显示从原开始计算；时钟不写表、不推 revision、不遍历成员、不操作 Main。
 
 零及不足一秒使用“执行了不到 1 秒／工作了不到 1 秒”；已知时长按分钟、秒本地化格式化，未知或时间证据倒序则省略时长。工具成员自身原有“用时”与推理成员“思考了”文案保留各自含义，不通过全局替换误改。
 
-问答占用只遮蔽实时区域，不清数据或补终态。保存阻塞、停止、审批及真实错误提示仍须可见，不得被普通组概要合并或折叠隐藏；无执行 owner 不画运行计时。展开、滚动与跟随输出属于局部 UI 状态；成员读取和媒体资格由原 display lease 持有。Work/Single 复用原成员 renderer，不维护 rawAtoms/groups/messages 三份完整内容，不新增状态机依赖或第二消息 store。
+问答占用只遮蔽实时区域，不清数据或补终态。保存阻塞、停止、审批及真实错误提示仍须可见，不得被普通组概要合并或折叠隐藏；无执行 owner 保持静态活动图标，工作组经过时间仍继续计算。展开、滚动与跟随输出属于局部 UI 状态；成员读取和媒体资格由原 display lease 持有。Work/Single 复用原成员 renderer，不维护 rawAtoms/groups/messages 三份完整内容，不新增状态机依赖或第二消息 store。
 
 ### 修改补丁的片段展示
 
@@ -243,24 +241,10 @@ Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加�
 
 验收映射 #364 V01–V30，覆盖唯一跨来源尾组、一次可见边界、始终空与终值撤回、迟到终态、跨批次/suborder、闲置重开、长期耐久清理与幂等、事务回滚、迁移、分页、慢消费、max_items=1 与资源关闭。生产 Rust→FRB→SDK→View 证明与概念稿、参考模型分开；截图来自本次运行，不能代替帧级接纳断言及 SQL/内存证据。
 
-## 26.10 迁移与保全
+## 26.10 当前快照格式与旧数据边界
 
-当前追加 `m20261112_000001_visible_tail_workgroups`：history20→21，内部头 version3、公共 presentation v3；不连带升级完成历史或 State 协议。头增加 `first_content_at`，Single 增加 visibility。旧头缺可靠首次内容证据保持 None，不当作新规则下始终空，不回写真实开始。
+当前快照为 history22、DisplayHeader v4、presentation v4。新库通过 m20261113_000001_work_snapshots 直接创建当前展示表、索引和水位，不经过旧快照聚合及转换链。组时间只保存开始、结束两个值；成员序号、未完成关联、内容引用与可靠封口位置保留原有读取和生命周期职责。
 
-同一事务检查全库创建顺序的最后块（包含已发布 Single）；只有最后块是合法未 sealed、history_pos=NULL Work 且头/成员索引/内容资格一致时才保留为唯一尾组。其他旧开放 Work/临时块按原顺序保全为只读 legacy 快照，旧冻结引用保留，无法证明旧 RAM 前缀明确 unavailable，不拿未来原件回填。旧封存待发布块按旧证据收束，新增位置仅从原持久前缀追加；不移动、重编号已发布位置，不合并旧块身份。只有可证明从未可见且确为空的旧壳可 RemoveEmpty。
+旧展示快照不支持，不解码、不迁移、不回退、不从原件重建。打开旧格式明确返回错误，原库、原件和已有备份原样保留；升级不是删除或清空用户数据的授权。其他账号、凭据和非展示存储的约定不因本次快照调整而改变。
 
-转换头、验证唯一开放 Work、schema/Applied 同事务提交，故障完整回滚，原件、完成 seq、内容、checkpoint、任务副作用及归档均保留。最后块不合法不得偷偷选择更早 Work；明确失败或保全为不可继续的 legacy 快照。正常 restore 严格新不变量，不长期保留多开放 lane，Applied 后坏结构或引用拒绝、不在线修复。
-
-以下是已发布旧迁移的保全边界，保持其名称及转换语义；旧步骤的开放输出须再由上述 schema21 步骤完成转换，不作为当前普通恢复分支：
-
-schema18→19 在原 migration runner 和同一事务建立展示表/索引及水位。旧完成数据按 seq 键集每批 128 个轻量头读取，复用已确定 run_start/ordinal 和 typed 类别，一次生成冻结 legacy 块及成员引用，history_pos 按旧可见段顺序分配，Hidden 无块。迁移可一次累积旧组摘要，但不读取正文/图片、不改原 ID/seq/payload/metadata/content，不猜 v18 从未保存的开放状态。
-
-旧迁移和已 Applied 语义不改，受管归档全部保留。原待恢复工具/交互继续 Core 责任，后来真实结果形成新段，不回填旧冻结组。校验引用、唯一性和水位后写 Applied；失败整体回滚。正常重开只读快照，Applied 后缺表/头或矛盾明确失败，不删建、不全历史 fold、不回落旧分组。
-
-history19→20 追加具名迁移，加入组内记录身份、开始/结束引用、封存资格和独立显示内容命名空间。保全旧块/成员 ID、顺序、原件与内容；旧已冻结完成记录仍引用真实原件，旧开放组保持开放，升级不是正文边界。只转换已有材料能证明的切面，缺前缀明确不可用，不用未来完成全文补旧观察。产品库27、calls9不因展示升版。正常路径只消费新结构，不留 v19 运行回退。
-
-这里“旧开放”指没有可靠 boundary 的 Work。v19 已有 boundary、因旧 unfinished 条件尚未发布的 closing Work 转为统一 Sealed 资格，保留 ID 和既有顺序；迁移不创建新边界或直接发布 history_pos。仅在迁移中按旧组成员索引定向读取独立事实，以完整 `(effect_seq,suborder)` 和可靠位置判断边界前终态，缺位置/占位不作证。边界前完成引用原件，尚未完成的行保留可证明开始及时间，不能将初始 Running 当任意边界状态；缺失切面标 unavailable。组经过时间只从可证明创建和边界原事实时间计算，不能反推被后来更新覆盖的 elapsed/duration/摘要。
-
-旧 closing 行若已接纳 boundary 后的终态，保留原开始观察行身份，并为该真实结束派生新记录，按原事实接纳顺序归入边界后的当前组或新结束组；不得丢结束、重复结束或回填旧切面。旧已发布历史保持原样，不追溯拆分；仅对未发布段定向转换，必要时为新增记录调整未发布排序键，保持所有旧段/成员相对顺序和已发布位置不变。新记录身份由真实终态位置和目标组决定，迁移可重放且只在迁移边界解码旧形状。
-
-既有库中的来源结束位置（包括旧 Turn end 的 suborder=0）和成员位置原样保留，不因新 producer 的围合规则重写或假定同批终态在其前。迁移依旧按实际位置识别边界后终态并形成新记录，缺失旧切面明确不可用；不能把规范修正变成旧事实重排或再次执行。
+当前快照的保存、回滚、重放和重开继续由唯一 writer 与原读池持有；坏结构、错误引用或版本冲突明确失败，不修库、不伪造开始或结束时间。

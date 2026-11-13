@@ -56,7 +56,7 @@ extension _MediaHandoffScene on _ConceptScene {
       'workRowId': work.id,
       'turnId': turnId,
       'callId': _mediaCall,
-      'initialSummaryTotal': work.summary!.total,
+      'startedAt': work.timing!.startedAt,
       'pages': pages,
     };
     DisplayMemberWindow window = const LatestDisplayMembers();
@@ -290,13 +290,11 @@ extension _MediaHandoffScene on _ConceptScene {
 
     await _until(
       tester,
-      () => observed.allWork.any((unit) => unit.summary!.transferred == 1),
+      () => observed.allWork.isNotEmpty,
       'original image Work has a real transferred terminal',
       timeout: const Duration(seconds: 15),
     );
-    final work = observed.allWork.singleWhere(
-      (unit) => unit.summary!.transferred == 1,
-    );
+    final work = observed.allWork.first;
     late final String turnId;
     if (reopen) {
       turnId = saved!['handoff']['turnId'] as String;

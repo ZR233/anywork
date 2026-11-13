@@ -26,16 +26,7 @@ LiveDisplayBlock _work(
   blockOrder: order,
   state: state,
   body: WorkDisplayBlock(
-    summary: const WorkSummary(
-      total: 1,
-      terminal: 1,
-      running: 0,
-      waiting: 0,
-      failed: 0,
-      cancelled: 0,
-      transferred: 0,
-      unavailable: 0,
-    ),
+    timing: const WorkTiming(startedAt: 0, finishedAt: null),
     members: DisplayBlockRef(databaseId: 'db', blockId: id),
   ),
 );
@@ -215,16 +206,7 @@ void main() {
           blockOrder: 2,
           state: DisplayBlockState.open,
           body: WorkDisplayBlock(
-            summary: WorkSummary(
-              total: 1,
-              terminal: active ? 0 : 1,
-              running: active ? 1 : 0,
-              waiting: 0,
-              failed: 0,
-              cancelled: 0,
-              transferred: 0,
-              unavailable: 0,
-            ),
+            timing: WorkTiming(startedAt: 0, finishedAt: null),
             members: _reference,
           ),
         ),

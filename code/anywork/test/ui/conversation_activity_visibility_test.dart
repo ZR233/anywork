@@ -246,7 +246,7 @@ void main() {
             state: DisplayBlockState.open,
             source: const BackgroundResultChatSource(messageId: 'background'),
             body: WorkDisplayBlock(
-              summary: displaySummary(1, terminal: 0, running: 1),
+              timing: displayTiming(),
               members: const DisplayBlockRef(
                 databaseId: 'db',
                 blockId: 'background-tail',
@@ -461,16 +461,7 @@ void main() {
               state: DisplayBlockState.open,
               source: source,
               body: const WorkDisplayBlock(
-                summary: WorkSummary(
-                  total: 1,
-                  terminal: 0,
-                  running: 1,
-                  waiting: 0,
-                  failed: 0,
-                  cancelled: 0,
-                  transferred: 0,
-                  unavailable: 0,
-                ),
+                timing: WorkTiming(startedAt: 0, finishedAt: null),
                 members: DisplayBlockRef(
                   databaseId: 'db',
                   blockId: 'opaque-block',
@@ -564,27 +555,10 @@ void main() {
     );
   }
 
-  for (final (
-        label,
-        running,
-        waiting,
-        failed,
-        cancelled,
-        transferred,
-        unavailable,
-        accepted,
-      )
-      in [
-        ('clean idle (group-idle)', 0, 0, 0, 0, 0, 0, true),
-        ('running', 1, 0, 0, 0, 0, 0, true),
-        ('waiting', 0, 1, 0, 0, 0, 0, true),
-        ('failed call while thinking', 0, 0, 1, 0, 0, 0, true),
-        ('failed call while running', 1, 0, 1, 0, 0, 0, true),
-        ('cancelled terminal', 0, 0, 0, 1, 0, 0, true),
-        ('transferred terminal', 0, 0, 0, 0, 1, 0, true),
-        ('unavailable running', 1, 0, 0, 0, 0, 1, false),
-        ('unavailable waiting', 0, 1, 0, 0, 0, 1, false),
-      ]) {
+  for (final (label, hasUnfinishedMembers) in [
+    ('idle', false),
+    ('unfinished', true),
+  ]) {
     test('normal notice requires complete continuing open Work: $label', () {
       final live = LiveDisplayWindow(
         currentWorkId: 'work',
@@ -597,17 +571,9 @@ void main() {
             blockOrder: 1,
             state: DisplayBlockState.open,
             source: const ForegroundTurnChatSource(turnId: 'turn'),
+            hasUnfinishedMembers: hasUnfinishedMembers,
             body: WorkDisplayBlock(
-              summary: WorkSummary(
-                total: 2,
-                terminal: 2 - running - waiting,
-                running: running,
-                waiting: waiting,
-                failed: failed,
-                cancelled: cancelled,
-                transferred: transferred,
-                unavailable: unavailable,
-              ),
+              timing: WorkTiming(startedAt: 0, finishedAt: null),
               members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
             ),
           ),
@@ -637,15 +603,11 @@ void main() {
         );
         final aggregate = _observe(live: live, status: status);
         final presenting = aggregate.barState as LiveStatusPresenting;
-        expect(placement != null, accepted, reason: kind.name);
+        expect(placement, isNotNull, reason: kind.name);
         expect(presenting.effectiveWindow, same(live));
         expect(presenting.surface, isA<LiveStatusWorkSurface>());
-        if (accepted) {
-          expect(placement!.notice, same(notice));
-          expect(presenting.surface.standaloneNotices, isEmpty);
-        } else {
-          expect(presenting.surface.standaloneNotices, hasLength(1));
-        }
+        expect(placement!.notice, same(notice));
+        expect(presenting.surface.standaloneNotices, isEmpty);
       }
     });
   }
@@ -896,7 +858,7 @@ void main() {
           state: DisplayBlockState.open,
           source: const ForegroundTurnChatSource(turnId: 'background-turn'),
           body: WorkDisplayBlock(
-            summary: displaySummary(1, terminal: 0, running: 1),
+            timing: displayTiming(),
             members: const DisplayBlockRef(
               databaseId: 'plan-visibility',
               blockId: 'plan-work',
@@ -1354,7 +1316,7 @@ void main() {
       state: DisplayBlockState.open,
       source: const ForegroundTurnChatSource(turnId: 'background-turn'),
       body: WorkDisplayBlock(
-        summary: displaySummary(1, terminal: 0, running: 1),
+        timing: displayTiming(),
         members: const DisplayBlockRef(
           databaseId: 'plan-mask',
           blockId: 'background-work',

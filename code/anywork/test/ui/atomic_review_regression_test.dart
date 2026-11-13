@@ -80,7 +80,7 @@ TimelineDisplayUnit _unit(
       blockOrder: 1,
       state: DisplayBlockState.open,
       body: WorkDisplayBlock(
-        summary: displaySummary(82, terminal: 1, running: 81),
+        timing: displayTiming(),
         members: DisplayBlockRef(databaseId: 'database', blockId: id),
       ),
     ),
@@ -168,19 +168,10 @@ Future<void> _dispose(
   expect(tester.takeException(), isNull);
 }
 
-void _expectCount(WidgetTester tester) {
+void _expectHeader(WidgetTester tester) {
   final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-  expect(
-    find.byWidgetPredicate(
-      (widget) =>
-          widget is Semantics &&
-          (widget.properties.label?.contains(
-                l10n.timelineGroupMemberCount(82),
-              ) ??
-              false),
-    ),
-    findsOneWidget,
-  );
+  expect(find.byKey(const ValueKey('work-header-title')), findsOneWidget);
+  expect(find.text(l10n.timelineGroupRecord), findsOneWidget);
 }
 
 void main() {
@@ -200,7 +191,7 @@ void main() {
       await tester.pumpWidget(_host(unit, content));
       await _frames(tester);
       expect(find.textContaining('成员读取失败'), findsOneWidget);
-      _expectCount(tester);
+      _expectHeader(tester);
       await tester.tap(find.widgetWithText(TextButton, '重试'));
       await _frames(tester);
       expect(opens, 2);
@@ -208,7 +199,7 @@ void main() {
       await tester.pump();
       expect(find.text('重试后的成员'), findsOneWidget);
       expect(find.textContaining('成员读取失败'), findsNothing);
-      _expectCount(tester);
+      _expectHeader(tester);
       await _dispose(tester, unit, content);
       expect(members.closed, isTrue);
     },
@@ -344,7 +335,7 @@ void main() {
       expect(tester.getSize(find.text('new member')).isEmpty, isFalse);
       expect(opens, 1);
       expect(registrations, 1);
-      _expectCount(tester);
+      _expectHeader(tester);
       await _dispose(tester, unit, content);
       expect(members.closed, isTrue);
     },

@@ -35,22 +35,7 @@ Map<String, Object?> displayRecordEvidence(DisplayRecord record) {
   };
 }
 
-Map<String, Object?> workSummaryEvidence(WorkSummary summary) => {
-  'total': summary.total,
-  'terminal': summary.terminal,
-  'running': summary.running,
-  'waiting': summary.waiting,
-  'failed': summary.failed,
-  'cancelled': summary.cancelled,
-  'transferred': summary.transferred,
-  'unavailable': summary.unavailable,
-  'startedAt': summary.startedAt,
-  'finishedAt': summary.finishedAt,
-  'durationMs': summary.durationMs,
-  'createdAt': summary.createdAt,
-  'elapsedMs': summary.elapsedMs,
-  'thinkingSummary': summary.thinkingSummary,
-  'thinkingContent': summary.thinkingContent == null
-      ? null
-      : contentRefToJson(summary.thinkingContent!),
+Map<String, Object?> workTimingEvidence(WorkTiming timing) => {
+  'startedAt': timing.startedAt,
+  'finishedAt': timing.finishedAt,
 };

@@ -31,7 +31,7 @@ void main() {
         opens++;
         return native;
       };
-      final body = displayWork('work', 1, total: 10000).body;
+      final body = displayWork('work', 1).body;
       final live = TimelineDisplayUnit.live(
         block: LiveDisplayBlock(
           id: 'work',

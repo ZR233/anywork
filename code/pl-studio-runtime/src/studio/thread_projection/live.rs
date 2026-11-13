@@ -2380,6 +2380,15 @@ impl LiveProjection {
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        if let Some(activity) = self.current.activity()
+            && activity.kind == pl_protocol::ThreadActivityKind::Thinking
+            && let Some(summary) = activity.thinking_summary.as_deref()
+        {
+            self.presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .observe_thinking_summary(summary);
+        }
         Ok(())
     }
 
