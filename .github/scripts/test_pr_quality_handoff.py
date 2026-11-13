@@ -207,7 +207,7 @@ class HandoffTest(unittest.TestCase):
             # A valid outer digest cannot excuse a wrong profile or missing payload.
             with tarfile.open(self.archive) as tar:
                 original = [(member, tar.extractfile(member).read()) for member in tar]
-            for invalid in ("profile", "libpl_studio_bridge.so", "pl-provider-fixture"):
+            for invalid in ("profile", "libpl_studio_bridge.so", "pl-provider-fixture", "pl-studio-mcp"):
                 with self.subTest(invalid=invalid):
                     with tarfile.open(self.archive, "w:gz") as tar:
                         for member, payload in original:

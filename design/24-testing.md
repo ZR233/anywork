@@ -27,7 +27,7 @@ Cargo 缓存；同一 job 的步骤自然共享本地编译目录，不额外归
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 构建输入 | 生成检查需要工程工具；原生集成和 GUI 编译才需要双架构 helper。仅平台 Clippy 不触发准备作业，也不因其 skipped 而连带跳过。工程工具与所需 helper 复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
-| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance、开发配置 bridge 及 release 模拟供应商进程，经既有受控构件交接供各 runner 只读消费。显式选择的独立 release/profile 场景仍自行编译对应 bridge，不进入默认 CI 消费者路线。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
+| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance、开发配置 bridge、release 模拟供应商进程及原生 Host MCP，经既有受控构件交接供各 runner 只读消费。显式选择的独立 release/profile 场景仍自行编译对应 bridge，不进入默认 CI 消费者路线。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
 | Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。默认构建 Release/AOT App 和 release Rust bridge，编译真实插件并暂存双架构 helper；沿用发布检查点归档 `dist/anywork-release` 与独立工程工具，记录源码、版本、平台、配置及摘要，供检查和后续显式打包使用。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
@@ -45,7 +45,7 @@ Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，�
 
 Linux 编译生产者的 Cargo 源码与编译缓存按镜像身份与作业职责隔离；Rust 质量作业可写自身 PR 合并引用，其他生产者仅写默认分支。宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。没有同次上游构件的独立验证作业继续管理自身缓存。
 
-Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow 的验收工具、开发配置桥接库和 release `pl-provider-fixture`；这是 CI 工程输入，不是用户配置或持久缓存。交接沿用精确构件 ID、归档摘要、源码、编译工作区和不可变镜像校验，消费时再核对实际 Rust/Cargo 工具链、平台、构建配置、运行编号及各文件的 profile 和摘要。校验由 `pl-dev-support` 统一提供，xtask 和验收工具均使用同一入口。设置入口后缺失、损坏、源码有修改或身份不匹配均直接失败，不回退编译；未设置时保留普通本地 Cargo 构建。仅共享固定只读二进制，不共享 Cargo target、Flutter 输出、进程、fixture 状态、场景数据或报告；每个 runner 自己创建和释放调用内准备租约。下游重跑可复用同一 workflow run 的精确生产者构件，不接受跨 run 构件。
+Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow 的验收工具、开发配置桥接库、release `pl-provider-fixture` 和 `pl-studio-mcp`；这是 CI 工程输入，不是用户配置或持久缓存。交接沿用精确构件 ID、归档摘要、源码、编译工作区和不可变镜像校验，消费时再核对实际 Rust/Cargo 工具链、平台、构建配置、运行编号及各文件的 profile 和摘要。校验由 `pl-dev-support` 统一提供，xtask 和验收工具均使用同一入口。Host MCP 生产者使用与本地原生构建一致的目标与 release 参数（strip symbols、thin LTO、单 codegen unit、panic abort）；消费者只暂存并校验已有二进制，不再启动 Cargo。设置入口后缺失、损坏、源码有修改或身份不匹配均直接失败，不回退编译；未设置时保留普通本地 Cargo 构建。仅共享固定只读二进制，不共享 Cargo target、Flutter 输出、进程、fixture 状态、场景数据或报告；每个 runner 自己创建和释放调用内准备租约。下游重跑可复用同一 workflow run 的精确生产者构件，不接受跨 run 构件。
 
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；需要编译缓存的作业先恢复缓存，再校验和恢复本次工具。纯产物消费者直接恢复本次输入。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 

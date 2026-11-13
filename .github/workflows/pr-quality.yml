@@ -406,6 +406,12 @@ jobs:
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-acceptance -p pl-studio-bridge
       - name: Compile the shared optimized provider fixture
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --release --locked -p pl-provider-fixture --bin pl-provider-fixture
+      - name: Compile the shared native Host MCP executable
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
+            CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_PANIC=abort \
+            cargo build --release --locked -p pl-studio-mcp --bin pl-studio-mcp --target x86_64-unknown-linux-gnu
       - name: Checkpoint immutable test inputs
         id: checkpoint
         env:

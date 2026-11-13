@@ -101,12 +101,13 @@ impl Identity {
             self.artifacts.keys().map(String::as_str).eq([
                 "libpl_studio_bridge.so",
                 "pl-provider-fixture",
-                "pl-studio-acceptance"
+                "pl-studio-acceptance",
+                "pl-studio-mcp"
             ]),
             "CI test input artifact set mismatch"
         );
         for (name, expected) in &self.artifacts {
-            let profile = if name == "pl-provider-fixture" {
+            let profile = if matches!(name.as_str(), "pl-provider-fixture" | "pl-studio-mcp") {
                 "release"
             } else {
                 "dev"
@@ -198,6 +199,11 @@ mod tests {
                         .unwrap()
                         .is_file()
                 );
+                assert!(
+                    artifact(Path::new(&workspace), "pl-studio-mcp")?
+                        .unwrap()
+                        .is_file()
+                );
             }
             return Ok(());
         }
@@ -230,6 +236,11 @@ mod tests {
         )?;
         fs::create_dir_all(workspace.join("target/debug"))?;
         fs::create_dir_all(workspace.join("target/release"))?;
+        fs::create_dir_all(workspace.join("target/x86_64-unknown-linux-gnu/release"))?;
+        fs::write(
+            workspace.join("target/x86_64-unknown-linux-gnu/release/pl-studio-mcp"),
+            "mcp",
+        )?;
         fs::write(
             workspace.join("target/release/pl-provider-fixture"),
             "fixture",
@@ -320,6 +331,12 @@ mod tests {
         fs::remove_file(&fixture)?;
         consume(Some("No such file"))?;
         fs::write(&fixture, "fixture")?;
+        let host_mcp = directory.join("pl-studio-mcp");
+        fs::write(&host_mcp, "tampered Host MCP")?;
+        consume(Some("digest mismatch: pl-studio-mcp"))?;
+        fs::remove_file(&host_mcp)?;
+        consume(Some("No such file"))?;
+        fs::write(&host_mcp, "mcp")?;
         let library = directory.join("libpl_studio_bridge.so");
         fs::write(&library, "tampered")?;
         consume(Some("digest mismatch"))?;

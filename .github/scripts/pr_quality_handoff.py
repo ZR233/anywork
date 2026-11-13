@@ -22,6 +22,7 @@ _TEST_INPUTS = {
     "pl-studio-acceptance": Path("target/debug/pl-studio-acceptance"),
     "libpl_studio_bridge.so": Path("target/debug/libpl_studio_bridge.so"),
     "pl-provider-fixture": Path("target/release/pl-provider-fixture"),
+    "pl-studio-mcp": Path("target/x86_64-unknown-linux-gnu/release/pl-studio-mcp"),
 }
 _HELPERS = {
     f"{target}/{name}": Path("dist/remote-helper") / target / name
@@ -93,7 +94,7 @@ def _test_identity(workspace: Path, source_sha: str, environment: str) -> dict:
         "configuration": _build_configuration(),
         "artifacts": {
             name: {
-                "profile": "release" if relative.parts[1] == "release" else "dev",
+                "profile": "release" if relative.parent.name == "release" else "dev",
                 "sha256": _file_sha256(workspace / relative),
             }
             for name, relative in _TEST_INPUTS.items()
@@ -230,7 +231,7 @@ def _restore(
                 if set(identity.get("artifacts", {})) != set(_TEST_INPUTS):
                     raise ValueError("Test input artifact set mismatch")
                 for name, artifact in identity["artifacts"].items():
-                    profile = "release" if _TEST_INPUTS[name].parts[1] == "release" else "dev"
+                    profile = "release" if _TEST_INPUTS[name].parent.name == "release" else "dev"
                     if artifact.get("profile") != profile:
                         raise ValueError(f"Test input profile mismatch: {name}")
                     with tar.extractfile(name) as payload:
