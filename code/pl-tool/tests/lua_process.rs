@@ -808,8 +808,10 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
         .foreground();
     let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
     std::fs::write(root.path().join("unselected-output"), "UNSELECTED_STDOUT").unwrap();
+    let diagnostic = "诊断\n".repeat(4096) + "expected failing test\nFINAL_DIAGNOSTIC";
+    std::fs::write(root.path().join("failing-diagnostic"), &diagnostic).unwrap();
     let model = host::Calls {
-        calls: [("exec".into(), serde_json::json!({"code": "local r=tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; cat unselected-output; printf 'expected failing test' >&2; exit 7]=]}); assert(r.exitCode==7); return {exitCode=r.exitCode,stderr=r.stderr.content}"}).to_string())].into(),
+        calls: [("exec".into(), serde_json::json!({"code": "local r=tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; cat unselected-output; cat failing-diagnostic >&2; exit 7]=]}); assert(r.exitCode==7 and r.stderr.content==string.rep('诊断\\n',4096)..'expected failing test\\nFINAL_DIAGNOSTIC'); return {exitCode=r.exitCode,stderr=r.stderr.content}"}).to_string())].into(),
         requests: requests.clone(),
     };
     let thread = ThreadHandle::start("lua-nonzero".into(), DynModelSession::new(model)).unwrap();
@@ -845,6 +847,22 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
             .payload()
             .content()
             .contains("UNSELECTED_STDOUT")
+    );
+    let raw: serde_json::Value = serde_json::from_str(original.output.payload().content()).unwrap();
+    assert_eq!(raw["stderr"]["content"], diagnostic);
+    assert_eq!(raw["stderr"]["wasTruncated"], false);
+    let parent_delivery = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|d| d.call_id == parent.call_id)
+        .unwrap();
+    let selected: serde_json::Value =
+        serde_json::from_str(parent_delivery.output.payload().content()).unwrap();
+    let selected: serde_json::Value =
+        serde_json::from_str(selected["output"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        selected["stderr"], diagnostic,
+        "Lua receives the complete diagnostic before model projection"
     );
     let model_context =
         serde_json::to_string(&requests.lock().unwrap().last().unwrap().context).unwrap();

@@ -4,7 +4,7 @@ pub fn exec_definition() -> pl_agent_tool::ToolDefinition {
         "content":{"type":"string"},"wasTruncated":{"type":"boolean"}
     },"required":["content"],"additionalProperties":true});
     pl_agent_tool::ToolDefinition::json("exec_command",
-        "Run a shell command. Return exitCode, stdout.content and stderr.content: pipelines and later commands can mask failures. If rg is unavailable, use grep -R for directories or find. rg/grep exit 1 means no matches; refine the query without masking status. Put options, including --glob/--exclude-dir, BEFORE --; pattern and quoted paths follow. Read truncated stdoutFile/stderrFile from the workspace root (cwd omitted or '.'). Preserve completed effects on failure; inspect diagnostic and captureStatus.",
+        "Run a shell command. Return exitCode, stdout.content and stderr.content. Nonzero exit preserves both streams; shell pipelines and later commands determine the final exit status. Truncated streams retain their original stdoutFile/stderrFile: read these paths from the workspace root (cwd omitted or '.'). Execution failures retain observed output, diagnostic and captureStatus; completed effects are not replayed.",
         pl_agent_tool::typed::input_schema_for::<ExecInput>())
         .expect("static tool definition")
         .with_output_schema(serde_json::json!({"type":"object","properties":{
