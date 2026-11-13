@@ -79,6 +79,55 @@ impl pl_core::model::ModelSession for LifecycleModel {
         }
         let mut next = followup.or_else(|| self.calls.pop_front());
         if let Some(call) = next.as_mut()
+            && call.call_id.starts_with("recover-output")
+        {
+            let text = request.context.records.iter().find_map(|record| {
+                if !matches!(&record.source, pl_core::context::ContextSource::ToolResult { call_id, .. } if call_id == "truncated-program") {
+                    return None;
+                }
+                record.content.iter().find_map(|part| match part {
+                    pl_core::context::ContextContent::Text { text } => Some(text.as_ref()),
+                    _ => None,
+                })
+            }).expect("foreground program must deliver its result");
+            if call.call_id.ends_with("-diagnostic") {
+                assert!(
+                    text.starts_with("[Lua execution failed"),
+                    "failure must remain visible"
+                );
+            } else {
+                assert!(
+                    text.contains("BEGIN"),
+                    "truncation must retain the output head"
+                );
+            }
+            if !text.contains("Lua execution failed") {
+                assert!(
+                    text.contains("FINAL SUMMARY END"),
+                    "truncation must retain the terminal summary"
+                );
+            }
+            let encoded_id = text
+                .split_once("taskId=")
+                .expect("truncated result must identify its retained original")
+                .1;
+            let id: String = serde_json::Deserializer::from_str(encoded_id)
+                .into_iter()
+                .next()
+                .unwrap()
+                .unwrap();
+            let mut args: serde_json::Value =
+                serde_json::from_str(call.arguments.content()).unwrap();
+            args["code"] = args["code"]
+                .as_str()
+                .unwrap()
+                .replace("RECOVER_TASK_ID", &serde_json::to_string(&id).unwrap())
+                .into();
+            call.arguments =
+                pl_core::context::OpaquePayload::new("application/json", 1, args.to_string())
+                    .unwrap();
+        }
+        if let Some(call) = next.as_mut()
             && matches!(call.call_id.as_str(), "query-process" | "interactive-query")
         {
             let expected = if call.call_id == "query-process" {
@@ -134,6 +183,132 @@ impl pl_core::model::ModelSession for LifecycleModel {
 
     async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
         Ok(())
+    }
+}
+
+#[tokio::test]
+async fn truncated_program_exposes_head_tail_and_queryable_original_without_reexecution() {
+    use pl_tool::task_control::{TaskControlKind, TaskControlTool};
+    for (fails, diagnostic_only) in [(false, false), (true, false), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let definition = pl_tool::exec::exec_definition();
+        let command = ThreadExecTool::new(
+            Arc::new(pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap()),
+            Arc::new(Archive(root.path().join("archive"))),
+            CommandAccess::WorkspaceOnly,
+            definition.clone(),
+        )
+        .registration(
+            prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
+        )
+        .nested(false);
+        let tool = pl_tool::lua::LuaTool::new("");
+        let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+            .unwrap()
+            .attach(ToolHandle::new(tool))
+            .with_nested_calls()
+            .foreground();
+        let query = pl_tool::task_control::query_definition();
+        let query = TaskControlTool::new(TaskControlKind::Query, query.clone())
+            .registration(
+                prepare_registration("get_tool_task", &query, ToolCallPolicy::DirectOnly).unwrap(),
+            )
+            .nested(true);
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let finish = if diagnostic_only {
+            "error('EXPECTED_FAILURE'..string.rep('中',8192))"
+        } else if fails {
+            "print(text); error('EXPECTED_FAILURE')"
+        } else {
+            "return text"
+        };
+        let code = format!(
+            "local r=tools.exec_command({{command=[=[printf 'once\\n' >> invocation-count]=]}}); assert(r.exitCode==0); local text='BEGIN'..string.rep('中',8192)..'FINAL SUMMARY END'; {finish}"
+        );
+        let status = if fails { "failed" } else { "succeeded" };
+        let recovery = format!(
+            r#"
+local chunks={{}}; local cursor=0
+repeat
+  local q=tools.get_tool_task({{taskId=RECOVER_TASK_ID,resultCursor=cursor}})
+  assert(q.task.status=='{status}')
+  chunks[#chunks+1]=q.result.content; cursor=q.result.nextCursor
+until cursor==nil or cursor==json.null
+assert(#chunks>1)
+local saved=json.decode(table.concat(chunks))
+local expected='BEGIN'..string.rep('中',8192)..'FINAL SUMMARY END'
+assert(saved.output=={expected_output})
+{error_check}
+return {{pages=#chunks,bytes=#saved.output}}
+"#,
+            expected_output = if diagnostic_only {
+                "''"
+            } else if fails {
+                r"expected..'\n'"
+            } else {
+                "expected"
+            },
+            error_check = if fails {
+                "assert(saved.error:find('EXPECTED_FAILURE',1,true))"
+            } else {
+                "assert(saved.error==json.null)"
+            }
+        );
+        let recovery_id = if diagnostic_only {
+            "recover-output-diagnostic"
+        } else {
+            "recover-output"
+        };
+        let model = LifecycleModel {
+            calls: [
+                (
+                    "truncated-program",
+                    serde_json::json!({"code":code,"maxOutputBytes":256}),
+                ),
+                (recovery_id, serde_json::json!({"code":recovery})),
+            ]
+            .into_iter()
+            .map(|(id, args)| pl_core::model::ModelToolCall {
+                call_id: id.into(),
+                tool_id: "exec".into(),
+                arguments: pl_core::context::OpaquePayload::new(
+                    "application/json",
+                    1,
+                    args.to_string(),
+                )
+                .unwrap(),
+                rejection: None,
+                presentation_contract: None,
+            })
+            .collect(),
+            requests: requests.clone(),
+            message_wakes: 0,
+        };
+        let thread = ThreadHandle::start(
+            format!("truncation-{fails}-{diagnostic_only}"),
+            DynModelSession::new(model),
+        )
+        .unwrap();
+        thread
+            .register_tools(vec![command, lua, query])
+            .await
+            .unwrap();
+        thread.run_turn(host::turn("recovery")).await.unwrap();
+        let effects = thread.effects().await.unwrap();
+        let delivery = effects
+            .iter()
+            .flat_map(|e| e.deliveries.iter())
+            .find(|d| d.call_id == recovery_id)
+            .unwrap();
+        assert!(matches!(
+            delivery.outcome,
+            pl_core::thread::ToolOutcome::Succeeded
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("invocation-count")).unwrap(),
+            "once\n"
+        );
+        thread.close().await.unwrap();
     }
 }
 

@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// `exec_command` 的结构化输入。
+// Structured exec_command input; field documentation is also shown in the Lua SDK.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecInput {
@@ -26,11 +26,8 @@ pub struct ExecInput {
     pub timeout_seconds: Option<u64>,
     /// Positive combined stdout + stderr UTF-8 byte budget (default and maximum: 65536).
     /// Metadata, JSON escaping and protocol wrappers are additional and do not consume this budget.
-    ///
-    /// The wire field name keeps the historical `maxOutputChars`, but the unit is bytes: the
-    /// projection truncates the visible stdout/stderr text by `String` byte length, so multi-byte
-    /// characters are charged for their real encoded size. A backend may additionally declare its
-    /// own byte ceiling through `CommandBackend::model_output_bytes_cap`.
+    // The historical wire field name remains maxOutputChars; multi-byte characters consume
+    // their encoded byte length. Backends can further constrain model_output_bytes_cap.
     #[serde(default)]
     pub max_output_chars: Option<usize>,
 }

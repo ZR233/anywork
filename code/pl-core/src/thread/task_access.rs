@@ -36,6 +36,12 @@ pub struct NestedToolDeclaration {
     pub parallel: bool,
 }
 impl TaskAccess {
+    /// Owner-assigned identity of the invocation holding this capability.
+    /// Reading it neither creates a task nor grants additional control permission.
+    pub fn current_task_id(&self) -> &str {
+        &self.caller
+    }
+
     pub(crate) fn with_nested_plan(
         mut self,
         plan: Option<Arc<crate::tool::opaque::ToolPlan>>,

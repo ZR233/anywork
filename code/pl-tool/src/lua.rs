@@ -264,30 +264,33 @@ fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
     }
 }
 
-fn selected_text(result: &pl_tool_lua::ExecOutput) -> String {
+fn selected_text(result: &pl_tool_lua::ExecOutput, task_id: &str) -> String {
     let maximum = result.model_output_bytes;
-    let diagnostic = result
-        .error
-        .as_ref()
-        .map(|error| format!("\nLua execution failed: {error}"));
-    let diagnostic =
-        pl_output::bounded_text(diagnostic.as_deref().unwrap_or_default(), maximum, 0).text;
-    let available = maximum.saturating_sub(diagnostic.len());
-    let mut text = if result.output.len() > available {
-        let marker =
-            pl_output::bounded_text("\n[Output truncated; original retained.]", available, 0).text;
-        let mut text =
-            pl_output::bounded_text(&result.output, available.saturating_sub(marker.len()), 0).text;
-        text.push_str(&marker);
-        text
-    } else {
-        result.output.clone()
-    };
-    text.push_str(&diagnostic);
+    let mut text = result.output.clone();
+    if let Some(error) = &result.error {
+        text.push_str(&format!("\nLua execution failed: {error}"));
+    }
     if text.is_empty() {
         return pl_output::bounded_text("Lua execution completed with no output.", maximum, 0).text;
     }
-    text
+    if text.len() <= maximum {
+        return text;
+    }
+    let status = if result.error.is_some() {
+        "Lua execution failed; "
+    } else {
+        ""
+    };
+    let notice = format!(
+        "[{status}Output truncated; originalBytes={}; tools.get_tool_task({{taskId={},resultCursor=0}})]\n",
+        text.len(),
+        serde_json::to_string(task_id).expect("task identity encodes as JSON")
+    );
+    let mut selected = pl_output::bounded_text(&notice, maximum, 0).text;
+    let preview = pl_output::OutputExcerpt::from_parts(text.into_bytes(), Vec::new(), 0)
+        .project(maximum.saturating_sub(selected.len()));
+    selected.push_str(&preview.content);
+    selected
 }
 
 impl Tool for LuaTool {
@@ -354,7 +357,7 @@ impl Tool for LuaTool {
             .map_err(ToolError::new)?,
         )
         .map_err(ToolError::new)?;
-        let text = selected_text(&result);
+        let text = selected_text(&result, tasks.current_task_id());
         let selected_resources: Vec<_> = resources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -513,7 +516,7 @@ mod tests {
                     model_output_bytes: maximum,
                     error,
                 };
-                let text = super::selected_text(&result);
+                let text = super::selected_text(&result, "task:budget-test");
                 assert!(!text.is_empty());
                 assert!(text.len() <= maximum);
                 assert_eq!(result.output.len(), 49152);
