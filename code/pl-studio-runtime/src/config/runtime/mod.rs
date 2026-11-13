@@ -13,7 +13,6 @@ use super::{
     AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
     McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig,
 };
-use crate::mode::ThreadModeManager;
 use pl_model::config::AccountId;
 use pl_protocol::ThreadModeDocument;
 use pl_protocol::{
@@ -21,6 +20,7 @@ use pl_protocol::{
     McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, ThreadModeId,
     UpdateMcpDocumentRequest, studio::StudioModelCatalogStatus,
 };
+use pl_studio_workflow::mode::ThreadModeManager;
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。

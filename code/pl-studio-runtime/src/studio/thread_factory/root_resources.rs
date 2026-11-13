@@ -279,7 +279,10 @@ impl StudioThreadFactory {
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
                 .prepare_execution_identity(|state| {
-                    crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
+                    crate::mode_snapshot::migrate_mode_snapshot(
+                        state,
+                        &self.services.thread_modes,
+                    )?;
                     // A root's saved Mode identity is required evidence: without it neither the
                     // Mode nor the legacy Agent role can be attributed, so the original
                     // checkpoint stays as it is.
@@ -331,7 +334,7 @@ impl StudioThreadFactory {
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or(directory_mode);
-        let mode = crate::mode::saved_registered_mode(&saved)
+        let mode = crate::mode_snapshot::saved_registered_mode(&saved)
             .map_err(|error| resource_error("restore Mode snapshot", error))?
             .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
             .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
@@ -471,9 +474,9 @@ impl StudioThreadFactory {
         if !saved.extensions.contains_key("studio.mode") {
             initial_extensions.insert(
                 "studio.mode".into(),
-                crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(
-                    &mode, None,
-                ))
+                crate::mode_snapshot::encode_mode_snapshot(
+                    &crate::mode_snapshot::SavedThreadMode::capture(&mode, None),
+                )
                 .map_err(|error| resource_error("freeze root Mode", error))?,
             );
         }

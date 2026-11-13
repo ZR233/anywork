@@ -49,7 +49,7 @@ pub(in crate::studio) struct StudioThreadServices {
     pub lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry,
     pub local_executor: pl_remote_helper::Executor,
     pub skills: crate::studio::runtime::SkillCatalogRuntime,
-    pub thread_modes: crate::mode::ThreadModeManager,
+    pub thread_modes: pl_studio_workflow::mode::ThreadModeManager,
     pub ssh_manager: Arc<pl_tool::remote::SshManager>,
     pub helper_source: crate::worker_assets::RemoteHelperSource,
     pub bots: crate::bots::BotRuntime,

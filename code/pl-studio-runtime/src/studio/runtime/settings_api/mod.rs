@@ -69,7 +69,7 @@ impl StudioRuntime {
         // Keep the PL base revision in the hash input: it also covers transport profiles
         // that are not represented by the catalog DTO itself.
         let value = serde_json::to_value(&snapshot)?;
-        snapshot.revision = crate::hash::canonical_json_hash(&value);
+        snapshot.revision = pl_core::context::canonical_json_hash(&value);
         Ok(snapshot)
     }
 
@@ -684,7 +684,7 @@ impl StudioRuntime {
             .clone()
             .context("Native root has no workflow mode")?;
         let mode = crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(directory_mode);
-        crate::mode::saved_registered_mode(&state)?
+        crate::mode_snapshot::saved_registered_mode(&state)?
             .or_else(|| self.thread_modes.snapshot().mode(&mode))
             .context("current Thread Mode is unavailable")?;
         let selector = validated_route(

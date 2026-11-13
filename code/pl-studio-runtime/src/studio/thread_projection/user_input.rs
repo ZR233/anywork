@@ -119,7 +119,7 @@ fn project_plan(
             };
             // 决定语义由 Plan 内核自己的判定验证（Approve / Revise / 纯反馈），这里不重新解析标记，
             // 也不收窄内核允许的输入；拒绝原因只描述事实，不回显用户正文或计划正文。
-            crate::plan_tool::state::confirmation_decision(&resolution).map_err(|reason| {
+            pl_studio_workflow::plan::confirmation_decision(&resolution).map_err(|reason| {
                 ProjectionError::UserInput(format!(
                     "saved Plan confirmation decision is invalid: {reason}"
                 ))

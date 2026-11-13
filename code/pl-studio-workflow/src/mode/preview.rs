@@ -1,7 +1,5 @@
 //! Stateless authoring preview through the same machine as workflow_transition.
-use crate::workflow_tool::machine::{
-    CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation,
-};
+use crate::mode::{CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation};
 use pl_protocol::{
     PureError, WorkflowPreviewRequest, WorkflowPreviewSnapshot, WorkflowSessionState,
 };
@@ -52,7 +50,7 @@ pub fn preview_workflow(
             "preview path exceeds 128 states; reset the preview".into(),
         ));
     }
-    let mut machine = WorkflowMachine::new(mode.clone(), state.clone());
+    let mut machine = WorkflowMachine::new(mode.clone(), state.clone())?;
     let mut accepted = true;
     let mut message = "请选择下一阶段；自然语言条件由操作者判断".to_string();
     for (index, target) in targets.into_iter().enumerate() {
@@ -72,6 +70,7 @@ pub fn preview_workflow(
             &WorkflowOperation {
                 turn_id: "preview".into(),
                 call_id: index.to_string(),
+                occurred_at: index as i64,
             },
             format!("preview:{index}:{target}"),
         )?;
@@ -82,7 +81,7 @@ pub fn preview_workflow(
                 .unwrap_or_else(|| result.code.to_string());
             break;
         }
-        state = machine.state();
+        state = machine.state().clone();
         path.push(target);
     }
     let run = state.current_run.as_ref().expect("preview has a run");
@@ -94,11 +93,7 @@ pub fn preview_workflow(
         accepted,
         message,
         current_state: graph.state(&run.current_state_id).cloned(),
-        transitions: graph
-            .outgoing(&run.current_state_id)
-            .into_iter()
-            .cloned()
-            .collect(),
+        transitions: graph.outgoing(&run.current_state_id).cloned().collect(),
         path,
         terminal,
     })

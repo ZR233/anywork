@@ -553,7 +553,7 @@ impl StudioThreadFactory {
         let exposure = if child {
             crate::thread_assembler::AgentControlExposure::Disabled
         } else {
-            crate::mode::saved_registered_mode(snapshot)
+            crate::mode_snapshot::saved_registered_mode(snapshot)
                 .map_err(|error| resource_error("read Mode snapshot for tool refresh", error))?
                 .ok_or_else(|| {
                     ThreadAssemblyError::Identity("current Mode snapshot is unavailable".into())

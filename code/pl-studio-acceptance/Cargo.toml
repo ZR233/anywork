@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+pl-studio-workflow = { workspace = true }
 pl-dev-support = { workspace = true }
 pl-model = { workspace = true }
 pl-protocol = { workspace = true }

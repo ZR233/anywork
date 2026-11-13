@@ -186,15 +186,19 @@ impl StudioRuntime {
             .map(|record| crate::workflow_tool::decode_workflow_state(&record.payload))
             .transpose()?;
         let now = crate::studio::unix_seconds();
-        let workflow =
-            crate::mode::state::archive_workflow_for_mode_change(previous_workflow, &mode_id, now)?;
+        let workflow = pl_studio_workflow::mode::state::archive_workflow_for_mode_change(
+            previous_workflow,
+            &mode_id,
+            now,
+        )?;
         let mode_record = state.extensions.get("studio.mode");
         let route_record = state
             .extensions
             .get(crate::studio::model_route::MODEL_ROUTE_EXTENSION)
             .context("Thread has no saved model route")?;
-        let mode_payload =
-            crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
+        let mode_payload = crate::mode_snapshot::encode_mode_snapshot(
+            &crate::mode_snapshot::SavedThreadMode::capture(&mode, None),
+        )?;
         let route_payload = crate::studio::model_route::encode(&route_selector)?;
         let mut mutations = vec![
             ExtensionMutation::Put {
@@ -238,7 +242,9 @@ impl StudioRuntime {
                 expected_revision: workflow_record.map(|record| record.revision),
                 payload: crate::workflow_tool::encode_workflow_state(workflow)?,
             });
-            if let Some(section) = crate::mode::workflow_model_context_section(workflow, &mode) {
+            if let Some(section) =
+                pl_studio_workflow::mode::workflow_model_context_section(workflow, &mode)
+            {
                 facts.push(RuntimeFact {
                     source_id: "studio.workflow".into(),
                     content: vec![pl_core::context::ContextContent::Text {

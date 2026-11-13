@@ -3,11 +3,11 @@
 use super::{simple, task};
 use std::sync::Arc;
 
-use crate::mode::{
+use anyhow::{Context, Result};
+use pl_studio_workflow::mode::{
     ThreadModeManager, ThreadModeRegistrySnapshot, ThreadModeSource, ThreadModeSourceId,
     ThreadModeSourceKind,
 };
-use anyhow::{Context, Result};
 
 const BUILTIN_SOURCE_ID: &str = "studio.builtin";
 

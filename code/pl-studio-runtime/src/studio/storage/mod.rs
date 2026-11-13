@@ -14,7 +14,6 @@ mod mode_migration_tests {
     use crate::agent::definition::{
         AgentDefinitionOrigin, AgentDefinitionScope, ResolvedAgentDefinition, VerifiedAgentIdentity,
     };
-    use crate::mode::{ThreadModeManager, ThreadModeSource, ThreadModeSourceId};
     use anyhow::{Context, Result};
     use pl_core::{
         context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload},
@@ -24,6 +23,7 @@ mod mode_migration_tests {
             journal::ContextChange,
         },
     };
+    use pl_studio_workflow::mode::{ThreadModeManager, ThreadModeSource, ThreadModeSourceId};
     use sea_orm::ConnectionTrait;
 
     fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
@@ -34,8 +34,9 @@ mod mode_migration_tests {
         let mode = registry
             .mode(&pl_protocol::ThreadModeId::new("mode.migration")?)
             .context("registered mode")?;
-        let workflow = crate::mode::reconcile_workflow_for_turn(None, &mode, "migration", 1)?
-            .context("workflow")?;
+        let workflow =
+            pl_studio_workflow::mode::reconcile_workflow_for_turn(None, &mode, "migration", 1)?
+                .context("workflow")?;
         let instructions = legacy_instructions(
             legacy_block("modelBase", "保留的模式名称", "base"),
             vec![legacy_block(
@@ -160,7 +161,7 @@ mod mode_migration_tests {
         assert!(
             store
                 .prepare_execution_identity(|state| {
-                    crate::mode::migrate_mode_snapshot(state, &manager)?;
+                    crate::mode_snapshot::migrate_mode_snapshot(state, &manager)?;
                     Ok(())
                 })
                 .await
@@ -178,7 +179,7 @@ mod mode_migration_tests {
         faults.close().await?;
         let migrated = store
             .prepare_execution_identity(|state| {
-                crate::mode::migrate_mode_snapshot(state, &manager)?;
+                crate::mode_snapshot::migrate_mode_snapshot(state, &manager)?;
                 Ok(())
             })
             .await?;
@@ -187,8 +188,9 @@ mod mode_migration_tests {
         let recovered = migrated.state;
         assert_eq!(recovered.context, original.context);
         assert_eq!(recovered.extensions["studio.workflow"], workflow);
-        let saved =
-            crate::mode::decode_mode_snapshot(&recovered.extensions["studio.mode"].payload)?;
+        let saved = crate::mode_snapshot::decode_mode_snapshot(
+            &recovered.extensions["studio.mode"].payload,
+        )?;
         assert_eq!(saved.definition.prompt, "保存的原始 Prompt");
         assert_eq!(saved.definition.display_name, "保留的模式名称");
         assert_eq!(saved.frozen_turn_id, None);
@@ -204,7 +206,7 @@ mod mode_migration_tests {
         assert!(
             store
                 .prepare_execution_identity(|state| {
-                    crate::mode::migrate_mode_snapshot(state, &manager)?;
+                    crate::mode_snapshot::migrate_mode_snapshot(state, &manager)?;
                     Ok(())
                 })
                 .await
@@ -223,8 +225,8 @@ mod mode_migration_tests {
             .checkpoint()
             .await?
             .context("reopened checkpoint")?;
-        crate::mode::migrate_mode_snapshot(&mut checkpoint.state, &manager)?;
-        let restored = crate::mode::saved_registered_mode(&checkpoint.state)?
+        crate::mode_snapshot::migrate_mode_snapshot(&mut checkpoint.state, &manager)?;
+        let restored = crate::mode_snapshot::saved_registered_mode(&checkpoint.state)?
             .context("saved full definition")?;
         assert_eq!(restored.prompt(), "保存的原始 Prompt");
         assert_eq!(restored.definition(), saved.definition);
@@ -252,7 +254,7 @@ mod mode_migration_tests {
         assert!(
             store
                 .prepare_execution_identity(|state| {
-                    crate::mode::migrate_mode_snapshot(state, &manager)?;
+                    crate::mode_snapshot::migrate_mode_snapshot(state, &manager)?;
                     Ok(())
                 })
                 .await
@@ -294,7 +296,7 @@ mod mode_migration_tests {
                 )?;
             }
             let before = serde_json::to_vec(&state)?;
-            assert!(crate::mode::migrate_mode_snapshot(&mut state, &manager).is_err());
+            assert!(crate::mode_snapshot::migrate_mode_snapshot(&mut state, &manager).is_err());
             assert_eq!(serde_json::to_vec(&state)?, before);
         }
         Ok(())
@@ -305,9 +307,9 @@ mod mode_migration_tests {
     -> Result<()> {
         let original_manager = ThreadModeManager::default();
         let mut state = legacy_state(&original_manager)?;
-        crate::mode::migrate_mode_snapshot(&mut state, &original_manager)?;
+        crate::mode_snapshot::migrate_mode_snapshot(&mut state, &original_manager)?;
         let mut saved =
-            crate::mode::decode_mode_snapshot(&state.extensions["studio.mode"].payload)?;
+            crate::mode_snapshot::decode_mode_snapshot(&state.extensions["studio.mode"].payload)?;
         saved.graph_revision = 42;
         let restored_manager = ThreadModeManager::default();
         crate::studio::thread::register_builtins(&restored_manager)?;
@@ -1123,8 +1125,9 @@ mod mode_migration_tests {
             )],
         };
         let instruction_payload = snapshot_payload(&snapshot)?;
-        let mode_payload =
-            crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
+        let mode_payload = crate::mode_snapshot::encode_mode_snapshot(
+            &crate::mode_snapshot::SavedThreadMode::capture(&mode, None),
+        )?;
         let binding_payload = OpaquePayload::new(
             "pl.studio.instruction-binding",
             1,

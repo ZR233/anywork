@@ -7,7 +7,8 @@
 ```text
 pl-studio-bridge / pl-studio-server → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
-pl-studio-runtime → pl-studio-update / pl-studio-statistics
+pl-studio-runtime → pl-studio-update / pl-studio-statistics / pl-studio-workflow
+pl-studio-workflow → pl-core / pl-protocol
 pl-studio-bridge → pl-studio-update / pl-studio-statistics
 pl-studio-server → pl-studio-update
 pl-studio-update → pl-remote-helper
@@ -54,7 +55,8 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-mcp` | 传输无关的 Host MCP 服务、工具消费投影与领域调用端口、本地 IPC 契约及客户端，以及宿主原生 stdio 服务程序；不依赖 Studio runtime、Flutter/FRB、`pl-core`、`pl-model` 或 `pl-tool`，不拥有产品存储、成员目录或业务调度。Studio 实现该端口并持有原实例 IPC 服务 |
 | `pl-studio-update` | 稳定更新清单与来源校验、可信下载、安装缓存锁、长度/摘要/签名流式验证、只读安装包租约和安装器交接；不依赖 Studio runtime、模型、工具、配置或数据库，不持有产品更新状态机，也不决定应用退出 |
 | `pl-studio-statistics` | 模型性能快照与分页契约、同源不可变统计材料的发布、读取信用及关闭生命周期；不依赖 Studio runtime、模型、工具或数据库，不聚合计费事实，也不读取调用库。Runtime 原统计所有者串行提交单调版本并发布材料 |
-| `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)） |
+| `pl-studio-workflow` | 工作模式注册与原子快照、状态图编译和编辑校验、工作流预演与状态转换、固定计划状态机及确认决策；不依赖 Studio runtime、模型、工具、配置或数据库，不创建业务线程。时间与操作身份由宿主显式传入，复用 Core 的通用内容身份规则及 Protocol 的共享类型 |
+| `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划的工具与持久化适配、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)） |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
 | `pl-studio-acceptance` | 隔离的 GUI 与产品 API 人工验收工具（`manual-gui --preset`）、规范配置构造、模拟账号与模拟平台协调、数据库故障注入观察与验收证据采集 |

@@ -16,30 +16,41 @@ pub(super) const MAX_EVIDENCE_ITEMS: usize = 16;
 pub(super) const MAX_EVIDENCE_ITEM_BYTES: usize = 2 * 1024;
 
 #[derive(Debug)]
-pub(crate) struct WorkflowOperation {
+pub struct WorkflowOperation {
     pub turn_id: String,
     pub call_id: String,
+    /// Host-supplied timestamp; state transitions never read the system clock.
+    pub occurred_at: i64,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkflowMachine {
+pub struct WorkflowMachine {
     state: WorkflowSessionState,
-    pub mode: Arc<RegisteredThreadMode>,
+    mode: Arc<RegisteredThreadMode>,
+    graph: Arc<crate::mode::CompiledWorkflowDefinition>,
 }
 
 impl WorkflowMachine {
-    pub fn new(mode: Arc<RegisteredThreadMode>, state: WorkflowSessionState) -> Self {
-        Self { mode, state }
+    /// Builds a machine from a frozen mode with a compiled graph.
+    ///
+    /// # Errors
+    /// Returns a configuration error when the mode has no workflow.
+    pub fn new(
+        mode: Arc<RegisteredThreadMode>,
+        state: WorkflowSessionState,
+    ) -> Result<Self, PureError> {
+        let graph = mode.workflow().cloned().ok_or_else(|| {
+            PureError::ConfigError("workflow machine requires a mode with a workflow".into())
+        })?;
+        Ok(Self { mode, graph, state })
     }
 
-    pub fn state(&self) -> WorkflowSessionState {
-        self.state.clone()
+    pub fn state(&self) -> &WorkflowSessionState {
+        &self.state
     }
 
     pub fn graph(&self) -> &crate::mode::CompiledWorkflowDefinition {
-        self.mode
-            .workflow()
-            .expect("workflow tools require a registered graph")
+        &self.graph
     }
 
     pub fn current_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
@@ -79,7 +90,7 @@ impl WorkflowMachine {
             "runId": run.run_id,
             "revision": state.revision,
             "currentStateId": run.current_state_id,
-            "transitions": self.graph().outgoing(&run.current_state_id),
+            "transitions": self.graph().outgoing(&run.current_state_id).collect::<Vec<_>>(),
         })
     }
 
@@ -150,7 +161,7 @@ impl WorkflowMachine {
             .expect("compiled transition target exists")
             .kind;
         let next_revision = state.revision.saturating_add(1);
-        let now = crate::studio::unix_seconds();
+        let now = identity.occurred_at;
         let run = state
             .current_run
             .as_mut()
@@ -178,8 +189,9 @@ impl WorkflowMachine {
         trim_history(run)?;
         commit_operation_receipt(&mut state, operation_id, argument_hash, next_revision);
         crate::mode::state::validate_session_state_size(&state)?;
-        self.state = state.clone();
-        Ok(self.accepted("transitioned", &state))
+        let response = self.accepted("transitioned", &state);
+        self.state = state;
+        Ok(response)
     }
 
     pub fn apply_restart(
@@ -208,14 +220,15 @@ impl WorkflowMachine {
             .take()
             .expect("validated CAS requires a run");
         let next_revision = state.revision.saturating_add(1);
-        let now = crate::studio::unix_seconds();
+        let now = identity.occurred_at;
         archive_run(&mut state, old, "restarted", input.reason.trim(), now)?;
         let seed = format!("{operation_id}:{argument_hash}:{next_revision}");
         state.current_run = Some(new_run(&self.mode, self.graph(), None, &seed, now));
         commit_operation_receipt(&mut state, operation_id, argument_hash, next_revision);
         crate::mode::state::validate_session_state_size(&state)?;
-        self.state = state.clone();
-        Ok(self.accepted("restarted", &state))
+        let response = self.accepted("restarted", &state);
+        self.state = state;
+        Ok(response)
     }
 
     fn accepted(
@@ -311,7 +324,7 @@ impl RestartInput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkflowMutationResponse {
+pub struct WorkflowMutationResponse {
     pub accepted: bool,
     pub code: &'static str,
     pub operation_revision: u64,
@@ -399,4 +412,138 @@ fn idempotent_response(
 
 fn operation_id(identity: &WorkflowOperation) -> String {
     format!("{}/{}", identity.turn_id, identity.call_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mode::{reconcile_workflow_for_turn, state::MAX_WORKFLOW_HISTORY};
+    use crate::test_support::definition;
+
+    fn operation(call: usize) -> WorkflowOperation {
+        WorkflowOperation {
+            turn_id: "turn".into(),
+            call_id: call.to_string(),
+            occurred_at: 100 + call as i64,
+        }
+    }
+
+    fn transition(state: &WorkflowSessionState, target: &str) -> TransitionInput {
+        let run = state.current_run.as_ref().unwrap();
+        TransitionInput {
+            expected_run_id: run.run_id.clone(),
+            expected_revision: state.revision,
+            expected_state_id: run.current_state_id.clone(),
+            target_state_id: target.into(),
+            completion: CompletionInput {
+                reason: "Checks passed".into(),
+                summary: "Reviewed".into(),
+                evidence: vec!["test report".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn transitions_are_transactional_idempotent_and_restart_with_host_time() {
+        let mode = RegisteredThreadMode::from_definition(definition(), 7).unwrap();
+        let state = reconcile_workflow_for_turn(None, &mode, "seed", 10)
+            .unwrap()
+            .unwrap();
+        let mut machine = WorkflowMachine::new(mode, state.clone()).unwrap();
+        let input = transition(&state, "done");
+        assert!(
+            machine
+                .apply_transition(input.clone(), &operation(0), "hash".into())
+                .unwrap()
+                .accepted
+        );
+        let committed = machine.state().clone();
+        assert_eq!(committed.current_run.as_ref().unwrap().updated_at, 100);
+        assert_eq!(
+            committed.current_run.as_ref().unwrap().lifecycle,
+            pl_protocol::WorkflowRunLifecycle::Terminal
+        );
+        assert_eq!(
+            machine
+                .apply_transition(input.clone(), &operation(0), "hash".into())
+                .unwrap()
+                .code,
+            "alreadyApplied"
+        );
+        assert_eq!(
+            machine
+                .apply_transition(input.clone(), &operation(0), "changed".into())
+                .unwrap()
+                .code,
+            "operationIdentityConflict"
+        );
+        assert_eq!(
+            machine
+                .apply_transition(input, &operation(1), "hash".into())
+                .unwrap()
+                .code,
+            "staleRevision"
+        );
+        assert_eq!(machine.state(), &committed);
+        let run = committed.current_run.as_ref().unwrap();
+        let response = machine
+            .apply_restart(
+                RestartInput {
+                    expected_run_id: run.run_id.clone(),
+                    expected_revision: committed.revision,
+                    expected_state_id: run.current_state_id.clone(),
+                    reason: "New attempt".into(),
+                },
+                &operation(2),
+                "restart".into(),
+            )
+            .unwrap();
+        assert!(response.accepted);
+        let restarted = machine.state();
+        assert_eq!(restarted.archived_runs[0].run_id, run.run_id);
+        let next = restarted.current_run.as_ref().unwrap();
+        assert_ne!(next.run_id, run.run_id);
+        assert_eq!(next.started_at, 102);
+        assert_eq!(next.current_state_id, "review");
+    }
+
+    #[test]
+    fn history_remains_bounded_and_invalid_commands_do_not_commit() {
+        let mode = RegisteredThreadMode::from_definition(definition(), 1).unwrap();
+        let state = reconcile_workflow_for_turn(None, &mode, "seed", 10)
+            .unwrap()
+            .unwrap();
+        let mut machine = WorkflowMachine::new(mode, state).unwrap();
+        for call in 0..MAX_WORKFLOW_HISTORY + 2 {
+            let input = transition(machine.state(), "review");
+            assert!(
+                machine
+                    .apply_transition(input, &operation(call), format!("hash-{call}"))
+                    .unwrap()
+                    .accepted
+            );
+        }
+        let state = machine.state().clone();
+        let run = state.current_run.as_ref().unwrap();
+        assert_eq!(run.history_tail.len(), MAX_WORKFLOW_HISTORY);
+        assert_eq!(run.archived_transition_count, 2);
+        assert!(run.archived_transition_digest.starts_with("sha256:"));
+        for target in ["missing", "review"] {
+            let mut input = transition(&state, target);
+            if target == "review" {
+                input.completion.reason.clear();
+            }
+            assert!(
+                !machine
+                    .apply_transition(input, &operation(1000), "invalid".into())
+                    .unwrap()
+                    .accepted
+            );
+            assert_eq!(machine.state(), &state);
+        }
+        let mut plain = definition();
+        plain.workflow = None;
+        let plain = RegisteredThreadMode::from_definition(plain, 0).unwrap();
+        assert!(WorkflowMachine::new(plain, Default::default()).is_err());
+    }
 }

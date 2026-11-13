@@ -1,10 +1,10 @@
 //! Current Plan facts projected for the model by Studio.
 use super::PLAN_CONTEXT_SECTION_ID;
-use crate::plan_tool::state::AgentSessionPlanMachine;
 use pl_core::context::content_hash as canonical_content_hash;
 use pl_protocol::{
     AgentSessionPlanState, ContextSectionId, ModelContextSectionSnapshot, PureError,
 };
+use pl_studio_workflow::plan::AgentSessionPlanMachine;
 
 /// 从当前 Plan 状态派生完整快照；相同版本由会话事实层去重。
 ///

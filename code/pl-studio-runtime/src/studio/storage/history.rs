@@ -3831,8 +3831,8 @@ mod business_refs_tests {
 
     fn state_with_plan(markdown: &str) -> Result<ThreadSnapshot> {
         let mut machine =
-            crate::plan_tool::state::AgentSessionPlanMachine::new(Default::default())?;
-        machine.submit(crate::plan_tool::state::AgentSessionPlanSubmitCommand {
+            pl_studio_workflow::plan::AgentSessionPlanMachine::new(Default::default())?;
+        machine.submit(pl_studio_workflow::plan::AgentSessionPlanSubmitCommand {
             expected_revision: 0,
             plan: markdown.into(),
             interaction_id: "confirmation".into(),
@@ -3888,7 +3888,7 @@ mod business_refs_tests {
     }
 
     fn replace_plan(state: &mut ThreadSnapshot, markdown: &str) -> Result<()> {
-        use crate::plan_tool::state::*;
+        use pl_studio_workflow::plan::*;
         let record = state
             .extensions
             .get_mut(crate::plan_tool::PLAN_EXTENSION)

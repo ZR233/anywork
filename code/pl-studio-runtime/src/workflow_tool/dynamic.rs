@@ -1,7 +1,5 @@
 //! Dynamic workflow tools own decoding and rendering; core sees only versioned extension mutations.
-use super::machine::{
-    EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
-};
+use crate::extension_payload::ExtensionState;
 use crate::thread_assembler::ThreadAssemblyError;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
@@ -15,12 +13,14 @@ use pl_core::{
 };
 use pl_model::completion::ToolCallPolicy;
 use pl_protocol::WorkflowSessionState;
+use pl_studio_workflow::mode::{
+    EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
+};
 use pl_tool::binding::prepare_registration;
 use std::sync::Arc;
 
 /// Product-owned extension namespace; it is not a core schema or a database table.
 pub const WORKFLOW_EXTENSION: &str = "studio.workflow";
-const FORMAT: &str = "pl.studio.workflow";
 
 #[derive(Debug, thiserror::Error)]
 enum WorkflowPayloadError {
@@ -37,13 +37,7 @@ enum WorkflowPayloadError {
 /// # Errors
 /// Returns invalid state size or encoding errors.
 pub fn encode_workflow_state(state: &WorkflowSessionState) -> Result<OpaquePayload, ToolError> {
-    crate::mode::state::validate_session_state_size(state).map_err(ToolError::new)?;
-    OpaquePayload::new(
-        FORMAT,
-        1,
-        serde_json::to_string(state).map_err(ToolError::new)?,
-    )
-    .map_err(ToolError::new)
+    state.encode()
 }
 
 /// Decodes an explicitly supported product format; unknown versions are never defaulted.
@@ -51,15 +45,7 @@ pub fn encode_workflow_state(state: &WorkflowSessionState) -> Result<OpaquePaylo
 /// # Errors
 /// Rejects unknown formats, invalid state JSON and excessive state size.
 pub fn decode_workflow_state(payload: &OpaquePayload) -> Result<WorkflowSessionState, ToolError> {
-    if payload.format() != FORMAT || payload.version() != 1 {
-        return Err(ToolError::new(WorkflowPayloadError::Unsupported {
-            format: payload.format().into(),
-            version: payload.version(),
-        }));
-    }
-    let state = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
-    crate::mode::state::validate_session_state_size(&state).map_err(ToolError::new)?;
-    Ok(state)
+    WorkflowSessionState::decode(payload)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,13 +143,14 @@ impl Tool for ThreadWorkflowTool {
             .extensions
             .get("studio.mode")
             .ok_or_else(|| ToolError::new(WorkflowPayloadError::Missing))?;
-        let mode = crate::mode::decode_mode_snapshot(&mode_record.payload)
+        let mode = crate::mode_snapshot::decode_mode_snapshot(&mode_record.payload)
             .and_then(|snapshot| snapshot.registered())
             .map_err(ToolError::new)?;
         if mode.workflow().is_none() {
             return Err(ToolError::new(WorkflowPayloadError::Missing));
         }
-        let mut machine = WorkflowMachine::new(mode.clone(), previous.clone());
+        let mut machine =
+            WorkflowMachine::new(mode.clone(), previous.clone()).map_err(ToolError::new)?;
         if let Some(run) = &previous.current_run
             && (run.mode_id != mode.descriptor().id
                 || run.graph_hash != machine.graph().graph_hash())
@@ -173,6 +160,7 @@ impl Tool for ThreadWorkflowTool {
         let identity = WorkflowOperation {
             turn_id: context.turn_id,
             call_id: context.call_id,
+            occurred_at: crate::studio::unix_seconds(),
         };
         let hash = pl_core::context::content_hash(input.content().as_bytes());
         let response = match self.kind {
@@ -224,11 +212,11 @@ impl Tool for ThreadWorkflowTool {
             }],
         );
         let next = machine.state();
-        if next != previous {
+        if next != &previous {
             output = output.with_extension_mutations(vec![ExtensionMutation::Put {
                 id: WORKFLOW_EXTENSION.into(),
                 expected_revision: Some(saved.revision),
-                payload: encode_workflow_state(&next)?,
+                payload: encode_workflow_state(next)?,
             }]);
         }
         Ok(output)

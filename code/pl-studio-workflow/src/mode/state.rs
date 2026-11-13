@@ -72,7 +72,7 @@ pub fn archive_run(
     while state.archived_runs.len() > MAX_ARCHIVED_WORKFLOW_RUNS {
         let archived = state.archived_runs.remove(0);
         let encoded = serde_json::to_vec(&archived)?;
-        state.archived_run_digest = crate::canonical_content_hash(
+        state.archived_run_digest = pl_core::context::content_hash(
             [state.archived_run_digest.as_bytes(), encoded.as_slice()]
                 .concat()
                 .as_slice(),
@@ -90,7 +90,7 @@ pub fn trim_history(run: &mut WorkflowRun) -> Result<(), PureError> {
     let drain = run.history_tail.len().saturating_sub(MAX_WORKFLOW_HISTORY);
     for record in run.history_tail.drain(..drain) {
         let encoded = serde_json::to_vec(&record)?;
-        run.archived_transition_digest = crate::canonical_content_hash(
+        run.archived_transition_digest = pl_core::context::content_hash(
             [
                 run.archived_transition_digest.as_bytes(),
                 encoded.as_slice(),

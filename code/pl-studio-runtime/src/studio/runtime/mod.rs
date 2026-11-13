@@ -225,7 +225,7 @@ pub struct StudioRuntime {
     recovery: crate::studio::StudioRecoveryRegistry,
     recovery_task: background_task::BackgroundTaskSlot,
     skills: SkillCatalogRuntime,
-    thread_modes: crate::mode::ThreadModeManager,
+    thread_modes: pl_studio_workflow::mode::ThreadModeManager,
     account_usage: AccountUsageRuntime,
     /// ACP 接入与认证 owner：连接身份、操作代次、探测资源与独立 `acpAuth` topic。
     acp_auth: acp_auth::AcpAuthRuntime,

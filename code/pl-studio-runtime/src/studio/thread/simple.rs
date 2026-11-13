@@ -1,4 +1,4 @@
-use crate::mode::StaticThreadModeRegistration;
+use pl_studio_workflow::mode::StaticThreadModeRegistration;
 
 pub const PROMPT: &str = r#"# Simple Thread Mode
 

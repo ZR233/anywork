@@ -56,18 +56,18 @@ impl StudioRuntime {
     }
 
     pub fn validate_thread_mode_definition(&self, json: &str) -> ThreadModeValidationResult {
-        crate::mode::validate_mode_json(json)
+        pl_studio_workflow::mode::validate_mode_json(json)
     }
 
     pub fn thread_mode_definition_schema(&self) -> String {
-        crate::mode::mode_document_schema()
+        pl_studio_workflow::mode::mode_document_schema()
     }
 
     pub fn preview_thread_mode_workflow(
         &self,
         request: WorkflowPreviewRequest,
     ) -> Result<WorkflowPreviewSnapshot> {
-        Ok(crate::mode::preview_workflow(request)?)
+        Ok(pl_studio_workflow::mode::preview_workflow(request)?)
     }
 
     fn finish_mode_command(

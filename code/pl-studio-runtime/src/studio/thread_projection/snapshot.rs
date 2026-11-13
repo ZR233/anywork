@@ -171,7 +171,7 @@ pub(in crate::studio) fn saved_mode(
         .extensions
         .get("studio.mode")
         .map(|record| {
-            crate::mode::decode_saved_mode(&record.payload).map_err(ProjectionError::from)
+            crate::mode_snapshot::decode_saved_mode(&record.payload).map_err(ProjectionError::from)
         })
         .transpose()
 }

@@ -1,5 +1,7 @@
 //! Thread-owned context semantics and producer-owned opaque content.
 
+pub use serde_json::Value;
+
 mod content;
 mod payload;
 
@@ -12,8 +14,5 @@ pub use payload::{OpaquePayload, PayloadError};
 mod resource;
 pub use resource::{ResourceAccess, ResourceReadError, ResourceReader};
 
-/// Stable identity of actual UTF-8 or binary content, without interpreting its format.
-pub fn content_hash(content: &[u8]) -> String {
-    use sha2::Digest;
-    format!("sha256:{}", hex::encode(sha2::Sha256::digest(content)))
-}
+mod hash;
+pub use hash::{canonical_json_hash, content_hash};

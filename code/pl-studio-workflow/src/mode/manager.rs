@@ -1,6 +1,6 @@
 //! Thread Mode 的原子内存注册表。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use pl_protocol::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
@@ -434,8 +434,6 @@ fn publish(state: &mut ThreadModeManagerState) {
             right.id.as_str(),
         ))
     });
-    let ids = modes.keys().cloned().collect::<BTreeSet<_>>();
-    debug_assert_eq!(ids.len(), modes.len());
     state.snapshot = Arc::new(ThreadModeRegistrySnapshot {
         revision: state.revision,
         modes,
@@ -444,4 +442,64 @@ fn publish(state: &mut ThreadModeManagerState) {
             modes: descriptors,
         },
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::definition;
+
+    #[test]
+    fn source_replacement_is_atomic_and_keeps_frozen_turns_valid() {
+        let manager = ThreadModeManager::default();
+        let source = ThreadModeSource::external(ThreadModeSourceId::new("editor").unwrap());
+        let original = definition();
+        let id = original.id.clone();
+        let frozen = manager
+            .replace_source(source.clone(), [original.clone()])
+            .unwrap();
+        let original_mode = frozen.mode(&id).unwrap();
+        let mut invalid = original.clone();
+        invalid.id = ThreadModeId::new("mode.invalid").unwrap();
+        invalid.prompt.clear();
+        assert!(
+            manager
+                .replace_source(source.clone(), [original.clone(), invalid])
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(&frozen, &manager.snapshot()));
+
+        let conflicting = ThreadModeSource::external(ThreadModeSourceId::new("another").unwrap());
+        assert!(matches!(
+            manager.replace_source(conflicting, [original.clone()]),
+            Err(ThreadModeManagerError::SourceConflict { .. })
+        ));
+        assert!(Arc::ptr_eq(&frozen, &manager.snapshot()));
+
+        let mut changed = original;
+        changed.prompt = "Updated instructions.".into();
+        let prompt_edit = manager
+            .replace_source(source.clone(), [changed.clone()])
+            .unwrap();
+        assert!(prompt_edit.revision() > frozen.revision());
+        assert_eq!(
+            prompt_edit.mode(&id).unwrap().graph_revision(),
+            original_mode.graph_revision()
+        );
+        changed.workflow.as_mut().unwrap().transitions[0]
+            .guard
+            .push_str(" again");
+        let graph_edit = manager.replace_source(source.clone(), [changed]).unwrap();
+        assert!(graph_edit.mode(&id).unwrap().graph_revision() > original_mode.graph_revision());
+        assert_eq!(
+            frozen.mode(&id).unwrap().prompt(),
+            "Follow the review workflow."
+        );
+        assert_eq!(
+            frozen.mode(&id).unwrap().graph_hash(),
+            original_mode.graph_hash()
+        );
+        assert!(manager.remove_source(&source.id).mode(&id).is_none());
+        assert!(frozen.mode(&id).is_some());
+    }
 }
