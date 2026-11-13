@@ -3024,7 +3024,7 @@ pub fn gui_realtime_script(
             Step::tool_output(
                 Protocol::ResponsesHttp,
                 "realtime-long-call",
-                "\"kind\":\"final\"",
+                "\"exitCode\":0",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_LONG_DONE_TEXT,
@@ -3155,7 +3155,7 @@ pub fn gui_realtime_script(
         Step::tool_output(
             Protocol::ResponsesHttp,
             "realtime-parallel-call-a",
-            "\"kind\":\"final\"",
+            "\"exitCode\":0",
             step,
             reply,
         )
@@ -3167,7 +3167,7 @@ pub fn gui_realtime_script(
         Step::tool_output(
             Protocol::ResponsesHttp,
             "realtime-parallel-call-b",
-            "\"kind\":\"final\"",
+            "\"exitCode\":0",
             step,
             Reply::Sse(responses_text(
                 GUI_REALTIME_PARALLEL_DONE_TEXT,
@@ -3241,7 +3241,7 @@ pub fn gui_realtime_script(
             Step::tool_output(
                 Protocol::ResponsesHttp,
                 "realtime-host-cwd-call",
-                "\"kind\":\"final\"",
+                "\"exitCode\":0",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_HOST_CWD_DONE_TEXT,
@@ -4738,6 +4738,14 @@ fn match_step(
     if let Some(pending) = pending.filter(|pending| !pending.is_empty()) {
         let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
         let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
+        let arguments = realtime_wait_arguments(&borrowed);
+        if script.steps[index].protocol == Protocol::Chat {
+            return Ok(Reply::Sse(vec![
+                json!({"id":"scroll-wait","model":"fixture-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":wait_id,"type":"function","function":{"name":TOOL_WAIT_NAME,"arguments":arguments}}]},"finish_reason":null}]}),
+                json!({"id":"scroll-wait","choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+                json!({"id":"scroll-wait","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}),
+            ]));
+        }
         let events = responses_tool_calls(
             "scroll-wait",
             "fixture-model",
@@ -4745,7 +4753,7 @@ fn match_step(
                 item_id: &wait_id,
                 call_id: &wait_id,
                 name: TOOL_WAIT_NAME,
-                arguments: realtime_wait_arguments(&borrowed),
+                arguments,
             }],
         );
         return Ok(match script.steps[index].protocol {
@@ -5213,11 +5221,18 @@ fn tool_scroll_wait_count(body: &Value, step: usize) -> usize {
             items
                 .iter()
                 .filter(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("function_call")
+                    (item.get("type").and_then(Value::as_str) == Some("function_call")
                         && item
                             .get("call_id")
                             .and_then(Value::as_str)
-                            .is_some_and(|id| id.starts_with(&prefix))
+                            .is_some_and(|id| id.starts_with(&prefix)))
+                        || item["tool_calls"].as_array().is_some_and(|calls| {
+                            calls.iter().any(|call| {
+                                call["id"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with(&prefix))
+                            })
+                        })
                 })
                 .count()
         })
@@ -5307,6 +5322,51 @@ fn tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
                     .is_some_and(|text| text.contains(marker))
             }),
             _ => false,
+        })
+}
+
+/// Reads the model-visible result of one exact call, preferring a completed Lua
+/// program's real terminal delivery over its earlier running acknowledgement.
+/// This observes recorded provider input; it does not execute or replay tools.
+pub fn observed_tool_output(body: &Value, call_id: &str) -> Option<String> {
+    if let Some(item) = program_terminal_message(body, call_id) {
+        let texts = match &item["content"] {
+            Value::String(text) => vec![text.as_str()],
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect(),
+            _ => return None,
+        };
+        let mut selected = Vec::new();
+        for (index, text) in texts.into_iter().enumerate() {
+            if index == 0 {
+                let prefix = format!("Task task:{call_id} for tool exec finished: ");
+                let status = text.strip_prefix(&prefix)?;
+                let end = status.find('.')? + 1;
+                let rest = status[end..].trim_start_matches('\n');
+                if !rest.is_empty() {
+                    selected.push(rest);
+                }
+            } else {
+                selected.push(text);
+            }
+        }
+        return Some(selected.join("\n"));
+    }
+    body.get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|item| {
+            if item["type"] == "function_call_output" && item["call_id"] == call_id {
+                item["output"].as_str().map(str::to_owned)
+            } else if item["role"] == "tool" && item["tool_call_id"] == call_id {
+                item["content"].as_str().map(str::to_owned)
+            } else {
+                None
+            }
         })
 }
 

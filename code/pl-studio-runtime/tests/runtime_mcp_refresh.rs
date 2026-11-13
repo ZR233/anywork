@@ -478,40 +478,6 @@ fn reconnect_script() -> Vec<Step> {
     steps
 }
 
-fn reconnect_receipt(provider: &pl_provider_fixture::FixtureServer) -> Result<serde_json::Value> {
-    if let Ok(value) = receipt(provider, "reconnect") {
-        return Ok(value);
-    }
-    let notice = "Task task:reconnect for tool reconnect_mcp finished: Succeeded.";
-    for request in provider.recorded().iter().rev() {
-        let Some(input) = request.body["input"].as_array() else {
-            continue;
-        };
-        for item in input.iter().rev().filter(|item| item["role"] == "user") {
-            let texts: Vec<&str> = match &item["content"] {
-                serde_json::Value::String(text) => vec![text],
-                serde_json::Value::Array(parts) => parts
-                    .iter()
-                    .filter_map(|part| part["text"].as_str())
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if !texts.iter().any(|text| text.starts_with(notice)) {
-                continue;
-            }
-            for text in texts {
-                let candidate = text.strip_prefix(notice).unwrap_or(text).trim();
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
-                    && value["serverId"] == "fixture"
-                {
-                    return Ok(value);
-                }
-            }
-        }
-    }
-    anyhow::bail!("provider did not receive the terminal reconnect receipt")
-}
-
 #[tokio::test]
 async fn real_thread_reconnect_validates_target_replaces_session_and_installs_callable_tools()
 -> Result<()> {
@@ -551,7 +517,7 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
             "os.environ[\"MCP_SCHEMA_TAG\"]", "'reconnected'",
         ))?;
         submit(&env, id, "reconnect").await?;
-        let reply = reconnect_receipt(&env.root_provider)?;
+        let reply = receipt(&env.root_provider, "reconnect")?;
         ensure!(reply["serverId"] == "fixture" && reply["sessionStateReset"] == true);
         ensure!(reply["toolCatalog"] == "refreshScheduled");
         ensure!(reply["catalogRevision"].as_u64().is_some());

@@ -341,19 +341,8 @@ pub fn receipt(provider: &FixtureServer, call: &str) -> Result<serde_json::Value
 
 pub fn tool_output(provider: &FixtureServer, call: &str) -> Result<String> {
     for request in provider.recorded().iter().rev() {
-        if let Some(input) = request
-            .body
-            .get("input")
-            .and_then(serde_json::Value::as_array)
-        {
-            for item in input.iter().rev() {
-                if item["type"] == "function_call_output" && item["call_id"] == call {
-                    return Ok(item["output"]
-                        .as_str()
-                        .context("tool output text")?
-                        .to_owned());
-                }
-            }
+        if let Some(text) = pl_provider_fixture::observed_tool_output(&request.body, call) {
+            return Ok(text);
         }
     }
     anyhow::bail!("provider did not observe a real tool receipt for {call}")

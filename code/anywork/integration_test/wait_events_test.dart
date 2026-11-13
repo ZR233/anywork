@@ -151,7 +151,7 @@ void main() {
   }
 
   for (final (name, prefix, completedName, runningName, otherStatus) in const [
-    ('sleep-first', 'sleep-first-wait-t', 'sleep', 'exec', 'succeeded'),
+    ('sleep-first', 'sleep-first-wait-t', 'sleep', 'exec', 'running'),
     ('tool-first', 'tool-first-wait-t', 'exec', 'sleep', 'running'),
   ]) {
     testWidgets('$name: immutable any-of result reaches the real history UI', (
@@ -168,8 +168,7 @@ void main() {
       final completed = tasks.singleWhere((t) => t['toolId'] == completedName);
       final running = tasks.singleWhere((t) => t['toolId'] == runningName);
       expect(completed['status'], 'succeeded');
-      // Lua waits for command completion before the model can issue wait.
-      // The later timer can still be running in the tool-first scene.
+      // A background Lua program and the timer retain independent lifetimes.
       expect(running['status'], otherStatus);
       expect(running['cancelRequested'], isFalse);
       expect(completed['taskId'], isNot(running['taskId']));
