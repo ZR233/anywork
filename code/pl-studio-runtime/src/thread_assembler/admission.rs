@@ -125,8 +125,10 @@ impl SessionRuntime {
         // Standalone assemblers have no product configuration owner. Studio always installs one
         // before assembly, so every production path resolves its frozen selector against it.
         if let Some(services) = services {
-            services
-                .prepare_model_admission(id, thread, WorkspaceAdmission::Explicit)
+            // Model/workspace preparation carries its own snapshot and IO state. Keep it
+            // out of interaction continuations while the same caller retains admission,
+            // cancellation and the service snapshot; no independent task is introduced.
+            Box::pin(services.prepare_model_admission(id, thread, WorkspaceAdmission::Explicit))
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "admit Thread model",

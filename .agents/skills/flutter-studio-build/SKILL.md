@@ -115,6 +115,12 @@ cargo build -p pl-studio-bridge
 cargo xtask verify-gui
 ```
 
+## 原生崩溃取证
+
+遇到原生信号退出、跨动态库回溯或只有退出码而没有故障栈时，按
+[原生崩溃取证边界](references/native-crash-evidence.md) 保留真实进程、原始日志与调试证据；
+不绕过 xtask、不改全局调试权限，也不把诊断阶段或首次信号停止当作根因。
+
 ## 构建产物
 
 Flutter 原始 release 输出位于：

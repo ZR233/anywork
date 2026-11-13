@@ -17,7 +17,7 @@ pub(super) use native::tool_identity as native_tool_identity;
 use super::{
     BridgeConfiguration, DemoMode, DesktopTarget, RustBridgeArtifacts,
     ensure_desktop_build_environment, ensure_flutter_dependencies_for_build, paths,
-    prepare_bridge_artifacts, prepare_remote_helpers,
+    prepare_bridge_artifacts, prepare_host_mcp, prepare_remote_helpers,
 };
 
 pub(crate) const PREPARATION_ENV: &str = "ANYWORK_DESKTOP_TEST_PREPARATION";
@@ -32,6 +32,7 @@ struct Inputs {
     configuration: String,
     bridge: RustBridgeArtifacts,
     helpers: PathBuf,
+    host_mcp: PathBuf,
     artifacts: Vec<(PathBuf, String)>,
 }
 
@@ -87,10 +88,13 @@ impl DesktopTestPreparation {
         let helpers = prepare_remote_helpers(&workspace, DemoMode::Native)?
             .context("desktop tests require helper inputs")?
             .canonicalize()?;
+        let host_mcp = prepare_host_mcp(&workspace, DemoMode::Native)?
+            .context("desktop tests require Host MCP inputs")?
+            .canonicalize()?;
         let bridge =
             prepare_bridge_artifacts(&workspace, DemoMode::Native, BridgeConfiguration::Debug)?
                 .context("desktop tests require a debug bridge")?;
-        let artifacts = artifact_identity(&bridge, &helpers)?;
+        let artifacts = artifact_identity(&bridge, &helpers, &host_mcp)?;
         let inputs = Inputs {
             source: source_identity(&workspace)?,
             configuration: configuration_identity(),
@@ -99,6 +103,7 @@ impl DesktopTestPreparation {
             xtask,
             bridge,
             helpers,
+            host_mcp,
             artifacts,
         };
         Self::own(inputs)
@@ -158,7 +163,11 @@ impl DesktopTestPreparation {
             "desktop preparation source changed; start a new suite"
         );
         ensure!(
-            artifact_identity(&self.inputs.bridge, &self.inputs.helpers)? == self.inputs.artifacts,
+            artifact_identity(
+                &self.inputs.bridge,
+                &self.inputs.helpers,
+                &self.inputs.host_mcp
+            )? == self.inputs.artifacts,
             "desktop preparation artifact changed"
         );
         Ok(())
@@ -174,6 +183,10 @@ impl DesktopTestPreparation {
 
     pub(crate) fn helpers(&self) -> &Path {
         &self.inputs.helpers
+    }
+
+    pub(crate) fn host_mcp(&self) -> &Path {
+        &self.inputs.host_mcp
     }
 
     pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 2] {
@@ -214,12 +227,14 @@ fn file_digest(path: &Path) -> Result<String> {
 fn artifact_identity(
     bridge: &RustBridgeArtifacts,
     helpers: &Path,
+    host_mcp: &Path,
 ) -> Result<Vec<(PathBuf, String)>> {
     let mut files = vec![bridge.dynamic_library().canonicalize()?];
     if let Some(symbols) = bridge.debug_symbols() {
         files.push(symbols.canonicalize()?);
     }
     collect_files(helpers, &mut files)?;
+    collect_files(host_mcp, &mut files)?;
     files
         .into_iter()
         .map(|path| Ok((path.clone(), file_digest(&path)?)))
@@ -325,6 +340,28 @@ fn configuration_identity() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn host_mcp_resources_participate_in_prepared_artifact_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let helpers = temp.path().join("helpers");
+        let host_mcp = temp.path().join("host-mcp");
+        fs::create_dir_all(&helpers)?;
+        fs::create_dir_all(&host_mcp)?;
+        let library = temp.path().join("bridge");
+        fs::write(&library, b"bridge")?;
+        let bridge: RustBridgeArtifacts = serde_json::from_value(serde_json::json!({
+            "dynamic_library": library, "debug_symbols": null,
+        }))?;
+        let resource = host_mcp.join("pl-studio-mcp.zst");
+        fs::write(&resource, b"first image")?;
+        let original = artifact_identity(&bridge, &helpers, &host_mcp)?;
+        fs::write(&resource, b"changed image")?;
+        assert_ne!(original, artifact_identity(&bridge, &helpers, &host_mcp)?);
+        fs::remove_file(&resource)?;
+        assert_ne!(original, artifact_identity(&bridge, &helpers, &host_mcp)?);
+        Ok(())
+    }
+
     pub(super) fn fixture() -> Result<(TempDir, DesktopTestPreparation)> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().canonicalize()?;
@@ -350,6 +387,8 @@ mod tests {
         fs::write(workspace.join(".gitignore"), "/target/\n")?;
         let helpers = workspace.join("target/helpers");
         fs::create_dir_all(&helpers)?;
+        let host_mcp = workspace.join("target/host-mcp");
+        fs::create_dir_all(&host_mcp)?;
         let library = workspace.join("target/bridge");
         fs::write(&library, b"prepared bridge")?;
         let bridge = serde_json::from_value(serde_json::json!({
@@ -363,6 +402,7 @@ mod tests {
             xtask: std::env::current_exe()?.canonicalize()?,
             bridge,
             helpers,
+            host_mcp,
             artifacts: vec![(library.clone(), file_digest(&library)?)],
             workspace,
         };

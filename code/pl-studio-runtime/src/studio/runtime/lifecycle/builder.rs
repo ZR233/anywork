@@ -21,6 +21,7 @@ impl StudioRuntime {
         config_runtime: ConfigRuntime,
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
+        host_mcp_source: crate::host_mcp_assets::HostMcpSource,
         ssh_config: Option<crate::SshConfigFile>,
     ) -> Result<Self> {
         let local_executor = pl_remote_helper::Executor::local()?;
@@ -103,6 +104,15 @@ impl StudioRuntime {
             },
         );
         let sessions = crate::session::SessionTable::new();
+        let acp_workers = std::sync::Arc::new(local_executor.clone());
+        let acp_business = super::super::acp_business::AcpBusinessOwner::new(
+            thread_factory.clone(),
+            config_runtime.clone(),
+            store.clone(),
+            product_events.clone(),
+            acp_workers.clone(),
+            host_mcp_source.clone(),
+        );
         let service_config = config_runtime.clone();
         let service_store = store.clone();
         let service_events = product_events.clone();
@@ -118,6 +128,7 @@ impl StudioRuntime {
                 service_performance.clone(),
                 service_recovery.clone(),
             )?;
+            session.set_acp_business(acp_business.clone())?;
             session.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
                 service_config.clone(),
                 service_factory.clone(),
@@ -180,7 +191,8 @@ impl StudioRuntime {
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             acp_detection,
-            acp_workers: std::sync::Arc::new(pl_remote_helper::Executor::clone(&local_executor)),
+            acp_workers,
+            host_mcp_source,
             model_performance,
             updater,
             activation: Default::default(),

@@ -37,7 +37,11 @@ fn host(owner: &SessionRuntime, thread: &str) -> Arc<AgentHost> {
     Arc::new(AgentHost {
         registry: Arc::downgrade(&owner.0),
         identity: entry.identity.clone(),
-        resources: Arc::downgrade(&entry.native().unwrap().resources),
+        resources: AgentHostResources::Native(Arc::downgrade(&entry.native().unwrap().resources)),
+        catalog: Default::default(),
+        selection: crate::studio::delegation::saved(&entry.native().unwrap().thread.snapshot())
+            .unwrap()
+            .unwrap_or_default(),
     })
 }
 
@@ -48,6 +52,7 @@ fn frontend(host: Arc<AgentHost>, kind: AgentControlKind) -> ThreadAgentControl<
         kind.declaration(
             &[AgentSpawnProfile {
                 profile_id: "fixture".into(),
+                backend: pl_protocol::AgentBackendKind::Native,
                 workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
             }],
             pl_protocol::DelegationMode::default(),

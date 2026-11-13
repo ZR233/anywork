@@ -237,6 +237,10 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
             require_file(&bundle.join("data/remote-helper").join(target).join(file))?;
         }
     }
+    crate::host_mcp::validate_bundle_resources(
+        &bundle.join("data/host-mcp"),
+        "x86_64-unknown-linux-gnu",
+    )?;
     ensure!(
         fs::metadata(bundle.join("anywork"))?.permissions().mode() & 0o111 != 0,
         "anywork must be executable"
@@ -540,6 +544,15 @@ mod tests {
                 )?;
                 fs::write(dir.join("pl-remote-helper.metadata.json"), "{}\n")?;
             }
+            crate::remote_helper::stage_executable_resource(
+                &bundle.join("anywork"),
+                &bundle.join("data/host-mcp/x86_64-unknown-linux-gnu"),
+                "pl-studio-mcp",
+                &serde_json::to_vec(&serde_json::json!({
+                    "target": "x86_64-unknown-linux-gnu",
+                    "sha256": sha256_file(&bundle.join("anywork"))?,
+                }))?,
+            )?;
             // Retain an internal library symlink rather than flattening it.
             symlink("libpl_studio_bridge.so", bundle.join("lib/bridge-alias.so"))?;
             let release = root.join("release");
@@ -659,6 +672,8 @@ mod tests {
     fn release_linux_rejects_missing_resources_architecture_abi_and_escaping_links() -> Result<()> {
         let fixture = Fixture::new()?;
         for name in [
+            "data/host-mcp/x86_64-unknown-linux-gnu/pl-studio-mcp.zst",
+            "data/host-mcp/x86_64-unknown-linux-gnu/pl-studio-mcp.metadata.json",
             "data/remote-helper/aarch64-unknown-linux-musl/pl-remote-helper.zst",
             "lib/libflutter_linux_gtk.so",
         ] {

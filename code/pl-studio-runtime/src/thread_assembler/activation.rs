@@ -200,7 +200,9 @@ impl SessionRuntime {
                 )
             };
             if waiting.0 {
-                self.finish_report_receiver(identity.id()).await?;
+                // Receiver cleanup retains storage/transport state. Do not inline it beside
+                // the activation reservation and restricted workspace proof in this waiter.
+                Box::pin(self.finish_report_receiver(identity.id())).await?;
                 continue;
             }
             match waiting.1 {

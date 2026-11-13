@@ -8,7 +8,11 @@ fn host(owner: &SessionRuntime, id: &str) -> AgentHost {
     AgentHost {
         registry: Arc::downgrade(&owner.0),
         identity: entry.identity.clone(),
-        resources: Arc::downgrade(&entry.native().unwrap().resources),
+        resources: AgentHostResources::Native(Arc::downgrade(&entry.native().unwrap().resources)),
+        catalog: Default::default(),
+        selection: crate::studio::delegation::saved(&entry.native().unwrap().thread.snapshot())
+            .unwrap()
+            .unwrap_or_default(),
     }
 }
 

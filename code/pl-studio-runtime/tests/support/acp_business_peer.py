@@ -18,7 +18,11 @@ for line in sys.stdin:
         continue
     rid=msg['id']
     if method == 'initialize':
-        result={'protocolVersion':1, 'agentCapabilities':{'loadSession':True},
+        mode=(root / 'mode').read_text()
+        # Ordinary lifecycle cases use HTTP so they do not require the separately
+        # packaged stdio executable. Dedicated stdio cases exercise that transport.
+        capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}}
+        result={'protocolVersion':1, 'agentCapabilities':capabilities,
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
     elif method in ['session/new','session/load','session/resume']:
         mode=(root / 'mode').read_text()
@@ -26,6 +30,25 @@ for line in sys.stdin:
             emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32000,'message':'Authentication required',
                   'data':{'instruction':'Use server login'}}})
             continue
+        if mode == 'mcp-http':
+            servers=msg['params'].get('mcpServers', [])
+            http_servers=[server for server in servers if server.get('type') == 'http']
+            valid=(len(http_servers) == 1
+                   and http_servers[0].get('name') == 'anywork'
+                   and http_servers[0].get('url', '').startswith('http://127.0.0.1:')
+                   and http_servers[0].get('url', '').endswith('/mcp'))
+            if valid:
+                headers=http_servers[0].get('headers', [])
+                valid=any(header.get('name', '').lower() == 'authorization'
+                          and header.get('value', '').startswith('Bearer ')
+                          and len(header.get('value', '')) > len('Bearer ')
+                          for header in headers)
+            # Persist only a safe boolean. Never write the endpoint or header values.
+            (root / 'mcp-http-received').write_text('true' if valid else 'false')
+            if not valid:
+                emit({'jsonrpc':'2.0','id':rid,'error':{
+                    'code':-32602,'message':'Expected host HTTP MCP setup was not received'}})
+                continue
         sid=msg['params'].get('sessionId', 'remote-one')
         if mode in ['replay', 'load-hold']:
             update(sid, 'history before ready')

@@ -80,6 +80,10 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
             );
         }
     }
+    crate::host_mcp::validate_bundle_resources(
+        &bundle.join("data/host-mcp"),
+        "x86_64-pc-windows-msvc",
+    )?;
     Ok(())
 }
 

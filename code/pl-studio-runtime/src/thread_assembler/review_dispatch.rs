@@ -203,6 +203,16 @@ impl SessionRuntime {
         &self,
         terminal: Arc<TerminalDelivery>,
     ) -> Result<()> {
+        if terminal
+            .thread
+            .parent_thread_id
+            .as_deref()
+            .is_some_and(|parent| self.parent_is_acp(parent))
+        {
+            // The source report already belongs to the child's original history handoff.
+            // An ACP parent has no Native inbox or structured-review delivery to acknowledge.
+            return Ok(());
+        }
         let services = self
             .0
             .state()
@@ -426,7 +436,11 @@ impl SessionRuntime {
         &self,
         reviewer: &pl_protocol::Thread,
     ) -> Result<()> {
-        if reviewer.parent_thread_id.is_none() {
+        if reviewer
+            .parent_thread_id
+            .as_deref()
+            .is_none_or(|parent| self.parent_is_acp(parent))
+        {
             return Ok(());
         }
         let services = self
@@ -807,9 +821,38 @@ impl SessionRuntime {
             if self.observed_thread(&child.id).is_some() {
                 self.synchronize_observation(&child.id).await?;
             }
-            self.acknowledge_parent_reports(&services.store, &child)
-                .await?;
+            // The ACK's cold-recovery state otherwise inflates every observation barrier, even
+            // those with no children. Keep it out of the barrier's inline state; it still runs
+            // under this same owner and is awaited before joining the original delivery jobs.
+            Box::pin(self.acknowledge_parent_reports(&services.store, &child)).await?;
         }
         self.join_review_delivery(id).await
+    }
+}
+
+#[cfg(test)]
+mod future_sizes {
+    use super::*;
+
+    fn check<Input, F: std::future::Future + Send>(name: &str, _: impl FnOnce(Input) -> F) {
+        let bytes = std::mem::size_of::<F>();
+        eprintln!("{name}: {bytes} bytes");
+        assert!(
+            bytes <= 16 * 1024,
+            "{name} has {bytes} bytes of inline state"
+        );
+    }
+
+    #[test]
+    fn review_settlement_futures_remain_bounded() {
+        check("review settlement", |owner: &'static SessionRuntime| {
+            owner.settle_review_deliveries("size")
+        });
+        check(
+            "product observation barrier",
+            |runtime: &'static crate::studio::StudioRuntime| {
+                runtime.synchronize_thread_observation("size")
+            },
+        );
     }
 }

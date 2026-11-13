@@ -6,6 +6,7 @@ pub(super) fn failure(error: sdk::Error) -> AcpBusinessFailure {
         sdk::Error::Busy => AcpBusinessFailureKind::Busy,
         sdk::Error::Stale => AcpBusinessFailureKind::Stale,
         sdk::Error::NotReady => AcpBusinessFailureKind::NotReady,
+        sdk::Error::Preparation(_) => AcpBusinessFailureKind::Preparation,
         sdk::Error::Closed => AcpBusinessFailureKind::Closed,
         sdk::Error::Unsupported => AcpBusinessFailureKind::Unsupported,
         sdk::Error::UnsupportedVersion => AcpBusinessFailureKind::UnsupportedVersion,

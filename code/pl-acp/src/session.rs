@@ -40,13 +40,38 @@ pub enum Open {
     Resume(SessionId),
 }
 
-#[derive(Debug, Clone)]
+type OpenSetupFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpenSetup, Error>> + Send>>;
+
+/// Host preparation after validated initialize and before the session lifecycle request.
+/// The callback owns its future; it must not require the protocol receive lock.
+pub type PrepareOpen = Arc<dyn Fn(AgentCapabilities) -> OpenSetupFuture + Send + Sync>;
+
+/// Values prepared by the host for this connection; bearer headers must never be logged.
+#[derive(Default)]
+pub struct OpenSetup {
+    pub mcp_servers: Vec<McpServer>,
+    pub instructions: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct OpenRequest {
     pub cwd: String,
     pub intent: Open,
     pub cleanup: CleanupBudget,
     /// Some 要求 initialize.agentInfo.version 精确相等；None 仅校验 ACP V1。
     pub expected_server_version: Option<String>,
+    pub prepare: Option<PrepareOpen>,
+}
+
+impl fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenRequest")
+            .field("intent", &self.intent)
+            .field("expected_server_version", &self.expected_server_version)
+            .field("has_prepare", &self.prepare.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// 不可跨实例或跨运行复用的中断资格。
@@ -67,6 +92,8 @@ pub enum Error {
     Busy,
     Stale,
     NotReady,
+    /// Safe preparation diagnostic supplied by the host, never raw peer/configuration data.
+    Preparation(String),
     Closed,
     Unsupported,
     UnsupportedVersion,
@@ -78,6 +105,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Preparation(message) => write!(f, "ACP preparation failed: {message}"),
             Self::Rpc(error) => write!(f, "ACP RPC error ({})", i32::from(error.code)),
             other => write!(f, "ACP {other:?}"),
         }
@@ -159,15 +187,16 @@ enum Command {
     Mode(SessionModeId, Reply<()>),
     Permission(PermissionId, Option<PermissionOptionId>, Reply<()>),
     List(ListSessionsRequest, Reply<ListSessionsResponse>),
-    Snapshot(Reply<Snapshot>),
     Close(Reply<()>),
 }
 
 /// 有限命令入口；不复制运行状态。队列满时明确 Busy，不建立可靠输入队列。
 #[derive(Clone)]
 pub struct Session {
+    state: Shared,
     commands: mpsc::Sender<Command>,
     opened: watch::Receiver<Option<Result<SessionId, Error>>>,
+    completion_changes: watch::Receiver<u64>,
 }
 
 impl Session {
@@ -237,8 +266,15 @@ impl Session {
         self.call(|reply| Command::List(request, reply)).await
     }
 
+    /// 读取驱动维护的原状态；驱动退出后仍可读取最终关闭及完成事实。
     pub async fn snapshot(&self) -> Result<Snapshot, Error> {
-        self.call(Command::Snapshot).await
+        Ok(lock(&self.state).snapshot())
+    }
+
+    /// 先注册再读取 snapshot.last_completed，随后等待 changed，避免丢失完成通知。
+    /// 仅发布真实 prompt 终态的单调序号；驱动退出时关闭，不消费 Observer。
+    pub fn completion_changes(&self) -> watch::Receiver<u64> {
+        self.completion_changes.clone()
     }
 
     /// 仅确认开始关闭；必须继续 join driver，并由宿主回收进程。
@@ -252,6 +288,17 @@ pub struct Driver {
     request: OpenRequest,
     commands: mpsc::Receiver<Command>,
     state: Shared,
+    lifetime: Option<DriverLifetime>,
+}
+
+// Transferred from the unrun driver into run's outer future, so normal exit,
+// cancellation and dropping an unrun driver all close the original state's signals.
+struct DriverLifetime(Shared);
+
+impl Drop for DriverLifetime {
+    fn drop(&mut self) {
+        lock(&self.0).finish_driver();
+    }
 }
 
 /// 必须先取得 Observer，再启动 driver，才能看到 Load 响应前的历史回放。
@@ -259,6 +306,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
     let (tx, commands) = mpsc::channel(16);
     let (events, observer) = observe::channel();
     let (opened, open_result) = watch::channel(None);
+    let (completion_changes, completion_receiver) = watch::channel(0);
     let session_id = match &request.intent {
         Open::New => None,
         Open::Load(id) | Open::Resume(id) => Some(id.clone()),
@@ -274,6 +322,8 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         modes: None,
         active: None,
         last_completed: None,
+        completion_changes: Some(completion_changes),
+        prompt_instructions: None,
         next_run: 0,
         permission_sequence: 0,
         permissions: Vec::new(),
@@ -293,13 +343,16 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
     }));
     (
         Session {
+            state: state.clone(),
             commands: tx,
             opened: open_result,
+            completion_changes: completion_receiver,
         },
         observer,
         Driver {
             request,
             commands,
+            lifetime: Some(DriverLifetime(state.clone())),
             state,
         },
     )
@@ -329,8 +382,8 @@ struct State {
     instance: u64,
     session_id: Option<SessionId>,
     ready: bool,
-    // Only State/Driver and SDK callbacks own the sender. Dropping an unrun/cancelled
-    // driver releases it, so pending waiters end with Closed instead of hanging.
+    // DriverLifetime settles pending open and closes completion/events even when
+    // Session retains this original State after the driver exits or is cancelled.
     opened: watch::Sender<Option<Result<SessionId, Error>>>,
     initialized: Option<Result<InitializeResponse, agent_client_protocol::Error>>,
     capabilities: AgentCapabilities,
@@ -338,6 +391,8 @@ struct State {
     modes: Option<SessionModeState>,
     active: Option<Active>,
     last_completed: Option<Completed>,
+    completion_changes: Option<watch::Sender<u64>>,
+    prompt_instructions: Option<String>,
     next_run: u64,
     permission_sequence: u64,
     permissions: Vec<Permission>,
@@ -357,6 +412,18 @@ struct State {
 }
 
 impl State {
+    fn finish_driver(&mut self) {
+        self.closing = true;
+        self.ready = false;
+        self.settle_open(Err(Error::Closed));
+        self.cancel_permissions();
+        if let Some((_, reply)) = self.replacement.take() {
+            let _ = reply.send(Err(Error::Closed));
+        }
+        self.completion_changes.take();
+        self.events.close();
+    }
+
     fn settle_open(&self, result: Result<SessionId, Error>) {
         self.opened.send_if_modified(|current| {
             if current.is_some() {
@@ -450,6 +517,7 @@ impl State {
         self.settle_open(Err(error.clone()));
         let size = match &error {
             Error::Rpc(error) => rpc_error_size(error),
+            Error::Preparation(message) => message.len().saturating_add(256),
             _ => 256,
         };
         self.emit(Event::Failed(error.clone()), Ok(size));
@@ -577,11 +645,12 @@ fn rpc_error_size(error: &agent_client_protocol::Error) -> usize {
 
 impl Driver {
     /// 消费受监督 I/O，驱动协议及全部命令；宿主负责 spawn/join 和真实 worker 回收。
-    pub async fn run<W, R>(self, outgoing: W, incoming: R) -> Exit
+    pub async fn run<W, R>(mut self, outgoing: W, incoming: R) -> Exit
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncRead + Unpin + Send + 'static,
     {
+        let _lifetime = self.lifetime.take();
         let state = self.state.clone();
         let updates = state.clone();
         let permissions = state.clone();
@@ -633,6 +702,7 @@ impl Driver {
                 Event::Failed(error.clone()),
                 Ok(match &error {
                     Error::Rpc(error) => rpc_error_size(error),
+                    Error::Preparation(message) => message.len().saturating_add(256),
                     _ => 256,
                 }),
             );
@@ -640,10 +710,7 @@ impl Driver {
                 state.reason = Some(ExitReason::OpenFailed(error));
             }
         }
-        state.cancel_permissions();
-        if let Some((_, reply)) = state.replacement.take() {
-            let _ = reply.send(Err(Error::Closed));
-        }
+        state.finish_driver();
         Exit {
             reason: state.reason.clone().unwrap_or(ExitReason::IncomingClosed),
             close_error: state.close_error.clone(),
@@ -691,7 +758,9 @@ impl Driver {
                 }
             })?;
         let wake = lock(&state).wake.clone();
+        let mut preparing: Option<OpenSetupFuture> = None;
         loop {
+            let mut prepare_capabilities = None;
             {
                 let mut owner = lock(&state);
                 if let Some(initialize) = owner.initialized.take() {
@@ -716,8 +785,9 @@ impl Driver {
                                 owner.fail_open(Error::ServerVersionMismatch);
                             } else if !owner.closing {
                                 let capabilities = owner.capabilities.clone();
-                                owner.emit(Event::Initialized(Box::new(capabilities)), size);
-                                self.open(&connection, &mut owner);
+                                owner
+                                    .emit(Event::Initialized(Box::new(capabilities.clone())), size);
+                                prepare_capabilities = Some(capabilities);
                             } else {
                                 owner.close_done = true;
                             }
@@ -730,6 +800,11 @@ impl Driver {
                     break;
                 }
                 if owner.closing {
+                    // No lifecycle request has been sent while preparation is pending.
+                    // Drop the host future, but retain the normal SDK cleanup path.
+                    if preparing.take().is_some() || prepare_capabilities.take().is_some() {
+                        owner.close_done = true;
+                    }
                     closing.send_replace(Some(self.request.cleanup.deadline()));
                     if owner.ready && !owner.close_sent && owner.active.is_none() {
                         self.close_peer(&connection, &mut owner);
@@ -744,7 +819,22 @@ impl Driver {
                     let _ = reply.send(result);
                 }
             }
+            if let Some(capabilities) = prepare_capabilities {
+                preparing = Some(match self.request.prepare.take() {
+                    Some(prepare) => prepare(capabilities),
+                    None => Box::pin(async { Ok(OpenSetup::default()) }),
+                });
+            }
             tokio::select! {
+                result = async { preparing.as_mut().expect("guarded preparation").await },
+                    if preparing.is_some() => {
+                    preparing = None;
+                    let mut owner = lock(&state);
+                    match result {
+                        Ok(setup) => self.open(&connection, &mut owner, setup),
+                        Err(error) => owner.fail_open(error),
+                    }
+                }
                 () = &mut observation_lost, if !observation_ended => {
                     observation_ended = true;
                     lock(&state).cancel_permissions();
@@ -768,12 +858,40 @@ impl Driver {
         Ok(())
     }
 
-    fn open(&self, connection: &ConnectionTo<Agent>, owner: &mut State) {
+    fn open(&self, connection: &ConnectionTo<Agent>, owner: &mut State, setup: OpenSetup) {
+        if !owner.capabilities.mcp_capabilities.http
+            && setup
+                .mcp_servers
+                .iter()
+                .any(|server| matches!(server, McpServer::Http(_)))
+        {
+            owner.fail_open(Error::Unsupported);
+            return;
+        }
+        let instructions = setup.instructions.filter(|text| !text.is_empty());
+        let system_prompt = if owner
+            .capabilities
+            .session_capabilities
+            .system_prompt
+            .is_some()
+        {
+            instructions.map(|text| {
+                SystemPrompt::new(vec![ContentBlock::Text(TextContent::new(text))])
+                    .mode(SystemPromptMode::Append)
+            })
+        } else {
+            owner.prompt_instructions = instructions;
+            None
+        };
         let state = self.state.clone();
         let cwd = &self.request.cwd;
         let result = match &self.request.intent {
             Open::New => connection
-                .prepare_request(NewSessionRequest::new(cwd))
+                .prepare_request(
+                    NewSessionRequest::new(cwd)
+                        .mcp_servers(setup.mcp_servers)
+                        .system_prompt(system_prompt),
+                )
                 .on_receiving_result(async move |result| {
                     lock(&state).setup(result);
                     Ok(())
@@ -781,7 +899,11 @@ impl Driver {
             Open::Load(id) if owner.capabilities.load_session => {
                 let id = id.clone();
                 connection
-                    .prepare_request(LoadSessionRequest::new(id.clone(), cwd))
+                    .prepare_request(
+                        LoadSessionRequest::new(id.clone(), cwd)
+                            .mcp_servers(setup.mcp_servers)
+                            .system_prompt(system_prompt),
+                    )
                     .on_receiving_result(async move |result| {
                         lock(&state).setup(result.map(|r| {
                             NewSessionResponse::new(id)
@@ -795,7 +917,11 @@ impl Driver {
             Open::Resume(id) if owner.capabilities.session_capabilities.resume.is_some() => {
                 let id = id.clone();
                 connection
-                    .prepare_request(ResumeSessionRequest::new(id.clone(), cwd))
+                    .prepare_request(
+                        ResumeSessionRequest::new(id.clone(), cwd)
+                            .mcp_servers(setup.mcp_servers)
+                            .system_prompt(system_prompt),
+                    )
                     .on_receiving_result(async move |result| {
                         lock(&state).setup(result.map(|r| {
                             NewSessionResponse::new(id)
@@ -844,9 +970,6 @@ impl Driver {
 
     fn command(&self, connection: &ConnectionTo<Agent>, owner: &mut State, command: Command) {
         match command {
-            Command::Snapshot(reply) => {
-                let _ = reply.send(Ok(owner.snapshot()));
-            }
             Command::Close(reply) => {
                 begin_close(connection, owner);
                 let _ = reply.send(Ok(()));
@@ -943,13 +1066,19 @@ fn start_prompt(
     connection: &ConnectionTo<Agent>,
     state: &Shared,
     owner: &mut State,
-    content: Vec<ContentBlock>,
+    mut content: Vec<ContentBlock>,
 ) -> Result<RunId, Error> {
     let session_id = owner.ready()?;
     if owner.active.is_some() {
         return Err(Error::Busy);
     }
     validate_content(&owner.capabilities.prompt_capabilities, &content)?;
+    if let Some(instructions) = &owner.prompt_instructions {
+        content.insert(
+            0,
+            ContentBlock::Text(TextContent::new(instructions.clone())),
+        );
+    }
     owner.next_run += 1;
     let id = RunId {
         instance: owner.instance,
@@ -989,7 +1118,11 @@ fn start_prompt(
                     .unwrap_or_else(|error| Ok(rpc_error_size(&error)))
                     .map(|size| size + completed.summary.len());
                 owner.emit(Event::Completed(completed.clone()), size);
+                let sequence = completed.completion_sequence;
                 owner.last_completed = Some(completed);
+                if let Some(changes) = &owner.completion_changes {
+                    changes.send_replace(sequence);
+                }
                 owner.wake.notify_one();
             }
             Ok(())

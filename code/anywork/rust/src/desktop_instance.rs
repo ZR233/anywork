@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result};
 use pl_protocol::studio::StudioErrorCode;
 use pl_studio_runtime::{
-    RemoteHelperSource, StudioInstance, StudioInstanceLease, StudioRuntimeOptions,
+    HostMcpSource, RemoteHelperSource, StudioInstance, StudioInstanceLease, StudioRuntimeOptions,
 };
 
 static INSTANCE: OnceLock<Result<StudioInstance>> = OnceLock::new();
@@ -110,8 +110,12 @@ fn prepare() -> Result<StudioInstance> {
         .context("macOS executable has no Contents directory")?
         .join("Resources");
     Ok(StudioInstance::prepare(
-        StudioRuntimeOptions::desktop().with_remote_helper_source(RemoteHelperSource::Bundled(
-            bundle_root.join("data").join("remote-helper"),
-        )),
+        StudioRuntimeOptions::desktop()
+            .with_remote_helper_source(RemoteHelperSource::Bundled(
+                bundle_root.join("data").join("remote-helper"),
+            ))
+            .with_host_mcp_source(HostMcpSource::Bundled(
+                bundle_root.join("data").join("host-mcp"),
+            )),
     )?)
 }

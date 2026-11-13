@@ -37,6 +37,7 @@ pub(super) struct AgentServices {
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) operations: super::agent_operations::AgentOperations,
     pub(super) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
+    pub(super) acp_business: Option<crate::studio::runtime::acp_business::AcpBusinessOwner>,
 }
 impl std::fmt::Debug for AgentServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,7 +46,7 @@ impl std::fmt::Debug for AgentServices {
 }
 #[derive(Debug)]
 enum Kind {
-    Profiles(crate::config::AgentProfileCatalog),
+    Profiles,
     Session,
     Models,
     Model,
@@ -54,7 +55,7 @@ enum Kind {
 #[derive(Debug)]
 struct QueryTool {
     definition: ToolDefinition,
-    registry: std::sync::Weak<Registry>,
+    host: Arc<super::agents::AgentHost>,
     kind: Kind,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -112,6 +113,75 @@ struct Profiles<'a> {
 #[error("Agent service failed: {0}")]
 pub(super) struct ServiceError(#[source] pub(super) anyhow::Error);
 
+impl super::agents::AgentHost {
+    fn query_services(
+        &self,
+        context: &pl_tool::collaboration::control::AgentCallContext,
+        model: bool,
+    ) -> Result<AgentServices, pl_tool::collaboration::control::ControlError> {
+        use pl_tool::collaboration::control::ControlError;
+        self.caller(context)?;
+        if self.identity.parent_agent_id.is_some() {
+            return Err(ControlError::service(std::io::Error::other(
+                "delegation tools are root-only",
+            )));
+        }
+        if model && self.delegation().mode != pl_protocol::DelegationMode::Automatic {
+            return Err(ControlError::service(std::io::Error::other(
+                "model queries require automatic delegation",
+            )));
+        }
+        self.owner()?
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ControlError::Closed)
+    }
+
+    pub(crate) async fn list_agent_profiles(
+        &self,
+        context: pl_tool::collaboration::control::AgentCallContext,
+    ) -> Result<serde_json::Value, pl_tool::collaboration::control::ControlError> {
+        self.query_services(&context, false)?;
+        serde_json::to_value(Profiles {
+            profiles: &self.catalog.profiles,
+            diagnostics: &self.catalog.diagnostics,
+        })
+        .map_err(pl_tool::collaboration::control::ControlError::service)
+    }
+
+    pub(crate) async fn list_delegation_models(
+        &self,
+        context: pl_tool::collaboration::control::AgentCallContext,
+        request: pl_protocol::ListDelegationModelsRequest,
+    ) -> Result<pl_protocol::DelegationModelList, pl_tool::collaboration::control::ControlError>
+    {
+        self.query_services(&context, true)?
+            .delegation_models()
+            .list_delegation_models(request)
+            .await
+            .map_err(|error| {
+                pl_tool::collaboration::control::ControlError::service(ServiceError(error))
+            })
+    }
+
+    pub(crate) async fn get_delegation_model(
+        &self,
+        context: pl_tool::collaboration::control::AgentCallContext,
+        request: pl_protocol::GetDelegationModelRequest,
+    ) -> Result<pl_protocol::DelegationModelDetail, pl_tool::collaboration::control::ControlError>
+    {
+        self.query_services(&context, true)?
+            .delegation_models()
+            .get_delegation_model(request)
+            .await
+            .map_err(|error| {
+                pl_tool::collaboration::control::ControlError::service(ServiceError(error))
+            })
+    }
+}
+
 impl Tool for QueryTool {
     type Input = pl_core::context::OpaquePayload;
     type Context = CallContext;
@@ -152,56 +222,64 @@ impl QueryTool {
         input: pl_core::context::OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput> {
-        let registry = self
-            .registry
-            .upgrade()
-            .context("agent query coordinator is closed")?;
-        let services = {
-            let state = registry.state();
-            if state.closing
-                || !state.entries.get(&context.thread_id).is_some_and(|entry| {
-                    entry.native().is_ok_and(|native| {
-                        native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
-                    })
-                })
-            {
-                bail!("agent query caller is not active");
+        anyhow::ensure!(
+            context.thread_id == self.host.identity.thread_id.as_str(),
+            "agent query caller differs from the bound instance"
+        );
+        let call = pl_tool::collaboration::control::AgentCallContext {
+            caller: self.host.identity.agent_id.clone(),
+            call_id: context.call_id.clone(),
+            cancellation: context.cancellation.clone(),
+        };
+        self.host.caller(&call)?;
+        match &self.kind {
+            Kind::Profiles => {
+                let _: Empty =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                return output(&self.host.list_agent_profiles(call).await?);
             }
+            Kind::Models => {
+                return output(
+                    &self
+                        .host
+                        .list_delegation_models(
+                            call,
+                            pl_agent_tool::typed::decode_json(input.content())
+                                .map_err(ToolError::new)?,
+                        )
+                        .await?,
+                );
+            }
+            Kind::Model => {
+                return output(
+                    &self
+                        .host
+                        .get_delegation_model(
+                            call,
+                            pl_agent_tool::typed::decode_json(input.content())
+                                .map_err(ToolError::new)?,
+                        )
+                        .await?,
+                );
+            }
+            Kind::Session | Kind::Evaluate => {}
+        }
+        let owner = self.host.owner()?;
+        let services = {
+            let state = owner.0.state();
             state
                 .agent_services
                 .clone()
                 .context("agent product queries were not configured")?
         };
-        let selection = {
-            let state = registry.state();
-            let caller = state
-                .entries
-                .get(&context.thread_id)
-                .context("agent caller is missing")?;
-            if !matches!(self.kind, Kind::Session) {
-                anyhow::ensure!(
-                    caller.identity.parent_agent_id.is_none(),
-                    "delegation tools are root-only"
-                );
-            }
-            crate::studio::delegation::saved(&caller.native()?.thread.snapshot())?
-                .context("agent caller has no frozen delegation selection")?
-        };
-        if matches!(self.kind, Kind::Models | Kind::Model) {
+        if matches!(self.kind, Kind::Evaluate) {
             anyhow::ensure!(
-                selection.mode == pl_protocol::DelegationMode::Automatic,
-                "model queries require automatic delegation"
+                self.host.identity.parent_agent_id.is_none(),
+                "delegation tools are root-only"
             );
         }
         match &self.kind {
-            Kind::Profiles(catalog) => {
-                let _: Empty =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                output(&Profiles {
-                    profiles: &catalog.profiles,
-                    diagnostics: &catalog.diagnostics,
-                })
-            }
+            Kind::Profiles | Kind::Models | Kind::Model => unreachable!("shared host query"),
             Kind::Session => {
                 let mut input: SessionInput =
                     pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
@@ -231,26 +309,8 @@ impl QueryTool {
                     result = read => result,
                 }
             }
-            Kind::Models => output(
-                &services
-                    .delegation_models()
-                    .list_delegation_models(
-                        pl_agent_tool::typed::decode_json(input.content())
-                            .map_err(ToolError::new)?,
-                    )
-                    .await?,
-            ),
-            Kind::Model => output(
-                &services
-                    .delegation_models()
-                    .get_delegation_model(
-                        pl_agent_tool::typed::decode_json(input.content())
-                            .map_err(ToolError::new)?,
-                    )
-                    .await?,
-            ),
             Kind::Evaluate => output(
-                &SessionRuntime(registry)
+                &owner
                     .evaluate_agent(
                         context.thread_id,
                         pl_agent_tool::typed::decode_json(input.content())
@@ -290,33 +350,33 @@ impl AgentServices {
         loaded: &std::collections::BTreeSet<String>,
     ) -> Result<Vec<serde_json::Value>> {
         let caller_identity = self.identity(caller)?;
-        let caller = self.record(caller).await?;
         let mut rows = Vec::new();
         // 冷 agent 查询只消费 `catalog.toml` 的目录摘要，不逐个 child 读取 checkpoint。
         // 摘要只有 durable status，因此这里只投影 lifecycle，不虚构 Turn/Task 运行态计数。
-        for record in self
-            .store
-            .list_threads_for_root(&caller.root_thread_id)
-            .await?
-        {
-            let identity = self.identity(&record.id)?;
-            if loaded.contains(identity.agent_id.as_str()) {
+        for (member, closed) in self.factory.directory_rows_for_root(caller).await? {
+            if loaded.contains(&member.agent_id) {
                 continue;
             }
-            if identity.session_id != caller_identity.session_id {
+            if member.session_id != caller_identity.session_id.as_str() {
                 continue;
             }
-            let mut row = super::agents::agent_row(
-                identity.agent_id.as_str(),
-                identity
-                    .parent_agent_id
-                    .as_ref()
-                    .map(pl_protocol::AgentId::as_str),
-                &directory_snapshot(record.status),
-            )?;
-            row["frozenModel"] = serde_json::to_value(record.frozen_model)?;
-            row["delegationMode"] = serde_json::to_value(record.delegation_mode)?;
-            row["delegationPreference"] = serde_json::to_value(record.delegation_preference)?;
+            let mut row = match member.backend {
+                pl_protocol::session::AgentBackend::Native { config, status } => {
+                    let mut row = super::agents::agent_row(
+                        &member.agent_id,
+                        member.parent_agent_id.as_deref(),
+                        &directory_snapshot(status),
+                    )?;
+                    row["frozenModel"] = serde_json::to_value(config.route)?;
+                    row
+                }
+                pl_protocol::session::AgentBackend::Acp { .. } => serde_json::json!({
+                    "id":member.agent_id, "parentId":member.parent_agent_id,
+                    "backend":"acp", "lifecycle":{"kind":if closed {"closed"} else {"cold"}},
+                }),
+            };
+            row["delegationMode"] = serde_json::to_value(member.delegation_mode)?;
+            row["delegationPreference"] = serde_json::to_value(member.delegation_preference)?;
             rows.push(row);
         }
         Ok(rows)
@@ -578,7 +638,20 @@ impl SessionRuntime {
             recovery,
             operations: Default::default(),
             workspace_recovery: None,
+            acp_business: None,
         });
+        Ok(())
+    }
+    pub(crate) fn set_acp_business(
+        &self,
+        business: crate::studio::runtime::acp_business::AcpBusinessOwner,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.0
+            .state()
+            .agent_services
+            .as_mut()
+            .ok_or(ThreadAssemblyError::Closed)?
+            .acp_business = Some(business);
         Ok(())
     }
     /// Installs the runtime's Recovery publisher for internal activation failures.
@@ -617,7 +690,7 @@ impl SessionRuntime {
 
     pub(super) fn agent_query_tools(
         &self,
-        catalog: crate::config::AgentProfileCatalog,
+        host: Arc<super::agents::AgentHost>,
         selection: pl_protocol::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         if self.0.state().agent_services.is_none() {
@@ -632,7 +705,7 @@ impl SessionRuntime {
             (
                 "list_agent_profiles",
                 "List executable child Agent Profiles and diagnostics from the same frozen catalog as this request's spawn_agent declaration. An empty list means no child Profile is currently executable.",
-                Kind::Profiles(catalog),
+                Kind::Profiles,
                 pl_agent_tool::typed::input_schema_for::<Empty>(),
             ),
             (
@@ -658,7 +731,7 @@ impl SessionRuntime {
                 let foreground = matches!(&kind, Kind::Evaluate);
                 let registration = prepared.attach(ToolHandle::new(QueryTool {
                     definition,
-                    registry: Arc::downgrade(&self.0),
+                    host: host.clone(),
                     kind,
                 }));
                 Ok(if deferred {

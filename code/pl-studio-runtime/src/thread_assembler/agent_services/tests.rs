@@ -43,13 +43,24 @@ fn context(caller: &str, cancellation: CancellationToken) -> CallContext {
 }
 
 fn tool(owner: &SessionRuntime) -> Result<QueryTool> {
+    let (identity, resources) = {
+        let state = owner.0.state();
+        let entry = state.entries.get("root").context("root is not assembled")?;
+        (entry.identity.clone(), entry.native()?.resources.clone())
+    };
+    let host = owner.native_agent_host(
+        &identity,
+        &resources,
+        &owner.agent_profiles_snapshot()?,
+        Default::default(),
+    )?;
     Ok(QueryTool {
         definition: ToolDefinition::json(
             "read_agent_session",
             "Read saved history",
             pl_agent_tool::typed::input_schema_for::<SessionInput>(),
         )?,
-        registry: Arc::downgrade(&owner.0),
+        host: Arc::new(host),
         kind: Kind::Session,
     })
 }

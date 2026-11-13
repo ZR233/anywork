@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:anywork/src/domain/models/composer_primary_action.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
@@ -899,6 +900,91 @@ final class TimelineObservation {
             .take(3)
             .map((element) => _mainRevealElementInfo(element, state))
             .toList(),
+        'domainCut': {
+          'mainIndices': available
+              ? [
+                  for (var i = 0; i < originalController.messages.length; i++)
+                    if (originalController.messages[i].id == unitId) i,
+                ]
+              : null,
+          'rawLive': [
+            for (final block
+                in originalLease.live.value?.blocks ?? <LiveDisplayBlock>[])
+              if (block.id == unitId)
+                {
+                  'id': block.id,
+                  'state': block.state.name,
+                  'source': block.source == null
+                      ? null
+                      : _sourceCut(block.source!),
+                  'bodyKind': block.body.runtimeType.toString(),
+                },
+          ],
+          'targets': targetElements.take(8).map((element) {
+            final ancestors = <Map<String, Object?>>[];
+            var count = 0;
+            var dock = false;
+            element.visitAncestorElements((ancestor) {
+              count++;
+              final widget = ancestor.widget;
+              if (widget.runtimeType.toString() ==
+                  'ConversationActivityViewport') {
+                dock = true;
+              }
+              if (ancestors.length < 256) {
+                ancestors.add({
+                  'element': identityHashCode(ancestor),
+                  'widget': widget.runtimeType.toString(),
+                  if (widget is ConversationCurrentConnector)
+                    'section': widget.section.name,
+                  if (widget is ChatMessage)
+                    'outerMessageId': widget.message.id,
+                });
+              }
+              return true;
+            });
+            final nearest = Scrollable.maybeOf(element);
+            return {
+              'element': identityHashCode(element),
+              'domain': dock
+                  ? 'dock'
+                  : identical(nearest, state)
+                  ? 'main'
+                  : 'other',
+              'ancestorCount': count,
+              'ancestorsTruncated': count > ancestors.length,
+              'ancestors': ancestors,
+              'nearestScrollable': nearest == null
+                  ? null
+                  : identityHashCode(nearest),
+              'nearestController': nearest?.widget.controller == null
+                  ? null
+                  : identityHashCode(nearest!.widget.controller),
+              'nearestPosition': nearest == null
+                  ? null
+                  : identityHashCode(nearest.position),
+              'sameMainScrollable': identical(nearest, state),
+              'sameMainController': identical(
+                nearest?.widget.controller,
+                originalScrollController,
+              ),
+            };
+          }).toList(),
+          'mainTargetCount': targetElements
+              .where((element) => identical(Scrollable.maybeOf(element), state))
+              .length,
+          'dockTargetCount': targetElements.where((element) {
+            var dock = false;
+            element.visitAncestorElements((ancestor) {
+              dock |=
+                  ancestor.widget.runtimeType.toString() ==
+                  'ConversationActivityViewport';
+              return true;
+            });
+            return dock;
+          }).length,
+          'mainPosition': position == null ? null : identityHashCode(position),
+        },
         'interactionRole': interactionIsHeader
             ? 'groupHeaderTitle'
             : 'originalFragment',
@@ -916,6 +1002,19 @@ final class TimelineObservation {
         'scrollDemands': demands,
         'pointerEvidenceLimit': 'Read-only hit test at exact dragFrom start; actual dispatch cache and gesture-arena winning receiver are not exposed by WidgetTester.',
       };
+      final output =
+          Platform.environment['ANYWORK_REALTIME_OUTPUT'] ??
+          Platform.environment['ANYWORK_TIMELINE_OUTPUT'];
+      if (output != null) {
+        try {
+          File('$output/main-reveal-failure.json').writeAsStringSync(
+            '${const JsonEncoder.withIndent('  ').convert({'reason': reason, ...diagnostic})}\n',
+            flush: true,
+          );
+        } catch (error) {
+          diagnostic['fileWriteFailureType'] = error.runtimeType.toString();
+        }
+      }
       fail('$reason: ${jsonEncode(diagnostic)}');
     }
 

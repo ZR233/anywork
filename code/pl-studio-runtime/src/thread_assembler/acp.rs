@@ -135,14 +135,40 @@ impl SessionRuntime {
         account_id: String,
         resources: Arc<AcpResources>,
     ) -> Result<AcpPreparation, ThreadAssemblyError> {
-        if &identity.session_id != self.id() || identity.parent_agent_id.is_some() {
+        if &identity.session_id != self.id() {
             return Err(ThreadAssemblyError::Identity(
                 identity.thread_id.to_string(),
             ));
         }
+        let parent = if let Some(parent_agent) = &identity.parent_agent_id {
+            let parent = {
+                let state = self.0.state();
+                state
+                    .by_agent
+                    .get(parent_agent)
+                    .and_then(|thread| {
+                        state
+                            .entries
+                            .get(thread)
+                            .map(|entry| entry.identity.clone())
+                    })
+                    .or_else(|| {
+                        state
+                            .agent_services
+                            .as_ref()?
+                            .events
+                            .member_identity(&identity.session_id, parent_agent)
+                    })
+                    .ok_or_else(|| ThreadAssemblyError::Identity(identity.thread_id.to_string()))?
+            };
+            self.retain_directory_identity(&parent)?;
+            Some(parent.thread_id.to_string())
+        } else {
+            None
+        };
         let reservation = self.reserve_resources(
             identity.thread_id.as_str(),
-            None,
+            parent.as_deref(),
             Some(PreparedResources::Acp(resources.clone())),
         )?;
         self.0
@@ -158,6 +184,90 @@ impl SessionRuntime {
             binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig { account_id }),
             resources,
         })
+    }
+
+    pub(crate) fn publish_acp_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let mut state = self.0.state();
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || state
+                .preparing_children
+                .get(id)
+                .is_some_and(|child| child.cancellation.is_cancelled())
+        {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        if !state.entries.get(id).is_some_and(|entry| {
+            matches!(&entry.runtime, AgentRuntime::Acp(acp) if !acp.cancellation.is_cancelled())
+        }) {
+            return Err(ThreadAssemblyError::Identity(id.into()));
+        }
+        // A cold ACP member has no new-child reservation.
+        let unpublished = state.unpublished_children.remove(id);
+        drop(state);
+        drop(unpublished);
+        Ok(())
+    }
+
+    pub(crate) async fn bind_acp_result_delivery(
+        &self,
+        identity: &pl_protocol::AgentThreadIdentity,
+        resources: &Arc<AcpResources>,
+    ) -> anyhow::Result<()> {
+        let Some(parent_agent) = &identity.parent_agent_id else {
+            return Ok(());
+        };
+        let parent = {
+            let state = self.0.state();
+            let services = state
+                .agent_services
+                .as_ref()
+                .ok_or(ThreadAssemblyError::Closed)?;
+            let parent = services
+                .events
+                .member_identity(&identity.session_id, parent_agent)
+                .ok_or(ThreadAssemblyError::Closed)?;
+            let (_, binding, _) = services
+                .events
+                .agent_execution_identity(parent.thread_id.as_str())
+                .ok_or(ThreadAssemblyError::Closed)?;
+            if !matches!(binding, pl_protocol::AgentBinding::Native(_)) {
+                return Ok(());
+            }
+            parent
+        };
+        let registry = Arc::downgrade(&self.0);
+        let child = identity.clone();
+        let generation = resources.generation.clone();
+        resources.start_result_delivery(Arc::new(move |completed| {
+            let registry = registry.clone();
+            let parent = parent.clone();
+            let child = child.clone();
+            let generation = generation.clone();
+            Box::pin(async move {
+                let owner = SessionRuntime(registry.upgrade().ok_or(ThreadAssemblyError::Closed)?);
+                let services = owner.0.state().agent_services.clone().ok_or(ThreadAssemblyError::Closed)?;
+                let result = match &completed.result {
+                    Ok(response) => serde_json::to_value(response)?,
+                    Err(error) => serde_json::json!({"error": error}),
+                };
+                let text = serde_json::to_string(&serde_json::json!({
+                    "agentId": child.agent_id, "backend": "acp", "generation": generation,
+                    "run": {"instance": completed.run.instance, "sequence": completed.run.sequence},
+                    "completionSequence": completed.completion_sequence,
+                    "result": result, "summary": completed.summary, "truncated": completed.truncated,
+                }))?;
+                let message = pl_core::thread::inbox::ThreadMessage {
+                    kind: pl_core::context::AgentMessageKind::Report,
+                    id: format!("studio.acp.{}:{}:{generation}:{}", child.agent_id.as_str().len(),
+                        child.agent_id, completed.completion_sequence),
+                    source_id: format!("agent:{}", child.thread_id),
+                    payload: pl_core::context::OpaquePayload::text(text.clone()),
+                    context: vec![pl_core::context::ContextContent::Text { text: text.into() }],
+                };
+                services.redeliver_parent_report(&owner, parent.thread_id.as_str(), message).await
+            })
+        })).await
     }
 
     /// Every control resolves the original runtime generation, not just AgentId.

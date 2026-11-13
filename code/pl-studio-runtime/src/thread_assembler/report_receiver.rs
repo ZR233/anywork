@@ -101,6 +101,19 @@ impl AgentServices {
         parent: &str,
         message: ThreadMessage,
     ) -> Result<()> {
+        anyhow::ensure!(
+            !self
+                .events
+                .agent_execution_identity(parent)
+                .is_some_and(|(_, binding, _)| matches!(
+                    binding,
+                    pl_protocol::AgentBinding::Acp(_)
+                ))
+                && !owner.0.state().entries.get(parent).is_some_and(|entry| {
+                    matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
+                }),
+            "Native report inbox requires a Native recipient"
+        );
         self.write_storage_message(owner, parent, StorageWrite::Inbox(message))
             .await
     }

@@ -36,7 +36,8 @@ impl ControlError {
 pub struct SpawnReceipt {
     pub agent_id: String,
     pub profile_id: String,
-    pub model: pl_protocol::studio::NewThreadModelRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<pl_protocol::studio::NewThreadModelRoute>,
     pub delegation: DelegationSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<AgentWorkspaceAssignmentSnapshot>,
@@ -57,7 +58,8 @@ pub struct AgentSpawnResult {
 pub struct AgentSendResult {
     pub target: String,
     pub message_id: String,
-    pub sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
 }
 
 #[derive(Debug, serde::Serialize)]

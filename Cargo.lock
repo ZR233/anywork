@@ -4120,10 +4120,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-studio-mcp"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "h2",
+ "http",
+ "prost",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pl-studio-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.23.1",
  "criterion",
  "dirs 7.0.0",
@@ -4133,6 +4154,7 @@ dependencies = [
  "fs4",
  "futures",
  "hex",
+ "http",
  "image",
  "keyring",
  "libsqlite3-sys",
@@ -4145,12 +4167,14 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-remote-helper",
+ "pl-studio-mcp",
  "pl-tool",
  "pl-trace",
  "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "prost",
  "rawzip",
  "reqwest",
+ "rmcp",
  "rust-embed",
  "schemars 1.2.3",
  "sea-orm",
@@ -5051,11 +5075,16 @@ dependencies = [
  "chrono",
  "futures",
  "http",
+ "http-body",
+ "http-body-util",
  "indexmap 2.14.2",
  "libc",
  "oauth2",
+ "pastey",
  "pin-project-lite",
+ "rand 0.10.3",
  "reqwest",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -5064,8 +5093,10 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -5317,6 +5348,7 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",

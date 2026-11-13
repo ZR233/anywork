@@ -4,7 +4,7 @@ use crate::remote_helper::{self, BUNDLE_DIR_ENV};
 use crate::rust_bridge::{
     self, BRIDGE_DEBUG_SYMBOLS_ENV, BRIDGE_LIBRARY_ENV, BridgeConfiguration, RustBridgeArtifacts,
 };
-use crate::studio_version;
+use crate::{host_mcp, studio_version};
 use anyhow::{Context, Result, bail, ensure};
 use pl_dev_support::paths;
 use pl_dev_support::process;
@@ -47,6 +47,7 @@ struct FlutterInvocation<'a> {
     process_mode: FlutterProcessMode,
     bridge_artifacts: Option<&'a RustBridgeArtifacts>,
     remote_helper_bundle_dir: Option<&'a Path>,
+    host_mcp_bundle_dir: Option<&'a Path>,
     log_level: Option<LogLevel>,
 }
 
@@ -233,6 +234,7 @@ pub(crate) fn run_desktop_integration_test(
             process_mode: FlutterProcessMode::Resident,
             bridge_artifacts: Some(preparation.bridge()),
             remote_helper_bundle_dir: Some(preparation.helpers()),
+            host_mcp_bundle_dir: Some(preparation.host_mcp()),
             log_level: None,
         },
     )
@@ -322,6 +324,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
                 process_mode: FlutterProcessMode::Resident,
                 bridge_artifacts: None,
                 remote_helper_bundle_dir: None,
+                host_mcp_bundle_dir: None,
                 log_level: options.log_level,
             },
         );
@@ -346,6 +349,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
+    let host_mcp_bundle_dir = prepare_host_mcp(&workspace_root, demo_mode)?;
     let run_args = run_gui_args(target, &version_define, &options);
     let bridge_artifacts =
         prepare_bridge_artifacts(&workspace_root, demo_mode, BridgeConfiguration::Debug)?;
@@ -362,6 +366,7 @@ pub(crate) fn run_gui(options: RunGuiOptions) -> Result<()> {
             },
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            host_mcp_bundle_dir: host_mcp_bundle_dir.as_deref(),
             log_level: options.log_level,
         },
     )
@@ -387,28 +392,68 @@ fn run_gui_native_launch(
     print_context(workspace_root, app_dir);
     let spec = NativeLaunchSpec::from_options(app_dir, &options)?;
     let demo_mode = spec.demo_mode;
-    let (bundle_dir, bridge_artifacts, remote_helper_bundle_dir) = if let Some(preparation) =
-        DesktopTestPreparation::from_environment(workspace_root)?
-    {
-        ensure!(
-            !spec.profile && spec.demo_mode == DemoMode::Native,
-            "the live test preparation requires a native debug build; profile/demo needs its own preparation"
-        );
-        let arguments = run_native_launch_args(
-            target,
-            &version_define,
-            spec.profile,
-            &spec.entrypoint,
-            spec.capture,
-        );
-        let identity_started = std::time::Instant::now();
-        let tools = integration::native_tool_identity()?;
-        println!(
-            "startup_stage=native_identity elapsed_ms={}",
-            identity_started.elapsed().as_millis()
-        );
-        let bundle = preparation.native_bundle(&arguments, &tools, || {
-            build_native_bundle(
+    let (bundle_dir, bridge_artifacts, remote_helper_bundle_dir, host_mcp_bundle_dir) =
+        if let Some(preparation) = DesktopTestPreparation::from_environment(workspace_root)? {
+            ensure!(
+                !spec.profile && spec.demo_mode == DemoMode::Native,
+                "the live test preparation requires a native debug build; profile/demo needs its own preparation"
+            );
+            let arguments = run_native_launch_args(
+                target,
+                &version_define,
+                spec.profile,
+                &spec.entrypoint,
+                spec.capture,
+            );
+            let identity_started = std::time::Instant::now();
+            let tools = integration::native_tool_identity()?;
+            println!(
+                "startup_stage=native_identity elapsed_ms={}",
+                identity_started.elapsed().as_millis()
+            );
+            let bundle = preparation.native_bundle(&arguments, &tools, || {
+                build_native_bundle(
+                    workspace_root,
+                    app_dir,
+                    target,
+                    &spec,
+                    &version_define,
+                    FlutterInvocation {
+                        demo_mode,
+                        process_mode: FlutterProcessMode::Batch,
+                        bridge_artifacts: Some(preparation.bridge()),
+                        remote_helper_bundle_dir: Some(preparation.helpers()),
+                        host_mcp_bundle_dir: Some(preparation.host_mcp()),
+                        log_level: options.log_level,
+                    },
+                )
+            })?;
+            (
+                bundle,
+                Some(preparation.bridge().clone()),
+                Some(preparation.helpers().to_owned()),
+                Some(preparation.host_mcp().to_owned()),
+            )
+        } else {
+            let preflight_started = std::time::Instant::now();
+            ensure_desktop_build_environment(target)?;
+            ensure_flutter_dependencies(workspace_root, app_dir)?;
+            println!(
+                "startup_stage=native_preflight elapsed_ms={}",
+                preflight_started.elapsed().as_millis()
+            );
+            let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
+            let host_mcp_bundle_dir = prepare_host_mcp(workspace_root, demo_mode)?;
+            let bridge_artifacts = prepare_bridge_artifacts(
+                workspace_root,
+                demo_mode,
+                if spec.profile {
+                    BridgeConfiguration::Profile
+                } else {
+                    BridgeConfiguration::Debug
+                },
+            )?;
+            let bundle = build_native_bundle(
                 workspace_root,
                 app_dir,
                 target,
@@ -417,51 +462,19 @@ fn run_gui_native_launch(
                 FlutterInvocation {
                     demo_mode,
                     process_mode: FlutterProcessMode::Batch,
-                    bridge_artifacts: Some(preparation.bridge()),
-                    remote_helper_bundle_dir: Some(preparation.helpers()),
+                    bridge_artifacts: bridge_artifacts.as_ref(),
+                    remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+                    host_mcp_bundle_dir: host_mcp_bundle_dir.as_deref(),
                     log_level: options.log_level,
                 },
+            )?;
+            (
+                bundle,
+                bridge_artifacts,
+                remote_helper_bundle_dir,
+                host_mcp_bundle_dir,
             )
-        })?;
-        (
-            bundle,
-            Some(preparation.bridge().clone()),
-            Some(preparation.helpers().to_owned()),
-        )
-    } else {
-        let preflight_started = std::time::Instant::now();
-        ensure_desktop_build_environment(target)?;
-        ensure_flutter_dependencies(workspace_root, app_dir)?;
-        println!(
-            "startup_stage=native_preflight elapsed_ms={}",
-            preflight_started.elapsed().as_millis()
-        );
-        let remote_helper_bundle_dir = prepare_remote_helpers(workspace_root, demo_mode)?;
-        let bridge_artifacts = prepare_bridge_artifacts(
-            workspace_root,
-            demo_mode,
-            if spec.profile {
-                BridgeConfiguration::Profile
-            } else {
-                BridgeConfiguration::Debug
-            },
-        )?;
-        let bundle = build_native_bundle(
-            workspace_root,
-            app_dir,
-            target,
-            &spec,
-            &version_define,
-            FlutterInvocation {
-                demo_mode,
-                process_mode: FlutterProcessMode::Batch,
-                bridge_artifacts: bridge_artifacts.as_ref(),
-                remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
-                log_level: options.log_level,
-            },
-        )?;
-        (bundle, bridge_artifacts, remote_helper_bundle_dir)
-    };
+        };
     let executable = bundle_dir.join(target.executable_name());
     ensure!(
         executable.is_file(),
@@ -477,6 +490,7 @@ fn run_gui_native_launch(
             process_mode: FlutterProcessMode::Resident,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            host_mcp_bundle_dir: host_mcp_bundle_dir.as_deref(),
             log_level: options.log_level,
         },
     );
@@ -783,6 +797,7 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         DemoMode::Native
     };
     let remote_helper_bundle_dir = prepare_remote_helpers(&workspace_root, demo_mode)?;
+    let host_mcp_bundle_dir = prepare_host_mcp(&workspace_root, demo_mode)?;
     let configuration = if options.debug {
         BridgeConfiguration::Debug
     } else {
@@ -799,6 +814,7 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
             process_mode: FlutterProcessMode::Batch,
             bridge_artifacts: bridge_artifacts.as_ref(),
             remote_helper_bundle_dir: remote_helper_bundle_dir.as_deref(),
+            host_mcp_bundle_dir: host_mcp_bundle_dir.as_deref(),
             log_level: None,
         },
     )?;
@@ -871,6 +887,19 @@ fn prepare_remote_helpers(workspace_root: &Path, demo_mode: DemoMode) -> Result<
     Ok(None)
 }
 
+fn prepare_host_mcp(workspace_root: &Path, demo_mode: DemoMode) -> Result<Option<PathBuf>> {
+    if matches!(demo_mode, DemoMode::Demo) {
+        return Ok(None);
+    }
+    let started = std::time::Instant::now();
+    let resources = host_mcp::prepare_bundle_resources(workspace_root)?;
+    println!(
+        "startup_stage=build_host_mcp elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    Ok(Some(resources))
+}
+
 fn prepare_bridge_artifacts(
     workspace_root: &Path,
     demo_mode: DemoMode,
@@ -904,6 +933,7 @@ fn run_flutter(
             process_mode: FlutterProcessMode::Batch,
             bridge_artifacts: None,
             remote_helper_bundle_dir: None,
+            host_mcp_bundle_dir: None,
             log_level: None,
         },
     )
@@ -941,6 +971,7 @@ fn configure_flutter_environment(command: &mut Command, invocation: FlutterInvoc
     command.env_remove(BRIDGE_LIBRARY_ENV);
     command.env_remove(BRIDGE_DEBUG_SYMBOLS_ENV);
     command.env_remove(BUNDLE_DIR_ENV);
+    command.env_remove(host_mcp::BUNDLE_DIR_ENV);
     match invocation.demo_mode {
         DemoMode::Native => {
             command.env_remove("ANYWORK_DEMO");
@@ -965,6 +996,9 @@ fn configure_flutter_environment(command: &mut Command, invocation: FlutterInvoc
     }
     if let Some(bundle_dir) = invocation.remote_helper_bundle_dir {
         command.env(BUNDLE_DIR_ENV, bundle_dir);
+    }
+    if let Some(bundle_dir) = invocation.host_mcp_bundle_dir {
+        command.env(host_mcp::BUNDLE_DIR_ENV, bundle_dir);
     }
 }
 

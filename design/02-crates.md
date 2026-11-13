@@ -46,6 +46,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |
 | `pl-remote-helper` | 统一执行机器、受管进程、目标文件与 HTTP 字节接口；本地执行与 Linux 前台服务共用原生所有者。私有执行协议不依赖产品 DTO，不持有工作区、Thread 或跨连接恢复状态 |
+| `pl-studio-mcp` | 传输无关的 Host MCP 服务、工具消费投影与领域调用端口、本地 IPC 契约及客户端，以及宿主原生 stdio 服务程序；不依赖 Studio runtime、Flutter/FRB、`pl-core`、`pl-model` 或 `pl-tool`，不拥有产品存储、成员目录或业务调度。Studio 实现该端口并持有原实例 IPC 服务 |
 | `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)） |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |

@@ -8,11 +8,7 @@ use std::{
 
 use pl_tool::remote::{RemoteHelperAssets, RemoteHelperTarget, SshError, SshManager};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
-/// One decompressed helper must stay far below this bound; it only guards against
-/// unbounded decompression of a corrupted or replaced resource.
-const MAX_HELPER_BYTES: usize = 64 * 1024 * 1024;
 const BUNDLED_HELPER_ARCHIVE: &str = "pl-remote-helper.zst";
 const BUNDLED_HELPER_METADATA: &str = "pl-remote-helper.metadata.json";
 
@@ -89,7 +85,11 @@ impl RemoteHelperAssets for BundledHelperAssets {
 /// surface an actionable repair message; there is no fallback to `PATH` or the
 /// network in bundled mode.
 fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u8]>, String> {
-    let directory = root.join(target.triple());
+    load_bundled_target(root, target.triple())
+}
+
+fn load_bundled_target(root: &Path, target: &str) -> Result<Arc<[u8]>, String> {
+    let directory = root.join(target);
     let archive_path = directory.join(BUNDLED_HELPER_ARCHIVE);
     let metadata_path = directory.join(BUNDLED_HELPER_METADATA);
     let archive = fs::read(&archive_path)
@@ -107,12 +107,12 @@ fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u
                 metadata_path.display()
             )
         })?;
-    if metadata.target != target.triple() {
+    if metadata.target != target {
         return Err(format!(
             "bundled helper metadata {} declares target '{}', expected '{}'",
             metadata_path.display(),
             metadata.target,
-            target.triple()
+            target
         ));
     }
     if metadata.worker_protocol_version
@@ -135,19 +135,5 @@ fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u
             pl_remote_helper::EXECUTOR_WIRE_VERSION
         ));
     }
-    let executable = zstd::bulk::decompress(&archive, MAX_HELPER_BYTES).map_err(|error| {
-        format!(
-            "decompress bundled helper {}: {error}",
-            archive_path.display()
-        )
-    })?;
-    let digest = hex::encode(Sha256::digest(&executable));
-    if !digest.eq_ignore_ascii_case(&metadata.sha256) {
-        return Err(format!(
-            "bundled helper {} content digest {digest} does not match metadata {}",
-            archive_path.display(),
-            metadata.sha256
-        ));
-    }
-    Ok(Arc::from(executable.into_boxed_slice()))
+    crate::executable_assets::decompress_verified(&archive_path, &archive, &metadata.sha256)
 }

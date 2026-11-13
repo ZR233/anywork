@@ -217,6 +217,13 @@ impl SessionRuntime {
         store: &crate::studio::StudioStore,
         child: &pl_protocol::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
+        if let Some(parent) = child.parent_thread_id.as_deref()
+            && self.parent_is_acp(parent)
+        {
+            // The child's own history is still durable. ACP has no Native inbox whose
+            // acknowledgement could authorize or delay this child's retirement.
+            return Ok(ParentReportAcknowledgement::Absent);
+        }
         let failure = |source: anyhow::Error| ThreadAssemblyError::Resource {
             operation: "acknowledge terminal parent reports",
             source: source.into_boxed_dyn_error(),
@@ -449,6 +456,11 @@ impl SessionRuntime {
         message: pl_core::thread::inbox::ThreadMessage,
         wake: bool,
     ) -> Result<ParentMessageDelivery, ThreadAssemblyError> {
+        if self.parent_is_acp(id) {
+            return Ok(ParentMessageDelivery::Skipped(
+                ParentMessageSkip::TargetUnavailable,
+            ));
+        }
         let target = {
             let state = self.0.state();
             if state.closing {
@@ -533,6 +545,22 @@ impl SessionRuntime {
             ),
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub(super) fn parent_is_acp(&self, parent: &str) -> bool {
+        let state = self.0.state();
+        state
+            .entries
+            .get(parent)
+            .is_some_and(|entry| matches!(entry.runtime, crate::session::AgentRuntime::Acp(_)))
+            || state.agent_services.as_ref().is_some_and(|services| {
+                services
+                    .events
+                    .agent_execution_identity(parent)
+                    .is_some_and(|(_, binding, _)| {
+                        matches!(binding, pl_protocol::AgentBinding::Acp(_))
+                    })
+            })
     }
 }
 

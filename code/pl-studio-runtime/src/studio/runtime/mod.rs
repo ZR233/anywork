@@ -18,6 +18,7 @@ pub mod accounts;
 mod acp_auth;
 pub(crate) mod acp_business;
 mod acp_detection;
+pub(crate) mod acp_host_mcp;
 mod acp_install;
 mod acp_launch;
 pub use acp_business::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
@@ -241,6 +242,7 @@ pub struct StudioRuntime {
     activation: ProjectActivationRuntime,
     attachment_drafts: attachment_drafts::AttachmentDraftRuntime,
     ssh_manager: std::sync::Arc<pl_tool::remote::SshManager>,
+    host_mcp_source: crate::host_mcp_assets::HostMcpSource,
     /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
     service_stops: lifecycle::shutdown::ServiceStopSlots,
     /// An archive or worktree cleanup owns lifecycle admission through its real terminal commit,
