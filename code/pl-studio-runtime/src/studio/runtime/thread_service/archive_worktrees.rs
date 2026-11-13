@@ -19,7 +19,7 @@ impl StudioRuntime {
         operation: &mut ThreadArchiveOperation,
     ) -> Result<()> {
         for index in 0..operation.worktrees.len() {
-            self.clean_archive_worktree(operation, index).await?;
+            self.clean_archive_worktree(operation, index, false).await?;
         }
         Ok(())
     }
@@ -36,7 +36,7 @@ impl StudioRuntime {
                 super::delete::deletion_step(
                     &member,
                     "删除专属工作树",
-                    self.clean_archive_worktree(operation, index),
+                    self.clean_archive_worktree(operation, index, true),
                 )
                 .await,
             );
@@ -48,6 +48,7 @@ impl StudioRuntime {
         &self,
         operation: &mut ThreadArchiveOperation,
         index: usize,
+        deleting: bool,
     ) -> Result<()> {
         let entry = operation.worktrees[index].clone();
         let owner = &entry.lease.owner_thread_id;
@@ -90,7 +91,17 @@ impl StudioRuntime {
             ensure!(*original == common, "archive repository identity changed");
         }
         let removal = leases.begin_workspace_cleanup(owner, &entry.identity, None)?;
-        let (site, registered) = manager.removal_site(&handle).await?;
+        // Git no longer claims this path. Permanent deletion may release the stale association,
+        // but must preserve the entire unowned directory (including its SessionFiles subtree).
+        // Archive retains its stricter physical cleanup guarantee.
+        let unregistered = deleting && !manager.is_registered(&handle).await?;
+        let (site, registered) = if unregistered {
+            tracing::warn!(thread_id = %owner, reason = "worktree_unregistered",
+                decision = "preserve", "永久删除保留未登记的工作树路径，仅释放会话关联");
+            (None, false)
+        } else {
+            manager.removal_site(&handle).await?
+        };
         if entry.cleaned || current.state == WorktreeLeaseState::Cleaned {
             ensure!(
                 site.is_none() && !registered,
@@ -101,7 +112,7 @@ impl StudioRuntime {
                 site.is_none() && !registered,
                 "previous archive Git removal outcome is unresolved; possible replacement preserved"
             );
-        } else {
+        } else if !unregistered {
             let mut intent = current.clone();
             intent.transition(WorktreeLeaseState::CleanupRequested);
             leases.record_durable(intent).await?;

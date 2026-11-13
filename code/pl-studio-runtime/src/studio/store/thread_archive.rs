@@ -20,6 +20,8 @@ pub(in crate::studio) struct ArchiveWorktree {
     pub identity: WorkspaceIdentity,
     pub common_dir: Option<String>,
     pub removal_started: bool,
+    /// Responsibility settled. Permanent deletion may preserve an unregistered path while
+    /// releasing its stale association; archive requires physical removal.
     pub cleaned: bool,
 }
 

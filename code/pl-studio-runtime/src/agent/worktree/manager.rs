@@ -126,6 +126,23 @@ impl WorktreeManager {
         ))
     }
 
+    /// Absence releases a deletion association, never authorizes deleting leftover files.
+    pub(crate) async fn is_registered(
+        &self,
+        handle: &WorktreeHandle,
+    ) -> Result<bool, WorktreeError> {
+        self.validate_handle(handle)?;
+        let base = self.repo_root.to_string_lossy();
+        let target = super::backend::resolved_git_path(&handle.path.to_string_lossy(), &base)
+            .ok_or_else(|| {
+                WorktreeError::IdentityMismatch("managed path cannot be normalized".into())
+            })?;
+        Ok(self.registered_worktrees().await?.iter().any(|entry| {
+            super::backend::resolved_git_path(&entry.path, &base).as_deref()
+                == Some(target.as_str())
+        }))
+    }
+
     pub(crate) async fn git_common_dir(
         &self,
         path: &Path,
