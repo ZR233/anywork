@@ -77,6 +77,8 @@ Windows 运行 bundle 统一由工程入口收集：包含应用可执行文件�
 
 `finalize` 阶段仅对最终定稿字节生成 SHA-256、Minisign 签名、校验和文件与更新清单；`verify` 阶段独立复核文件集合、版本号、字节长度、哈希摘要、签名与清单一致性。
 
+打包编译器至少使用 Inno Setup 6.7.0（`RedirectionGuard` 指令自该版本提供），CI 缺少编译器时安装固定的 6.7.1。Windows 安装器仍接纳已发布客户端的 `/ANYWORKUPDATE=exit`，等待其 `/ANYWORKWAITPID` 退出后覆盖文件且不重启；新客户端仅发送 `/ANYWORKUPDATE=1`，安装后重启。此边界服务旧客户端升级，不恢复新客户端的普通退出安装行为。
+
 ### Linux Debian 包与兼容边界
 
 Linux `stage` 同样显式消费版本匹配的预构建 bundle，不隐式执行 Flutter、Rust bridge 或辅助进程编译。使用 Debian 官方打包与共享库依赖分析能力，拒绝缺少输入、架构错误、无法解析的系统库及已有 staging 覆盖。包架构为 `amd64`；应用完整安装于 `/opt/anywork`，由 `/usr/bin/anywork` 提供命令入口，系统桌面目录安装既有应用入口与图标。完整数据目录、Flutter/bridge/插件运行库、两种架构的辅助进程资源、许可证与第三方许可说明一并交付，不写用户配置或在用户目录注册另一份安装。

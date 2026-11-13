@@ -1,3 +1,7 @@
+#if Ver < EncodeVer(6, 7, 0)
+  #error Inno Setup 6.7.0 or newer is required for RedirectionGuard
+#endif
+
 #ifndef MyAppVersion
   #error MyAppVersion is required
 #endif
@@ -93,7 +97,9 @@ Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: ShouldRestartAfterUpdat
 [Code]
 function IsAppUpdate: Boolean;
 begin
-  Result := ExpandConstant('{param:ANYWORKUPDATE|0}') = '1';
+  { Published Windows clients still hand off exit-only updates with this value. }
+  Result := (ExpandConstant('{param:ANYWORKUPDATE|0}') = '1') or
+    (ExpandConstant('{param:ANYWORKUPDATE|0}') = 'exit');
 end;
 
 function ShouldRestartAfterUpdate: Boolean;
@@ -133,6 +139,7 @@ begin
     if not Result then Log('Could not observe the old application process; refusing installation.');
     Exit;
   end;
+  Log(Format('Waiting for application process %d to exit.', [ProcessId]));
   WaitResult := WaitForSingleObject(ProcessHandle, 30000);
   CloseHandle(ProcessHandle);
   Result := WaitResult = 0; { WAIT_OBJECT_0 }

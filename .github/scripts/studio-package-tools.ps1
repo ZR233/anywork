@@ -10,9 +10,9 @@ function Install-StudioInnoSetup {
       Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
       Select-Object -First 1
     if ($null -eq $iscc) {
-      choco install innosetup --version=6.4.3 --yes --no-progress
+      choco install innosetup --version=6.7.1 --yes --no-progress
       if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install Inno Setup 6.4.3 (choco exit $LASTEXITCODE)"
+        throw "Failed to install Inno Setup 6.7.1 (choco exit $LASTEXITCODE)"
       }
       $iscc = $isccCandidates |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
@@ -24,7 +24,7 @@ function Install-StudioInnoSetup {
     $isccVersion = [Version](Get-Item -LiteralPath $iscc).VersionInfo.FileVersion
     if ($isccVersion -eq [Version]'0.0.0.0') {
       Write-Warning "Inno Setup at $iscc does not expose meaningful file-version metadata; package staging will validate the compiler"
-    } elseif ($isccVersion.Major -ne 6 -or $isccVersion -lt [Version]'6.4.3') {
+    } elseif ($isccVersion.Major -ne 6 -or $isccVersion -lt [Version]'6.7.0') {
       throw "Unsupported Inno Setup compiler version $isccVersion at $iscc"
     } else {
       Write-Output "Using Inno Setup compiler $isccVersion at $iscc"

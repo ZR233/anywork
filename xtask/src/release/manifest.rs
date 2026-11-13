@@ -463,11 +463,31 @@ mod feed_tests {
             both.platforms["linux-x86_64"].sha256,
             sha256_file(&directory.path().join(&deb)).unwrap()
         );
-        let old = manifest_for(&version, 123, &setup, 15, "a".repeat(64));
-        let encoded = serde_json::to_value(old).unwrap();
+        let asset = &both.platforms["windows-x86_64"];
+        let old = manifest_for(&version, 123, &setup, asset.size, asset.sha256.clone());
+        let encoded = serde_json::to_value(&old).unwrap();
         assert_eq!(encoded["schemaVersion"], 1);
         assert_eq!(encoded["platforms"].as_object().unwrap().len(), 1);
         assert!(encoded["platforms"].get("linux-x86_64").is_none());
+        // Published schema-1 clients validate the old repository path exactly.
+        // Both feeds must describe the same signed installer bytes.
+        assert_eq!(old.platforms.windows_x86_64.size, asset.size);
+        assert_eq!(old.platforms.windows_x86_64.sha256, asset.sha256);
+        assert_eq!(
+            old.platforms.windows_x86_64.url,
+            asset.url.replace("/ZR233/anywork/", "/ZR233/pure-lang/")
+        );
+        assert_eq!(
+            old.platforms.windows_x86_64.signature,
+            asset
+                .signature
+                .replace("/ZR233/anywork/", "/ZR233/pure-lang/")
+        );
+        assert_eq!(
+            old.notes_url,
+            both.notes_url
+                .replace("/ZR233/anywork/", "/ZR233/pure-lang/")
+        );
         fs::write(directory.path().join(&deb), b"changed").unwrap();
         assert_ne!(
             both,

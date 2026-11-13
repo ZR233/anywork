@@ -743,6 +743,15 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Verify Windows installer handoff from published and current clients
+        if: needs.changes.outputs.windows_gui_build == 'true'
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Install-StudioInnoSetup
+          $compiler = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 6\ISCC.exe') |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          .github/scripts/test-windows-updater.ps1 -Compiler $compiler -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'windows-updater')
       - name: Compile the Release AOT application without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
         run: cargo xtask build-gui
