@@ -275,7 +275,7 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
     }
 }
 
-/// `exec`/`write_stdin` 在进程语义之外的结构化失败原因。
+/// `exec_command`/`write_stdin` 在进程语义之外的结构化失败原因。
 ///
 /// 生产者把结构化事实报成 typed 错误而不是只拼一段文本，调用方因此能把"命令按自己声明的输出
 /// 上限被终止"与"退出码失败、超时、取消"分开处理，而不必解析诊断文本。
@@ -442,7 +442,6 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                                 exit_code: Some(exit_code),
                             },
                     }) if *exit_code != 0
-                        && snapshot.supervision_failure.is_none()
                         && snapshot.output_failure.is_none()
                         && snapshot.signal.is_none() =>
                     {

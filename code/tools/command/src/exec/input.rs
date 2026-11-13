@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// `exec` 的结构化输入。
+/// `exec_command` 的结构化输入。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecInput {

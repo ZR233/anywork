@@ -264,7 +264,7 @@ pub struct CommandOutputSizes {
     pub stderr_bytes: u64,
 }
 
-/// 为统一的 `exec` / `write_stdin` 工具提供环境相关能力。
+/// 为统一的 `exec_command` / `write_stdin` 工具提供环境相关能力。
 ///
 /// PL 负责进程表、超时、stdin、输出截断和生命周期；实现只负责将命令映射到
 /// 本地、容器或远程 workspace，并在结束时发布完整输出与 artifact 元数据。

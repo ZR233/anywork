@@ -153,7 +153,8 @@ impl StudioThreadTools {
         if capabilities.exec {
             let exec_definition = ThreadBuiltin::Exec.declaration();
             let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-            let exec = prepare_registration("exec_command", &exec_definition, ToolCallPolicy::DirectOnly)?;
+            let exec =
+                prepare_registration("exec_command", &exec_definition, ToolCallPolicy::DirectOnly)?;
             let stdin =
                 prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)?;
             let archive = store.command_archive(files.clone(), host_scratch);

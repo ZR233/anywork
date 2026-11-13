@@ -1,7 +1,5 @@
-//! Linux process evidence for the composed Lua -> Thread -> production worker cancellation path.
+//! Linux process evidence for the composed Lua -> Thread -> production executor cancellation path.
 #![cfg(target_os = "linux")]
-#[path = "support/helper.rs"]
-mod helper;
 #[path = "support/binding_host.rs"]
 mod host;
 use pl_agent_tool::{Tool, ToolHandle};
@@ -57,8 +55,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
 
     let root = tempfile::tempdir().unwrap();
     let definition = pl_tool::exec::exec_definition();
-    let backend = pl_tool::command::LocalCommandBackend::new(root.path())
-        .with_worker_executable(helper::remote_helper_executable());
+    let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
     let command = ThreadExecTool::new(
         Arc::new(backend),
         Arc::new(Archive(root.path().join("archive"))),
@@ -302,7 +299,10 @@ impl CommandOutputArchive for Archive {
             CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
         };
         let mut bytes = tokio::fs::read(path).await.map_err(ToolError::new)?;
-        bytes.truncate(snapshot.capture_offsets.get(stream) as usize);
+        let confirmed = snapshot
+            .confirmed_bytes(stream)
+            .ok_or_else(|| ToolError::new(std::io::Error::other("capture length is unknown")))?;
+        bytes.truncate(usize::try_from(confirmed).map_err(ToolError::new)?);
         let digest = hex::encode(Sha256::digest(&bytes));
         tokio::fs::create_dir_all(&self.0)
             .await
@@ -322,12 +322,9 @@ impl CommandOutputArchive for Archive {
 
 #[tokio::test]
 async fn deadline_cancellation_and_close_join_real_lua_child_processes() {
-    // Build/locate the matched production helper before starting any execution deadline.
-    let worker = helper::remote_helper_executable();
     for action in ["deadline", "cancel", "close"] {
         let root = tempfile::tempdir().unwrap();
-        let backend =
-            pl_tool::command::LocalCommandBackend::new(root.path()).with_worker_executable(worker);
+        let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
         let definition = pl_tool::exec::exec_definition();
         let prepared =
             prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap();
@@ -405,8 +402,7 @@ async fn deadline_cancellation_and_close_join_real_lua_child_processes() {
 #[tokio::test]
 async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed() {
     let root = tempfile::tempdir().unwrap();
-    let backend = pl_tool::command::LocalCommandBackend::new(root.path())
-        .with_worker_executable(helper::remote_helper_executable());
+    let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
     let definition = pl_tool::exec::exec_definition();
     let command = ThreadExecTool::new(
         Arc::new(backend),
