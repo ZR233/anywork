@@ -4,7 +4,7 @@ pub fn exec_definition() -> pl_agent_tool::ToolDefinition {
         "content":{"type":"string"},"wasTruncated":{"type":"boolean"}
     },"required":["content"],"additionalProperties":true});
     pl_agent_tool::ToolDefinition::json("exec_command",
-        "Run one independent shell. Returns a process record: inspect exitCode (0 is success), stdout.content and stderr.content. Nonzero exits retain their observed output. cwd defaults to the workspace root. timeoutSeconds includes startup and execution; defaults normally suffice. maxOutputChars budgets combined stdout+stderr UTF-8 text (default and maximum 65536), with metadata additional. stdoutFile/stderrFile are exact workspace-root-relative capture paths: read with cwd omitted or '.', even if the original command used another cwd. Inspect processStarted, diagnostic, captureStatus and archiveStatus on a tool failure; preserve completed effects and use the original receipt to recover output.",
+        "Run a shell command. Read exitCode (0=success), stdout.content and stderr.content. rg/grep exit 1 means no matches; inspect it without reruns, echo or || true. Options precede --, then pattern and quoted paths: rg -n -F -g '!vendor/**' -- 'literal' 'path'. Read truncated stdoutFile/stderrFile relative to the workspace root, with cwd omitted or '.'. On failure inspect processStarted, diagnostic, captureStatus and archiveStatus; preserve completed effects.",
         pl_agent_tool::typed::input_schema_for::<ExecInput>())
         .expect("static tool definition")
         .with_output_schema(serde_json::json!({"type":"object","properties":{

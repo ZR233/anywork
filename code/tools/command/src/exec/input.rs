@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub struct ExecInput {
     /// The shell command to execute.
     pub command: String,
-    /// Optional working directory. Use `.` for the workspace root or a workspace-relative path
+    /// Working directory, defaulting to the workspace root. Use `.` or a workspace-relative path
     /// such as `src`. SSH execution rejects absolute paths; local absolute paths remain subject to
     /// the active permission and workspace policy.
     #[serde(default)]
