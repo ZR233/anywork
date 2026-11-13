@@ -304,7 +304,7 @@ struct State {
     s2_close_broadcast: Option<tokio::sync::oneshot::Sender<()>>,
     operation_gates: BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
     sealed_agents: BTreeMap<String, usize>,
-    agent_services: Option<agent_services::AgentServices>,
+    agent_services: Option<Arc<agent_services::AgentServices>>,
     observation: Option<observation::AssemblyObservation>,
     child_factory: Option<children::ChildFactory>,
     closing: bool,
