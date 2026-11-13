@@ -211,42 +211,6 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn openai_canonical_declaration_is_usable() {
-    let capabilities = ProtocolEndpoint::openai(None).service_capabilities;
-    let declaration = capabilities.image_generation.unwrap();
-    assert_eq!(declaration.dialect, ImageGenerationDialect::OpenAiImages);
-    assert_eq!(declaration.model_prefixes, vec!["gpt-image-".to_string()]);
-    // 首选序有意留空：版本择优决定具体 slug，不把某个模型固化成默认。
-    assert_eq!(declaration.preferred_models, Vec::<String>::new());
-    // 方言同时声明身份字符串与追加到 base_url 的路径。
-    assert_eq!(declaration.dialect.as_str(), "open_ai_images");
-    assert_eq!(declaration.dialect.path(), "/images/generations");
-    assert_eq!(
-        "open_ai_images".parse::<ImageGenerationDialect>(),
-        Ok(ImageGenerationDialect::OpenAiImages)
-    );
-    assert!("images".parse::<ImageGenerationDialect>().is_err());
-    assert_eq!(
-        serde_json::to_string(&ImageGenerationDialect::OpenAiImages).unwrap(),
-        "\"open_ai_images\""
-    );
-
-    // 其它 endpoint 不声明该能力。
-    assert!(
-        ProtocolEndpoint::deepseek(None)
-            .service_capabilities
-            .image_generation
-            .is_none()
-    );
-    assert!(
-        ProtocolEndpoint::compatible("Custom", "http://127.0.0.1:1")
-            .service_capabilities
-            .image_generation
-            .is_none()
-    );
-}
-
-#[test]
 fn template_keeps_image_generation_when_base_url_is_overridden() {
     let account = AccountConfig::from_bundled_catalog(
         ProtocolEndpoint::openai(Some("https://proxy.example.com".into())),

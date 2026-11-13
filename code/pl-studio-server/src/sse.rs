@@ -1227,7 +1227,6 @@ mod tests {
             ),
             ("DisplayBlockRef", &["databaseId", "blockId"][..]),
             ("DisplayRecord", &["atom", "contentSource"][..]),
-            ("WorkTiming", &["startedAt"][..]),
         ] {
             let required = schemas[schema]["required"]
                 .as_array()
@@ -1238,6 +1237,26 @@ mod tests {
                     "{schema}.{field}"
                 );
             }
+        }
+        let timing = &schemas["WorkTiming"];
+        for field in ["startedAt", "finishedAt"] {
+            let property = &timing["properties"][field];
+            let types = property["type"]
+                .as_array()
+                .with_context(|| format!("missing nullable type for WorkTiming.{field}"))?;
+            assert!(
+                types.len() == 2
+                    && types.iter().any(|kind| kind == "integer")
+                    && types.iter().any(|kind| kind == "null"),
+                "WorkTiming.{field} must preserve known or unknown Unix seconds"
+            );
+            assert_eq!(property["format"], "int64");
+            assert!(
+                !timing["required"]
+                    .as_array()
+                    .is_some_and(|required| required.iter().any(|name| name == field)),
+                "WorkTiming.{field} must accept imported snapshots without clock evidence"
+            );
         }
         for (schema, property, target) in [
             ("OpenRequest", "demand", "ReadDemand"),

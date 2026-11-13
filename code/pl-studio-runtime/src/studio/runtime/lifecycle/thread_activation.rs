@@ -247,5 +247,13 @@ mod future_sizes {
                 )
             },
         );
+        // These commands wait for lifecycle admission while retaining their real workers.
+        // The worker belongs on the heap before that wait, not inside each caller's future.
+        check("thread archive", |runtime: &'static StudioRuntime| {
+            runtime.archive_thread("size".into(), "size".into())
+        });
+        check("workspace archive", |runtime: &'static StudioRuntime| {
+            runtime.archive_project("size")
+        });
     }
 }

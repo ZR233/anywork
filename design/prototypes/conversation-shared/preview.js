@@ -7,7 +7,8 @@
   } = app.ui;
   const {
     MenuManager, PromptComposerCard, renderTopbar,
-    buildPreparationHTML, renderStartStage, buildAgentReadOnlyDock
+    buildPreparationHTML, renderStartStage, buildAgentReadOnlyDock,
+    describeContextNotes
   } = app.composer;
 
   let instanceSequence = 0;
@@ -36,21 +37,21 @@
     }
     if (page === 'start') {
       return {
-        title: '创建期与运行期组件共享与分层',
+        title: '创建期组件融合与双层创建台',
         items: [
-          ['统一新会话入口', '直接点击侧栏「新建会话」与在项目行点击「+」均进入同一新会话页，仅初始开启位置分别为「无项目」或所点项目。'],
-          ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（项目选择器支持无项目 / 已有项目模糊搜索 / 新建项目，以及本地目录 / 新建工作树、子智能体分发），内层复用统一输入卡。'],
-          ['创建后自动收敛', '首条消息准备完成后直接转入会话页：外层创建栏退役，工作区与分发上移至顶栏只读徽标。']
+          ['统一新会话与模型融合', '去掉外层「糊来帮 / ACP」独立切换，内置模型与外部 ACP 智能体统一收纳在同一模型下拉菜单；动态配置按 3+1 槽位呈现。'],
+          ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（所属项目 / 本地目录 / 新建工作树 / 分发），内层复用统一输入卡。'],
+          ['外部化说明边界', '主展示区仅保留纯净真实产品控件，协议探测详情、SSH 兼容提示与预设规则均汇总在右侧检查器。']
         ]
       };
     }
     if (page === 'composer') {
       return {
-        title: '会话运行期不可配项与零位移交互准则',
+        title: '运行期动态槽位与零位移交互准则',
         items: [
-          ['创建期永久冻结', '所属项目、本地目录 / 独立工作树、子智能体分发在会话创建后收敛至顶栏等高只读标签，不再占用输入区。'],
-          ['等宽极简不可交互态', '运行中锁定模式 / 模型 / 强度；活动工作流空闲时仅锁模式、开放换模。不可配项省略锁标并保留相同控件几何，状态切换零位移。'],
-          ['并发拟稿与定宽主钮', '运行中文本框与附件不锁定，34×34px 定宽主圆钮按状态在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。']
+          ['创建期永久冻结', '所属项目、本地目录 / 独立工作树、子智能体分发（及 ACP 身份）在会话创建后收敛至顶栏等高只读标签。'],
+          ['3+1 动态槽位与单飞确认', '内置与 ACP 模型共享「模式 · 模型 · 思考强度 + ⚙ 调优」底栏，运行中或 ACP 往返确认期间等宽置灰，切换零位移。'],
+          ['并发拟稿与定宽主钮', '运行中文本框与附件（支持图片工具）保持可用，34×34px 定宽主圆钮在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。']
         ]
       };
     }
@@ -75,15 +76,15 @@
     if (page === 'start') {
       return {
         title: '新会话起始页与工作区输入布局',
-        subtitle: '直接点击侧栏「新建会话」与在项目行点击「+」共享同一个新会话页面：外层环境栏左侧直接展示新会话开启在「无项目」还是具体项目，点击即可在「无项目」、支持模糊搜索的「已有项目」列表与「新建项目」之间切换，并配置本地目录 / 新建工作树与子智能体分发。',
-        footerHTML: '外层环境栏收纳会话创建时一次性固定的空间与协作策略（所属项目下拉选择器：支持<code>无项目</code>、<code>已有项目</code>实时模糊搜索与<code>新建项目…</code>向导联动；<code>local</code> 本地目录 / <code>worktree</code> 新建工作树紧凑下拉列表；子智能体分发单层菜单）；内层输入卡与会话运行期共用同一组件实例。'
+        subtitle: '内置模型与外部 ACP 智能体统一收纳在同一模型选择器，动态映射 3+1 配置槽位；外层环境栏管理项目（无项目 / 已有项目搜索 / 新建项目）、工作区与内置分发，协议与规则说明统一外置到右侧检查器。',
+        footerHTML: '展示区仅呈现真实产品界面与开发任务；外部检查器汇总 ACP 协议字段、SSH 兼容性说明与预加载触发按钮。'
       };
     }
     if (page === 'composer') {
       return {
         title: '会话运行时输入框与配置锁定交互',
-        subtitle: '展示会话创建后外层创建栏退役、冻结项上移顶栏只读徽标，以及运行中、活动工作流、停止恢复、模型不可用、机器人接管与子智能体只读视图下的输入框可配性边界。',
-        footerHTML: '会话运行中文本框与附件草稿始终允许并发编辑；当前不可更改的选择器省略锁图标并保持相同触发器几何尺寸，直接以无框置灰的不可交互形态呈现（悬停 Tooltip 说明原因，状态切换不产生位移）。右侧 34×34px 唯一主圆钮按权威运行态与草稿状态在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。'
+        subtitle: '展示内置模型与外部 ACP 会话运行期的 3+1 动态槽位、⚙ 调优二级弹层、往返单飞确认态、运行期等宽不可交互态、并发草稿及子智能体只读底栏。',
+        footerHTML: '会话运行中文本框与可用附件始终允许并发编辑；当前不可更改的槽位省略锁图标保持等宽置灰（状态切换 0px 位移），所有协议及规则说明置于右侧检查器。'
       };
     }
     return {
@@ -335,6 +336,8 @@
                 </div>
               </div>
               <div class="cv-scenario-hint"></div>
+              <div class="cv-external-notes" aria-label="外部设计说明" hidden></div>
+              <div class="cv-quick-presets" aria-label="一键对比内置与 ACP 配置形态"></div>
               <div class="cv-demo-controls"></div>
               <div class="cv-playback-box" hidden>
                 <div class="cv-demo-progress">
@@ -466,8 +469,40 @@
       this.scenarioTrigger = root.querySelector('[data-menu-trigger="scenario"]');
       this.scenarioMenu = root.querySelector('[data-menu-panel="scenario"]');
       this.scenarioValueEl = root.querySelector('.cv-m3-select-value');
+      this.externalNotesEl = root.querySelector('.cv-external-notes');
+      this.quickPresetsEl = root.querySelector('.cv-quick-presets');
       this.playbackBox = root.querySelector('.cv-playback-box');
       this.matrixListEl = root.querySelector('.cv-matrix-list');
+
+      const presetItems = this.page === 'start'
+        ? [
+            { id: 'start-project', label: '内置默认' },
+            { id: 'start-acp-codex', label: 'Codex (动态强度)' },
+            { id: 'start-acp-agy', label: 'Antigravity (⚙调优)' },
+            { id: 'start-acp-grok', label: 'Grok (146/纯文本)' },
+            { id: 'start-acp-deferred', label: '首条激活态' },
+            { id: 'start-acp-ssh-blocked', label: 'SSH 阻断' }
+          ]
+        : [
+            { id: 'idle-editable', label: '内置空闲' },
+            { id: 'acp-codex-idle', label: 'Codex ACP' },
+            { id: 'acp-agy-extra', label: 'Antigravity ⚙调优' },
+            { id: 'acp-claude-legacy', label: 'Claude 旧版' },
+            { id: 'acp-config-pending', label: 'ACP 确认中' },
+            { id: 'acp-running-locked', label: 'ACP 运行锁' }
+          ];
+      if (this.quickPresetsEl) {
+        this.quickPresetsEl.innerHTML = presetItems.map(p => `
+          <button type="button" class="cv-preset-chip" data-quick-preset="${escape(p.id)}">${escape(p.label)}</button>
+        `).join('');
+        this.quickPresetsEl.querySelectorAll('[data-quick-preset]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const id = btn.dataset.quickPreset;
+            controller.load(id);
+            this.sidebar?.applyScenarioPreset(id);
+          });
+        });
+      }
 
       // Inspector controls
       const controlsHost = root.querySelector('.cv-demo-controls');
@@ -475,13 +510,18 @@
       this.stepButton = button('单步', 'step-forward', () => controller.step(), 'cv-tonal');
       this.finishStopButton = button('完成停止收束', 'check', () => controller.completeStoppingCleanup(), 'cv-primary');
       this.failureButton = button('模拟失败', 'circle-alert', () => controller.fail());
+      this.probeAcpButton = button('模拟预加载配置', 'sparkles', () => {
+        controller.enableAcpStartProbe();
+        this.toast('已模拟预加载配置');
+      }, 'cv-tonal');
+      this.probeAcpButton.hidden = true;
       this.sidebarBtn = button('侧栏开关', 'panel-left', () => this.toggleSidebar());
       this.resetButton = button('重置', 'rotate-ccw', () => {
         const sc = controller.state.scenario;
         controller.load(sc);
         this.sidebar?.applyScenarioPreset(sc);
       });
-      controlsHost.append(this.playButton, this.stepButton, this.finishStopButton, this.failureButton, this.sidebarBtn, this.resetButton);
+      controlsHost.append(this.playButton, this.stepButton, this.finishStopButton, this.failureButton, this.probeAcpButton, this.sidebarBtn, this.resetButton);
 
       this.dialog = root.querySelector('.cv-detail-dialog');
       const close = button('关闭', 'x', () => this.dialog.close(), 'cv-quiet cv-icon-only');
@@ -655,21 +695,7 @@
     }
 
     renderLockNotice() {
-      const s = this.controller.state;
-      if (s.stage !== 'session' || !s.lockNotice || s.activeAgentId !== 'root' || s.pending) {
-        this.lockNoticeHost.replaceChildren();
-        return;
-      }
-      const banner = node(`
-        <div class="cv-lock-notice ${s.lockNoticeTone === 'warning' ? 'is-warning' : ''}" role="status">
-          ${icon(s.lockNoticeTone === 'warning' ? 'triangle-alert' : 'info')}
-          <span class="cv-lock-notice-text">${escape(s.lockNotice)}</span>
-          <button type="button" class="cv-lock-notice-close" aria-label="关闭锁定说明">${icon('x')}</button>
-        </div>
-      `);
-      banner.querySelector('button').addEventListener('click', () => this.controller.dismissLockNotice());
-      this.lockNoticeHost.replaceChildren(banner);
-      icons(banner);
+      this.lockNoticeHost.replaceChildren();
     }
 
     renderLive() {
@@ -678,7 +704,7 @@
       if (isSubagent) {
         const subAgent = this.controller.currentAgent();
         if (subAgent.status === 'running') {
-          this.liveHost.innerHTML = `<section class="cv-live" aria-label="子智能体当前状态"><div class="cv-thinking-header">${activityIndicator('restingCat')}<span class="cv-live-title">${escape(subAgent.role)} 正在核查运行期选择器锁定规则…</span><span class="cv-tabular">执行了 4 秒</span></div></section>`;
+          this.liveHost.innerHTML = `<section class="cv-live" aria-label="子智能体当前状态"><div class="cv-thinking-header">${activityIndicator('restingCat')}<span class="cv-live-title">${escape(subAgent.role)} 正在执行…</span><span class="cv-tabular">执行了 4 秒</span></div></section>`;
           icons(this.liveHost);
         } else {
           this.liveHost.replaceChildren();
@@ -773,9 +799,9 @@
       const oldTop = this.history.scrollTop;
 
       if (items.length === 0 && this.historyNodes.size === 0 && !this.historyList.firstChild) {
-        const empty = node(`<div class="cv-empty">${icon('sparkles')}<h2>已建空白会话</h2><p>创建期工作区与分发已锁定在顶栏，输入第一条消息开始本轮工作。</p></div>`);
+        const empty = node(`<div class="cv-empty">${icon('sparkles')}<h2>新会话已就绪</h2></div>`);
         empty.append(button('填入示例任务', 'arrow-up-right', () => {
-          this.controller.setDraft('梳理会话组件化结构，并完整演示运行期输入框选择器的锁定与恢复。');
+          this.controller.setDraft('梳理 SQLite 连接池取消路径并补充回归测试。');
           this.composerCard.textarea.focus();
         }));
         this.historyList.append(empty);
@@ -795,9 +821,7 @@
       });
 
       this.historyStart.hidden = items.length === 0;
-      this.historyStart.textContent = isSubagent
-        ? `子智能体 ${agent.role} · 只读会话历史`
-        : '今天 · 主会话已结束记录';
+      this.historyStart.textContent = isSubagent ? agent.role : '今天';
 
       this.renderLive();
       this.renderLockNotice();
@@ -817,13 +841,16 @@
       }
 
       // Status footer
-      const modeLabel = this.controller.currentMode().label;
+      const schema = this.controller.getComposerSchema();
+      const modeLabel = state.backendKind === 'acp'
+        ? (schema.modeSlot ? schema.modeSlot.currentLabel : `ACP · ${schema.account?.name || 'Agent'}`)
+        : this.controller.currentMode().label;
       const wf = state.frozenThread.workflow;
       const leftParts = [];
       if (isSubagent) {
         leftParts.push(`<span class="cv-workflow-pill is-active">${icon('git-fork')}<span>子智能体 · ${escape(agent.role)}</span></span>`);
-      } else if (wf.active) {
-        leftParts.push(`<span class="cv-workflow-pill is-active" title="活动图工作流进行中，中途锁定模式切换">${icon('workflow')}<span>${escape(wf.stageLabel)}</span></span>`);
+      } else if (wf.active && state.backendKind !== 'acp') {
+        leftParts.push(`<span class="cv-workflow-pill is-active" title="${escape(wf.stageLabel)}">${icon('workflow')}<span>${escape(wf.stageLabel)}</span></span>`);
       } else {
         leftParts.push(`<span class="cv-workflow-pill">${escape(modeLabel)}</span>`);
       }
@@ -840,13 +867,8 @@
       const canCompact = !isSubagent && !state.live && !state.pending && state.transitionPhase === 'none' && state.history.length > 0;
       this.compressButton.disabled = !canCompact;
       this.compressButton.querySelector('span').textContent = state.retryCompression ? '重试压缩' : '立即压缩';
-      this.contextExplanation.textContent = isSubagent
-        ? '子智能体上下文由运行时按任务自动管理，不支持手动触发压缩。'
-        : (state.live || state.pending || state.transitionPhase !== 'none')
-          ? '当前会话正在执行或等待处理，轮次空闲后可手动触发强制压缩。'
-          : state.history.length
-            ? '强制压缩复用自动压缩路径，不发送隐藏用户消息，并保留原始历史回执。'
-            : '有历史记录后可手动压缩上下文。';
+      this.contextExplanation.hidden = true;
+      this.contextExplanation.textContent = '';
 
       if (reason === 'reset' && state.scenario === 'read-images' && !isSubagent) {
         this.history.scrollTop = 0;
@@ -885,9 +907,34 @@
         this.root.querySelector('.cv-scenario-hint').textContent = currentScenario.hint;
       }
 
+      if (this.externalNotesEl) {
+        const extNotes = describeContextNotes(this.controller);
+        if (extNotes.length > 0) {
+          this.externalNotesEl.hidden = false;
+          this.externalNotesEl.innerHTML = extNotes.map(([title, body]) => `
+            <div class="cv-ext-note-item">
+              <strong>${escape(title)}</strong>
+              <span>${escape(body)}</span>
+            </div>
+          `).join('');
+        } else {
+          this.externalNotesEl.hidden = true;
+          this.externalNotesEl.replaceChildren();
+        }
+      }
+
+      if (this.quickPresetsEl) {
+        this.quickPresetsEl.querySelectorAll('[data-quick-preset]').forEach(btn => {
+          btn.classList.toggle('is-active', btn.dataset.quickPreset === state.scenario);
+        });
+      }
+
       const inRootSession = state.stage === 'session' && state.activeAgentId === 'root';
       const hasQueue = inRootSession && !state.pending && state.transitionPhase === 'none' && state.cursor < state.queue.length;
 
+      if (this.probeAcpButton) {
+        this.probeAcpButton.hidden = !(state.stage === 'start' && state.backendKind === 'acp' && state.acpDeferredProbe);
+      }
       this.playButton.hidden = !inRootSession;
       this.stepButton.hidden = !inRootSession;
       this.failureButton.hidden = !inRootSession;
@@ -921,51 +968,75 @@
       }
 
       // Live Configuration Mutability Matrix
+      const schema = locks.schema;
       let wsStatus;
       if (state.stage === 'start') {
-        if (locks.prepRunning) wsStatus = ['准备期已锁', 'locked'];
+        if (locks.acpIssue) wsStatus = ['SSH 阻断 ACP 启动', 'warn'];
+        else if (locks.prepRunning) wsStatus = ['准备期已锁', 'locked'];
+        else if (state.backendKind === 'acp') wsStatus = ['ACP · 无内部子分发', 'open'];
         else if (state.targetType === 'standalone') wsStatus = ['无项目 · 可切换项目', 'open'];
         else wsStatus = ['外层环境栏可配', 'open'];
       } else {
-        wsStatus = ['创建冻结 · 顶栏只读', 'frozen'];
+        wsStatus = [state.backendKind === 'acp' ? '创建冻结 · ACP 顶栏标签' : '创建冻结 · 顶栏只读', 'frozen'];
       }
 
       let modeStatus;
       if (locks.isSubagent) modeStatus = ['子会话只读', 'frozen'];
-      else if (locks.modeEditable) modeStatus = ['可切换', 'open'];
-      else if (!locks.isStart && state.frozenThread.workflow.active && !locks.turnBusy) modeStatus = ['已锁 · 工作流进行中', 'locked'];
+      else if (schema.deferred) modeStatus = ['待首次启动后获取', 'locked'];
+      else if (!locks.modeSupported) modeStatus = ['协议未返回 · 槽位省略', 'locked'];
+      else if (locks.configPending && state.acpConfigPending?.configId === schema.modeSlot?.id) modeStatus = ['等待 ACP 确认中…', 'warn'];
+      else if (locks.modeEditable) modeStatus = [schema.modeSlot?.kind === 'acp-legacy' ? '可切（legacy modes）' : '可切换', 'open'];
+      else if (!locks.isStart && state.frozenThread.workflow.active && !locks.isAcp) modeStatus = ['已锁 · 工作流进行中', 'locked'];
       else modeStatus = ['已锁 · 会话运行中', 'locked'];
 
       let modelStatus;
       if (locks.isSubagent) modelStatus = ['冻结路由 · 只读', 'frozen'];
-      else if (!locks.isStart && state.frozenThread.botManaged) modelStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (!locks.isStart && state.frozenThread.botManaged && !locks.isAcp) modelStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (locks.configPending && state.acpConfigPending?.configId === schema.modelSlot?.id) modelStatus = ['等待 ACP 确认中…', 'warn'];
+      else if (locks.isAcp && !locks.isStart && !locks.modelSupported) modelStatus = ['协议未暴露模型 · 只读胶囊', 'frozen'];
       else if (!locks.isStart && !state.frozenThread.routeAvailable) modelStatus = ['可换模（当前不可用）', 'warn'];
-      else if (locks.modelEditable) modelStatus = ['可切换（下轮生效）', 'open'];
+      else if (locks.modelEditable) modelStatus = [locks.isAcp ? (locks.isStart ? '内置+ACP 统一可换' : '可切该 ACP 子模型') : '可切换（下轮生效）', 'open'];
       else modelStatus = ['已锁 · 会话运行中', 'locked'];
 
       let effortStatus;
       if (locks.isSubagent) effortStatus = ['冻结路由 · 只读', 'frozen'];
-      else if (!locks.isStart && state.frozenThread.botManaged) effortStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (!locks.isStart && state.frozenThread.botManaged && !locks.isAcp) effortStatus = ['已锁 · 机器人统一设置', 'locked'];
+      else if (schema.deferred) effortStatus = ['待首次握手获取', 'locked'];
+      else if (locks.configPending && state.acpConfigPending?.configId === schema.thoughtSlot?.id) modeStatus && (effortStatus = ['等待 ACP 确认中…', 'warn']);
       else if (!locks.effortSupported) effortStatus = ['已锁 · 模型无此参数', 'locked'];
       else if (locks.effortEditable) effortStatus = ['可切换', 'open'];
       else effortStatus = ['已锁 · 会话运行中', 'locked'];
 
+      const extraCount = schema.extraOptions.length;
+      let extraStatus = null;
+      if (extraCount > 0) {
+        if (locks.configPending && schema.extraOptions.some(o => o.id === state.acpConfigPending?.configId)) {
+          extraStatus = [`同步中 · ${extraCount} 项`, 'warn'];
+        } else {
+          extraStatus = [locks.extraEditable ? `可调 · ${extraCount} 项动态参数` : `已锁 · ${extraCount} 项`, locks.extraEditable ? 'open' : 'locked'];
+        }
+      }
+
       let composerStatus;
       if (locks.isSubagent) composerStatus = ['只读停靠面板', 'frozen'];
+      else if (locks.acpIssue) composerStatus = ['SSH+ACP 启动已阻断', 'warn'];
       else if (state.pending) composerStatus = ['问答停靠（草稿已暂存）', 'locked'];
       else if (action.kind === 'stopping') composerStatus = ['正在停止（过渡锁）', 'locked'];
       else if (action.kind === 'continuing') composerStatus = ['正在继续…', 'locked'];
       else if (!locks.isStart && !state.frozenThread.routeAvailable) composerStatus = ['草稿可写 · 发送已阻塞', 'warn'];
+      else if (!schema.imageSupported) composerStatus = [`纯文本模式（禁传图片）`, 'open'];
       else if (action.kind === 'stop') composerStatus = ['可并发拟稿 · 主钮「停止」', 'open'];
       else if (action.kind === 'sendAndContinue') composerStatus = ['主钮「发送并继续 ↑」', 'open'];
       else if (action.kind === 'continue') composerStatus = ['主钮「▶ 继续」', 'open'];
       else composerStatus = [action.enabled ? '主钮「发送 ↑」就绪' : '可编辑（空草稿禁用发送）', 'open'];
 
       const matrixRows = [
+        ['后端引擎', locks.isAcp ? `ACP · ${schema.account?.name || 'Agent'}` : '糊来帮内置', locks.isAcp ? 'open' : 'frozen'],
         ['项目 / 工作区 / 分发', ...wsStatus],
         ['工作模式', ...modeStatus],
         ['主智能体模型', ...modelStatus],
         ['思考强度', ...effortStatus],
+        ...(extraStatus ? [['⚙ 调优参数', ...extraStatus]] : []),
         ['输入与主操作', ...composerStatus]
       ];
 
@@ -1005,11 +1076,9 @@
       }
 
       if (reason === 'notice') {
-        if (state.stage === 'start') {
-          renderStartStage(this.startStageEl, this.controller, this.composerCard, this.menuManager, this.composerHelpers);
-        } else {
-          this.renderLockNotice();
-        }
+        if (state.lockNotice) this.toast(state.lockNotice);
+        if (state.stage !== 'start') this.renderLockNotice();
+        this.renderInspector();
         return;
       }
 

@@ -132,7 +132,7 @@
       {
         id: 'thr-questions',
         workspaceId: 'pure-lang-pure',
-        title: '确认侧边栏组件化与二级菜单交互边界',
+        title: '确认工作区 SQLite 迁移回滚路径与锁定策略',
         worktree: true,
         branch: 'anywork/thr-01jd4p',
         workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jd4p\\session',
@@ -146,7 +146,7 @@
       {
         id: 'thr-workflow',
         workspaceId: 'pure-lang-pure',
-        title: '按设计稿完善账号管理页面并验证流程',
+        title: '补全凭据迁移状态校验与单测覆盖',
         worktree: true,
         branch: 'anywork/thr-01jb9m',
         workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jb9m\\session',
@@ -156,6 +156,36 @@
         archived: false,
         status: 'idle',
         updatedLabel: '26 分钟前'
+      },
+      {
+        id: 'thr-acp-codex',
+        workspaceId: 'pure-lang-pure',
+        title: '审查 pl-studio-bridge 线程调度边界与错误恢复',
+        worktree: false,
+        branch: null,
+        workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure',
+        delegationSummary: '外部 ACP · Codex CLI',
+        acpBadge: 'Codex',
+        scenario: 'acp-codex-idle',
+        pinned: false,
+        archived: false,
+        status: 'idle',
+        updatedLabel: '42 分钟前'
+      },
+      {
+        id: 'thr-acp-agy',
+        workspaceId: 'pure-lang-pure',
+        title: '排查模型流式工具调用并发超时与取消逻辑',
+        worktree: true,
+        branch: 'anywork/thr-01jag7',
+        workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jag7\\session',
+        delegationSummary: '外部 ACP · Antigravity',
+        acpBadge: 'AGY',
+        scenario: 'acp-agy-extra',
+        pinned: false,
+        archived: false,
+        status: 'idle',
+        updatedLabel: '1 小时前'
       },
       {
         id: 'thr-ci-deb',
@@ -523,7 +553,10 @@
           branch: ft.branch || null,
           workspacePath: ft.workspacePath,
           delegationSummary: ft.delegationSummary || '自动选模 · 平衡',
-          scenario: 'workgroup',
+          acpBadge: ft.backendKind === 'acp' ? (ft.acpAccountName || 'ACP') : '',
+          scenario: ft.backendKind === 'acp'
+            ? (ft.acpAccountId === 'acp.agy' ? 'acp-agy-extra' : 'acp-codex-idle')
+            : 'workgroup',
           pinned: false,
           archived: false,
           status: 'running',
@@ -738,6 +771,10 @@
         ? `<span class="sb-slot sb-worktree-slot is-worktree" title="独立 Git 工作树${thread.branch ? ' · ' + escape(thread.branch) : ''}">${lucideIcon('git-branch')}</span>`
         : (thread.pinned ? `<span class="sb-slot sb-worktree-slot is-empty" aria-hidden="true"></span>` : '');
 
+      const acpBadgeHTML = thread.acpBadge
+        ? `<span class="sb-acp-pill" title="外部 ACP 会话：${escape(thread.acpBadge)}">${escape(thread.acpBadge)}</span>`
+        : '';
+
       return `
         <div
           class="sb-thread-row ${isSelected ? 'is-active' : ''} ${isMenuOpen ? 'is-menu-open' : ''}"
@@ -752,6 +789,7 @@
             data-thread-id="${escape(thread.id)}">
             ${statusSlotHTML}
             <span class="sb-thread-title">${escape(title)}</span>
+            ${acpBadgeHTML}
           </button>
           <div class="sb-thread-meta">
             ${pinSlotHTML}

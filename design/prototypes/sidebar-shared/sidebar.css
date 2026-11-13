@@ -733,6 +733,21 @@
   color: var(--sb-warning);
 }
 
+.sb-acp-pill {
+  flex-shrink: 0;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(85, 121, 140, 0.12);
+  color: var(--sb-blue-accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
 .sb-thread-status.is-attention svg {
   width: 14.5px;
   height: 14.5px;

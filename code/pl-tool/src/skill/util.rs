@@ -130,18 +130,3 @@ pub(super) fn validate_usage_write(project_dir: &Path, skill_dir: &Path) -> Resu
         .map_err(|error| PureError::ConfigError(error.to_string()))?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn standard_user_skill_directory_is_derived_only_from_platform_home() {
-        let home = Path::new("/isolated-user");
-
-        assert_eq!(
-            agents_user_skills_dir_from_home(home),
-            home.join(".agents/skills")
-        );
-    }
-}

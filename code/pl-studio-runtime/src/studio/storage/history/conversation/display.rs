@@ -46,7 +46,7 @@ pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeade
     );
     if let Some(pos) = header.history_pos {
         ensure!(
-            pos > 0 && header.boundary.is_some() && header.sealed && !header.skip_display,
+            pos > 0 && header.sealed && !header.skip_display,
             "published display header is not ready"
         );
     }
@@ -66,7 +66,8 @@ pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeade
             "display member owner differs"
         );
         ensure!(
-            header.sealed == timing.finished_at.is_some(),
+            header.sealed == timing.finished_at.is_some()
+                || (header.sealed && timing.started_at.is_none()),
             "display timing and boundary differ"
         );
         ensure!(
@@ -1590,7 +1591,7 @@ mod tests {
         let delta = owner.prepare(1, 10, &[atom], &[ended], std::slice::from_ref(&item))?;
         assert!(
             matches!(&delta.blocks[0].header.body, DisplayBlockBody::Work { timing: summary, .. }
-        if summary.started_at == 10 && summary.finished_at.is_none())
+        if summary.started_at == Some(10) && summary.finished_at.is_none())
         );
         db.execute_unprepared("CREATE TRIGGER reject_display BEFORE INSERT ON conversation_display_members BEGIN SELECT RAISE(ABORT,'display rejection'); END;").await?;
         let tx = db.begin().await?;
@@ -1619,7 +1620,7 @@ mod tests {
         else {
             unreachable!("created Work above");
         };
-        summary.started_at = 11;
+        summary.started_at = Some(11);
         summary.finished_at = Some(12);
         assert!(verify(&db, &wrong_time).await.is_err());
         let mut contradictory = delta.as_ref().clone();

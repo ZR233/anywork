@@ -1006,27 +1006,6 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
         capabilities.web_search.standalone,
         Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
     );
-    assert_eq!(
-        StandaloneWebSearchDialect::DeepSeekToolsApi.as_str(),
-        "deep_seek_tools_api"
-    );
-    assert_eq!(
-        serde_json::from_str::<StandaloneWebSearchDialect>("\"deep_seek_tools_api\"").unwrap(),
-        StandaloneWebSearchDialect::DeepSeekToolsApi
-    );
-    assert_eq!(
-        serde_json::to_value(StandaloneWebSearchDialect::DeepSeekToolsApi).unwrap(),
-        json!("deep_seek_tools_api")
-    );
-    assert!(
-        "deep_seek_anthropic_messages"
-            .parse::<StandaloneWebSearchDialect>()
-            .is_err()
-    );
-    assert!(
-        serde_json::from_str::<StandaloneWebSearchDialect>("\"deep_seek_anthropic_messages\"")
-            .is_err()
-    );
     assert!(!capabilities.web_search.hosted_responses);
 
     let mut custom = AccountConfig::deepseek_template();

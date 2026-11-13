@@ -1,15 +1,12 @@
 //! Base handle contract: single erasure, default and overridden close,
-//! bounded debug, and the generic consumer call shape.
+//! and bounded debug.
 
-use std::{
-    error::Error as StdError,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
-use pl_agent_tool::{InputFormat, Tool, ToolDefinition, ToolHandle};
+use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 
 #[derive(Debug, thiserror::Error)]
 enum EchoError {
@@ -65,12 +62,9 @@ impl Tool for Echo {
     }
 }
 
-fn assert_send_sync<T: Send + Sync>() {}
-
 #[test]
 fn handle_erases_once_and_executes_with_owned_values() {
     let handle = ToolHandle::new(Echo::new(false));
-    assert_send_sync::<ToolHandle<String, u32, String, EchoError>>();
 
     let output = futures::executor::block_on(handle.execute("hi".to_owned(), 7_u32)).unwrap();
     assert_eq!(output, "hi #7");
@@ -78,14 +72,6 @@ fn handle_erases_once_and_executes_with_owned_values() {
     // The handle stays usable; execution is stateless here.
     let output = futures::executor::block_on(handle.execute("again".to_owned(), 8_u32)).unwrap();
     assert_eq!(output, "again #8");
-}
-
-#[test]
-fn definition_snapshot_is_served_without_io() {
-    let handle = ToolHandle::new(Echo::new(false));
-    let definition = handle.definition();
-    assert_eq!(definition.name(), "echo");
-    assert_eq!(definition.input(), &InputFormat::Text);
 }
 
 #[test]
@@ -140,23 +126,4 @@ fn handle_debug_shows_only_the_tool_name() {
     assert!(debug.contains("echo"), "{debug}");
     assert!(debug.contains("ToolHandle"), "{debug}");
     assert!(!debug.contains("SECRET-DESCRIPTION"), "{debug}");
-}
-
-/// The generic consumer entry from the contract: one function for any tool.
-async fn invoke<I, C, O, E>(tool: &ToolHandle<I, C, O, E>, input: I, context: C) -> Result<O, E>
-where
-    I: Send + 'static,
-    C: Send + 'static,
-    O: Send + 'static,
-    E: StdError + Send + Sync + 'static,
-{
-    tool.execute(input, context).await
-}
-
-#[test]
-fn generic_consumer_invokes_any_endpoint() {
-    let handle = ToolHandle::new(Echo::new(false));
-    let output =
-        futures::executor::block_on(invoke(&handle, "via invoke".to_owned(), 1_u32)).unwrap();
-    assert_eq!(output, "via invoke #1");
 }

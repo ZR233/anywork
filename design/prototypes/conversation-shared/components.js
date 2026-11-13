@@ -657,11 +657,11 @@
       if (key === this.key) return;
       this.key = key;
       this.node.replaceChildren();
-      const header = node(`<div class="cv-dock-header"><span class="cv-dock-symbol">${icon('message-circle-question')}</span><div><b>${escape(pending.title)}</b><span>待决提问期间输入框暂时收起，回答后会保留为只读历史回执</span></div></div>`);
+      const header = node(`<div class="cv-dock-header"><span class="cv-dock-symbol">${icon('message-circle-question')}</span><div><b>${escape(pending.title)}</b></div></div>`);
       header.append(button('停止', 'square', () => controller.stop(), 'cv-quiet'));
       this.node.append(header);
       if (hasStashedDraft) {
-        this.node.append(node(`<div class="cv-draft-stash-note">${icon('info')}<span>你未发送的输入草稿已自动暂存，提交答案或跳过后将原样恢复。</span></div>`));
+        this.node.append(node(`<div class="cv-draft-stash-note">${icon('info')}<span>草稿已暂存</span></div>`));
       }
       const question = pending.questions[pending.index];
       this.node.append(node(`<div class="cv-question-heading"><span>问题 ${pending.index + 1} / ${pending.questions.length}</span><span>${question.multiple ? '可多选' : '单选'}</span></div>`));

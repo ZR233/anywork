@@ -132,6 +132,297 @@
     group.models.map(model => ({ ...model, accountId: group.accountId, accountName: group.accountName }))
   );
 
+  const acpAccounts = [
+    {
+      id: 'acp.codex',
+      name: 'Codex',
+      badge: 'CX',
+      color: '#3d6b5e',
+      specSummary: 'codex-acp · 返回 configOptions（mode + model + thought_level）；切换 gpt-5.4 ↔ gpt-6.1-sol 时服务端动态增删 thought_level 槽位',
+      supportsRemote: false,
+      promptCapabilities: { image: true },
+      defaults: { mode: 'auto', model: 'gpt-5.4', reasoning_effort: 'xhigh' },
+      resolveConfig(rawValues = {}) {
+        const values = { ...this.defaults, ...rawValues };
+        const modelId = values.model || this.defaults.model;
+        const modeId = values.mode || this.defaults.mode;
+        const effortVal = values.reasoning_effort || 'xhigh';
+        const options = [
+          {
+            id: 'mode',
+            name: '模式',
+            category: 'mode',
+            type: 'select',
+            currentValue: modeId,
+            options: [
+              { value: 'auto', name: '自动执行' },
+              { value: 'plan', name: '仅规划' },
+              { value: 'read-only', name: '只读分析' }
+            ]
+          },
+          {
+            id: 'model',
+            name: '模型',
+            category: 'model',
+            type: 'select',
+            currentValue: modelId,
+            options: [
+              { value: 'gpt-5.4', name: 'gpt-5.4' },
+              { value: 'gpt-6.1-sol', name: 'gpt-6.1-sol' },
+              { value: 'gpt-5.3-codex', name: 'gpt-5.3-codex' },
+              { value: 'gpt-5.2-codex', name: 'gpt-5.2-codex' },
+              { value: 'gpt-5.1-codex-max', name: 'gpt-5.1-codex-max' },
+              { value: 'gpt-5.2', name: 'gpt-5.2' },
+              { value: 'gpt-5.1-codex-mini', name: 'gpt-5.1-codex-mini' }
+            ]
+          }
+        ];
+        if (modelId !== 'gpt-6.1-sol') {
+          options.push({
+            id: 'reasoning_effort',
+            name: '思考强度',
+            category: 'thought_level',
+            type: 'select',
+            currentValue: ['low', 'medium', 'high', 'xhigh'].includes(effortVal) ? effortVal : 'xhigh',
+            options: [
+              { value: 'low', name: 'low' },
+              { value: 'medium', name: 'medium' },
+              { value: 'high', name: 'high' },
+              { value: 'xhigh', name: 'xhigh' }
+            ]
+          });
+        }
+        return {
+          configOptions: options,
+          modes: null,
+          promptCapabilities: { ...this.promptCapabilities }
+        };
+      }
+    },
+    {
+      id: 'acp.agy',
+      name: 'Antigravity',
+      badge: 'AG',
+      color: '#55798c',
+      specSummary: 'agy acp · 返回分组 model 列表与 2 项扩展配置（boolean 开关 use_ai_credits 与 select 策略 terminal_policy），自动收纳至「调优」浮层',
+      supportsRemote: false,
+      promptCapabilities: { image: true },
+      defaults: {
+        mode: 'agent',
+        model: 'gemini-3.1-pro',
+        thought_level: 'high',
+        use_ai_credits: false,
+        terminal_policy: 'workspace_safe'
+      },
+      resolveConfig(rawValues = {}) {
+        const values = { ...this.defaults, ...rawValues };
+        const modelId = values.model || this.defaults.model;
+        const isFlash = modelId === 'gemini-3-flash';
+        const allowedEfforts = isFlash ? ['minimal', 'low', 'medium', 'high'] : ['low', 'high'];
+        const currentThought = allowedEfforts.includes(values.thought_level)
+          ? values.thought_level
+          : (isFlash ? 'medium' : 'high');
+        const options = [
+          {
+            id: 'mode',
+            name: '模式',
+            category: 'mode',
+            type: 'select',
+            currentValue: values.mode || 'agent',
+            options: [
+              { value: 'agent', name: '执行' },
+              { value: 'plan', name: '规划' },
+              { value: 'ask', name: '仅问答' }
+            ]
+          },
+          {
+            id: 'model',
+            name: '模型',
+            category: 'model',
+            type: 'select',
+            currentValue: modelId,
+            groups: [
+              {
+                group: 'Gemini 系列',
+                options: [
+                  { value: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+                  { value: 'gemini-3-flash', name: 'Gemini 3 Flash' }
+                ]
+              },
+              {
+                group: 'Claude 与合作模型',
+                options: [
+                  { value: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6' },
+                  { value: 'claude-opus-4.6', name: 'Claude Opus 4.6' }
+                ]
+              }
+            ]
+          },
+          {
+            id: 'thought_level',
+            name: '思考强度',
+            category: 'thought_level',
+            type: 'select',
+            currentValue: currentThought,
+            options: allowedEfforts.map(level => ({ value: level, name: level }))
+          },
+          {
+            id: 'use_ai_credits',
+            name: '超额自动启用 AI Credits',
+            category: 'other',
+            type: 'boolean',
+            currentValue: Boolean(values.use_ai_credits)
+          },
+          {
+            id: 'terminal_policy',
+            name: '终端命令放行策略',
+            category: 'other',
+            type: 'select',
+            currentValue: values.terminal_policy || 'workspace_safe',
+            options: [
+              { value: 'ask_all', name: '逐次询问确认' },
+              { value: 'workspace_safe', name: '工作区内安全自动' },
+              { value: 'turbo_auto', name: '全自动推进' }
+            ]
+          }
+        ];
+        return {
+          configOptions: options,
+          modes: null,
+          promptCapabilities: { ...this.promptCapabilities }
+        };
+      }
+    },
+    {
+      id: 'acp.grok',
+      name: 'Grok Build',
+      badge: 'GK',
+      color: '#514039',
+      specSummary: 'grok agent stdio · 仅返回 146 个可检索 model（无 mode 与 thought_level），且 promptCapabilities.image = false 为纯文本输入',
+      supportsRemote: false,
+      promptCapabilities: { image: false },
+      defaults: { model: 'composer-2.5' },
+      resolveConfig(rawValues = {}) {
+        const values = { ...this.defaults, ...rawValues };
+        const modelId = values.model || this.defaults.model;
+        return {
+          configOptions: [
+            {
+              id: 'model',
+              name: '模型',
+              category: 'model',
+              type: 'select',
+              totalCount: 146,
+              currentValue: modelId,
+              options: [
+                { value: 'composer-2.5', name: 'composer-2.5' },
+                { value: 'grok-4-1-fast-reasoning', name: 'grok-4-1-fast-reasoning' },
+                { value: 'grok-4.20-reasoning', name: 'grok-4.20-reasoning' },
+                { value: 'grok-code-fast-1', name: 'grok-code-fast-1' },
+                { value: 'grok-3-mini-fast', name: 'grok-3-mini-fast' },
+                { value: 'claude-4.6-opus-high-thinking', name: 'claude-4.6-opus-high-thinking' },
+                { value: 'claude-4.6-sonnet-medium-thinking', name: 'claude-4.6-sonnet-medium-thinking' },
+                { value: 'gpt-5.4-high', name: 'gpt-5.4-high' },
+                { value: 'gpt-5.3-codex-xhigh', name: 'gpt-5.3-codex-xhigh' },
+                { value: 'gpt-5.2-codex', name: 'gpt-5.2-codex' },
+                { value: 'gemini-3.1-pro', name: 'gemini-3.1-pro' },
+                { value: 'gemini-3-flash', name: 'gemini-3-flash' },
+                { value: 'deepseek-v4-pro', name: 'deepseek-v4-pro' },
+                { value: 'kimi-k2.5', name: 'kimi-k2.5' },
+                { value: 'qwen3.6-plus', name: 'qwen3.6-plus' },
+                { value: 'o4-mini-high', name: 'o4-mini-high' }
+              ]
+            }
+          ],
+          modes: null,
+          promptCapabilities: { ...this.promptCapabilities }
+        };
+      }
+    },
+    {
+      id: 'acp.opencode',
+      name: 'OpenCode',
+      badge: 'OC',
+      color: '#8c5a32',
+      specSummary: 'opencode acp · 返回 Build/Plan 模式与随模型动态显隐的 5 档 effort（切换 iceman-free 时省略 thought_level）',
+      supportsRemote: false,
+      promptCapabilities: { image: true },
+      defaults: { mode: 'build', model: 'deepseek/deepseek-v4-pro', effort: 'high' },
+      resolveConfig(rawValues = {}) {
+        const values = { ...this.defaults, ...rawValues };
+        const modelId = values.model || this.defaults.model;
+        const options = [
+          {
+            id: 'model',
+            name: '模型',
+            category: 'model',
+            type: 'select',
+            totalCount: 33,
+            currentValue: modelId,
+            options: [
+              { value: 'deepseek/deepseek-v4-pro', name: 'deepseek/deepseek-v4-pro' },
+              { value: 'opencode/iceman-free', name: 'opencode/iceman-free' },
+              { value: 'moonshotai/kimi-k2.5', name: 'moonshotai/kimi-k2.5' },
+              { value: 'opencode/qwen3.6-plus-free', name: 'opencode/qwen3.6-plus-free' }
+            ]
+          },
+          {
+            id: 'mode',
+            name: '模式',
+            category: 'mode',
+            type: 'select',
+            currentValue: values.mode || 'build',
+            options: [
+              { value: 'build', name: 'Build' },
+              { value: 'plan', name: 'Plan' }
+            ]
+          }
+        ];
+        if (modelId !== 'opencode/iceman-free') {
+          options.push({
+            id: 'effort',
+            name: '思考强度',
+            category: 'thought_level',
+            type: 'select',
+            currentValue: values.effort || 'high',
+            options: ['none', 'low', 'high', 'max', 'default'].map(v => ({ value: v, name: v }))
+          });
+        }
+        return {
+          configOptions: options,
+          modes: null,
+          promptCapabilities: { ...this.promptCapabilities }
+        };
+      }
+    },
+    {
+      id: 'acp.claude',
+      name: 'Claude Code',
+      badge: 'CC',
+      color: '#b56547',
+      specSummary: 'claude-code-acp · 旧版协议仅返回 modes 字段（无 configOptions 与独立模型列表），运行期模型槽位保持只读胶囊',
+      supportsRemote: false,
+      promptCapabilities: { image: true },
+      defaults: { legacyMode: 'acceptEdits' },
+      resolveConfig(rawValues = {}) {
+        const modeId = rawValues.legacyMode || this.defaults.legacyMode;
+        return {
+          configOptions: null,
+          modes: {
+            currentModeId: modeId,
+            availableModes: [
+              { id: 'default', name: '默认询问' },
+              { id: 'acceptEdits', name: '自动接受编辑' },
+              { id: 'plan', name: '规划模式' },
+              { id: 'bypassPermissions', name: '跳过确认' }
+            ]
+          },
+          promptCapabilities: { ...this.promptCapabilities }
+        };
+      }
+    }
+  ];
+
   const preferenceHints = {
     economy: '满足任务能力与质量要求后，优先降低预计整体成本；未知价格不当免费。',
     balanced: '综合任务适配、近期评价、成本与完成时间，不降低质量要求。',
@@ -437,7 +728,7 @@
         id: 'root',
         isRoot: true,
         role: '主智能体',
-        title: '会话组件化与运行期输入框锁定',
+        title: '重构 SQLite 连接池超时重试与取消收敛',
         routeLabel: 'GPT-6.1 Sol · max',
         status: 'running',
         workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jc9k\\session'
@@ -446,7 +737,7 @@
         id: 'reviewer',
         isRoot: false,
         role: 'reviewer',
-        title: '核对运行期选择器锁定原因与只读停靠',
+        title: '核查取消路径下的事务回滚与锁释放',
         routeLabel: 'Claude Opus 4.6 · high',
         status: 'running',
         workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jc9k\\agents\\reviewer'
@@ -455,7 +746,7 @@
         id: 'explorer',
         isRoot: false,
         role: 'explorer',
-        title: '梳理起始页与会话页共享组件边界',
+        title: '梳理工作区增量索引调用链',
         routeLabel: 'GPT-5.4 Mini · medium',
         status: 'completed',
         workspacePath: 'C:\\Users\\dev\\work\\pure-lang-pure\\.anywork\\worktrees\\thr_01jc9k\\agents\\explorer'
@@ -467,59 +758,60 @@
      2. Shared Timeline, WorkGroup, Q&A & Playback Story Fixtures
      ======================================================================== */
   const text = [
-    '已经把会话界面收敛为同一套共享模块：**起始页与运行期会话共用外壳、顶栏与 `PromptComposerCard`，上方时间线只放已结束内容，下方状态栏承载正在进行的工作组**。',
+    '已完成 `pl-core` SQLite 连接池的取消收敛与超时退避改造：**当调用方在等待连接期间触发取消时，句柄会在 Drop 前显式归还给池调度器，避免写锁长时间阻塞**。',
     '',
-    '### 运行期配置可配性分层',
-    '- **创建期一次性冻结**：工作区模式（`本地目录` / `新建工作树`）与子智能体分发在会话创建后上移至顶栏只读徽标，外层创建托盘自动退役。',
-    '- **运行期条件锁定**：轮次运行或等待期间锁定模式、主模型与思考强度（点击展示明确原因）；轮次空闲后即使处于活动工作流阶段，仍允许切换下一轮主模型与思考强度。',
-    '- **子智能体只读停靠**：切到子智能体视图时输入区整体替换为只读停靠面板，新要求统一回到主会话表达。',
+    '### 本轮主要改动',
+    '- **退避抖动上限**：将连续忙碌重试延迟控制在 `12ms..80ms` 带抖动区间，防止多线程同时唤醒形成惊群。',
+    '- **事务取消清理**：在 `ConnectionLease::drop` 中检查未提交事务标记并排队执行异步回滚，释放占用的文件描述符。',
+    '- **回归测试补全**：新增并发取消与写锁争用压测，验证退出路径无孤儿连接残留。',
     '',
-    '```dart',
-    'final modeEditable = thread.isIdle && !workflow.isActive && activeInteraction == null;',
-    'final routeEditable = thread.isIdle && !thread.isBotManaged;',
+    '```rust',
+    'pub async fn acquire_with_cancel(&self, cancel: &CancellationToken) -> Result<ConnectionLease, PoolError> {',
+    '    tokio::select! { biased; _ = cancel.cancelled() => Err(PoolError::Cancelled), res = self.acquire_inner() => res }',
+    '}',
     '```',
     '',
-    '| 配置项 | 起始页（新建草稿） | 根会话运行中 | 根会话空闲（活动工作流） | 子智能体会话 |',
-    '| --- | --- | --- | --- | --- |',
-    '| 工作区 / 分发 | 外层环境栏可配 | 顶栏只读冻结 | 顶栏只读冻结 | 只读芯片 |',
-    '| 工作模式 | 可切换 | 锁定（附原因） | 锁定（工作流中） | 只读停靠 |',
-    '| 主模型 / 强度 | 可切换 | 锁定（附原因） | 可切换（下轮生效） | 冻结路由只读 |',
+    '| 测试套件 | 场景覆盖 | 耗时 | 结果 |',
+    '| --- | --- | --- | --- |',
+    '| `pool_acquire_timeout` | 写锁满载超时与退避曲线 | 1.8s | 24 passed |',
+    '| `lease_drop_on_cancel` | 取消信号触发异步事务回滚 | 0.9s | 12 passed |',
+    '| `wal_checkpoint_flush` | 多读单写切换后 WAL 截断 | 2.1s | 16 passed |',
     '',
-    '> 运行中文本输入与附件草稿始终保持可编辑，输入内容后主按钮自动由「停止」切换为「发送并继续」。'
+    '> 接下来将运行全量静态分析并生成变更摘要。'
   ].join('\n');
 
-  const closingText = '静态检查与视觉核对已全部通过。\n\n所有会话入口页面现在共享同一套 `conversation-shared` 组件与状态控制器。';
+  const closingText = '全量单元测试与静态检查已全部通过。\n\n连接池超时重试与取消收敛改动已就绪，可以继续下一项任务。';
 
   function members(id, terminal) {
     const status = terminal ? 'completed' : 'running';
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '梳理 **会话共享组件** 与 `LiveStatusBar` 锁定边界', status: 'completed', elapsed: 3,
-        content: '已完成的成员**留在状态栏的当前工作组**；同时核对运行期 `SessionModeSelector` 与 `ModelRoleSelector` 的就地锁定提示。' },
-      { id: id + '-read', kind: 'read', title: '读取文件', target: 'composer_dock_connector.dart', status: 'completed', elapsed: 1,
-        path: 'code/anywork/lib/src/features/conversation/composer/connectors/composer_dock_connector.dart',
-        content: '已核对运行期选择器锁定规则：\n- 工作模式要求 idle 且无活动工作流\n- 模型与强度仅要求当前轮次 idle，点击锁定项通过 _modelNotice 就地解释原因。' },
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '排查 **connection_pool.rs** 中的取消路径与锁持有顺序', status: 'completed', elapsed: 3,
+        content: '先追踪 `acquire_inner` 与 `Transaction::drop` 的锁获取顺序，确认在并发取消场景下不会与后台 WAL checkpoint 产生死锁。' },
+      { id: id + '-read', kind: 'read', title: '读取文件', target: 'connection_pool.rs', status: 'completed', elapsed: 1,
+        path: 'code/pl-core/src/storage/connection_pool.rs',
+        content: '第 142-198 行显示旧版 `acquire_inner` 在 `BUSY_TIMEOUT` 重试循环内未监听 CancellationToken，导致请求取消后仍继续占用 worker 槽位。' },
       { id: id + '-command', kind: 'command', title: '执行命令', target: 'cargo test -p pl-core --features sqlite',
         status, elapsed: terminal ? 8 : 5, cwd: '~/work/anywork', exitCode: terminal ? 0 : null,
-        output: 'Compiling pl-core\nrunning 24 tests\ntest finished_group_enters_timeline ... ok\ntest locked_route_preserves_draft ... ok' + (terminal ? '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0' : '') },
-      { id: id + '-search', kind: 'search', title: '搜索交互约定', target: '选择器锁定 · 运行中发送', status: 'completed', elapsed: 2,
-        queries: ['被锁定的选择器必须给出可见原因', '运行中发送并继续与草稿冻结'],
+        output: 'Compiling pl-core\nrunning 24 tests\ntest storage::pool::tests::acquire_timeout_returns_error ... ok\ntest storage::pool::tests::cancel_releases_lease_cleanly ... ok' + (terminal ? '\ntest result: ok. 24 passed; 0 failed\nProcess exited with code 0' : '') },
+      { id: id + '-search', kind: 'search', title: '检索调用点', target: 'CancellationToken · sqlite', status: 'completed', elapsed: 2,
+        queries: ['acquire_with_cancel', 'wal_autocheckpoint'],
         results: [
-          { title: 'design/19-studio-ui.md §19.2 动态工作模式与工作流状态', description: '被锁定的选择器必须给出可见原因，不得出现看似可点却静默吞掉点击的控件。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/Accessibility/ARIA' },
-          { title: 'design/19-studio-ui.md §19.11 运行中发送消息与剪贴板粘贴', description: '运行中无草稿显示停止，输入草稿后切换为发送并继续，使用明确按钮请求停止。', url: 'https://developer.mozilla.org/zh-CN/docs/Web/HTML/Element/dialog' }
+          { title: 'code/pl-core/src/storage/session_store.rs', description: '第 88 行调用 acquire_inner，已同步替换为 acquire_with_cancel。', url: 'https://doc.rust-lang.org/std/' },
+          { title: 'code/pl-studio-runtime/src/history_writer.rs', description: '第 214 行批量写入事务，取消后依赖 ConnectionLease 安全归还连接。', url: 'https://docs.rs/rusqlite/latest/rusqlite/' }
         ] },
-      { id: id + '-edit', kind: 'edit', title: '修改文件', target: 'conversation-shared/composer.js', status: 'completed', elapsed: 2,
-        path: 'design/prototypes/conversation-shared/composer.js',
+      { id: id + '-edit', kind: 'edit', title: '修改文件', target: 'connection_pool.rs', status: 'completed', elapsed: 2,
+        path: 'code/pl-core/src/storage/connection_pool.rs',
         files: [
-          { name: 'composer.js', added: 28, removed: 0,
-            diff: '@@ 共享会话输入卡与锁定提示 @@\n+ renderPromptComposerCard({ stage, locks, primaryAction });\n+ if (locks.notice) renderDismissibleLockNotice(locks.notice);\n+ onLockedSelectorClick(reason => controller.explainLock(reason));' },
-          { name: 'session-start/index.html', added: 6, removed: 18,
-            diff: '@@ 复用 conversation-shared 消除重复实现 @@\n- <script defer src="preview.js"></script>\n+ <script defer src="../conversation-shared/preview.js"></script>' }
+          { name: 'connection_pool.rs', added: 28, removed: 6,
+            diff: '@@ -154,6 +154,28 @@ impl SqlitePool {\n+ pub async fn acquire_with_cancel(&self, cancel: &CancellationToken) -> Result<ConnectionLease, PoolError> {\n+     tokio::select! {\n+         biased;\n+         _ = cancel.cancelled() => Err(PoolError::Cancelled),' },
+          { name: 'session_store.rs', added: 4, removed: 4,
+            diff: '@@ -86,4 +86,4 @@\n- let conn = self.pool.acquire().await?;\n+ let conn = self.pool.acquire_with_cancel(&cancel).await?;' }
         ] },
       { id: id + '-wait', kind: 'wait', title: '等待子智能体', target: 'explorer · reviewer',
         status, elapsed: terminal ? 7 : 4, rule: '等待两个成员都返回结果',
         targets: [
-          { name: 'explorer', task: '梳理起始页与会话页共享组件边界', status: 'completed', report: '已确认外层创建环境栏仅在起始页挂载，会话页复用同一内层输入卡。' },
-          { name: 'reviewer', task: '核对运行期选择器锁定原因与只读停靠', status, report: terminal ? '完成全部锁定态、模型不可用告警与子会话只读面板核对。' : '正在核对运行期锁定点击反馈与子智能体只读面板。' }
+          { name: 'explorer', task: '梳理所有 SQLite 写入点及索引重建耗时', status: 'completed', report: '已定位 4 处跨线程写入调用点，仅 `session_store.rs` 需接入取消令牌。' },
+          { name: 'reviewer', task: '核查取消路径下的事务回滚与锁释放', status, report: terminal ? '已完成锁顺序与 Drop 回滚核查，未发现阻塞或悬挂连接。' : '正在核对并发取消压测与 WAL checkpoint 互斥边界。' }
         ] },
       { id: id + '-readImage', kind: 'readImage', title: '查看了 3 张图片', status: 'completed', elapsed: 1,
         images: timelineReadImages.slice(0, 3) }
@@ -532,10 +824,10 @@
 
   function followUpMembers(id) {
     return [
-      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '确认 **收尾检查** 与 `cargo flutter analyze`', status: 'running', elapsed: 0,
-        content: '正文已经结束，这是新的工作组：先在状态栏插入成员，等下一段正文出现时再整组进入时间线。' },
-      { id: id + '-command', kind: 'command', title: '执行命令', target: 'cargo flutter analyze', status: 'running', elapsed: 0,
-        cwd: '~/work/anywork', exitCode: null, output: 'Analyzing anywork...' }
+      { id: id + '-thinking', kind: 'thinking', title: '思考', summary: '运行收尾静态分析 `cargo clippy -p pl-core --all-targets`', status: 'running', elapsed: 0,
+        content: '正在验证新增加的异步取消路径是否引入未使用的生命周期或 lint 警告。' },
+      { id: id + '-command', kind: 'command', title: '执行命令', target: 'cargo clippy -p pl-core --all-targets', status: 'running', elapsed: 0,
+        cwd: '~/work/anywork', exitCode: null, output: 'Checking pl-core v0.4.2...' }
     ];
   }
 
@@ -543,13 +835,13 @@
     const old = group('group-history', true);
     old.members = old.members.slice(0, 3);
     return [
-      { id: 'message-user-1', kind: 'user', author: '你', text: '把会话设计稿组件化避免每个页面复制一份，再把会话运行时的输入框交互和不可配项体现清楚。', time: '14:32' },
+      { id: 'message-user-1', kind: 'user', author: '你', text: '排查高并发下连接池获取超时后未及时释放句柄的问题，并补齐取消安全测试。', time: '14:32' },
       old,
       { id: 'history-read-images', kind: 'imageRead', expanded: false, images: timelineReadImages.slice(0, 3) },
       { id: 'message-assistant-1', kind: 'text', status: 'completed', time: '14:34',
-        text: '已对照界面走查图把侧栏、顶栏、时间线和主输入卡统一收敛到 `conversation-shared`，再细化已建会话中「创建期永久冻结」与「运行期动态锁定」的分层交互。' },
+        text: '已定位到 `connection_pool.rs` 的忙碌重试循环未响应取消令牌的问题，目前正在补齐 `acquire_with_cancel` 与压测验证。' },
       { id: 'compression-history', kind: 'compression', status: 'completed', time: '14:35' },
-      { id: 'message-user-2', kind: 'user', author: '你', text: '重点检查运行中锁模型、活动工作流锁模式、中断后继续以及子智能体只读视图。', time: '14:36' }
+      { id: 'message-user-2', kind: 'user', author: '你', text: '继续完成锁释放路径审查，并在改动确认后跑一遍全量测试。', time: '14:36' }
     ];
   }
 
@@ -633,22 +925,22 @@
           id: 'sub-' + agent.id + '-read',
           kind: 'read',
           title: '读取文件',
-          target: 'session_selectors.dart',
+          target: 'transaction_guard.rs',
           status: 'completed',
           elapsed: 2,
-          path: 'code/anywork/lib/src/features/status/session_selectors.dart',
-          content: '已核对 _QuietSelectorMenu.onBlockedTap：禁用状态下点击触发 _explainSelection，不静默吞掉操作。'
+          path: 'code/pl-core/src/storage/transaction_guard.rs',
+          content: '已核对 `TransactionGuard::drop`：未提交事务在取消退出时排队执行回滚，不会阻塞异步调度线程。'
         },
         {
           id: 'sub-' + agent.id + '-search',
           kind: 'search',
-          title: '搜索只读契约',
-          target: 'AgentReadOnlyDockView',
+          title: '检索事务回滚',
+          target: 'rollback_on_drop',
           status: 'completed',
           elapsed: 4,
-          queries: ['子智能体会话（只读）', '顶栏智能体切换菜单唯一停止入口'],
+          queries: ['rollback_on_drop', 'sqlite_busy_timeout'],
           results: [
-            { title: 'composer_support_views.dart · AgentReadOnlyDockView', description: '子会话详情只展示历史、进展、冻结模型与工作区，不提供输入或继续按钮。', url: 'https://developer.mozilla.org/zh-CN/' }
+            { title: 'code/pl-core/src/storage/connection_pool.rs', description: 'Drop hook 统一归还连接至空闲队列，不持有额外互斥锁。', url: 'https://docs.rs/rusqlite/latest/rusqlite/' }
           ]
         }
       ]
@@ -659,7 +951,7 @@
         kind: 'user',
         author: '主智能体委派',
         time: '14:36',
-        text: `请核对「${agent.title}」，确认所有不可配置项都有清晰的视觉区分与原因反馈，并提交核查报告。`
+        text: `请核查「${agent.title}」，确认并发取消和锁释放边界无残留问题并提交报告。`
       },
       subGroup,
       {
@@ -668,21 +960,21 @@
         status: 'completed',
         time: '14:37',
         text: agent.status === 'completed'
-          ? '已完成核查并向主智能体提交报告：\n- 创建期工作区模式与子智能体分发已移至顶栏只读芯片；\n- 运行期被锁定的选择器均带有锁形指示与点击原因横条。'
-          : '已初步核对选择器锁定逻辑，正在继续检查模型不可用（`unavailable`）与子智能体只读面板的边界表现。'
+          ? '已完成核查并向主智能体汇报：\n- 4 处写入点中仅 `session_store.rs` 需补充取消令牌透传；\n- 所有并发取消路径均安全归还数据库连接。'
+          : '已初步核对 `TransactionGuard::drop` 的锁顺序，正在继续运行并发写锁取消压测。'
       }
     ];
   }
 
   const questions = {
-    id: 'questions', kind: 'questions', title: '确认两个运行期交互细节', index: 0,
+    id: 'questions', kind: 'questions', title: '确认两个实现细节', index: 0,
     questions: [
-      { title: '点击运行期已锁定的选择器时如何反馈？', description: '遵循 §19.2 不静默吞掉点击的交互准则。', multiple: false,
-        options: ['在输入卡上方展开可关闭的就地原因提示条（推荐）', '仅依赖鼠标悬停 Tooltip'] },
-      { title: '需要重点覆盖哪些不可配状态？', description: '可以多选，也可以补充自己的要求。', multiple: true,
-        options: ['创建期冻结（本地目录 / 工作树 / 分发）', '运行中三联全锁与并发拟稿', '活动工作流仅锁模式、开放换模', '子智能体只读停靠面板'], secret: true }
+      { title: '连接池写锁争用超时后的默认重试策略？', description: '用于在并发写入峰值时控制等待延迟与失败率。', multiple: false,
+        options: ['指数退避 + 随机抖动（12ms–80ms）', '固定 25ms 短间隔重试'] },
+      { title: '本轮回归测试需要补充覆盖哪些场景？', description: '可以多选，也可以补充自己的要求。', multiple: true,
+        options: ['CancellationToken 取消信号触发回滚', '多线程高并发写锁争用', 'WAL checkpoint 并发切换', '异常断电后只读恢复'], secret: true }
     ],
-    answers: [['在输入卡上方展开可关闭的就地原因提示条（推荐）'], ['创建期冻结（本地目录 / 工作树 / 分发）', '运行中三联全锁与并发拟稿']],
+    answers: [['指数退避 + 随机抖动（12ms–80ms）'], ['CancellationToken 取消信号触发回滚', '多线程高并发写锁争用']],
     others: ['', ''],
     secret: ''
   };
@@ -793,8 +1085,94 @@
       label: '起始页 · 工作树准备失败保留草稿',
       hint: '非 Git 目录尝试创建工作树失败时，原位保留提示词与附件草稿，提供一键「切换为本地目录」或改选其他项目恢复。'
     },
+    {
+      id: 'start-acp-codex',
+      group: 'start',
+      stage: 'start',
+      acpAccountId: 'acp.codex',
+      initialDraft: '排查连接池并发超时重试的退避抖动参数，并补充单元测试。',
+      label: '起始页 · ACP 智能体 Codex（同构三槽 + 动态思考强度）',
+      hint: '去掉右上角切换器，直接在输入卡「模型」菜单选中 Codex (ACP)：模式（自动执行/仅规划/只读）、子模型与思考强度与普通会话共享同一三槽位置；在子模型列表把 gpt-5.4 切到 gpt-6.1-sol 时思考强度原位退回 —（零位移）。'
+    },
+    {
+      id: 'start-acp-agy',
+      group: 'start',
+      stage: 'start',
+      acpAccountId: 'acp.agy',
+      label: '起始页 · ACP 智能体 Antigravity（分组模型 + ⚙ 扩展项）',
+      hint: '选中 Antigravity (ACP) 后模型菜单支持按供应商分组选模；除「模式 / 模型 / 思考强度」三槽外，其余布尔开关（AI Credits）与终端策略下拉项按服务端返回动态绘制在「⚙ 调优」浮层中。'
+    },
+    {
+      id: 'start-acp-grok',
+      group: 'start',
+      stage: 'start',
+      acpAccountId: 'acp.grok',
+      label: '起始页 · ACP 智能体 Grok Build（146 模型搜索 + 静默降级）',
+      hint: 'Grok Build 仅返回 category:"model"（146 个模型），不返回 mode 与 thought_level：模式槽静默收起、思考强度保持 60px 灰态 —，模型菜单内置实时搜索；且因 promptCapabilities.image 为 false，贴图或选图时给出明确提示。'
+    },
+    {
+      id: 'start-acp-deferred',
+      group: 'start',
+      stage: 'start',
+      acpAccountId: 'acp.codex',
+      acpDeferred: true,
+      label: '起始页 · ACP 待首次连接（未预探测模型回退态）',
+      hint: '新建页处于新建工作树尚未创建或首次认证前、无法提前探测模型列表时：模型槽优雅显示 [CX] Codex ⌄，模式/思考强度保持静默只读占位，点击 ↑ 即可一气呵成完成工作区创建、ACP 握手并提交首条消息。'
+    },
+    {
+      id: 'start-acp-ssh-blocked',
+      group: 'start',
+      stage: 'start',
+      acpAccountId: 'acp.codex',
+      initialDraft: '请排查远端仓库构建脚本为什么未产生预编译产物。',
+      label: '起始页 · SSH 远端项目选 ACP（内联阻断与一键恢复）',
+      hint: '当前本地 ACP 服务不支持在 SSH 远端主机拉起进程：外层项目与工作区选择器原位保留，输入卡上方提示阻断原因并提供「改用内置模型」或「切回本地项目」一键恢复。'
+    },
 
     // Group 2: Runtime Session Composer & Locked Configuration Matrix
+    {
+      id: 'acp-codex-idle',
+      group: 'composer',
+      stage: 'session',
+      acpAccountId: 'acp.codex',
+      label: 'ACP 会话（Codex 空闲）· 切子模型动态显隐思考强度',
+      hint: '已进入 Codex (ACP) 运行期会话：顶栏展示等高「ACP · Codex」只读徽标；模型菜单自动收敛为当前 Codex 会话暴露的 7 个模型，切换 gpt-5.4 ↔ gpt-6.1-sol 可观察服务端重算 configOptions 后思考强度动态显隐，且切换过程模拟 260ms 单飞确认态。'
+    },
+    {
+      id: 'acp-agy-extra',
+      group: 'composer',
+      stage: 'session',
+      acpAccountId: 'acp.agy',
+      label: 'ACP 会话（Antigravity）· 分组模型 + ⚙ 布尔/下拉动态绘制',
+      hint: '已进入 Antigravity (ACP) 会话：三联槽位与普通会话完全一致，额外返回的 use_ai_credits 布尔开关与 terminal_policy 单选列表自动收纳入「⚙ 调优」浮层动态渲染，不挤压主输入栏高度。'
+    },
+    {
+      id: 'acp-claude-legacy',
+      group: 'composer',
+      stage: 'session',
+      acpAccountId: 'acp.claude',
+      label: 'ACP 旧版兼容（Claude Code）· 仅 modes + 模型静默胶囊',
+      hint: '适配仅返回 legacy modes（无 configOptions、无 model 列表）的外部智能体：模式槽映射为「自动接受编辑 / 规划模式」可单飞切换，模型槽降级为与「机器人托管」视觉一致的静默胶囊 [CC] Claude Code，思考强度保持灰态 —。'
+    },
+    {
+      id: 'acp-config-pending',
+      group: 'composer',
+      stage: 'session',
+      acpAccountId: 'acp.agy',
+      acpPendingDemo: true,
+      label: 'ACP 配置同步中（set_config_option 单飞等待只读）',
+      hint: '外部智能体尚未确认 session/set_config_option 响应前：不做虚假乐观更新，对应槽位旁显示细旋转环，全部配置槽原宽置灰只读防止并发叠发，待服务端返回最新 configOptions 后统一刷新。'
+    },
+    {
+      id: 'acp-running-locked',
+      group: 'composer',
+      stage: 'session',
+      at: 'workgroup',
+      acpAccountId: 'acp.codex',
+      initialDraft: '补充关闭阶段的连接池句柄泄漏断言。',
+      label: 'ACP 运行中 · 与普通会话一致的零位移锁定 + 并发拟稿',
+      hint: 'ACP 会话轮次执行期间与糊来帮内置会话体验 100% 一致：模式、子模型、思考强度及 ⚙ 调优全部等宽置灰只读，文本框与贴图随时可改，主圆钮随草稿原位切换 ■ / ↑。'
+    },
     {
       id: 'submission-failed',
       group: 'composer',
@@ -817,7 +1195,7 @@
       group: 'composer',
       stage: 'session',
       at: 'workgroup',
-      initialDraft: '顺便对照这两张粘贴的走查截图，检查窄窗口下底部选择器的折行表现并补充到设计文档表格里。',
+      initialDraft: '对照这两张截图核对窄窗口下工具栏按钮的对齐与间距。',
       initialAttachments: [
         { id: 'att-running-1', ...sampleScreenshots[0] },
         { id: 'att-running-2', ...sampleScreenshots[1] }
@@ -855,7 +1233,7 @@
       group: 'composer',
       stage: 'session',
       routeUnavailable: true,
-      initialDraft: '继续验证模型恢复后的下一轮输出。',
+      initialDraft: '继续排查连接池空闲回收阈值并跑一遍基准测试。',
       label: '模型不可用 · 阻塞发送但保留换模自救',
       hint: '当前绑定的模型配额耗尽或离线时：保留原模型名不静默篡改，显示告警按钮并锁闭发送，但模型选择器保持可点——改选任一可用模型即可立即恢复发送！'
     },
@@ -959,7 +1337,7 @@
       group: 'timeline',
       stage: 'session',
       pending: questions,
-      initialDraft: '（回答完问题后继续沿用这段暂存草稿）',
+      initialDraft: '退避参数确认后，直接按该方案修改连接池实现。',
       label: '停靠区 · 待回答提问（暂存草稿）',
       hint: '提问到达时此前的工作组整组移入时间线，输入框暂时让位于分步问答停靠面板并自动保留未发草稿；回答或跳过后草稿原样恢复。'
     },
@@ -1053,6 +1431,7 @@
     modes,
     accountGroups,
     allModels,
+    acpAccounts,
     preferenceHints,
     sampleScreenshots,
     timelineReadImages,

@@ -1,6 +1,30 @@
-//! Current-only Work snapshots. Existing aggregate snapshots are unsupported.
+//! Current Work snapshots and the one-time legacy display upgrade.
 use super::*;
 use pl_protocol::DisplayBlockBody;
+mod legacy;
+
+/// Published migration identities remain registered; conversion is owned by WorkSnapshots.
+pub(super) struct LegacyDisplayMarker(pub &'static str);
+impl MigrationName for LegacyDisplayMarker {
+    fn name(&self) -> &str {
+        self.0
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for LegacyDisplayMarker {
+    async fn up(&self, _: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
+    }
+}
+pub(super) fn is_legacy_marker(name: &str) -> bool {
+    matches!(
+        name,
+        "m20261109_000001_display_snapshots"
+            | "m20261111_000001_display_observations"
+            | "m20261112_000001_history_tool_work"
+            | "m20261112_000001_visible_tail_workgroups"
+    )
+}
 
 pub(super) struct WorkSnapshots;
 impl MigrationName for WorkSnapshots {
@@ -29,10 +53,10 @@ pub(in crate::studio::storage::history) async fn initialize(
             vec![],
         ))
         .await?;
-    ensure!(
-        existing.is_none(),
-        "unsupported old Work snapshots; existing data preserved"
-    );
+    if existing.is_some() {
+        legacy::upgrade(db).await?;
+        return validate(db).await;
+    }
     db.execute_unprepared(
         "CREATE TABLE conversation_display_blocks(
          block_id TEXT NOT NULL PRIMARY KEY,source_key TEXT NOT NULL,
@@ -54,6 +78,7 @@ pub(in crate::studio::storage::history) async fn initialize(
          ALTER TABLE history_meta ADD COLUMN display_applied_effect INTEGER NOT NULL DEFAULT 0 CHECK(display_applied_effect>=0);
          UPDATE history_meta SET schema_version=22 WHERE id=1;"
     ).await?;
+    legacy::backfill(db).await?;
     validate(db).await
 }
 
@@ -224,14 +249,72 @@ pub(in crate::studio::storage::history) mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_snapshots_are_rejected_without_modifying_the_store() -> Result<()> {
+    async fn immutable_runs_backfill_visible_members_without_rewriting_originals() -> Result<()> {
+        let (_dir, db) = fixture().await?;
+        let mut originals = Vec::new();
+        for seq in 1..=3i64 {
+            let id = format!("original-{seq}");
+            let mut atom: pl_protocol::ChatAtom =
+                serde_json::from_slice(&conversation::tests::metadata(&id))?;
+            atom.kind = pl_protocol::ChatAtomKind::ToolCall;
+            atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+            if seq == 3 {
+                atom.kind = pl_protocol::ChatAtomKind::Inference;
+            }
+            atom.source = pl_protocol::ChatSourceId::ForegroundTurn {
+                turn_id: "saved-turn".into(),
+            };
+            let metadata = serde_json::to_vec(&atom)?;
+            let payload = vec![0u8, 255, seq as u8];
+            let visible = seq < 3;
+            db.execute_raw(statement("INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal) VALUES(?,?,'conversation',NULL,?,?,?,?)",
+            vec![seq.into(),id.clone().into(),payload.clone().into(),metadata.clone().into(),visible.then_some(1i64).into(),visible.then_some(seq).into()])).await?;
+            originals.push((id, payload, metadata));
+        }
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        let heads = conversation::display::history_heads(&db, 1, None, 10).await?;
+        assert_eq!(heads.len(), 1);
+        assert!(
+            matches!(&heads[0].body, DisplayBlockBody::Work { timing, .. } if timing.started_at.is_none() && timing.finished_at.is_none())
+        );
+        let members = db
+            .query_all_raw(statement(
+                "SELECT completion_id FROM conversation_display_members ORDER BY member_order",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(
+            members
+                .iter()
+                .map(|row| row.try_get::<String>("", "completion_id"))
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            vec!["original-1", "original-2"]
+        );
+        let rows = db
+            .query_all_raw(statement(
+                "SELECT item_id,payload,metadata FROM conversation_items ORDER BY seq",
+                vec![],
+            ))
+            .await?;
+        for (row, (id, payload, metadata)) in rows.iter().zip(originals) {
+            assert_eq!(row.try_get::<String>("", "item_id")?, id);
+            assert_eq!(row.try_get::<Vec<u8>>("", "payload")?, payload);
+            assert_eq!(row.try_get::<Vec<u8>>("", "metadata")?, metadata);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn published_legacy_snapshot_bookkeeping_upgrades_and_reopens() -> Result<()> {
         let (_dir, db) = fixture().await?;
         super::initialize(&db).await?;
         db.execute_unprepared("UPDATE history_meta SET schema_version=21 WHERE id=1")
             .await?;
-        let error = super::super::preflight(&db, THREAD).await.unwrap_err();
-        assert!(error.to_string().contains("unsupported old Work snapshots"));
-        assert_eq!(version(&db).await?, 21);
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        assert_eq!(version(&db).await?, 22);
+        super::validate(&db).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert!(
         db.query_one_raw(statement(
             "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='conversation_display_blocks'",
@@ -246,7 +329,75 @@ pub(in crate::studio::storage::history) mod tests {
                 vec![WORK_SNAPSHOTS.into()],
             ))
             .await?
+            .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_work_keeps_identity_and_unknown_time_and_rolls_back_invalid_headers()
+    -> Result<()> {
+        let (_dir, db) = fixture().await?;
+        super::initialize(&db).await?;
+        let header = serde_json::json!({
+            "version":2,"legacy":true,"id":"old-work",
+            "source":{"kind":"foregroundTurn","turnId":"old-turn"},
+            "block_order":1,"history_pos":1,"boundary":null,
+            "sealed":true,"unfinished":0,"next_member":0,"revision":1,"skip_display":false,
+            "body":{"kind":"work","summary":{"durationMs":1234},
+                "members":{"databaseId":"unused","blockId":"old-work"}}
+        });
+        db.execute_raw(statement("INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header) VALUES(?,?,1,1,1,0,?)",vec!["old-work".into(),serde_json::to_string(&header["source"])?.into(),serde_json::to_vec(&header)?.into()])).await?;
+        db.execute_unprepared(
+            "UPDATE history_meta SET schema_version=20,display_published_through=1 WHERE id=1",
+        )
+        .await?;
+        // An unsupported header must not leave an archive or partially publish a new schema.
+        let mut invalid = header.clone();
+        invalid["version"] = 99.into();
+        db.execute_raw(statement(
+            "UPDATE conversation_display_blocks SET header=?",
+            vec![serde_json::to_vec(&invalid)?.into()],
+        ))
+        .await?;
+        assert!(
+            super::super::prepare(&db, THREAD, Preparation::Schema, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(version(&db).await?, 20);
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT 1 FROM sqlite_schema WHERE name='work_snapshot_migration_headers'",
+                vec![]
+            ))
+            .await?
             .is_none()
+        );
+        db.execute_raw(statement(
+            "UPDATE conversation_display_blocks SET header=?",
+            vec![serde_json::to_vec(&header)?.into()],
+        ))
+        .await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        let heads = conversation::display::history_heads(&db, 1, None, 1).await?;
+        assert_eq!(heads[0].id, "old-work");
+        let DisplayBlockBody::Work { timing, .. } = &heads[0].body else {
+            panic!("Work")
+        };
+        assert_eq!(timing.started_at, None);
+        assert_eq!(timing.finished_at, None);
+        let archived = db
+            .query_one_raw(statement(
+                "SELECT header FROM work_snapshot_migration_headers WHERE block_id='old-work'",
+                vec![],
+            ))
+            .await?
+            .unwrap();
+        assert_eq!(
+            archived.try_get::<Vec<u8>>("", "header")?,
+            serde_json::to_vec(&header)?
         );
         Ok(())
     }

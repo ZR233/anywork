@@ -33,7 +33,7 @@ pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
 mod snapshot;
 pub(crate) use snapshot::{
     SavedThreadMode, decode_mode_snapshot, decode_saved_mode, encode_mode_snapshot,
-    migrate_mode_snapshot, saved_registered_mode,
+    migrate_mode_snapshot, presentation_mode, saved_registered_mode,
 };
 mod preview;
 pub use preview::preview_workflow;

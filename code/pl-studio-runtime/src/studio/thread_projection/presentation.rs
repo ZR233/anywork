@@ -1253,7 +1253,7 @@ impl PresentationState {
             body: if is_work {
                 DisplayBlockBody::Work {
                     timing: pl_protocol::WorkTiming {
-                        started_at: committed_at,
+                        started_at: Some(committed_at),
                         finished_at: None,
                     },
                     members: DisplayBlockRef {
@@ -1725,7 +1725,7 @@ mod tests {
             .iter()
             .find(|block| block.published.is_some())
             .unwrap();
-        assert_eq!(timing(&work.header).started_at, 10);
+        assert_eq!(timing(&work.header).started_at, Some(10));
         assert_eq!(timing(&work.header).finished_at, Some(135));
         Ok(())
     }
@@ -2004,7 +2004,7 @@ mod tests {
                     .header
             )
             .started_at,
-            99
+            Some(99)
         );
         assert_eq!(*s.pending[&1], *frozen);
         assert_eq!(s.member_heads(&block, None, 8)[0].head, member.head);
@@ -2327,7 +2327,7 @@ mod tests {
                     };
                     assert_eq!(s.blocks[&1].next_member, 2);
                     assert_eq!(s.blocks[&1].unfinished, 1);
-                    assert_eq!(summary.started_at, 10);
+                    assert_eq!(summary.started_at, Some(10));
                     assert_eq!(summary.finished_at, None);
                     assert_eq!(members.block_id, foreground.id);
                     assert_eq!(members.database_id, "db");
@@ -2344,7 +2344,10 @@ mod tests {
         let mut s = state();
         let a = atom("A", ChatAtomKind::ToolCall, false);
         s.prepare(1, 10, &[a], &[], &[])?;
-        assert_eq!(timing(s.blocks.values().next().unwrap()).started_at, 10);
+        assert_eq!(
+            timing(s.blocks.values().next().unwrap()).started_at,
+            Some(10)
+        );
         assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
         let done = atom("A", ChatAtomKind::ToolCall, true);
         s.prepare(2, 20, std::slice::from_ref(&done), &[], &[])?;
@@ -2363,7 +2366,10 @@ mod tests {
         next = at_effect(next, 3);
         s.prepare(3, 1000, &[next.clone()], &[], &[])?;
         assert_eq!(s.blocks.values().next().unwrap().id, id);
-        assert_eq!(timing(s.blocks.values().next().unwrap()).started_at, 10);
+        assert_eq!(
+            timing(s.blocks.values().next().unwrap()).started_at,
+            Some(10)
+        );
         assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
         next.lifecycle = ChatAtomLifecycle::Terminal {
             started: Some(at(3)),
@@ -2377,7 +2383,7 @@ mod tests {
         let delta = s.prepare(5, 1200, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
         assert_eq!(delta.published_through, 1);
         let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
-        assert_eq!(timing(&frozen.header).started_at, 10);
+        assert_eq!(timing(&frozen.header).started_at, Some(10));
         assert_eq!(timing(&frozen.header).finished_at, Some(1200));
         assert_eq!(
             delta
@@ -2412,7 +2418,7 @@ mod tests {
             let mut done = atom("done", ChatAtomKind::ToolCall, true);
             done.started_at = None;
             s.prepare(1, created, &[done], &[], &[])?;
-            assert_eq!(timing(&s.blocks[&1]).started_at, created);
+            assert_eq!(timing(&s.blocks[&1]).started_at, Some(created));
             assert_eq!(timing(&s.blocks[&1]).finished_at, None);
             let delta = s.prepare(
                 2,
@@ -2422,7 +2428,7 @@ mod tests {
                 &[],
             )?;
             let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
-            assert_eq!(timing(&frozen.header).started_at, created);
+            assert_eq!(timing(&frozen.header).started_at, Some(created));
             assert_eq!(timing(&frozen.header).finished_at, Some(observed));
         }
         Ok(())
@@ -2492,7 +2498,7 @@ mod tests {
             panic!("Work")
         };
         assert_eq!(s.frozen_headers[&s.retired[&3].1].next_member, 2);
-        assert_eq!(summary.started_at, 40);
+        assert_eq!(summary.started_at, Some(40));
         assert_eq!(summary.finished_at, Some(50));
         let ended = s.prepare(
             6,
@@ -2519,7 +2525,7 @@ mod tests {
         assert!(matches!(s.pending[&5].body, DisplayBlockBody::Work { .. }));
         assert!(
             matches!(&s.pending[&5].body, DisplayBlockBody::Work { timing: summary, .. }
-        if summary.started_at == 60 && summary.finished_at == Some(70))
+        if summary.started_at == Some(60) && summary.finished_at == Some(70))
         );
         assert!(matches!(
             s.pending[&2].body,
@@ -2634,7 +2640,7 @@ mod tests {
         a.finished_at = Some(30);
         s.prepare(3, 30, &[a], &[], &[])?;
         let head = s.blocks.values().next().unwrap();
-        assert_eq!(timing(head).started_at, 10);
+        assert_eq!(timing(head).started_at, Some(10));
         assert_eq!(timing(head).finished_at, None);
 
         Ok(())
@@ -2654,7 +2660,7 @@ mod tests {
             &[],
         )?;
         let head = s.blocks.values().next().unwrap();
-        assert_eq!(timing(head).started_at, 10);
+        assert_eq!(timing(head).started_at, Some(10));
 
         Ok(())
     }
