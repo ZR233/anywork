@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioUpdate {
+    pub platform: crate::StudioUpdatePlatform,
     pub version: String,
     pub published_at: i64,
     pub notes_url: String,

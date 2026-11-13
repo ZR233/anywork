@@ -5,6 +5,7 @@ use pl_dev_support::process;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -41,6 +42,55 @@ struct UpdateAsset {
     signature: String,
 }
 
+/// Current multi-platform feed. The schema-1 Windows projection above remains
+/// solely for already installed external clients which reject unknown fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UnifiedManifest {
+    schema_version: u32,
+    version: String,
+    published_at: i64,
+    notes_url: String,
+    platforms: BTreeMap<String, UpdateAsset>,
+}
+
+fn unified_manifest_for(
+    directory: &Path,
+    version: &Version,
+    published_at: i64,
+) -> Result<UnifiedManifest> {
+    let mut platforms = BTreeMap::new();
+    for (platform, name) in [
+        ("windows-x86_64", asset_name(version, "setup.exe")),
+        (
+            "linux-x86_64",
+            format!("anywork-{version}-linux-x86_64.deb"),
+        ),
+    ] {
+        let path = directory.join(&name);
+        if !path.is_file() {
+            continue;
+        }
+        let url = format!("https://github.com/ZR233/anywork/releases/download/v{version}/{name}");
+        platforms.insert(
+            platform.to_owned(),
+            UpdateAsset {
+                signature: format!("{url}.minisig"),
+                url,
+                size: fs::metadata(&path)?.len(),
+                sha256: sha256_file(&path)?,
+            },
+        );
+    }
+    Ok(UnifiedManifest {
+        schema_version: 2,
+        version: version.to_string(),
+        published_at,
+        notes_url: format!("https://github.com/ZR233/anywork/releases/tag/v{version}"),
+        platforms,
+    })
+}
+
 pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
     if !cfg!(target_os = "windows") {
         bail!(
@@ -58,11 +108,30 @@ pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Vers
     let password = env::var("MINISIGN_PASSWORD")
         .context("MINISIGN_PASSWORD is required for release-gui finalize")?;
     let password_input = minisign_password_input(&password)?;
-    sign_file(&secret_key, &setup_path, version, &password_input)?;
+    let public_key = env::var_os("MINISIGN_PUBLIC_KEY_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("code/pl-studio-update/src/anywork.pub"));
+    for name in payload_names(release_dir, version) {
+        let path = release_dir.join(name);
+        if PathBuf::from(format!("{}.minisig", path.display())).is_file() {
+            // Combining platform checkpoints must preserve already signed bytes.
+            verify_signature(&public_key, &path)?;
+        } else {
+            sign_file(&secret_key, &path, version, &password_input)?;
+        }
+    }
+    let timestamp = if release_dir.join("latest.json").is_file() {
+        let existing: UpdateManifest =
+            serde_json::from_slice(&fs::read(release_dir.join("latest.json"))?)?;
+        verify_manifest(&existing, release_dir, version)?;
+        existing.published_at
+    } else {
+        published_at()?
+    };
 
     let manifest = manifest_for(
         version,
-        published_at()?,
+        timestamp,
         &setup_name,
         fs::metadata(&setup_path)?.len(),
         setup_hash.clone(),
@@ -71,7 +140,11 @@ pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Vers
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-    let sums = payload_names(version)
+    fs::write(
+        release_dir.join("latest-v2.json"),
+        serde_json::to_vec_pretty(&unified_manifest_for(release_dir, version, timestamp)?)?,
+    )?;
+    let sums = payload_names(release_dir, version)
         .into_iter()
         .map(|name| {
             Ok(format!(
@@ -88,15 +161,15 @@ pub(super) fn finalize(workspace_root: &Path, release_dir: &Path, version: &Vers
 
 pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Version) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if cfg!(target_os = "linux") {
+    if !release_dir.join("latest-v2.json").is_file() {
         return super::linux::verify(release_dir, version);
     }
     #[cfg(target_os = "macos")]
-    if cfg!(target_os = "macos") {
+    if !release_dir.join("latest-v2.json").is_file() {
         return super::macos::verify(release_dir, version);
     }
     ensure_staged_assets(release_dir, version)?;
-    let expected = expected_files(version);
+    let expected = expected_files(release_dir, version);
     let mut actual = fs::read_dir(release_dir)
         .with_context(|| format!("failed to read {}", release_dir.display()))?
         .filter_map(Result::ok)
@@ -112,7 +185,25 @@ pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Versio
     let manifest: UpdateManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
         .with_context(|| format!("invalid update manifest: {}", manifest_path.display()))?;
     verify_manifest(&manifest, release_dir, version)?;
+    let unified: UnifiedManifest =
+        serde_json::from_slice(&fs::read(release_dir.join("latest-v2.json"))?)?;
+    if unified != unified_manifest_for(release_dir, version, manifest.published_at)? {
+        bail!("multi-platform manifest does not match the staged version and bytes");
+    }
     verify_sums(release_dir, version)?;
+    for name in [
+        format!("anywork-{version}-linux-x86_64.deb"),
+        format!("anywork-{version}-macos-arm64.zip"),
+    ] {
+        if release_dir.join(&name).is_file() {
+            let expected = format!("{}  {name}\n", sha256_file(&release_dir.join(&name))?);
+            if fs::read_to_string(release_dir.join(format!("{name}.sha256")))?.replace("\r\n", "\n")
+                != expected
+            {
+                bail!("package checksum does not match {name}");
+            }
+        }
+    }
 
     let public_key = env::var_os("MINISIGN_PUBLIC_KEY_FILE")
         .map(PathBuf::from)
@@ -123,7 +214,7 @@ pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Versio
                 .join("src")
                 .join("anywork.pub")
         });
-    for file in payload_names(version) {
+    for file in payload_names(release_dir, version) {
         verify_signature(&public_key, &release_dir.join(file))?;
     }
     println!("Verified stable release: {}", release_dir.display());
@@ -189,7 +280,7 @@ fn verify_manifest(manifest: &UpdateManifest, release_dir: &Path, version: &Vers
 }
 
 fn verify_sums(release_dir: &Path, version: &Version) -> Result<()> {
-    let expected = payload_names(version)
+    let expected = payload_names(release_dir, version)
         .into_iter()
         .map(|name| {
             Ok(format!(
@@ -207,18 +298,35 @@ fn verify_sums(release_dir: &Path, version: &Version) -> Result<()> {
     Ok(())
 }
 
-fn payload_names(version: &Version) -> Vec<String> {
-    vec![asset_name(version, "setup.exe")]
+fn payload_names(directory: &Path, version: &Version) -> Vec<String> {
+    let mut names = vec![asset_name(version, "setup.exe")];
+    let linux = format!("anywork-{version}-linux-x86_64.deb");
+    if directory.join(&linux).is_file() {
+        names.push(linux);
+    }
+    names
 }
 
-fn expected_files(version: &Version) -> Vec<String> {
+fn expected_files(directory: &Path, version: &Version) -> Vec<String> {
     let setup = asset_name(version, "setup.exe");
     let mut files = vec![
         "SHA256SUMS.txt".to_string(),
         format!("{setup}.minisig"),
         setup,
         "latest.json".to_string(),
+        "latest-v2.json".to_string(),
     ];
+    for name in payload_names(directory, version).into_iter().skip(1) {
+        files.extend([
+            name.clone(),
+            format!("{name}.minisig"),
+            format!("{name}.sha256"),
+        ]);
+    }
+    let macos = format!("anywork-{version}-macos-arm64.zip");
+    if directory.join(&macos).is_file() {
+        files.extend([macos.clone(), format!("{macos}.sha256")]);
+    }
     files.sort();
     files
 }
@@ -330,4 +438,40 @@ fn published_at() -> Result<i64> {
         .context("system clock is before Unix epoch")?
         .as_secs();
     i64::try_from(seconds).context("current Unix timestamp does not fit i64")
+}
+
+#[cfg(test)]
+mod feed_tests {
+    use super::*;
+    #[test]
+    fn current_feed_selects_platform_assets_while_legacy_projection_stays_windows_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let version = Version::new(1, 2, 3);
+        let setup = asset_name(&version, "setup.exe");
+        let deb = format!("anywork-{version}-linux-x86_64.deb");
+        fs::write(directory.path().join(&setup), b"windows payload").unwrap();
+        let windows = unified_manifest_for(directory.path(), &version, 123).unwrap();
+        assert_eq!(windows.platforms.len(), 1);
+        fs::write(directory.path().join(&deb), b"linux payload").unwrap();
+        let both = unified_manifest_for(directory.path(), &version, 123).unwrap();
+        assert_eq!(both.platforms.len(), 2);
+        assert_eq!(
+            both.platforms["windows-x86_64"],
+            windows.platforms["windows-x86_64"]
+        );
+        assert_eq!(
+            both.platforms["linux-x86_64"].sha256,
+            sha256_file(&directory.path().join(&deb)).unwrap()
+        );
+        let old = manifest_for(&version, 123, &setup, 15, "a".repeat(64));
+        let encoded = serde_json::to_value(old).unwrap();
+        assert_eq!(encoded["schemaVersion"], 1);
+        assert_eq!(encoded["platforms"].as_object().unwrap().len(), 1);
+        assert!(encoded["platforms"].get("linux-x86_64").is_none());
+        fs::write(directory.path().join(&deb), b"changed").unwrap();
+        assert_ne!(
+            both,
+            unified_manifest_for(directory.path(), &version, 123).unwrap()
+        );
+    }
 }

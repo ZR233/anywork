@@ -271,6 +271,11 @@ jobs:
             export PATH="$PWD/target/debug:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
           '
+      - name: Verify real PackageKit updates across supported distributions
+        run: |
+          executable=$(bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-update --lib --no-run --message-format=json |
+            python3 -c 'import json,sys; messages=(json.loads(line) for line in sys.stdin if line.startswith("{")); paths=[m["executable"] for m in messages if m.get("reason")=="compiler-artifact" and m.get("executable") and m.get("profile",{}).get("test")]; assert len(paths)==1,paths; print(paths[0])')
+          bash .github/scripts/test-linux-updater.sh "$executable"
       - name: Build the standalone server
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-server
 

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>anywork</vendor>
+  <vendor_url>https://github.com/ZR233/anywork</vendor_url>
+  <action id="io.github.zr233.anywork.update">
+    <description>Install a verified anywork update</description>
+    <description xml:lang="zh_CN">安装已验证的 anywork 更新</description>
+    <message>Authentication is required to update anywork</message>
+    <message xml:lang="zh_CN">更新 anywork 需要系统授权</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/anywork/libexec/anywork-update-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install</annotate>
+  </action>
+</policyconfig>

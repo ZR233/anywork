@@ -32,6 +32,32 @@ class _RecordingCommands implements StudioUpdateCommands {
 }
 
 void main() {
+  test(
+    'installation outcome remains visible during the immediate next check',
+    () {
+      final snapshot = UpdaterStateSnapshot(
+        activity: CheckingUpdaterActivity(
+          revision: 5,
+          operationId: 'startup-check',
+          startedAt: _now,
+        ),
+        installationError: const UpdaterErrorView(
+          code: 'installerFailed',
+          message: 'Package installation failed',
+          retryable: true,
+        ),
+      );
+      final view = projectStudioUpdateViewState(
+        snapshot: snapshot,
+        request: const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
+        currentVersion: '1.0.0',
+      );
+      expect(view.statusKind, StudioUpdateStatusKind.checking);
+      expect(view.errorMessage, 'Package installation failed');
+      expect(view.errorKind, StudioUpdateErrorKind.failed);
+    },
+  );
+
   test('matching receipt and canonical errors render once while selection rejection stays visible', () {
     final snapshot = UpdaterStateSnapshot(
       activity: InstallFailedUpdaterActivity(

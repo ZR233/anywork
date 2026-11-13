@@ -84,7 +84,7 @@ StudioUpdateViewState projectStudioUpdateViewState({
     DownloadingUpdaterActivity() ||
     VerifyingUpdaterActivity() ||
     ReadyUpdaterActivity() ||
-    InstallerLaunchedUpdaterActivity() => null,
+    InstallerLaunchedUpdaterActivity() => snapshot.installationError,
   };
 
   late final StudioUpdateSettingsActionLayout actionLayout;

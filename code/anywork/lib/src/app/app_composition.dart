@@ -4,7 +4,6 @@ import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
 import '../infrastructure/frb/studio_api.dart';
 import '../infrastructure/frb/studio_update_api.dart';
 import '../platform/clipboard_image_reader.dart';
-import '../platform/studio_platform.dart';
 import 'app_graph.dart';
 import 'frb_startup_host.dart';
 import 'studio_startup_host.dart';
@@ -19,7 +18,6 @@ AppGraph createProductionAppGraph({
     statisticsFeed: const FrbStatisticsFeedPort(),
     updateApi: const FrbStudioUpdateApi(),
     updatesEnabled:
-        isWindowsPlatform &&
         const bool.fromEnvironment('dart.vm.product') &&
         !const bool.fromEnvironment('ANYWORK_DEMO'),
     startupHost: FrbStudioStartupHost(),

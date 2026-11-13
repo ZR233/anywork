@@ -806,15 +806,21 @@ typedef RecoveryStateSnapshot = DirectoryStateSnapshot<StudioRecoveryIssue>;
 
 /// One canonical state: current activity and the retained installer are independent.
 final class UpdaterStateSnapshot {
-  const UpdaterStateSnapshot({required this.activity, this.readyUpdate});
+  const UpdaterStateSnapshot({
+    required this.activity,
+    this.readyUpdate,
+    this.installationError,
+  });
   UpdaterStateSnapshot.idle({
     required int revision,
     required DateTime updatedAt,
   }) : activity = IdleUpdaterActivity(revision: revision, updatedAt: updatedAt),
-       readyUpdate = null;
+       readyUpdate = null,
+       installationError = null;
 
   final UpdaterActivity activity;
   final ReadyStudioUpdate? readyUpdate;
+  final UpdaterErrorView? installationError;
   int get revision => activity.revision;
   DateTime get updatedAt => activity.updatedAt;
   StudioUpdateInfoView? get update => readyUpdate?.update ?? activity.update;

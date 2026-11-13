@@ -252,6 +252,7 @@ impl super::StudioUpdateStateSnapshot {
                         },
                     ),
                     ready_update: self.ready_update.clone(),
+                    installation_error: None,
                 });
             }
         }
@@ -263,9 +264,15 @@ impl super::StudioUpdateStateSnapshot {
             }),
             _ => self.ready_update.clone(),
         };
+        let installation_error = if matches!(next, StudioUpdateActivity::InstallerLaunched(_)) {
+            None
+        } else {
+            self.installation_error.clone()
+        };
         Ok(Self {
             activity: next,
             ready_update,
+            installation_error,
         })
     }
 }

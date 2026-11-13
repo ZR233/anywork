@@ -20,6 +20,12 @@ semver = { workspace = true }
 url = { workspace = true }
 minisign-verify = { workspace = true }
 fs4 = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.6", features = ["fs", "process", "event"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

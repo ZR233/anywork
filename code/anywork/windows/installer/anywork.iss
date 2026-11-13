@@ -93,8 +93,7 @@ Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: ShouldRestartAfterUpdat
 [Code]
 function IsAppUpdate: Boolean;
 begin
-  Result := (ExpandConstant('{param:ANYWORKUPDATE|0}') = '1') or
-    (ExpandConstant('{param:ANYWORKUPDATE|0}') = 'exit');
+  Result := ExpandConstant('{param:ANYWORKUPDATE|0}') = '1';
 end;
 
 function ShouldRestartAfterUpdate: Boolean;

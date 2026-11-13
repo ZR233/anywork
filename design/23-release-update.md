@@ -1,6 +1,6 @@
 # 23 - anywork 发布与应用内升级
 
-本文定义 `anywork` 稳定版的唯一发布渠道、Windows / Linux `x64` 与 macOS `arm64` 打包格式及 Windows 应用内更新信任边界。Linux 提供手动安装的 Debian 包，macOS 提供完整 `.app` ZIP，均不加入 Windows 更新清单；候选发布（RC）构建仅作为 CI 构件（artifact），不进入稳定更新源。SSH 远端辅助进程（`pl-remote-helper`）不设独立发布契约，而是以压缩资源随应用发行包（bundle）一并分发（见 [22](./22-ssh-remote.md)）：安装目录包含随包资源，GitHub Release 不提供单独的辅助进程下载项，也不在用户数据目录安装副本。
+本文定义 `anywork` 稳定版的唯一发布渠道、Windows / Linux `x64` 与 macOS `arm64` 打包格式及 Windows / Linux 应用内更新信任边界。Linux 提供标准 Debian 包与系统授权安装，macOS 提供手动安装的完整 `.app` ZIP；候选发布（RC）构建仅作为 CI 构件（artifact），不进入稳定更新源。SSH 远端辅助进程（`pl-remote-helper`）不设独立发布契约，而是以压缩资源随应用发行包（bundle）一并分发（见 [22](./22-ssh-remote.md)）：安装目录包含随包资源，GitHub Release 不提供单独的辅助进程下载项，也不在用户数据目录安装副本。
 
 macOS 当前提供从源码构建当前宿主架构的 `.app`：bridge 动态库位于包内 Frameworks，SSH helper 位于包内 Resources，完整保留 framework 的版本符号链接。应用为访问用户工作区及启动工具而不启用 App Sandbox；本地构建采用 ad-hoc 签名。稳定版与 RC 使用 GitHub 的 `macos-15` Apple Silicon runner，首版仅分发 `arm64`；不包含 Developer ID 签名、公证或应用内更新。
 
@@ -39,7 +39,7 @@ RC/手动构建沿用编译构件交接与预构建打包契约，并在无生�
 
 若某个未完成发布的草稿 Release 因源码缺陷必须由后续提交修复，维护者可在主分支记录明确的取代（supersede）声明（绑定稳定标签、精确提交 SHA 与原因），使该草稿不再阻塞下一版 Release PR 的生成，同时禁止手动发布该被取代的草稿。构建与发布遵循严格的权限分离：发现与解析草稿的作业虽需仓库写权限（因 GitHub 草稿 Release 仅对具备推送权限的身份可见）但仅执行只读查询；编译作业保持只读权限且不接触生产签名凭据；签名凭据只在打包签名作业使用并清理；独立溯源作业持有 OIDC/attestation 权限；唯有最终发布作业执行 Release 资产上传与状态切换。
 
-稳定版 Release 的资产集合由不可变发布源码的契约决定。当前版本提供八项公开资产：Windows 单用户（per-user）安装器及其 `.minisig`、`latest.json`、Windows `SHA256SUMS.txt`，以及 `anywork-<version>-linux-x86_64.deb`、同名 `.deb.sha256`、`anywork-<version>-macos-arm64.zip` 和同名 `.zip.sha256`。平台内严格核验与最终统一对账分开，不能因合并资产而放宽 Windows 文件集或签名验证。历史已发布版本按其原有资产契约验证，不补包、不覆盖；不提供 Windows 便携版压缩包，也不执行 Cargo crate 发布。
+稳定版 Release 的资产集合由不可变发布源码的契约决定。当前版本提供十项公开资产：Windows 单用户（per-user）安装器及其 `.minisig`、`latest.json`、`latest-v2.json`、跨平台安装包 `SHA256SUMS.txt`，以及 `anywork-<version>-linux-x86_64.deb`、同名 `.deb.sha256` 与 `.deb.minisig`、`anywork-<version>-macos-arm64.zip` 和同名 `.zip.sha256`。平台构件先按各自检查点严格核验，最终汇合后签名 Linux 安装包并核验完整资产集合；保留已有 Windows 签名字节和清单时间戳，重试不能改变已上传资产。历史已发布版本按其原有资产契约验证，不补包、不覆盖；不提供 Windows 便携版压缩包，也不执行 Cargo crate 发布。
 
 ### 工具链固定、构建缓存与 MSVC 环境排障
 
@@ -85,7 +85,7 @@ Linux `stage` 同样显式消费版本匹配的预构建 bundle，不隐式执�
 
 Debian 包使用 GNU/glibc 桌面链路；只有独立辅助进程采用 musl，不能据此宣称整包摆脱 glibc。首版构建基线为 Ubuntu 22.04，目标运行环境为 Ubuntu 22.04、24.04 与 Debian 12、13 的 `amd64`。对所有 ELF 有效载荷检查 ABI 需求：GLIBC 不高于 2.35，GLIBCXX/CXXABI 等不超出最低支持环境实际提供的能力。系统库依赖由成品推导，发行版包名迁移以实际包关系与原生包管理器解算为依据，不私带或替换 glibc、不忽略缺库、不降低依赖声明伪造兼容。
 
-ELF 依赖分析不能发现运行时动态加载的库。Flutter/GTK 图形栈通过 libepoxy 加载的 GL、EGL 与 GLES 调度库必须显式列入产品依赖，不能依赖开发包、测试工具或宿主桌面的偶然安装。具体驱动由操作系统及用户的图形环境提供，包不绑定某一家 GPU 驱动。独立库的链接分析可显式使用随包私有库目录模拟主进程已加载的依赖；主程序分析与真实启动不注入额外加载路径，不放宽缺库、符号或版本错误。
+ELF 依赖分析不能发现运行时动态加载的库。Flutter/GTK 图形栈通过 libepoxy 加载的 GL、EGL 与 GLES 调度库必须显式列入产品依赖，不能依赖开发包、测试工具或宿主桌面的偶然安装。具体驱动由操作系统及用户的图形环境提供，包不绑定某一家 GPU 驱动。PackageKit 识别本地安装包还需要标准 MIME 数据，因此显式依赖 `shared-mime-info`；该数据依赖不能从 ELF 推导。独立库的链接分析可显式使用随包私有库目录模拟主进程已加载的依赖；主程序分析与真实启动不注入额外加载路径，不放宽缺库、符号或版本错误。
 
 Debian 打包与依赖解算断言（`release::linux::tests`）由 workspace 测试覆盖，在具备真实发行版依赖信息（官方 `dpkg-dev` 与 `libc6:amd64.symbols`）的项目 Docker 构建环境或 Debian/Ubuntu 宿主中运行。测试实际执行 `.deb` 包布局、解包提取校验、字段与文件篡改检测，以及缺失动态载荷库时的 `dpkg-shlibdeps` 依赖解析失败断言；不注入机器专用库路径、不模拟依赖解析，也不放宽依赖与篡改断言。
 
@@ -93,7 +93,7 @@ Debian 打包与依赖解算断言（`release::linux::tests`）由 workspace 测
 
 安装后的产品沿用系统工具的既有所有权：本地 Git 项目的工作树管理与恢复诊断使用 `PATH` 中的 Git，SSH 远程能力使用系统 OpenSSH 并复用用户配置与凭据设施（见 [22](./22-ssh-remote.md)）。这些功能要求用户提供满足命令能力的工具，不把构建镜像内的 Git/OpenSSH 当作 Debian 包已交付内容，也不由安装器添加第三方软件源。当前本地恢复审计需要 `git worktree list --porcelain -z`，这是 Git 2.36 起文档化的能力；Ubuntu 22.04 默认 Git 2.34 不满足该调用，使用相关功能前须按 [Git 官方安装说明](https://git-scm.com/install/linux) 更新系统 Git。该能力要求不是对所有 Git 功能的统一最低版本审计结论。SSH 远程功能另需安装系统 OpenSSH 客户端，Debian/Ubuntu 包名为 `openssh-client`。共享库与首帧兼容通过不能替代这些外部工具和业务路径的独立验证。
 
-Linux 的 `.deb.sha256` 只描述最终 Debian 包字节，不改写 Windows 校验和或更新清单。安装由用户或系统包管理器负责，本次不提供 Linux 应用内更新或 APT 仓库。
+Linux 的 `.deb.sha256` 描述最终 Debian 包字节；汇合发布时使用同一 Minisign 信任根生成 `.deb.minisig` 并加入多平台更新清单。首次安装使用系统包管理器，后续可在应用内更新；不添加 APT 仓库。系统安装目录仍为 `/opt/anywork`，用户配置与凭据仍在原用户目录。标准 `.deb` 安装需要系统授权，应用不要求用户手动运行 `sudo`。
 
 ### macOS Apple Silicon 归档与兼容边界
 
@@ -101,22 +101,30 @@ macOS 的 `release-gui stage` 显式消费 `dist/anywork-release` 格式的预�
 
 最低系统版本为 macOS 13；CI 原生构建与打包使用 `macos-15`，不据此宣称已在所有 macOS 版本实机验证。当前应用使用 ad-hoc 签名，尚未配置 Developer ID 和 Apple 公证，GitHub 构建溯源不能替代它们；下载后的系统信任判定仍遵循 Gatekeeper。用户解压并将 `.app` 放入 Applications，更新使用同样的手动替换方式，不写入 Windows 更新清单。本次不提供 Intel 或 Universal 包。
 
-## 23.3 更新清单（`latest.json`）
+## 23.3 多平台更新清单（`latest-v2.json`）
 
-发布器按当前 GitHub 仓库名 `ZR233/anywork` 校验发布身份；客户端更新检查 URL 维持已发布版本信任的 `ZR233/pure-lang` 路径（由 GitHub 仓库重命名重定向机制解析至同一发布仓库）。稳定版更新清单固定为 `latest.json`（采用 `camelCase` 类型化 JSON）：
+发布器按 `ZR233/anywork` 校验发布身份。当前客户端只读取 `https://github.com/ZR233/anywork/releases/latest/download/latest-v2.json`（schema 2），由 Rust 按构建平台选择 `windows-x86_64` 或 `linux-x86_64`，检查资产的版本、文件名与签名 URL。缺少本平台资产时返回不支持该平台，不能误报已是最新。
+
+发布端继续输出 schema 1 的 `latest.json`，仅含 Windows，并保留旧客户端信任的 `ZR233/pure-lang` URL。该投影仅服务已发布外部客户端；新客户端没有旧格式解析或回退。新版本统一清单示例：
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "version": "1.2.3",
   "publishedAt": 1770000000,
-  "notesUrl": "https://github.com/ZR233/pure-lang/releases/tag/v1.2.3",
+  "notesUrl": "https://github.com/ZR233/anywork/releases/tag/v1.2.3",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/ZR233/pure-lang/releases/download/v1.2.3/anywork-1.2.3-windows-x86_64-setup.exe",
+      "url": "https://github.com/ZR233/anywork/releases/download/v1.2.3/anywork-1.2.3-windows-x86_64-setup.exe",
       "size": 123456,
       "sha256": "...",
-      "signature": "https://github.com/ZR233/pure-lang/releases/download/v1.2.3/anywork-1.2.3-windows-x86_64-setup.exe.minisig"
+      "signature": "https://github.com/ZR233/anywork/releases/download/v1.2.3/anywork-1.2.3-windows-x86_64-setup.exe.minisig"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/ZR233/anywork/releases/download/v1.2.3/anywork-1.2.3-linux-x86_64.deb",
+      "size": 123456789,
+      "sha256": "<64 hex characters>",
+      "signature": "https://github.com/ZR233/anywork/releases/download/v1.2.3/anywork-1.2.3-linux-x86_64.deb.minisig"
     }
   }
 }
@@ -130,12 +138,20 @@ macOS 的 `release-gui stage` 显式消费 `dist/anywork-release` 格式的预�
 
 Studio 运行时的更新器所有者（updater owner）在内存中维护权威快照，其中当前活动为 `StudioUpdateActivity` 枚举：`Disabled`、`Idle`、`Checking`、`UpToDate`、`Available`、`Downloading`、`Verifying`、`Ready`、`InstallerLaunched`、`CheckFailed` 与 `InstallFailed`（每个状态由独立载荷承载，不设平行的可选字段）：
 
-- **后台周期检查与事件交付**：Windows 正式版桌面应用就绪后，每个进程幂等启动一个 Rust 后台调度器，立即检查一次，此后每 **20 分钟**检查稳定版本；使用 Tokio `interval` 与 `MissedTickBehavior::Skip`，休眠后不集中补跑，手动操作不重置周期。检查、下载、校验和投影的单轮错误与可捕获 panic 发布失败状态并记录诊断，收束该轮后继续下一周期。当前轮次忙时跳过定时准入，不并行下载。只有应用关停停止调度，并等待当前轮次真实完成；用户取消只影响其选中的当前轮次，下一周期仍可重新下载。
+- **后台周期检查与事件交付**：Windows 与 Linux x86_64 正式版桌面应用就绪后，每个进程幂等启动一个 Rust 后台调度器，立即检查一次，此后每 **20 分钟**检查稳定版本；使用 Tokio `interval` 与 `MissedTickBehavior::Skip`，休眠后不集中补跑，手动操作不重置周期。检查、下载、校验和投影的单轮错误与可捕获 panic 发布失败状态并记录诊断，收束该轮后继续下一周期。当前轮次忙时跳过定时准入，不并行下载。只有应用关停停止调度，并等待当前轮次真实完成；用户取消只影响其选中的当前轮次，下一周期仍可重新下载。
 - **活动与已验证安装包**：`StudioUpdateStateSnapshot` 同时承载当前 `activity` 与独立的 `readyUpdate`，共用活动 revision；状态仅在内存中维护，不写入 `config.toml`。已有安装包时仍检查更高版本，同版或更低版本不重复下载；新版完整校验成功后才原子替换旧文件租约。新版失败、取消或检查失败均保留旧安装包及其可安装资格。手动安装先冻结选中版本，加入当前准备任务或取消新候选并使用已有安装包，完成回执只描述 `Ready(version)`、取消或失败，不等待常驻调度退出，也不允许后台在退出交接前替换选中版本。
 - **统一 GUI 状态来源**：bootstrap 与 `UpdaterTopic` 基线、`UpdaterStateChanged` 事件进入 Client `UpdaterStore` 的唯一接纳入口，Riverpod 向侧栏、设置页等组件分发只读投影。手动检查只返回命令完成，安装操作只返回准备结果，不另开进度流、不用命令回执回灌状态，也不在失败后额外回读。组件销毁不取消后台任务；后台错误在更新区域显示，不主动弹出通知。
 - **断点续传与多重校验**：安装包下载采用 Rust 原生 `reqwest`/`rustls` 与 `downlowd` 库管理 HTTP 断点续传、`ETag`/`Last-Modified` 校验、有界重试及 `.part`/`.downloadinfo` 分片写入（同一版本缓存受操作系统文件锁保护，拒绝跨进程并发下载）。超时与重试限额固定为：更新检查连接超时 **15 秒**、读取停滞超时 **30 秒**、总预算 **60 秒**；安装包下载单文件上限 **512 MiB**、连接与读取停滞超时 **5 秒**、总预算 **15 分钟**、最多 **4 次**传输尝试（重试间隔不超过 2 秒），中间进度合并发布频率上限为每秒 **4 次**。下载完成后必须完整校验字节长度、SHA-256 摘要与内置 Minisign 公钥签名，任一校验不通过立即删除损坏分片并终止，绝不启动未验证的二进制程序。
-- **手动更新入口**：Windows 应用内更新的手动入口包括设置页的检查／下载并重启／安装并重启，以及主界面侧栏底栏设置旁的短按钮「更新」（英文 `Update`）。侧栏入口仅在 Client `hasUpdate` 为真时显示（发现新版本、正在下载或校验、安装包已就绪、或安装失败可重试）；没有已验证安装包时，检查中或已是最新不显示；已有安装包时，即使后续检查或新版下载失败仍保留入口。更新关闭或已启动安装器时不显示。点击「更新」与设置页安装并重启走同一命令：准备安装包后由退出协调器以更新后重启意图关停并交接安装器，不另开设置页、不另造安装 API。进度、发行说明与取消仍只在设置页。Linux / macOS 当前没有应用内更新，侧栏入口保持隐藏，更新方式仍为手动替换安装包。
+- **手动更新入口**：Windows / Linux 应用内更新的手动入口包括设置页的检查／下载并重启／安装并重启，以及主界面侧栏底栏设置旁的短按钮「更新」（英文 `Update`）。侧栏入口仅在 Client `hasUpdate` 为真时显示（发现新版本、正在下载或校验、安装包已就绪、或安装失败可重试）；没有已验证安装包时，检查中或已是最新不显示；已有安装包时，即使后续检查或新版下载失败仍保留入口。更新关闭或已启动安装器时不显示。点击「更新」与设置页安装并重启走同一命令：准备安装包后由退出协调器以更新后重启意图关停并交接安装器，不另开设置页、不另造安装 API。进度、发行说明与取消仍只在设置页。macOS 保持手动更新。普通退出不安装已下载包，只有用户明确点击更新才进入安装交接。
 - **退出协调与安装器交接**：手动点击更新不要求当前会话空闲，下载期间可正常使用应用。当安装包准备完成且进入应用退出流程时，统一走宿主退出协调器（见 [18](./18-studio-state.md) §18.5）：唯有运行时、桥接层与 Dart 外部所有者全部确认收束且关停报告为真实 `Clean` 时，才启动安装器交接；若关停报告为 `Degraded`、保存状态未知或超时，则跳过本次安装并保留已验证缓存供下次启动重试。Windows 安装器通过支持显式脱离（breakaway）的进程交接工厂启动，脱离原应用作业对象（Job Object），禁用 Windows Restart Manager 的自动关闭与重启，等待旧进程真正退出后才开始写入文件，并在手动更新完成后负责拉起新版本应用。
+
+### Linux 系统授权与可靠交接
+
+更新准备阶段先请求 Polkit 授权，再关闭应用。`.deb` 随包提供 root 所有的独立更新辅助程序及固定 action；`pkexec` 只运行该程序，图形应用和重启监督进程保持原用户身份。未授权、取消、缺少系统服务或预检失败时，原应用继续运行，并发布安装失败状态。
+
+用户缓存不是提权后的信任来源。准备任务从文件租约创建封印快照，辅助程序在 root 私有暂存目录再次验证内置公钥签名、摘要、包名、版本及架构。它收到真实 `Clean` 关闭提交后，仍通过 pidfd 等待旧应用退出；未提交时通道关闭只代表撤销，不能触发安装。普通退出及失败关闭均撤销交接并等待所属进程，安装阶段不占用应用的 30 秒关停预算。
+
+PackageKit 负责 `.deb` 及依赖安装，辅助程序订阅事务信号后才提交安装，只有 `Finished(success)` 且没有 `ErrorCode` 才算成功。Minisign 信任不冒充仓库 GPG 信任。安装终态写入原用户的一次性结果文件，由下一次 bootstrap 纳入同一更新快照；安装错误独立保留，立即首检不会覆盖它。监督进程随后以原用户重启当前安装的应用；失败不承诺回滚，不伪报成功，缓存保留以便重试。
 
 ## 23.5 生产诊断日志与后台进程窗口约束
 

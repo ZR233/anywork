@@ -132,12 +132,29 @@ pub(crate) struct BridgeRuntime {
 
 impl BridgeRuntime {
     async fn new() -> Result<Self> {
+        let studio = StudioRuntime::initialize_with_lease(
+            crate::desktop_instance::lease()?,
+            std::sync::Arc::new(super::handlers::lifecycle::publish_startup_stage),
+        )
+        .await?;
+        #[cfg(target_os = "linux")]
+        match pl_studio_update::linux::take_installation_failure() {
+            Ok(Some((update, error))) => {
+                if let Err(error) = studio
+                    .record_studio_update_installation_failure(format!(
+                        "Update {}: {error}",
+                        update.version
+                    ))
+                    .await
+                {
+                    tracing::error!(%error, "failed to project installation outcome");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::error!(%error, "failed to read installation outcome"),
+        }
         Ok(Self {
-            studio: StudioRuntime::initialize_with_lease(
-                crate::desktop_instance::lease()?,
-                std::sync::Arc::new(super::handlers::lifecycle::publish_startup_stage),
-            )
-            .await?,
+            studio,
             subscriptions: BridgeTaskRegistry::new(),
             shutdown: CancellationToken::new(),
         })

@@ -111,6 +111,7 @@ final class StudioUpdateClient {
     if (_closed ||
         !enabled ||
         _automaticStarted ||
+        state.activity is DisabledUpdaterActivity ||
         updater.state.value == null) {
       return;
     }

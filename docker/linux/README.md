@@ -117,7 +117,7 @@ bash docker/linux/scripts/run.sh anywork-linux-build:local \
 
 版本必须与源码一致；stage 只消费显式预构建 bundle，不编译 GUI 或 helper，拒绝
 覆盖已有发布目录。输出在 `dist/studio-release/<x.y.z>/`：Debian 包及其
-`.deb.sha256`。安装使用系统包管理器，例如 `sudo apt install ./anywork-<version>-linux-x86_64.deb`。
+`.deb.sha256`，最终发布汇合时另生成 Minisign 签名和多平台清单。首次安装使用系统包管理器，例如 `sudo apt install ./anywork-<version>-linux-x86_64.deb`。
 
 首版成品验证目标为 Ubuntu 22.04、24.04 与 Debian 12、13 的 amd64。构建环境固定
 Ubuntu 22.04，完整 ELF 的 GLIBC 需求不高于 2.35，其他 ABI 需求也须满足最低环境。
@@ -126,3 +126,5 @@ Ubuntu 22.04，完整 ELF 的 GLIBC 需求不高于 2.35，其他 ABI 需求也�
 兼容检查在干净运行环境安装同一 DEB，不能借用本镜像预装的开发库掩盖漏依赖。
 不承诺更旧发行版或全部桌面业务；支持与证据边界见
 [发布契约](../../design/23-release-update.md)。
+
+Windows / Linux 共用后台更新检查与签名验证；Linux 安装阶段通过 PackageKit 与 Polkit 系统授权，普通退出不安装。`build-gui` 将独立更新辅助程序和固定 action 一并放入 bundle，`stage` 只消费这些预构建输入。
