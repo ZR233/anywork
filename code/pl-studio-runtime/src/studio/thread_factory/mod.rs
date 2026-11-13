@@ -58,7 +58,9 @@ pub(in crate::studio) struct StudioThreadServices {
 /// Assembles fresh model and tool instances from product inputs, without the old Turn engine.
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
-    services: StudioThreadServices,
+    // Assembly inputs are immutable service leases. Factory clones retain this one bundle
+    // instead of inlining it into every preparation permit and suspended operation.
+    services: Arc<StudioThreadServices>,
     lsp_binding_updates: Arc<tokio::sync::Notify>,
     scopes: Arc<
         std::sync::Mutex<
@@ -227,7 +229,7 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) fn new(services: StudioThreadServices) -> Self {
         Self {
-            services,
+            services: Arc::new(services),
             lsp_binding_updates: Arc::new(tokio::sync::Notify::new()),
             scopes: Default::default(),
             initial_routes: Default::default(),

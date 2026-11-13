@@ -115,7 +115,7 @@ impl super::agents::AgentHost {
         &self,
         context: &pl_tool::collaboration::control::AgentCallContext,
         model: bool,
-    ) -> Result<AgentServices, pl_tool::collaboration::control::ControlError> {
+    ) -> Result<Arc<AgentServices>, pl_tool::collaboration::control::ControlError> {
         use pl_tool::collaboration::control::ControlError;
         self.caller(context)?;
         if self.identity.parent_agent_id.is_some() {
@@ -626,7 +626,7 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        state.agent_services = Some(AgentServices {
+        state.agent_services = Some(Arc::new(AgentServices {
             factory,
             config,
             store,
@@ -636,19 +636,21 @@ impl SessionRuntime {
             operations: Default::default(),
             workspace_recovery: None,
             acp_business: None,
-        });
+        }));
         Ok(())
     }
     pub(crate) fn set_acp_business(
         &self,
         business: crate::studio::runtime::acp_business::AcpBusinessOwner,
     ) -> Result<(), ThreadAssemblyError> {
-        self.0
-            .state()
+        let mut state = self.0.state();
+        let services = state
             .agent_services
             .as_mut()
-            .ok_or(ThreadAssemblyError::Closed)?
-            .acp_business = Some(business);
+            .ok_or(ThreadAssemblyError::Closed)?;
+        // Installers replace the original service snapshot. In-flight operations keep the
+        // exact leases they captured, as they did when this bundle was cloned by value.
+        Arc::make_mut(services).acp_business = Some(business);
         Ok(())
     }
     /// Installs the runtime's Recovery publisher for internal activation failures.
@@ -664,7 +666,7 @@ impl SessionRuntime {
             .agent_services
             .as_mut()
             .ok_or(ThreadAssemblyError::Closed)?;
-        services.workspace_recovery = publisher;
+        Arc::make_mut(services).workspace_recovery = publisher;
         Ok(())
     }
 
