@@ -311,9 +311,9 @@
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="panel-left"></i></span>5 个侧边栏共享组件场景</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="circle-check"></i></span>62 个账户与模型场景</mdui-chip>
         <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="server"></i></span>18 个 SSH 与远端 MCP 场景</mdui-chip>
-        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="git-branch"></i></span>7 个起始页与工作区场景</mdui-chip>
-        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="lock"></i></span>8 个运行时输入框与锁定场景</mdui-chip>
-        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="activity"></i></span>13 个时间线与状态栏场景</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="git-branch"></i></span>12 个起始页与工作区场景</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="lock"></i></span>14 个运行时输入框与锁定场景</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="activity"></i></span>15 个时间线与状态栏场景</mdui-chip>
       </div>
       <div class="swatch-strip" aria-label="暹罗浅色主题色板">
         <div class="swatch light" style="background:#F6F0E7"><span>Lowest</span><small>#F6F0E7</small></div>
@@ -543,7 +543,7 @@
           <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
           <h2>新会话起始页与工作区输入布局</h2>
         </div>
-        <span class="sec-cnt">共享 conversation-shared · 7 个创建期场景</span>
+        <span class="sec-cnt">共享 conversation-shared · 12 个创建期场景</span>
       </div>
       <div class="grid-2">
         <mdui-card variant="outlined" clickable href="session-start/index.html" class="proto-card">
@@ -602,6 +602,21 @@
             <mdui-chip class="chip-tag" tabindex="-1">失败保留草稿</mdui-chip>
           </div>
         </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="session-start/index.html?scenario=start-acp-codex" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>模型融合选择与 ACP 动态槽位<span class="card-zh">Codex / Antigravity / Grok</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>去掉外层「糊来帮 / ACP」独立切换器，将外部智能体账号与百余项模型直接融合进同一模型下拉菜单；动态映射工作模式、思考强度、⚙ 调优面板与 SSH 本地限制校验。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">模型融合菜单</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">动态槽位 + ⚙调优</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">SSH 兼容校验</mdui-chip>
+          </div>
+        </mdui-card>
       </div>
     </section>
 
@@ -611,7 +626,7 @@
           <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
           <h2>会话运行时输入框与配置锁定</h2>
         </div>
-        <span class="sec-cnt">共享 conversation-shared · 8 个运行期场景</span>
+        <span class="sec-cnt">共享 conversation-shared · 14 个运行期场景</span>
       </div>
       <div class="grid-2">
         <mdui-card variant="outlined" clickable href="session-composer/index.html" class="proto-card">
@@ -703,6 +718,21 @@
             <mdui-chip class="chip-tag" tabindex="-1">冻结路由与工作树</mdui-chip>
           </div>
         </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="session-composer/index.html?scenario=acp-agy-extra" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>ACP 运行期动态调优与单飞确认<span class="card-zh">⚙ 调优弹层 / 思考强度动态显隐</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>已建 ACP 会话将工作模式、模型与动态参数映射到统一 3+1 底栏；切模动态增删思考强度、通过 ⚙ 调优渲染分组开关，并在配置确认往返期间原宽置灰防止并发冲突。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">3+1 统一槽位</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">⚙ 动态二级调优</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">单飞往返确认</mdui-chip>
+          </div>
+        </mdui-card>
       </div>
     </section>
 
@@ -738,7 +768,7 @@
           <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
           <h2>会话时间线与实时状态栏</h2>
         </div>
-        <span class="sec-cnt">共享 conversation-shared · 13 个时间线场景</span>
+        <span class="sec-cnt">共享 conversation-shared · 15 个时间线场景</span>
       </div>
       <div class="grid-2">
         <mdui-card variant="outlined" clickable href="live-status/index.html" class="proto-card">

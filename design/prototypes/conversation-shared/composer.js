@@ -27,12 +27,14 @@
       this.getWindowEl = getWindowEl;
       this.openId = null;
       this.projectSearchQuery = '';
+      this.modelSearchQuery = '';
     }
 
     closeAll() {
       if (!this.openId) return;
       this.openId = null;
       this.projectSearchQuery = '';
+      this.modelSearchQuery = '';
       this.root.querySelectorAll('.cv-menu').forEach(menu => { menu.hidden = true; });
       this.root.querySelectorAll('[data-menu-trigger][aria-expanded]').forEach(btn => {
         btn.setAttribute('aria-expanded', 'false');
@@ -145,14 +147,21 @@
           ${icon(ft.workspaceMode === 'worktree' ? 'git-branch' : 'folder')}
           <span>${ft.sshAlias ? `SSH:${escape(ft.sshAlias)} · ` : ''}${escape(wsShort)}</span>
         </span>
-        ${!isSubagent ? `
+        ${!isSubagent ? (ft.backendKind === 'acp' ? `
+          <span
+            class="cv-frozen-chip is-acp"
+            title="外部智能体：${escape(ft.acpAccountName || 'ACP')}">
+            <span class="cv-acp-mark is-sm" style="background:${escape(ft.acpColor || '#55798C')}">${escape(ft.acpBadgeText || 'ACP')}</span>
+            <span>${escape(ft.acpAccountName || 'Agent')}</span>
+          </span>
+        ` : `
           <span
             class="cv-frozen-chip cv-frozen-delegation"
-            title="会话创建时已固定子智能体分发策略（只读）：${escape(ft.delegationSummary)}">
+            title="子智能体分发：${escape(ft.delegationSummary)}">
             ${icon('sliders-horizontal')}
             <span>${escape(ft.delegationSummary)}</span>
           </span>
-        ` : ''}
+        `) : ''}
       </div>
     `;
 
@@ -166,15 +175,14 @@
           data-menu-trigger="agents"
           aria-haspopup="menu"
           aria-expanded="false"
-          title="查看主会话与子智能体列表，或停止运行中的子智能体">
+          title="会话智能体">
           ${icon('users')}
           <span class="cv-tabular">${activeAgentsCount} 个智能体</span>
           <span class="cv-caret">${icon('chevron-down')}</span>
         </button>
         <div class="cv-menu cv-menu-agents align-right" data-menu-panel="agents" role="menu" hidden>
           <div class="cv-menu-head">
-            <span>会话智能体目录</span>
-            <small>子会话只读 · 可单独停止</small>
+            <span>会话智能体</span>
           </div>
           <div class="cv-agent-list">
             ${s.agents.map(ag => {
@@ -288,6 +296,218 @@
     icons(topbarEl);
   }
 
+  function renderAcpBrandMark(account, sizeClass = '') {
+    if (!account) return '';
+    const bg = account.color || '#55798C';
+    const label = account.badge || account.badgeText || 'AC';
+    return `<span class="cv-acp-mark ${sizeClass}" style="background:${escape(bg)}" aria-hidden="true">${escape(label)}</span>`;
+  }
+
+  function renderAcpOptionRows(options, currentValue) {
+    return options.map(opt => {
+      const selected = opt.value === currentValue;
+      return `
+        <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-acp-model="${escape(opt.value)}">
+          <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+          <span class="cv-item-main cv-mono-tight">${escape(opt.name || opt.value)}</span>
+        </button>
+      `;
+    }).join('');
+  }
+
+  function renderAcpModelSectionHTML(schema, query) {
+    const slot = schema.modelSlot;
+    const acc = schema.account;
+    if (!slot || !acc) return '';
+    const q = String(query || '').trim().toLowerCase();
+    const matchOpt = opt => !q
+      || String(opt.name || '').toLowerCase().includes(q)
+      || String(opt.value || '').toLowerCase().includes(q);
+
+    let listHtml = '';
+    let matchedCount = 0;
+
+    if (slot.groups && slot.groups.length) {
+      const filteredGroups = slot.groups
+        .map(g => ({ group: g.group, options: g.options.filter(matchOpt) }))
+        .filter(g => g.options.length > 0);
+      matchedCount = filteredGroups.reduce((accSum, g) => accSum + g.options.length, 0);
+      listHtml = filteredGroups.map(g => `
+        <div class="cv-menu-subhead"><span>${escape(g.group)}</span></div>
+        ${renderAcpOptionRows(g.options, slot.currentValue)}
+      `).join('');
+    } else {
+      const filtered = (slot.flatOptions || []).filter(matchOpt);
+      matchedCount = filtered.length;
+      listHtml = renderAcpOptionRows(filtered, slot.currentValue);
+    }
+
+    const total = slot.totalCount || (slot.flatOptions || []).length;
+    const countBadge = q ? `${matchedCount}/${total}` : '';
+
+    if (!matchedCount) {
+      return `
+        <div class="cv-menu-head">
+          <span>${escape(acc.name)}</span>
+          ${countBadge ? `<small>${escape(countBadge)}</small>` : ''}
+        </div>
+        <div class="cv-menu-empty-hint">未找到匹配「${escape(query)}」的模型</div>
+      `;
+    }
+
+    return `
+      <div class="cv-menu-head">
+        <span>${escape(acc.name)}</span>
+        ${countBadge ? `<small>${escape(countBadge)}</small>` : ''}
+      </div>
+      ${listHtml}
+    `;
+  }
+
+  function renderNativeGroupsHTML(currentModelId, isNativeActive, query) {
+    const q = String(query || '').trim().toLowerCase();
+    const htmlParts = [];
+    app.fixtures.accountGroups.forEach(grp => {
+      const models = grp.models.filter(m =>
+        !q
+        || m.name.toLowerCase().includes(q)
+        || grp.accountName.toLowerCase().includes(q)
+        || (m.caps || []).some(c => c.toLowerCase().includes(q))
+      );
+      if (!models.length) return;
+      htmlParts.push(`
+        <div class="cv-menu-head"><span>${escape(grp.accountName)}</span></div>
+        ${models.map(m => {
+          const selected = isNativeActive && m.id === currentModelId;
+          return `
+            <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-native-model="${escape(m.id)}">
+              <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+              <span class="cv-item-main">${escape(m.name)}</span>
+              <span class="cv-cap-badges">
+                ${m.caps.map(c => `<span class="cv-cap-badge">${escape(c)}</span>`).join('')}
+              </span>
+            </button>
+          `;
+        }).join('')}
+      `);
+    });
+    return htmlParts.join('<div class="cv-menu-divider"></div>');
+  }
+
+  function renderAcpAccountsListHTML(controller, query) {
+    const s = controller.state;
+    const q = String(query || '').trim().toLowerCase();
+    const proj = s.targetType === 'project' ? controller.currentProject() : null;
+    const isRemote = Boolean(proj?.sshAlias);
+    const items = (app.fixtures.acpAccounts || []).filter(acc =>
+      !q
+      || acc.name.toLowerCase().includes(q)
+      || acc.id.toLowerCase().includes(q)
+    );
+    if (!items.length) return '';
+    return `
+      <div class="cv-menu-head">
+        <span>外部智能体</span>
+      </div>
+      ${items.map(acc => {
+        const selected = s.backendKind === 'acp' && s.acpAccountId === acc.id;
+        const sshBlocked = isRemote && !acc.supportsRemote;
+        return `
+          <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-acp-account="${escape(acc.id)}">
+            <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+            ${renderAcpBrandMark(acc)}
+            <span class="cv-item-main">${escape(acc.name)}</span>
+            <span class="cv-cap-badges">
+              <span class="cv-cap-badge">ACP</span>
+              ${sshBlocked ? '<span class="cv-cap-badge is-warn">仅本地</span>' : ''}
+            </span>
+          </button>
+        `;
+      }).join('')}
+    `;
+  }
+
+  function buildModelMenuResultsHTML(controller, schema, query) {
+    const s = controller.state;
+    const isStart = s.stage === 'start';
+
+    if (!isStart) {
+      if (schema.kind === 'acp') {
+        return renderAcpModelSectionHTML(schema, query);
+      }
+      const nativeBody = renderNativeGroupsHTML(s.modelId, true, query);
+      return nativeBody || `<div class="cv-menu-empty-hint">未找到匹配「${escape(query)}」的模型</div>`;
+    }
+
+    const parts = [];
+    if (schema.kind === 'acp' && !schema.deferred && schema.modelSlot?.kind === 'acp') {
+      parts.push(renderAcpModelSectionHTML(schema, query));
+    }
+
+    const nativeHtml = renderNativeGroupsHTML(s.modelId, schema.kind === 'native', query);
+    const acpAccountsHtml = renderAcpAccountsListHTML(controller, query);
+    if (nativeHtml) parts.push(nativeHtml);
+    if (acpAccountsHtml) parts.push(acpAccountsHtml);
+
+    if (!parts.filter(Boolean).length) {
+      return `<div class="cv-menu-empty-hint">未找到匹配「${escape(query)}」的选项</div>`;
+    }
+    return parts.filter(Boolean).join('<div class="cv-menu-divider"></div>');
+  }
+
+  function buildExtraMenuHTML(schema) {
+    return `
+      <div class="cv-menu-head">
+        <span>扩展参数</span>
+      </div>
+      ${schema.extraOptions.map(opt => {
+        if (opt.type === 'boolean') {
+          const checked = Boolean(opt.currentValue);
+          return `
+            <div class="cv-extra-bool-row">
+              <div class="cv-item-main">
+                <div class="cv-item-title">${escape(opt.name)}</div>
+              </div>
+              <button
+                type="button"
+                class="cv-m3-switch ${checked ? 'is-on' : ''}"
+                role="switch"
+                aria-checked="${checked}"
+                aria-label="${escape(opt.name)}"
+                data-toggle-acp-bool="${escape(opt.id)}"
+                data-next-val="${checked ? 'false' : 'true'}">
+                <span class="cv-m3-switch-thumb"></span>
+              </button>
+            </div>
+          `;
+        }
+        const items = opt.groups?.length
+          ? opt.groups.flatMap(g => g.options)
+          : (opt.options || []);
+        return `
+          <div class="cv-extra-group">
+            <div class="cv-extra-group-head">
+              <strong>${escape(opt.name)}</strong>
+            </div>
+            ${items.map(item => {
+              const selected = item.value === opt.currentValue;
+              return `
+                <button
+                  type="button"
+                  class="cv-menu-item ${selected ? 'is-selected' : ''}"
+                  data-pick-acp-extra="${escape(opt.id)}"
+                  data-acp-val="${escape(item.value)}">
+                  <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+                  <span class="cv-item-main">${escape(item.name || item.value)}</span>
+                </button>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }).join('<div class="cv-menu-divider"></div>')}
+    `;
+  }
+
   /* ========================================================================
      3. Unified PromptComposerCard Component (100% Shared Between Start & Session)
      ======================================================================== */
@@ -367,8 +587,11 @@
           if (cmd === 'local') this.helpers.openFilePicker();
           else if (cmd === 'url') this.helpers.openUrlDialog();
           else if (cmd === 'paste') {
-            this.controller.addPastedImage();
-            this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+            if (this.controller.addPastedImage()) {
+              this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+            } else {
+              this.helpers.toast(this.controller.state.lockNotice || '当前外部智能体不支持图片输入');
+            }
           }
         });
       });
@@ -396,9 +619,14 @@
         if (imageItems.length) {
           event.preventDefault();
           const files = imageItems.map(i => i.getAsFile()).filter(Boolean);
-          if (files.length) this.controller.attach(files, { source: 'clipboard' });
-          else this.controller.addPastedImage();
-          this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+          const ok = files.length
+            ? this.controller.attach(files, { source: 'clipboard' })
+            : this.controller.addPastedImage();
+          if (ok) {
+            this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+          } else {
+            this.helpers.toast(this.controller.state.lockNotice || '当前外部智能体不支持图片输入');
+          }
         }
       });
 
@@ -432,6 +660,7 @@
     update() {
       const s = this.controller.state;
       const locks = this.controller.getLockState();
+      const schema = locks.schema;
       const action = this.controller.getPrimaryAction();
       const mode = this.controller.currentMode();
       const model = this.controller.currentModel();
@@ -441,32 +670,12 @@
         this.textarea.value = s.draft;
         this.syncTextareaHeight();
       }
-      let placeholder = '描述下一步，或补充你的想法…';
-      if (s.stage === 'start') {
-        placeholder = locks.prepRunning ? '环境准备期间仍可提前输入下一条草稿…' : '描述你的需求…';
-      } else if (s.transitionPhase === 'stopping') {
-        placeholder = '正在收束清理当前执行，草稿内容可继续编辑并保留…';
-      } else if (!s.frozenThread.routeAvailable) {
-        placeholder = '当前模型不可用（草稿可正常编辑，请先在右下角改选可用模型）…';
-      } else if (s.live) {
-        placeholder = '会话运行中，可提前拟定下一条消息、拖放文件或粘贴图片…';
-      } else if (s.resumable) {
-        placeholder = '可直接点击右侧「继续」，或输入补充指示后「发送并继续」…';
-      }
+      let placeholder = s.stage === 'start' ? '描述你的需求…' : '输入消息…';
       this.textarea.placeholder = placeholder;
 
-      // 2. Sync transition status (keeps right-hand primary action slot fixed width)
-      this.statusEl.textContent = s.stage === 'start'
-        ? (locks.prepRunning ? '正在准备会话空间…' : '')
-        : action.kind === 'stopping'
-          ? '正在停止收束当前执行…'
-          : action.kind === 'continuing'
-            ? '正在恢复执行…'
-            : s.live
-              ? '运行中可并发拟稿'
-              : s.resumable
-                ? '已停止 · 点击右侧 ▶ 继续，或输入补充内容发送'
-                : '';
+      // 2. Keep inline status strip free of explanatory copy inside display area
+      this.statusEl.textContent = '';
+      this.statusEl.hidden = true;
 
       // 3. Sync attachments rail (image thumbnails with click-to-lightbox + file/link chips)
       const nextAttachSig = s.attachments.map(a => `${a.id}:${a.name}:${a.dimensions || ''}:${a.url || ''}`).join('|');
@@ -524,99 +733,174 @@
         icons(this.attachmentsEl);
       }
 
-      // 4. Sync inline reason region (route blocker & continuation note)
+      // 4. Sync inline reason region (only actionable blockers inside product UI)
       const reasonLines = [];
+      if (s.stage === 'start' && locks.acpIssue) {
+        reasonLines.push({
+          blocker: true,
+          acpIssue: true,
+          iconName: 'triangle-alert',
+          text: locks.acpIssue.message
+        });
+      }
       if (s.stage === 'session' && !s.frozenThread.routeAvailable) {
         reasonLines.push({
           blocker: true,
           iconName: 'triangle-alert',
-          text: '当前模型不可用，暂时不能继续。请在右下角模型选择器改选其他可用模型。'
-        });
-      }
-      if (s.stage === 'session' && s.resumable && s.continuationReason) {
-        reasonLines.push({
-          blocker: false,
-          iconName: 'info',
-          text: s.continuationReason
+          text: '当前模型不可用，请改选其他模型'
         });
       }
       this.reasonEl.hidden = reasonLines.length === 0;
       this.reasonEl.innerHTML = reasonLines.map(line => `
-        <div class="cv-reason-line ${line.blocker ? 'is-blocker' : ''}">
+        <div class="cv-reason-line ${line.blocker ? 'is-blocker' : ''} ${line.acpIssue ? 'cv-acp-issue-banner' : ''}">
           ${icon(line.iconName)}
-          <span>${escape(line.text)}</span>
+          <span class="cv-reason-text">${escape(line.text)}</span>
+          ${line.acpIssue ? `
+            <span class="cv-acp-issue-actions">
+              <button type="button" class="cv-inline-fix-btn" data-recover-acp="native">改用内置模型</button>
+              <button type="button" class="cv-inline-fix-btn" data-recover-acp="local">切回本地项目</button>
+            </span>
+          ` : ''}
         </div>
       `).join('');
-      if (reasonLines.length) icons(this.reasonEl);
+      if (reasonLines.length) {
+        this.reasonEl.querySelectorAll('[data-recover-acp]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            if (btn.dataset.recoverAcp === 'native') {
+              this.controller.selectNativeModel(this.controller.state.modelId);
+              this.helpers.toast('已改用糊来帮内置模型');
+            } else {
+              this.controller.switchToLocalProjectForAcp();
+              this.helpers.toast('已切回本地项目，可正常启动 ACP 会话');
+            }
+          });
+        });
+        icons(this.reasonEl);
+      }
 
-      // 5. Sync 3-Part Lock-Aware Route Selector Bar (Mode · Model · Effort)
-      const botManaged = s.stage === 'session' && s.frozenThread.botManaged;
+      // 5. Sync Unified 3+1 Route Selector Bar (Mode · Model/ACP · Thought · + Extra Tuning)
+      const botManaged = s.stage === 'session' && s.frozenThread.botManaged && !locks.isAcp;
       const routeUnavailable = s.stage === 'session' && !s.frozenThread.routeAvailable;
+      const acpPending = s.backendKind === 'acp' ? s.acpConfigPending : null;
+      const extraSig = schema.extraOptions.map(o => `${o.id}=${String(o.currentValue)}`).join(',');
       const nextRouteSig = JSON.stringify({
-        modeId: mode.id,
+        stage: s.stage,
+        backendKind: s.backendKind,
+        acpAccountId: s.acpAccountId,
+        deferred: schema.deferred,
+        pendingId: acpPending?.configId || null,
+        targetType: s.targetType,
+        projectId: s.projectId,
+        modeId: schema.modeSlot?.currentValue || null,
+        modeLabel: schema.modeSlot?.currentLabel || null,
+        modeOpts: (schema.modeSlot?.flatOptions || []).length,
         modeEditable: locks.modeEditable,
         modeReason: locks.modeReason,
-        modelId: model.id,
+        modelVal: schema.modelSlot?.kind === 'acp' ? schema.modelSlot.currentValue : model.id,
+        modelLabel: schema.modelSlot?.currentLabel || schema.account?.name || model.name,
+        modelKind: schema.modelSlot?.kind || 'none',
         modelEditable: locks.modelEditable,
         modelReason: locks.modelReason,
-        effort: s.effort,
+        thoughtVal: schema.thoughtSlot?.currentValue || null,
+        thoughtLabel: schema.thoughtSlot?.currentLabel || null,
         effortSupported: locks.effortSupported,
         effortEditable: locks.effortEditable,
         effortReason: locks.effortReason,
+        extraSig,
+        extraEditable: locks.extraEditable,
+        extraReason: locks.extraReason,
         botManaged,
         routeUnavailable
       });
 
       if (nextRouteSig !== this.routeSignature) {
         this.routeSignature = nextRouteSig;
+        const isAcp = schema.kind === 'acp';
+        const showModeSlot = Boolean(schema.modeSlot);
+        const modeOpts = schema.modeSlot?.flatOptions || schema.modeSlot?.options || [];
+        const modeTitle = schema.modeSlot?.name || '工作模式';
+        const modeCurrentLabel = schema.modeSlot?.currentLabel || mode.label;
+        const modePending = Boolean(acpPending && schema.modeSlot && acpPending.configId === schema.modeSlot.id);
+
+        const hasAcpModelSlot = isAcp && schema.modelSlot?.kind === 'acp';
+        const modelTriggerLabel = isAcp
+          ? (hasAcpModelSlot ? schema.modelSlot.currentLabel : (schema.account?.name || 'ACP'))
+          : model.name;
+        const modelTriggerTitle = isAcp
+          ? `${schema.account?.name || 'ACP'}${hasAcpModelSlot ? ' / ' + schema.modelSlot.currentLabel : ''}${schema.deferred ? '（待首条启动后加载）' : ''}`
+          : `主智能体模型：${model.accountName} / ${model.name}`;
+        const modelPending = Boolean(acpPending && schema.modelSlot && acpPending.configId === schema.modelSlot.id);
+
+        const showThoughtSlot = !isAcp || (!schema.deferred && (Boolean(schema.thoughtSlot) || hasAcpModelSlot));
+        const thoughtOptions = isAcp
+          ? (schema.thoughtSlot?.flatOptions || schema.thoughtSlot?.options || [])
+          : (model.efforts || []).map(ef => ({ value: ef, name: ef }));
+        const thoughtCurrentVal = schema.thoughtSlot?.currentValue || null;
+        const thoughtCurrentLabel = schema.thoughtSlot?.currentLabel || thoughtCurrentVal || '—';
+        const thoughtPending = Boolean(acpPending && schema.thoughtSlot && acpPending.configId === schema.thoughtSlot.id);
+
+        const showExtraSlot = schema.extraOptions.length > 0;
+        const extraPending = Boolean(acpPending && schema.extraOptions.some(o => o.id === acpPending.configId));
+        const hasExtraActive = schema.extraOptions.some(o =>
+          o.type === 'boolean' ? Boolean(o.currentValue) : (o.currentValue && o.currentValue !== 'workspace_safe')
+        );
+
+        const initialQuery = this.menuManager.openId === 'model' ? (this.menuManager.modelSearchQuery || '') : '';
+        const modelResultsHTML = buildModelMenuResultsHTML(this.controller, schema, initialQuery);
+
         this.routeBarEl.innerHTML = `
-          <!-- Work Mode Selector -->
-          <div class="cv-menu-anchor">
-            ${locks.modeEditable ? `
-              <button
-                type="button"
-                class="cv-quiet-trigger"
-                data-route-trigger="mode"
-                data-menu-trigger="mode"
-                aria-haspopup="menu"
-                aria-expanded="false"
-                title="${escape('工作模式：' + mode.label)}">
-                <span>${escape(mode.label)}</span>
-                <span class="cv-caret">${icon('chevron-down')}</span>
-              </button>
-              <div class="cv-menu align-right" data-menu-panel="mode" role="menu" hidden>
-                <div class="cv-menu-head"><span>工作模式</span></div>
-                ${app.fixtures.modes.map(m => {
-                  const selected = m.id === mode.id;
-                  return `
-                    <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-mode="${escape(m.id)}">
-                      <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
-                      <span class="cv-item-main">
-                        <div class="cv-item-title">${escape(m.label)}</div>
-                        <div class="cv-item-sub">${escape(m.desc)}</div>
-                      </span>
-                    </button>
-                  `;
-                }).join('')}
-              </div>
-            ` : `
-              <span
-                class="cv-quiet-trigger is-disabled"
-                aria-disabled="true"
-                title="${escape(locks.modeReason)}">
-                <span>${escape(mode.label)}</span>
-                <span class="cv-caret">${icon('chevron-down')}</span>
-              </span>
-            `}
-          </div>
+          ${showModeSlot ? `
+            <!-- Slot 1: Mode Selector -->
+            <div class="cv-menu-anchor">
+              ${locks.modeEditable ? `
+                <button
+                  type="button"
+                  class="cv-quiet-trigger ${modePending ? 'is-pending-acp' : ''}"
+                  data-route-trigger="mode"
+                  data-menu-trigger="mode"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  title="${escape(modeTitle + '：' + modeCurrentLabel)}">
+                  ${modePending ? spinner() : ''}
+                  <span>${escape(modeCurrentLabel)}</span>
+                  <span class="cv-caret">${icon('chevron-down')}</span>
+                </button>
+                <div class="cv-menu align-right" data-menu-panel="mode" role="menu" hidden>
+                  <div class="cv-menu-head">
+                    <span>${escape(modeTitle)}</span>
+                  </div>
+                  ${modeOpts.map(m => {
+                    const mVal = m.value ?? m.id;
+                    const mLabel = m.name ?? m.label;
+                    const selected = mVal === schema.modeSlot.currentValue;
+                    return `
+                      <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-mode="${escape(mVal)}">
+                        <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+                        <span class="cv-item-main">${escape(mLabel)}</span>
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+              ` : `
+                <span
+                  class="cv-quiet-trigger is-disabled"
+                  aria-disabled="true"
+                  title="${escape(locks.modeReason)}">
+                  ${modePending ? spinner() : ''}
+                  <span>${escape(modeCurrentLabel)}</span>
+                  <span class="cv-caret">${icon('chevron-down')}</span>
+                </span>
+              `}
+            </div>
+          ` : ''}
 
           ${botManaged ? `
             <span
               class="cv-quiet-trigger is-disabled is-static-label"
               aria-disabled="true"
-              title="模型与思考强度由机器人设置统一管理">
+              title="由机器人设置统一管理">
               ${icon('bot')}
-              <span>${escape(model.name)} · 由机器人统一设置</span>
+              <span>${escape(model.name)}</span>
             </span>
           ` : `
             ${routeUnavailable ? `
@@ -624,107 +908,214 @@
                 type="button"
                 class="cv-route-warn-btn"
                 data-warn-explain
-                title="点击查看当前模型不可用原因"
-                aria-label="当前模型路由不可用详情">
+                title="查看原因"
+                aria-label="当前模型不可用">
                 ${icon('triangle-alert')}
               </button>
             ` : ''}
 
-            <!-- Main Agent Model Selector -->
+            <!-- Slot 2: Main Agent Model / ACP Selector -->
             <div class="cv-menu-anchor">
               ${locks.modelEditable ? `
                 <button
                   type="button"
-                  class="cv-quiet-trigger"
+                  class="cv-quiet-trigger ${isAcp ? 'is-acp-model' : ''} ${modelPending ? 'is-pending-acp' : ''}"
                   data-route-trigger="model"
                   data-menu-trigger="model"
                   aria-haspopup="menu"
                   aria-expanded="false"
-                  title="${escape(`主智能体模型：${model.accountName} / ${model.name}`)}">
-                  <span>${escape(model.name)}</span>
+                  title="${escape(modelTriggerTitle)}">
+                  ${modelPending ? spinner() : (isAcp ? renderAcpBrandMark(schema.account, 'is-sm') : '')}
+                  <span class="cv-model-label-text">${escape(modelTriggerLabel)}</span>
                   <span class="cv-caret">${icon('chevron-down')}</span>
                 </button>
                 <div class="cv-menu cv-menu-models align-right" data-menu-panel="model" role="menu" hidden>
-                  ${app.fixtures.accountGroups.map((grp, gIdx) => `
-                    ${gIdx > 0 ? '<div class="cv-menu-divider"></div>' : ''}
-                    <div class="cv-menu-head"><span>${escape(grp.accountName)}</span></div>
-                    ${grp.models.map(m => {
-                      const selected = m.id === model.id;
+                  <div class="cv-model-search-wrap">
+                    <span class="cv-model-search-icon">${icon('search')}</span>
+                    <input
+                      type="text"
+                      class="cv-model-search-input"
+                      value="${escape(initialQuery)}"
+                      placeholder="搜索模型…"
+                      aria-label="搜索模型"
+                      autocomplete="off"
+                      spellcheck="false">
+                    <button
+                      type="button"
+                      class="cv-model-search-clear"
+                      title="清除搜索"
+                      aria-label="清除搜索"
+                      ${initialQuery ? '' : 'hidden'}>
+                      ${icon('x')}
+                    </button>
+                  </div>
+                  <div class="cv-model-menu-results" role="group" aria-label="模型列表">
+                    ${modelResultsHTML}
+                  </div>
+                </div>
+              ` : `
+                <span
+                  class="cv-quiet-trigger is-disabled ${isAcp && !hasAcpModelSlot ? 'is-static-label is-acp-model' : (isAcp ? 'is-acp-model' : '')}"
+                  aria-disabled="true"
+                  title="${escape(locks.modelReason)}">
+                  ${modelPending ? spinner() : (isAcp ? renderAcpBrandMark(schema.account, 'is-sm') : '')}
+                  <span class="cv-model-label-text">${escape(modelTriggerLabel)}</span>
+                  ${isAcp && !hasAcpModelSlot ? '' : `<span class="cv-caret">${icon('chevron-down')}</span>`}
+                </span>
+              `}
+            </div>
+
+            ${showThoughtSlot ? `
+              <!-- Slot 3: Reasoning Effort -->
+              <div class="cv-menu-anchor">
+                ${locks.effortEditable ? `
+                  <button
+                    type="button"
+                    class="cv-quiet-trigger cv-mono is-effort ${thoughtPending ? 'is-pending-acp' : ''}"
+                    data-route-trigger="effort"
+                    data-menu-trigger="effort"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    title="${escape((schema.thoughtSlot?.name || '思考强度') + '：' + thoughtCurrentLabel)}">
+                    ${thoughtPending ? spinner() : ''}
+                    <span>${escape(thoughtCurrentLabel)}</span>
+                    <span class="cv-caret">${icon('chevron-down')}</span>
+                  </button>
+                  <div class="cv-menu align-right" data-menu-panel="effort" role="menu" hidden>
+                    <div class="cv-menu-head">
+                      <span>${escape(schema.thoughtSlot?.name || '思考强度')}</span>
+                    </div>
+                    ${thoughtOptions.map(ef => {
+                      const efVal = ef.value ?? ef;
+                      const efLabel = ef.name ?? efVal;
+                      const selected = efVal === thoughtCurrentVal;
                       return `
-                        <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-model="${escape(m.id)}">
+                        <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-pick-effort="${escape(efVal)}">
                           <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
-                          <span class="cv-item-main">${escape(m.name)}</span>
-                          <span class="cv-cap-badges">
-                            ${m.caps.map(c => `<span class="cv-cap-badge">${escape(c)}</span>`).join('')}
-                          </span>
+                          <span class="cv-item-main cv-mono">${escape(efLabel)}</span>
                         </button>
                       `;
                     }).join('')}
-                  `).join('')}
-                </div>
-              ` : `
-                <span
-                  class="cv-quiet-trigger is-disabled"
-                  aria-disabled="true"
-                  title="${escape(locks.modelReason)}">
-                  <span>${escape(model.name)}</span>
-                  <span class="cv-caret">${icon('chevron-down')}</span>
-                </span>
-              `}
-            </div>
+                  </div>
+                ` : `
+                  <span
+                    class="cv-quiet-trigger cv-mono is-effort is-disabled"
+                    aria-disabled="true"
+                    title="${escape(locks.effortReason)}">
+                    ${thoughtPending ? spinner() : ''}
+                    <span>${escape(locks.effortSupported ? thoughtCurrentLabel : '—')}</span>
+                    <span class="cv-caret">${icon('chevron-down')}</span>
+                  </span>
+                `}
+              </div>
+            ` : ''}
 
-            <!-- Reasoning Effort Selector -->
-            <div class="cv-menu-anchor">
-              ${locks.effortEditable ? `
-                <button
-                  type="button"
-                  class="cv-quiet-trigger cv-mono is-effort"
-                  data-route-trigger="effort"
-                  data-menu-trigger="effort"
-                  aria-haspopup="menu"
-                  aria-expanded="false"
-                  title="${escape('思考强度：' + s.effort)}">
-                  <span>${escape(s.effort || '—')}</span>
-                  <span class="cv-caret">${icon('chevron-down')}</span>
-                </button>
-                <div class="cv-menu align-right" data-menu-panel="effort" role="menu" hidden>
-                  <div class="cv-menu-head"><span>思考强度</span></div>
-                  ${model.efforts.map(ef => {
-                    const selected = ef === s.effort;
-                    return `
-                      <button type="button" class="cv-menu-item cv-mono ${selected ? 'is-selected' : ''}" data-pick-effort="${escape(ef)}">
-                        <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
-                        <span class="cv-item-main">${escape(ef)}</span>
-                      </button>
-                    `;
-                  }).join('')}
-                </div>
-              ` : `
-                <span
-                  class="cv-quiet-trigger cv-mono is-effort is-disabled"
-                  aria-disabled="true"
-                  title="${escape(locks.effortReason)}">
-                  <span>${escape(locks.effortSupported ? (s.effort || '—') : '—')}</span>
-                  <span class="cv-caret">${icon('chevron-down')}</span>
-                </span>
-              `}
-            </div>
+            ${showExtraSlot ? `
+              <!-- Slot 4: Dynamic ACP Extra Parameters (boolean / select) -->
+              <div class="cv-menu-anchor">
+                ${locks.extraEditable ? `
+                  <button
+                    type="button"
+                    class="cv-quiet-trigger cv-extra-trigger ${hasExtraActive ? 'has-active-extra' : ''} ${extraPending ? 'is-pending-acp' : ''}"
+                    data-route-trigger="extra"
+                    data-menu-trigger="extra"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    title="扩展参数">
+                    ${extraPending ? spinner() : icon('sliders-horizontal')}
+                    <span>调优</span>
+                    <span class="cv-extra-count">${schema.extraOptions.length}</span>
+                  </button>
+                  <div class="cv-menu cv-menu-acp-extra align-right" data-menu-panel="extra" role="menu" hidden>
+                    ${buildExtraMenuHTML(schema)}
+                  </div>
+                ` : `
+                  <span
+                    class="cv-quiet-trigger cv-extra-trigger is-disabled"
+                    aria-disabled="true"
+                    title="${escape(locks.extraReason)}">
+                    ${extraPending ? spinner() : icon('sliders-horizontal')}
+                    <span>调优</span>
+                    <span class="cv-extra-count">${schema.extraOptions.length}</span>
+                  </span>
+                `}
+              </div>
+            ` : ''}
           `}
         `;
 
+        const modelPanel = this.routeBarEl.querySelector('[data-menu-panel="model"]');
+        const modelResultsEl = modelPanel?.querySelector('.cv-model-menu-results');
+        const modelSearchInput = modelPanel?.querySelector('.cv-model-search-input');
+        const modelSearchClearBtn = modelPanel?.querySelector('.cv-model-search-clear');
+
+        const bindModelResultsEvents = container => {
+          if (!container) return;
+          container.querySelectorAll('[data-pick-native-model]').forEach(btn => {
+            btn.addEventListener('click', () => {
+              this.menuManager.closeAll();
+              this.controller.selectNativeModel(btn.dataset.pickNativeModel);
+            });
+          });
+          container.querySelectorAll('[data-pick-acp-account]').forEach(btn => {
+            btn.addEventListener('click', () => {
+              this.menuManager.closeAll();
+              this.controller.selectAcpAccount(btn.dataset.pickAcpAccount);
+            });
+          });
+          container.querySelectorAll('[data-pick-acp-model]').forEach(btn => {
+            btn.addEventListener('click', () => {
+              this.menuManager.closeAll();
+              this.controller.setModel(btn.dataset.pickAcpModel);
+            });
+          });
+        };
+
+        const syncModelSearchList = query => {
+          this.menuManager.modelSearchQuery = query;
+          if (modelSearchClearBtn) modelSearchClearBtn.hidden = !query;
+          if (modelResultsEl) {
+            modelResultsEl.innerHTML = buildModelMenuResultsHTML(this.controller, schema, query);
+            bindModelResultsEvents(modelResultsEl);
+            icons(modelResultsEl);
+          }
+        };
+
         // Bind editable route triggers
-        ['mode', 'model', 'effort'].forEach(kind => {
+        ['mode', 'model', 'effort', 'extra'].forEach(kind => {
           const btn = this.routeBarEl.querySelector(`[data-route-trigger="${kind}"]`);
           const panel = this.routeBarEl.querySelector(`[data-menu-panel="${kind}"]`);
           if (btn && panel) {
-            btn.addEventListener('click', () => this.menuManager.toggle(kind, btn, panel, true));
+            btn.addEventListener('click', () => {
+              this.menuManager.toggle(kind, btn, panel, true);
+              if (kind === 'model' && !panel.hidden && modelSearchInput) {
+                syncModelSearchList(this.menuManager.modelSearchQuery || '');
+                modelSearchInput.value = this.menuManager.modelSearchQuery || '';
+                requestAnimationFrame(() => modelSearchInput.focus({ preventScroll: true }));
+              }
+            });
           }
           this.menuManager.restoreIfOpen(kind, btn, panel, true);
         });
 
+        modelSearchInput?.addEventListener('input', () => {
+          syncModelSearchList(modelSearchInput.value);
+        });
+        modelSearchInput?.addEventListener('click', event => event.stopPropagation());
+        modelSearchClearBtn?.addEventListener('click', event => {
+          event.stopPropagation();
+          if (!modelSearchInput) return;
+          modelSearchInput.value = '';
+          syncModelSearchList('');
+          modelSearchInput.focus({ preventScroll: true });
+        });
+
+        bindModelResultsEvents(modelResultsEl);
+
         this.routeBarEl.querySelector('[data-warn-explain]')?.addEventListener('click', () => {
           this.controller.explainLock(this.controller.state.frozenThread.routeUnavailableReason, 'warning');
         });
+
 
         this.routeBarEl.querySelectorAll('[data-pick-mode]').forEach(btn => {
           btn.addEventListener('click', () => {
@@ -732,16 +1123,24 @@
             this.controller.setWorkMode(btn.dataset.pickMode);
           });
         });
-        this.routeBarEl.querySelectorAll('[data-pick-model]').forEach(btn => {
-          btn.addEventListener('click', () => {
-            this.menuManager.closeAll();
-            this.controller.setModel(btn.dataset.pickModel);
-          });
-        });
         this.routeBarEl.querySelectorAll('[data-pick-effort]').forEach(btn => {
           btn.addEventListener('click', () => {
             this.menuManager.closeAll();
             this.controller.setEffort(btn.dataset.pickEffort);
+          });
+        });
+        this.routeBarEl.querySelectorAll('[data-toggle-acp-bool]').forEach(btn => {
+          btn.addEventListener('click', event => {
+            event.stopPropagation();
+            const cfgId = btn.dataset.toggleAcpBool;
+            const nextVal = btn.dataset.nextVal === 'true';
+            this.controller.setAcpConfigValue(cfgId, nextVal);
+          });
+        });
+        this.routeBarEl.querySelectorAll('[data-pick-acp-extra]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            this.menuManager.closeAll();
+            this.controller.setAcpConfigValue(btn.dataset.pickAcpExtra, btn.dataset.acpVal);
           });
         });
 
@@ -787,7 +1186,9 @@
     const prep = controller.state.preparation;
     if (!prep) return '';
     const project = controller.currentProject();
-    const steps = ['检查项目', '准备工作区', '初始化会话', '提交请求'];
+    const isAcp = controller.state.backendKind === 'acp';
+    const acpAcc = isAcp ? controller.currentAcpAccount() : null;
+    const steps = ['检查项目', '准备工作区', isAcp ? `连接 ${acpAcc?.name || 'ACP'}` : '初始化会话', '提交请求'];
     const isRunning = prep.status === 'running';
     const isFailed = prep.status === 'failed';
 
@@ -801,7 +1202,6 @@
             </div>
             <div>
               <h3>${isFailed ? '环境准备未完成' : '正在准备会话'}</h3>
-              <p>${isFailed ? '输入与附件草稿已原位保留，可切换工作区模式或调整后重新发送。' : '准备好会话空间后将自动进入运行期会话并处理你的首条请求。'}</p>
             </div>
           </div>
           <ol class="cv-prep-steps">
@@ -844,7 +1244,7 @@
             </div>
             <div class="cv-prep-kv">
               <small>冻结的会话工作区</small>
-              <span>${prep.frozenWorkspaceMode === 'worktree' ? '新建工作树 (worktree)' : '本地目录 (local)'}</span>
+              <span>${prep.frozenWorkspaceMode === 'worktree' ? '新建工作树' : '本地目录'}</span>
             </div>
             ${project?.sshAlias ? `
               <div class="cv-prep-kv">
@@ -1016,7 +1416,6 @@
           <div class="cv-project-empty" role="status">
             ${icon('search-x')}
             <span>未找到匹配「${escape(q)}」的已有项目</span>
-            <small>可尝试输入名称、路径或 SSH 别名缩写，或点击上方「新建项目…」</small>
           </div>
         `
       };
@@ -1057,28 +1456,13 @@
     const project = controller.currentProject();
     const standalone = s.targetType === 'standalone';
     const effDelMode = controller.effectiveDelegationMode();
-    const effDelPref = controller.effectiveDelegationPreference();
     const hasDelOverride = Boolean(s.delegationModeOverride || s.delegationPrefOverride);
-
-    let subtitle = '';
-    if (standalone) {
-      subtitle = '当前新会话将开启在「无项目」（保存在 Documents/anywork），也可点击下方切换至已有项目或新建项目。';
-    } else if (project?.sshAlias) {
-      subtitle = s.workspaceMode === 'worktree'
-        ? `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）从 HEAD 检出独立工作树隔离改动。`
-        : `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）目录中直接协作。`;
-    } else {
-      subtitle = s.workspaceMode === 'worktree'
-        ? `当前新会话将在项目「${project.name}」从 HEAD 新建独立 Git 工作树，代码修改与原工作区互不干扰。`
-        : `当前新会话将在项目「${project.name}」中开启，可在下方切换为无项目、其他项目或新建工作树。`;
-    }
 
     const heroHTML = s.preparation
       ? buildPreparationHTML(controller)
       : `
         <div class="cv-welcome">
           <h2>想从哪里开始？</h2>
-          <p>${escape(subtitle)}</p>
         </div>
       `;
 
@@ -1091,14 +1475,6 @@
       <div class="cv-start-col">
         <div class="cv-hero-slot">${heroHTML}</div>
 
-        ${s.lockNotice ? `
-          <div class="cv-lock-notice ${s.lockNoticeTone === 'warning' ? 'is-warning' : ''}" role="status">
-            ${icon('info')}
-            <span class="cv-lock-notice-text">${escape(s.lockNotice)}</span>
-            <button type="button" class="cv-lock-notice-close" data-dismiss-notice aria-label="关闭提示">${icon('x')}</button>
-          </div>
-        ` : ''}
-
         <div class="cv-start-envelope" aria-label="新会话创建环境栏与输入卡">
           <div class="cv-env-bar">
             <div class="cv-env-left">
@@ -1107,7 +1483,7 @@
                   <span
                     class="cv-quiet-trigger cv-project-trigger is-disabled"
                     aria-disabled="true"
-                    title="正在准备新会话环境，所属项目已按提交快照固定">
+                    title="${escape(standalone ? '无项目' : project.name)}">
                     ${icon(standalone ? 'file-box' : (project?.sshAlias ? 'server' : 'folder'))}
                     <span class="cv-anchor-name">${escape(standalone ? '无项目' : project.name)}</span>
                     ${project?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(project.sshAlias)}</span>` : ''}
@@ -1120,9 +1496,7 @@
                     data-menu-trigger="project"
                     aria-haspopup="menu"
                     aria-expanded="false"
-                    title="${escape(standalone
-                      ? '新会话将开启在：无项目（保存在 C:\\Users\\dev\\Documents\\anywork）· 点击可切换已有项目或新建项目'
-                      : `新会话将开启在项目：${project.name}（${project.path}）· 点击可切换为无项目、已有项目或新建项目`)}">
+                    title="${escape(standalone ? '无项目' : `${project.name}（${project.path}）`)}">
                     ${icon(standalone ? 'file-box' : (project?.sshAlias ? 'server' : 'folder'))}
                     <span class="cv-anchor-name">${escape(standalone ? '无项目' : project.name)}</span>
                     ${project?.sshAlias ? `<span class="cv-ssh-pill">SSH · ${escape(project.sshAlias)}</span>` : ''}
@@ -1131,8 +1505,7 @@
 
                   <div class="cv-menu cv-menu-project align-left" data-menu-panel="project" role="menu" aria-label="选择新会话开启位置" hidden>
                     <div class="cv-menu-head">
-                      <span>新会话开启位置</span>
-                      <small>会话创建时固定</small>
+                      <span>开启位置</span>
                     </div>
                     <button
                       type="button"
@@ -1144,7 +1517,6 @@
                       <span class="cv-ws-item-icon">${icon('file-box')}</span>
                       <span class="cv-item-main">
                         <div class="cv-item-title">无项目</div>
-                        <div class="cv-item-sub">不绑定代码仓库 · 默认保存在 Documents/anywork</div>
                       </span>
                     </button>
 
@@ -1157,7 +1529,6 @@
                       <span class="cv-ws-item-icon is-accent">${icon('folder-plus')}</span>
                       <span class="cv-item-main">
                         <div class="cv-item-title">新建项目…</div>
-                        <div class="cv-item-sub">添加本地代码目录或连接 ~/.ssh/config 远程主机目录</div>
                       </span>
                     </button>
 
@@ -1173,8 +1544,8 @@
                         type="text"
                         class="cv-project-search-input"
                         value="${escape(currentSearchQuery)}"
-                        placeholder="模糊搜索已有项目（名称、路径、SSH）…"
-                        aria-label="模糊搜索已有项目"
+                        placeholder="搜索项目…"
+                        aria-label="搜索已有项目"
                         autocomplete="off"
                         spellcheck="false">
                       <button
@@ -1193,23 +1564,14 @@
                 `}
               </div>
 
-              <span class="cv-v-sep" aria-hidden="true"></span>
-
-              ${standalone ? `
-                <span
-                  class="cv-quiet-trigger is-disabled is-static-label"
-                  aria-disabled="true"
-                  title="无项目新会话固定保存在 Documents/anywork，不提供 Git 工作树选项">
-                  ${icon('folder')}
-                  <span>固定本地目录</span>
-                </span>
-              ` : `
+              ${standalone ? '' : `
+                <span class="cv-v-sep" aria-hidden="true"></span>
                 <div class="cv-menu-anchor">
                   ${locks.prepRunning ? `
                     <span
                       class="cv-quiet-trigger cv-ws-trigger ${s.workspaceMode === 'worktree' ? 'is-worktree' : ''} is-disabled"
                       aria-disabled="true"
-                      title="正在准备新会话环境，工作区模式已按提交快照固定">
+                      title="${s.workspaceMode === 'worktree' ? '新建工作树' : '本地目录'}">
                       ${icon(s.workspaceMode === 'worktree' ? 'git-branch' : 'folder')}
                       <span>${s.workspaceMode === 'worktree' ? '新建工作树' : '本地目录'}</span>
                       <span class="cv-caret">${icon('chevron-down')}</span>
@@ -1221,7 +1583,7 @@
                       data-menu-trigger="workspace"
                       aria-haspopup="menu"
                       aria-expanded="false"
-                      title="${s.workspaceMode === 'worktree' ? '会话工作区：新建工作树（从仓库当前 HEAD 检出）' : '会话工作区：本地目录（直接使用当前项目目录）'}">
+                      title="${s.workspaceMode === 'worktree' ? '新建工作树' : '本地目录'}">
                       ${icon(s.workspaceMode === 'worktree' ? 'git-branch' : 'folder')}
                       <span>${s.workspaceMode === 'worktree' ? '新建工作树' : '本地目录'}</span>
                       <span class="cv-caret">${icon('chevron-down')}</span>
@@ -1230,20 +1592,17 @@
                     <div class="cv-menu cv-menu-ws align-left" data-menu-panel="workspace" role="menu" hidden>
                       <div class="cv-menu-head">
                         <span>会话工作区</span>
-                        <small>会话创建时固定</small>
                       </div>
                       ${[
                         {
                           val: 'local',
                           iconName: 'folder',
-                          label: '本地目录',
-                          desc: '直接在当前项目目录中读写与执行'
+                          label: '本地目录'
                         },
                         {
                           val: 'worktree',
                           iconName: 'git-branch',
-                          label: '新建工作树',
-                          desc: '从仓库当前 HEAD 检出独立工作树隔离改动'
+                          label: '新建工作树'
                         }
                       ].map(opt => {
                         const selected = s.workspaceMode === opt.val;
@@ -1253,7 +1612,6 @@
                             <span class="cv-ws-item-icon ${opt.val === 'worktree' ? 'is-worktree' : ''}">${icon(opt.iconName)}</span>
                             <span class="cv-item-main">
                               <div class="cv-item-title">${escape(opt.label)}</div>
-                              <div class="cv-item-sub">${escape(opt.desc)}</div>
                             </span>
                           </button>
                         `;
@@ -1264,80 +1622,74 @@
               `}
             </div>
 
-            <div class="cv-env-right">
-              <div class="cv-menu-anchor">
-                ${locks.prepRunning ? `
-                  <span
-                    class="cv-quiet-trigger is-disabled"
-                    aria-disabled="true"
-                    title="正在准备新会话环境，子智能体分发策略已按提交快照固定">
-                    ${icon('sliders-horizontal')}
-                    <span>${escape(controller.delegationSummaryText())}</span>
-                    <span class="cv-caret">${icon('chevron-down')}</span>
-                  </span>
-                ` : `
-                  <button
-                    type="button"
-                    class="cv-quiet-trigger ${hasDelOverride ? 'has-override' : ''}"
-                    data-menu-trigger="delegation"
-                    aria-haspopup="menu"
-                    aria-expanded="false"
-                    title="子智能体分发策略 · ${escape(controller.delegationSummaryText())}（创建会话时冻结）">
-                    ${icon('sliders-horizontal')}
-                    <span>${escape(controller.delegationSummaryText())}</span>
-                    <span class="cv-caret">${icon('chevron-down')}</span>
-                  </button>
+            ${s.backendKind === 'acp' ? '' : `
+              <div class="cv-env-right">
+                <div class="cv-menu-anchor">
+                  ${locks.prepRunning ? `
+                    <span
+                      class="cv-quiet-trigger is-disabled"
+                      aria-disabled="true"
+                      title="${escape(controller.delegationSummaryText())}">
+                      ${icon('sliders-horizontal')}
+                      <span>${escape(controller.delegationSummaryText())}</span>
+                      <span class="cv-caret">${icon('chevron-down')}</span>
+                    </span>
+                  ` : `
+                    <button
+                      type="button"
+                      class="cv-quiet-trigger ${hasDelOverride ? 'has-override' : ''}"
+                      data-menu-trigger="delegation"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      title="${escape(controller.delegationSummaryText())}">
+                      ${icon('sliders-horizontal')}
+                      <span>${escape(controller.delegationSummaryText())}</span>
+                      <span class="cv-caret">${icon('chevron-down')}</span>
+                    </button>
 
-                  <div class="cv-menu cv-menu-wide align-right" data-menu-panel="delegation" role="menu" hidden>
-                    <div class="cv-menu-head">
-                      <span>分发模式</span>
-                      <small>会话创建时固定</small>
+                    <div class="cv-menu cv-menu-wide align-right" data-menu-panel="delegation" role="menu" hidden>
+                      <div class="cv-menu-head">
+                        <span>分发模式</span>
+                      </div>
+                      ${[
+                        { val: null, label: `跟随默认 · ${defaultModeName}` },
+                        { val: 'profile', label: '固定配置模板' },
+                        { val: 'automatic', label: '自动选模' }
+                      ].map(opt => {
+                        const selected = s.delegationModeOverride === opt.val;
+                        return `
+                          <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-del-mode="${opt.val ?? 'default'}">
+                            <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+                            <span class="cv-item-main">${escape(opt.label)}</span>
+                          </button>
+                        `;
+                      }).join('')}
+
+                      <div class="cv-menu-divider"></div>
+
+                      <div class="cv-menu-head">
+                        <span>自动选模偏好</span>
+                      </div>
+                      ${[
+                        { val: null, label: `跟随默认 · ${defaultPrefName}` },
+                        { val: 'economy', label: '经济' },
+                        { val: 'balanced', label: '平衡' },
+                        { val: 'fast', label: '快速' }
+                      ].map(opt => {
+                        const selected = s.delegationPrefOverride === opt.val;
+                        const disabled = effDelMode !== 'automatic';
+                        return `
+                          <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-del-pref="${opt.val ?? 'default'}" ${disabled ? 'disabled' : ''}>
+                            <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
+                            <span class="cv-item-main">${escape(opt.label)}</span>
+                          </button>
+                        `;
+                      }).join('')}
                     </div>
-                    ${[
-                      { val: null, label: `跟随默认 · ${defaultModeName}` },
-                      { val: 'profile', label: '固定配置模板' },
-                      { val: 'automatic', label: '自动选模' }
-                    ].map(opt => {
-                      const selected = s.delegationModeOverride === opt.val;
-                      return `
-                        <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-del-mode="${opt.val ?? 'default'}">
-                          <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
-                          <span class="cv-item-main">${escape(opt.label)}</span>
-                        </button>
-                      `;
-                    }).join('')}
-
-                    <div class="cv-menu-divider"></div>
-
-                    <div class="cv-menu-head">
-                      <span>自动选模偏好</span>
-                      <small>${effDelMode === 'automatic' ? '当前生效' : '固定模式下保留'}</small>
-                    </div>
-                    ${[
-                      { val: null, label: `跟随默认 · ${defaultPrefName}` },
-                      { val: 'economy', label: '经济' },
-                      { val: 'balanced', label: '平衡' },
-                      { val: 'fast', label: '快速' }
-                    ].map(opt => {
-                      const selected = s.delegationPrefOverride === opt.val;
-                      const disabled = effDelMode !== 'automatic';
-                      return `
-                        <button type="button" class="cv-menu-item ${selected ? 'is-selected' : ''}" data-del-pref="${opt.val ?? 'default'}" ${disabled ? 'disabled' : ''}>
-                          <span class="cv-check-slot">${selected ? icon('check') : ''}</span>
-                          <span class="cv-item-main">${escape(opt.label)}</span>
-                        </button>
-                      `;
-                    }).join('')}
-
-                    <div class="cv-menu-footnote">
-                      ${effDelMode === 'automatic'
-                        ? escape(app.fixtures.preferenceHints[effDelPref])
-                        : '仅自动选模时生效；固定配置模板模式下保留该偏好值。'}
-                    </div>
-                  </div>
-                `}
+                  `}
+                </div>
               </div>
-            </div>
+            `}
           </div>
 
           <div class="cv-start-card-mount"></div>
@@ -1349,7 +1701,6 @@
     host.querySelector('.cv-start-card-mount').append(composerCard.node);
     composerCard.update();
 
-    host.querySelector('[data-dismiss-notice]')?.addEventListener('click', () => controller.dismissLockNotice());
     host.querySelector('[data-start-action="switch-local"]')?.addEventListener('click', () => {
       controller.setWorkspaceMode('local');
       helpers.toast('已切换为「本地目录」，可直接点击发送');
@@ -1463,28 +1814,25 @@
      ======================================================================== */
   function buildAgentReadOnlyDock(controller) {
     const agent = controller.currentAgent();
-    const waiting = agent.status === 'waiting' || agent.status === 'stopped';
     const wrapper = node(`
-      <section class="cv-readonly-dock" aria-label="子智能体会话只读说明">
+      <section class="cv-readonly-dock" aria-label="子智能体会话只读栏">
         <div class="cv-readonly-head">
           <span class="cv-readonly-title">
-            <span>子智能体会话（只读）</span>
+            <span>只读 · ${escape(agent.role)}</span>
           </span>
           <button type="button" class="cv-button cv-primary" data-readonly-back>
             ${icon('arrow-left')}
-            <span>返回主会话继续沟通</span>
+            <span>返回主会话</span>
           </button>
         </div>
-        ${waiting ? `<p class="cv-readonly-copy">等待主智能体调度该成员。</p>` : ''}
-        <p class="cv-readonly-copy">历史、进展、冻结模型与独立工作树仅供查看；需要它继续或调整方向时，请在主会话向主智能体表达要求。运行中的子智能体仅在顶栏「智能体」菜单行内提供单独停止入口。</p>
         <div class="cv-readonly-chips">
           <span class="cv-info-chip">
             ${icon('sparkles')}
-            <span>状态：${escape(statusLabel(agent.status))}</span>
+            <span>${escape(statusLabel(agent.status))}</span>
           </span>
           <span class="cv-info-chip">
             ${icon('cpu')}
-            <span>冻结路由：${escape(agent.routeLabel)}</span>
+            <span>${escape(agent.routeLabel)}</span>
           </span>
           <span class="cv-info-chip" title="${escape(agent.workspacePath)}">
             ${icon('folder')}
@@ -1498,12 +1846,83 @@
     return wrapper;
   }
 
+  function describeContextNotes(controller) {
+    const s = controller.state;
+    const locks = controller.getLockState();
+    const schema = locks.schema;
+    const notes = [];
+
+    if (s.lockNotice) {
+      notes.push(['交互提示', s.lockNotice]);
+    }
+    if (locks.acpIssue) {
+      notes.push(['远程兼容性说明', locks.acpIssue.detail || locks.acpIssue.message]);
+    }
+    if (s.backendKind === 'acp' && schema.account?.specSummary) {
+      notes.push([`ACP 协议探测 · ${schema.account.name}`, schema.account.specSummary]);
+      if (schema.deferred) {
+        notes.push([
+          '首条激活机制',
+          '当前外部智能体未在创建期预热进程，发送首条消息完成 session/new 握手后自动展开动态配置槽；也可点击下方「模拟预加载配置」预览握手后形态。'
+        ]);
+      }
+    }
+
+    if (s.stage === 'start') {
+      const project = controller.currentProject();
+      const standalone = s.targetType === 'standalone';
+      let targetText = '';
+      if (standalone) {
+        targetText = '当前新会话将在「无项目」（Documents/anywork）开启，不绑定 Git 工作树，所属位置在会话创建时固定。';
+      } else if (project?.sshAlias) {
+        targetText = s.workspaceMode === 'worktree'
+          ? `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）从 HEAD 检出独立工作树隔离改动，创建后工作区不可变更。`
+          : `当前新会话将在远程项目「${project.name}」（SSH · ${project.sshAlias}）目录中直接协作，创建后工作区不可变更。`;
+      } else {
+        targetText = s.workspaceMode === 'worktree'
+          ? `当前新会话将在项目「${project.name}」从 HEAD 新建独立 Git 工作树隔离改动，创建后固定工作区。`
+          : `当前新会话将在项目「${project.name}」本地目录中开启（可在外层环境栏切换为无项目、已有项目或新建工作树）。`;
+      }
+      if (s.backendKind === 'acp') {
+        notes.push(['开启位置与调度边界', `${targetText}外部智能体（ACP）内部自主处理工具调用与子任务编排；切回内置模型可重新配置子智能体分发。`]);
+      } else {
+        const effDelMode = controller.effectiveDelegationMode();
+        const effDelPref = controller.effectiveDelegationPreference();
+        const delHint = effDelMode === 'automatic'
+          ? app.fixtures.preferenceHints[effDelPref]
+          : '子智能体分发使用固定配置模板（自动选模偏好仅保留不生效），随首条消息发送一次性冻结。';
+        notes.push(['开启位置与分发规则', `${targetText}${delHint}`]);
+      }
+    } else {
+      const agent = controller.currentAgent();
+      if (!agent.isRoot) {
+        notes.push([
+          '子智能体只读说明',
+          '历史、进展、冻结模型与独立工作树仅供查看；需要它继续或调整方向时，请在主会话向主智能体表达要求。运行中的子智能体仅在顶栏「智能体」菜单行内提供单独停止入口。'
+        ]);
+      } else {
+        if (s.continuationReason) {
+          notes.push(['待继续状态说明', s.continuationReason]);
+        }
+        const canCompact = !s.live && !s.pending && s.transitionPhase === 'none' && s.history.length > 0;
+        if (!canCompact) {
+          notes.push(['上下文压缩条件', (s.live || s.pending || s.transitionPhase !== 'none')
+            ? '当前会话正在执行或等待处理，轮次空闲后可从页脚上下文环手动触发强制压缩。'
+            : '有已结束历史记录后可从页脚上下文环手动触发强制压缩。']);
+        }
+      }
+    }
+    return notes;
+  }
+
   app.composer = {
     MenuManager,
     PromptComposerCard,
     renderTopbar,
+    renderAcpBrandMark,
     buildPreparationHTML,
     renderStartStage,
-    buildAgentReadOnlyDock
+    buildAgentReadOnlyDock,
+    describeContextNotes
   };
 })();
