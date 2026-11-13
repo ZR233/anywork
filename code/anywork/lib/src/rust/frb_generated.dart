@@ -22139,7 +22139,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 2)
       throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
     return BridgeWorkTiming(
-      startedAt: dco_decode_i_64(arr[0]),
+      startedAt: dco_decode_opt_box_autoadd_i_64(arr[0]),
       finishedAt: dco_decode_opt_box_autoadd_i_64(arr[1]),
     );
   }
@@ -40034,7 +40034,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   BridgeWorkTiming sse_decode_bridge_work_timing(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_startedAt = sse_decode_i_64(deserializer);
+    var var_startedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_finishedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     return BridgeWorkTiming(
       startedAt: var_startedAt,
@@ -56863,7 +56863,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_64(self.startedAt, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.startedAt, serializer);
     sse_encode_opt_box_autoadd_i_64(self.finishedAt, serializer);
   }
 

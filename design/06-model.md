@@ -42,6 +42,8 @@
 
 作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
 
+所有厂商的出站工具输入声明共用精简投影，ChatGPT 会话路由也复用同一规则：只保留参数形状、说明、引用与必要约束，删除生成器标题、方言声明、默认值、示例与内部扩展字段，并裁掉未引用的本地定义。闭合对象联合的分支引用父级公共参数定义，只发送允许的参数名、不同限制与额外必填项；禁止的参数从可用参数表移除，仍由分支对象闭合拒绝，不再重复整份参数 schema 或发送布尔属性 schema。其他布尔 schema 在必要处转为对象形式。枚举/常量中的 JSON 实例不递归当成 schema 改写。完整作者声明、冻结上下文与宿主 Profile / 权限校验保持原状；Custom/Grammar 原生表示及必要的 Function 回退沿用原协议适配。子智能体创建的内部 metadata 不进入模型参数声明。直接工具调用不携带输出 schema，托管编程式调用所需的输出声明遵循下一段契约。此设计对照本地 Codex 的独立 API 工具表示与 schema 清理边界；xAI 对布尔属性 schema 的拒绝见 [JSON Schema support](https://docs.x.ai/developers/model-capabilities/text/structured-outputs#json-schema-support)。
+
 Responses 的工具输出声明与实际交给模型的内容必须一致：工具作者和 MCP 的原始输出 schema 仍保存在冻结声明中，但模型上下文可能包含多段文本、截断提示或工具错误，不能保证符合原始 schema。仅支持直接调用的工具不向 Responses 声明输出 schema，其结果保留原文；支持供应商托管编程式调用的工具仍需声明开放对象，并将其结果编码为包含 JSON 对象的字符串。已是 JSON 对象时保留原文，其他 JSON 值和普通文本放在对象的 `content` 字段中；带编程式 caller 的历史结果也按此编码。历史重放按当前请求的工具声明重新投影，仅改变出站表示，不更改会话事实，也不重复执行工具。
 
 ## 6.3 模型能力矩阵

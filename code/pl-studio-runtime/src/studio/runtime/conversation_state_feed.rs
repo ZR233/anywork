@@ -186,7 +186,7 @@ impl StudioRuntime {
                         // Core resource shutdown is not permanent product Thread closure.
                         // Keep the directory status captured above, alongside this cold slice.
                         runtime = Some(
-                            crate::studio::thread_projection::project_runtime(
+                            crate::studio::thread_projection::project_cold_runtime(
                                 thread_id,
                                 saved,
                                 thread.updated_at,
@@ -1401,6 +1401,149 @@ mod storage_fault_tests {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cold_state_reads_legacy_mode_without_requiring_its_original_graph() -> Result<()> {
+        use crate::studio::paths::{SqliteFileMode, sqlite_file_options};
+        use sea_orm::{ConnectionTrait, Database};
+        let mut env = support::Environment::new(
+            vec![support::prompt_step(
+                "legacy-mode-seed",
+                0,
+                support::text_reply("saved", "legacy-seed"),
+            )],
+            vec![],
+        )
+        .await?;
+        let result = async {
+            let thread = env
+                .start(ThreadWorkspaceMode::Local, "legacy-mode-seed")
+                .await?
+                .thread;
+            support::completed_prompt(&env.runtime, &thread.id, "legacy-mode-seed").await?;
+            let history = env.runtime.store.history(&thread.id).await?;
+            let path = env
+                .runtime
+                .store
+                .registered_session_paths(&thread.id)?
+                .history_database();
+            env.runtime.shutdown_runtime().await?;
+            let original = history.checkpoint().await?.context("saved checkpoint")?;
+            let mut legacy = original.clone();
+            let mode = legacy
+                .state
+                .extensions
+                .get_mut("studio.mode")
+                .context("saved Mode")?;
+            let legacy_id = ThreadModeId::new("mode.retired-original")?;
+            mode.payload = pl_core::context::OpaquePayload::new(
+                "pl.studio.mode",
+                1,
+                serde_json::to_string(&legacy_id)?,
+            )?;
+            let workflow = WorkflowSessionState {
+                current_run: Some(WorkflowRun {
+                    lineage_id: "saved-lineage".into(),
+                    run_id: "saved-run".into(),
+                    mode_id: legacy_id,
+                    graph_revision: 1,
+                    graph_hash: "retired-original-graph".into(),
+                    lifecycle: WorkflowRunLifecycle::Active,
+                    current_state_id: "saved-state".into(),
+                    started_at: 1,
+                    updated_at: 2,
+                    history_tail: vec![],
+                    archived_transition_count: 0,
+                    archived_transition_digest: String::new(),
+                }),
+                ..Default::default()
+            };
+            legacy.state.extensions.insert(
+                "studio.workflow".into(),
+                pl_core::thread::extensions::ExtensionRecord {
+                    revision: 1,
+                    payload: crate::workflow_tool::encode_workflow_state(&workflow)?,
+                },
+            );
+            drop(history);
+            let db = Database::connect(
+                sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
+            )
+            .await?;
+            // Freeze the published ID-only representation without changing unrelated checkpoint facts.
+            let row = db
+                .query_one_raw(sea_orm::Statement::from_string(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "SELECT payload FROM session_checkpoint WHERE id=1",
+                ))
+                .await?
+                .context("saved envelope")?;
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            payload["state"]["extensions"]["studio.mode"] =
+                serde_json::to_value(&legacy.state.extensions["studio.mode"])?;
+            payload["state"]["extensions"]["studio.workflow"] =
+                serde_json::to_value(&legacy.state.extensions["studio.workflow"])?;
+            let payload = serde_json::to_string(&payload)?;
+            db.execute_raw(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Sqlite,
+                "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+                [
+                    payload.clone().into(),
+                    pl_core::context::content_hash(payload.as_bytes()).into(),
+                ],
+            ))
+            .await?;
+            db.close().await?;
+            env.restart().await?;
+            for _ in 0..2 {
+                let mut feed = env.runtime.open_conversation_state_feed(&thread.id).await?;
+                let snapshot = state_snapshot(&mut feed).await?;
+                assert_eq!(snapshot.thread.id, thread.id);
+                let run = snapshot
+                    .runtime
+                    .as_ref()
+                    .context("runtime")?
+                    .workflow
+                    .as_ref()
+                    .context("workflow")?
+                    .current_run
+                    .as_ref()
+                    .context("run")?;
+                assert_eq!(run.graph_hash, "retired-original-graph");
+                assert!(run.mode_display_name.is_empty() && run.current_state_title.is_empty());
+                assert!(
+                    env.runtime
+                        .session_of(&thread.id)
+                        .and_then(|session| session.observed_thread(&thread.id))
+                        .is_none()
+                );
+                feed.close().await?;
+                let history = env.runtime.store.history(&thread.id).await?;
+                let migrated = history.checkpoint().await?.context("durable checkpoint")?;
+                assert_eq!(
+                    migrated.state.extensions["studio.mode"],
+                    legacy.state.extensions["studio.mode"]
+                );
+                assert_eq!(
+                    migrated.state.extensions["studio.workflow"],
+                    legacy.state.extensions["studio.workflow"]
+                );
+                assert_eq!(migrated.state_revision, original.state_revision);
+                assert_eq!(migrated.history_fence, original.history_fence);
+                assert_eq!(migrated.state.context, original.state.context);
+                env.restart().await?;
+            }
+            assert_eq!(
+                env.root_provider.recorded().len(),
+                1,
+                "cold reads cannot issue model requests"
+            );
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
     use super::*;
     use crate::runtime_test_support as support;
     use crate::studio::runtime::conversation_feed::tests::{completed_runs, state_snapshot};

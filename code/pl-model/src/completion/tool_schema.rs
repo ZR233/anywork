@@ -6,6 +6,8 @@ use pl_protocol::{ToolCallerMode, ToolFormat, ToolSpec};
 use crate::model::ModelCapabilities;
 use crate::protocol::ProtocolEndpoint;
 
+mod input_schema;
+
 const APPLY_PATCH_FUNCTION_DESCRIPTION: &str = "Apply a Codex-style patch to workspace files. Pass the complete patch text, beginning with *** Begin Patch and ending with *** End Patch, in the required `input` string. Every file operation uses one of *** Add File: <path>, *** Delete File: <path>, or *** Update File: <path> (optionally followed by *** Move to: <path>). Do not use ---/+++ unified diff, *** File: metadata, or natural-language edit instructions such as Insert after. Update hunk lines start with a control prefix: space for context, `-` for deletion, `+` for addition; preserve a leading `-` or `+` in the file content after that prefix. If a previous patch failed, read the target file again and retry with a smaller patch based on current content.";
 
 const APPLY_PATCH_FUNCTION_FALLBACK_DESCRIPTION: &str = "Complete Codex-style apply_patch text beginning with *** Begin Patch and ending with *** End Patch. Each file operation must use one of these hunk headers: *** Add File: <path>, *** Delete File: <path>, or *** Update File: <path>. Do not use ---/+++ unified diff, *** File: metadata, or natural-language edit instructions such as Insert after. If a previous patch failed, read the target file again and retry with a smaller patch based on current content; do not repeat the same failed patch. Minimal update example:\n*** Begin Patch\n*** Update File: notes.txt\n@@\n-old line\n+new line\n*** End Patch";
@@ -150,12 +152,11 @@ pub(crate) fn provider_compatible_tool(mut tool: ToolSpec, projection: ToolProje
 
 /// Function argument providers require an object root even for a union of objects.
 /// Adapt only the request copy: the frozen author declaration remains intact.
-fn project_function_schema(schema: &mut serde_json::Value) {
+pub(crate) fn project_function_schema(schema: &mut serde_json::Value) {
+    input_schema::project(schema);
     let Some(object) = schema.as_object_mut() else {
         return;
     };
-    object.remove("$schema");
-    object.remove("title");
     let object_union = ["oneOf", "anyOf"].iter().any(|key| {
         object
             .get(*key)

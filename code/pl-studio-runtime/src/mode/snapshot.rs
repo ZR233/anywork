@@ -1,4 +1,4 @@
-//! Self-contained execution snapshots. Only explicit recovery decodes the old ID-only format.
+//! Self-contained execution snapshots. Execution recovery requires a full definition; passive reads preserve old run facts.
 use super::{RegisteredThreadMode, ThreadModeManager};
 use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 use pl_protocol::{PureError, ThreadModeDefinition, ThreadModeId};
@@ -56,6 +56,19 @@ pub(crate) fn decode_mode_snapshot(payload: &OpaquePayload) -> Result<SavedThrea
 }
 pub(crate) fn decode_saved_mode(payload: &OpaquePayload) -> Result<ThreadModeId, PureError> {
     Ok(decode_mode_snapshot(payload)?.definition.id)
+}
+
+/// A passive presentation can retain an old run even when its original executable graph is no
+/// longer available. Validate the published ID-only envelope but leave missing labels unknown;
+/// never rebuild execution metadata from the current catalog or rewrite the saved checkpoint.
+pub(crate) fn presentation_mode(
+    payload: &OpaquePayload,
+) -> Result<Option<SavedThreadMode>, PureError> {
+    if payload.format() == FORMAT && payload.version() == 1 {
+        let _: ThreadModeId = serde_json::from_str(payload.content())?;
+        return Ok(None);
+    }
+    decode_mode_snapshot(payload).map(Some)
 }
 pub(crate) fn saved_registered_mode(
     state: &ThreadSnapshot,

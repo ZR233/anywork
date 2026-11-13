@@ -53,6 +53,24 @@ const _thinking = ConversationActivityView(
 );
 
 void main() {
+  testWidgets('imported Work with unknown times does not invent a duration', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        CompletionRunView(
+          id: 'imported',
+          timing: const WorkTiming(startedAt: null),
+          location: WorkDisplayLocation.history,
+          initiallyExpanded: false,
+          childBuilder: (_) => const SizedBox(),
+        ),
+      ),
+    );
+    expect(find.text('工作记录'), findsOneWidget);
+    expect(find.text('工作了不到 1 秒'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
   testWidgets(
     'one Work clock includes idle and overnight time without reading members',
     (tester) async {

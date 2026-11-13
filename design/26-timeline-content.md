@@ -127,7 +127,7 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 
 ## 26.5 展示协议与同切面交付
 
-公共展示协议为 presentation_version=4，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/history_pos/body。Work 仅持 WorkTiming（必填 startedAt、可空 finishedAt，均为 Unix 秒）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
+公共展示协议为 presentation_version=5，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/history_pos/body。Work 仅持 WorkTiming（可空 startedAt、可空 finishedAt，均为 Unix 秒；旧组缺少可靠时间时保留 null）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
 
 
 LiveDisplayWindow 携 revision、history_through=P、execution_present、current_work_id、有界 blocks 和 older。current_work_id 由 Rust owner 唯一确定，规范最新窗口必须包含它指向的未 sealed Work；预算不足明确 InvalidDemand，不丢头让客户端猜。旧页只描述该页，不写回规范最新身份。更早窗口保留原读取资格与结构代次；token 不换代，stale 只刷新受影响 live 窗口。execution_present 只证明资源存在，不证明正在工作。
@@ -243,8 +243,8 @@ Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加�
 
 ## 26.10 当前快照格式与旧数据边界
 
-当前快照为 history22、DisplayHeader v4、presentation v4。新库通过 m20261113_000001_work_snapshots 直接创建当前展示表、索引和水位，不经过旧快照聚合及转换链。组时间只保存开始、结束两个值；成员序号、未完成关联、内容引用与可靠封口位置保留原有读取和生命周期职责。
+当前快照为 history22、DisplayHeader v4、presentation v5。新库通过 m20261113_000001_work_snapshots 直接创建当前展示表、索引和水位，不经过旧快照聚合及转换链。组时间只保存开始、结束两个值；成员序号、未完成关联、内容引用与可靠封口位置保留原有读取和生命周期职责。
 
-旧展示快照不支持，不解码、不迁移、不回退、不从原件重建。打开旧格式明确返回错误，原库、原件和已有备份原样保留；升级不是删除或清空用户数据的授权。其他账号、凭据和非展示存储的约定不因本次快照调整而改变。
+旧展示快照只在正式存储迁移边界解码升级，保留原块身份、成员与内容引用，并归档旧快照。历史中没有组创建或封口证据时，时间保持未知，界面不显示推算耗时。尚未生成展示快照的旧库按原完成顺序建立引用，不改写原件。迁移失败事务回滚，原件和已有备份保留；升级不是删除或清空用户数据的授权。其他账号、凭据和非展示存储的约定不因本次快照调整而改变。
 
 当前快照的保存、回滚、重放和重开继续由唯一 writer 与原读池持有；坏结构、错误引用或版本冲突明确失败，不修库、不伪造开始或结束时间。

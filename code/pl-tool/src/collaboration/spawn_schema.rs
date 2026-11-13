@@ -315,6 +315,7 @@ mod tests {
             let envelope = schema["properties"].as_object().unwrap();
             assert_eq!(schema["additionalProperties"], false);
             assert!(!envelope.contains_key("toolSummary"));
+            assert!(!envelope.contains_key("metadata"));
             for branch in branches {
                 assert!(branch.get("additionalProperties").is_none());
                 let fields = branch["properties"].as_object().unwrap();

@@ -320,10 +320,10 @@ class BridgeTimelineBatch {
 }
 
 class BridgeWorkTiming {
-  final PlatformInt64 startedAt;
+  final PlatformInt64? startedAt;
   final PlatformInt64? finishedAt;
 
-  const BridgeWorkTiming({required this.startedAt, this.finishedAt});
+  const BridgeWorkTiming({this.startedAt, this.finishedAt});
 
   @override
   int get hashCode => startedAt.hashCode ^ finishedAt.hashCode;

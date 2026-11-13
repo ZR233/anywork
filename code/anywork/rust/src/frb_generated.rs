@@ -23371,7 +23371,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
 impl SseDecode for crate::api::studio::types::presentation::BridgeWorkTiming {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_startedAt = <i64>::sse_decode(deserializer);
+        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
         return crate::api::studio::types::presentation::BridgeWorkTiming {
             started_at: var_startedAt,
@@ -57593,7 +57593,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeWebSearchSettingsD
 impl SseEncode for crate::api::studio::types::presentation::BridgeWorkTiming {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i64>::sse_encode(self.started_at, serializer);
+        <Option<i64>>::sse_encode(self.started_at, serializer);
         <Option<i64>>::sse_encode(self.finished_at, serializer);
     }
 }

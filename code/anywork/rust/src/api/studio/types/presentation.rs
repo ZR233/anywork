@@ -36,7 +36,7 @@ pub struct BridgeDisplayBlockRef {
 
 #[derive(Debug, Clone)]
 pub struct BridgeWorkTiming {
-    pub started_at: i64,
+    pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
 }
 

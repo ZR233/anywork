@@ -100,7 +100,11 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               executionPresent: widget.executionPresent,
               state: widget.state,
               activity: widget.activity,
-              seconds: seconds ?? 0,
+              seconds:
+                  widget.timing.startedAt == null ||
+                      (!live && widget.timing.finishedAt == null)
+                  ? null
+                  : seconds ?? 0,
               expanded: _disclosure.isExpanded,
             ),
           ),
@@ -160,7 +164,7 @@ class _WorkHeader extends StatelessWidget {
   final WorkDisplayLocation location;
   final bool executionPresent;
   final DisplayBlockState state;
-  final int seconds;
+  final int? seconds;
   final bool expanded;
   final ConversationActivityView? activity;
 
@@ -183,11 +187,15 @@ class _WorkHeader extends StatelessWidget {
     final status =
         activeThought ??
         (rawSummary != null && rawSummary.isNotEmpty ? rawSummary : fallback);
-    final duration = activityDurationLabel(
-      context,
-      seconds,
-      kind: live ? ActivityDurationKind.executing : ActivityDurationKind.worked,
-    );
+    final duration = seconds == null
+        ? fallback
+        : activityDurationLabel(
+            context,
+            seconds!,
+            kind: live
+                ? ActivityDurationKind.executing
+                : ActivityDurationKind.worked,
+          );
     final current = live && (cold || active);
     final label = live ? status : duration;
     final description = [

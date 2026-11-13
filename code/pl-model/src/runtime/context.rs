@@ -117,6 +117,11 @@ pub(super) fn project_request(
     let mut request = if endpoint.chatgpt_session.is_some() {
         // The SIWC plan is frozen: do not convert custom tools to functions (or synthesize
         // apply_patch grammar) as the generic API compatibility path is allowed to do.
+        for tool in &mut request.tools {
+            if let crate::completion::ToolSpec::Function { input_schema, .. } = tool {
+                crate::completion::tool_schema::project_function_schema(input_schema);
+            }
+        }
         request.tools = crate::completion::stable_tool_schemas(request.tools);
         request
     } else {
