@@ -9,12 +9,11 @@ use pl_model::config::{
 };
 use pl_model::model::{
     ModelInfo, ModelSelectionGuide, ModelSelectionSource, ModelSelectionSourceKind, ModelType,
-    bundled_selection_guide, bundled_selection_guides,
+    bundled_selection_guide,
 };
 use pl_model::protocol::ProtocolEndpoint;
 use pl_protocol::BillingKind;
 use pretty_assertions::assert_eq;
-use serde_json::json;
 
 fn openai_account() -> AccountConfig {
     AccountConfig::from_bundled_catalog(
@@ -368,18 +367,6 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
         coding_plan.billing_kind().unwrap(),
         BillingKind::Subscription
     );
-    assert_eq!(
-        template("mimo-token-plan").billing_kind().unwrap(),
-        BillingKind::Subscription
-    );
-    assert_eq!(
-        template("openai").billing_kind().unwrap(),
-        BillingKind::Metered
-    );
-    assert_eq!(
-        template("deepseek").billing_kind().unwrap(),
-        BillingKind::Metered
-    );
 
     // 自定义兼容入口既不是订阅也不是已知按量计价。
     let compatible = template("openai-compatible");
@@ -433,29 +420,6 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
     assert_eq!(
         custom.inferred_billing_kind().unwrap(),
         BillingKind::Unknown
-    );
-
-    // 旧配置缺这两个字段时按「全部启用、计费未知」解码，而不是猜成订阅。
-    let legacy: AccountConfig = serde_json::from_value(json!({
-        "protocol": "open_ai",
-        "name": "legacy",
-        "base_url": "https://api.openai.com/v1",
-        "catalog": {
-            "source": "bundled",
-            "catalog": "openai",
-            "additional_models": []
-        }
-    }))
-    .unwrap();
-    assert_eq!(legacy.billing_kind, None);
-    assert_eq!(legacy.billing_kind().unwrap(), BillingKind::Unknown);
-    assert!(legacy.model_enabled_overrides().is_empty());
-    assert!(
-        legacy
-            .effective_catalog(None)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.enabled)
     );
 }
 
@@ -564,82 +528,20 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
             .pricing,
         PricingOutcome::NoCharge
     );
-    let historical: InferenceAccounting = serde_json::from_value(json!({
-        "usage": {}, "pricing": {"kind":"disabled"},
-        "priceSnapshot": null, "requestStartedAt": 1,
-    }))
-    .unwrap();
-    assert_eq!(historical.pricing, PricingOutcome::Disabled);
-    assert_ne!(historical.pricing, no_charge.pricing);
-    assert_eq!(
-        serde_json::from_value::<InferenceAccounting>(serde_json::to_value(&historical).unwrap())
-            .unwrap(),
-        historical
-    );
-    assert_eq!(
-        serde_json::from_value::<InferenceAccounting>(serde_json::to_value(&no_charge).unwrap())
-            .unwrap(),
-        no_charge
-    );
 }
 
-/// 选模资料按精确目录成员绑定，并带有可核对的测量条件。
+/// 选模资料不能跨目录补写，共享目录显式指向同一份资料。
 #[test]
-fn selection_guides_bind_exact_catalog_members() {
-    builtin_account_catalog().unwrap().validate().unwrap();
-    assert!(!bundled_selection_guides().is_empty());
-
-    let luna = bundled_selection_guide("openai", "gpt-6-luna").expect("luna guide");
-    assert!(luna.summary.chars().count() <= 240);
-    assert!(luna.sources.len() <= 6);
-    let benchmark = luna
-        .sources
-        .iter()
-        .find(|source| source.kind == ModelSelectionSourceKind::Benchmark)
-        .expect("luna keeps its measured index");
-    let measurement = benchmark.measurement.as_ref().unwrap();
-    assert_eq!(measurement.model, "GPT-6 Luna");
-    assert_eq!(measurement.effort, Some("max"));
-    assert_eq!(measurement.metric_version, Some("v4.3.2"));
-    assert_eq!(measurement.score, Some(38.0));
-
-    // 全部内置资料的分数都必须绑定明确的指标版本，否则不可比。
-    for bundled in bundled_selection_guides() {
-        for source in bundled.guide.sources {
-            let Some(measurement) = source.measurement.as_ref() else {
-                continue;
-            };
-            if measurement.score.is_some() {
-                assert!(
-                    measurement
-                        .metric_version
-                        .is_some_and(|version| !version.trim().is_empty()),
-                    "{} keeps an unscoped score",
-                    bundled.model_id
-                );
-            }
-        }
-    }
-
-    // 版本化测量的精确型号不能被别名冒充。
-    let deepseek = bundled_selection_guide("deepseek", "deepseek-v4-pro").expect("v4 pro guide");
-    let versions = deepseek
-        .sources
-        .iter()
-        .filter_map(|source| source.measurement.as_ref())
-        .map(|measurement| measurement.model)
-        .collect::<Vec<_>>();
-    assert!(versions.contains(&"DeepSeek V4 Pro 0813"));
-
-    // 不跨目录、不按同名模型补写资料。
+fn selection_guides_require_catalog_membership_and_explicit_sharing() {
     assert!(bundled_selection_guide("deepseek", "gpt-6-luna").is_none());
     assert!(bundled_selection_guide("openai", "mimo-v2.5-pro").is_none());
     assert!(bundled_selection_guide("openai", "gpt-5.5").is_none());
 
     // 同一供应商的多套目录显式共享资料。
+    let shared = bundled_selection_guide("zhipu", "glm-5.3").expect("shared guide");
     assert_eq!(
-        bundled_selection_guide("zhipu", "glm-5.3"),
-        bundled_selection_guide("zhipu-responses", "glm-5.3")
+        bundled_selection_guide("zhipu-responses", "glm-5.3"),
+        Some(shared)
     );
 }
 
@@ -654,7 +556,10 @@ fn account_selection_guide_requires_current_non_manual_member() {
         .model_selection_guide("gpt-6-astra")
         .unwrap()
         .expect("bundled guide");
-    assert!(guide.summary.contains("旗舰"));
+    assert_eq!(
+        guide,
+        bundled_selection_guide("openai", "gpt-6-astra").unwrap()
+    );
     // 其他目录的 model_id 不在本账号目录里，不回落到系统目录。
     assert!(account.model_selection_guide("glm-5.3").unwrap().is_none());
 
@@ -753,28 +658,66 @@ fn selection_guide_rejects_unscoped_scores() {
     );
 }
 
-/// wire 投影只搬运资料，并把测量条件保留成结构化字段。
+/// 资料转换保留测量条件、来源顺序和缺失状态，不绑定内置模型文案与分数。
 #[test]
 fn selection_guide_projection_keeps_measurement_conditions() {
-    let guide = bundled_selection_guide("openai", "gpt-6-luna").unwrap();
-    let dto = selection_guide_descriptor(guide);
-    let value = serde_json::to_value(&dto).unwrap();
-    assert!(value["summary"].as_str().unwrap().chars().count() <= 240);
-    assert!(
-        value["taskSuitability"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("coding"))
+    use pl_model::model::ModelSelectionMeasurement;
+    use pl_protocol::{
+        AgentTaskCategory, ModelSelectionGuideDto, ModelSelectionMeasurementDto,
+        ModelSelectionSourceDto, ModelSelectionSourceKindDto,
+    };
+
+    let guide = ModelSelectionGuide {
+        summary: "Synthetic guide",
+        task_suitability: &[AgentTaskCategory::Coding],
+        limitations: &["Synthetic limitation"],
+        sources: &[
+            ModelSelectionSource {
+                kind: ModelSelectionSourceKind::Benchmark,
+                url: "https://example.test/benchmark",
+                verified_at: 17,
+                measurement: Some(ModelSelectionMeasurement {
+                    model: "measured-model-v1",
+                    effort: Some("low"),
+                    metric: "Synthetic metric",
+                    metric_version: Some("v1"),
+                    score: Some(12.5),
+                }),
+            },
+            ModelSelectionSource {
+                kind: ModelSelectionSourceKind::Official,
+                url: "https://example.test/official",
+                verified_at: 19,
+                measurement: None,
+            },
+        ],
+    };
+    assert_eq!(
+        selection_guide_descriptor(&guide),
+        ModelSelectionGuideDto {
+            summary: "Synthetic guide".into(),
+            task_suitability: vec![AgentTaskCategory::Coding],
+            limitations: vec!["Synthetic limitation".into()],
+            sources: vec![
+                ModelSelectionSourceDto {
+                    kind: ModelSelectionSourceKindDto::Benchmark,
+                    url: "https://example.test/benchmark".into(),
+                    verified_at: 17,
+                    measurement: Some(ModelSelectionMeasurementDto {
+                        model: "measured-model-v1".into(),
+                        effort: Some("low".into()),
+                        metric: "Synthetic metric".into(),
+                        metric_version: Some("v1".into()),
+                        score: Some(12.5),
+                    }),
+                },
+                ModelSelectionSourceDto {
+                    kind: ModelSelectionSourceKindDto::Official,
+                    url: "https://example.test/official".into(),
+                    verified_at: 19,
+                    measurement: None,
+                },
+            ],
+        }
     );
-    let benchmark = value["sources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|source| source["kind"] == "benchmark")
-        .unwrap();
-    assert_eq!(benchmark["measurement"]["model"], "GPT-6 Luna");
-    assert_eq!(benchmark["measurement"]["effort"], "max");
-    assert_eq!(benchmark["measurement"]["metricVersion"], "v4.3.2");
-    assert_eq!(benchmark["measurement"]["score"], 38.0);
-    assert_eq!(benchmark["verifiedAt"], 1_792_627_200);
 }

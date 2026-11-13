@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 pl-tool-git = { path = "../.." }
-pl-agent-tool = { path = "../../../../pl-agent-tool", features = ["typed"] }
+pl-agent-tool = { path = "../../../../pl-agent-tool" }
 serde_json = "1.0.154"
 tempfile = "3"
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "sync"] }

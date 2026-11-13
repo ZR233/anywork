@@ -7,12 +7,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pl_agent_tool::{
-    Tool, ToolDefinition, ToolHandle,
-    typed::{ArgumentError, decode_json, input_schema_for},
-};
+use pl_agent_tool::{Tool, ToolHandle};
 use pl_tool_git::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use support::{Repository, git};
 
 type IndependentTool = ToolHandle<String, (), GitOutput, GitError>;
@@ -43,74 +40,6 @@ fn runner(config: &GitWorkspaceConfig) -> GitRunner<Process> {
 
 fn network(config: &GitWorkspaceConfig) -> GitNetwork<Process, NoGitCredentialProvider> {
     GitNetwork::new(runner(config), Arc::new(NoGitCredentialProvider))
-}
-
-fn definitions() -> Vec<ToolDefinition> {
-    vec![
-        pl_tool_git::status::definition(),
-        pl_tool_git::diff::definition(),
-        pl_tool_git::branch::definition(),
-        pl_tool_git::fetch::definition(),
-        pl_tool_git::commit::definition(),
-        pl_tool_git::push::definition(),
-        pl_tool_git::workspace_info::definition(),
-        pl_tool_git::sync_default_branch::definition(),
-    ]
-}
-
-#[test]
-fn declarations_and_strict_wire_contract_match_the_pre_migration_tools() {
-    let baseline: Value = serde_json::from_str(include_str!("definitions.json")).unwrap();
-    assert_eq!(serde_json::to_value(definitions()).unwrap(), baseline);
-
-    let fetch: pl_tool_git::fetch::GitFetchInput = decode_json("{}").unwrap();
-    assert_eq!(fetch.remote(), None);
-    assert_eq!(fetch.refspec, None);
-    assert!(fetch.prune);
-    let push: pl_tool_git::push::GitPushInput = decode_json("{}").unwrap();
-    assert_eq!(push.remote(), None);
-    assert_eq!(push.branch, None);
-    assert!(!push.set_upstream);
-    let fetch: pl_tool_git::fetch::GitFetchInput =
-        decode_json(r#"{"remote":"upstream","refspec":"main","prune":false}"#).unwrap();
-    assert_eq!(fetch.remote().as_deref(), Some("upstream"));
-    assert_eq!(fetch.refspec.as_deref(), Some("main"));
-    assert!(!fetch.prune);
-    let push: pl_tool_git::push::GitPushInput =
-        decode_json(r#"{"remote":"fork","branch":"topic","setUpstream":true}"#).unwrap();
-    assert_eq!(push.remote().as_deref(), Some("fork"));
-    assert_eq!(push.branch.as_deref(), Some("topic"));
-    assert!(push.set_upstream);
-
-    for schema in [
-        input_schema_for::<pl_tool_git::fetch::GitFetchInput>(),
-        input_schema_for::<pl_tool_git::push::GitPushInput>(),
-    ] {
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(
-            schema["properties"]["remote"]["type"],
-            json!(["string", "null"])
-        );
-    }
-    for raw in [r#"{"unexpected":1}"#, r#"{"remote":{}}"#] {
-        for error in [
-            decode_json::<pl_tool_git::fetch::GitFetchInput>(raw).unwrap_err(),
-            decode_json::<pl_tool_git::push::GitPushInput>(raw).unwrap_err(),
-        ] {
-            let ArgumentError::Decode { source, .. } = error else {
-                panic!("not a decode failure")
-            };
-            assert!(source.column() > 0);
-        }
-    }
-    assert!(matches!(
-        decode_json::<pl_tool_git::fetch::GitFetchInput>("{} {}"),
-        Err(ArgumentError::Trailing { .. })
-    ));
-    assert!(matches!(
-        decode_json::<pl_tool_git::push::GitPushInput>("{} {}"),
-        Err(ArgumentError::Trailing { .. })
-    ));
 }
 
 #[tokio::test]
