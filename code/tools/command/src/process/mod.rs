@@ -20,6 +20,8 @@ pub const MAX_MODEL_BODY_BYTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct ProcessRequest {
     pub command: String,
+    /// False selects null-device stdin; true retains a writable pipe for ProcessInput.
+    pub interactive: bool,
     pub cwd: Option<PathBuf>,
     pub allow_workspace_escape: bool,
     pub timeout: Duration,

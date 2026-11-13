@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 pub struct ExecInput {
     /// The shell command to execute.
     pub command: String,
+    /// Keep the stdin pipe open for write_stdin (default false: stdin is the null device).
+    /// This enables pipe input, not a PTY terminal.
+    #[serde(default)]
+    pub interactive: bool,
     /// Working directory, defaulting to the workspace root. Use `.` or a workspace-relative path
     /// such as `src`. SSH execution rejects absolute paths; local absolute paths remain subject to
     /// the active permission and workspace policy.

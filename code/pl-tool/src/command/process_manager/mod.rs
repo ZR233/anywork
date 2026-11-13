@@ -136,6 +136,7 @@ struct CommandProcessState {
 
 pub struct CommandStartRequest {
     pub command: String,
+    pub interactive: bool,
     pub cwd: Option<PathBuf>,
     pub allow_workspace_escape: bool,
     pub timeout: Duration,
@@ -151,6 +152,7 @@ pub struct CommandStartRequest {
 impl std::fmt::Debug for CommandStartRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommandStartRequest")
+            .field("interactive", &self.interactive)
             .field("cwd", &self.cwd)
             .field("allow_workspace_escape", &self.allow_workspace_escape)
             .field("timeout", &self.timeout)
@@ -390,6 +392,7 @@ where
                 start_control: start_control.clone(),
                 process_id: process_id.clone(),
                 command: request.command,
+                interactive: request.interactive,
                 cwd: working_directory,
                 output_target: output_target.clone(),
                 capture_limit_bytes,
@@ -401,6 +404,11 @@ where
         let stdout_open = stdout.is_some();
         let stderr_open = stderr.is_some();
         let stdin = child.take_stdin();
+        let close_state = if stdin.is_some() {
+            crate::command::StdinCloseState::Open
+        } else {
+            crate::command::StdinCloseState::Closed
+        };
         let output_failure = CancellationToken::new();
         let entry = Arc::new(CommandProcessEntry {
             process_id: process_id.clone(),
@@ -408,7 +416,7 @@ where
             stdin: Mutex::new(CommandInput {
                 writer: stdin,
                 accepted_bytes: 0,
-                close_state: crate::command::StdinCloseState::Open,
+                close_state,
             }),
             input_stopped: CancellationToken::new(),
             state: Mutex::new(CommandProcessState::new(

@@ -83,7 +83,7 @@ typed 输入 schema 在绑定时按反序列化语义生成一次，保留完整
 
 ### exec 输入与失败事实
 
-`exec_command` 的授权与执行共用严格的纯参数校验：仅接受 `command`、`cwd`、`timeoutSeconds`、`maxOutputChars`，在 FullAccess、审批和自动审查的权限判断前拒绝无效参数。字段路径来自 Serde 解码，保留原始诊断及行列；空白命令和零额度分别给出稳定分类。命令文本不改写，每次 cwd 独立，timeout 默认 60 秒，自进程管理器接纳开始计算，审批等待不计入。
+`exec_command` 的授权与执行共用严格的纯参数校验：仅接受 `command`、`interactive`、`cwd`、`timeoutSeconds`、`maxOutputChars`，在 FullAccess、审批和自动审查的权限判断前拒绝无效参数。字段路径来自 Serde 解码，保留原始诊断及行列；空白命令和零额度分别给出稳定分类。命令文本不改写，每次 cwd 独立，timeout 默认 60 秒，自进程管理器接纳开始计算，审批等待不计入。
 
 本地 shell 选择只解析可执行文件，不为探测可用性提前运行测试命令。Windows 保持 `pwsh`、Windows PowerShell、`cmd` 的优先级，找到首选后不继续查找较低优先级；实际启动失败由命令执行返回原始错误，不在准备会话阶段通过试运行保证未来调用成功。
 
@@ -99,6 +99,8 @@ stdout 与 stderr 的纯输出内容共用请求的 UTF-8 字节预算，默认�
 
 新执行仅产生 `pl.tool.exec` v2；原 v1 历史只在读取/投影边界解码，payload 不重写。v2 给出真实 taskId、退出码/signal、双流展示字节与截断事实、执行侧 `stdoutFile`/`stderrFile`、确认前缀、捕获及归档状态和可用的下一步。原始双流按字节分别保存，共用 16 MiB 捕获额度；命令、cwd、流标签只属于记录与展示。捕获由执行器 owner 写入，状态明确区分 Complete、Incomplete、LimitExceeded、Failed；每流已确认原始字节数可以未知，未知不能记为零。根退出、管道 EOF 和捕获完成分别观察；取消或期限可终止根退出后的排空，保留已经观察到的退出事实。归档只保存已确认前缀，拒绝未知长度；部分资源保存成功仍保留引用，失败仅重试桌面资源保存，不重构捕获、不回放输出、不重跑 shell。
 
+`exec_command` 默认使用空设备作为 stdin，使普通检索不会等待管道输入；显式 `interactive=true` 才请求可写输入管道，启动后通过 `write_stdin` 发送文本和 EOF，不提供 PTY。
+
 `write_stdin` 使用原 exec_command 的真实 taskId，必填 chars，默认 false 的 `closeStdin` 在文本之后发送 EOF；空字符串仅在发送 EOF 时有效。锁等待、逐次 write 与 flush 均观察当前输入调用取消，回执记录 acceptedBytes、closeState、outcome 与诊断。acceptedBytes 只表示异步写接口接纳的字节，不保证目标程序已经消费；没有远端 offset 或 CloseStdin ACK。Drop 输入按序送出已接纳字节再关闭，取消输入不隐式终止 exec_command，也不重发已接纳字节。
 
 - **有界实时进度预览**：运行中的命令通过任务进度通道上报至多 **64 KiB** 的合并内容预览（超出部分标记截断，完整输出由归档服务独立保存）。预览数据仅归属原任务、原执行器及当前运行中的线程，不推进历史水位，也不写入模型上下文或持久化检查点；一旦轮次或任务终态提交即清除预览。
@@ -107,7 +109,7 @@ stdout 与 stderr 的纯输出内容共用请求的 UTF-8 字节预算，默认�
 
 ## 9.5 Lua 编排与供应商编程式调用
 
-Native 的 `exec` 是 Lua 5.4 编排入口，参数为必填 `code`、可选 `timeoutMs` 与 `maxOutputBytes`。原 shell 工具为 `exec_command`，输入仍为 `command`、`cwd`、`timeoutSeconds`、`maxOutputChars`。不再接收旧 shell `exec` 调用；历史中的旧名称和原 `pl.tool.exec` v1/v2 回执继续按保存格式读取。
+Native 的 `exec` 是 Lua 5.4 编排入口，参数为必填 `code`、可选 `timeoutMs` 与 `maxOutputBytes`。原 shell 工具为 `exec_command`，输入为 `command`、`interactive`、`cwd`、`timeoutSeconds`、`maxOutputChars`。不再接收旧 shell `exec` 调用；历史中的旧名称和原 `pl.tool.exec` v1/v2 回执继续按保存格式读取。
 
 外层 `exec` 复用标准后台任务策略：超过前台交付窗口就返回程序 taskId，原 VM 和子命令继续由 Thread 持有；`wait` 等待该程序终态，取消和关闭仍由原 owner 收束。Lua 内子调用继续等待真实终态；需要输入时，另一次程序用任务查询取得运行中子命令的 taskId，再调用 `write_stdin`。这支持标准输入管道，不包含 PTY 或持久 REPL。
 

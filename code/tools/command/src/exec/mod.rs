@@ -73,6 +73,7 @@ impl<P: ProcessExecutor> Tool for ExecTool<P> {
             .process
             .run(ProcessRequest {
                 command: input.command,
+                interactive: input.interactive,
                 cwd: input.cwd,
                 timeout: Duration::from_secs(input.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECS)),
                 max_output_bytes: requested_body_bytes.min(MAX_MODEL_BODY_BYTES),

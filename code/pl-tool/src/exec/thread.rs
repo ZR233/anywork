@@ -523,6 +523,7 @@ impl<B: CommandBackend> ProcessExecutor for ThreadCommandPort<B> {
                 &self.task_id,
                 CommandStartRequest {
                     command: request.command,
+                    interactive: request.interactive,
                     cwd: request.cwd,
                     allow_workspace_escape: request.allow_workspace_escape,
                     timeout: request.timeout,

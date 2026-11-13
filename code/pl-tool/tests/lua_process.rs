@@ -144,6 +144,11 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
     use serde_json::json;
 
     let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("search-probe.txt"),
+        "default-stdin-probe\n",
+    )
+    .unwrap();
     let definition = pl_tool::exec::exec_definition();
     let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
     let command = ThreadExecTool::new(
@@ -233,9 +238,14 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
             json!({"code": "local r=tools.exec_command({command=[=[printf '0123456789abcdefghij']=],maxOutputChars=8}); assert(r.exitCode==0 and r.stdout.wasTruncated and r.stdout.omittedBytes>0); local full=tools.exec_command({command='cat '..string.format('%q',r.stdoutFile)}); assert(full.stdout.content=='0123456789abcdefghij'); return {bytes=#full.stdout.content}"}),
         ),
         (
+            "default-stdin",
+            "exec",
+            json!({"code": "local r=tools.exec_command({command=[=[rg -n -F -- default-stdin-probe]=],timeoutSeconds=2}); assert(r.exitCode==0 and r.stderr.content=='' and r.stdout.content:find('search-probe.txt',1,true)); local eof=tools.exec_command({command='cat',timeoutSeconds=2}); assert(eof.exitCode==0 and eof.stdout.content==''); return 'default stdin is EOF; search uses workspace files'"}),
+        ),
+        (
             "interactive-start",
             "exec",
-            json!({"code": "return tools.exec_command({command=[=[printf 'ready\\n'; IFS= read -r value; printf 'received:%s\\n' \"$value\"]=], timeoutSeconds=15})"}),
+            json!({"code": "return tools.exec_command({command=[=[printf 'ready\\n'; IFS= read -r value; printf 'received:%s\\n' \"$value\"]=], timeoutSeconds=15,interactive=true})"}),
         ),
         (
             "interactive-input",
@@ -464,6 +474,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         "slow-program",
         "query-process",
         "truncated-output",
+        "default-stdin",
         "interactive-start",
         "interactive-input",
         "interactive-query",

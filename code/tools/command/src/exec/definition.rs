@@ -4,7 +4,7 @@ pub fn exec_definition() -> pl_agent_tool::ToolDefinition {
         "content":{"type":"string"},"wasTruncated":{"type":"boolean"}
     },"required":["content"],"additionalProperties":true});
     pl_agent_tool::ToolDefinition::json("exec_command",
-        "Run a shell command. Read exitCode (0=success), stdout.content and stderr.content. rg/grep exit 1 means no matches; inspect it without reruns, echo or || true. Options precede --, then pattern and quoted paths: rg -n -F -g '!vendor/**' -- 'literal' 'path'. Read truncated stdoutFile/stderrFile relative to the workspace root, with cwd omitted or '.'. On failure inspect processStarted, diagnostic, captureStatus and archiveStatus; preserve completed effects.",
+        "Run a shell command. Read exitCode (0=success), stdout.content and stderr.content. rg/grep exit 1 means no matches; inspect it without reruns, echo or || true. Put ALL options, including --glob/--exclude-dir filters, BEFORE --; only pattern and quoted paths follow: grep -RnF --exclude-dir=vendor -- 'literal' 'path'. Read truncated stdoutFile/stderrFile relative to the workspace root, with cwd omitted or '.'. On failure inspect processStarted, diagnostic, captureStatus and archiveStatus; preserve completed effects.",
         pl_agent_tool::typed::input_schema_for::<ExecInput>())
         .expect("static tool definition")
         .with_output_schema(serde_json::json!({"type":"object","properties":{

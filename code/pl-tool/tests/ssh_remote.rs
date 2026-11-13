@@ -190,6 +190,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let processes = CommandProcessManager::new(Arc::new(host.commands().clone()));
     let first = processes
         .start(CommandStartRequest {
+            interactive: true,
             command: "printf 'stdout-one\\n'; printf 'stderr-one\\n' >&2; read line; printf 'stdin:%s\\n' \"$line\"".to_string(),
             cwd: None,
             allow_workspace_escape: false,
@@ -242,6 +243,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 
     let eof = processes
         .start(CommandStartRequest {
+            interactive: true,
             command: "cat > ssh-stdin-eof.txt".into(),
             cwd: None,
             allow_workspace_escape: false,
@@ -294,6 +296,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
                 "timeout-marker"
             };
             let request = CommandStartRequest {
+                interactive: false,
                 command: format!("sleep 5; touch {marker}"),
                 cwd: None,
                 allow_workspace_escape: false,
@@ -353,6 +356,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     anyhow::ensure!(environment.status == 0, "read remote execution PATH");
     let command_environment = processes
         .start(CommandStartRequest {
+            interactive: false,
             command: "printf '%s' \"$PATH\"".to_string(),
             cwd: None,
             allow_workspace_escape: false,
@@ -391,6 +395,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         .run_task(
             "task-remote-budget",
             CommandStartRequest {
+                interactive: false,
                 command: "head -c 20000000 /dev/zero".into(),
                 cwd: None,
                 allow_workspace_escape: false,
@@ -441,6 +446,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let mut tree = host.commands().spawn(CommandSpawnRequest {
+        interactive: true,
         start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
         process_id: "closed-connection-process".into(),
         command: "printf '%s' \"$$\" > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"".into(),

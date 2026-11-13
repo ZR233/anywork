@@ -4,6 +4,7 @@
 mod helper;
 #[path = "support/remote.rs"]
 mod support;
+use anyhow::Context;
 use pl_tool::command::{
     CommandCaptureState, CommandProcessLifecycle, CommandProcessManager, CommandStartRequest,
     ExecutorCommandBackend,
@@ -21,6 +22,7 @@ async fn root_and_tail(expire: bool) -> anyhow::Result<()> {
         let backend = Arc::new(backend);
         let manager = CommandProcessManager::new(backend.clone());
         let request=CommandStartRequest {
+            interactive: false,
             command:"(while test ! -e release-tail; do sleep 0.02; done; printf 'tail-after-root\n') & exit 17".into(),
             cwd:None,allow_workspace_escape:false,timeout:if expire {Duration::from_millis(500)}else {Duration::from_secs(5)},yield_time:Duration::ZERO,max_output_chars:4096,
             session_id:"root-tail".into(),tool_id:"root-tail".into(),call_id:"root-tail".into(),cancellation_token:None,output_observer:None,
@@ -87,4 +89,62 @@ async fn root_exit_is_visible_before_tail_and_capture_completion() -> anyhow::Re
 #[tokio::test]
 async fn deadline_can_end_drain_without_overwriting_the_observed_root_exit() -> anyhow::Result<()> {
     root_and_tail(true).await
+}
+
+#[tokio::test]
+async fn remote_helper_search_uses_files_and_interactive_input_remains_explicit()
+-> anyhow::Result<()> {
+    let helper = support::Helper::start(helper::remote_helper_executable()).await?;
+    tokio::fs::write(helper.root.path().join("needle.txt"), "stdin-mode-probe\n").await?;
+    let manager = CommandProcessManager::new(Arc::new(helper.commands()?));
+    let request = |command: &str, interactive| CommandStartRequest {
+        command: command.into(),
+        interactive,
+        cwd: None,
+        allow_workspace_escape: false,
+        timeout: Duration::from_secs(2),
+        yield_time: Duration::ZERO,
+        max_output_chars: 4096,
+        session_id: "stdin-mode".into(),
+        tool_id: "stdin-mode".into(),
+        call_id: "stdin-mode".into(),
+        cancellation_token: None,
+        output_observer: None,
+    };
+    let search = manager
+        .run_task(
+            "task-remote-search",
+            request("rg -n -F -- stdin-mode-probe", false),
+        )
+        .await?;
+    anyhow::ensure!(search.exit_code == Some(0) && search.stderr.content.is_empty());
+    anyhow::ensure!(search.stdout.content == "needle.txt:1:stdin-mode-probe\n");
+    let input = manager
+        .start(request("printf 'once\\n' >> interactive-once; cat", true))
+        .await?;
+    let id = input
+        .process_id
+        .context("interactive cat is still running")?;
+    let result = manager
+        .write_stdin(pl_tool::command::CommandWriteRequest {
+            process_id: id.clone(),
+            chars: "输入\n".into(),
+            close_stdin: true,
+            yield_time: Duration::from_secs(2),
+            max_output_chars: 4096,
+            cancellation: Default::default(),
+        })
+        .await?;
+    anyhow::ensure!(result.exit_code == Some(0) && result.stdout.content == "输入\n");
+    anyhow::ensure!(
+        result
+            .input_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.accepted_bytes == 7)
+    );
+    anyhow::ensure!(
+        tokio::fs::read_to_string(helper.root.path().join("interactive-once")).await? == "once\n"
+    );
+    helper.close().await?;
+    Ok(())
 }

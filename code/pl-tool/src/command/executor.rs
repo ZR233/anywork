@@ -268,7 +268,11 @@ impl CommandBackend for ExecutorCommandBackend {
             .envs(self.child_environment.clone())
             .env_remove("BASH_ENV")
             .env_remove("ENV")
-            .stdin(pl_remote_helper::Stdio::Piped)
+            .stdin(if request.interactive {
+                pl_remote_helper::Stdio::Piped
+            } else {
+                pl_remote_helper::Stdio::Null
+            })
             .stdout(pl_remote_helper::Stdio::Piped)
             .stderr(pl_remote_helper::Stdio::Piped)
             .capture(pl_remote_helper::CaptureSpec {
