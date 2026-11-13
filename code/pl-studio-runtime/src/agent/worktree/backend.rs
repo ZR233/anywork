@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -206,10 +207,21 @@ impl ExecutorWorktreeBackend {
             })
     }
     fn path(&self, path: &Path) -> Result<pl_remote_helper::TargetPath, WorktreeError> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| WorktreeError::InvalidResource("worktree path is not UTF-8".into()))?;
+        // A Windows PathBuf may contain host separators after allocation. Interpret them
+        // at the remote Git boundary, without changing native POSIX filename semantics.
+        let path = if !self.executor.is_local() && self.executor.target_info().os == "linux" {
+            Cow::Owned(
+                pl_tool::remote::normalize_remote_absolute_path(path)
+                    .map_err(|error| WorktreeError::InvalidResource(error.to_string()))?,
+            )
+        } else {
+            Cow::Borrowed(path)
+        };
         self.executor
-            .path(path.to_str().ok_or_else(|| {
-                WorktreeError::InvalidResource("worktree path is not UTF-8".into())
-            })?)
+            .path(path.as_ref())
             .map_err(|source| WorktreeError::Target {
                 operation: "resolve worktree path",
                 source: source.into(),

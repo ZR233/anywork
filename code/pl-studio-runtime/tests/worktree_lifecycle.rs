@@ -379,6 +379,163 @@ async fn missing_and_foreign_sites_keep_distinct_identity_and_retry_semantics_on
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "external SSH; requires PURE_SSH_TEST_SERVER and PURE_SSH_TEST_HELPER"]
+async fn ssh_managed_worktrees_use_target_path_separators() -> Result<()> {
+    let server = std::env::var("PURE_SSH_TEST_SERVER").context("PURE_SSH_TEST_SERVER")?;
+    let helper = std::env::var("PURE_SSH_TEST_HELPER").context("PURE_SSH_TEST_HELPER")?;
+    let mut ssh = tokio::process::Command::new("ssh")
+        .args(["-x", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
+        .arg(server)
+        .arg(format!("exec '{}' --stdio", helper.replace('\'', "'\\''")))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()?;
+    let input = ssh.stdin.take().context("SSH stdin")?;
+    let output = ssh.stdout.take().context("SSH stdout")?;
+    let opening = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pl_remote_helper::Executor::remote(tokio::io::join(output, input)),
+    )
+    .await
+    .context("SSH helper handshake timed out")
+    .and_then(|result| result.map_err(anyhow::Error::from));
+    let executor = match opening {
+        Ok(executor) => executor,
+        Err(error) => {
+            ssh.kill().await?;
+            ssh.wait().await?;
+            return Err(error);
+        }
+    };
+    let result = ssh_worktree_lifecycle(&executor).await;
+    let closed = executor.close().await;
+    drop(executor);
+    let exited = tokio::time::timeout(std::time::Duration::from_secs(10), ssh.wait()).await;
+    if exited.is_err() {
+        ssh.kill().await?;
+        ssh.wait().await?;
+    }
+    if let Err(error) = result {
+        return Err(error.context(format!(
+            "SSH cleanup: executor={closed:?}; process={exited:?}"
+        )));
+    }
+    closed?;
+    ensure!(exited??.success(), "SSH helper did not exit successfully");
+    Ok(())
+}
+
+async fn ssh_worktree_lifecycle(executor: &pl_remote_helper::Executor) -> Result<()> {
+    ensure!(
+        executor.target_info().os == "linux",
+        "requires Linux SSH target"
+    );
+    let directory = executor
+        .command("mktemp")
+        .args(["-d", "-t", "anywork-worktree-XXXXXXXX"])
+        .output()
+        .await?;
+    ensure!(
+        directory.status.success(),
+        "create isolated SSH test directory"
+    );
+    let directory = String::from_utf8(directory.stdout)?.trim().to_owned();
+    ensure!(
+        directory.starts_with('/')
+            && directory
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf.starts_with("anywork-worktree-")),
+        "mktemp returned an unexpected directory"
+    );
+    let target = executor.path(&directory)?;
+    let result = async {
+        executor_git(executor, &directory, &["init", "-b", "main"]).await?;
+        executor_git(
+            executor,
+            &directory,
+            &[
+                "-c",
+                "user.name=Worktree Test",
+                "-c",
+                "user.email=worktree@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        )
+        .await?;
+        let backend = Arc::new(ExecutorWorktreeBackend::new(executor.clone()));
+        let repo =
+            WorktreeManager::resolve_repository_root(backend.as_ref(), Path::new(&directory))
+                .await?;
+        let manager = WorktreeManager::new(repo.clone(), backend);
+        let base = manager.resolve_head(&repo).await?;
+        for ownership in [
+            WorktreeOwnership::Session {
+                thread_id: "root".into(),
+            },
+            WorktreeOwnership::Child {
+                child_id: "child".into(),
+            },
+        ] {
+            let handle = manager
+                .create(WorktreeCreateSpec {
+                    repo_root: repo.clone(),
+                    root_thread_id: "root".into(),
+                    ownership,
+                    base_commit: base.clone(),
+                })
+                .await?;
+            manager.verify(&handle).await?;
+            let status = manager.preview(&handle).await?;
+            ensure!(status.head == base, "worktree changed its pinned commit");
+            ensure!(status.branch.is_none(), "worktree was not detached");
+            ensure!(status.changed_files.is_empty(), "new worktree is dirty");
+            manager
+                .cleanup(&handle, WorktreeCleanupPolicy::Safe)
+                .await?;
+            ensure!(
+                matches!(manager.verify(&handle).await, Err(WorktreeError::Missing)),
+                "cleaned worktree still exists"
+            );
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let removed = executor.fs().remove(&target, true).await;
+    if let Err(error) = result {
+        return Err(error.context(format!("isolated SSH directory cleanup: {removed:?}")));
+    }
+    removed?;
+    Ok(())
+}
+
+async fn executor_git(
+    executor: &pl_remote_helper::Executor,
+    directory: &str,
+    args: &[&str],
+) -> Result<String> {
+    let output = executor
+        .command("git")
+        .args(args.iter().copied())
+        .current_dir(directory)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .await?;
+    ensure!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
 // Run the same ownership, backlink, cleanup and side-effect scenarios through
 // native calls and the production h2 transport; no worktree algorithm substitute.
 async fn both<F, Fut>(case: F) -> Result<()>

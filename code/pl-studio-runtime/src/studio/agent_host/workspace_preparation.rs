@@ -480,7 +480,7 @@ where
         Some(&durable.path),
         None,
     );
-    let handle = match create_prepared_worktree(
+    let handle = create_prepared_worktree(
         worktrees,
         &manager,
         &durable,
@@ -491,17 +491,7 @@ where
             base_commit,
         },
     )
-    .await
-    {
-        Ok(handle) => handle,
-        Err(error) => {
-            return Err(error.context(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Unavailable,
-                "Git could not create or check out the session worktree. Check repository permissions and available disk space.",
-                false,
-            )));
-        }
-    };
+    .await?;
     if !workspace_paths_equal(&handle.path, &path, remote)? {
         let mut retained = durable;
         retained.transition(WorktreeLeaseState::Preserved);
@@ -577,7 +567,7 @@ async fn create_prepared_worktree(
                 .record_durable(retained)
                 .await
                 .context("save actual creation failure disposition")?;
-            Err(failure.into())
+            Err(failure.into_error().into())
         }
     }
 }

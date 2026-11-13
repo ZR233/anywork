@@ -311,9 +311,60 @@ async fn lease_fact(home: &Path, id: &str, preserve: bool) -> Result<serde_json:
 }
 
 #[tokio::test]
-async fn rejected_initial_root_input_preserves_the_confirmed_original_binding() -> Result<()> {
+async fn failed_root_preparation_preserves_original_resources_and_reports_cause() -> Result<()> {
     let mut env = Environment::new(vec![], vec![]).await?;
     let result = async {
+        // Conflict only after the original lease is durable. Git must adjudicate the
+        // occupied path, and the failed preparation must preserve its unknown content.
+        let conflict = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let recorded = conflict.clone();
+        let failure = env.runtime.create_thread_command(
+            env.project.id.clone(),
+            pl_protocol::studio::CreateThreadRequest {
+                title: Some("Conflicting root worktree".into()),
+                input: StudioPromptInput {
+                    input_id: "input-conflicting-worktree".into(),
+                    text: "must not reach a model".into(),
+                    attachment_draft_ids: Vec::new(),
+                },
+                mode: pl_protocol::ThreadModeId::simple().to_string(),
+                route: pl_protocol::studio::NewThreadModelRoute {
+                    account_id: "root-fixture".into(),
+                    model_id: support::MODEL.into(),
+                    effort: None,
+                },
+                delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                delegation_preference: None,
+                workspace_mode: ThreadWorkspaceMode::Worktree,
+            },
+            Some(std::sync::Arc::new(move |event| {
+                if event.stage == pl_studio_runtime::ThreadPreparationStage::CreatingWorktree {
+                    let path = event.workspace_path.expect("worktree creation path");
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(Path::new(&path).join("original.txt"), "keep original content").unwrap();
+                    *recorded.lock().unwrap() = Some(path);
+                }
+            })),
+        ).await.err().context("occupied worktree path unexpectedly accepted")?;
+        ensure!(failure.chain().any(|cause| matches!(
+            cause.downcast_ref::<pl_studio_runtime::agent::worktree::WorktreeError>(),
+            Some(pl_studio_runtime::agent::worktree::WorktreeError::GitExited { args, exit_code, .. })
+                if args.starts_with("worktree add ") && *exit_code != 0
+        )), "creation lost its typed Git failure: {failure:#}");
+        let path = conflict.lock().unwrap().clone().context("worktree creation was not reached")?;
+        let mapped = pl_studio_runtime::studio_error_from_anyhow(failure);
+        ensure!(mapped.code == StudioErrorCode::Unavailable && mapped.retryable, "{mapped:?}");
+        ensure!(mapped.message.contains("git worktree add") && mapped.message.contains("exited with code"));
+        ensure!(mapped.message.len() <= 2048 && !mapped.message.contains(&path));
+        ensure!(std::fs::read_to_string(Path::new(&path).join("original.txt"))? == "keep original content");
+        let retained = env.runtime.recovery_issues().into_iter()
+            .filter_map(|issue| issue.worktree)
+            .find(|preview| preview.path == path)
+            .context("failed creation lost its preserved ownership")?;
+        ensure!(retained.state == "preserved");
+        ensure!(lease_fact(&env.home, &retained.owner_thread_id, false).await?["state"] == "preserved");
+        ensure!(env.runtime.read_thread(&retained.owner_thread_id).await.is_err());
+
         // Admit a real file draft, then fault only its test-owned spool bytes. Preflight
         // still sees the valid metadata; promotion fails after factory confirmation.
         let config_store = pl_studio_runtime::config::ConfigStore::new(
