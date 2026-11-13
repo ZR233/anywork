@@ -14,7 +14,7 @@ use pl_protocol::{
     ThreadWorkspaceMode, TurnState, UpdateMcpDocumentRequest,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
-use pl_provider_fixture::{Protocol, RequestMatch, Step};
+use pl_provider_fixture::{Protocol, Step};
 use pl_studio_runtime::{
     StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
 };
@@ -37,29 +37,23 @@ fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: pl_provider_fix
 }
 
 fn probes(steps: &mut Vec<Step>, phase: &str) {
-    // Directory installation is asynchronous. Observe its actual model-facing output,
-    // using bounded real Turns (no sleep/poll of internal state and no installation claim).
+    // Keep discovery in one Turn. Repeated user submissions would each change
+    // the extension CAS while the real hot-catalog installer prepares a candidate.
     for attempt in 0..ATTEMPTS {
         let call = format!("{phase}-{attempt}");
-        steps.push(
-            prompt_step(
-                &call,
-                steps.len(),
-                tool_reply("discover_tools", &call, json!({"query": TOOL})),
-            )
-            .optional(),
-        );
-        steps.push(
-            Step::tool_output(
-                Protocol::ResponsesHttp,
-                &call,
-                "toolIds",
-                steps.len(),
-                text_reply("catalog observed", &call),
-            )
-            .optional(),
-        );
+        let reply = tool_reply("discover_tools", &call, json!({"query": TOOL}));
+        if attempt == 0 {
+            steps.push(prompt_step(phase, steps.len(), reply));
+        } else {
+            after(steps, &format!("{phase}-{}", attempt - 1), "toolIds", reply);
+        }
     }
+    after(
+        steps,
+        &format!("{phase}-{}", ATTEMPTS - 1),
+        "toolIds",
+        text_reply("catalog observed", phase),
+    );
 }
 
 fn script() -> Vec<Step> {
@@ -195,47 +189,34 @@ async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_pro
 }
 
 async fn catalog(env: &Environment, id: &str, phase: &str, present: bool) -> Result<()> {
-    for attempt in 0..ATTEMPTS {
-        let call = format!("{phase}-{attempt}");
-        let turn = submit_turn(env, id, &call).await?;
-        if let TurnState::Failed(failed) = &turn.state {
-            // Runtime publication is not an installation barrier. A configuration replacement
-            // may revoke a frozen model plan before the hot catalog is installed. Preserve that
-            // exact hard refusal; no MCP call is retried and all other failures remain fatal.
-            ensure!(
-                failed.failure().message
-                    == pl_core::thread::ModelOutputViolation::ToolPermissionRevoked.to_string(),
-                "{call}: unexpected failed Turn: {failed:?}"
-            );
-            continue;
-        }
+    let turn = submit_turn(env, id, phase).await?;
+    ensure!(
+        matches!(turn.state, TurnState::Completed(_)),
+        "{phase}: unexpected terminal state {:?}",
+        turn.state
+    );
+    let ids: Vec<String> = serde_json::from_value(
+        receipt(&env.root_provider, &format!("{phase}-{}", ATTEMPTS - 1))?["toolIds"].clone(),
+    )?;
+    ensure!(
+        ids.iter().any(|name| name == TOOL) == present,
+        "{phase}: real catalog presence differs from {present}: {ids:?}"
+    );
+    if present {
+        let recorded = env.root_provider.recorded();
+        let tools = recorded.last().context("last catalog request")?.body["tools"]
+            .as_array()
+            .context("model tools")?;
         ensure!(
-            matches!(turn.state, TurnState::Completed(_)),
-            "{call}: unexpected terminal state {:?}",
-            turn.state
+            tools.iter().any(|tool| tool["name"] == "exec"
+                && tool["description"]
+                    .as_str()
+                    .is_some_and(|sdk| sdk.contains(&format!("tools[{TOOL:?}](args)"))
+                        && sdk.contains(&format!("\"description\":{phase:?}")))),
+            "{phase}: the installed Lua SDK did not retain the exact current schema"
         );
-        let ids: Vec<String> =
-            serde_json::from_value(receipt(&env.root_provider, &call)?["toolIds"].clone())?;
-        let schema_installed = !present
-            || env
-                .root_provider
-                .recorded()
-                .last()
-                .and_then(|request| request.body["tools"].as_array())
-                .is_some_and(|tools| {
-                    tools.iter().any(|tool| {
-                        tool["name"] == "exec"
-                            && tool["description"].as_str().is_some_and(|sdk| {
-                                sdk.contains(&format!("tools[{TOOL:?}](args)"))
-                                    && sdk.contains(&format!("\"description\":{phase:?}"))
-                            })
-                    })
-                });
-        if ids.iter().any(|name| name == TOOL) == present && schema_installed {
-            return Ok(());
-        }
     }
-    anyhow::bail!("{phase}: real Thread catalog never reached presence={present}")
+    Ok(())
 }
 
 async fn state(env: &Environment, id: &str, present: bool, after: u64) -> Result<()> {
@@ -467,62 +448,16 @@ fn reconnect_script() -> Vec<Step> {
         steps.push(prompt_step(
             phase,
             steps.len(),
-            tool_reply("reconnect_mcp", phase, input),
+            program_reply("reconnect_mcp", phase, input),
         ));
-        if phase == "failed" {
-            // A failed handshake exceeds foreground delivery. Wait for this exact task;
-            // acceptance is not a terminal error and must not satisfy the assertion.
-            after(
-                &mut steps,
-                phase,
-                "Task task:failed is running.",
-                tool_reply(
-                    "wait",
-                    "wait-failed",
-                    json!({"taskIds":["task:failed"],"timeoutMs":60000}),
-                ),
-            );
-            let index = steps.len();
-            steps.push(Step::delivery(
-                Protocol::ResponsesHttp,
-                "Task task:failed for tool reconnect_mcp finished: Failed.",
-                index,
-                text_reply("failed session observed", phase),
-            ));
-        } else if phase == "reconnect" {
-            steps.push(
-                Step::tool_output(
-                    Protocol::ResponsesHttp,
-                    phase,
-                    "Task task:reconnect is running.",
-                    steps.len(),
-                    tool_reply(
-                        "wait",
-                        "wait-reconnect",
-                        json!({"taskIds":["task:reconnect"],"timeoutMs":60000}),
-                    ),
-                )
-                .optional(),
-            );
-            steps.push(Step {
-                protocol: Protocol::ResponsesHttp,
-                request: RequestMatch::ToolCompletion {
-                    call_id: phase.into(),
-                    tool_id: "reconnect_mcp".into(),
-                    marker: marker.into(),
-                    step: steps.len(),
-                },
-                reply: text_reply("reconnect observed", phase),
-                optional: false,
-            });
-        } else {
-            after(
-                &mut steps,
-                phase,
-                marker,
-                text_reply("reconnect observed", phase),
-            );
-        }
+        // Lua waits for the original nested task to settle; no intermediate top-level
+        // receipt is delivered. Keep the same terminal outcome and error checks.
+        after(
+            &mut steps,
+            phase,
+            marker,
+            text_reply("reconnect observed", phase),
+        );
         if phase == "credential" {
             probes(&mut steps, "created");
         } else if phase == "reconnect" {
@@ -530,7 +465,7 @@ fn reconnect_script() -> Vec<Step> {
             steps.push(prompt_step(
                 "call-reconnected",
                 steps.len(),
-                tool_reply(TOOL, "call-reconnected", json!({"mode":"success"})),
+                program_reply(TOOL, "call-reconnected", json!({"mode":"success"})),
             ));
             after(
                 &mut steps,
@@ -641,7 +576,7 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
         submit(&env, id, "failed").await.with_context(|| format!(
             "failed reconnect actual tool receipt: {:?}", tool_output(&env.root_provider, "failed")))?;
         let failed = env.root_provider.recorded().last().context("terminal failure request")?.body.to_string();
-        ensure!(failed.contains("Task task:failed for tool reconnect_mcp finished: Failed."));
+        ensure!(tool_output(&env.root_provider, "failed")?.contains("remains unavailable"));
         ensure!(failed.contains("remains unavailable"));
         ensure!(!failed.contains("private-reconnect-secret"));
         let snapshot = env.runtime.read_thread_mcp(id).await?;

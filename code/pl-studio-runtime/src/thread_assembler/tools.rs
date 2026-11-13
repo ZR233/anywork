@@ -257,6 +257,7 @@ impl StudioThreadTools {
         registrations.push(
             prepared_sleep
                 .attach(ToolHandle::new(sleep.attach(pl_tool::session::SleepTool)))
+                .top_level_only()
                 .with_presentation_contract(ToolPresentationContract::new("builtin.sleep@1")),
         );
         for kind in [
@@ -318,8 +319,10 @@ impl StudioThreadTools {
                 binding.credentials.clone(),
                 definition,
             );
-            self.registrations
-                .push(tool.registration(declaration, binding.authorization.clone()));
+            self.registrations.push(
+                tool.registration(declaration, binding.authorization.clone())
+                    .nested(matches!(policy, ToolCallPolicy::DirectAndProgrammatic)),
+            );
         }
         Ok(self)
     }
@@ -498,7 +501,8 @@ impl StudioThreadTools {
             )?;
             let tool =
                 pl_tool::lsp::ThreadLspTool::new(registry.clone(), paths.clone(), kind, definition);
-            self.registrations.push(tool.registration(declaration));
+            self.registrations
+                .push(tool.registration(declaration).nested(true));
         }
         Ok(self)
     }
@@ -543,8 +547,7 @@ fn lua_registrations(registrations: Vec<Registration>) -> Vec<Registration> {
     result.push(
         prepared
             .attach(ToolHandle::new(tool))
-            .with_nested_catalog(pl_tool::lua::project_catalog)
-            .foreground_coexisting(),
+            .with_nested_catalog(pl_tool::lua::project_catalog),
     );
     result
 }

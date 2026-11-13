@@ -402,8 +402,13 @@ async fn frozen_sdk_tracks_discovery_without_exposing_nested_schemas_twice() {
                 .all(|request| request.tools.iter().all(|tool| tool.tool_id != "child"))
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(requests[1].tools.iter().any(|tool| tool.tool_id == "exec"
-            && tool.declaration.content().contains("returns JSON schema:")));
+        assert!(requests[1].tools.iter().any(|tool| {
+            tool.tool_id == "exec"
+                && tool
+                    .declaration
+                    .content()
+                    .contains(r#"\"properties\":{\"selected\":"#)
+        }));
     }
     thread.close().await.unwrap();
 }

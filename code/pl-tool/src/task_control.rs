@@ -333,7 +333,7 @@ pub fn list_tasks_tool_definition() -> pl_agent_tool::ToolDefinition {
 }
 
 const LIST_TASKS_TOOL_NAME: &str = "list_tool_tasks";
-const LIST_TASKS_TOOL_DESCRIPTION: &str = "List tasks owned by this Thread without consuming results; use get_tool_task for complete-result pages.";
+const LIST_TASKS_TOOL_DESCRIPTION: &str = "List this Thread active and resident tasks without consuming results. Completed tasks may leave this list; keep returned taskId values and use get_tool_task to read their saved results.";
 
 pub fn wait_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("wait",

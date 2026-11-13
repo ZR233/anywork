@@ -20,6 +20,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 struct LifecycleModel {
     calls: std::collections::VecDeque<pl_core::model::ModelToolCall>,
     requests: Arc<std::sync::Mutex<Vec<pl_core::model::ModelRequest>>>,
+    message_wakes: usize,
 }
 
 impl pl_core::model::ModelSession for LifecycleModel {
@@ -28,7 +29,96 @@ impl pl_core::model::ModelSession for LifecycleModel {
         request: pl_core::model::ModelRequest,
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
         self.requests.lock().unwrap().push(request.clone());
-        let calls = self.calls.pop_front().into_iter().collect();
+        let last_result = request.context.records.iter().rev().find(|record| {
+            matches!(
+                record.source,
+                pl_core::context::ContextSource::ToolResult { .. }
+            )
+        });
+        let mut followup = None;
+        if let Some(record) = last_result
+            && let pl_core::context::ContextSource::ToolResult { call_id, tool_id } = &record.source
+            && tool_id == "wait"
+            && (call_id.starts_with("wait-slow-program") || call_id.starts_with("wait-interactive"))
+        {
+            let text = record
+                .content
+                .iter()
+                .find_map(|part| match part {
+                    pl_core::context::ContextContent::Text { text } => Some(text.as_ref()),
+                    _ => None,
+                })
+                .expect("wait must deliver its real result");
+            let result: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(
+                result["timedOut"], false,
+                "program wait must finish within its original deadline"
+            );
+            if result["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["status"] == "running")
+            {
+                self.message_wakes += 1;
+                assert!(
+                    self.message_wakes <= 4,
+                    "unexpected repeated non-task wakes"
+                );
+                let original = request
+                    .context
+                    .records
+                    .iter()
+                    .flat_map(|record| record.tool_calls.iter())
+                    .find(|call| &call.call_id == call_id)
+                    .unwrap();
+                let mut next = original.clone();
+                next.call_id = format!("{call_id}-resume");
+                followup = Some(next);
+            }
+        }
+        let mut next = followup.or_else(|| self.calls.pop_front());
+        if let Some(call) = next.as_mut()
+            && matches!(call.call_id.as_str(), "query-process" | "interactive-query")
+        {
+            let expected = if call.call_id == "query-process" {
+                "ready\nfinished\n"
+            } else {
+                "ready\nreceived:hello\n"
+            };
+            let observed = request
+                .context
+                .records
+                .iter()
+                .rev()
+                .flat_map(|record| record.content.iter())
+                .find_map(|part| {
+                    let pl_core::context::ContextContent::Text { text } = part else {
+                        return None;
+                    };
+                    let start = text.find('{')?;
+                    let value: serde_json::Value =
+                        serde_json::Deserializer::from_str(&text[start..])
+                            .into_iter()
+                            .next()?
+                            .ok()?;
+                    (value["stdout"]["content"] == expected)
+                        .then(|| value["taskId"].as_str().map(str::to_owned))
+                        .flatten()
+                })
+                .expect("the model must receive the real selected command taskId");
+            let mut arguments: serde_json::Value =
+                serde_json::from_str(call.arguments.content()).unwrap();
+            arguments["code"] =
+                serde_json::Value::String(arguments["code"].as_str().unwrap().replace(
+                    "OBSERVED_COMMAND_TASK",
+                    &serde_json::to_string(&observed).unwrap(),
+                ));
+            call.arguments =
+                pl_core::context::OpaquePayload::new("application/json", 1, arguments.to_string())
+                    .unwrap();
+        }
+        let calls = next.into_iter().collect();
         Ok(pl_core::model::PreparedModelCall::new(async move {
             Ok(pl_core::model::ModelStepOutput {
                 turn_action: Default::default(),
@@ -62,16 +152,21 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         CommandAccess::WorkspaceOnly,
         definition.clone(),
     )
-    .registration(
+    .registrations(
         prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
-    )
-    .nested(false);
+        prepare_registration(
+            "write_stdin",
+            &pl_tool::exec::write_stdin_definition(),
+            ToolCallPolicy::DirectOnly,
+        )
+        .unwrap(),
+        pl_tool::exec::write_stdin_definition(),
+    );
     let lua = pl_tool::lua::LuaTool::new("");
     let lua = prepare_registration("exec", lua.definition(), ToolCallPolicy::DirectOnly)
         .unwrap()
         .attach(ToolHandle::new(lua))
-        .with_nested_calls()
-        .foreground_coexisting();
+        .with_nested_calls();
     let list = pl_tool::task_control::ListTasksTool::declaration();
     let list = prepare_registration("list_tool_tasks", &list, ToolCallPolicy::DirectOnly)
         .unwrap()
@@ -96,7 +191,11 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
                 .attach(pl_tool::session::SleepTool),
         ))
         .top_level_only();
-    let mut registrations = vec![command, lua, list, query, sleep];
+    let mut registrations = command
+        .into_iter()
+        .map(|tool| tool.nested(false))
+        .collect::<Vec<_>>();
+    registrations.extend([lua, list, query, sleep]);
     for (kind, definition) in [
         (
             TaskControlKind::Wait,
@@ -116,12 +215,42 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         (
             "slow-program",
             "exec",
-            json!({"code": "local r=tools.exec_command({command=[=[echo $$ > business.pid; printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done; printf 'finished\\n']=],timeoutSeconds=15}); assert(r.exitCode==0); return {taskId=r.taskId,stdout=r.stdout.content}", "timeoutMs":20000}),
+            json!({"code": "local r=tools.exec_command({command=[=[echo $$ > business.pid; printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done; printf 'finished\\n']=],timeoutSeconds=15}); assert(r.exitCode==0); return r", "timeoutMs":20000}),
+        ),
+        (
+            "wait-slow-program",
+            "wait",
+            json!({"taskIds":["task:slow-program"],"timeoutMs":20000}),
         ),
         (
             "query-process",
             "exec",
-            json!({"code": "local found; for _,t in ipairs(tools.list_tool_tasks({})) do if t.toolId=='exec_command' then found=t end end; assert(found and found.status=='succeeded'); local q=tools.get_tool_task({taskId=found.taskId,resultCursor=0}); local r=json.decode(q.result.content); assert(r.exitCode==0 and r.stdout.content=='ready\\nfinished\\n'); return {taskId=q.task.taskId,status=q.task.status,exitCode=r.exitCode}"}),
+            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content); assert(q.task.status=='succeeded' and r.exitCode==0 and r.stdout.content=='ready\\nfinished\\n'); return {taskId=q.task.taskId,status=q.task.status,exitCode=r.exitCode}"}),
+        ),
+        (
+            "truncated-output",
+            "exec",
+            json!({"code": "local r=tools.exec_command({command=[=[printf '0123456789abcdefghij']=],maxOutputChars=8}); assert(r.exitCode==0 and r.stdout.wasTruncated and r.stdout.omittedBytes>0); local full=tools.exec_command({command='cat '..string.format('%q',r.stdoutFile)}); assert(full.stdout.content=='0123456789abcdefghij'); return {bytes=#full.stdout.content}"}),
+        ),
+        (
+            "interactive-start",
+            "exec",
+            json!({"code": "return tools.exec_command({command=[=[printf 'ready\\n'; IFS= read -r value; printf 'received:%s\\n' \"$value\"]=], timeoutSeconds=15})"}),
+        ),
+        (
+            "interactive-input",
+            "exec",
+            json!({"code": "local target; for _,t in ipairs(tools.list_tool_tasks({})) do if t.toolId=='exec_command' and t.status=='running' then assert(not target); target=t end end; assert(target); local r=tools.write_stdin({taskId=target.taskId,chars='hello\\n',closeStdin=true}); assert(r.inputReceipt.acceptedBytes==6); return r"}),
+        ),
+        (
+            "wait-interactive",
+            "wait",
+            json!({"taskIds":["task:interactive-start"],"timeoutMs":15000}),
+        ),
+        (
+            "interactive-query",
+            "exec",
+            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content); assert(q.task.status=='succeeded' and r.stdout.content=='ready\\nreceived:hello\\n'); return 'interactive command completed'"}),
         ),
         ("timer", "sleep", json!({"durationMs":60000})),
         (
@@ -168,12 +297,13 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
             })
             .collect(),
         requests: requests.clone(),
+        message_wakes: 0,
     };
     let thread =
         ThreadHandle::start("lua-process-observe".into(), DynModelSession::new(model)).unwrap();
     thread.register_tools(registrations).await.unwrap();
     let mut input = host::turn("observe");
-    input.max_model_steps = pl_core::thread::ModelStepLimit::Limited(10.try_into().unwrap());
+    input.max_model_steps = pl_core::thread::ModelStepLimit::Limited(20.try_into().unwrap());
     let runner = tokio::spawn({
         let thread = thread.clone();
         async move { thread.run_turn(input).await }
@@ -200,10 +330,18 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         .values()
         .find(|t| t.tool_id == "exec_command" && t.status == TaskStatus::Running)
         .unwrap();
-    assert_eq!(
-        requests.lock().unwrap().len(),
-        1,
-        "Lua must not hand off a premature command receipt"
+    assert!(
+        requests.lock().unwrap().len() >= 2,
+        "the running Lua program must yield so the model can wait"
+    );
+    assert!(
+        requests.lock().unwrap().iter().all(|request| request
+            .context
+            .records
+            .iter()
+            .flat_map(|record| record.tool_calls.iter())
+            .all(|call| call.call_id != "query-process")),
+        "a message wake must not let the simulated model assume command completion"
     );
     let wait_cancellation = tokio_util::sync::CancellationToken::new();
     let pending_wait = tokio::spawn({
@@ -243,6 +381,50 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         .unwrap()
         .unwrap();
     let effects = thread.effects().await.unwrap();
+    let parent = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.call_id == "slow-program")
+        .unwrap();
+    let receipt: serde_json::Value =
+        serde_json::from_str(parent.output.payload().content()).unwrap();
+    let selected: serde_json::Value =
+        serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
+    assert_eq!(selected["exitCode"], terminal["exitCode"]);
+    assert_eq!(selected["stdout"]["content"], terminal["stdout"]["content"]);
+    assert_eq!(selected["taskId"], terminal["taskId"]);
+    assert_eq!(terminal["captureStatus"], "complete");
+    assert!(terminal["stdoutResource"].is_object());
+    assert!(
+        selected.to_string().len() * 2 < terminal.to_string().len(),
+        "returning the command view should not repeat the full archive envelope"
+    );
+    let stdin = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.tool_id == "write_stdin")
+        .unwrap();
+    let original_stdin: serde_json::Value =
+        serde_json::from_str(stdin.output.payload().content()).unwrap();
+    let parent_stdin = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.call_id == "interactive-input")
+        .unwrap();
+    let parent_stdin: serde_json::Value =
+        serde_json::from_str(parent_stdin.output.payload().content()).unwrap();
+    let selected_stdin: serde_json::Value =
+        serde_json::from_str(parent_stdin["output"].as_str().unwrap())
+            .unwrap_or_else(|error| panic!("stdin program result {parent_stdin}: {error}"));
+    assert_eq!(
+        selected_stdin["inputReceipt"],
+        original_stdin["inputReceipt"]
+    );
+    assert_eq!(
+        selected_stdin["targetTaskId"],
+        original_stdin["targetTaskId"]
+    );
+    assert!(selected_stdin.to_string().len() * 2 < original_stdin.to_string().len());
     let deliveries = effects
         .iter()
         .flat_map(|effect| effect.deliveries.iter())
@@ -273,14 +455,32 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
             .values()
             .all(|t| t.status != TaskStatus::Running)
     );
-    assert!(
-        thread
-            .snapshot()
-            .tasks
-            .values()
-            .filter(|t| t.tool_id == "exec")
-            .all(|t| t.status == TaskStatus::Succeeded)
-    );
+    let final_tasks = effects
+        .iter()
+        .flat_map(|effect| effect.tasks.iter())
+        .map(|task| (task.call_id.as_str(), task))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for id in [
+        "slow-program",
+        "query-process",
+        "truncated-output",
+        "interactive-start",
+        "interactive-input",
+        "interactive-query",
+        "query-pending",
+        "query-terminal",
+    ] {
+        assert_eq!(
+            final_tasks[id].status,
+            TaskStatus::Succeeded,
+            "program {id} must complete: {:?}",
+            effects
+                .iter()
+                .flat_map(|effect| effect.deliveries.iter())
+                .find(|delivery| delivery.call_id == id)
+                .map(|delivery| delivery.output.payload().content())
+        );
+    }
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     thread.close().await.unwrap();
 }

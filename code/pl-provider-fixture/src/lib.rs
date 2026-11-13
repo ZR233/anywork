@@ -4661,13 +4661,21 @@ fn match_step(
                         call_id,
                         marker,
                         step,
-                    } => *step == index && tool_output_contains(body, call_id, marker),
+                    } => {
+                        *step == index
+                            && (tool_output_contains(body, call_id, marker)
+                                || program_wait_needed(
+                                    body,
+                                    &[(call_id.clone(), marker.clone())],
+                                    index,
+                                ))
+                    }
                     RequestMatch::ToolOutputs { outputs, step } => {
                         *step == index
                             && !outputs.is_empty()
-                            && outputs.iter().all(|(call_id, marker)| {
+                            && (outputs.iter().all(|(call_id, marker)| {
                                 tool_output_contains(body, call_id, marker)
-                            })
+                            }) || program_wait_needed(body, outputs, index))
                     }
                     RequestMatch::ToolImages {
                         images,
@@ -4687,7 +4695,12 @@ fn match_step(
                     } => {
                         *step == index
                             && (tool_output_contains(body, call_id, marker)
-                                || tool_delivery_contains(body, call_id, tool_id, marker))
+                                || tool_delivery_contains(body, call_id, tool_id, marker)
+                                || program_wait_needed(
+                                    body,
+                                    &[(call_id.clone(), marker.clone())],
+                                    index,
+                                ))
                     }
                     RequestMatch::ToolScrollCompletion { call_ids, step } => {
                         *step == index
@@ -4708,6 +4721,13 @@ fn match_step(
     });
     let index = selected.ok_or(MatchError::Unexpected)?;
     let pending = match script.steps[index].request.base() {
+        RequestMatch::ToolOutput {
+            call_id, marker, ..
+        }
+        | RequestMatch::ToolCompletion {
+            call_id, marker, ..
+        } => pending_programs(body, &[(call_id.clone(), marker.clone())]),
+        RequestMatch::ToolOutputs { outputs, .. } => pending_programs(body, outputs),
         RequestMatch::ToolScrollCompletion { call_ids, .. } => tool_scroll_pending(body, call_ids),
         RequestMatch::ToolImages {
             images, outputs, ..
@@ -4717,7 +4737,7 @@ fn match_step(
     if let Some(pending) = pending.filter(|pending| !pending.is_empty()) {
         let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
         let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
-        return Ok(Reply::Sse(responses_tool_calls(
+        let events = responses_tool_calls(
             "scroll-wait",
             "fixture-model",
             &[RealtimeToolCall {
@@ -4726,7 +4746,11 @@ fn match_step(
                 name: TOOL_WAIT_NAME,
                 arguments: realtime_wait_arguments(&borrowed),
             }],
-        )));
+        );
+        return Ok(match script.steps[index].protocol {
+            Protocol::ResponsesWebSocket => Reply::WebSocket(events),
+            _ => Reply::Sse(events),
+        });
     }
     let reply = script.steps[index].reply.clone();
     script.cursor = index + 1;
@@ -5171,24 +5195,7 @@ fn tool_scroll_pending(body: &Value, call_ids: &[String]) -> Option<Vec<String>>
         if !output.contains(&tool_running_receipt(call_id)) {
             return None;
         }
-        let notice_prefix = format!("Task task:{call_id} for tool exec finished: ");
-        let delivered = items.iter().any(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && user_text(item).is_some_and(|text| {
-                    ["Succeeded.", "Failed.", "Cancelled.", "TimedOut."]
-                        .iter()
-                        .any(|status| text.starts_with(&format!("{notice_prefix}{status}")))
-                })
-                && match item.get("content") {
-                    Some(Value::String(text)) => exec_result_is_terminal(text),
-                    Some(Value::Array(parts)) => parts.iter().any(|part| {
-                        part.get("text")
-                            .and_then(Value::as_str)
-                            .is_some_and(exec_result_is_terminal)
-                    }),
-                    _ => false,
-                }
-        });
+        let delivered = program_terminal_message(body, call_id).is_some();
         if !delivered {
             pending.push(call_id.clone());
         }
@@ -5225,11 +5232,81 @@ fn exec_result_is_terminal(text: &str) -> bool {
     else {
         return false;
     };
-    value["state"]["kind"] == "final"
-        && matches!(
-            value["state"]["data"]["result"]["kind"].as_str(),
-            Some("succeeded" | "failed" | "cancelled" | "timedOut")
-        )
+    value["exitCode"].as_i64().is_some()
+        || (value["state"]["kind"] == "final"
+            && matches!(
+                value["state"]["data"]["result"]["kind"].as_str(),
+                Some("succeeded" | "failed" | "cancelled" | "timedOut")
+            ))
+}
+
+/// A program can outlive its initial tool response. The simulated model waits only
+/// for the exact real Lua task receipt; a terminal message with the wrong marker
+/// remains a hard mismatch, including when an unrelated task wakes `wait` first.
+fn call_is_lua(body: &Value, id: &str) -> bool {
+    body.get("input")
+        .or_else(|| body.get("messages"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                (item["type"] == "function_call" && item["call_id"] == id && item["name"] == "exec")
+                    || item["tool_calls"].as_array().is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|call| call["id"] == id && call["function"]["name"] == "exec")
+                    })
+            })
+        })
+}
+fn pending_programs(body: &Value, outputs: &[(String, String)]) -> Option<Vec<String>> {
+    let mut pending = Vec::new();
+    for (id, marker) in outputs {
+        if tool_output_contains(body, id, marker) {
+            continue;
+        }
+        if !call_is_lua(body, id)
+            || !direct_tool_output_contains(body, id, &tool_running_receipt(id))
+            || program_terminal_message(body, id).is_some()
+        {
+            return None;
+        }
+        pending.push(id.clone());
+    }
+    Some(pending)
+}
+fn program_wait_needed(body: &Value, outputs: &[(String, String)], step: usize) -> bool {
+    tool_scroll_wait_count(body, step) < 32
+        && pending_programs(body, outputs).is_some_and(|pending| !pending.is_empty())
+}
+fn program_terminal_message<'a>(body: &'a Value, id: &str) -> Option<&'a Value> {
+    if !call_is_lua(body, id) || !direct_tool_output_contains(body, id, &tool_running_receipt(id)) {
+        return None;
+    }
+    let items = body
+        .get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?;
+    let prefix = format!("Task task:{id} for tool exec finished: ");
+    items.iter().find(|item| {
+        item["role"] == "user"
+            && user_text(item).is_some_and(|text| {
+                ["Succeeded.", "Failed.", "Cancelled.", "TimedOut."]
+                    .iter()
+                    .any(|status| text.starts_with(&format!("{prefix}{status}")))
+            })
+    })
+}
+fn tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
+    direct_tool_output_contains(body, call_id, marker)
+        || program_terminal_message(body, call_id).is_some_and(|item| match &item["content"] {
+            Value::String(text) => text.contains(marker),
+            Value::Array(parts) => parts.iter().any(|part| {
+                part["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))
+            }),
+            _ => false,
+        })
 }
 
 /// Whether the request carries the committed tool output for `call_id`.
@@ -5239,7 +5316,7 @@ fn exec_result_is_terminal(text: &str) -> bool {
 /// call identity and the marker inside that output keeps the comparison an
 /// identity check on one delivered result: the original prompt alone, or any
 /// unrelated request, never satisfies it.
-fn tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
+fn direct_tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
     let items = body
         .get("input")
         .or_else(|| body.get("messages"))

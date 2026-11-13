@@ -138,7 +138,7 @@ impl pl_tool_lua::ToolHost for Host {
             && let Some(output) = error.observed_output()
         {
             self.retain_resources(output)?;
-            return decode_output(output).map_err(Into::into);
+            return program_output(output).map_err(Into::into);
         }
         let output = outcome.map_err(|error| {
             let mut message = error.to_string();
@@ -162,8 +162,54 @@ impl pl_tool_lua::ToolHost for Host {
             pl_tool_lua::CallFailure { message, output }
         })?;
         self.retain_resources(&output)?;
-        decode_output(&output).map_err(Into::into)
+        program_output(&output).map_err(Into::into)
     }
+}
+
+/// The Lua command view carries execution decisions, not the original archive envelope.
+/// Error inspection and task queries retain the full authored receipt.
+fn program_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
+    let mut value = decode_output(output)?;
+    if output.payload().format() != "pl.tool.exec" {
+        return Ok(value);
+    }
+    let record = value
+        .as_object_mut()
+        .ok_or("command receipt must be an object")?;
+    // The authored exec envelope also carries observed stdin results. Its explicit
+    // targetTaskId distinguishes the input call from the target command's output.
+    if record.contains_key("targetTaskId") {
+        record.retain(|key, _| matches!(key.as_str(), "taskId" | "targetTaskId" | "inputReceipt"));
+        return Ok(value);
+    }
+    let mut paths = Vec::new();
+    for (stream, file) in [("stdout", "stdoutFile"), ("stderr", "stderrFile")] {
+        let body = record
+            .get_mut(stream)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("command receipt must contain both streams")?;
+        if !body
+            .get("content")
+            .is_some_and(serde_json::Value::is_string)
+        {
+            return Err("command receipt stream must contain text".into());
+        }
+        let truncated = body.get("wasTruncated") == Some(&serde_json::Value::Bool(true));
+        let lossy = body.get("textLossy") == Some(&serde_json::Value::Bool(true));
+        body.retain(|key, _| {
+            key == "content"
+                || (truncated && matches!(key.as_str(), "wasTruncated" | "omittedBytes"))
+                || (lossy && key == "textLossy")
+        });
+        if truncated {
+            paths.push(file);
+        }
+    }
+    record.retain(|key, _| {
+        matches!(key.as_str(), "taskId" | "exitCode" | "stdout" | "stderr")
+            || paths.contains(&key.as_str())
+    });
+    Ok(value)
 }
 
 fn decode_output(output: &ToolOutput) -> Result<serde_json::Value, String> {
@@ -353,11 +399,10 @@ pub fn sdk(
                 output_schema,
                 ..
             } => {
-                let mut line = format!(
-                    "tools[{name:?}](args) -- {description}\nPass a Lua table with key=value; argument validation schema (JSON): {input_schema}"
-                );
+                let mut line =
+                    format!("tools[{name:?}](args) -- {description}\ninput: {input_schema}");
                 if let Some(output) = output_schema {
-                    line.push_str(&format!("\nreturns JSON schema: {output}"));
+                    line.push_str(&format!("\noutput: {output}"));
                 }
                 line
             }
@@ -367,11 +412,9 @@ pub fn sdk(
                 output_schema,
                 ..
             } => {
-                let mut line = format!(
-                    "tools[{name:?}](text) -- {description}\nPass one Lua string, not a table or JSON wrapper. Example: local text = [=[content]=]; return tools[{name:?}](text)"
-                );
+                let mut line = format!("tools[{name:?}](text) -- {description}\ninput: Lua string");
                 if let Some(output) = output_schema {
-                    line.push_str(&format!("\nreturns JSON schema: {output}"));
+                    line.push_str(&format!("\noutput: {output}"));
                 }
                 line
             }

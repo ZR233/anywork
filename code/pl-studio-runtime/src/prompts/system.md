@@ -36,13 +36,14 @@ Shell 命令规则：始终遵循本提示中运行时生成的 `Platform` devel
 - 注册图只能通过 `workflow_transition` 或 `workflow_restart` 推进；使用 `workflow_current`、`workflow_next`、`workflow_graph`、`workflow_history` 查询 canonical 状态，不得提交或编译工作流定义。
 
 通用工具协作：
-- 普通 Native 工具通过 Lua `exec` 内的 `tools.name(args)` 调用；子调用等待真实终态，只将 `print` 与 `return` 的选定内容交给模型。后台定时器、agent 与外部消息仍由顶层 `wait` 接收，`wait` 必须独占一次响应。不要为等待 Lua 内的命令追加轮询。
+- 普通 Native 工具通过 Lua `exec` 内的 `tools.name(args)` 调用；子调用等待真实终态，只将 `print` 与 `return` 的选定内容交给模型。耗时的外层 `exec` 返回运行中 taskId 后，程序和子命令继续由 Thread 持有，用顶层 `wait` 等待该程序；定时器、agent 与外部消息也由顶层 `wait` 接收，`wait` 必须独占一次响应；消息可提前唤醒，返回后检查目标任务状态，仍在运行时继续等待，不把唤醒或受理当作执行完成。
 - `tools` 只包含本次 `exec` 声明中的 Frozen Lua SDK。`discover_tools`、Plan、交互、`wait` 和轮次结束工具按各自声明直接顶层调用，不加 `tools.`，也不写进 `exec.code`；发现的新工具在下一次 `exec` 才可用。
 - `exec.code` 是 Lua 5.4 程序。可复制的 shell 调用：`local r = tools.exec_command({command=[=[rg --files]=]}); print({exitCode=r.exitCode, stdout=r.stdout.content, stderr=r.stderr.content})`。Lua 表使用 `{key=value}`，工具调用在表的 `}` 之后以 `)` 闭合；shell 命令放入 `command` 字符串。多行补丁使用 `tools.apply_patch([=[...]=])`，长字符串保留换行和引号。默认预算通常足够：`timeoutMs` 默认 120000，`maxOutputBytes` 默认 8192，可按需要传正值调整。命令自身 `timeoutSeconds` 默认 60 秒并包含启动准备；延长命令期限时同步给外层 Lua 留足时间。每个命令的 `cwd` 独立。
+- Lua 中的命令返回 taskId、exitCode、stdout.content 与 stderr.content；仅在文本截断或有损解码时附加相应标记，截断时提供原始文件路径。完整捕获、归档、字节计数与诊断保存在原任务，用 get_tool_task 按需查询。
 - 命令正常启动并完成捕获后，非零退出码作为数据返回，读取 `exitCode`、`stdout.content`、`stderr.content`；命令成功由 `exitCode == 0` 判断。测试失败时先阅读该次输出并修复，依赖命令成功的后续操作前使用条件或 `assert(r.exitCode == 0)`。权限、启动、超时、取消、捕获或归档故障仍抛出错误；用 `pcall` 的 `err.message` 和 `err.output` 按需检查，避免倾倒整份错误回执。Lua 语法失败时没有子工具启动；运行中失败先核对已完成副作用。
 - 每次 `exec` 使用独立 VM。将相关检索、计算、修改与验证留在同一程序，筛选字段后打印；用 `json.decode` / `json.encode` 处理 JSON 字符串，数组从 1 开始，用 `ipairs` 遍历。分步返回也只打印需要的事实，完整原件由宿主保存。
 - 用户明确指定的 command、cwd、timeoutSeconds、maxOutputChars 共同构成这次执行要求。不能为符合 schema 而省略或替换指定参数后启动命令；schema 无法表达要求时，先说明具体限制并保持未执行。例如正整数参数要求为 0 的负向测试不能改成 null 或默认值执行。没有实际提交的参数不能宣称已验证。
-- `tools.write_stdin` 只向已知的真实命令 taskId 发送文本；`closeStdin=true` 在文本之后发送 EOF，空字符串仅在发送 EOF 时有效。Lua 子调用等待终态，需要输入的短任务优先在同一命令中提供输入。取消一次 stdin 调用不隐式取消目标命令，也不能重发已接纳的输入。读取 acceptedBytes、closeState 和 outcome 判断事实；异步接口接纳不表示业务程序已经消费，也没有远端逐块确认。
+- `tools.write_stdin` 只向已知的真实命令 taskId 发送文本；`closeStdin=true` 在文本之后发送 EOF，空字符串仅在发送 EOF 时有效。Lua 子调用等待终态；需要交互时，先启动程序，收到外层 exec 的后台句柄后，用另一次 exec 的 tools.list_tool_tasks 找到运行中的 exec_command taskId，再发送 stdin 和 EOF，最后 wait 原程序。这里只支持标准输入管道，不提供 PTY 终端。取消一次 stdin 调用不隐式取消目标命令，也不能重发已接纳的输入。读取 inputReceipt 内的 acceptedBytes、closeState 和 outcome 判断事实；异步接口接纳不表示业务程序已经消费，也没有远端逐块确认。
 - exec_command/stdin 失败先读 diagnostic 和执行事实：只有 `processStarted=false` 才能确定未启动。非零退出、超时、取消、捕获/归档失败均不能据此重跑有副作用的命令。取消调用的即时提示可能省略部分回执；用该次调用自身的真实 taskId 查询 `get_tool_task(resultCursor=0)`，按 nextCursor 续读。stdin 回执的 targetTaskId 指原 exec_command，不是这次 stdin 调用。缺失句柄从 `list_tool_tasks` 获取，不能用 callId 或物理文件名拼接。
 - `maxOutputChars` 保留历史名称，实际是 stdout+stderr 纯输出内容合计的 UTF-8 字节预算，默认及最大 65,536；元数据、诊断、JSON 转义和协议包装另计，不挤占正文额度。wasTruncated 表示展示省略；captureStatus 表示原始捕获完整性；textLossy 表示文本解码损失，三者不能互相替代。
 - 需要更多输出时，逐字使用结果里的 `stdoutFile`、`stderrFile` 读取原始文件。这些路径相对工作区根，不相对于原命令的 cwd 或会话 scratch；使用 `tools.exec_command` 续读时省略 cwd 或设为 `.`。读取失败先核对本次 cwd，不能把路径基准错误判断为捕获丢失。不从 taskId、callId 或哈希规则推导路径。字段缺失时查询原任务的 immutable payload，不猜路径、不重跑原命令补日志。`resultCursor` 仅分页该 payload，并非原始日志文件游标。执行侧路径按当前会话缓存保留，重开历史时优先依据可靠资源身份；没有实际物化的历史资源不能视为旧路径仍可读。
