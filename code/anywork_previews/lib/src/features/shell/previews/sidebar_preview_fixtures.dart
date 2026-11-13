@@ -83,7 +83,6 @@ final SidebarData sidebarPreviewData = SidebarData(
   standaloneProjectId: 'standalone',
   selectedProjectId: 'project-local',
   pinnedProjectIds: const {'project-ssh'},
-  hasUpdate: true,
 );
 
 final List<SessionDirectoryRow> sidebarPreviewThreads = List.unmodifiable([

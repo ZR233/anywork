@@ -1091,6 +1091,12 @@ abstract class AppLocalizations {
   /// **'Settings'**
   String get sidebarSettings;
 
+  /// No description provided for @sidebarUpdateNow.
+  ///
+  /// In en, this message translates to:
+  /// **'Update now'**
+  String get sidebarUpdateNow;
+
   /// No description provided for @runtimeFatalTitle.
   ///
   /// In en, this message translates to:

@@ -114,9 +114,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         pinnedProjectIds: pinnedProjects.toSet(),
         preparing: preparation.isPreparing,
         preparationError: preparation.error,
-        hasUpdate: ref.watch(
-          studioUpdateControllerProvider.select((state) => state.hasUpdate),
-        ),
       ),
       onQueryChanged: (_) {},
       projectStructureBuilder: (context, projectId, selection, builder) =>
@@ -264,6 +261,18 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         const SettingsRoute().go(context);
       },
       onClose: widget.onNavigate,
+      footerBuilder:
+          ({
+            required archived,
+            required onToggleArchived,
+            required onSettings,
+            required touchMode,
+          }) => SidebarFooterConnector(
+            archived: archived,
+            onToggleArchived: onToggleArchived,
+            onSettings: onSettings,
+            touchMode: touchMode,
+          ),
     );
   }
 

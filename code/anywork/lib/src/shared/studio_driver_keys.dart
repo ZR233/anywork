@@ -158,6 +158,9 @@ abstract final class StudioDriverKeys {
   static const projectPathInput = ValueKey<String>('project-path-input');
   static const projectPathSubmit = ValueKey<String>('project-path-submit');
   static const settingsOpen = ValueKey<String>('settings-open');
+  static const sidebarUpdateNow = ValueKey<String>(
+    StudioDriverKeyValues.sidebarUpdateNow,
+  );
   static const settingsPage = ValueKey<String>('settings-page');
   static const settingsBack = ValueKey<String>(
     StudioDriverKeyValues.settingsBack,

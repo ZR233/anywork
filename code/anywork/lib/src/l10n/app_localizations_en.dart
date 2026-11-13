@@ -563,6 +563,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarSettings => 'Settings';
 
   @override
+  String get sidebarUpdateNow => 'Update now';
+
+  @override
   String get runtimeFatalTitle => 'anywork could not start';
 
   @override

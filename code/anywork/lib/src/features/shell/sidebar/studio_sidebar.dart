@@ -38,6 +38,7 @@ class StudioSidebar extends StatefulWidget {
     required this.onThreadAction,
     required this.onSettings,
     this.onClose,
+    this.footerBuilder,
   });
 
   final SidebarData data;
@@ -75,6 +76,13 @@ class StudioSidebar extends StatefulWidget {
   onThreadAction;
   final VoidCallback? onSettings;
   final VoidCallback? onClose;
+  final Widget Function({
+    required bool archived,
+    required VoidCallback onToggleArchived,
+    required VoidCallback? onSettings,
+    required bool touchMode,
+  })?
+  footerBuilder;
 
   @override
   State<StudioSidebar> createState() => _StudioSidebarState();
@@ -349,13 +357,20 @@ class _StudioSidebarState extends State<StudioSidebar> {
                   ),
                 ),
               ),
-              SidebarFooter(
-                archived: _archived,
-                hasUpdate: data.hasUpdate,
-                touchMode: _touchInput,
-                onToggleArchived: () => _change(() => _archived = !_archived),
-                onSettings: widget.onSettings,
-              ),
+              widget.footerBuilder?.call(
+                    archived: _archived,
+                    onToggleArchived: () =>
+                        _change(() => _archived = !_archived),
+                    onSettings: widget.onSettings,
+                    touchMode: _touchInput,
+                  ) ??
+                  SidebarFooter(
+                    archived: _archived,
+                    touchMode: _touchInput,
+                    onToggleArchived: () =>
+                        _change(() => _archived = !_archived),
+                    onSettings: widget.onSettings,
+                  ),
             ],
           ),
         ),

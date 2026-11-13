@@ -5,10 +5,10 @@ import 'package:material_ui/material_ui.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import 'settings_common.dart';
-import 'settings_update_row.dart';
 import 'settings_web_search.dart';
 import 'settings_delegation.dart';
 import 'settings_worktree_recovery.dart';
+import '../update/connectors/studio_update_settings_connector.dart';
 
 class GeneralTab extends StatefulWidget {
   const GeneralTab({
@@ -123,7 +123,7 @@ class _GeneralTabState extends State<GeneralTab> {
         ),
         SettingsSectionPanel(
           title: context.l10n.settingsUpdatesGroup,
-          children: [const StudioUpdateSettingsRow()],
+          children: [const StudioUpdateSettingsConnector()],
         ),
       ],
     );
