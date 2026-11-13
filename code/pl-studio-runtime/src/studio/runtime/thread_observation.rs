@@ -1401,13 +1401,13 @@ impl LiveOwner {
         #[cfg(not(test))]
         let binding = projector
             .session_of(id)
-            .map(|session| session.close_storage_binding(id))
+            .map(|session| session.projection_storage_binding(id))
             .transpose()?
             .flatten();
         #[cfg(test)]
         let binding = projector
             .session_of(id)
-            .and_then(|session| session.close_storage_binding(id).ok())
+            .and_then(|session| session.projection_storage_binding(id).ok())
             .flatten();
         #[cfg(not(test))]
         anyhow::ensure!(binding.is_some(), "execution has no storage binding");

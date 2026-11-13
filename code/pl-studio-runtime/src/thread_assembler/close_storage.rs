@@ -458,6 +458,29 @@ impl SessionRuntime {
         }
     }
 
+    /// writer 初始化后观察者即可借用原绑定恢复投影；Core 的附加完成仍由关闭流程确认。
+    /// 观察者不能等待 Core 附加命令，否则该命令的保存屏障可能反过来等待观察者。
+    pub(crate) fn projection_storage_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
+        let state = self.0.state();
+        let entry = state
+            .entries
+            .get(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        match entry.native()?.close_storage.as_ref() {
+            Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
+            Some(
+                CloseStorage::Initialized(binding)
+                | CloseStorage::Attaching { binding, .. }
+                | CloseStorage::Attached(binding),
+            ) => Ok(Some(binding.clone())),
+            None if entry.native()?.purpose == EntryPurpose::Execution => Ok(None),
+            _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
+        }
+    }
+
     /// Only ordinary execution entries legitimately have no close-only binding. A missing or
     /// unfinished binding on either storage-only purpose cannot count as successful cleanup.
     pub(crate) fn close_storage_binding(
