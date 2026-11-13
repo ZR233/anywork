@@ -212,6 +212,7 @@
   "sidebarSessionWorktree": "会话工作树",
   "sidebarOpenProject": "打开项目",
   "sidebarSettings": "设置",
+  "sidebarUpdateNow": "更新",
   "runtimeFatalTitle": "糊来帮无法启动",
   "runtimeFatalRetry": "重试",
   "persistenceDegraded": "保存暂时不可用，尚有 {count} 项更改未保存；可以继续会话。",

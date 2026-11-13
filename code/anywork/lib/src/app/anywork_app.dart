@@ -8,8 +8,8 @@ import 'package:go_router/go_router.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../platform/desktop_tray_host.dart';
-import '../presentation/providers/studio_update_controller.dart';
 import '../presentation/providers/settings_store.dart';
+import '../features/update/view_models/studio_update_view_model.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
@@ -265,7 +265,7 @@ class _EagerInitialization extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    ref.watch(studioUpdateControllerProvider);
+    ref.watch(studioUpdateViewModelProvider);
     return child;
   }
 }

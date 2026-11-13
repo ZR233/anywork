@@ -530,6 +530,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarSettings => '设置';
 
   @override
+  String get sidebarUpdateNow => '更新';
+
+  @override
   String get runtimeFatalTitle => '糊来帮无法启动';
 
   @override

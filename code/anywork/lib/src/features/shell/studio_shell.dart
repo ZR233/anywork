@@ -35,7 +35,6 @@ import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
 import 'reading_workspace_state.dart';
 import '../../shared/studio_driver_state.dart';
-import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';
 import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
@@ -53,6 +52,7 @@ import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'sidebar/sidebar_views.dart';
 import 'sidebar/sidebar_connectors.dart';
+import '../update/connectors/sidebar_footer_connector.dart';
 
 part 'studio_sidebar.dart';
 part 'add_project_dialog.dart';

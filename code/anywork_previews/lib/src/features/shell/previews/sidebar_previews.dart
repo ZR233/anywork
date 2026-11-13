@@ -275,9 +275,19 @@ Widget sidebarPageStatusPreview() => _sidebarPreviewHost(
 Widget sidebarFooterPreview() => _sidebarPreviewHost(
   SidebarFooter(
     archived: false,
+    onToggleArchived: () => recordSidebarPreviewIntent('toggle archived'),
+    onSettings: () => recordSidebarPreviewIntent('settings'),
+  ),
+);
+
+@Preview(name: '底栏 · 有更新', group: 'Shell · Sidebar parts', size: Size(336, 64))
+Widget sidebarFooterUpdatePreview() => _sidebarPreviewHost(
+  SidebarFooter(
+    archived: false,
     hasUpdate: true,
     onToggleArchived: () => recordSidebarPreviewIntent('toggle archived'),
     onSettings: () => recordSidebarPreviewIntent('settings'),
+    onUpdateNow: () => recordSidebarPreviewIntent('update now'),
   ),
 );
 

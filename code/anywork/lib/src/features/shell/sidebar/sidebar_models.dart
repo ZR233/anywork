@@ -66,7 +66,6 @@ class SidebarData {
     Set<String> pinnedProjectIds = const {},
     this.preparing = false,
     this.preparationError,
-    this.hasUpdate = false,
   }) : projectIds = List.unmodifiable(projectIds),
        pinnedProjectIds = Set.unmodifiable(pinnedProjectIds);
 
@@ -77,7 +76,6 @@ class SidebarData {
   final Set<String> pinnedProjectIds;
   final bool preparing;
   final String? preparationError;
-  final bool hasUpdate;
 }
 
 /// One project's independently observed structure and pagination intents.

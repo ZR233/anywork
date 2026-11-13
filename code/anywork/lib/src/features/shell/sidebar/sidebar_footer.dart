@@ -7,6 +7,8 @@ class SidebarFooter extends StatelessWidget {
     required this.onToggleArchived,
     this.onSettings,
     this.hasUpdate = false,
+    this.updateBusy = false,
+    this.onUpdateNow,
     this.touchMode = false,
   });
 
@@ -14,6 +16,8 @@ class SidebarFooter extends StatelessWidget {
   final VoidCallback onToggleArchived;
   final VoidCallback? onSettings;
   final bool hasUpdate;
+  final bool updateBusy;
+  final VoidCallback? onUpdateNow;
   final bool touchMode;
 
   @override
@@ -22,27 +26,63 @@ class SidebarFooter extends StatelessWidget {
     child: Column(
       children: [
         const Divider(height: 16),
-        Row(
+        Stack(
+          alignment: Alignment.centerRight,
           children: [
-            Expanded(
-              child: SidebarFooterButton(
-                key: const ValueKey('sidebar-archived'),
-                tooltip: context.l10n.sidebarArchived,
-                icon: Icons.archive_outlined,
-                selected: archived,
-                onPressed: onToggleArchived,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: SidebarFooterButton(
+                    key: const ValueKey('sidebar-archived'),
+                    tooltip: context.l10n.sidebarArchived,
+                    icon: Icons.archive_outlined,
+                    selected: archived,
+                    onPressed: onToggleArchived,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: SidebarFooterButton(
+                    key: StudioDriverKeys.settingsOpen,
+                    tooltip: context.l10n.sidebarSettings,
+                    icon: Icons.settings_outlined,
+                    showIndicator: hasUpdate,
+                    onPressed: onSettings,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: SidebarFooterButton(
-                key: StudioDriverKeys.settingsOpen,
-                tooltip: context.l10n.sidebarSettings,
-                icon: Icons.settings_outlined,
-                showIndicator: hasUpdate,
-                onPressed: onSettings,
+            if (hasUpdate)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 96),
+                    child: FilledButton(
+                      key: StudioDriverKeys.sidebarUpdateNow,
+                      onPressed: updateBusy ? null : onUpdateNow,
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        minimumSize: Size.zero,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 6,
+                        ),
+                        textStyle: context.text.labelSmall,
+                      ),
+                      child: Text(
+                        context.l10n.sidebarUpdateNow,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
           ],
         ),
       ],

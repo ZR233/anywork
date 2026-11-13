@@ -46,6 +46,7 @@ abstract final class StudioDriverKeyValues {
       'thread-preparation-${stage.name}';
   static const newSession = 'sidebar-new-session';
   static const nonProjectSessionsArea = 'sidebar-non-project-sessions';
+  static const sidebarUpdateNow = 'sidebar-update-now';
   static const standalonePreparationFailure = 'standalone-preparation-failure';
   static const standalonePreparationFailureMessage =
       'standalone-preparation-failure-message';
