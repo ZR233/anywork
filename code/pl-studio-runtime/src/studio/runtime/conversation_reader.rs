@@ -202,16 +202,12 @@ impl ConversationReader {
     pub async fn read_business_refs(&self) -> Result<ThreadBusinessRefs> {
         let guard = self.resources().await?;
         let resources = guard.as_ref().ok_or_else(cancelled)?;
-        let source = resources.conversation.current_conversation();
-        let references = if let Some(source) = source {
-            source.current.business_refs()
-        } else {
-            let references = tokio::select! { biased;
-                _ = self.inner.cancel.cancelled() => return Err(cancelled()),
-                references = resources.history.read_business_refs() => references?,
-            };
-            references.unwrap_or_else(ThreadBusinessRefs::empty)
+        let current = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            current = resources.conversation.current_state() => current?,
         };
+        let references =
+            current.map_or_else(ThreadBusinessRefs::empty, |current| current.business_refs());
         self.ensure()?;
         Ok(references)
     }
@@ -252,6 +248,17 @@ impl ConversationReader {
         }
         if self.inner.cancel.is_cancelled() {
             return Err(cancelled());
+        }
+        let identity_changed = self.inner.resources.try_read().ok().is_some_and(|guard| {
+            guard.as_ref().is_some_and(|resources| {
+                !resources
+                    .conversation
+                    .identity_matches(resources.database_id.as_deref())
+            })
+        });
+        if identity_changed {
+            self.invalidate();
+            return Err(resync());
         }
         Ok(())
     }
@@ -797,7 +804,7 @@ impl ConversationReader {
             let cold = if source.is_none()
                 && matches!(owner, ContentOwner::Current { domain, .. } if domain == "collection:interactions")
             {
-                r.history.cold_current_state().await?
+                r.conversation.current_state().await?
             } else {
                 None
             };
@@ -916,7 +923,7 @@ impl ConversationReader {
                 }
             })
             .transpose()?;
-        let source = r.conversation.current_conversation();
+        let current = r.conversation.current_state().await?.ok_or_else(stale)?;
         let encode = |after| {
             self.token(
                 r,
@@ -926,13 +933,7 @@ impl ConversationReader {
                 },
             )
         };
-        let page = if let Some(source) = source {
-            current_page(&source.current, reference, after.as_deref(), demand, encode)?
-        } else {
-            r.history
-                .page_current(reference, after.as_deref(), demand, &encode)
-                .await?
-        };
+        let page = current_page(&current, reference, after.as_deref(), demand, encode)?;
         self.ensure()?;
         ensure!(
             serde_json::to_vec(&page)?.len() <= demand.max_bytes as usize,

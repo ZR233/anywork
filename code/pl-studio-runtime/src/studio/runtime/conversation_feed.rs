@@ -83,19 +83,22 @@ impl StudioRuntime {
         let scope_query = query(&scope)?;
         let id = crate::studio::ids::new_id("conversation");
         let slot = self.thread_observations.observation_slot(thread_id);
+        let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
         let conversation = self
             .store
             .conversation_store(thread_id)
             .await?
             .open_reader();
+        let history = self.store.history(thread_id).await?;
         conversation.wait_initialization().await?;
+        if conversation.current_conversation().is_none() {
+            history.prepare_conversation_read().await?;
+        }
         let progress_rx = conversation.subscribe_progress();
         let cut = conversation
             .capture(crate::studio::conversation_store::ReadRequest::Current)
             .await?;
-        let thread = self.read_protocol_thread(thread_id).await?;
-        self.check_thread_read_access(&thread)?;
-        let history = self.store.history(thread_id).await?;
         let progress = Some(progress_rx);
         let mut initial_activity = Arc::new(ActivitySnapshot {
             revision: 0,
@@ -254,6 +257,7 @@ impl StudioRuntime {
         } else {
             annotate_sources(&mut initial_entries, &history, &source_states, effect_cut).await?;
         }
+        conversation.bind_database(database_id.as_deref())?;
         let reader = ConversationReader::new(
             id,
             scope,
@@ -2141,6 +2145,7 @@ pub(super) mod tests {
             pub session: core::Session,
             pub projection: LiveProjection,
             pub source: Arc<super::super::super::thread_observation::ThreadLiveFeed>,
+            pub conversation: Arc<crate::studio::conversation_store::ConversationStore>,
             pub sequence: u64,
             _owner: watch::Sender<super::super::super::thread_observation::Progress>,
         }
@@ -2177,7 +2182,8 @@ pub(super) mod tests {
                     .conversation_database_id()
                     .await?
                     .context("database")?;
-                let session = env.runtime.store.chat_session(&thread.id).await?;
+                let conversation = env.runtime.store.conversation_store(&thread.id).await?;
+                let session = conversation.session().clone();
                 let channel = env
                     .runtime
                     .store
@@ -2195,6 +2201,7 @@ pub(super) mod tests {
                         Default::default(),
                     ),
                 );
+                source.bind_conversation(&conversation);
                 source.bind_test_presentation(projection.presentation());
                 env.runtime
                     .thread_observations
@@ -2210,6 +2217,7 @@ pub(super) mod tests {
                     session,
                     projection,
                     source,
+                    conversation,
                     sequence: 0,
                     _owner: owner,
                 })
@@ -2942,7 +2950,8 @@ pub(super) mod tests {
         }
 
         #[tokio::test]
-        async fn a_b_a_reincarnation_never_rebinds_old_reader_or_late_retirement() -> Result<()> {
+        async fn execution_replacement_keeps_store_readers_until_explicit_revocation() -> Result<()>
+        {
             let env = support::Environment::new(vec![], vec![]).await?;
             let result = async {
                 let h = Harness::new(&env).await?;
@@ -2966,7 +2975,7 @@ pub(super) mod tests {
                 );
                 slot.install(replacement);
                 slot.install(h.source.clone());
-                assert!(reader.ensure().is_err());
+                reader.ensure()?;
                 let mut new = env
                     .runtime
                     .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
@@ -3806,6 +3815,7 @@ pub(super) mod tests {
                         Default::default(),
                     ),
                 );
+                h.source.bind_conversation(&h.conversation);
                 publish(
                     &mut h,
                     &CoreSnapshot {
@@ -3814,9 +3824,10 @@ pub(super) mod tests {
                     },
                 )
                 .await?;
+                h.source.bind_conversation(&h.conversation);
                 slot.install(h.source.clone());
                 retired.publish_test_state_activity(999, Some(summary.clone()));
-                assert!(old.recv().await.is_err());
+                old.reader().ensure()?;
                 assert!(old_state.recv().await.is_err());
                 let mut new = env
                     .runtime

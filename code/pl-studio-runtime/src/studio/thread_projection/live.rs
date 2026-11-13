@@ -323,7 +323,7 @@ pub(in crate::studio) struct PreparedEffect {
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
     display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) items: Vec<ThreadItem>,
+    pub(in crate::studio) items: Arc<[ThreadItem]>,
     /// The frozen completion records this batch published atomically before the handoff.
     ///
     /// The completion session allocated their `append_seq` in one short critical section and keeps
@@ -341,7 +341,7 @@ pub(in crate::studio) struct PreparedEffect {
         Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
-        Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+        Arc<[crate::thread_assembler::review_delivery::ReviewDeliveryFact]>,
 }
 
 fn review_delivery_facts(
@@ -396,10 +396,8 @@ impl PreparedEffect {
     /// `terminal_retention` is excluded here because that managed owner carries its one charge.
     /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
     ///
-    /// Shell contract: the value includes each item's and the report's own shell, but not the
-    /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
-    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method. Even an empty
-    /// content batch retains its prepared accounting material and its corresponding charge.
+    /// 条目使用共享的 Arc 切片，本估算已包含条目与报告本身的外壳；没有 Vec 预留容量。
+    /// 即使内容批次为空，也保留准备好的记账资料及其对应预算。
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let parent_report = self.parent_report_retained_bytes();
         let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
@@ -1676,12 +1674,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1754,12 +1752,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         self.retain(state);
         Ok(prepared)
@@ -1881,7 +1879,9 @@ impl LiveProjection {
             .filter(|item| matches!(item.state(), ThreadItemState::Turn(_)) && item.is_terminal())
             .map(|item| item.id.clone())
             .collect();
-        let (mut existing, restored) = self.resolve(thread, ids, &terminal_turns).await?;
+        let (mut existing, restored) = self
+            .resolve(thread, ids, &terminal_turns, effect.sequence)
+            .await?;
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -2255,7 +2255,7 @@ impl LiveProjection {
         prepared: &PreparedEffect,
         records: &[Arc<ChatItem>],
     ) -> anyhow::Result<(
-        super::presentation::PresentationState,
+        super::presentation::PresentationPlan,
         Arc<super::presentation::PreparedDisplayDelta>,
     )> {
         let presentation = self
@@ -2288,7 +2288,7 @@ impl LiveProjection {
         )
     }
 
-    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationState) {
+    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationPlan) {
         self.presentation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2869,6 +2869,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         ids: impl IntoIterator<Item = String>,
         terminal_turns: &BTreeSet<String>,
+        effect: u64,
     ) -> Result<ResolvedIdentities, ProjectionError> {
         let mut existing = BTreeMap::new();
         let mut restored = BTreeSet::new();
@@ -2899,8 +2900,14 @@ impl LiveProjection {
                 existing.insert(id, item);
                 continue;
             }
-            // Only a reliable identity miss reaches storage. Streaming frames and retained
-            // identities stay entirely in memory.
+            if self
+                .order_index
+                .as_ref()
+                .is_some_and(|index| index.is_new_reservation(&id, effect))
+            {
+                continue;
+            }
+            // Unknown and restored identities retain their explicit history validation.
             let history = self
                 .execution_history
                 .as_ref()

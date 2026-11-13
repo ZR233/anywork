@@ -11,8 +11,8 @@ pub(in crate::studio::runtime) struct SourcePosition {
     pub source: Option<Arc<ThreadLiveFeed>>,
 }
 
-/// The slot, rather than the current source pointer, is the observation registration barrier.
-/// A cold read captures absence and must revalidate the same epoch after IO.
+/// 执行状态观察的登记屏障及会话读取的显式撤销入口。
+/// 内容读取由稳定 Store 持有，不用这里的执行代际判断内容连续性。
 pub(in crate::studio::runtime) struct ObservationSlot {
     state: Mutex<SourcePosition>,
     changed: watch::Sender<u64>,

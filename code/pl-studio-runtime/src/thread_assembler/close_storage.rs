@@ -160,14 +160,17 @@ impl SessionRuntime {
         storage: pl_core::thread::cold::ColdStoreHandle,
     ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
-        let mut preparation_storage = None;
-        if let Some(services) = &services
-            && services
+        let preparation = match &services {
+            Some(services) => services
                 .store
                 .thread_preparation(id)
                 .await
-                .map_err(preparation_storage_error)?
-                .is_some_and(|record| !record.published)
+                .map_err(preparation_storage_error)?,
+            None => None,
+        };
+        let mut preparation_storage = None;
+        if let Some(services) = &services
+            && preparation.as_ref().is_some_and(|record| !record.published)
         {
             let incarnation = crate::studio::new_id("preparation-storage");
             let through = self
@@ -198,11 +201,16 @@ impl SessionRuntime {
         };
         let conversation = match services.as_ref() {
             Some(services) => Some(
-                services
-                    .store
-                    .conversation_store(id)
-                    .await
-                    .map_err(preparation_storage_error)?,
+                match &preparation {
+                    Some(preparation) => {
+                        services
+                            .store
+                            .conversation_store_for(&preparation.identity.workspace_id, id)
+                            .await
+                    }
+                    None => services.store.conversation_store(id).await,
+                }
+                .map_err(preparation_storage_error)?,
             ),
             None => None,
         };

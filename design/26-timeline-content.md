@@ -27,7 +27,7 @@ Markdown 语法与流式未闭合内容由上游渲染组件解析，采用其 C
 
 原 `ChatDraft → ChatItem` 和 `conversation_items` 是唯一完成原件；`conversation_atom_facts` 分别保存轻量 start/terminal 事实，不以展示合并覆盖原件。边界时原 owner 从同一 effect 捕获未结束成员的公开状态、参数和内容前缀，沿原 immutable chunks/content store 保存派生显示快照。它证明当时显示了什么，不是第三条业务事件或执行状态来源；展示头只持小头、身份、引用及计数。无新 actor、线程、全局注册表、writer、可靠展示队列或保存定时器。真实 Plan、交互和配置仍由原领域 State 管理。
 
-会话资源沿原 Session → AgentRuntime → NativeResources 持有，执行与检查点继续归 Core owner；展示投影属于原 Native observation，不建立另一份成员登记。关闭先同步撤销发布和新读资格，再由原会话关闭任务汇合订阅、观察及在途读取。冷读只借已保存快照，不物化 Native、不重算分组、不推进计时。
+会话资源沿原 Session → AgentRuntime → NativeResources 持有，执行与检查点继续归 Core owner；展示投影和当前状态属于稳定的 Native ConversationStore，原观察工作者只持执行绑定及串行驱动，不建立另一份成员登记。关闭先同步撤销发布和新读资格，再由原会话关闭任务汇合订阅、观察及在途读取。冷读只借已保存快照，不物化 Native、不重算分组、不推进计时。
 
 State 与内容是独立资源：Repository 是 Dart State 唯一写入口，State feed 独立确认、恢复和关闭；Timeline、完成内容及成员读取不转发第二份 State，也不因暂停内容信用阻塞状态终态或统计。GUI 的展示流替代旧完成内容流承担卡片交付，不替代 State feed；非 GUI 完成级消费者继续使用原内容接口。本次整组交接规则替代旧版“活动临时组合、不延续历史身份”的约定，而不是撤销状态/内容分域或会话资源所有权。
 
@@ -92,7 +92,7 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 ## 26.3 增量状态与保存交接
 
-原 live owner 持有唯一 PresentationState：一个 open_work、原 blocks 有序容器、当前组关联索引、仅含已可见正文的 open_texts、必要 pending 与 P/Dp。普通 progress 只更新当前仍拥有的成员，不将旧运行任务复制到每个新组。加入或结束成员只触及当前行和组小头；边界只捕获本组未结束观察，不遍历完成正文或无关 Plan/交互。
+稳定的 ConversationStore 持有唯一 PresentationState：一个 open_work、原 blocks 有序容器、当前组关联索引、仅含已可见正文的 open_texts、必要 pending 与 P/Dp。普通 progress 只更新当前仍拥有的成员，不将旧运行任务复制到每个新组。加入或结束成员只触及当前行和组小头；边界只捕获本组未结束观察，不遍历完成正文或无关 Plan/交互。
 
 - H/D：原子完成发布上界及已保存连续前缀，原 Session pending 完整覆盖 `(D,H]`。
 - P/Dp：冻结展示发布上界及已确认持久前缀；待保存索引引用原 PreparedEffect 中同一冻结材料，覆盖 `(Dp,P]`，不是另一可靠队列。
@@ -103,6 +103,11 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 成功确认只对应实际批次，不等 GUI ACK、不制造展示事件。长期尾组保留小头、内部未完成计数、下一 member_order、未结束关联和未保存责任；按每批实际变动位置释放已耐久 terminal 行及正文驻留引用，复用 sparse overlay/成员索引，不等封组、不每次 COMMIT 扫全组。已释放事实靠原准入/effect 位置及处理水位幂等，不新建永久全会话 ID 缓存。查询沿短锁捕获切点、共享引用与其后 SQLite 短读快照补齐，不跨 await 持投影锁。
 
 ## 26.4 展示快照、冷打开与恢复
+
+Store 的冷态、初始化中、就绪和失败是明确的生命周期状态，不由订阅数推断。冷读先在生命周期 gate 外取得可取消的数据库读连接，再在 gate 内重新核对模式，并以首次元数据 SELECT 建立 SQLite 快照；仅 BEGIN DEFERRED 不构成切面。随后释放 gate，在同一短事务内读取所请求的有界页。初始化可以在页面读取期间启动，不能改变已经建立的快照。若已进入初始化，读者等待 Store 保留的同一个恢复结果；取消单个等待者不放弃该结果，也不另开忽略待恢复状态的冷读。
+
+就绪时在短同步边界捕获数据库身份、完成及展示上界，以及请求窗口的共享引用，再在锁外补读 SQLite。捕获时仍可变的行覆盖随后数据库中的同键行，上界排除切面之后新增的行；未保存冻结材料和可变行保留在 RAM。只有冻结且真实提交的材料具备释放资格，保存确认不依赖执行驱动仍存活或 GUI 确认。数据库身份失效时明确结束旧读取，不把新库接作旧游标续页。
+
 
 冻结观察的公开 payload 复用原聊天内容编码器的 `anywork.chat/1` 信封、类型描述和
 `bodies` 清单。内部 `ThreadItemState` JSON 不能直接作为公开 payload；正文 chunk

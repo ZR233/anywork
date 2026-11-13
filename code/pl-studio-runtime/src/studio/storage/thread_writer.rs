@@ -545,15 +545,6 @@ impl RuntimeOrderIndex {
             .is_some_and(|(effect, _)| *effect > state.durable)
     }
 
-    fn has_unfinished_source(&self) -> bool {
-        !self
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .by_source
-            .is_empty()
-    }
-
     pub(in crate::studio) fn materialize(
         &self,
         item: &pl_protocol::ThreadItem,
@@ -825,6 +816,19 @@ impl RuntimeOrderIndex {
             .assigned
             .get(id)
             .is_some_and(|entry| entry.effect.is_some_and(|seq| seq > state.durable))
+    }
+
+    /// 只有当前已接纳 effect 新认领且尚未物化的身份能跳过历史查找。
+    /// 旧正文及已物化身份继续走原恢复边界。
+    pub(in crate::studio) fn is_new_reservation(&self, id: &str, effect: u64) -> bool {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .assigned
+            .get(id)
+            .is_some_and(|entry| entry.effect == Some(effect) && entry.stamp.is_none())
     }
 
     pub(in crate::studio) fn pending_placement(
@@ -1339,6 +1343,10 @@ impl Drop for ReviewDeliveryRetention {
 }
 
 impl HistoryChannel {
+    #[cfg(test)]
+    pub(in crate::studio) async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.step_lock.lock().await
+    }
     /// Called under the registry lock; this only pins an atomic logical source,
     /// and never acquires progress or index.
     pub(crate) fn pin_review_delivery(
@@ -1598,11 +1606,9 @@ impl HistoryChannel {
     pub(crate) fn next_storage_channel(&self) -> Self {
         let mut channel = Self::new(self.process_bytes.clone());
         // A stopped storage-only writer may still have a live producer holding reservations.
-        // Otherwise a fresh owner needs only the scalar ceiling, not its predecessor's identities.
-        if self.order_index.has_pending()
-            || (self.order_index.has_unfinished_source()
-                && Arc::strong_count(&self.order_index) > 1)
-        {
+        // A resident ConversationStore must keep that same allocator across writer replacement.
+        // Only a fully unreferenced index can restart from its scalar ceiling.
+        if self.order_index.has_pending() || Arc::strong_count(&self.order_index) > 1 {
             channel.order_index = self.order_index.clone();
         } else {
             let ceiling = self
@@ -2409,7 +2415,7 @@ impl Drop for Inner {
 pub(crate) struct ThreadStorageSink(Arc<Inner>);
 
 /// One actual writer incarnation, retained through attachment and all close joins.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ThreadStorageBinding {
     pub(crate) conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     pub(crate) incarnation: usize,
@@ -2429,6 +2435,12 @@ impl ThreadStorageBinding {
             conversation,
             incarnation: NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed),
         }
+    }
+}
+
+impl Drop for ThreadStorageBinding {
+    fn drop(&mut self) {
+        self.conversation.detach_execution(self);
     }
 }
 
@@ -3693,7 +3705,7 @@ fn fact_receipts(
     prepared: &PreparedEffect,
 ) -> Result<Vec<crate::studio::storage::history::FactReceiptWrite>> {
     let mut receipts = Vec::new();
-    for fact in &prepared.review_delivery {
+    for fact in prepared.review_delivery.iter() {
         receipts.push(crate::studio::storage::history::FactReceiptWrite {
             item_id: fact.message.id.clone(),
             revision: 1,
@@ -6996,7 +7008,7 @@ pub(crate) mod storage_fault_tests {
             next_prepared.accounting = Arc::new(
                 crate::studio::thread_projection::PreparedAccounting::prepare(&next_write.effect)?,
             );
-            next_prepared.items = vec![next_item.clone()];
+            next_prepared.items = Arc::from([next_item.clone()]);
             next_prepared.completions = Arc::from([]);
             sink.admit(id, next_write)?;
             assert!(sink.0.channel.prepare(Arc::new(next_prepared)));
@@ -7063,12 +7075,16 @@ pub(crate) mod storage_fault_tests {
         let finished_projection = closed.order_index();
         assert_eq!(finished_projection.assign("finished-scope")?, 1);
         let weak = Arc::downgrade(&closed.order_index);
+        // 稳定 Store 的投影仍持分配器时，替换 writer 必须复用同一索引。
+        let retained = closed.next_storage_channel();
+        assert!(Arc::ptr_eq(&finished_projection, &retained.order_index));
+        drop(retained);
+        drop(finished_projection);
         let reopened = closed.next_storage_channel();
         assert!(!Arc::ptr_eq(&closed.order_index, &reopened.order_index));
         assert_eq!(reopened.order_index.retained_bytes(), 0);
         assert_eq!(reopened.order_index.assign("new-scope")?, 2);
         drop(closed);
-        drop(finished_projection);
         assert!(weak.upgrade().is_none());
         drop(reopened);
         assert_eq!(process.load(Ordering::Acquire), 0);

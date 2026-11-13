@@ -67,6 +67,15 @@ pub(crate) struct ConversationStore {
     database_id: std::sync::OnceLock<String>,
     execution: Mutex<(usize, Option<usize>)>,
     channel: Mutex<std::sync::Weak<HistoryChannel>>,
+    #[cfg(test)]
+    last_locked_us: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    before_meta: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -166,7 +175,7 @@ impl ConversationStore {
         };
         operation
             .await
-            .map_err(|error| anyhow::anyhow!("conversation initialization failed: {error:#}"))
+            .map_err(crate::error_mapping::shared_runtime_error)
     }
 
     async fn wait_initialization(&self) -> anyhow::Result<()> {
@@ -178,17 +187,15 @@ impl ConversationStore {
             match &*mode {
                 Mode::Initializing { operation, .. } => Some(operation.clone()),
                 Mode::Faulted { error, .. } => {
-                    return Err(anyhow::anyhow!(
-                        "conversation initialization failed: {error:#}"
-                    ));
+                    return Err(crate::error_mapping::shared_runtime_error(error.clone()));
                 }
                 Mode::Cold | Mode::Ready => None,
             }
         };
         if let Some(pending) = pending {
-            pending.await.map_err(|error| {
-                anyhow::anyhow!("conversation initialization failed: {error:#}")
-            })?;
+            pending
+                .await
+                .map_err(crate::error_mapping::shared_runtime_error)?;
         }
         Ok(())
     }
@@ -213,6 +220,10 @@ impl ConversationStore {
             database_id: std::sync::OnceLock::new(),
             execution: Mutex::new((0, None)),
             channel: Mutex::new(std::sync::Weak::new()),
+            #[cfg(test)]
+            last_locked_us: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            before_meta: tokio::sync::Mutex::new(None),
         }))
     }
 
@@ -254,12 +265,25 @@ impl ConversationStore {
         channel: &HistoryChannel,
         retained: &mut RetainedProjection,
     ) -> anyhow::Result<Arc<PreparedEffect>> {
+        let admission_started = std::time::Instant::now();
         let _mutation = self
             .mutation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let locked = std::time::Instant::now();
+        anyhow::ensure!(
+            matches!(
+                *self
+                    .mode
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Mode::Ready
+            ),
+            "conversation is not ready for admission"
+        );
         anyhow::ensure!(
             std::ptr::eq(self, binding.conversation.as_ref())
+                && std::ptr::eq(channel, binding.channel.as_ref())
                 && self
                     .execution
                     .lock()
@@ -272,7 +296,19 @@ impl ConversationStore {
             .pending
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("no retained handoff"))?;
+        anyhow::ensure!(
+            pending.write.effect.thread_id == self.history.thread_id()
+                && pending.prepared.sequence == pending.write.effect.sequence
+                && pending.prepared.current.projection().source_effect_seq
+                    == pending.prepared.sequence
+                && pending.prepared.accounting.thread_id == self.history.thread_id(),
+            "prepared effect does not match the accepted original"
+        );
         let Some(drafts) = pending.prepared.completion_drafts.as_ref() else {
+            anyhow::ensure!(
+                pending.admitted,
+                "unadmitted effect has no fresh publication plan"
+            );
             return Ok(pending.prepared.clone());
         };
         let plan = self.session.prepare_fresh(drafts.clone())?;
@@ -280,9 +316,9 @@ impl ConversationStore {
             .projection
             .plan_display(&pending.prepared, plan.records())?;
         let source = pending
-            .prepared
-            .current_state
-            .as_ref()
+            .publishes_current()
+            .then_some(&pending.prepared)
+            .and_then(|prepared| prepared.current_state.as_ref())
             .map(|current| {
                 self.publication
                     .prepare(&self.session, plan.head_seq(), current.clone())
@@ -318,7 +354,25 @@ impl ConversationStore {
         }
         pending.prepared = prepared.clone();
         pending.admitted = true;
+        #[cfg(test)]
+        self.last_locked_us.store(
+            locked.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        tracing::debug!(target: "conversation_work", source_effect_seq = prepared.sequence,
+            admission_wait_us = locked.duration_since(admission_started).as_micros() as u64,
+            admission_locked_us = locked.elapsed().as_micros() as u64,
+            completion_records = prepared.completions.len(),
+            prepared_bytes = prepared.retained_bytes(),
+            queued_bytes = channel.subscribe().borrow().queued_bytes,
+            "conversation memory admission");
         Ok(prepared)
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) fn last_admission_locked_us(&self) -> u64 {
+        self.last_locked_us
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) async fn attach_execution(
@@ -330,6 +384,18 @@ impl ConversationStore {
             "binding belongs to another conversation"
         );
         self.session.initialize().await?;
+        let database = self
+            .history
+            .conversation_database_id()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("execution database is not initialized"))?;
+        anyhow::ensure!(
+            self.database_id
+                .get()
+                .is_none_or(|current| current == &database),
+            pl_core::chat::ChatError::StaleContent
+        );
+        self.database_id.get_or_init(|| database);
         let _mutation = self
             .mutation
             .lock()
@@ -362,7 +428,17 @@ impl ConversationStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if execution.1 == Some(binding.incarnation) {
             execution.1 = None;
+            self.publication.retire_execution();
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) fn retire_test_execution(&self) {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication.retire_execution();
     }
 
     pub(in crate::studio) fn confirm_committed(
@@ -383,12 +459,6 @@ impl ConversationStore {
             self.session.confirm_durable(through)?;
         }
         if let Some(source) = self.publication.current() {
-            anyhow::ensure!(
-                self.database_id
-                    .get()
-                    .is_none_or(|database| database == committed.database_id()),
-                "committed database identity differs"
-            );
             source
                 .presentation
                 .lock()
@@ -403,6 +473,13 @@ impl ConversationStore {
 
 impl Drop for ConversationStore {
     fn drop(&mut self) {
+        // 先释放投影引用的身份索引，再发布最终预算，避免残留已释放索引的旧计数。
+        drop(
+            self.retained
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
         if let Some(channel) = self
             .channel
             .get_mut()
@@ -430,14 +507,20 @@ impl ConversationReadHandle {
             // BEGIN 在 gate 外取得连接。首次 meta SELECT 留在 gate 内建立真实快照。
             let mut snapshot = self.0.history.conversation_snapshot().await?;
             let gate = self.0.lifecycle.lock().await;
-            let initializing = matches!(
-                *self
+            let initializing = {
+                let mode = self
                     .0
                     .mode
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                Mode::Initializing { .. }
-            );
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match &*mode {
+                    Mode::Faulted { error, .. } => {
+                        return Err(crate::error_mapping::shared_runtime_error(error.clone()));
+                    }
+                    Mode::Initializing { .. } => true,
+                    Mode::Cold | Mode::Ready => false,
+                }
+            };
             if initializing {
                 drop(gate);
                 drop(snapshot);
@@ -446,11 +529,36 @@ impl ConversationReadHandle {
             if let Some(cut) = self.capture_ready(&request) {
                 return Ok(cut);
             }
+            #[cfg(test)]
+            if let Some((entered, release)) = self.0.before_meta.lock().await.take() {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
             if let Some(snapshot) = &mut snapshot {
                 snapshot.pin(self.0.history.thread_id()).await?;
+                anyhow::ensure!(
+                    self.0
+                        .database_id
+                        .get()
+                        .is_none_or(|database| database == &snapshot.database_id),
+                    pl_core::chat::ChatError::StaleContent
+                );
+                self.0
+                    .database_id
+                    .get_or_init(|| snapshot.database_id.clone());
             }
             drop(gate);
             return Ok(ReadCut::Cold(snapshot));
+        }
+    }
+
+    pub(in crate::studio) async fn current_state(
+        &self,
+    ) -> anyhow::Result<Option<Arc<super::thread_projection::CurrentState>>> {
+        match self.capture(ReadRequest::Current).await? {
+            ReadCut::Ready { source, .. } => Ok(Some(source.current.clone())),
+            ReadCut::Cold(Some(snapshot)) => Ok(Some(snapshot.current_state().await?)),
+            ReadCut::Cold(None) => Ok(None),
         }
     }
 
@@ -501,6 +609,24 @@ impl ConversationReadHandle {
     pub(crate) fn session(&self) -> &Session {
         self.0.session()
     }
+
+    pub(in crate::studio) fn identity_matches(&self, database: Option<&str>) -> bool {
+        self.0.database_id.get().map(String::as_str) == database
+    }
+
+    pub(in crate::studio) fn bind_database(&self, database: Option<&str>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.0
+                .database_id
+                .get()
+                .is_none_or(|current| Some(current.as_str()) == database),
+            pl_core::chat::ChatError::StaleContent
+        );
+        if let Some(database) = database {
+            self.0.database_id.get_or_init(|| database.to_owned());
+        }
+        Ok(())
+    }
     pub(crate) async fn wait_initialization(&self) -> anyhow::Result<()> {
         self.0.wait_initialization().await
     }
@@ -526,5 +652,118 @@ impl ConversationReadHandle {
         Option<Arc<super::runtime::thread_observation::publication::ConversationSource>>,
     > {
         self.0.publication.subscribe_progress()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::storage::coordinator::ThreadPersistenceCoordinator;
+    use super::*;
+    use sea_orm::{ConnectionTrait, Database};
+
+    #[tokio::test]
+    async fn concurrent_passive_opens_share_a_weak_store_without_creating_history()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("absent/history.sqlite");
+        let history = HistoryStore::open(&path, "passive").await?;
+        let registry = ThreadPersistenceCoordinator::default();
+        let (first, second) = tokio::join!(
+            async {
+                Ok::<_, anyhow::Error>(registry.install_conversation_store(
+                    "passive",
+                    ConversationStore::new(history.clone())?,
+                ))
+            },
+            async {
+                Ok::<_, anyhow::Error>(registry.install_conversation_store(
+                    "passive",
+                    ConversationStore::new(history.clone())?,
+                ))
+            },
+        );
+        let (first, second) = (first?, second?);
+        assert!(Arc::ptr_eq(&first, &second));
+        let reader = first.open_reader();
+        assert!(matches!(
+            reader.capture(ReadRequest::Current).await?,
+            ReadCut::Cold(None)
+        ));
+        assert_eq!(registry.snapshot().pending_commits, 0);
+        assert_eq!(history.reader_calls(), 1);
+        println!("COLD_EMPTY_READ_PORT_CALLS=1 COLD_PAGE_ROWS=0");
+        assert!(!path.try_exists()?);
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(weak.upgrade().is_some());
+        drop(reader);
+        assert!(weak.upgrade().is_none());
+        assert!(registry.conversation_store("passive").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cold_meta_cut_precedes_attach_and_page_read_does_not_hold_the_gate()
+    -> anyhow::Result<()> {
+        for before_select in [true, false] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let history = HistoryStore::open(&path, "cold-race").await?;
+            history.prepare_write().await?;
+            let store = ConversationStore::new(history)?;
+            let reader = store.open_reader();
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (release, resume) = tokio::sync::oneshot::channel();
+            if before_select {
+                *store.before_meta.lock().await = Some((entered, resume));
+            }
+            let read = tokio::spawn(async move { reader.capture(ReadRequest::Current).await });
+            let factory = Arc::new({
+                let path = path.clone();
+                move || {
+                    let path = path.clone();
+                    Box::pin(async move {
+                        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display()))
+                            .await?;
+                        db.execute_unprepared(
+                            "UPDATE history_meta SET applied_write_seq=1 WHERE id=1",
+                        )
+                        .await?;
+                        db.close().await?;
+                        anyhow::bail!("controlled initialization failure")
+                    }) as BoxFuture<'static, anyhow::Result<RetainedProjection>>
+                }
+            });
+            if before_select {
+                waiting.await?;
+            }
+            let mut initializing = Box::pin(store.initialize_projection(factory));
+            if before_select {
+                assert!(futures::poll!(initializing.as_mut()).is_pending());
+                release.send(()).ok();
+            }
+            let ReadCut::Cold(Some(snapshot)) = read.await?? else {
+                panic!("expected pinned cold snapshot")
+            };
+            // 整页物化尚未开始；初始化必须能取得 gate 并完成原结果。
+            let failed =
+                tokio::time::timeout(std::time::Duration::from_secs(3), initializing).await?;
+            assert!(failed.is_err());
+            let cold = snapshot.presentation_baseline().await?;
+            assert_eq!(
+                cold.current.source_effect_seq, 0,
+                "page mixed the later metadata into its pinned snapshot"
+            );
+            assert!(
+                store
+                    .open_reader()
+                    .capture(ReadRequest::Current)
+                    .await
+                    .is_err(),
+                "failed initialization appeared as empty success"
+            );
+        }
+        Ok(())
     }
 }

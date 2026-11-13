@@ -126,6 +126,9 @@ impl StudioStore {
         &self,
         thread_id: &str,
     ) -> anyhow::Result<std::sync::Arc<crate::studio::conversation_store::ConversationStore>> {
+        if let Some(active) = self.thread_persistence.conversation_store(thread_id) {
+            return Ok(active);
+        }
         let paths = self.registered_session_paths(thread_id)?;
         self.conversation_store_for(paths.workspace_id(), thread_id)
             .await

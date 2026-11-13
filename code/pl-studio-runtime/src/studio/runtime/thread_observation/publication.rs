@@ -1,5 +1,5 @@
-//! One latest `(completion head, activity)` at the execution owner's serial boundary.
-//! Completion history is replayed from Session; no reliable presentation queue exists here.
+//! 稳定 ConversationStore 的最新完成边界与当前状态；通知不拥有可靠保存队列。
+//! 完成历史仍由同一 Session 读取，执行驱动只推进此处的共享发布。
 use crate::studio::thread_projection::CurrentState;
 use pl_core::chat::Session;
 use pl_protocol::ActivitySnapshot;
@@ -98,6 +98,7 @@ impl ConversationPublication {
             source
                 .serial
                 .checked_add(1)
+                .filter(|serial| *serial < u64::MAX)
                 .ok_or_else(|| anyhow::anyhow!("activity revision exhausted"))
         })?;
         let projection = current.projection();
@@ -129,6 +130,41 @@ impl ConversationPublication {
             activity,
         });
         Ok(source)
+    }
+
+    /// 退出执行只清除执行可用性，保留同一 Store 的业务与展示切面。
+    /// 正常发布预留一个修订号，因此该同步收束段不会发生计数失败。
+    pub(in crate::studio) fn retire_execution(&self) {
+        let Some(previous) = self
+            .current()
+            .filter(|source| source.current.projection().execution_present)
+        else {
+            return;
+        };
+        let mut projection = previous.current.projection().clone();
+        projection.execution_present = false;
+        projection.active = None;
+        let current = crate::studio::thread_projection::CurrentState::with_projection(
+            previous.current.clone(),
+            crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
+        );
+        let serial = previous
+            .serial
+            .checked_add(1)
+            .expect("publication reserved retirement revision");
+        self.apply(Arc::new(ConversationSource {
+            presentation: previous.presentation.clone(),
+            serial,
+            session: previous.session.clone(),
+            head: previous.head,
+            current,
+            activity: Arc::new(ActivitySnapshot {
+                revision: serial,
+                completed_through: previous.head,
+                execution_present: false,
+                entries: Vec::new(),
+            }),
+        }));
     }
 
     pub(in crate::studio) fn apply(&self, source: Arc<ConversationSource>) {

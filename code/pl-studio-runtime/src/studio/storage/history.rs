@@ -79,6 +79,14 @@ impl ConversationSnapshot {
         );
         Ok(())
     }
+    pub(in crate::studio) async fn current_state(
+        self,
+    ) -> Result<Arc<crate::studio::thread_projection::CurrentState>> {
+        let current = conversation::completed::cold(&self.tx).await?;
+        self.tx.commit().await?;
+        Ok(current)
+    }
+
     pub(in crate::studio) async fn presentation_baseline(self) -> Result<ColdConversation> {
         let current = conversation::completed::cold(&self.tx).await?;
         let head = conversation::latest_append_seq(&self.tx).await?;
@@ -152,6 +160,8 @@ impl std::fmt::Debug for HistoryStoreShare {
 }
 
 struct HistoryStoreState {
+    #[cfg(test)]
+    reader_calls: std::sync::atomic::AtomicU64,
     closed: std::sync::atomic::AtomicBool,
     path: PathBuf,
     thread_id: String,
@@ -386,6 +396,8 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
+                #[cfg(test)]
+                reader_calls: std::sync::atomic::AtomicU64::new(0),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
@@ -583,6 +595,10 @@ impl HistoryStore {
     /// writer initialization waits behind it instead of validating the half-initialized database
     /// that `connect(mode=rwc)` just created.
     async fn reader(&self) -> Result<Option<&HistoryConnection>> {
+        #[cfg(test)]
+        self.state
+            .reader_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The first writer may have created the file with `connect(mode=rwc)` while its schema and
         // identity are still uncommitted. Take the read side of the initialization lock before
         // touching the file, so we either run before the file exists or after it is fully
@@ -599,6 +615,13 @@ impl HistoryStore {
             );
         }
         self.read_only_connection().await
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) fn reader_calls(&self) -> u64 {
+        self.state
+            .reader_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Caller holds the initialization read guard. Never returns the writer, even when another
@@ -1661,6 +1684,7 @@ impl HistoryStore {
         Ok(Some(current))
     }
 
+    #[cfg(test)]
     pub(in crate::studio) async fn cold_current_state(
         &self,
     ) -> Result<Option<Arc<crate::studio::thread_projection::CurrentState>>> {
@@ -1698,6 +1722,7 @@ impl HistoryStore {
 
     /// Same domain-head projection as State, from one fresh SQLite read transaction.
     /// Missing history means this Thread has no established business read resources yet.
+    #[cfg(test)]
     pub(in crate::studio) async fn read_business_refs(
         &self,
     ) -> Result<Option<pl_protocol::ThreadBusinessRefs>> {
@@ -1850,6 +1875,7 @@ impl HistoryStore {
         snapshot.cold_conversation(query, demand, budget).await
     }
 
+    #[cfg(test)]
     pub(in crate::studio) async fn page_current(
         &self,
         reference: &pl_protocol::CurrentCollectionRef,
