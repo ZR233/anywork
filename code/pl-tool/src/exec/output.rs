@@ -1,22 +1,16 @@
 //! Host history envelopes, task receipt identity and typed host-error mapping.
 use pl_core::{
     context::{ContextContent, OpaquePayload, ResourceReference},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 use serde::Serialize;
 use std::sync::Arc;
 
-pub(super) fn current_receipt(context: &CallContext) -> Option<String> {
-    context.tasks.as_ref().and_then(|tasks| {
-        tasks
-            .list()
-            .into_iter()
-            .find(|task| task.call_id == context.call_id)
-            .map(|task| task.id)
-    })
+pub(super) fn current_receipt(context: &crate::invocation::WorkspaceInvocation) -> Option<String> {
+    context
+        .tasks
+        .as_ref()
+        .and_then(|tasks| tasks.current_receipt())
 }
 
 pub(super) fn archived_output(
@@ -43,7 +37,7 @@ fn prefix(text: &str, mut bytes: usize) -> &str {
     &text[..bytes]
 }
 
-pub(super) fn stdin_unavailable(target: &pl_core::thread::task::TaskRecord) -> ToolError {
+pub(super) fn stdin_unavailable(target: &crate::invocation::CommandTask) -> ToolError {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Receipt<'a> {
@@ -60,7 +54,7 @@ pub(super) fn stdin_unavailable(target: &pl_core::thread::task::TaskRecord) -> T
         next_action: &'static str,
     }
     let receipt = Receipt {
-        target_task_id: &target.id,
+        target_task_id: &target.task_id,
         status: target.status,
         accepted_bytes: 0,
         delivery_pending: false,
@@ -77,7 +71,7 @@ pub(super) fn stdin_unavailable(target: &pl_core::thread::task::TaskRecord) -> T
         .map_err(ToolError::new)
         .and_then(|text| receipt_output("pl.tool.stdin", text));
     let error = ToolError::new(super::ExecFailure::TaskUnavailable {
-        task_id: target.id.clone(),
+        task_id: target.task_id.clone(),
         status: target.status,
         cancelled: target.cancel_requested,
     });
@@ -121,7 +115,7 @@ pub fn permission_denied(source: impl std::error::Error + Send + Sync + 'static)
 
 pub(super) fn start_error(
     error: crate::command::CommandRunError,
-    context: &CallContext,
+    context: &crate::invocation::WorkspaceInvocation,
 ) -> ToolError {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -140,13 +134,7 @@ pub(super) fn start_error(
     let cancelled = matches!(error.failure, crate::command::CommandRunFailure::Cancelled);
     let detail = error.to_string();
     let receipt = StartReceipt {
-        task_id: context.tasks.as_ref().and_then(|tasks| {
-            tasks
-                .list()
-                .into_iter()
-                .find(|task| task.call_id == context.call_id)
-                .map(|task| task.id)
-        }),
+        task_id: current_receipt(context),
         process_started: error.process_started,
         diagnostic: StartDiagnostic {
             code: error.failure,

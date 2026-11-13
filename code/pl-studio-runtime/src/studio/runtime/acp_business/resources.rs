@@ -45,6 +45,7 @@ struct Owned {
     driver_error: Option<String>,
     association: Option<Association>,
     report_join: Option<JoinHandle<()>>,
+    workspace_closed: bool,
 }
 
 #[derive(Clone)]
@@ -71,6 +72,9 @@ pub(crate) struct AcpResources {
     owned: Mutex<Owned>,
     obligations: AtomicBool,
     host_mcp: Mutex<Option<HostMcp>>,
+    pub(in crate::studio::runtime) workspace_tools:
+        OnceLock<Arc<super::super::acp_workspace_tools::WorkspaceTools>>,
+    workspace_close: Mutex<Option<JoinHandle<Result<()>>>>,
     /// Kept independently of the HTTP listener until the entire ACP process tree is joined.
     mcp_frontend: std::sync::Mutex<Option<crate::host_mcp_assets::HostMcpAsset>>,
     mcp_injected: AtomicBool,
@@ -112,9 +116,12 @@ impl AcpResources {
                 driver_error: None,
                 association: None,
                 report_join: None,
+                workspace_closed: false,
             }),
             obligations: AtomicBool::new(true),
             host_mcp: Mutex::new(None),
+            workspace_tools: OnceLock::new(),
+            workspace_close: Mutex::new(None),
             mcp_frontend: std::sync::Mutex::new(None),
             mcp_injected: AtomicBool::new(false),
             mcp_calls: OnceLock::new(),
@@ -142,12 +149,13 @@ impl AcpResources {
             "ACP Host MCP preparation was closed"
         );
         // No await occurs between server creation and transfer to its registered owner.
-        let (service, definition) = HostMcp::start(
+        let (service, definition) = HostMcp::start_bound(
             host,
             caller,
             self.cancellation.clone(),
             is_root,
             frontend.as_ref().map(AsRef::as_ref),
+            self.workspace_tools.get().cloned(),
         )
         .await?;
         let calls = service.observed_counter();
@@ -317,6 +325,27 @@ impl AcpResources {
 
     pub(crate) fn cancel(&self) {
         self.cancellation.cancel();
+        if let Some(tools) = self.workspace_tools.get() {
+            tools.stop();
+        }
+    }
+
+    pub(in crate::studio::runtime) async fn retain_workspace_tools(
+        &self,
+        tools: Arc<super::super::acp_workspace_tools::WorkspaceTools>,
+        usage: WorkspaceUsageLease,
+    ) -> Result<()> {
+        let mut owned = self.owned.lock().await;
+        ensure!(
+            !self.cancellation.is_cancelled(),
+            "ACP workspace preparation closed"
+        );
+        self.workspace_tools
+            .set(tools)
+            .map_err(|_| anyhow::anyhow!("ACP tools already prepared"))?;
+        owned.usage = Some(usage);
+        self.obligations.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) fn has_obligations(&self) -> bool {
@@ -496,13 +525,52 @@ impl AcpResources {
                 }
             }
         }
+        let mut workspace_complete = true;
+        if !owned.workspace_closed
+            && let Some(tools) = self.workspace_tools.get()
+        {
+            let mut closing = self.workspace_close.lock().await;
+            if closing.is_none() {
+                let tools = tools.clone();
+                *closing = Some(tokio::spawn(async move { tools.close().await }));
+            }
+            let join = closing.as_mut().expect("workspace cleanup join");
+            let result = if join.is_finished() {
+                Some(join.await)
+            } else {
+                tokio::time::timeout_at(self.cleanup.deadline(), join)
+                    .await
+                    .ok()
+            };
+            match result {
+                Some(Ok(Ok(()))) => {
+                    *closing = None;
+                    owned.workspace_closed = true;
+                }
+                Some(Ok(Err(error))) => {
+                    *closing = None;
+                    workspace_complete = false;
+                    owned.driver_error = Some(error.to_string());
+                }
+                Some(Err(error)) => {
+                    *closing = None;
+                    workspace_complete = false;
+                    owned.driver_error = Some(error.to_string());
+                }
+                None => {
+                    workspace_complete = false;
+                    owned.driver_error = Some("ACP workspace task cleanup is pending".into());
+                }
+            }
+        }
         let local_complete = owned.worker.is_none()
             && owned.reclaim.is_none()
             && !owned.reclaim_failed
             && owned.join.is_none()
             && owned.association.is_none()
             && owned.report_join.is_none()
-            && host_mcp.is_none();
+            && host_mcp.is_none()
+            && workspace_complete;
         if local_complete {
             self.mcp_frontend
                 .lock()
@@ -522,7 +590,7 @@ impl AcpResources {
 
 impl Drop for AcpResources {
     fn drop(&mut self) {
-        self.cancellation.cancel();
+        self.cancel();
         // Final cancellation fence only. Normal close always joins in place above.
         if let Some(join) = &self.owned.get_mut().join {
             join.abort();

@@ -228,7 +228,9 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
-同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
+SSH 项目的同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。本地 ACP 保留已有协作工具和外部代理原本的本机工具，不在本期额外增加宿主文件/命令访问或其审批能力。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
+
+SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分支不能取得本机 `HOST_WORKSPACE_ACCESS` grant，工作区外请求按原远程策略处理，不转为本机用户审批或自动审查。`RequestApproval`/`AutoReview` 的本机越界审批依赖 Native 执行上下文，不用假 Turn/TaskAccess、另选模型或新增计费 owner 补齐；这些本机能力不属于远程项目接入范围。该限制不改变 Native 已有权限模式，也不声称 Shell 命令受 OS 沙箱隔离。
 
 任务受理、执行 future 所有权、取消、等待、结果访问和关闭共享普通会话的必要任务基础。Native 的 TaskRecord、Turn、writer/checkpoint、ACK 和冷读仍归 Native owner；ACP 只使用真实实例及调用身份，不伪造 Native 对象、轮次或持久序号，不新增任务数据库，也不承诺跨实例恢复。一次 MCP 请求结束只结束观察；已受理执行由任务 owner 持有，stdin 和结果查询使用真实原回执，不能从文件名或 MCP request ID 合成。长输出与归档失败继续由原捕获/可靠资源责任收束，不能重跑命令补日志。
 

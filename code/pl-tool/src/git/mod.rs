@@ -178,6 +178,21 @@ where
         input: pl_core::context::OpaquePayload,
         context: pl_core::tool::opaque::CallContext,
     ) -> Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B, P> GitTool<B, P>
+where
+    B: ExecutionBackend + 'static,
+    B::Error: Into<pl_tool_git::BoxError>,
+    P: GitCredentialProvider + 'static,
+{
+    pub async fn execute_workspace(
+        &self,
+        input: pl_core::context::OpaquePayload,
+        context: crate::invocation::WorkspaceInvocation,
+    ) -> Result<ToolOutput, ToolError> {
         if input.format() != "application/json" || input.version() != 1 {
             return Err(ToolError::new(crate::tool_error(
                 self.kind.name(),

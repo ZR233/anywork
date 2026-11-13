@@ -2,57 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
-/// The existing host operations; neither a caller identity nor an authority grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HostOperation {
-    SpawnAgent,
-    SendMessage,
-    ListAgents,
-    WaitAgent,
-    InterruptAgent,
-    CloseAgent,
-    ListAgentProfiles,
-    ListDelegationModels,
-    GetDelegationModel,
-}
-
-impl HostOperation {
-    pub const fn tool_name(self) -> &'static str {
-        match self {
-            Self::SpawnAgent => "anywork_spawn_agent",
-            Self::SendMessage => "anywork_send_message",
-            Self::ListAgents => "anywork_list_agents",
-            Self::WaitAgent => "anywork_wait_agent",
-            Self::InterruptAgent => "anywork_interrupt_agent",
-            Self::CloseAgent => "anywork_close_agent",
-            Self::ListAgentProfiles => "anywork_list_agent_profiles",
-            Self::ListDelegationModels => "anywork_list_delegation_models",
-            Self::GetDelegationModel => "anywork_get_delegation_model",
-        }
-    }
-
-    pub fn from_tool_name(name: &str) -> Option<Self> {
-        match name {
-            "anywork_spawn_agent" => Some(Self::SpawnAgent),
-            "anywork_send_message" => Some(Self::SendMessage),
-            "anywork_list_agents" => Some(Self::ListAgents),
-            "anywork_wait_agent" => Some(Self::WaitAgent),
-            "anywork_interrupt_agent" => Some(Self::InterruptAgent),
-            "anywork_close_agent" => Some(Self::CloseAgent),
-            "anywork_list_agent_profiles" => Some(Self::ListAgentProfiles),
-            "anywork_list_delegation_models" => Some(Self::ListDelegationModels),
-            "anywork_get_delegation_model" => Some(Self::GetDelegationModel),
-            _ => None,
-        }
-    }
-}
-
 /// Consumer projection of the runtime's author-owned tool declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostTool {
-    pub operation: HostOperation,
+    /// Exact identity from this instance's prepared catalog, not a permission grant.
+    pub tool_id: String,
     pub description: String,
     pub input_schema: Map<String, Value>,
 }
@@ -63,7 +18,7 @@ pub type HostCatalog = Vec<HostTool>;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostInvocation {
-    pub operation: HostOperation,
+    pub tool_id: String,
     pub arguments: Map<String, Value>,
 }
 

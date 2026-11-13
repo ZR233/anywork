@@ -99,8 +99,6 @@ impl Owner {
             } else {
                 self.interrupt.background_token()
             };
-        self.task_tokens
-            .insert(format!("task:{}", call.call.call_id), cancellation.clone());
         let tasks =
             TaskAccess::new(self, &id, &call.executor).with_nested_plan(call.nested_plan.clone());
         if let Some(plan) = &call.nested_plan {
@@ -131,21 +129,40 @@ impl Owner {
             extension_sequence: self.state.extension_sequence,
             catalog: self.tools.catalog(),
         };
+        let identity = crate::tool::task::ExecutionIdentity::new(
+            call.call.call_id.clone(),
+            call.call.tool_id.clone(),
+        );
+        let failed_call = call.clone();
+        let failed_cancellation = cancellation.clone();
+        let execution = self
+            .executions
+            .start(identity, cancellation.clone(), async move {
+                let output = if authorized {
+                    call.executor
+                        .execute(call.call.arguments.clone(), context, cold, cold_error)
+                        .await
+                        .map_err(Arc::new)
+                } else {
+                    Err(Arc::new(crate::tool::opaque::ToolError::new(
+                        ThreadError::ToolPermissionRevoked,
+                    )))
+                };
+                ToolExecutionCompletion {
+                    call,
+                    output,
+                    cancellation,
+                }
+            })
+            .map_err(|_| ThreadError::Closed)?;
         Ok(Box::pin(async move {
-            let output = if authorized {
-                call.executor
-                    .execute(call.call.arguments.clone(), context, cold, cold_error)
-                    .await
-                    .map_err(Arc::new)
-            } else {
-                Err(Arc::new(crate::tool::opaque::ToolError::new(
-                    ThreadError::ToolPermissionRevoked,
-                )))
-            };
-            ToolExecutionCompletion {
-                call,
-                output,
-                cancellation,
+            match execution.wait().await {
+                Ok(completion) => (*completion).clone(),
+                Err(error) => ToolExecutionCompletion {
+                    call: failed_call,
+                    output: Err(Arc::new(crate::tool::opaque::ToolError::new(error))),
+                    cancellation: failed_cancellation,
+                },
             }
         }))
     }
@@ -182,7 +199,7 @@ impl Owner {
                 return Err(error);
             }
             self.permission_leases.remove(&format!("permission:{id}"));
-            self.task_tokens.remove(&format!("task:{id}"));
+            self.executions.forget(&format!("task:{id}"));
             self.nested_plans.remove(&format!("task:{id}"));
             // The call returned and its result is now enrolled by the same `publish`/`admit` the
             // ordinary path uses, so the transient ceiling can be given back — but only once that
@@ -275,7 +292,7 @@ impl Owner {
             // cancel the call with the bytes already accepted — they stay resident — and latch the
             // same typed output-pressure fault the reliable-budget refusal uses, so the Thread fails
             // closed and pauses further admission instead of letting a runaway producer run on.
-            if let Some(token) = self.task_tokens.get(&caller) {
+            if let Some(token) = self.executions.token(&caller) {
                 token.cancel();
             }
             let limit = if accepted > crate::model::MAX_TOOL_PROGRESS_BYTES {
@@ -299,7 +316,7 @@ impl Owner {
         };
         if refused {
             // Cancel the operation with the bytes it already accepted; the earlier preview stays.
-            if let Some(token) = self.task_tokens.get(&caller) {
+            if let Some(token) = self.executions.token(&caller) {
                 token.cancel();
             }
             // Publish the typed fault the moment the preview is refused. A tool that keeps wrapping

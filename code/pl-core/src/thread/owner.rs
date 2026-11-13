@@ -101,7 +101,8 @@ pub(super) struct Owner {
         futures::stream::FuturesUnordered<super::tool_execution::ToolExecutionFuture>,
     pub(super) nested_sequence: u64,
     pub(super) nested_plans: std::collections::BTreeMap<String, NestedScope>,
-    pub(super) task_tokens: std::collections::BTreeMap<String, CancellationToken>,
+    pub(super) executions:
+        crate::tool::task::ExecutionTasks<super::tool_execution::ToolExecutionCompletion>,
     pub(super) nested_replies: std::collections::BTreeMap<
         String,
         oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
@@ -685,11 +686,13 @@ impl Owner {
         if !self.interrupt.is_deleting() {
             self.retry_tool_commits()?;
         }
-        let tasks = self.task_tokens.keys().cloned().collect::<Vec<_>>();
+        self.executions.stop_admission();
+        let tasks = self.executions.keys();
         for id in tasks {
             self.cancel_task(&id)?;
         }
         self.drain_background().await;
+        self.executions.join().await;
         if !self.interrupt.is_deleting() {
             self.retry_tool_commits()?;
         }

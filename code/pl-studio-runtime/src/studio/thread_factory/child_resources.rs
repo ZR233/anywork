@@ -150,7 +150,7 @@ impl StudioThreadFactory {
                 }
                 pl_protocol::AgentBinding::Acp(_) => (
                     ToolWorkspace::new(pl_tool::workspace::AgentWorkspace::local(PathBuf::from(
-                        &parent.session.workspace_path,
+                        self.acp_business_root(&request.caller, &parent.session),
                     ))),
                     project.clone(),
                 ),

@@ -48,7 +48,8 @@ async fn reap(child: &mut Child) -> std::process::ExitStatus {
 }
 
 fn call(arguments: Value) -> CallToolRequestParams {
-    CallToolRequestParams::new("anywork_wait_agent").with_arguments(invocation(arguments).arguments)
+    let invocation = invocation(arguments);
+    CallToolRequestParams::new(invocation.tool_id).with_arguments(invocation.arguments)
 }
 
 async fn wait_ended(backend: &Backend) {
@@ -79,7 +80,20 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
     .unwrap();
     let catalog = service.list_tools(None).await.unwrap();
     assert_eq!(catalog.tools.len(), 1);
-    assert_eq!(catalog.tools[0].name, "anywork_wait_agent");
+    assert_eq!(catalog.tools[0].name, "anywork_fixture_echo");
+    // Dispatch is driven by the instance catalog, not the former collaboration whitelist.
+    // Even a formerly known operation is not callable when this instance did not bind it.
+    let calls_before_rejection = backend.0.calls.load(Ordering::SeqCst);
+    assert!(
+        service
+            .call_tool(CallToolRequestParams::new("anywork_wait_agent"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        backend.0.calls.load(Ordering::SeqCst),
+        calls_before_rejection
+    );
     let success = service.call_tool(call(json!({"answer":42}))).await.unwrap();
     assert_eq!(success.structured_content, Some(json!({"answer":42})));
     assert_eq!(success.is_error, Some(false));
