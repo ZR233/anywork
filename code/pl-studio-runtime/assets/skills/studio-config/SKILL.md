@@ -12,6 +12,10 @@ the requested feature; do not copy another client's JSON configuration into anyw
 This main document is an index: load the selected support file through the skill
 reader, not a guessed installation path.
 
+ACP programs and authentication remain on the Studio host for SSH projects too.
+Remote workspace tools use the ordinary session execution binding through Host MCP;
+see the ACP section in the main configuration reference, not remote agent setup.
+
 ## Find the correct location
 
 `<studio-home>` is the running application's configuration root, resolved in order:

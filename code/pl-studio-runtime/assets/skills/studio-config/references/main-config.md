@@ -253,4 +253,14 @@ Local detection only checks help/version; it neither downloads nor logs in and
 does not prove authentication. ACP accounts are not Native model-route candidates.
 Never repair a conflict by deleting migration records, definitions or credentials.
 
+For SSH projects, keep this same host-side definition and login. Do not install
+agy or an ACP server on the SSH target, copy credentials, or add an SSH tunnel.
+Host MCP exposes the ordinary session command, file and enabled Git capabilities
+through the project's frozen execution binding. Existing tool capability switches
+and permission checks still apply; tool availability is not a sandbox for the
+external agent's own local tools. ACP uses a private host session working directory
+while business tool paths refer to the real SSH workspace. Command receipts,
+stdin, task wait/results and cancellation must use the original returned identity;
+an accepted cancellation is not proof of remote process exit.
+
 `runtime.tool_capabilities.exec` controls the `exec_command` / `write_stdin` command bindings. Native tools are called through Lua `exec`, which accepts `code`; shell commands use `tools.exec_command({command=...})` inside that program. Disabling command bindings still permits orchestration of other enabled tools. There is no legacy execution-mode switch.
