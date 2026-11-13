@@ -43,7 +43,7 @@ sealed class BridgeDisplayBlockBody with _$BridgeDisplayBlockBody {
   const BridgeDisplayBlockBody._();
 
   const factory BridgeDisplayBlockBody.work({
-    required BridgeWorkSummary summary,
+    required BridgeWorkTiming timing,
     required BridgeDisplayBlockRef members,
   }) = BridgeDisplayBlockBody_Work;
   const factory BridgeDisplayBlockBody.single({
@@ -198,6 +198,8 @@ class BridgeLiveDisplayBlock {
   final BridgeChatSourceId? source;
   final BridgeDisplayBlockBody body;
   final BridgeDisplayBlockState state;
+  final bool hasUnfinishedMembers;
+  final String? thinkingSummary;
 
   const BridgeLiveDisplayBlock({
     required this.id,
@@ -205,6 +207,8 @@ class BridgeLiveDisplayBlock {
     this.source,
     required this.body,
     required this.state,
+    required this.hasUnfinishedMembers,
+    this.thinkingSummary,
   });
 
   @override
@@ -213,7 +217,9 @@ class BridgeLiveDisplayBlock {
       blockOrder.hashCode ^
       source.hashCode ^
       body.hashCode ^
-      state.hashCode;
+      state.hashCode ^
+      hasUnfinishedMembers.hashCode ^
+      thinkingSummary.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -224,7 +230,9 @@ class BridgeLiveDisplayBlock {
           blockOrder == other.blockOrder &&
           source == other.source &&
           body == other.body &&
-          state == other.state;
+          state == other.state &&
+          hasUnfinishedMembers == other.hasUnfinishedMembers &&
+          thinkingSummary == other.thinkingSummary;
 }
 
 class BridgeLiveDisplayWindow {
@@ -311,77 +319,20 @@ class BridgeTimelineBatch {
           live == other.live;
 }
 
-class BridgeWorkSummary {
-  final BigInt total;
-  final BigInt terminal;
-  final BigInt running;
-  final BigInt waiting;
-  final BigInt unavailable;
-  final BigInt failed;
-  final BigInt cancelled;
-  final BigInt transferred;
-  final PlatformInt64? createdAt;
-  final BigInt? elapsedMs;
-  final PlatformInt64? startedAt;
+class BridgeWorkTiming {
+  final PlatformInt64 startedAt;
   final PlatformInt64? finishedAt;
-  final BigInt? durationMs;
-  final String? thinkingSummary;
-  final BridgeContentRef? thinkingContent;
 
-  const BridgeWorkSummary({
-    required this.total,
-    required this.terminal,
-    required this.running,
-    required this.waiting,
-    required this.unavailable,
-    required this.failed,
-    required this.cancelled,
-    required this.transferred,
-    this.createdAt,
-    this.elapsedMs,
-    this.startedAt,
-    this.finishedAt,
-    this.durationMs,
-    this.thinkingSummary,
-    this.thinkingContent,
-  });
+  const BridgeWorkTiming({required this.startedAt, this.finishedAt});
 
   @override
-  int get hashCode =>
-      total.hashCode ^
-      terminal.hashCode ^
-      running.hashCode ^
-      waiting.hashCode ^
-      unavailable.hashCode ^
-      failed.hashCode ^
-      cancelled.hashCode ^
-      transferred.hashCode ^
-      createdAt.hashCode ^
-      elapsedMs.hashCode ^
-      startedAt.hashCode ^
-      finishedAt.hashCode ^
-      durationMs.hashCode ^
-      thinkingSummary.hashCode ^
-      thinkingContent.hashCode;
+  int get hashCode => startedAt.hashCode ^ finishedAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeWorkSummary &&
+      other is BridgeWorkTiming &&
           runtimeType == other.runtimeType &&
-          total == other.total &&
-          terminal == other.terminal &&
-          running == other.running &&
-          waiting == other.waiting &&
-          unavailable == other.unavailable &&
-          failed == other.failed &&
-          cancelled == other.cancelled &&
-          transferred == other.transferred &&
-          createdAt == other.createdAt &&
-          elapsedMs == other.elapsedMs &&
           startedAt == other.startedAt &&
-          finishedAt == other.finishedAt &&
-          durationMs == other.durationMs &&
-          thinkingSummary == other.thinkingSummary &&
-          thinkingContent == other.thinkingContent;
+          finishedAt == other.finishedAt;
 }

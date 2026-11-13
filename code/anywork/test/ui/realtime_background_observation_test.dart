@@ -94,7 +94,7 @@ void main() {
         ChatItemPresentation.forUnit(selected).compatibility,
         ChatItemCompatibility.deferred,
       );
-      expect(main.first.summary!.total, 3);
+      expect(main.first.timing!.finishedAt, isNotNull);
       expect(controller.messages, hasLength(2));
     },
   );

@@ -1,5 +1,32 @@
 use super::*;
-use pl_protocol::{ChatSourceLifecycle, WorkSummary};
+use pl_protocol::{ChatSourceLifecycle, WorkTiming};
+
+#[test]
+fn work_lifetime_is_frozen_at_the_first_visible_boundary() -> Result<()> {
+    let mut owner = state();
+    owner.prepare(
+        1,
+        10,
+        &[atom("work", ChatAtomKind::ToolCall, true)],
+        &[],
+        &[],
+    )?;
+    let delta = owner.prepare(
+        2,
+        135,
+        &[atom("answer", ChatAtomKind::Text, false)],
+        &[],
+        &[],
+    )?;
+    let work = delta
+        .blocks
+        .iter()
+        .find(|block| block.published.is_some())
+        .unwrap();
+    assert_eq!(timing(&work.header).started_at, 10);
+    assert_eq!(timing(&work.header).finished_at, Some(135));
+    Ok(())
+}
 
 fn atom(id: &str, kind: ChatAtomKind, terminal: bool) -> ChatAtom {
     ChatAtom {
@@ -69,7 +96,7 @@ fn start_and_end_merge_only_in_the_open_group() -> Result<()> {
         &[],
     )?;
     assert_eq!(only_end.members[0].head.record.start_fact, None);
-    assert_eq!(summary(&s.blocks[&1]).total, 2);
+    assert_eq!(s.blocks[&1].next_member, 2);
     Ok(())
 }
 
@@ -225,13 +252,15 @@ fn boundary_freezes_content_state_time_and_late_end_gets_a_new_key() -> Result<(
             available: true
         }
     ));
-    assert_eq!(
-        (
-            summary(&cut.blocks[0].header).running,
-            summary(&cut.blocks[0].header).waiting
-        ),
-        (0, 1)
-    );
+    assert_eq!(cut.blocks[0].header.unfinished, 1);
+    assert!(matches!(
+        member.head.record.atom.lifecycle,
+        ChatAtomLifecycle::Active {
+            status: ChatActiveStatus::Waiting,
+            ..
+        }
+    ));
+    assert_eq!(timing(&cut.blocks[0].header).finished_at, Some(25));
     assert!(!s.accepts_update(&start));
     let appended = ContentBlock::append(&prefix, "-later");
     let replacement = ContentBlock::from_text("OTHER!");
@@ -263,7 +292,7 @@ fn boundary_freezes_content_state_time_and_late_end_gets_a_new_key() -> Result<(
     assert_ne!(late.members[0].head.member_key, old_key);
     assert_eq!(late.members[0].head.record.start_fact, None);
     assert_eq!(
-        summary(
+        timing(
             &late
                 .blocks
                 .iter()
@@ -271,8 +300,8 @@ fn boundary_freezes_content_state_time_and_late_end_gets_a_new_key() -> Result<(
                 .unwrap()
                 .header
         )
-        .created_at,
-        Some(99)
+        .started_at,
+        99
     );
     assert_eq!(*s.pending[&1], *frozen);
     assert_eq!(s.member_heads(&block, None, 8)[0].head, member.head);
@@ -351,8 +380,11 @@ fn state() -> PresentationState {
     s.bind("db").unwrap();
     s
 }
-fn summary(h: &DisplayHeader) -> &WorkSummary {
-    let DisplayBlockBody::Work { summary, .. } = &h.body else {
+fn timing(h: &DisplayHeader) -> &WorkTiming {
+    let DisplayBlockBody::Work {
+        timing: summary, ..
+    } = &h.body
+    else {
         panic!("expected work")
     };
     summary
@@ -393,7 +425,7 @@ fn v364_cross_source_work_joins_one_tail_and_input_seals_it() -> Result<()> {
         1,
         "different sources must share the current Work"
     );
-    assert_eq!(summary(&s.blocks[&1]).total, 2);
+    assert_eq!(s.blocks[&1].next_member, 2);
     let mut input = atom("input", ChatAtomKind::Input, true);
     input.source = ChatSourceId::ForegroundTurn {
         turn_id: "another-turn".into(),
@@ -473,7 +505,7 @@ fn v364_source_ended_and_idle_restore_preserve_the_same_open_work() -> Result<()
     cold.prepare(3, 100_000, &[next], &[], &[])?;
     assert_eq!(cold.blocks.len(), 1);
     assert_eq!(cold.blocks[&1].id, id);
-    assert_eq!(summary(&cold.blocks[&1]).total, 2);
+    assert_eq!(cold.blocks[&1].next_member, 2);
     Ok(())
 }
 
@@ -518,7 +550,7 @@ fn v364_text_terminal_does_not_seal_the_later_work() -> Result<()> {
     s.prepare(5, 50, &[y], &[], &[])?;
     assert_eq!(s.blocks.len(), 1);
     assert_eq!(s.blocks[&3].id, tail);
-    assert_eq!(summary(&s.blocks[&3]).total, 2);
+    assert_eq!(s.blocks[&3].next_member, 2);
     Ok(())
 }
 
@@ -579,20 +611,17 @@ fn background_tools_join_the_tail_and_only_independent_files_create_a_boundary()
                 assert_eq!(s.published, 0);
                 assert_eq!(s.blocks.len(), 1);
                 assert_eq!(s.blocks[&1].id, foreground.id);
-                let DisplayBlockBody::Work { summary, members } = &s.blocks[&1].body else {
+                let DisplayBlockBody::Work {
+                    timing: summary,
+                    members,
+                } = &s.blocks[&1].body
+                else {
                     panic!("ordinary background tool must be Work");
                 };
-                assert_eq!(
-                    (summary.total, summary.terminal, summary.running),
-                    (2, 1, 1)
-                );
-                assert_eq!(
-                    summary.failed,
-                    u64::from(outcome == ChatTerminalOutcome::Failed)
-                );
-                assert_eq!(summary.duration_ms, None);
-                assert_eq!(summary.created_at, Some(10));
-                assert_eq!(summary.elapsed_ms, None);
+                assert_eq!(s.blocks[&1].next_member, 2);
+                assert_eq!(s.blocks[&1].unfinished, 1);
+                assert_eq!(summary.started_at, 10);
+                assert_eq!(summary.finished_at, None);
                 assert_eq!(members.block_id, foreground.id);
                 assert_eq!(members.database_id, "db");
                 assert!(!s.blocks[&1].sealed);
@@ -604,34 +633,31 @@ fn background_tools_join_the_tail_and_only_independent_files_create_a_boundary()
 }
 
 #[test]
-fn completed_members_wait_for_visible_content_and_idle_time_is_not_display_duration() -> Result<()>
-{
+fn completed_members_wait_for_visible_content_and_the_interval_includes_idle() -> Result<()> {
     let mut s = state();
     let a = atom("A", ChatAtomKind::ToolCall, false);
     s.prepare(1, 10, &[a], &[], &[])?;
-    assert_eq!(
-        summary(s.blocks.values().next().unwrap()).created_at,
-        Some(10)
-    );
-    assert_eq!(summary(s.blocks.values().next().unwrap()).elapsed_ms, None);
+    assert_eq!(timing(s.blocks.values().next().unwrap()).started_at, 10);
+    assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
     let done = atom("A", ChatAtomKind::ToolCall, true);
     s.prepare(2, 20, std::slice::from_ref(&done), &[], &[])?;
     s.confirm(2);
     assert_eq!(s.published, 0);
-    assert_eq!(summary(s.blocks.values().next().unwrap()).terminal, 1);
-    assert_eq!(summary(s.blocks.values().next().unwrap()).elapsed_ms, None);
-    // No visible boundary: the idle tail keeps its identity and does not count the gap.
+    assert_eq!(
+        (s.blocks.values().next().unwrap().next_member
+            - s.blocks.values().next().unwrap().unfinished),
+        1
+    );
+    assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
+    // No visible boundary: the same open interval includes the idle gap.
     let id = s.blocks.values().next().unwrap().id.clone();
     let mut next = atom("B", ChatAtomKind::ToolCall, false);
     next.started_at = Some(1000); // The old active-interval metric excludes this gap.
     next = at_effect(next, 3);
     s.prepare(3, 1000, &[next.clone()], &[], &[])?;
     assert_eq!(s.blocks.values().next().unwrap().id, id);
-    assert_eq!(
-        summary(s.blocks.values().next().unwrap()).created_at,
-        Some(10)
-    );
-    assert_eq!(summary(s.blocks.values().next().unwrap()).elapsed_ms, None);
+    assert_eq!(timing(s.blocks.values().next().unwrap()).started_at, 10);
+    assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
     next.lifecycle = ChatAtomLifecycle::Terminal {
         started: Some(at(3)),
         ended: Some(at(4)),
@@ -639,16 +665,13 @@ fn completed_members_wait_for_visible_content_and_idle_time_is_not_display_durat
     };
     next.finished_at = Some(1010);
     s.prepare(4, 1010, &[next], &[], &[])?;
-    assert_eq!(
-        summary(s.blocks.values().next().unwrap()).duration_ms,
-        Some(20)
-    );
+    assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
     assert_eq!(s.published, 0);
     let delta = s.prepare(5, 1200, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
     assert_eq!(delta.published_through, 1);
     let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
-    assert_eq!(summary(&frozen.header).created_at, Some(10));
-    assert_eq!(summary(&frozen.header).elapsed_ms, None);
+    assert_eq!(timing(&frozen.header).started_at, 10);
+    assert_eq!(timing(&frozen.header).finished_at, Some(1200));
     assert_eq!(
         delta
             .blocks
@@ -669,56 +692,47 @@ fn completed_members_wait_for_visible_content_and_idle_time_is_not_display_durat
     s.confirm(5);
     assert_eq!(s.durable, 1);
     s.prepare(6, 1300, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
-    assert_eq!(summary(&frozen.header).elapsed_ms, None);
+    assert_eq!(timing(&frozen.header).finished_at, Some(1200));
     assert!(s.member_heads(&id, None, 8).is_empty());
     Ok(())
 }
 
 #[test]
-fn restored_old_head_never_acquires_creation_time_from_new_members_or_boundary() -> Result<()> {
+fn current_snapshot_requires_the_group_start_and_never_persists_the_thought() -> Result<()> {
     let mut original = state();
     original.prepare(
         1,
         10,
-        &[atom("old", ChatAtomKind::ToolCall, true)],
+        &[atom("work", ChatAtomKind::ToolCall, true)],
         &[],
         &[],
     )?;
-    let mut old = serde_json::to_value(original.blocks[&1].as_ref())?;
-    let old_summary = old["body"]["summary"].as_object_mut().unwrap();
-    old_summary.remove("createdAt");
-    old_summary.remove("elapsedMs");
-    let header: DisplayHeader = serde_json::from_value(old)?;
-    let mut restored = PresentationState::default();
-    restored.restore("db", 0, 1, 1, vec![header], vec![])?;
-    restored.prepare(
-        2,
-        100,
-        &[atom("new", ChatAtomKind::ToolCall, true)],
-        &[],
-        &[],
-    )?;
-    let head = restored.blocks[&1].as_ref();
-    assert_eq!(summary(head).total, 2);
-    assert_eq!(summary(head).created_at, None);
-    assert_eq!(summary(head).elapsed_ms, None);
-    let delta = restored.prepare(3, 200, &[atom("text", ChatAtomKind::Text, false)], &[], &[])?;
-    let published = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
-    assert_eq!(summary(&published.header).created_at, None);
-    assert_eq!(summary(&published.header).elapsed_ms, None);
+    let mut header = original.blocks[&1].as_ref().clone();
+    header.thinking_summary = Some("transient thought".into());
+    let wire = serde_json::to_value(&header)?;
+    assert!(wire.get("thinking_summary").is_none());
+    let restored: DisplayHeader = serde_json::from_value(wire.clone())?;
+    assert!(restored.thinking_summary.is_none());
+    assert_eq!(timing(&restored).started_at, 10);
+    let mut missing = wire;
+    missing["body"]["timing"]
+        .as_object_mut()
+        .unwrap()
+        .remove("startedAt");
+    assert!(serde_json::from_value::<DisplayHeader>(missing).is_err());
     Ok(())
 }
 
 #[test]
-fn direct_completion_keeps_creation_evidence_without_counting_wall_elapsed() -> Result<()> {
+fn direct_completion_keeps_its_group_interval_independent_of_member_time() -> Result<()> {
     // A completed member's old/unknown active start is not its group creation time.
     for (created, observed) in [(100, 150), (100, 99), (i64::MIN, i64::MAX), (0, i64::MAX)] {
         let mut s = state();
         let mut done = atom("done", ChatAtomKind::ToolCall, true);
         done.started_at = None;
         s.prepare(1, created, &[done], &[], &[])?;
-        assert_eq!(summary(&s.blocks[&1]).created_at, Some(created));
-        assert_eq!(summary(&s.blocks[&1]).elapsed_ms, None);
+        assert_eq!(timing(&s.blocks[&1]).started_at, created);
+        assert_eq!(timing(&s.blocks[&1]).finished_at, None);
         let delta = s.prepare(
             2,
             observed,
@@ -727,9 +741,8 @@ fn direct_completion_keeps_creation_evidence_without_counting_wall_elapsed() -> 
             &[],
         )?;
         let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
-        assert_eq!(summary(&frozen.header).created_at, Some(created));
-        assert_eq!(summary(&frozen.header).elapsed_ms, None);
-        assert_eq!(summary(&frozen.header).duration_ms, None);
+        assert_eq!(timing(&frozen.header).started_at, created);
+        assert_eq!(timing(&frozen.header).finished_at, Some(observed));
     }
     Ok(())
 }
@@ -791,12 +804,15 @@ fn late_terminals_and_cross_source_input_keep_the_global_creation_prefix() -> Re
     s.prepare(5, 50, &[background, input], &[ended], &[])?;
     assert_eq!(s.published, 4);
     assert!(s.blocks.is_empty());
-    let DisplayBlockBody::Work { summary, .. } = &s.pending[&3].body else {
+    let DisplayBlockBody::Work {
+        timing: summary, ..
+    } = &s.pending[&3].body
+    else {
         panic!("Work")
     };
-    assert_eq!(summary.total, 2);
-    assert_eq!(summary.created_at, Some(40));
-    assert_eq!(summary.elapsed_ms, None);
+    assert_eq!(s.frozen_headers[&s.retired[&3].1].next_member, 2);
+    assert_eq!(summary.started_at, 40);
+    assert_eq!(summary.finished_at, Some(50));
     let ended = s.prepare(
         6,
         60,
@@ -821,8 +837,8 @@ fn late_terminals_and_cross_source_input_keep_the_global_creation_prefix() -> Re
     );
     assert!(matches!(s.pending[&5].body, DisplayBlockBody::Work { .. }));
     assert!(
-        matches!(&s.pending[&5].body, DisplayBlockBody::Work { summary, .. }
-        if summary.created_at == Some(60) && summary.elapsed_ms.is_none())
+        matches!(&s.pending[&5].body, DisplayBlockBody::Work { timing: summary, .. }
+        if summary.started_at == 60 && summary.finished_at == Some(70))
     );
     assert!(matches!(
         s.pending[&2].body,
@@ -860,7 +876,7 @@ fn transfer_and_background_result_have_distinct_rows_and_empty_text_keeps_the_ta
     let delta = s.prepare(4, 40, &[at_effect(empty, 4)], &[], &[])?;
     assert!(delta.remove_empty.is_empty());
     assert_eq!(s.published, 0);
-    assert_eq!(summary(&s.blocks[&1]).total, 2);
+    assert_eq!(s.blocks[&1].next_member, 2);
     s.prepare(
         5,
         50,
@@ -869,7 +885,7 @@ fn transfer_and_background_result_have_distinct_rows_and_empty_text_keeps_the_ta
         &[],
     )?;
     assert_eq!(s.blocks.values().next().unwrap().id, tail);
-    assert_eq!(summary(&s.blocks[&1]).total, 3);
+    assert_eq!(s.blocks[&1].next_member, 3);
     Ok(())
 }
 
@@ -887,7 +903,7 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
     s.prepare(2, 20, &[waiting], &[], &[])?;
     assert_eq!(s.revision, revision);
     assert!(!watch.has_changed()?);
-    assert_eq!(summary(s.blocks.values().next().unwrap()).waiting, 1);
+    assert_eq!(s.blocks.values().next().unwrap().unfinished, 1);
     let terminal = atom("q", ChatAtomKind::ToolCall, true);
     s.prepare(3, 30, std::slice::from_ref(&terminal), &[], &[])?;
     assert_eq!(
@@ -907,7 +923,11 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
     };
     assert!(s.prepare(5, 50, &[conflict], &[], &[]).is_err());
     assert_eq!(s.revision, before);
-    assert_eq!(summary(s.blocks.values().next().unwrap()).terminal, 1);
+    assert_eq!(
+        (s.blocks.values().next().unwrap().next_member
+            - s.blocks.values().next().unwrap().unfinished),
+        1
+    );
     s.prepare(6, 60, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
     assert!(
         s.revision > revision,
@@ -917,7 +937,7 @@ fn waiting_and_duplicate_facts_do_not_change_members_or_accept_conflicts() -> Re
 }
 
 #[test]
-fn parallel_member_without_start_invalidates_the_work_duration() -> Result<()> {
+fn member_without_start_does_not_change_the_group_interval() -> Result<()> {
     let mut s = state();
     s.prepare(1, 10, &[atom("A", ChatAtomKind::ToolCall, false)], &[], &[])?;
     let mut b = atom("B", ChatAtomKind::ToolCall, true);
@@ -932,14 +952,14 @@ fn parallel_member_without_start_invalidates_the_work_duration() -> Result<()> {
     a.finished_at = Some(30);
     s.prepare(3, 30, &[a], &[], &[])?;
     let head = s.blocks.values().next().unwrap();
-    assert_eq!(summary(head).started_at, None);
-    assert_eq!(summary(head).finished_at, Some(30));
-    assert_eq!(summary(head).duration_ms, None);
+    assert_eq!(timing(head).started_at, 10);
+    assert_eq!(timing(head).finished_at, None);
+
     Ok(())
 }
 
 #[test]
-fn missing_work_time_stays_unknown_after_later_measured_intervals() -> Result<()> {
+fn later_members_do_not_reset_the_group_start() -> Result<()> {
     let mut s = state();
     let mut unknown = atom("unknown", ChatAtomKind::ToolCall, true);
     unknown.started_at = None;
@@ -952,8 +972,8 @@ fn missing_work_time_stays_unknown_after_later_measured_intervals() -> Result<()
         &[],
     )?;
     let head = s.blocks.values().next().unwrap();
-    assert_eq!(summary(head).started_at, None);
-    assert_eq!(summary(head).duration_ms, None);
+    assert_eq!(timing(head).started_at, 10);
+
     Ok(())
 }
 
@@ -1047,7 +1067,7 @@ fn bounded_head_delta_and_deferred_bodies(member_count: u64) -> Result<()> {
     assert_eq!(s.members.len(), 0);
     let cut = s.capture(None, 1, 0, 1);
     assert_eq!(cut.open.len(), 1);
-    assert_eq!(summary(&cut.open[0]).total, member_count);
+    assert_eq!(cut.open[0].next_member, member_count);
     assert!(s.retained_bytes() < 4096);
     let mut text = atom("text", ChatAtomKind::Text, false);
     text.lifecycle = ChatAtomLifecycle::Active {
@@ -1144,7 +1164,23 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
     let mut r1_active = atom("r1", ChatAtomKind::Reasoning, false);
     r1_active.source_order = Some(1);
     s.prepare(1, 10, &[r1_active], &[], &[])?;
-    assert_eq!(summary(&s.blocks[&1]).thinking_summary, None);
+    assert_eq!(s.blocks[&1].thinking_summary, None);
+    let persisted = serde_json::to_value(&s.blocks[&1])?;
+    let revision = s.blocks[&1].revision;
+    s.members.begin();
+    s.observe_thinking_summary("流式 **摘要**");
+    s.observe_thinking_summary("最新流式 **摘要**");
+    let accesses = s.members.finish();
+    assert_eq!(
+        (accesses.reads, accesses.writes, accesses.misses),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        s.blocks[&1].thinking_summary.as_deref(),
+        Some("最新流式 **摘要**")
+    );
+    assert_eq!(s.blocks[&1].revision, revision);
+    assert_eq!(serde_json::to_value(&s.blocks[&1])?, persisted);
 
     let (r1_done, r1_item) = completed_reasoning(
         "r1",
@@ -1159,7 +1195,7 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
     )?;
     s.prepare(2, 20, &[r1_done], &[], &[r1_item])?;
     assert_eq!(
-        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        s.blocks[&1].thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
     );
 
@@ -1172,7 +1208,7 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
         &[],
     )?;
     assert_eq!(
-        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        s.blocks[&1].thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
     );
     s.prepare(
@@ -1183,7 +1219,7 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
         &[],
     )?;
     assert_eq!(
-        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        s.blocks[&1].thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
     );
 
@@ -1192,7 +1228,7 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
         completed_reasoning("r-raw", 2, 6, vec![], vec!["仅有正文无摘要".into()], 2)?;
     s.prepare(6, 35, &[r_nosummary], &[], &[r_nosummary_item])?;
     assert_eq!(
-        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        s.blocks[&1].thinking_summary.as_deref(),
         Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
     );
 
@@ -1207,7 +1243,7 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
     )?;
     s.prepare(8, 40, &[r2_done], &[], &[r2_item])?;
     assert_eq!(
-        summary(&s.blocks[&1]).thinking_summary.as_deref(),
+        s.blocks[&1].thinking_summary.as_deref(),
         Some("### 确认收尾检查与 `cargo flutter analyze`")
     );
 
@@ -1234,6 +1270,6 @@ fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across
         .values()
         .find(|block| matches!(block.body, DisplayBlockBody::Work { .. }) && !block.sealed)
         .expect("new open Work after boundary");
-    assert_eq!(summary(next_work).thinking_summary, None);
+    assert_eq!(next_work.thinking_summary, None);
     Ok(())
 }

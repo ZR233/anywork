@@ -1,23 +1,12 @@
 import 'package:anywork_client/models.dart';
 
-WorkSummary displaySummary(int total, {int? terminal, int running = 0}) =>
-    WorkSummary(
-      unavailable: 0,
-      total: total,
-      terminal: terminal ?? total,
-      running: running,
-      waiting: 0,
-      failed: 0,
-      cancelled: 0,
-      transferred: 0,
-      durationMs: 1250,
-    );
+WorkTiming displayTiming() => WorkTiming(startedAt: 0, finishedAt: null);
 
-DisplayBlock displayWork(String id, int pos, {int total = 3}) => DisplayBlock(
+DisplayBlock displayWork(String id, int pos) => DisplayBlock(
   id: id,
   historyPos: pos,
   body: WorkDisplayBlock(
-    summary: displaySummary(total),
+    timing: const WorkTiming(startedAt: 0, finishedAt: 1),
     members: DisplayBlockRef(databaseId: 'db', blockId: id),
   ),
 );

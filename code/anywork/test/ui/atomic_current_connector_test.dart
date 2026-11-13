@@ -356,17 +356,7 @@ void main() {
           state: DisplayBlockState.open,
           body: WorkDisplayBlock(
             members: reference,
-            summary: WorkSummary(
-              total: 1,
-              terminal: 0,
-              running: 1,
-              waiting: 0,
-              failed: 0,
-              cancelled: 0,
-              transferred: 0,
-              unavailable: 0,
-              createdAt: 1000,
-            ),
+            timing: WorkTiming(startedAt: 1000, finishedAt: null),
           ),
         );
         final latest = LiveDisplayWindow(
@@ -540,7 +530,12 @@ void main() {
           expect(display, same(originalDisplay));
           expect(find.text('合法打开的正文'), findsOneWidget);
           expect(find.text('合法打开的正文').hitTestable(), findsOneWidget);
-          expect(find.textContaining('执行了'), findsNothing);
+          expect(
+            find.text(
+              '执行了 ${now.difference(DateTime.fromMillisecondsSinceEpoch(1000000)).inMinutes} 分',
+            ),
+            findsOneWidget,
+          );
           final header = find.byKey(
             const ValueKey('completion-run-header:tail'),
           );
@@ -804,16 +799,7 @@ void main() {
                   state: state,
                   body: const WorkDisplayBlock(
                     members: reference,
-                    summary: WorkSummary(
-                      total: 1,
-                      terminal: 0,
-                      running: 1,
-                      waiting: 0,
-                      failed: 0,
-                      cancelled: 0,
-                      transferred: 0,
-                      unavailable: 0,
-                    ),
+                    timing: WorkTiming(startedAt: 0, finishedAt: null),
                   ),
                 ),
                 executionPresent: true,
@@ -1526,11 +1512,7 @@ void main() {
           _host(
             CompletionRunView(
               id: 'mixed-current-work',
-              summary: displaySummary(
-                withBackground ? 2 : 1,
-                terminal: withBackground ? 1 : 0,
-                running: 1,
-              ),
+              timing: displayTiming(),
               location: WorkDisplayLocation.live,
               executionPresent: true,
               initiallyExpanded: true,

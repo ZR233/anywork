@@ -22,34 +22,12 @@ frb_presentation.BridgeDisplayMemberWindow _displayMemberWindowToFrb(
     ),
 };
 
-WorkSummary _workSummaryFromFrb(frb_presentation.BridgeWorkSummary value) =>
-    WorkSummary(
-      total: _exactTimelineInt(value.total, 'work total'),
-      terminal: _exactTimelineInt(value.terminal, 'work terminal'),
-      running: _exactTimelineInt(value.running, 'work running'),
-      waiting: _exactTimelineInt(value.waiting, 'work waiting'),
-      unavailable: _exactTimelineInt(value.unavailable, 'work unavailable'),
-      failed: _exactTimelineInt(value.failed, 'work failed'),
-      cancelled: _exactTimelineInt(value.cancelled, 'work cancelled'),
-      transferred: _exactTimelineInt(value.transferred, 'work transferred'),
-      startedAt: value.startedAt == null
-          ? null
-          : _exactSignedTimelineInt(value.startedAt!),
+WorkTiming _workTimingFromFrb(frb_presentation.BridgeWorkTiming value) =>
+    WorkTiming(
+      startedAt: _exactSignedTimelineInt(value.startedAt),
       finishedAt: value.finishedAt == null
           ? null
           : _exactSignedTimelineInt(value.finishedAt!),
-      durationMs: _exactNullableTimelineInt(value.durationMs, 'work duration'),
-      createdAt: value.createdAt == null
-          ? null
-          : _exactSignedTimelineInt(value.createdAt!),
-      elapsedMs: _exactNullableTimelineInt(
-        value.elapsedMs,
-        'work elapsed time',
-      ),
-      thinkingSummary: value.thinkingSummary,
-      thinkingContent: value.thinkingContent == null
-          ? null
-          : _contentRefFromFrb(value.thinkingContent!),
     );
 
 DisplayRecord _displayRecordFromFrb(
@@ -83,12 +61,9 @@ DisplayRecord _displayRecordFromFrb(
 DisplayBlockBody _displayBodyFromFrb(
   frb_presentation.BridgeDisplayBlockBody value,
 ) => switch (value) {
-  frb_presentation.BridgeDisplayBlockBody_Work(
-    :final summary,
-    :final members,
-  ) =>
+  frb_presentation.BridgeDisplayBlockBody_Work(:final timing, :final members) =>
     WorkDisplayBlock(
-      summary: _workSummaryFromFrb(summary),
+      timing: _workTimingFromFrb(timing),
       members: _displayBlockRefFromFrb(members),
     ),
   frb_presentation.BridgeDisplayBlockBody_Single(
@@ -123,6 +98,8 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
         blockOrder: _exactTimelineInt(block.blockOrder, 'live block order'),
         source: block.source == null ? null : _chatSourceFromFrb(block.source!),
         body: _displayBodyFromFrb(block.body),
+        hasUnfinishedMembers: block.hasUnfinishedMembers,
+        thinkingSummary: block.thinkingSummary,
         state: switch (block.state) {
           frb_presentation.BridgeDisplayBlockState.open =>
             DisplayBlockState.open,

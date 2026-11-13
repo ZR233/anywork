@@ -2055,11 +2055,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Previous work is unfinished and has not resumed';
 
   @override
-  String timelineGroupTransferredCount(int count) {
-    return '$count transferred';
-  }
-
-  @override
   String get timelineReasoningSummary => 'Summary';
 
   @override
@@ -6368,33 +6363,13 @@ class AppLocalizationsEn extends AppLocalizations {
       'The interaction details have an invalid format.';
 
   @override
-  String get timelineGroupWorking => 'Working';
-
-  @override
   String get timelineGroupUnfinished => 'Work unfinished';
 
   @override
+  String get timelineGroupWorking => 'Working';
+
+  @override
   String get timelineGroupRecord => 'Work record';
-
-  @override
-  String timelineGroupMemberCount(int count) {
-    return '$count items';
-  }
-
-  @override
-  String timelineGroupFailedCount(int count) {
-    return '$count failed';
-  }
-
-  @override
-  String timelineGroupStoppedCount(int count) {
-    return '$count stopped';
-  }
-
-  @override
-  String timelineGroupCompletedCount(int count) {
-    return '$count completed';
-  }
 
   @override
   String timelineGroupActiveCount(int count) {

@@ -93,7 +93,7 @@ async fn migrate(db: &DatabaseConnection) -> Result<()> {
         .get_pending_migrations_read_only(db)
         .await?
         .iter()
-        .take_while(|step| step.name() != DISPLAY_SNAPSHOTS)
+        .take_while(|step| step.name() != WORK_SNAPSHOTS)
         .count();
     migrator.up(db, Some(u32::try_from(steps)?)).await?;
     Ok(())

@@ -38,7 +38,7 @@ void main() {
         await projection.applyTimeline(
           displayBatch([
             if (work)
-              displayWork(id, 1, total: 1)
+              displayWork(id, 1)
             else
               displaySingle(chatMessage(id, body: 'Ready canonical body')),
           ]),
@@ -213,7 +213,7 @@ void main() {
         displayBatch([
           for (var i = 0; i < ids.length; i++)
             if (i == ids.length - 1)
-              displayWork(ids[i], i + 1, total: 1)
+              displayWork(ids[i], i + 1)
             else
               displaySingle(
                 chatMessage(ids[i], body: 'Main row $i', completionSeq: i + 1),
@@ -479,7 +479,7 @@ void main() {
           of: groupHeader,
           matching: find.text(
             AppLocalizations.of(tester.element(groupHeader))
-                .timelineGroupRecord,
+                .timelineGroupWorkedSeconds(1),
           ),
         );
         expect(groupTitle, findsOneWidget);

@@ -425,19 +425,6 @@
     return `${prefix} ${minutes} 分${remainder ? ` ${remainder} 秒` : ''}`;
   }
 
-  function groupDigest(group) {
-    const digest = node('<span class="cv-group-digest"></span>');
-    Object.entries(kinds).forEach(([kind, info]) => {
-      const count = group.members.filter(member => member.kind === kind).length;
-      if (count) digest.append(node(`<span class="cv-kind-chip" title="${escape(info.label)} ${count}" aria-label="${escape(info.label)} ${count}">${icon(info.icon)}<span aria-hidden="true">${count}</span></span>`));
-    });
-    ['failed', 'stopped'].forEach(status => {
-      const count = group.members.filter(member => member.status === status).length;
-      if (count) digest.append(node(`<span class="cv-issue-chip" data-status="${status}">${count} 步${escape(statusLabel(status))}</span>`));
-    });
-    return digest;
-  }
-
   class WorkGroupView {
     constructor(group, mode, actions, expanded = false) {
       this.mode = mode;
@@ -453,7 +440,7 @@
       this.members = [];
       if (mode === 'history') {
         this.title.textContent = groupElapsedLabel(group.elapsed, '工作了') || '工作记录';
-        this.meta.append(groupDigest(group));
+        this.meta.textContent = '';
         const footer = node('<div class="cv-group-actions"></div>');
         footer.append(button('复制工作记录', 'copy', () => actions.copy(groupText(this.current)), 'cv-quiet'));
         this.node.append(footer);
@@ -477,7 +464,7 @@
       if (this.mode === 'resting') {
         this.node.dataset.phase = 'resting';
         this.title.textContent = '工作记录';
-        this.meta.textContent = `${group.members.length} 项`;
+        this.meta.textContent = groupElapsedLabel(group.elapsed, '执行了');
         return;
       }
       const running = group.members.filter(member => member.status === 'running');
@@ -511,7 +498,7 @@
         this.currentStep.textContent = '';
         this.currentStep.hidden = true;
       }
-      this.meta.textContent = `${group.members.length} 项`;
+      this.meta.textContent = groupElapsedLabel(group.elapsed, '执行了');
     }
     flush() { this.members.forEach(member => member.flush()); }
   }

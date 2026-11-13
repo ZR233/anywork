@@ -1,6 +1,6 @@
 import 'chat_models.dart';
 
-const presentationVersion = 3;
+const presentationVersion = 4;
 
 final class DisplayBlockRef {
   const DisplayBlockRef({required this.databaseId, required this.blockId});
@@ -16,49 +16,11 @@ final class DisplayBlockRef {
   int get hashCode => Object.hash(databaseId, blockId);
 }
 
-final class WorkSummary {
-  const WorkSummary({
-    required this.total,
-    required this.terminal,
-    required this.running,
-    required this.waiting,
-    required this.failed,
-    required this.cancelled,
-    required this.transferred,
-    required this.unavailable,
-    this.startedAt,
-    this.finishedAt,
-    this.durationMs,
-    this.createdAt,
-    this.elapsedMs,
-    this.thinkingSummary,
-    this.thinkingContent,
-  });
-  final int total;
-  final int terminal;
-  final int running;
-  final int waiting;
-  final int failed;
-  final int cancelled;
-  final int transferred;
-  final int unavailable;
-  final int? startedAt;
+/// Wall-clock interval owned by the Work block, in Unix seconds.
+final class WorkTiming {
+  const WorkTiming({required this.startedAt, this.finishedAt});
+  final int startedAt;
   final int? finishedAt;
-  final int? durationMs;
-
-  /// The first information's creation time in Unix seconds.
-  final int? createdAt;
-
-  /// A frozen legacy group lifetime, not an active-work clock.
-  ///
-  /// Open tails may include arbitrary idle gaps, so this value must not be
-  /// extrapolated or displayed as their accumulated work duration.
-  final int? elapsedMs;
-  final String? thinkingSummary;
-  final ContentRef? thinkingContent;
-
-  bool get hasUnfinishedOrUnavailableMembers =>
-      terminal < total || unavailable > 0;
 }
 
 sealed class DisplayBlockBody {
@@ -66,8 +28,8 @@ sealed class DisplayBlockBody {
 }
 
 final class WorkDisplayBlock extends DisplayBlockBody {
-  const WorkDisplayBlock({required this.summary, required this.members});
-  final WorkSummary summary;
+  const WorkDisplayBlock({required this.timing, required this.members});
+  final WorkTiming timing;
   final DisplayBlockRef members;
 }
 
@@ -131,12 +93,16 @@ final class LiveDisplayBlock {
     required this.body,
     required this.state,
     this.source,
+    this.hasUnfinishedMembers = false,
+    this.thinkingSummary,
   });
   final String id;
   final int blockOrder;
   final DisplayBlockBody body;
   final DisplayBlockState state;
   final ChatSourceId? source;
+  final bool hasUnfinishedMembers;
+  final String? thinkingSummary;
 }
 
 final class LiveDisplayWindow {

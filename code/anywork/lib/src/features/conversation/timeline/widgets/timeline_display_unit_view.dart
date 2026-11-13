@@ -74,7 +74,9 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
     final unit = widget.unit;
     return CompletionRunView(
       id: unit.id,
-      summary: unit.summary!,
+      timing: unit.timing!,
+      thinkingSummary: unit.thinkingSummary,
+      hasUnfinishedMembers: unit.hasUnfinishedMembers,
       executionPresent: unit.executionPresent,
       state: unit.state,
       initiallyExpanded: unit.expansion.expanded!,

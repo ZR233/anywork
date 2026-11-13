@@ -118,6 +118,8 @@ impl ConversationReader {
                 block_order: header.block_order,
                 source: Some(header.source.clone()),
                 body: header.body.clone(),
+                has_unfinished_members: header.unfinished > 0,
+                thinking_summary: header.thinking_summary.clone(),
                 state: if header.sealed {
                     DisplayBlockState::Sealed
                 } else {

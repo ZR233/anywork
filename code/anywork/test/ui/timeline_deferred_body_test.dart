@@ -858,7 +858,7 @@ void main() {
           SingleChildScrollView(
             child: CompletionRunView(
               id: 'work',
-              summary: displaySummary(1),
+              timing: displayTiming(),
               location: WorkDisplayLocation.history,
               initiallyExpanded: false,
               childBuilder: (_) => TimelineMemberAtom(

@@ -108,7 +108,7 @@ void main() {
     tester,
   ) async {
     final f = _Fixture(tester);
-    await f.set([displayWork('work', 1, total: 2)]);
+    await f.set([displayWork('work', 1)]);
     f.content.scope.replyForWindow = (window) async => switch (window) {
       LatestDisplayMembers() => _page(_other, order: 2, before: 2),
       BeforeDisplayMembers(:final memberOrder) => () {
@@ -138,7 +138,7 @@ void main() {
     tester,
   ) async {
     final f = _Fixture(tester);
-    await f.set([displayWork('work', 1, total: 1)]);
+    await f.set([displayWork('work', 1)]);
     f.content.scope.reply = Future.value(_page(_other));
     expect(await f.observed.hasHistoricalSource(_source), isFalse);
     expect(f.content.scope.handles.single.closed, isTrue);
@@ -158,7 +158,7 @@ void main() {
         LiveDisplayBlock(
           id: 'work',
           blockOrder: 1,
-          body: displayWork('work', 1, total: 1).body,
+          body: displayWork('work', 1).body,
           source: _source,
           state: DisplayBlockState.sealed,
         ),
@@ -181,7 +181,7 @@ void main() {
     tester,
   ) async {
     final f = _Fixture(tester);
-    await f.set([displayWork('work', 1, total: 1)]);
+    await f.set([displayWork('work', 1)]);
     final failure = StateError('member-query-failure');
     f.content.scope.reply = Future.value(_page(_source));
     f.content.scope.nextFailure = failure;
@@ -198,8 +198,8 @@ void main() {
     (tester) async {
       final old = _Fixture(tester);
       final next = _Fixture(tester, generation: 2);
-      await old.set([displayWork('work', 1, total: 1)]);
-      await next.set([displayWork('work', 1, total: 1)]);
+      await old.set([displayWork('work', 1)]);
+      await next.set([displayWork('work', 1)]);
       var borrowed = old.lease;
       final observed = TimelineObservation(tester, () => borrowed);
       final reply = Completer<DisplayMemberPage>();
@@ -218,7 +218,7 @@ void main() {
     tester,
   ) async {
     final f = _Fixture(tester);
-    await f.set([displayWork('work', 1, total: 1), _single(_source)]);
+    await f.set([displayWork('work', 1), _single(_source)]);
     f.lease.live.value = LiveDisplayWindow(
       currentWorkId: null,
       revision: 9,

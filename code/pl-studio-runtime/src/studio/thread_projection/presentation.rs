@@ -7,12 +7,12 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ChatItem};
 #[cfg(test)]
-use pl_protocol::ChatSourceState;
+use pl_protocol::{ChatActiveStatus, ChatSourceState};
 use pl_protocol::{
-    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatDeliveryKind,
-    ChatFactPosition, ChatSourceId, ChatTerminalOutcome, ContentRef, ContentTarget, DisplayBlock,
-    DisplayBlockBody, DisplayBlockRef, DisplayContentSource, DisplayMemberHead, DisplayRecord,
-    PayloadData, SingleVisibility,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatDeliveryKind, ChatFactPosition,
+    ChatSourceId, ChatTerminalOutcome, ContentRef, ContentTarget, DisplayBlock, DisplayBlockBody,
+    DisplayBlockRef, DisplayContentSource, DisplayMemberHead, DisplayRecord, PayloadData,
+    SingleVisibility,
 };
 use serde::{Deserialize, Serialize};
 mod observations;
@@ -30,7 +30,6 @@ pub(in crate::studio) type PresentationHandle = Arc<Mutex<PresentationState>>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::studio) struct DisplayHeader {
     pub version: u32,
-    pub legacy: bool,
     pub id: String,
     pub source: ChatSourceId,
     pub block_order: u64,
@@ -42,8 +41,8 @@ pub(in crate::studio) struct DisplayHeader {
     pub next_member: u64,
     pub revision: u64,
     pub skip_display: bool,
-    pub active_since: Option<i64>,
-    pub duration_known: bool,
+    #[serde(skip)]
+    pub thinking_summary: Option<String>,
     pub body: DisplayBlockBody,
 }
 
@@ -352,7 +351,7 @@ fn operations<'a>(facts: &'a [ChatAtom], visible: &'a [TextVisible]) -> Vec<Disp
 
 fn block_identity(database: &str, atom: &ChatAtom, key: &str) -> Result<String> {
     Ok(serde_json::to_string(&(
-        "display-v3",
+        "display-v4",
         database,
         &atom.source,
         evidence(atom),
@@ -364,7 +363,34 @@ fn bytes<T: Serialize>(value: &T) -> Result<u64> {
     Ok(serde_json::to_vec(value)?.len() as u64 + 192)
 }
 
+fn header_bytes(header: &DisplayHeader) -> Result<u64> {
+    Ok(bytes(header)?.saturating_add(
+        header
+            .thinking_summary
+            .as_ref()
+            .map_or(0, |value| value.len() as u64),
+    ))
+}
+
 impl PresentationState {
+    /// Streaming replaces only the open group's bounded in-memory title. No member
+    /// read, durable delta or persisted header revision is produced by progress.
+    pub(super) fn observe_thinking_summary(&mut self, summary: &str) {
+        let Some(order) = self.open_work else { return };
+        let header = self.blocks.get(&order).expect("open Work header");
+        if header.thinking_summary.as_deref() == Some(summary) {
+            return;
+        }
+        let previous = header.thinking_summary.as_ref().map_or(0, String::len);
+        let mut header = header.as_ref().clone();
+        header.thinking_summary = Some(summary.to_owned());
+        self.blocks.insert(order, Arc::new(header));
+        self.retained = self
+            .retained
+            .saturating_sub(previous as u64)
+            .saturating_add(summary.len() as u64);
+    }
+
     fn admitted(&self, atom: &ChatAtom) -> bool {
         match atom.lifecycle {
             ChatAtomLifecycle::Terminal {
@@ -507,7 +533,7 @@ impl PresentationState {
         self.applied_effect = effect;
         for header in headers {
             ensure!(
-                header.history_pos.is_none() && header.version == 3,
+                header.history_pos.is_none() && header.version == 4,
                 "invalid open display header"
             );
             if !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. }) {
@@ -517,7 +543,7 @@ impl PresentationState {
                     "multiple open work blocks"
                 );
             }
-            self.retained += bytes(&header)?;
+            self.retained += header_bytes(&header)?;
             self.sparse.insert(header.block_order);
             self.by_id.insert(header.id.clone(), header.block_order);
             self.blocks.insert(header.block_order, Arc::new(header));
@@ -547,8 +573,7 @@ impl PresentationState {
             } else {
                 ensure!(
                     member.head.record.atom.kind != ChatAtomKind::Text
-                        || self.blocks[&order].first_content_at.is_some()
-                        || self.blocks[&order].legacy,
+                        || self.blocks[&order].first_content_at.is_some(),
                     "visible Text has no content evidence"
                 );
                 &mut self.open_texts
@@ -1010,11 +1035,11 @@ impl PresentationState {
                     .as_ref()
                     .clone();
                 ensure!(!header.sealed, "sealed display member is not updatable");
-                update_summary(&mut header, Some(&previous.head.record.atom), &atom)?;
-                if let DisplayBlockBody::Work { summary, .. } = &mut header.body
+                update_member_counts(&mut header, Some(&previous.head.record.atom), &atom)?;
+                if matches!(header.body, DisplayBlockBody::Work { .. })
                     && let Some(thought) = thoughts.get(&key)
                 {
-                    summary.thinking_summary = Some(thought.clone());
+                    header.thinking_summary = Some(thought.clone());
                 }
                 let next_record = record(atom.clone(), previous.head.record.start_fact);
                 let member = Arc::new(DisplayMemberWrite {
@@ -1042,7 +1067,7 @@ impl PresentationState {
                 if matches!(header.body, DisplayBlockBody::Single { .. }) && member.terminal {
                     self.open_texts.remove(&key);
                 }
-                self.replace_header(header, committed_at, &mut touched)?;
+                self.replace_header(header, &mut touched)?;
             } else {
                 let order = if work(&atom) {
                     if let Some(order) = self.open_work {
@@ -1065,7 +1090,7 @@ impl PresentationState {
                     let order = self.create(&atom, &key, false, committed_at, &mut touched)?;
                     let mut header = self.blocks[&order].as_ref().clone();
                     header.first_content_at = first_content_at;
-                    self.replace_header(header, committed_at, &mut touched)?;
+                    self.replace_header(header, &mut touched)?;
                     order
                 };
                 let mut header = self.blocks[&order].as_ref().clone();
@@ -1073,11 +1098,11 @@ impl PresentationState {
                     .next_member
                     .checked_add(1)
                     .context("display member order exhausted")?;
-                update_summary(&mut header, None, &atom)?;
-                if let DisplayBlockBody::Work { summary, .. } = &mut header.body
+                update_member_counts(&mut header, None, &atom)?;
+                if matches!(header.body, DisplayBlockBody::Work { .. })
                     && let Some(thought) = thoughts.get(&key)
                 {
-                    summary.thinking_summary = Some(thought.clone());
+                    header.thinking_summary = Some(thought.clone());
                 }
                 let member = Arc::new(DisplayMemberWrite {
                     block_id: header.id.clone(),
@@ -1112,7 +1137,7 @@ impl PresentationState {
                 }
                 self.members.insert(position, member.clone());
                 changed_members.insert(position, member);
-                self.replace_header(header, committed_at, &mut touched)?;
+                self.replace_header(header, &mut touched)?;
             }
             self.drain(
                 (effect, committed_at),
@@ -1171,26 +1196,14 @@ impl PresentationState {
         Ok(Arc::new(delta))
     }
 
-    fn replace_header(
-        &mut self,
-        mut header: DisplayHeader,
-        committed_at: i64,
-        touched: &mut BTreeSet<u64>,
-    ) -> Result<()> {
-        if !self
-            .blocks
-            .get(&header.block_order)
-            .is_some_and(|old| old.sealed)
-        {
-            observe_elapsed(&mut header, committed_at);
-        }
+    fn replace_header(&mut self, header: DisplayHeader, touched: &mut BTreeSet<u64>) -> Result<()> {
         if let Some(old) = self
             .blocks
             .insert(header.block_order, Arc::new(header.clone()))
         {
-            self.retained = self.retained.saturating_sub(bytes(old.as_ref())?);
+            self.retained = self.retained.saturating_sub(header_bytes(old.as_ref())?);
         }
-        self.retained = self.retained.saturating_add(bytes(&header)?);
+        self.retained = self.retained.saturating_add(header_bytes(&header)?);
         touched.insert(header.block_order);
         self.member_change = self
             .member_change
@@ -1226,8 +1239,7 @@ impl PresentationState {
             self.open_work = Some(order);
         }
         let header = DisplayHeader {
-            version: 3,
-            legacy: false,
+            version: 4,
             id: id.clone(),
             source: atom.source.clone(),
             block_order: order,
@@ -1239,14 +1251,13 @@ impl PresentationState {
             next_member: 0,
             revision: 0,
             skip_display: false,
-            active_since: None,
-            duration_known: true,
+            thinking_summary: None,
             body: if is_work {
                 DisplayBlockBody::Work {
-                    summary: Box::new(pl_protocol::WorkSummary {
-                        created_at: Some(committed_at),
-                        ..Default::default()
-                    }),
+                    timing: pl_protocol::WorkTiming {
+                        started_at: committed_at,
+                        finished_at: None,
+                    },
                     members: DisplayBlockRef {
                         database_id: self.database.clone(),
                         block_id: id.clone(),
@@ -1266,7 +1277,7 @@ impl PresentationState {
             },
         };
         self.by_id.insert(id, order);
-        self.replace_header(header, committed_at, touched)?;
+        self.replace_header(header, touched)?;
         Ok(order)
     }
 
@@ -1302,28 +1313,11 @@ impl PresentationState {
                             && member.head.member_key == previous.head.member_key,
                         "prepared boundary display identity differs"
                     );
-                    update_summary(
+                    update_member_counts(
                         &mut header,
                         Some(&previous.head.record.atom),
                         &member.head.record.atom,
                     )?;
-                    if let DisplayBlockBody::Work { summary, .. } = &mut header.body
-                        && member.head.record.atom.kind == ChatAtomKind::Reasoning
-                    {
-                        summary.thinking_content = member
-                            .head
-                            .record
-                            .atom
-                            .contents
-                            .iter()
-                            .rev()
-                            .find(|body| body.role == ChatContentRole::ReasoningSummary)
-                            .or_else(|| member.head.record.atom.contents.last())
-                            .map(|body| body.reference.clone());
-                        if let Some(thought) = prepared.thinking_summary {
-                            summary.thinking_summary = Some(thought);
-                        }
-                    }
                     header.revision = header
                         .revision
                         .checked_add(1)
@@ -1352,7 +1346,11 @@ impl PresentationState {
             self.current_work_rows.clear();
             header.boundary = Some(at);
             header.sealed = true;
-            self.replace_header(header, committed_at, touched)?;
+            header.thinking_summary = None;
+            if let DisplayBlockBody::Work { timing, .. } = &mut header.body {
+                timing.finished_at = Some(committed_at);
+            }
+            self.replace_header(header, touched)?;
         }
         Ok(())
     }
@@ -1373,7 +1371,7 @@ impl PresentationState {
             }
             let mut header = header.as_ref().clone();
             self.blocks.remove(&order);
-            self.retained = self.retained.saturating_sub(bytes(&header)?);
+            self.retained = self.retained.saturating_sub(header_bytes(&header)?);
             if header.skip_display {
                 ensure!(
                     matches!(&header.body, DisplayBlockBody::Single { record, .. }
@@ -1416,20 +1414,6 @@ impl PresentationState {
     }
 }
 
-fn observe_elapsed(header: &mut DisplayHeader, committed_at: i64) {
-    if let DisplayBlockBody::Work { summary, .. } = &mut header.body {
-        if header.version == 3 {
-            summary.elapsed_ms = None;
-            return;
-        }
-        summary.elapsed_ms = summary
-            .created_at
-            .and_then(|created| committed_at.checked_sub(created))
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .and_then(|seconds| seconds.checked_mul(1000));
-    }
-}
-
 fn content_tail_summary(content: &ChatContent) -> Result<Option<String>> {
     let offset = content
         .data
@@ -1444,29 +1428,6 @@ fn content_tail_summary(content: &ChatContent) -> Result<Option<String>> {
         }
     }
     anyhow::bail!("thinking summary boundary contains invalid UTF-8")
-}
-
-fn material_summary(
-    atom: &ChatAtom,
-    contents: &BTreeMap<String, Arc<ChatContent>>,
-) -> Result<Option<String>> {
-    for body in atom
-        .contents
-        .iter()
-        .rev()
-        .filter(|body| body.role == ChatContentRole::ReasoningSummary)
-    {
-        let ContentTarget::Body { key, .. } = &body.reference.target else {
-            continue;
-        };
-        let content = contents
-            .get(key)
-            .context("thinking summary lost its frozen content")?;
-        if let Some(summary) = content_tail_summary(content)? {
-            return Ok(Some(summary));
-        }
-    }
-    Ok(None)
 }
 
 fn completed_thinking_summary(
@@ -1508,13 +1469,12 @@ fn completed_thinking_summary(
     Ok(None)
 }
 
-fn update_summary(
+fn update_member_counts(
     header: &mut DisplayHeader,
     old: Option<&ChatAtom>,
     atom: &ChatAtom,
 ) -> Result<()> {
     let terminal = matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. });
-    let previously_unfinished = header.unfinished;
     header.revision = header
         .revision
         .checked_add(1)
@@ -1531,7 +1491,7 @@ fn update_summary(
             .checked_sub(1)
             .context("duplicate member terminal")?;
     }
-    let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
+    if !matches!(header.body, DisplayBlockBody::Work { .. }) {
         let start = match &header.body {
             DisplayBlockBody::Single { record, .. } => record.start_fact,
             _ => None,
@@ -1555,93 +1515,6 @@ fn update_summary(
         }
         return Ok(());
     };
-    if old.is_none() {
-        summary.total = summary
-            .total
-            .checked_add(1)
-            .context("member count exhausted")?;
-        summary.started_at = match (summary.started_at, atom.started_at) {
-            (None, at) if summary.total == 1 => at,
-            (Some(a), Some(b)) => Some(a.min(b)),
-            _ => None,
-        };
-        // Every member contributes to the proof, including a directly completed member
-        // whose unknown start can precede the current overlapping work interval.
-        header.duration_known &= atom.started_at.is_some();
-        if !header.duration_known {
-            summary.duration_ms = None;
-        }
-        if previously_unfinished == 0 {
-            header.active_since = atom
-                .started_at
-                .map(|start| summary.finished_at.map_or(start, |end| start.max(end)));
-        }
-    } else if matches!(
-        old.map(|a| &a.lifecycle),
-        Some(ChatAtomLifecycle::Active {
-            status: ChatActiveStatus::Waiting,
-            ..
-        })
-    ) {
-        summary.waiting = summary
-            .waiting
-            .checked_sub(1)
-            .context("waiting count underflow")?;
-    } else {
-        summary.running = summary
-            .running
-            .checked_sub(1)
-            .context("running count underflow")?;
-    }
-    match atom.lifecycle {
-        ChatAtomLifecycle::Active {
-            status: ChatActiveStatus::Waiting,
-            ..
-        } => summary.waiting += 1,
-        ChatAtomLifecycle::Active { .. } => summary.running += 1,
-        ChatAtomLifecycle::Terminal { outcome, .. } => {
-            summary.terminal += 1;
-            match outcome {
-                ChatTerminalOutcome::Failed => summary.failed += 1,
-                ChatTerminalOutcome::Cancelled => summary.cancelled += 1,
-                ChatTerminalOutcome::Transferred => summary.transferred += 1,
-                ChatTerminalOutcome::Completed => {}
-            }
-            summary.finished_at = match (summary.finished_at, atom.finished_at) {
-                (None, at) if summary.terminal == 1 => at,
-                (Some(a), Some(b)) => Some(a.max(b)),
-                _ => None,
-            };
-            if header.unfinished == 0 {
-                summary.duration_ms = match (
-                    header.duration_known,
-                    header.active_since.take(),
-                    summary.finished_at,
-                ) {
-                    (true, Some(start), Some(end)) => end
-                        .checked_sub(start)
-                        .and_then(|v| u64::try_from(v).ok())
-                        .and_then(|v| summary.duration_ms.unwrap_or(0).checked_add(v)),
-                    _ => None,
-                };
-                header.duration_known &= summary.duration_ms.is_some();
-            }
-        }
-    }
-    if atom.kind == ChatAtomKind::Reasoning {
-        summary.thinking_content = atom
-            .contents
-            .iter()
-            .rev()
-            .find(|c| c.role == ChatContentRole::ReasoningSummary)
-            .or_else(|| {
-                atom.contents
-                    .iter()
-                    .rev()
-                    .find(|c| c.role == ChatContentRole::Body)
-            })
-            .map(|c| c.reference.clone());
-    }
     Ok(())
 }
 

@@ -9,10 +9,9 @@ async fn observation_chunks_rollback_and_replay_with_the_original_display_transa
         model::ContentBlock,
     };
     use pl_protocol::*;
-    let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
-    super::super::super::schema::display_snapshots::upgrade(&db).await?;
-    super::super::super::schema::display_observations::upgrade(&db).await?;
-    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
+    let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -171,10 +170,9 @@ async fn visible_text_final_empty_is_atomic_and_keeps_the_frozen_boundary_on_col
     use pl_protocol::{
         ChatAtomKind, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
     };
-    let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
-    super::super::super::schema::display_snapshots::upgrade(&db).await?;
-    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
-    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
+    let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -276,10 +274,9 @@ async fn visible_text_final_empty_is_atomic_and_keeps_the_frozen_boundary_on_col
 async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_a_receipt()
 -> Result<()> {
     use sea_orm::TransactionTrait;
-    let (_dir, db) = super::super::super::schema::display_snapshots::tests::fixture().await?;
-    super::super::super::schema::display_snapshots::upgrade(&db).await?;
-    crate::studio::storage::history::schema::display_observations::upgrade(&db).await?;
-    super::super::super::schema::visible_tail_workgroups::upgrade(&db).await?;
+    let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
+    crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+
     let database: String = db
         .query_one_raw(statement(
             "SELECT database_id FROM history_meta WHERE id=1",
@@ -333,8 +330,8 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     };
     let delta = owner.prepare(1, 10, &[atom], &[ended], std::slice::from_ref(&item))?;
     assert!(
-        matches!(&delta.blocks[0].header.body, DisplayBlockBody::Work { summary, .. }
-        if summary.created_at == Some(10) && summary.elapsed_ms.is_none())
+        matches!(&delta.blocks[0].header.body, DisplayBlockBody::Work { timing: summary, .. }
+        if summary.started_at == 10 && summary.finished_at.is_none())
     );
     db.execute_unprepared("CREATE TRIGGER reject_display BEFORE INSERT ON conversation_display_members BEGIN SELECT RAISE(ABORT,'display rejection'); END;").await?;
     let tx = db.begin().await?;
@@ -357,11 +354,14 @@ async fn display_delta_rolls_back_with_original_completion_and_exact_replay_has_
     assert_eq!(heads[0].body, delta.blocks[0].header.body);
     let mut wrong_time = delta.as_ref().clone();
     let header = Arc::make_mut(&mut wrong_time.blocks[0].header);
-    let DisplayBlockBody::Work { summary, .. } = &mut header.body else {
+    let DisplayBlockBody::Work {
+        timing: summary, ..
+    } = &mut header.body
+    else {
         unreachable!("created Work above");
     };
-    summary.created_at = Some(11);
-    summary.elapsed_ms = Some(1000);
+    summary.started_at = 11;
+    summary.finished_at = Some(12);
     assert!(verify(&db, &wrong_time).await.is_err());
     let mut contradictory = delta.as_ref().clone();
     contradictory.published_through = 1;

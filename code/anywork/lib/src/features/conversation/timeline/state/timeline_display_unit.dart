@@ -97,6 +97,8 @@ final class TimelineDisplayUnit {
        body = block.body,
        state = DisplayBlockState.sealed,
        executionPresent = false,
+       hasUnfinishedMembers = false,
+       thinkingSummary = null,
        expansion = expansion ?? TimelineExpansionIntent();
 
   TimelineDisplayUnit.live({
@@ -106,20 +108,24 @@ final class TimelineDisplayUnit {
   }) : id = block.id,
        historyPos = null,
        body = block.body,
-       state = block.state;
+       state = block.state,
+       hasUnfinishedMembers = block.hasUnfinishedMembers,
+       thinkingSummary = block.thinkingSummary;
 
   final String id;
   final int? historyPos;
   final DisplayBlockBody body;
   final DisplayBlockState state;
   final bool executionPresent;
+  final bool hasUnfinishedMembers;
+  final String? thinkingSummary;
   final TimelineExpansionIntent expansion;
   DisplayBlockRef? get memberReference => switch (body) {
     WorkDisplayBlock(:final members) => members,
     SingleDisplayBlock() => null,
   };
-  WorkSummary? get summary => switch (body) {
-    WorkDisplayBlock(:final summary) => summary,
+  WorkTiming? get timing => switch (body) {
+    WorkDisplayBlock(:final timing) => timing,
     SingleDisplayBlock() => null,
   };
   ChatAtom? get atom => switch (body) {

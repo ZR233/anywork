@@ -555,7 +555,7 @@ abstract final class TimelinePreviewFixtures {
           id: entry.recordId,
           historyPos: entry.completionSeq,
           body: WorkDisplayBlock(
-            summary: workSummary(entry.run!.ordinal),
+            timing: workTiming(),
             members: DisplayBlockRef(
               databaseId: 'preview',
               blockId: entry.recordId,
@@ -564,18 +564,7 @@ abstract final class TimelinePreviewFixtures {
         ),
       );
 
-  static WorkSummary workSummary(int count) => WorkSummary(
-    unavailable: 0,
-    total: count,
-    terminal: count,
-    running: 0,
-    waiting: 0,
-    failed: 0,
-    cancelled: 0,
-    transferred: 0,
-    createdAt: 100,
-    elapsedMs: 125000,
-  );
+  static WorkTiming workTiming() => WorkTiming(startedAt: 100, finishedAt: 225);
 
   static Map<String, Object?> _imageMetadata(String id) => {
     'id': id,

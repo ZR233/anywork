@@ -1454,6 +1454,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeWorkTiming dco_decode_box_autoadd_bridge_work_timing(dynamic raw);
+
+  @protected
   BridgeWorkflowDefinition dco_decode_box_autoadd_bridge_workflow_definition(
     dynamic raw,
   );
@@ -1640,9 +1643,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
-
-  @protected
-  BridgeWorkSummary dco_decode_box_bridge_work_summary(dynamic raw);
 
   @protected
   StartNewThreadResponse dco_decode_box_start_new_thread_response(dynamic raw);
@@ -3750,7 +3750,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeWorkSummary dco_decode_bridge_work_summary(dynamic raw);
+  BridgeWorkTiming dco_decode_bridge_work_timing(dynamic raw);
 
   @protected
   BridgeWorkflowDefinition dco_decode_bridge_workflow_definition(dynamic raw);
@@ -6510,6 +6510,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeWorkTiming sse_decode_box_autoadd_bridge_work_timing(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeWorkflowDefinition sse_decode_box_autoadd_bridge_workflow_definition(
     SseDeserializer deserializer,
   );
@@ -6748,11 +6753,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer);
-
-  @protected
-  BridgeWorkSummary sse_decode_box_bridge_work_summary(
-    SseDeserializer deserializer,
-  );
 
   @protected
   StartNewThreadResponse sse_decode_box_start_new_thread_response(
@@ -9456,9 +9456,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeWorkSummary sse_decode_bridge_work_summary(
-    SseDeserializer deserializer,
-  );
+  BridgeWorkTiming sse_decode_bridge_work_timing(SseDeserializer deserializer);
 
   @protected
   BridgeWorkflowDefinition sse_decode_bridge_workflow_definition(
@@ -12692,6 +12690,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_work_timing(
+    BridgeWorkTiming self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_workflow_definition(
     BridgeWorkflowDefinition self,
     SseSerializer serializer,
@@ -12966,12 +12970,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_bridge_work_summary(
-    BridgeWorkSummary self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_box_start_new_thread_response(
@@ -16274,8 +16272,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_work_summary(
-    BridgeWorkSummary self,
+  void sse_encode_bridge_work_timing(
+    BridgeWorkTiming self,
     SseSerializer serializer,
   );
 

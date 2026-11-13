@@ -1,6 +1,5 @@
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart'
-    show ConversationActivityView, ConversationActivityKind;
+import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -17,7 +16,7 @@ enum WorkDisplayLocation { live, history }
 class CompletionRunView extends StatefulWidget {
   const CompletionRunView({
     required this.id,
-    required this.summary,
+    required this.timing,
     required this.childBuilder,
     required this.initiallyExpanded,
     required this.location,
@@ -25,6 +24,8 @@ class CompletionRunView extends StatefulWidget {
     this.executionPresent = false,
     DisplayBlockState? state,
     this.activity,
+    this.thinkingSummary,
+    this.hasUnfinishedMembers = false,
     this.now,
     super.key,
   }) : state =
@@ -33,11 +34,13 @@ class CompletionRunView extends StatefulWidget {
                ? DisplayBlockState.sealed
                : DisplayBlockState.open);
   final String id;
-  final WorkSummary summary;
+  final WorkTiming timing;
   final bool executionPresent;
   final DisplayBlockState state;
   final WorkDisplayLocation location;
   final ConversationActivityView? activity;
+  final String? thinkingSummary;
+  final bool hasUnfinishedMembers;
   final DateTime Function()? now;
   final WidgetBuilder childBuilder;
   final bool initiallyExpanded;
@@ -70,12 +73,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
 
   @override
   Widget build(BuildContext context) {
-    final summary = widget.summary;
     final live = widget.state == DisplayBlockState.open;
-    final savedElapsed = summary.elapsedMs;
-    final savedSeconds = !live && savedElapsed != null && savedElapsed >= 0
-        ? savedElapsed ~/ 1000
-        : null;
     return Expansible(
       key: ValueKey('completion-run-disclosure:${widget.id}'),
       controller: _disclosure,
@@ -90,17 +88,19 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           onTap: _disclosure.toggle,
           borderRadius: BorderRadius.circular(8),
           child: TimelineActivityClock(
-            startedAt: null,
-            running: false,
+            startedAt: widget.timing.startedAt,
+            finishedAt: widget.timing.finishedAt,
+            running: live,
             now: widget.now,
             builder: (context, seconds) => _WorkHeader(
               key: ValueKey('completion-run-header:${widget.id}'),
-              summary: summary,
+              hasUnfinishedMembers: widget.hasUnfinishedMembers,
+              thinkingSummary: widget.thinkingSummary,
               location: widget.location,
               executionPresent: widget.executionPresent,
               state: widget.state,
               activity: widget.activity,
-              seconds: savedSeconds,
+              seconds: seconds ?? 0,
               expanded: _disclosure.isExpanded,
             ),
           ),
@@ -145,7 +145,8 @@ class _CompletionRunViewState extends State<CompletionRunView> {
 class _WorkHeader extends StatelessWidget {
   const _WorkHeader({
     super.key,
-    required this.summary,
+    required this.hasUnfinishedMembers,
+    required this.thinkingSummary,
     required this.location,
     required this.executionPresent,
     required this.state,
@@ -154,19 +155,19 @@ class _WorkHeader extends StatelessWidget {
     this.activity,
   });
 
-  final WorkSummary summary;
+  final bool hasUnfinishedMembers;
+  final String? thinkingSummary;
   final WorkDisplayLocation location;
   final bool executionPresent;
   final DisplayBlockState state;
-  final int? seconds;
+  final int seconds;
   final bool expanded;
   final ConversationActivityView? activity;
 
   @override
   Widget build(BuildContext context) {
     final live = state == DisplayBlockState.open;
-    final cold =
-        live && !executionPresent && summary.hasUnfinishedOrUnavailableMembers;
+    final cold = live && !executionPresent && hasUnfinishedMembers;
     final active = live && executionPresent && activity != null;
     final l10n = context.l10n;
     final fallback = cold
@@ -174,65 +175,28 @@ class _WorkHeader extends StatelessWidget {
         : active
         ? context.conversationActivityLabel(activity!)
         : l10n.timelineGroupRecord;
-    final activeThought = active
-        ? [
-                if (activity != null) activity!.thinkingSummary,
-                summary.thinkingSummary,
-              ]
-              .whereType<String>()
-              .map((value) => value.trim())
-              .where((value) => value.isNotEmpty)
-              .firstOrNull
+    final thought = thinkingSummary?.trim();
+    final activeThought = active && thought != null && thought.isNotEmpty
+        ? thought
         : null;
     final rawSummary = active ? activity?.summary?.trim() : null;
     final status =
         activeThought ??
         (rawSummary != null && rawSummary.isNotEmpty ? rawSummary : fallback);
-    final duration = seconds == null
-        ? null
-        : activityDurationLabel(
-            context,
-            seconds!,
-            kind: live
-                ? ActivityDurationKind.executing
-                : ActivityDurationKind.worked,
-          );
-    final phaseDuration =
-        active &&
-            activity!.kind == ConversationActivityKind.thinking &&
-            activity!.thinkingSeconds != null
-        ? activityDurationLabel(context, activity!.thinkingSeconds!)
-        : null;
-    final meta = phaseDuration ?? duration;
-    // A group summary is a fact in its own right, not an inferred model phase.
-    // Without that fact, current activity or active members, retain static Work.
-    final hasPhase = cold || active;
-    final current = live && (hasPhase || activeThought != null);
-    final label = current ? status : duration ?? l10n.timelineGroupRecord;
-    final outcomes = <String>[
-      if (summary.failed > 0) l10n.timelineGroupFailedCount(summary.failed),
-      if (summary.cancelled > 0)
-        l10n.timelineGroupStoppedCount(summary.cancelled),
-      if (summary.transferred > 0)
-        l10n.timelineGroupTransferredCount(summary.transferred),
-      if (!live && (summary.running > 0 || summary.waiting > 0)) '封存时尚未结束',
-      if (summary.unavailable > 0) '旧边界观察不可用',
-    ];
+    final duration = activityDurationLabel(
+      context,
+      seconds,
+      kind: live ? ActivityDurationKind.executing : ActivityDurationKind.worked,
+    );
+    final current = live && (cold || active);
+    final label = live ? status : duration;
     final description = [
       label,
-      if (live && hasPhase && label != fallback) fallback,
-      if (live && duration != null && label != duration) duration,
-      l10n.timelineGroupMemberCount(summary.total),
-      ...outcomes,
+      if (live && current && label != fallback) fallback,
+      if (live && label != duration) duration,
     ].join('，');
     final icon = cold
         ? Icons.history_outlined
-        : active
-        ? activity!.kind.icon
-        : summary.cancelled > 0
-        ? Icons.stop_circle_outlined
-        : summary.transferred > 0
-        ? Icons.call_made
         : activity?.kind.icon ?? Icons.work_outline;
     final secondaryColor = context.colors.onSurfaceVariant;
     final indicatorColor = active
@@ -242,8 +206,8 @@ class _WorkHeader extends StatelessWidget {
       color: live
           ? (active ? context.colors.onSurface : secondaryColor)
           : secondaryColor,
-      fontSize: live ? TimelineActivityRow.headerFontSize : 13,
-      fontWeight: FontWeight.w500,
+      fontSize: live ? TimelineActivityRow.headerFontSize : 12,
+      fontWeight: live ? FontWeight.w500 : FontWeight.w400,
       height: live ? 1.36 : 1.45,
     );
     final metaStyle = context.text.labelSmall!.copyWith(
@@ -258,7 +222,7 @@ class _WorkHeader extends StatelessWidget {
         message: description,
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            minHeight: live ? TimelineActivityRow.headerMinHeight : 30,
+            minHeight: live ? TimelineActivityRow.headerMinHeight : 28,
           ),
           child: Padding(
             padding: EdgeInsets.symmetric(vertical: live ? 2 : 3),
@@ -324,18 +288,10 @@ class _WorkHeader extends StatelessWidget {
                                   style: titleStyle,
                                 ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          l10n.timelineGroupMemberCount(summary.total),
-                          key: const ValueKey('work-header-member-count'),
-                          maxLines: 1,
-                          softWrap: false,
-                          style: metaStyle,
-                        ),
-                        if (meta != null && label != meta) ...[
+                        if (label != duration) ...[
                           const SizedBox(width: 8),
                           Text(
-                            meta,
+                            duration,
                             key: const ValueKey('work-header-elapsed'),
                             maxLines: 1,
                             softWrap: false,
@@ -356,19 +312,6 @@ class _WorkHeader extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        SizedBox(
-                          width: TimelineActivityRow.iconColumnWidth,
-                          child: Center(
-                            heightFactor: 1,
-                            child: TimelineActivityIndicator(
-                              icon: icon,
-                              active: false,
-                              staticIconSize: 16,
-                              color: indicatorColor,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: TimelineActivityRow.gap),
                         Flexible(
                           child: Text(
                             label,

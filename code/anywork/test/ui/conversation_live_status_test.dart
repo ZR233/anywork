@@ -16,8 +16,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
 
-import '../support/display_fixtures.dart';
-
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
@@ -129,7 +127,7 @@ Widget _group({Widget? content, bool live = true, String? thinkingSummary}) {
   if (!live) {
     return CompletionRunView(
       id: 'test-group',
-      summary: displaySummary(82),
+      timing: const WorkTiming(startedAt: 0, finishedAt: 125),
       location: WorkDisplayLocation.history,
       initiallyExpanded: false,
       childBuilder: (_) => content ?? const Text('成员正文'),
@@ -481,7 +479,7 @@ void main() {
 
     for (final width in [360.0, 760.0, 1040.0]) {
       for (final scale in [1.0, 1.6]) {
-        testWidgets('标题、统计与箭头在宽度 $width 和字号 $scale 下完整可读', (tester) async {
+        testWidgets('标题、耗时与箭头在宽度 $width 和字号 $scale 下完整可读', (tester) async {
           await tester.binding.setSurfaceSize(Size(width, 600));
           addTearDown(() => tester.binding.setSurfaceSize(null));
           await tester.pumpWidget(
@@ -496,7 +494,7 @@ void main() {
           final l10n = AppLocalizations.of(
             tester.element(find.byType(Scaffold)),
           );
-          final label = find.text(l10n.timelineGroupRecord);
+          final label = find.text(l10n.timelineGroupWorkedMinutesSeconds(2, 5));
           expect(label, findsOneWidget);
           final card = tester.getRect(
             find.byKey(const ValueKey('conversation-activity')),
@@ -1093,19 +1091,12 @@ void main() {
         blockOrder: order,
         state: state,
         source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+        thinkingSummary: thought,
+        hasUnfinishedMembers: running > 0,
         body: WorkDisplayBlock(
-          summary: WorkSummary(
-            unavailable: 0,
-            total: total,
-            terminal: total - running,
-            running: running,
-            waiting: 0,
-            failed: failed,
-            cancelled: 0,
-            transferred: transferred,
-            createdAt: 100,
-            elapsedMs: 125000,
-            thinkingSummary: thought,
+          timing: WorkTiming(
+            startedAt: 100,
+            finishedAt: state == DisplayBlockState.sealed ? 225 : null,
           ),
           members: DisplayBlockRef(databaseId: 'db', blockId: id),
         ),
@@ -1609,15 +1600,15 @@ void main() {
           expect(
             find.descendant(
               of: barFinder,
-              matching: find.byKey(const ValueKey('work-header-member-count')),
+              matching: find.byKey(const ValueKey('work-header-elapsed')),
             ),
             findsOneWidget,
-            reason: '${stage.name}: the open tail exposes its reliable count',
+            reason: '${stage.name}: the open tail exposes its lifecycle clock',
           );
           expect(
             find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
-            findsNothing,
-            reason: '${stage.name}: group creation is not an active-work clock',
+            findsOneWidget,
+            reason: '${stage.name}: the same group start owns every phase',
           );
           expect(
             find.descendant(

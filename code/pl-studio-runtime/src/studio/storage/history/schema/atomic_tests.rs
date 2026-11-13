@@ -25,10 +25,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|migration| {
@@ -67,10 +64,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|migration| {
@@ -114,10 +108,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|migration| {

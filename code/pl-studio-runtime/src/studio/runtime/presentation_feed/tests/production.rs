@@ -176,13 +176,13 @@ async fn v364_accepted_parent_text_seals_work_once_and_survives_cold_display_rea
         assert_eq!(hot.blocks.len(), 2);
         assert_eq!(hot.blocks[0].id, old_id);
         let DisplayBlockBody::Work {
-            summary,
+            timing,
             members: old_members,
         } = &hot.blocks[0].body
         else {
             panic!("frozen prior Work")
         };
-        assert_eq!((summary.total, summary.running), (1, 1));
+        assert!(timing.finished_at.is_some());
         let DisplayBlockBody::Single { record, visibility } = &hot.blocks[1].body else {
             panic!("visible accepted parent Single")
         };
@@ -259,7 +259,7 @@ async fn v364_accepted_parent_text_seals_work_once_and_survives_cold_display_rea
         assert_eq!(&live.blocks[0].id, new_id);
         assert!(matches!(
             &live.blocks[0].body,
-            DisplayBlockBody::Work { summary, .. } if summary.total == 1
+            DisplayBlockBody::Work { timing: summary, .. } if summary.finished_at.is_none()
         ));
         assert_eq!(
             ChatHistory::item(&h.history, &original.header.item_id)
@@ -508,18 +508,14 @@ async fn v364_reliable_visible_text_cross_source_late_results_and_final_empty_ke
         let live = cut.live.context("saved Resting tail")?;
         assert!(!live.execution_present);
         assert_eq!(live.current_work_id.as_deref(), Some(tail_id.as_str()));
-        let DisplayBlockBody::Work { summary, .. } = &live.blocks[0].body else {
+        let DisplayBlockBody::Work {
+            timing: summary, ..
+        } = &live.blocks[0].body
+        else {
             panic!("Work")
         };
-        assert_eq!(
-            (
-                summary.total,
-                summary.terminal,
-                summary.running,
-                summary.unavailable
-            ),
-            (2, 2, 0, 0)
-        );
+        assert!(summary.finished_at.is_none());
+        assert!(!live.blocks[0].has_unfinished_members);
         cold.reader().close().await?;
         cold.close().await?;
         Ok(())
@@ -564,19 +560,14 @@ async fn v364_normal_turn_completion_and_owner_retirement_preserve_the_durable_r
         let live = batch.live.context("durable Resting tail")?;
         assert_eq!(live.current_work_id.as_deref(), Some(id.as_str()));
         assert!(!live.execution_present);
-        let DisplayBlockBody::Work { summary, .. } = &live.blocks[0].body else {
+        let DisplayBlockBody::Work {
+            timing: summary, ..
+        } = &live.blocks[0].body
+        else {
             panic!("Work")
         };
-        assert_eq!(
-            (
-                summary.total,
-                summary.terminal,
-                summary.running,
-                summary.waiting,
-                summary.unavailable
-            ),
-            (1, 1, 0, 0, 0)
-        );
+        assert!(summary.finished_at.is_none());
+        assert!(!live.blocks[0].has_unfinished_members);
         feed.reader().close().await?;
         feed.close().await?;
         Ok(())
@@ -980,13 +971,14 @@ async fn reliable_text_visibility_advances_p_without_h_and_member_completion_adv
         );
         let updated_live = updated.live.context("updated live")?;
         assert_eq!(work_reference(&updated_live)?, reference);
-        let DisplayBlockBody::Work { summary, .. } = &updated_live.blocks[0].body else {
+        let DisplayBlockBody::Work {
+            timing: summary, ..
+        } = &updated_live.blocks[0].body
+        else {
             anyhow::bail!("expected Work");
         };
-        assert_eq!(
-            (summary.total, summary.terminal, summary.running),
-            (1, 1, 0)
-        );
+        assert!(summary.finished_at.is_none());
+        assert!(!updated_live.blocks[0].has_unfinished_members);
         let terminal = members.next().await?.context("terminal member page")?;
         assert_eq!(terminal.entries[0].member_key, active.entries[0].member_key);
         assert!(terminal.entries[0].record.atom.completion_item_id.is_some());

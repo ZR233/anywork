@@ -170,14 +170,8 @@ void main() {
       reason: 'The GUI consumer opens Timeline, never the atomic Chat feed',
     );
     const reference = DisplayBlockRef(databaseId: 'db', blockId: 'work');
-    WorkDisplayBlock body(int total, int terminal) => WorkDisplayBlock(
-      summary: displaySummary(
-        total,
-        terminal: terminal,
-        running: total - terminal,
-      ),
-      members: reference,
-    );
+    WorkDisplayBlock body(int total, int terminal) =>
+        WorkDisplayBlock(timing: displayTiming(), members: reference);
     LiveDisplayWindow live(int revision, int total, int terminal) =>
         LiveDisplayWindow(
           currentWorkId: reference.blockId,
@@ -286,7 +280,7 @@ void main() {
       blockOrder: 1,
       state: DisplayBlockState.sealed,
       body: WorkDisplayBlock(
-        summary: displaySummary(2, terminal: 1, running: 1),
+        timing: displayTiming(),
         members: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
       ),
     );
@@ -321,7 +315,7 @@ void main() {
       2,
       ConversationTimelineEvent(
         batch: displayBatch(
-          [displayWork('work', 2, total: 2)],
+          [displayWork('work', 2)],
           placement: ChatPlacement.append,
           from: 1,
           live: LiveDisplayWindow(

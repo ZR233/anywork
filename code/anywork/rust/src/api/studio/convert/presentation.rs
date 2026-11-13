@@ -28,23 +28,10 @@ pub(crate) fn member_window(value: BridgeDisplayMemberWindow) -> protocol::Displ
     }
 }
 
-fn summary(value: protocol::WorkSummary) -> BridgeWorkSummary {
-    BridgeWorkSummary {
-        total: value.total,
-        terminal: value.terminal,
-        running: value.running,
-        waiting: value.waiting,
-        unavailable: value.unavailable,
-        failed: value.failed,
-        cancelled: value.cancelled,
-        transferred: value.transferred,
-        created_at: value.created_at,
-        elapsed_ms: value.elapsed_ms,
+fn timing(value: protocol::WorkTiming) -> BridgeWorkTiming {
+    BridgeWorkTiming {
         started_at: value.started_at,
         finished_at: value.finished_at,
-        duration_ms: value.duration_ms,
-        thinking_summary: value.thinking_summary,
-        thinking_content: value.thinking_content.map(chat::content_ref),
     }
 }
 
@@ -72,10 +59,10 @@ fn record(value: protocol::DisplayRecord) -> BridgeDisplayRecord {
 fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
     match value {
         protocol::DisplayBlockBody::Work {
-            summary: value,
+            timing: value,
             members,
         } => BridgeDisplayBlockBody::Work {
-            summary: Box::new(summary(*value)),
+            timing: timing(value),
             members: block_ref(members),
         },
         protocol::DisplayBlockBody::Single {
@@ -107,6 +94,8 @@ pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDispl
                 block_order: block.block_order,
                 source: block.source.map(chat::source_id),
                 body: body(block.body),
+                has_unfinished_members: block.has_unfinished_members,
+                thinking_summary: block.thinking_summary,
                 state: match block.state {
                     protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
                     protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
@@ -169,18 +158,10 @@ mod tests {
 
     fn work() -> protocol::DisplayBlockBody {
         protocol::DisplayBlockBody::Work {
-            summary: Box::new(protocol::WorkSummary {
-                total: 3,
-                terminal: 2,
-                running: 0,
-                waiting: 1,
-                failed: 1,
-                cancelled: 0,
-                transferred: 1,
-                created_at: Some(1_700_000_000),
-                elapsed_ms: Some(125_000),
-                ..Default::default()
-            }),
+            timing: protocol::WorkTiming {
+                started_at: 1_700_000_000,
+                finished_at: Some(1_700_000_125),
+            },
             members: reference(),
         }
     }
@@ -208,11 +189,11 @@ mod tests {
         assert_eq!(mapped.from_pos, Some(3));
         assert_eq!(mapped.through_pos, 4);
         assert_eq!(mapped.blocks[0].history_pos, 4);
-        let BridgeDisplayBlockBody::Work { summary, .. } = &mapped.blocks[0].body else {
+        let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.blocks[0].body else {
             panic!("expected Work");
         };
-        assert_eq!(summary.created_at, Some(1_700_000_000));
-        assert_eq!(summary.elapsed_ms, Some(125_000));
+        assert_eq!(timing.started_at, 1_700_000_000);
+        assert_eq!(timing.finished_at, Some(1_700_000_125));
         assert!(mapped.live.is_none(), "split cut must not clear live");
 
         let mut live_only = cut();
@@ -224,6 +205,8 @@ mod tests {
             execution_present: false,
             current_work_id: None,
             blocks: vec![protocol::LiveDisplayBlock {
+                has_unfinished_members: false,
+                thinking_summary: None,
                 id: "unresolved".into(),
                 block_order: 11,
                 source: Some(protocol::ChatSourceId::ForegroundTurn {
@@ -242,18 +225,13 @@ mod tests {
         assert_eq!(live.blocks[0].state, BridgeDisplayBlockState::Sealed);
         assert!(matches!(&live.blocks[0].source,
             Some(BridgeChatSourceId::ForegroundTurn { turn_id }) if turn_id == "original-work-turn"));
-        let BridgeDisplayBlockBody::Work { summary, members } = &live.blocks[0].body else {
+        let BridgeDisplayBlockBody::Work { timing, members } = &live.blocks[0].body else {
             panic!("work body must not be inferred from completed content");
         };
         assert_eq!(protocol_block_ref(members.clone()), reference());
-        assert_eq!(summary.total, 3);
-        assert_eq!(summary.terminal, 2);
-        assert_eq!(summary.waiting, 1);
-        assert_eq!(summary.failed, 1);
-        assert_eq!(summary.transferred, 1);
-        assert_eq!(summary.started_at, None);
-        assert_eq!(summary.finished_at, None);
-        assert_eq!(summary.duration_ms, None);
+
+        assert_eq!(timing.started_at, 1_700_000_000);
+        assert_eq!(timing.finished_at, Some(1_700_000_125));
     }
 
     #[test]
@@ -264,6 +242,8 @@ mod tests {
             execution_present: false,
             current_work_id: Some("not-an-encoded-turn".into()),
             blocks: vec![protocol::LiveDisplayBlock {
+                has_unfinished_members: false,
+                thinking_summary: None,
                 id: "not-an-encoded-turn".into(),
                 block_order: 1,
                 source: None,

@@ -10,19 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../integration_test/support/timeline_observation.dart';
 
-const _summary = WorkSummary(
-  unavailable: 0,
-  total: 3,
-  terminal: 3,
-  running: 0,
-  waiting: 0,
-  failed: 0,
-  cancelled: 0,
-  transferred: 0,
-  createdAt: 1000,
-  elapsedMs: 2000,
-  durationMs: 2000,
-);
+const _summary = WorkTiming(startedAt: 1000, finishedAt: 1002);
 
 Widget _host(
   WorkDisplayLocation location, {
@@ -38,7 +26,9 @@ Widget _host(
   home: Scaffold(
     body: CompletionRunView(
       id: 'observed-work',
-      summary: _summary,
+      timing: location == WorkDisplayLocation.live
+          ? const WorkTiming(startedAt: 1000)
+          : _summary,
       location: location,
       activity: activity,
       executionPresent: location == WorkDisplayLocation.live,
@@ -89,9 +79,13 @@ void main() {
       expect(tester.widget<Text>(label).maxLines, 1);
       expect(
         tester.widget<Text>(elapsed).data,
-        activityDurationLabel(tester.element(header), 2),
+        activityDurationLabel(
+          tester.element(header),
+          2,
+          kind: ActivityDurationKind.executing,
+        ),
       );
-      expect(find.textContaining('执行了'), findsNothing);
+      expect(find.textContaining('执行了'), findsOneWidget);
       await tester.tap(header);
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -139,7 +133,7 @@ void main() {
             of: header,
             matching: find.byKey(const ValueKey('work-header-elapsed')),
           ),
-          findsNothing,
+          location == WorkDisplayLocation.live ? findsOneWidget : findsNothing,
         );
         expect(
           timelineWorkHeaderExpanded(tester, header, 'observed-work'),

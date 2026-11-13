@@ -73,10 +73,7 @@ mod tests {
                     TIMELINE_BACKGROUND_TAIL
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
-                        | DISPLAY_SNAPSHOTS
-                        | DISPLAY_OBSERVATIONS
-                        | TOOL_WORK
-                        | VISIBLE_TAIL_WORKGROUPS
+                        | WORK_SNAPSHOTS
                 ) && !is_lifecycle_migration(step.name())
             })
             .collect()

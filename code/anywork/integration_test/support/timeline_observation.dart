@@ -87,14 +87,12 @@ Map<String, Object?> timelineWaitFailureSnapshot({
           'bodyKind': 'single',
           ..._atomCut(record.atom),
         },
-        WorkDisplayBlock(:final members, :final summary) => {
+        WorkDisplayBlock(:final members) => {
           'bodyKind': 'work',
           'source': null,
           'sourceEvidence':
               'bounded member heads, not a source on the Work header',
           'memberBlockId': members.blockId,
-          'total': summary.total,
-          'terminal': summary.terminal,
           'mountedMembers': [
             for (final display
                 in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
@@ -336,8 +334,8 @@ final class TimelineObservation {
         reason: 'one canonical Main card owns one Message',
       );
       expect(value.historyPos, greaterThan(0));
-      if (value.body case WorkDisplayBlock(:final summary, :final members)) {
-        expect(summary.total, greaterThan(0));
+      if (value.body case WorkDisplayBlock(:final timing, :final members)) {
+        expect(timing.finishedAt, isNotNull);
         expect(members.blockId, value.id);
       } else {
         expect(value.body, isA<SingleDisplayBlock>());
@@ -508,9 +506,8 @@ final class TimelineObservation {
   /// Explicit finite fixture inventory. UI still owns just its selected page.
   Future<List<DisplayMemberHead>> readMemberInventory(
     TimelineDisplayUnit block, {
-    required int expectedCount,
+    int? expectedCount,
   }) async {
-    expect(block.summary!.total, expectedCount);
     final result = <DisplayMemberHead>[];
     DisplayMemberWindow window = const LatestDisplayMembers();
     int? revision;
@@ -527,15 +524,17 @@ final class TimelineObservation {
         reason: 'A mutable fixture inventory must stay at one structural cut',
       );
       result.insertAll(0, page.entries);
-      expect(result.length, lessThanOrEqualTo(expectedCount));
+      if (expectedCount != null) {
+        expect(result.length, lessThanOrEqualTo(expectedCount));
+      }
       final before = page.before;
       if (before == null) break;
       window = BeforeDisplayMembers(memberOrder: before);
     }
-    expect(result, hasLength(expectedCount));
+    if (expectedCount != null) expect(result, hasLength(expectedCount));
     expect(
       result.map((head) => head.memberKey).toSet(),
-      hasLength(expectedCount),
+      hasLength(result.length),
     );
     var previous = 0;
     for (final head in result) {
@@ -547,7 +546,7 @@ final class TimelineObservation {
 
   Future<List<ChatAtom>> readFixtureAtoms(
     TimelineDisplayUnit block, {
-    required int expectedCount,
+    int? expectedCount,
   }) async {
     final heads = await readMemberInventory(
       block,
@@ -1658,7 +1657,6 @@ final class TimelineObservation {
       timeout: timeout,
     );
     expect(display!.blockReference, reference);
-    expect(display!.atoms.length, lessThanOrEqualTo(unit(id).summary!.total));
     expect(
       display!.atoms.map((atom) => atom.id).toSet(),
       hasLength(display!.atoms.length),

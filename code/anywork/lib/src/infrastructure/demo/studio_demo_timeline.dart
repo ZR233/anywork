@@ -3,17 +3,15 @@ part of 'studio_demo_api.dart';
 // A controlled story declaration, not an atom classifier. Only IDs and member
 // heads live here; bodies and completion originals remain in _DemoHistory.
 final class _DemoDisplayScript {
-  _DemoDisplayScript(
-    this.id,
-    this.memberIds, {
-    required this.work,
-    this.turnId,
-  });
+  _DemoDisplayScript(this.id, this.memberIds, {required this.work, this.turnId})
+    : startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   final String id;
   final List<String> memberIds;
   final bool work;
   final String? turnId;
   bool sealed = false;
+  final int startedAt;
+  int? finishedAt;
 }
 
 bool _sameDisplayAtomIdentity(ChatAtom previous, ChatAtom next) =>
@@ -133,38 +131,11 @@ extension _DemoDisplayHistory on _DemoHistory {
         record: head.record,
       );
     }
-    var terminal = 0,
-        running = 0,
-        waiting = 0,
-        failed = 0,
-        cancelled = 0,
-        transferred = 0;
-    for (final head in heads) {
-      switch (head.record.atom.lifecycle) {
-        case TerminalChatAtom(:final outcome):
-          terminal++;
-          if (outcome == ChatTerminalOutcome.failed) failed++;
-          if (outcome == ChatTerminalOutcome.cancelled) cancelled++;
-          if (outcome == ChatTerminalOutcome.transferred) transferred++;
-        case ActiveChatAtom(:final status):
-          if (status == ChatActiveStatus.waiting) {
-            waiting++;
-          } else {
-            running++;
-          }
-      }
-    }
     return WorkDisplayBlock(
       members: displayRef(script.id),
-      summary: WorkSummary(
-        total: heads.length,
-        terminal: terminal,
-        running: running,
-        waiting: waiting,
-        unavailable: 0,
-        failed: failed,
-        cancelled: cancelled,
-        transferred: transferred,
+      timing: WorkTiming(
+        startedAt: script.startedAt,
+        finishedAt: script.sealed ? script.finishedAt : null,
       ),
     );
   }
@@ -262,6 +233,8 @@ extension _DemoDisplayHistory on _DemoHistory {
         record: freezeDisplayRecord(id, head),
       );
     }
+    script.finishedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    script.sealed = true;
     displayBlocks.add(
       DisplayBlock(
         id: id,
@@ -269,7 +242,6 @@ extension _DemoDisplayHistory on _DemoHistory {
         body: scriptBody(script),
       ),
     );
-    script.sealed = true;
     if (displayCurrentWorkId == id) displayCurrentWorkId = null;
     displayRevision++;
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
@@ -439,6 +411,12 @@ extension _DemoDisplayHistory on _DemoHistory {
               (displayLiveSeed?.blocks.lastOrNull?.blockOrder ?? 0) +
               displayScripts.keys.toList().indexOf(script.id) +
               1,
+          hasUnfinishedMembers:
+              (displayHeads[displayRef(script.id)] ??
+                      const <DisplayMemberHead>[])
+                  .any(
+                    (member) => member.record.atom.lifecycle is ActiveChatAtom,
+                  ),
           body: scriptBody(script),
           state: DisplayBlockState.open,
         ),
@@ -479,28 +457,10 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
     'record': _displayRecordJson(record),
     'visibility': visibility.name,
   },
-  WorkDisplayBlock(:final summary, :final members) => {
+  WorkDisplayBlock(:final timing, :final members) => {
     'kind': 'work',
     'members': {'databaseId': members.databaseId, 'blockId': members.blockId},
-    'summary': {
-      'total': summary.total,
-      'terminal': summary.terminal,
-      'running': summary.running,
-      'waiting': summary.waiting,
-      'unavailable': summary.unavailable,
-      'failed': summary.failed,
-      'cancelled': summary.cancelled,
-      'transferred': summary.transferred,
-      'startedAt': summary.startedAt,
-      'finishedAt': summary.finishedAt,
-      'durationMs': summary.durationMs,
-      if (summary.createdAt != null) 'createdAt': summary.createdAt,
-      if (summary.elapsedMs != null) 'elapsedMs': summary.elapsedMs,
-      'thinkingSummary': summary.thinkingSummary,
-      'thinkingContent': summary.thinkingContent == null
-          ? null
-          : contentRefToJson(summary.thinkingContent!),
-    },
+    'timing': {'startedAt': timing.startedAt, 'finishedAt': timing.finishedAt},
   },
 };
 Object _liveJson(LiveDisplayWindow live) => {
@@ -517,6 +477,8 @@ Object _liveJson(LiveDisplayWindow live) => {
         if (b.source != null) 'source': chatSourceIdToJson(b.source!),
         'body': _displayBodyJson(b.body),
         'state': b.state.name,
+        'hasUnfinishedMembers': b.hasUnfinishedMembers,
+        'thinkingSummary': b.thinkingSummary,
       },
   ],
 };
@@ -579,6 +541,8 @@ extension _DemoTimelineReader on _DemoReader {
         source: b.source,
         body: fitDisplay(b.body),
         state: b.state,
+        hasUnfinishedMembers: b.hasUnfinishedMembers,
+        thinkingSummary: b.thinkingSummary,
       );
       final next = i > 0 ? cursor('display-live', revision, i) : null;
       final trial = LiveDisplayWindow(

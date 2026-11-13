@@ -35,10 +35,7 @@ impl MigratorTraitSelf for Published {
                     | SOURCE_CLASSIFICATION
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)

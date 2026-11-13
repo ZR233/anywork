@@ -360,11 +360,11 @@ fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> R
         ),
         (
             "LiveDisplayBlock",
-            &["id", "blockOrder", "body", "state"][..],
+            &["id", "blockOrder", "body", "state", "hasUnfinishedMembers"][..],
         ),
         ("DisplayBlockRef", &["databaseId", "blockId"][..]),
         ("DisplayRecord", &["atom", "contentSource"][..]),
-        ("WorkSummary", &["unavailable"][..]),
+        ("WorkTiming", &["startedAt"][..]),
     ] {
         let required = schemas[schema]["required"]
             .as_array()

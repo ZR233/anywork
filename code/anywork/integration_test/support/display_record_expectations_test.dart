@@ -139,23 +139,20 @@ void main() {
     },
   );
 
-  test(
-    'frozen summary rejects thinking text, reference and unavailable drift',
-    () {
-      final saved = jsonDecode(jsonEncode(workSummaryEvidence(_summary())));
-      expect(workSummaryEvidence(_summary()), saved);
-      for (final changed in [
-        _summary(thinkingSummary: 'later text'),
-        _summary(contentMemberKey: 'later-member'),
-        _summary(unavailable: 1),
-      ]) {
-        expect(
-          () => expect(workSummaryEvidence(changed), saved),
-          throwsA(isA<TestFailure>()),
-        );
-      }
-    },
-  );
+  test('frozen Work timing rejects either timestamp drifting', () {
+    final saved = jsonDecode(jsonEncode(workTimingEvidence(_summary())));
+    expect(workTimingEvidence(_summary()), saved);
+    for (final changed in [
+      _summary(startedAt: 99),
+      _summary(finishedAt: 103),
+      _summary(finishedAt: 104),
+    ]) {
+      expect(
+        () => expect(workTimingEvidence(changed), saved),
+        throwsA(isA<TestFailure>()),
+      );
+    }
+  });
 }
 
 TerminalChatAtom _terminal(ChatTerminalOutcome outcome) => TerminalChatAtom(
@@ -227,24 +224,5 @@ ContentRef _reference(String memberKey) => ContentRef(
   ),
 );
 
-WorkSummary _summary({
-  String thinkingSummary = 'frozen prefix',
-  String contentMemberKey = 'member-a',
-  int unavailable = 0,
-}) => WorkSummary(
-  total: 2,
-  terminal: 1,
-  running: 1,
-  waiting: 0,
-  failed: 0,
-  cancelled: 0,
-  transferred: 0,
-  unavailable: unavailable,
-  startedAt: 100,
-  finishedAt: null,
-  durationMs: 2,
-  createdAt: 100,
-  elapsedMs: 2000,
-  thinkingSummary: thinkingSummary,
-  thinkingContent: _reference(contentMemberKey),
-);
+WorkTiming _summary({int startedAt = 100, int finishedAt = 102}) =>
+    WorkTiming(startedAt: startedAt, finishedAt: finishedAt);

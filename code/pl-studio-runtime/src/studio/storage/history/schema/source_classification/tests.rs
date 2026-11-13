@@ -29,10 +29,7 @@ impl MigratorTraitSelf for Published16 {
                     | TIMELINE_BACKGROUND_TAIL
                     | COMPLETION_BOUNDARY
                     | IMMUTABLE_COMPLETION_RUNS
-                    | DISPLAY_SNAPSHOTS
-                    | DISPLAY_OBSERVATIONS
-                    | TOOL_WORK
-                    | VISIBLE_TAIL_WORKGROUPS
+                    | WORK_SNAPSHOTS
             )
         })
         .collect()
@@ -321,10 +318,7 @@ async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen()
         TIMELINE_BACKGROUND_TAIL,
         COMPLETION_BOUNDARY,
         IMMUTABLE_COMPLETION_RUNS,
-        DISPLAY_SNAPSHOTS,
-        DISPLAY_OBSERVATIONS,
-        TOOL_WORK,
-        VISIBLE_TAIL_WORKGROUPS,
+        WORK_SNAPSHOTS,
     ];
     assert_eq!(new_ledger.len(), old_ledger.len() + appended_steps.len());
     for step in appended_steps {

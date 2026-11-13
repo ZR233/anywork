@@ -924,14 +924,6 @@
   },
   "timelineGroupClosing": "Finishing work",
   "timelineGroupUnrestored": "Previous work is unfinished and has not resumed",
-  "timelineGroupTransferredCount": "{count} transferred",
-  "@timelineGroupTransferredCount": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -3065,17 +3057,9 @@
   "interactionDetailsNoProgress": "Reading the details resource made no progress.",
   "interactionDetailsReadFailed": "Failed to read the details resource.",
   "interactionDetailsInvalidFormat": "The interaction details have an invalid format.",
-  "timelineGroupWorking": "Working",
   "timelineGroupUnfinished": "Work unfinished",
+  "timelineGroupWorking": "Working",
   "timelineGroupRecord": "Work record",
-  "timelineGroupMemberCount": "{count} items",
-  "@timelineGroupMemberCount": {"placeholders": {"count": {"type": "int"}}},
-  "timelineGroupFailedCount": "{count} failed",
-  "@timelineGroupFailedCount": {"placeholders": {"count": {"type": "int"}}},
-  "timelineGroupStoppedCount": "{count} stopped",
-  "@timelineGroupStoppedCount": {"placeholders": {"count": {"type": "int"}}},
-  "timelineGroupCompletedCount": "{count} completed",
-  "@timelineGroupCompletedCount": {"placeholders": {"count": {"type": "int"}}},
   "timelineGroupActiveCount": "{count} running",
   "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
   "composerNoProject": "No project",
