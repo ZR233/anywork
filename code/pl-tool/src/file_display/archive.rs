@@ -13,6 +13,23 @@ pub(super) async fn archived_file(
     id: &str,
 ) -> Result<FileDisplayResult, ToolError> {
     let mut fallback = None;
+    let mut selected = false;
+    for record in context.context.records.iter() {
+        for part in record.content.iter() {
+            match part {
+                ContextContent::Resource { reference } if reference.id() == id => selected = true,
+                ContextContent::Opaque { payload } => {
+                    if let Some(attachment) =
+                        pl_model::runtime::decode_attachment(payload).map_err(ToolError::new)?
+                        && attachment.reference.id() == id
+                    {
+                        selected = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     for record in context.context.records.iter().rev() {
         // A committed receipt is looked up only by an actual call in this frozen Thread context.
         // This also covers old show_image, whose context was just a short text note.
@@ -33,10 +50,36 @@ pub(super) async fn archived_file(
                     .and_then(|fact| fact.delivery),
                 Err(error) => return Err(ToolError::new(error)),
             };
-            if let Some(delivery) = delivery
-                && let Some(file) = receipt_file(delivery.output.payload(), id)?
-            {
-                return Ok(file);
+            if let Some(delivery) = delivery {
+                if let Some(file) = receipt_file(delivery.output.payload(), id)? {
+                    return Ok(file);
+                }
+                // Only selected resource capabilities can follow the parent's owner-assigned
+                // provenance. Printed strings alone never authorize another archived file.
+                if selected
+                    && let Some(children) =
+                        crate::lua::saved_nested_call_ids(delivery.output.payload())?
+                {
+                    for child in children.into_iter().rev() {
+                        let delivery = match tasks.result(&format!("task:{child}")) {
+                            Ok(delivery) => delivery,
+                            Err(
+                                pl_core::thread::ThreadError::InvalidOutput
+                                | pl_core::thread::ThreadError::TaskNotFound { .. },
+                            ) => tasks
+                                .durable(&child)
+                                .await
+                                .map_err(ToolError::new)?
+                                .and_then(|fact| fact.delivery),
+                            Err(error) => return Err(ToolError::new(error)),
+                        };
+                        if let Some(delivery) = delivery
+                            && let Some(file) = receipt_file(delivery.output.payload(), id)?
+                        {
+                            return Ok(file);
+                        }
+                    }
+                }
             }
         }
         for content in record.content.iter().rev() {

@@ -895,6 +895,8 @@ impl HistoryStore {
                     tx,
                     write_seq,
                     &pl_core::thread::task::TaskRecord {
+                        parent_call_id: None,
+                        invocation: None,
                         id: format!("task:{}", call.call_id),
                         call_id: call.call_id.clone(),
                         tool_id: call.tool_id.clone(),
@@ -6854,6 +6856,8 @@ mod storage_fault_tests {
         let store =
             HistoryStore::open(&directory.path().join("history.sqlite"), "thread-2").await?;
         let tasks = [TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: "task:call-1".to_owned(),
             call_id: "call-1".to_owned(),
             turn_id: "turn-1".to_owned(),
@@ -8435,6 +8439,8 @@ mod storage_fault_tests {
         let mut existing = std::collections::BTreeMap::new();
         existing.insert(answered.id.clone(), answered.clone());
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: "task:call-qa".into(),
             call_id: "call-qa".into(),
             tool_id: "request_user_input".into(),

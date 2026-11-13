@@ -26,6 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if with_task {
                     let call_id = format!("call-{sequence}");
                     effect.tasks = Arc::from([TaskRecord {
+                        parent_call_id: None,
+                        invocation: None,
                         id: format!("task:{call_id}"),
                         call_id: call_id.clone(),
                         tool_id: "exec".into(),

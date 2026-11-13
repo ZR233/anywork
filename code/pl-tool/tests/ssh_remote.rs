@@ -38,12 +38,12 @@ use tokio_util::sync::CancellationToken;
 #[ignore = "external SSH; requires PURE_SSH_TEST_SERVER, PURE_SSH_TEST_WORKSPACE, and PURE_REMOTE_HELPER_*"]
 async fn ssh_remote_validation() -> anyhow::Result<()> {
     let scope = match std::env::var("PURE_SSH_TEST_SCOPE").as_deref() {
-        Ok("exec") => "exec",
+        Ok("exec_command") => "exec_command",
         Ok("lsp") => "lsp",
         Ok("full") | Err(std::env::VarError::NotPresent) => "full",
         other => anyhow::bail!("invalid PURE_SSH_TEST_SCOPE: {other:?}"),
     };
-    let exec_only = scope == "exec";
+    let exec_only = scope == "exec_command";
     let host = required("PURE_SSH_TEST_SERVER")?;
     let workspace = required("PURE_SSH_TEST_WORKSPACE")?;
     let aarch64 = std::env::var_os("PURE_REMOTE_HELPER_AARCH64").map(PathBuf::from);
@@ -190,6 +190,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     let processes = CommandProcessManager::new(Arc::new(host.commands().clone()));
     let first = processes
         .start(CommandStartRequest {
+            interactive: true,
             command: "printf 'stdout-one\\n'; printf 'stderr-one\\n' >&2; read line; printf 'stdin:%s\\n' \"$line\"".to_string(),
             cwd: None,
             allow_workspace_escape: false,
@@ -242,6 +243,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
 
     let eof = processes
         .start(CommandStartRequest {
+            interactive: true,
             command: "cat > ssh-stdin-eof.txt".into(),
             cwd: None,
             allow_workspace_escape: false,
@@ -294,6 +296,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
                 "timeout-marker"
             };
             let request = CommandStartRequest {
+                interactive: false,
                 command: format!("sleep 5; touch {marker}"),
                 cwd: None,
                 allow_workspace_escape: false,
@@ -353,6 +356,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     anyhow::ensure!(environment.status == 0, "read remote execution PATH");
     let command_environment = processes
         .start(CommandStartRequest {
+            interactive: false,
             command: "printf '%s' \"$PATH\"".to_string(),
             cwd: None,
             allow_workspace_escape: false,
@@ -391,6 +395,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
         .run_task(
             "task-remote-budget",
             CommandStartRequest {
+                interactive: false,
                 command: "head -c 20000000 /dev/zero".into(),
                 cwd: None,
                 allow_workspace_escape: false,
@@ -398,7 +403,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
                 yield_time: Duration::ZERO,
                 max_output_chars: 256,
                 session_id: "budget".into(),
-                tool_id: "exec".into(),
+                tool_id: "exec_command".into(),
                 call_id: "remote-budget".into(),
                 cancellation_token: None,
                 output_observer: None,
@@ -441,6 +446,7 @@ async fn ssh_remote_validation() -> anyhow::Result<()> {
     use pl_tool::command::{CommandBackend, CommandOutputTarget, CommandSpawnRequest};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let mut tree = host.commands().spawn(CommandSpawnRequest {
+        interactive: true,
         start_control: pl_tool::command::CommandStartControl::new(tokio::time::Instant::now() + Duration::from_secs(60), CancellationToken::new(), CancellationToken::new()),
         process_id: "closed-connection-process".into(),
         command: "printf '%s' \"$$\" > tree.pid; printf 'ready\\n'; read line; printf 'continued:%s\\n' \"$line\"".into(),

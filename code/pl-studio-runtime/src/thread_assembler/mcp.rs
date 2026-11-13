@@ -25,7 +25,10 @@ impl StudioThreadTools {
             let prepared = prepare_registration(&descriptor.exposed_name, &definition, policy)?;
             let tool = ThreadMcpTool::new(lease.clone(), &descriptor.exposed_name, media.clone())
                 .map_err(|error| pl_core::thread::ThreadError::Tool(Arc::new(error)))?;
-            self.registrations.push(tool.registration(prepared));
+            self.registrations.push(
+                tool.registration(prepared)
+                    .nested(matches!(policy, ToolCallPolicy::DirectAndProgrammatic)),
+            );
         }
         if lease.has_resources() {
             for kind in pl_tool::mcp::resources::McpResourceToolKind::all() {
@@ -41,7 +44,8 @@ impl StudioThreadTools {
                     media.clone(),
                     definition,
                 );
-                self.registrations.push(tool.registration(prepared));
+                self.registrations
+                    .push(tool.registration(prepared).nested(true));
             }
         }
         Ok(self)

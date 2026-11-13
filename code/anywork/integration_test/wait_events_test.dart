@@ -150,9 +150,9 @@ void main() {
     return _Scene(tester, graph, name, captureReport, trace);
   }
 
-  for (final (name, prefix, completedName, runningName) in const [
-    ('sleep-first', 'sleep-first-wait-t', 'sleep', 'exec'),
-    ('tool-first', 'tool-first-wait-t', 'exec', 'sleep'),
+  for (final (name, prefix, completedName, runningName, otherStatus) in const [
+    ('sleep-first', 'sleep-first-wait-t', 'sleep', 'exec', 'running'),
+    ('tool-first', 'tool-first-wait-t', 'exec', 'sleep', 'running'),
   ]) {
     testWidgets('$name: immutable any-of result reaches the real history UI', (
       tester,
@@ -168,7 +168,8 @@ void main() {
       final completed = tasks.singleWhere((t) => t['toolId'] == completedName);
       final running = tasks.singleWhere((t) => t['toolId'] == runningName);
       expect(completed['status'], 'succeeded');
-      expect(running['status'], 'running');
+      // A background Lua program and the timer retain independent lifetimes.
+      expect(running['status'], otherStatus);
       expect(running['cancelRequested'], isFalse);
       expect(completed['taskId'], isNot(running['taskId']));
       expect(wait.presentationContract, 'builtin.wait@1');
@@ -893,7 +894,8 @@ final class _Scene {
         .where(
           (atom) =>
               atom.source == source &&
-              atom.tool?.callId.startsWith(prefix) == true,
+              atom.tool?.callId.startsWith(prefix) == true &&
+              atom.tool?.callId.contains(':nested:') == false,
         )
         .toList();
     expect(

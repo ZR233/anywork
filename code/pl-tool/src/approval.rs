@@ -37,7 +37,7 @@ pub const HOST_WORKSPACE_ACCESS: &str = "pl.tool.workspace.external";
 /// Assesses only the cwd already accepted by exec's strict input contract.
 pub fn assess_exec(input: &crate::exec::ValidatedExecInput, root: &Path) -> ToolAccessAssessment {
     let external = input.cwd().is_some_and(|cwd| {
-        ToolPathPolicy::new(root.to_path_buf(), false, "exec").map_or(true, |policy| {
+        ToolPathPolicy::new(root.to_path_buf(), false, "exec_command").map_or(true, |policy| {
             path_requires_external_access(&cwd.to_string_lossy(), &policy)
         })
     });

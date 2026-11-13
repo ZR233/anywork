@@ -10282,6 +10282,8 @@ pub(crate) mod storage_fault_tests {
             let turn_id = "background-turn";
             let receipt_id = "task-receipt";
             let task = TaskRecord {
+                parent_call_id: None,
+                invocation: None,
                 id: format!("task:{call_id}"),
                 call_id: call_id.into(),
                 tool_id: tool_id.into(),

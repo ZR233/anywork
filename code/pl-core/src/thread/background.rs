@@ -71,7 +71,13 @@ impl Owner {
         &mut self,
         completion: super::tool_execution::ToolExecutionCompletion,
     ) {
-        if let Err(error) = self.commit_tool_execution(completion)
+        let id = completion.call.call.call_id.clone();
+        let result = self.commit_tool_execution(completion);
+        if let Some(reply) = self.nested_replies.remove(&id) {
+            let _ = reply.send(result);
+            return;
+        }
+        if let Err(error) = result
             && !matches!(error, ThreadError::Tool(_) | ThreadError::Cancelled)
         {
             tracing::error!(thread = self.id, %error, "background result commit failed");

@@ -1093,11 +1093,10 @@ mod tests {
                     "binding-explicit",
                     0,
                     support::tool_reply(
-                        "show_files",
+                        "exec",
                         "selected-display-call",
                         serde_json::json!({
-                            "caption":"selected caption",
-                            "files":[{"kind":"workspace","path":"selected.md"}],
+                            "code":"return tools.show_files({caption='selected caption', files={{kind='workspace',path='selected.md'}}})",
                         }),
                     ),
                 ),

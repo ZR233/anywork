@@ -25,9 +25,94 @@ pub struct TaskAccess {
     caller: String,
     may_wait: bool,
     may_cancel: bool,
+    nested_catalog: Arc<[NestedToolDeclaration]>,
+    pub(super) nested_invocations: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+/// One frozen program-only binding. The payload is the original host declaration.
+#[derive(Debug, Clone)]
+pub struct NestedToolDeclaration {
+    pub declaration: ModelToolDeclaration,
+    pub parallel: bool,
+}
 impl TaskAccess {
+    /// Owner-assigned identity of the invocation holding this capability.
+    /// Reading it neither creates a task nor grants additional control permission.
+    pub fn current_task_id(&self) -> &str {
+        &self.caller
+    }
+
+    pub(crate) fn with_nested_plan(
+        mut self,
+        plan: Option<Arc<crate::tool::opaque::ToolPlan>>,
+    ) -> Self {
+        self.nested_catalog = plan
+            .as_ref()
+            .map(|plan| {
+                plan.nested()
+                    .map(|(_, tool)| NestedToolDeclaration {
+                        declaration: tool.declaration().clone(),
+                        parallel: tool.nested_policy().expect("filtered policy").parallel,
+                    })
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .unwrap_or_else(|| Arc::from([]));
+        self
+    }
+    pub fn nested_tools(&self) -> Vec<NestedToolDeclaration> {
+        self.nested_catalog.to_vec()
+    }
+    /// Owner-assigned identities of this invocation's admitted children, in submission order.
+    /// This derived index contains no executors or grants.
+    pub fn nested_call_ids(&self) -> Vec<String> {
+        self.nested_invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// Dispatches through the original owner. No executor or grant crosses this capability.
+    pub async fn call_nested(
+        &self,
+        tool_id: String,
+        arguments: OpaquePayload,
+        cancellation: CancellationToken,
+    ) -> Result<crate::tool::ToolOutput, ThreadError> {
+        if self.nested_catalog.is_empty() {
+            return Err(ThreadError::ToolPermissionRevoked);
+        }
+        let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
+        let (reply, response) = oneshot::channel();
+        commands
+            .send(mailbox::MailboxCommand::InvokeNested {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+    /// Waits for every admitted child to settle, even after the program was cancelled.
+    pub async fn drain_nested(&self) -> Result<(), ThreadError> {
+        let parent = self
+            .caller
+            .strip_prefix("task:")
+            .ok_or(ThreadError::InvalidIdentity)?;
+        let mut snapshots = self.snapshots.clone();
+        loop {
+            if !snapshots.borrow_and_update().tasks.values().any(|task| {
+                task.parent_call_id.as_deref() == Some(parent)
+                    && task.status == task::TaskStatus::Running
+            }) {
+                return Ok(());
+            }
+            snapshots.changed().await.map_err(|_| ThreadError::Closed)?;
+        }
+    }
     pub(super) fn new(
         owner: &Owner,
         caller: &str,
@@ -45,6 +130,8 @@ impl TaskAccess {
             caller: format!("task:{caller}"),
             may_wait: permissions.wait,
             may_cancel: permissions.cancel,
+            nested_catalog: Arc::from([]),
+            nested_invocations: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 

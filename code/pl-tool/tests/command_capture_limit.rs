@@ -347,6 +347,7 @@ where
 #[cfg(unix)]
 fn request(command: String, key: &str) -> CommandStartRequest {
     CommandStartRequest {
+        interactive: false,
         command,
         cwd: None,
         allow_workspace_escape: false,
@@ -432,9 +433,9 @@ async fn stdin_eof_delivers_utf8_and_yield_keeps_the_same_process() -> anyhow::R
     let root = tempfile::tempdir()?;
     let backend = Arc::new(ExecutorCommandBackend::local(root.path())?);
     let manager = CommandProcessManager::new(backend.clone());
-    let snapshot = manager
-        .start(request("cat; printf stderr >&2".into(), "input"))
-        .await?;
+    let mut command = request("cat; printf stderr >&2".into(), "input");
+    command.interactive = true;
+    let snapshot = manager.start(command).await?;
     let id = snapshot
         .process_id
         .context("still running without stdin EOF")?;

@@ -166,20 +166,7 @@ fn scenario_prompt(body: &Value) -> String {
 }
 
 fn declared_tool_names(body: &Value) -> Vec<String> {
-    body.get("tools")
-        .and_then(Value::as_array)
-        .map(|tools| {
-            tools
-                .iter()
-                .filter_map(|tool| {
-                    tool.get("name")
-                        .and_then(Value::as_str)
-                        .or_else(|| tool.pointer("/function/name").and_then(Value::as_str))
-                        .map(str::to_owned)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::lua::catalogue(body)
 }
 
 fn declared(tools: &[String], name: &str) -> bool {
@@ -278,7 +265,7 @@ fn sleep_args(duration_ms: u64) -> Value {
 }
 
 fn exec_args(command: &str) -> Value {
-    json!({ "command": command })
+    crate::lua::arguments("exec_command", &json!({ "command": command }))
 }
 
 fn wait_args(call_ids: &[&str], timeout_ms: u64) -> Value {
@@ -846,6 +833,12 @@ pub(super) async fn responses(
         }
     }
 
+    for call in &mut tool_calls {
+        let input: Value = serde_json::from_str(&call.arguments).expect("fixture arguments");
+        let (name, arguments) = crate::lua::invocation(&body, &call.name, &input);
+        call.name = name;
+        call.arguments = arguments;
+    }
     record(&state, "POST", "/v1/responses", body, accepted, note);
     if !tool_calls.is_empty() {
         let calls = tool_calls

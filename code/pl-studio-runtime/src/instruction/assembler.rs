@@ -186,10 +186,10 @@ fn platform_instructions(environment: &ExecutionEnvironment) -> String {
     };
     let cwd_rule = match environment.transport {
         ExecutionTransport::Local => {
-            "For `exec.cwd`, use `.` for the workspace root or a relative path such as `src`. Absolute local paths are accepted only when the current Permission Mode and workspace policy allow them."
+            "For `exec_command.cwd`, use `.` for the workspace root or a relative path such as `src`. Absolute local paths are accepted only when the current Permission Mode and workspace policy allow them."
         }
         ExecutionTransport::Ssh => {
-            "For `exec.cwd`, use only a workspace-relative path: `.` for the workspace root or a path such as `src`. Never pass the remote canonical workspace root or any other absolute path."
+            "For `exec_command.cwd`, use only a workspace-relative path: `.` for the workspace root or a path such as `src`. Never pass the remote canonical workspace root or any other absolute path."
         }
     };
     let os_specific = if environment.os.is_windows() {
@@ -211,7 +211,7 @@ fn platform_instructions(environment: &ExecutionEnvironment) -> String {
         ShellDialect::Cmd => "Use Windows cmd.exe syntax; commands are started as `cmd /C`.",
     };
     format!(
-        "{}\n\n{}\n\n## Runtime execution environment\n- Execution target: {target}\n- Target OS: {}\n- Shell dialect: {}\n- Shell executable: `{}`\n- {shell_rules}\n- {cwd_rule}\n- Follow this runtime shell exactly. Do not infer syntax from the controller OS, your model defaults, or `$SHELL`.",
+        "{}\n\n{}\n\n## Runtime execution environment\n- Tool orchestration: `exec.code` is Lua 5.4. For a shell command use `local r = tools.exec_command({{command=[=[your command]=]}}); print(r.stdout.content); print(r.stderr.content); print(r.exitCode)`. Put multiline commands and patches in Lua long strings `[=[...]=]` to preserve newlines and quotes. Call custom text tools such as `tools.apply_patch([=[patch text]=])` with a string. Combine dependent calls in one program and print only the fields needed for the next decision; unprinted intermediate results remain in durable tool history.\n- Execution target: {target}\n- Target OS: {}\n- Shell dialect: {}\n- Shell executable: `{}`\n- {shell_rules}\n- {cwd_rule}\n- Follow this runtime shell exactly. Do not infer syntax from the controller OS, your model defaults, or `$SHELL`.",
         PLATFORM_COMMON_INSTRUCTIONS.trim(),
         os_specific.trim(),
         environment.os.as_str(),

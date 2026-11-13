@@ -1,3 +1,7 @@
+#[expect(
+    dead_code,
+    reason = "shared isolated runtime fixtures also cover program-only tools"
+)]
 mod support;
 
 use anyhow::{Context, Result, ensure};

@@ -16,7 +16,7 @@ use pl_studio_runtime::{
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use support::{Environment, prompt_step, receipt, text_reply, tool_reply};
+use support::{Environment, program_reply, prompt_step, receipt, text_reply, tool_reply};
 
 const REPAIR_PATH: &str = ".anywork/lsp/fixture.toml";
 const CATALOG_ATTEMPTS: usize = 16;
@@ -66,13 +66,13 @@ fn script(configuration: &str) -> Vec<Step> {
         &mut steps,
         "failed-discovery",
         "lsp_status",
-        tool_reply("lsp_status", "failed-status", json!({})),
+        program_reply("lsp_status", "failed-status", json!({})),
     );
     after(
         &mut steps,
         "failed-status",
         "failed",
-        tool_reply("stat_path", "ordinary-stat", json!({"path":"tracked.txt"})),
+        program_reply("stat_path", "ordinary-stat", json!({"path":"tracked.txt"})),
     );
     after(
         &mut steps,
@@ -83,7 +83,7 @@ fn script(configuration: &str) -> Vec<Step> {
     steps.push(prompt_step(
         "repair configuration",
         steps.len(),
-        tool_reply(
+        program_reply(
             "write_file",
             "repair-file",
             json!({"path":REPAIR_PATH,"mode":"overwrite","content":configuration}),
@@ -124,19 +124,19 @@ fn script(configuration: &str) -> Vec<Step> {
     steps.push(prompt_step(
         "query repaired server",
         steps.len(),
-        tool_reply("lsp_status", "mixed-status", json!({})),
+        program_reply("lsp_status", "mixed-status", json!({})),
     ));
     after(
         &mut steps,
         "mixed-status",
         "ready",
-        tool_reply("lsp_capabilities", "healthy-capabilities", json!({})),
+        program_reply("lsp_capabilities", "healthy-capabilities", json!({})),
     );
     after(
         &mut steps,
         "healthy-capabilities",
         "fixture",
-        tool_reply(
+        program_reply(
             "lsp_query",
             "real-hover",
             json!({
@@ -476,9 +476,10 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
         ensure!(requests.iter().any(|request| {
             request.body["tools"].as_array().is_some_and(|tools| {
                 tools.iter().any(|tool| {
-                    tool["name"]
-                        .as_str()
-                        .is_some_and(|name| name.ends_with("lsp_query"))
+                    tool["name"] == "exec"
+                        && tool["description"]
+                            .as_str()
+                            .is_some_and(|sdk| sdk.contains("tools[\"lsp_query\"]"))
                 })
             })
         }));

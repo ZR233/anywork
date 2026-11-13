@@ -16,6 +16,7 @@ members = [
     "code/pl-tool",
     "code/tools/filesystem",
     "code/tools/command",
+    "code/tools/lua",
     "code/tools/git",
     "code/tools/lsp",
     "code/tools/mcp",
@@ -42,6 +43,8 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+mlua = { version = "=0.12.2", features = ["lua54", "vendored", "async", "serde", "send"] }
+pl-tool-lua = { path = "code/tools/lua" }
 criterion = { version = "=0.8.2", features = ["async_tokio"] }
 agent-client-protocol = { version = "=5.1.0", default-features = false }
 agent-client-protocol-schema = { version = "=1.16.0", default-features = false }

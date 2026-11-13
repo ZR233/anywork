@@ -4,10 +4,10 @@
 use pl_agent_tool::Tool;
 use pl_tool_command::exec::{ExecContext, ExecTool, exec_definition};
 use pl_tool_command::process::{
-    CancellationToken, CommandCaptureResult, CommandCapturedStream,CommandCaptureState, CommandInputOutcome,
-    CommandInputReceipt, CommandOutputSnapshot, CommandProcessFinalResult, CommandProcessLifecycle,
-    FinalCommandProcess, InputRequest, InputTarget, ProcessExecutor, ProcessInput, ProcessRequest,
-    RunningCommandProcess, StdinCloseState,
+    CancellationToken, CommandCaptureResult, CommandCaptureState, CommandCapturedStream,
+    CommandInputOutcome, CommandInputReceipt, CommandOutputSnapshot, CommandProcessFinalResult,
+    CommandProcessLifecycle, FinalCommandProcess, InputRequest, InputTarget, ProcessExecutor,
+    ProcessInput, ProcessRequest, RunningCommandProcess, StdinCloseState,
 };
 use pl_tool_command::write_stdin::{
     StdinContext, StdinResult, WriteStdinTool, write_stdin_definition,
@@ -79,7 +79,11 @@ impl ProcessExecutor for PipeOwner {
         let mut child = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(request.command)
-            .stdin(Stdio::piped())
+            .stdin(if request.interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -98,8 +102,15 @@ impl ProcessExecutor for PipeOwner {
         snapshot.stderr.content = String::from_utf8(output.stderr).unwrap();
         snapshot.stdout.original_length = snapshot.stdout.content.len();
         snapshot.stderr.original_length = snapshot.stderr.content.len();
-        let stream=|bytes|CommandCapturedStream{state:CommandCaptureState::Complete,confirmed_bytes:Some(bytes),error:None};
-        snapshot.capture=Some(CommandCaptureResult{stdout:stream(snapshot.stdout.original_length as u64),stderr:stream(snapshot.stderr.original_length as u64)});
+        let stream = |bytes| CommandCapturedStream {
+            state: CommandCaptureState::Complete,
+            confirmed_bytes: Some(bytes),
+            error: None,
+        };
+        snapshot.capture = Some(CommandCaptureResult {
+            stdout: stream(snapshot.stdout.original_length as u64),
+            stderr: stream(snapshot.stderr.original_length as u64),
+        });
         Ok(snapshot)
     }
 }
@@ -138,7 +149,7 @@ async fn exec_and_stdin_use_one_actual_pipe_and_preserve_domain_output() {
     let exec_owner = owner.clone();
     let running = tokio::spawn(async move {
         exec.execute(
-            r#"{"command":"cat; printf err >&2","timeoutSeconds":17,"maxOutputChars":100000}"#
+            r#"{"command":"cat; printf err >&2","interactive":true,"timeoutSeconds":17,"maxOutputChars":100000}"#
                 .into(),
             ExecContext {
                 process: exec_owner,

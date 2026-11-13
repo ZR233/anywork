@@ -142,3 +142,109 @@ async fn websocket_continuation_rejects_non_json_output_from_previous_response()
     assert!(!report.requests[1].accepted);
     assert_eq!(report.consumed_steps, 1);
 }
+
+#[tokio::test]
+async fn lua_program_receipts_wait_for_their_own_terminal_output() {
+    for status in ["Succeeded", "Failed"] {
+        let fixture = FixtureServer::start(vec![Step::tool_output(
+            Protocol::ResponsesHttp,
+            "parent",
+            "terminal marker",
+            0,
+            Reply::Sse(responses_text("terminal accepted", "done", "fixture-model")),
+        )])
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("{}/responses", fixture.base_url());
+        let mut body = json!({"stream":true,"input":[
+            {"type":"function_call","name":"exec","call_id":"parent","arguments":"{}"},
+            {"type":"function_call_output","call_id":"parent","output":
+                "Task task:parent is running. Its result will be delivered when execution finishes."}
+        ]});
+        let waiting = client.post(&url).json(&body).send().await.unwrap();
+        assert!(waiting.status().is_success());
+        let waiting = waiting.text().await.unwrap();
+        assert!(waiting.contains("task:parent") && !waiting.contains("terminal accepted"));
+        body["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"user","content":
+            "Task task:other for tool exec finished: Succeeded.\nterminal marker"}));
+        let unrelated = client.post(&url).json(&body).send().await.unwrap();
+        assert!(unrelated.status().is_success());
+        assert!(
+            !unrelated
+                .text()
+                .await
+                .unwrap()
+                .contains("terminal accepted")
+        );
+        body["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"user","content":
+            format!("Task task:parent for tool exec finished: {status}.\nwrong output")}));
+        let wrong = client.post(&url).json(&body).send().await.unwrap();
+        assert_eq!(wrong.status(), reqwest::StatusCode::BAD_REQUEST);
+        body["input"].as_array_mut().unwrap().last_mut().unwrap()["content"] = json!(format!(
+            "Task task:parent for tool exec finished: {status}.\nterminal marker"
+        ));
+        assert_eq!(
+            pl_provider_fixture::observed_tool_output(&body, "parent").as_deref(),
+            Some("terminal marker")
+        );
+        let complete = client.post(&url).json(&body).send().await.unwrap();
+        assert!(complete.status().is_success());
+        assert!(complete.text().await.unwrap().contains("terminal accepted"));
+        let report = fixture.shutdown().await.unwrap();
+        assert_eq!(report.consumed_steps, 1);
+        assert_eq!(
+            report
+                .requests
+                .iter()
+                .filter(|request| request.accepted)
+                .count(),
+            3
+        );
+    }
+}
+
+#[tokio::test]
+async fn chat_lua_running_receipt_returns_a_chat_wait_call() {
+    let fixture = FixtureServer::start(vec![Step::tool_output(
+        Protocol::Chat,
+        "parent",
+        "terminal marker",
+        0,
+        Reply::Sse(Vec::new()),
+    )])
+    .await
+    .unwrap();
+    let body = json!({"stream":true,"messages":[
+        {"role":"assistant","tool_calls":[{"id":"parent","type":"function","function":{"name":"exec","arguments":"{}"}}]},
+        {"role":"tool","tool_call_id":"parent","content":
+            "Task task:parent is running. Its result will be delivered when execution finishes."}
+    ]});
+    let reply = reqwest::Client::new()
+        .post(format!("{}/chat/completions", fixture.base_url()))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(reply.status().is_success());
+    let wire = reply.text().await.unwrap();
+    let first = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let event: serde_json::Value = serde_json::from_str(first).unwrap();
+    let call = &event["choices"][0]["delta"]["tool_calls"][0];
+    assert_eq!(call["function"]["name"], "wait");
+    let arguments: serde_json::Value =
+        serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(arguments["taskIds"], json!(["task:parent"]));
+    let report = fixture.shutdown().await.unwrap();
+    assert_eq!(report.consumed_steps, 0);
+    assert!(report.requests[0].accepted);
+}

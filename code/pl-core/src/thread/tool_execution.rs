@@ -93,13 +93,27 @@ impl Owner {
             self.pending.insert(id, call);
             return Err(error);
         }
-        let cancellation = if call.executor.requires_foreground_execution() {
-            cancellation.child_token()
-        } else {
-            self.interrupt.background_token()
-        };
+        let cancellation =
+            if call.parent_call_id.is_some() || call.executor.requires_foreground_execution() {
+                cancellation.child_token()
+            } else {
+                self.interrupt.background_token()
+            };
         self.task_tokens
             .insert(format!("task:{}", call.call.call_id), cancellation.clone());
+        let tasks =
+            TaskAccess::new(self, &id, &call.executor).with_nested_plan(call.nested_plan.clone());
+        if let Some(plan) = &call.nested_plan {
+            self.nested_plans.insert(
+                format!("task:{id}"),
+                super::owner::NestedScope {
+                    plan: plan.clone(),
+                    context: call.context.clone(),
+                    model_projection: call.model_projection.clone(),
+                    invocations: tasks.nested_invocations.clone(),
+                },
+            );
+        }
         let authorized = call.executor.remains_authorized(&self.tools);
         let cold = self.cold.clone();
         let cold_error = self.cold_error.clone();
@@ -108,7 +122,7 @@ impl Owner {
             context: call.context.clone(),
             history_fence: self.state.commit_sequence,
             model_projection: call.model_projection.clone(),
-            tasks: Some(TaskAccess::new(self, &id, &call.executor)),
+            tasks: Some(tasks),
             thread_id: self.id.clone(),
             turn_id: call.turn_id.clone(),
             call_id: id,
@@ -169,6 +183,7 @@ impl Owner {
             }
             self.permission_leases.remove(&format!("permission:{id}"));
             self.task_tokens.remove(&format!("task:{id}"));
+            self.nested_plans.remove(&format!("task:{id}"));
             // The call returned and its result is now enrolled by the same `publish`/`admit` the
             // ordinary path uses, so the transient ceiling can be given back — but only once that
             // hand-over really completed. Handing it back before the result was enrolled would let a
@@ -469,7 +484,9 @@ impl Owner {
             .get(&format!("task:{id}"))
             .cloned()
             .ok_or(ThreadError::InvalidIdentity)?;
-        let (target, delivered_context) = if task.acknowledgement.is_some() {
+        let (target, delivered_context) = if let Some(parent_call_id) = call.parent_call_id {
+            (ToolDeliveryTarget::Nested { parent_call_id }, Vec::new())
+        } else if task.acknowledgement.is_some() {
             let context = super::background::result_context(
                 &task,
                 task::TaskStatus::from_outcome(&outcome),

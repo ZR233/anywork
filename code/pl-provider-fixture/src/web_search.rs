@@ -819,6 +819,12 @@ pub(super) async fn responses(
         }
         Marker::None => {}
     }
+    if let Some(call) = &mut tool_call {
+        let input: Value = serde_json::from_str(&call.arguments).expect("fixture arguments");
+        let (name, arguments) = crate::lua::invocation(&body, &call.name, &input);
+        call.name = name;
+        call.arguments = arguments;
+    }
     record(&state, "POST", "/v1/responses", body, accepted, note);
     if slow {
         return sse_reply(

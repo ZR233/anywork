@@ -153,7 +153,8 @@ impl StudioThreadTools {
         if capabilities.exec {
             let exec_definition = ThreadBuiltin::Exec.declaration();
             let stdin_definition = ThreadBuiltin::WriteStdin.declaration();
-            let exec = prepare_registration("exec", &exec_definition, ToolCallPolicy::DirectOnly)?;
+            let exec =
+                prepare_registration("exec_command", &exec_definition, ToolCallPolicy::DirectOnly)?;
             let stdin =
                 prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)?;
             let archive = store.command_archive(files.clone(), host_scratch);
@@ -256,6 +257,7 @@ impl StudioThreadTools {
         registrations.push(
             prepared_sleep
                 .attach(ToolHandle::new(sleep.attach(pl_tool::session::SleepTool)))
+                .top_level_only()
                 .with_presentation_contract(ToolPresentationContract::new("builtin.sleep@1")),
         );
         for kind in [
@@ -317,8 +319,10 @@ impl StudioThreadTools {
                 binding.credentials.clone(),
                 definition,
             );
-            self.registrations
-                .push(tool.registration(declaration, binding.authorization.clone()));
+            self.registrations.push(
+                tool.registration(declaration, binding.authorization.clone())
+                    .nested(matches!(policy, ToolCallPolicy::DirectAndProgrammatic)),
+            );
         }
         Ok(self)
     }
@@ -497,7 +501,8 @@ impl StudioThreadTools {
             )?;
             let tool =
                 pl_tool::lsp::ThreadLspTool::new(registry.clone(), paths.clone(), kind, definition);
-            self.registrations.push(tool.registration(declaration));
+            self.registrations
+                .push(tool.registration(declaration).nested(true));
         }
         Ok(self)
     }
@@ -509,15 +514,42 @@ impl StudioThreadTools {
     }
 
     pub(crate) fn into_registrations(self) -> Vec<Registration> {
-        self.registrations
+        lua_registrations(self.registrations)
     }
 
     /// Transfers this catalog and reader into the one assembly specification.
     pub fn install(self, mut spec: StudioThreadSpec) -> StudioThreadSpec {
-        spec.tools.extend(self.registrations);
+        spec.tools.extend(lua_registrations(self.registrations));
         spec.resources = ResourceAccess::new(self.store);
         spec
     }
+}
+
+/// Freeze one program surface from the same registrations passed to Thread. Control tools
+/// retain their top-level declarations and authority; ordinary tools become program-only.
+fn lua_registrations(registrations: Vec<Registration>) -> Vec<Registration> {
+    if !registrations.iter().any(Registration::permits_nesting) {
+        return registrations;
+    }
+    let mut result = Vec::new();
+    for registration in registrations {
+        if registration.permits_nesting() {
+            let parallel = registration.nested_parallel();
+            result.push(registration.nested(parallel));
+        } else {
+            result.push(registration);
+        }
+    }
+    let tool = pl_tool::lua::LuaTool::new("");
+    use pl_agent_tool::Tool;
+    let prepared = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+        .expect("static Lua registration");
+    result.push(
+        prepared
+            .attach(ToolHandle::new(tool))
+            .with_nested_catalog(pl_tool::lua::project_catalog),
+    );
+    result
 }
 
 fn mutation_presentation_contract(

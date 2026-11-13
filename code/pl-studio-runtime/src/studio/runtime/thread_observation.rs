@@ -3539,6 +3539,8 @@ mod storage_fault_tests {
             outcome: ToolOutcome::Succeeded,
         };
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: format!("task:{call}"),
             call_id: call.into(),
             tool_id: tool.into(),
