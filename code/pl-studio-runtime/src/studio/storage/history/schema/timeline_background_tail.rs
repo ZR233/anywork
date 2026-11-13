@@ -67,6 +67,7 @@ mod tests {
             }
             .migrations()
             .into_iter()
+            .filter(|step| !work_snapshots::is_legacy_marker(step.name()))
             .filter(|step| {
                 !matches!(
                     step.name(),

@@ -4725,7 +4725,7 @@ mod completion_boundary_tests {
         let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
         assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
             pl_protocol::DisplayBlockBody::Work { timing, .. }
-            if timing.started_at == first.committed_at && timing.finished_at.is_none()));
+            if timing.started_at == Some(first.committed_at) && timing.finished_at.is_none()));
         started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
         let receipt = ModelMemberReceipt {
@@ -4764,7 +4764,7 @@ mod completion_boundary_tests {
             assert!(
                 matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
                 if cut.open[0].next_member == 1 && cut.open[0].unfinished == 0
-                    && timing.started_at == first.committed_at
+                    && timing.started_at == Some(first.committed_at)
                     && timing.finished_at.is_none())
             );
         }
@@ -4784,7 +4784,7 @@ mod completion_boundary_tests {
             .find(|block| block.published.is_some()).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
             pl_protocol::DisplayBlockBody::Work { timing, .. }
-            if timing.started_at == first.committed_at && timing.finished_at == Some(third.committed_at)));
+            if timing.started_at == Some(first.committed_at) && timing.finished_at == Some(third.committed_at)));
         let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
         assert_eq!(cold_work[0].body, frozen_work.header.body);
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;

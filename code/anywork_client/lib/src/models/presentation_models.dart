@@ -1,6 +1,6 @@
 import 'chat_models.dart';
 
-const presentationVersion = 4;
+const presentationVersion = 5;
 
 final class DisplayBlockRef {
   const DisplayBlockRef({required this.databaseId, required this.blockId});
@@ -19,7 +19,7 @@ final class DisplayBlockRef {
 /// Wall-clock interval owned by the Work block, in Unix seconds.
 final class WorkTiming {
   const WorkTiming({required this.startedAt, this.finishedAt});
-  final int startedAt;
+  final int? startedAt;
   final int? finishedAt;
 }
 

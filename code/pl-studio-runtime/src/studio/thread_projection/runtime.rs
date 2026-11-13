@@ -12,6 +12,37 @@ pub(in crate::studio) fn project_runtime(
     updated_at: i64,
     summary: &pl_core::thread::UsageSummary,
 ) -> Result<ThreadRuntimeSnapshot, ProjectionError> {
+    let mode = state
+        .extensions
+        .get("studio.mode")
+        .map(|record| crate::mode::decode_mode_snapshot(&record.payload))
+        .transpose()?;
+    project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
+}
+
+/// Cold reads require saved run facts, not a recoverable executable graph.
+pub(in crate::studio) fn project_cold_runtime(
+    thread_id: &str,
+    state: &ThreadSnapshot,
+    updated_at: i64,
+    summary: &pl_core::thread::UsageSummary,
+) -> Result<ThreadRuntimeSnapshot, ProjectionError> {
+    let mode = state
+        .extensions
+        .get("studio.mode")
+        .map(|record| crate::mode::presentation_mode(&record.payload))
+        .transpose()?
+        .flatten();
+    project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
+}
+
+fn project_with_mode(
+    thread_id: &str,
+    state: &ThreadSnapshot,
+    updated_at: i64,
+    summary: &pl_core::thread::UsageSummary,
+    mode: Option<&crate::mode::SavedThreadMode>,
+) -> Result<ThreadRuntimeSnapshot, ProjectionError> {
     // Totals come from the Thread's cumulative summary, never from whatever attempts are still
     // resident: finished attempts are dropped by the commit that produced them, so aggregating
     // them here is what made a hot increment, a reconnect and a cold restore disagree.
@@ -107,11 +138,9 @@ pub(in crate::studio) fn project_runtime(
     if let Some(run) = workflow
         .as_mut()
         .and_then(|workflow| workflow.current_run.as_mut())
-        && let Some(record) = state.extensions.get("studio.mode")
+        && let Some(mode) = mode
     {
         // Recovery/preparation owns compilation. Token projections only read saved metadata.
-        let mode =
-            crate::mode::decode_mode_snapshot(&record.payload).map_err(ProjectionError::from)?;
         run.mode_display_name
             .clone_from(&mode.definition.display_name);
         if let Some(current) = mode.definition.workflow.as_ref().and_then(|graph| {

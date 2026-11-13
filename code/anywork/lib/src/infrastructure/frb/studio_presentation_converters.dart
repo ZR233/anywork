@@ -24,7 +24,9 @@ frb_presentation.BridgeDisplayMemberWindow _displayMemberWindowToFrb(
 
 WorkTiming _workTimingFromFrb(frb_presentation.BridgeWorkTiming value) =>
     WorkTiming(
-      startedAt: _exactSignedTimelineInt(value.startedAt),
+      startedAt: value.startedAt == null
+          ? null
+          : _exactSignedTimelineInt(value.startedAt!),
       finishedAt: value.finishedAt == null
           ? null
           : _exactSignedTimelineInt(value.finishedAt!),

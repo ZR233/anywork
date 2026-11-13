@@ -159,7 +159,7 @@ mod tests {
     fn work() -> protocol::DisplayBlockBody {
         protocol::DisplayBlockBody::Work {
             timing: protocol::WorkTiming {
-                started_at: 1_700_000_000,
+                started_at: Some(1_700_000_000),
                 finished_at: Some(1_700_000_125),
             },
             members: reference(),
@@ -192,7 +192,7 @@ mod tests {
         let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.blocks[0].body else {
             panic!("expected Work");
         };
-        assert_eq!(timing.started_at, 1_700_000_000);
+        assert_eq!(timing.started_at, Some(1_700_000_000));
         assert_eq!(timing.finished_at, Some(1_700_000_125));
         assert!(mapped.live.is_none(), "split cut must not clear live");
 
@@ -230,7 +230,7 @@ mod tests {
         };
         assert_eq!(protocol_block_ref(members.clone()), reference());
 
-        assert_eq!(timing.started_at, 1_700_000_000);
+        assert_eq!(timing.started_at, Some(1_700_000_000));
         assert_eq!(timing.finished_at, Some(1_700_000_125));
     }
 

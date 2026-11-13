@@ -62,8 +62,9 @@ pub struct AgentSpawn {
     /// Optional host-bound feedback to the reviewed executor; accepted only by review Profiles.
     #[serde(default, deserialize_with = "review_feedback")]
     pub review_feedback: Option<ReviewFeedback>,
-    /// Product-owned creation metadata; never interpreted as framework permissions.
+    /// Internal creation metadata, omitted from model-facing arguments.
     #[serde(default)]
+    #[schemars(skip)]
     pub metadata: serde_json::Value,
 }
 

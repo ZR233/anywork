@@ -133,6 +133,18 @@ impl MigratorTraitSelf for Migrator {
             Box::new(timeline_background_tail::TimelineBackgroundTail),
             Box::new(completion_boundary::CompletionBoundary),
             Box::new(immutable_completion_runs::ImmutableCompletionRuns),
+            Box::new(work_snapshots::LegacyDisplayMarker(
+                "m20261109_000001_display_snapshots",
+            )),
+            Box::new(work_snapshots::LegacyDisplayMarker(
+                "m20261111_000001_display_observations",
+            )),
+            Box::new(work_snapshots::LegacyDisplayMarker(
+                "m20261112_000001_history_tool_work",
+            )),
+            Box::new(work_snapshots::LegacyDisplayMarker(
+                "m20261112_000001_visible_tail_workgroups",
+            )),
             Box::new(work_snapshots::WorkSnapshots),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
@@ -378,14 +390,15 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .context("missing history identity; existing data preserved")?;
     let version: i64 = row.try_get("", "schema_version")?;
     ensure!(
-        !(19..=21).contains(&version),
-        "unsupported old Work snapshots (history schema {version}); existing data preserved"
-    );
-    ensure!(
         (1..=HISTORY_SCHEMA_VERSION).contains(&version),
         "unsupported history schema {version}; existing data preserved"
     );
-    let pending = migrator.get_pending_migrations_read_only(db).await?;
+    let pending = migrator
+        .get_pending_migrations_read_only(db)
+        .await?
+        .into_iter()
+        .filter(|step| !work_snapshots::is_legacy_marker(step.name()))
+        .collect::<Vec<_>>();
     let atomic_pending = pending.iter().any(|step| step.name() == ATOMIC_TIMELINE);
     let metering_pending = pending.iter().any(|step| step.name() == METERING_FACTS);
     let combined_pending = pending.iter().any(|step| step.name() == COMBINED_CONTENT);
@@ -482,6 +495,14 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 demand_conversation::validate_tables(db).await?;
             }
             match version {
+                19..=21 => {
+                    immutable_completion_runs::validate_preserved(db).await?;
+                    ensure!(
+                        pending.iter().all(|step| step.name() == WORK_SNAPSHOTS
+                            || is_lifecycle_migration(step.name())),
+                        "legacy display has pending earlier content migrations"
+                    );
+                }
                 18 => {
                     immutable_completion_runs::validate(db).await?;
                     ensure!(
@@ -1307,6 +1328,7 @@ impl MigrationTrait for CombinedContent {
                 .get_pending_migrations_read_only(db)
                 .await?
                 .iter()
+                .filter(|step| !work_snapshots::is_legacy_marker(step.name()))
                 .any(|step| {
                     // Later content steps are still pending at the format-10 boundary.
                     !matches!(

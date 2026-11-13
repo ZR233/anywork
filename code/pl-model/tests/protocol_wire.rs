@@ -3973,7 +3973,11 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
                         &pl_agent_tool::ToolDefinition::json(
                             "lookup",
                             "Look up a symbol",
-                            json!({"type":"object","properties":{"name":{"type":"string"}}}),
+                            json!({"type":"object","additionalProperties":false,
+                                "properties":{"name":{"type":"string"}, "free":true,
+                                    "flag":{"type":"boolean","default":false,"enum":[true,false]}},
+                                "oneOf":[{"type":"object","properties":{"forbidden":false,
+                                    "nested":{"type":"array","items":{"type":"object","properties":{"blocked":false}}}}}]}),
                         )
                         .unwrap(),
                         pl_model::completion::ToolCallPolicy::DirectOnly,
@@ -4013,6 +4017,19 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
     let tools = records[0].body["tools"].as_array().unwrap();
     assert!(tools.iter().all(|tool| tool["type"] == "function"));
     assert!(tools.iter().all(|tool| tool["type"] != "web_search"));
+    let schema = &tools.iter().find(|tool| tool["name"] == "lookup").unwrap()["parameters"];
+    assert_eq!(schema["properties"]["free"], json!({}));
+    assert_eq!(
+        schema["oneOf"][0]["properties"]["forbidden"],
+        json!({"not":{}})
+    );
+    assert_eq!(
+        schema["oneOf"][0]["properties"]["nested"]["items"]["properties"]["blocked"],
+        json!({"not":{}})
+    );
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(schema["properties"]["flag"].get("default").is_none());
+    assert_eq!(schema["properties"]["flag"]["enum"], json!([true, false]));
 }
 
 #[tokio::test]

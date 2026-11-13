@@ -8,7 +8,7 @@ use crate::{
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
-pub const PRESENTATION_VERSION: u32 = 4;
+pub const PRESENTATION_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,10 +18,11 @@ pub struct DisplayBlockRef {
 }
 
 /// The Work block's creation-to-boundary interval, in Unix seconds.
+/// Imported snapshots without group-level clock evidence retain unknown timestamps.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkTiming {
-    pub started_at: i64,
+    pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
 }
 
