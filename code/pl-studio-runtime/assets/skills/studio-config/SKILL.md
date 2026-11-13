@@ -36,6 +36,7 @@ configuration are different locations:
 | Configure | Current file/location | Read next |
 | --- | --- | --- |
 | Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 33 | [Main configuration](references/main-config.md) |
+| Noninteractive `anywk exec` | Explicit `--studio-home`, existing native config, environment-only credentials and runtime-only skill options | [CLI execution](references/main-config.md#noninteractive-cli-execution) |
 | ACP definitions | `<studio-home>/acp/<id>.toml`, TOML schema 1 | [Main configuration](references/main-config.md#acp-accounts) |
 | MCP, including Dart MCP | `<studio-home>/mcp/host/<key>.toml` or `mcp/ssh/<ssh-key>/<key>.toml`, TOML schema 1; both directories are on the Studio host | [MCP formats and setup](references/mcp.md) |
 | Language servers | `<workspace>/.anywork/lsp/<id>.toml`, TOML schema 1; local defaults at `<studio-home>/lsp/host/<id>.toml` | [LSP formats and setup](references/lsp.md) |

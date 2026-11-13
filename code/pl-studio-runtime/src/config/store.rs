@@ -23,6 +23,8 @@ pub struct ConfigStore {
     paths: ConfigPaths,
     pub(super) credentials: Arc<dyn CredentialStore>,
     observed: Arc<std::sync::Mutex<Option<super::credential_commit::Baseline>>>,
+    pub(super) environment_only: bool,
+    require_existing: bool,
 }
 
 impl std::fmt::Debug for ConfigStore {
@@ -112,6 +114,22 @@ impl ConfigStore {
         )
     }
 
+    /// Production CLI credentials are resolved only through each native account's environment reference.
+    pub fn for_cli(studio_home: impl Into<PathBuf>) -> Self {
+        let mut store = Self::with_credential_store(
+            ConfigPaths::from_config_dir(studio_home),
+            Arc::new(MemoryCredentialStore::environment_only()),
+        );
+        store.environment_only = true;
+        store.require_existing = true;
+        store
+    }
+
+    pub(crate) fn require_existing(mut self) -> Self {
+        self.require_existing = true;
+        self
+    }
+
     /// 创建使用进程内凭据存储的隔离配置实例。
     ///
     /// 生产桌面应用必须使用 [`Self::default_app`]，避免测试、fixture 或 driver 修改用户的系统凭据库。
@@ -127,6 +145,8 @@ impl ConfigStore {
             paths,
             credentials,
             observed: Arc::new(std::sync::Mutex::new(None)),
+            environment_only: false,
+            require_existing: false,
         }
     }
 
@@ -139,11 +159,7 @@ impl ConfigStore {
         paths: ConfigPaths,
         credentials: Arc<super::credential::MemoryCredentialStore>,
     ) -> Self {
-        Self {
-            paths,
-            credentials,
-            observed: Arc::new(std::sync::Mutex::new(None)),
-        }
+        Self::with_credential_store(paths, credentials)
     }
 
     pub fn paths(&self) -> &ConfigPaths {
@@ -183,7 +199,7 @@ impl ConfigStore {
 
     pub fn load_or_default(&self) -> Result<StudioConfig> {
         self.recover_credentials()?;
-        if self.config_absent()? {
+        if !self.require_existing && self.config_absent()? {
             let mut config = StudioConfig::default_config()?;
             self.hydrate_credentials(&mut config)?;
             return Ok(config);
@@ -204,18 +220,28 @@ impl ConfigStore {
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
+        if self.require_existing {
+            // A profile-only interrupted migration must not substitute defaults for a missing main.
+            fs::read(self.paths.config_file())
+                .map_err(|source| super::ConfigRuntimeError::RequiredConfiguration { source })?;
+        }
         self.recover_credentials()
             .map_err(|error| super::ConfigRuntimeError::Migration(error.into()))?;
         // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
         super::schema_migration::resume_for_startup(&self.paths, self.credentials.as_ref())
             .map_err(super::ConfigRuntimeError::Migration)?;
-        let content = if self.config_absent()? {
-            super::mcp_resource::ensure_default_host_builtins_if_fresh(&self.paths)
-                .map_err(|error| super::ConfigRuntimeError::Migration(error.into()))?;
-            None
-        } else {
-            Some(fs::read(self.paths.config_file()).map_err(PureError::from)?)
-        };
+        let content =
+            if self.require_existing {
+                Some(fs::read(self.paths.config_file()).map_err(|source| {
+                    super::ConfigRuntimeError::RequiredConfiguration { source }
+                })?)
+            } else if self.config_absent()? {
+                super::mcp_resource::ensure_default_host_builtins_if_fresh(&self.paths)
+                    .map_err(|error| super::ConfigRuntimeError::Migration(error.into()))?;
+                None
+            } else {
+                Some(fs::read(self.paths.config_file()).map_err(PureError::from)?)
+            };
         let mut config = super::schema_migration::prepare_for_startup(
             &self.paths,
             self.credentials.as_ref(),
@@ -366,6 +392,19 @@ impl ConfigStore {
     }
 
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
+        if self.environment_only {
+            for account in config.models.accounts.values_mut() {
+                if account.authentication
+                    == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt
+                {
+                    return Err(PureError::ConfigError("CLI requires API accounts with environment credentials; ChatGPT/OAuth is unsupported".into()));
+                }
+                account.bearer_token = None;
+                account.chatgpt_session = None;
+                account.chatgpt_credentials = None;
+            }
+            return self.remember_bindings(config);
+        }
         let _locks = self.lock_accounts(config.models.accounts.keys().map(ToString::to_string))?;
         for (account_id, account) in &mut config.models.accounts {
             self.ensure_credential_available(account_id.as_str())?;
@@ -520,6 +559,67 @@ mod tests {
     use pl_model::config::{AccountCapabilitySelection, AccountId};
     use pl_model::protocol::StandaloneWebSearchDialect;
     use pl_protocol::search::WebSearchMode;
+
+    #[test]
+    fn cli_loader_requires_existing_main_and_preserves_pending_credentials() {
+        let (directory, seed) = isolated_store();
+        let config = StudioConfig::default_config().unwrap();
+        seed.save(&config).unwrap();
+        let cli = ConfigStore::for_cli(directory.path());
+        std::fs::remove_file(cli.paths.config_file()).unwrap();
+        assert!(matches!(
+            cli.load_for_startup(),
+            Err(super::super::ConfigRuntimeError::RequiredConfiguration { .. })
+        ));
+        assert!(!cli.paths.config_file().exists());
+        assert!(!cli.paths.mcp_dir().exists());
+        std::fs::write(
+            cli.paths.config_file(),
+            serialize_persisted_config(&config).unwrap(),
+        )
+        .unwrap();
+        let original = std::fs::read(cli.paths.config_file()).unwrap();
+        let pending = directory
+            .path()
+            .join("data/credential-transactions/pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(pending.join("journal.json"), b"preserve recovery material").unwrap();
+        assert!(cli.load_for_startup().is_err());
+        assert_eq!(std::fs::read(cli.paths.config_file()).unwrap(), original);
+        assert_eq!(
+            std::fs::read(pending.join("journal.json")).unwrap(),
+            b"preserve recovery material"
+        );
+    }
+
+    #[test]
+    fn cli_credentials_never_hydrate_protected_values_or_acknowledge_durable_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli = ConfigStore::for_cli(directory.path());
+        let mut config = StudioConfig::default_config().unwrap();
+        let (id, account) = config.models.accounts.iter_mut().next().unwrap();
+        let id = id.clone();
+        account.bearer_token_env = Some("ANYWK_CREDENTIAL_TEST_ENV_REFERENCE".into());
+        cli.credentials
+            .save(id.as_str(), "protected-value-must-not-be-read")
+            .unwrap();
+        cli.hydrate_credentials(&mut config).unwrap();
+        let account = &config.models.accounts[&id];
+        assert!(account.bearer_token.is_none());
+        assert_eq!(
+            account.bearer_token_env.as_deref(),
+            Some("ANYWK_CREDENTIAL_TEST_ENV_REFERENCE")
+        );
+        assert!(
+            cli.credentials
+                .import_inline_secret(id.as_str(), "inline")
+                .is_err()
+        );
+        assert!(cli.credentials.copy_legacy_account(id.as_str()).is_err());
+        config.models.accounts.get_mut(&id).unwrap().authentication =
+            pl_protocol::studio::AccountAuthenticationMethod::ChatGpt;
+        assert!(cli.hydrate_credentials(&mut config).is_err());
+    }
 
     #[test]
     fn chatgpt_schema_27_startup_preserves_api_credentials_routes_headers_and_overrides() {

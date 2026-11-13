@@ -182,12 +182,16 @@ pub(super) struct SkillFileScan {
 pub(super) fn scan_skill_files(
     root: &Path,
     cancellation: &CancellationToken,
+    required: bool,
 ) -> Result<SkillFileScan> {
     ensure_scan_active(cancellation)?;
     let mut files = Vec::new();
     let root_metadata = match fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if required {
+                return Err(error.into());
+            }
             return Ok(SkillFileScan {
                 files,
                 complete: true,
@@ -308,7 +312,7 @@ pub(super) fn scan_skill_files(
 }
 
 pub(super) fn find_skill_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let scan = scan_skill_files(root, &CancellationToken::new())?;
+    let scan = scan_skill_files(root, &CancellationToken::new(), false)?;
     if !scan.complete {
         return Err(PureError::ConfigError(scan.warnings.join("; ")));
     }

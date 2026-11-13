@@ -101,10 +101,28 @@ impl StudioRuntime {
             }
         };
         let home = resolved.paths.home().to_owned();
-        let mut backup = tokio::task::spawn_blocking(move || StartupBackup::resume(&home))
-            .await
-            .map_err(|error| internal("resume_backup", error))?
-            .map_err(|error| environment("resume_backup", error))?;
+        let policy = resolved.startup_policy;
+        let mut backup = tokio::task::spawn_blocking(move || match policy {
+            crate::StudioStartupPolicy::Strict => {
+                if StartupBackup::recovery_required(&home)
+                    .map_err(|error| environment("inspect_recovery", error))?
+                {
+                    return Err(StudioStartupError::new(
+                        "inspect_recovery",
+                        StudioStartupErrorKind::RecoveryRequired,
+                        anyhow::anyhow!(
+                            "recoveryRequired: unfinished startup recovery; original materials preserved"
+                        ),
+                    ));
+                }
+                Ok(None)
+            }
+            crate::StudioStartupPolicy::InteractiveRecovery => {
+                StartupBackup::resume(&home).map_err(|error| environment("resume_backup", error))
+            }
+        })
+        .await
+        .map_err(|error| internal("resume_backup", error))??;
         if backup.is_some() {
             observer(StudioStartupStage::Resetting);
         }
@@ -149,7 +167,9 @@ impl StudioRuntime {
                     if matches!(
                         error.kind,
                         StudioStartupErrorKind::PersistentData | StudioStartupErrorKind::Migration
-                    ) && backup.is_none() =>
+                    ) && backup.is_none()
+                        && resolved.startup_policy
+                            == crate::StudioStartupPolicy::InteractiveRecovery =>
                 {
                     check_cancelled(&cancellation)?;
                     observer(StudioStartupStage::BackingUp);
@@ -185,9 +205,15 @@ impl StudioRuntime {
         observer(StudioStartupStage::Preparing);
         let config_store = match resolved.host {
             crate::StudioHostKind::Test => ConfigStore::new(resolved.paths.config_paths()),
+            crate::StudioHostKind::Cli => ConfigStore::for_cli(resolved.paths.home().to_owned()),
             crate::StudioHostKind::Desktop | crate::StudioHostKind::HttpServer => {
                 ConfigStore::for_studio_home(resolved.paths.home().to_owned())
             }
+        };
+        let config_store = if resolved.startup_policy == crate::StudioStartupPolicy::Strict {
+            config_store.require_existing()
+        } else {
+            config_store
         };
         observer(StudioStartupStage::WaitingForSteps);
         // join! deliberately waits for both results: a failing config cannot detach a database open.
@@ -234,6 +260,7 @@ impl StudioRuntime {
             resolved.helper_source.clone(),
             resolved.host_mcp_source.clone(),
             resolved.ssh_config.clone(),
+            resolved.skill_search.clone(),
         )
         .await;
         let runtime = match assembled {

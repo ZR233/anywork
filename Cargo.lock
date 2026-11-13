@@ -4189,6 +4189,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-studio-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "pl-model",
+ "pl-protocol",
+ "pl-provider-fixture",
+ "pl-studio-runtime",
+ "pl-studio-update",
+ "pl-tool",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "pl-studio-mcp"
 version = "0.1.0"
 dependencies = [

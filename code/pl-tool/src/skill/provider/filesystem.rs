@@ -25,9 +25,9 @@ pub struct FileSystemSkillProvider {
     sources: FileSystemSkillSources,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum FileSystemSkillSources {
-    Configured,
+    Configured(crate::skill::SkillSearchOptions),
     Explicit(Vec<SkillDirectorySource>),
 }
 
@@ -92,9 +92,13 @@ impl SkillDirectorySource {
 impl FileSystemSkillProvider {
     /// Creates the configured desktop User/System/External read-only Provider.
     pub fn configured_readonly() -> Self {
+        Self::configured_readonly_with_options(Default::default())
+    }
+
+    pub fn configured_readonly_with_options(options: crate::skill::SkillSearchOptions) -> Self {
         Self {
             id: SkillProviderId(FILESYSTEM_PROVIDER_ID.to_string()),
-            sources: FileSystemSkillSources::Configured,
+            sources: FileSystemSkillSources::Configured(options),
         }
     }
 
@@ -127,7 +131,13 @@ impl SkillProvider for FileSystemSkillProvider {
         part(b"pl-tool/filesystem-skill-source/v1");
         part(self.id.as_str().as_bytes());
         match &self.sources {
-            FileSystemSkillSources::Configured => part(b"configured"),
+            FileSystemSkillSources::Configured(options) => {
+                part(b"configured");
+                part(&[u8::from(options.include_default_user_dir)]);
+                for directory in &options.additional_dirs {
+                    part(directory.as_os_str().as_encoded_bytes());
+                }
+            }
             FileSystemSkillSources::Explicit(sources) => {
                 part(b"explicit");
                 for source in sources {
@@ -144,10 +154,7 @@ impl SkillProvider for FileSystemSkillProvider {
         request: SkillProviderRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SkillProviderObservation>> + Send + 'a>> {
         let id = self.id.clone();
-        let sources = match &self.sources {
-            FileSystemSkillSources::Configured => None,
-            FileSystemSkillSources::Explicit(sources) => Some(sources.clone()),
-        };
+        let sources = self.sources.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || list_local_skills(&id, request, sources))
                 .await
@@ -245,29 +252,24 @@ fn read_local_resource(
 fn list_local_skills(
     provider_id: &SkillProviderId,
     request: SkillProviderRequest,
-    explicit_sources: Option<Vec<SkillDirectorySource>>,
+    source_policy: FileSystemSkillSources,
 ) -> Result<SkillProviderObservation> {
     if request.cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
-    let sources = if let Some(sources) = explicit_sources {
-        sources
-            .into_iter()
-            .enumerate()
-            .map(|(rank, source)| {
-                let rank = u16::try_from(rank).map_err(|_| {
-                    PureError::ConfigError(
-                        "too many explicit Skill directory sources to rank".to_string(),
-                    )
-                })?;
-                Ok((source.root, source.source, rank))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        crate::skill::resolve_local_readonly_skill_sources(
-            &request.config,
-            request.system_dir.as_deref(),
-        )?
+    let (sources, first_rank, required_roots) = match source_policy {
+        FileSystemSkillSources::Explicit(sources) => (sources, 0, Vec::new()),
+        FileSystemSkillSources::Configured(options) => (
+            crate::skill::resolve_local_readonly_skill_sources(
+                &request.config,
+                request.system_dir.as_deref(),
+                &options,
+            )?,
+            1,
+            options.additional_dirs,
+        ),
+    };
+    let sources = sources
         .into_iter()
         .enumerate()
         .map(|(rank, source)| {
@@ -275,11 +277,12 @@ fn list_local_skills(
                 source.root,
                 source.source,
                 u16::try_from(rank)
-                    .map_err(|_| PureError::ConfigError("too many Skill sources".into()))?,
+                    .ok()
+                    .and_then(|rank| rank.checked_add(first_rank))
+                    .ok_or_else(|| PureError::ConfigError("too many Skill sources".into()))?,
             ))
         })
-        .collect::<Result<Vec<_>>>()?
-    };
+        .collect::<Result<Vec<_>>>()?;
     let disabled = request
         .config
         .disabled
@@ -289,13 +292,14 @@ fn list_local_skills(
     let mut observation = SkillProviderObservation::empty();
     let mut local_order = 0;
     for (root, source_kind, rank) in sources {
+        tracing::debug!(source = ?source_kind, path = %root.display(), rank, "discovering Skill source");
         if source_kind == SkillSourceKind::System && !request.config.system.enabled {
             continue;
         }
         if request.cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
-        let scan = scan_skill_files(&root, &request.cancellation)?;
+        let scan = scan_skill_files(&root, &request.cancellation, required_roots.contains(&root))?;
         observation.complete &= scan.complete;
         observation.warnings.extend(scan.warnings);
         for skill_file in scan.files {
@@ -351,4 +355,194 @@ fn list_local_skills(
 
 fn content_revision(content: &str) -> String {
     hex::encode(Sha256::digest(content.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skill::{SkillRegistry, SkillSearchOptions, SkillsConfig};
+    use anyhow::Result;
+    use std::{path::Path, sync::Arc};
+
+    fn skill(root: &Path, name: &str, description: &str) -> Result<()> {
+        let directory = root.join(name);
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{description}\n"),
+        )?;
+        Ok(())
+    }
+
+    // HOME is changed only on a child process; parallel tests never mutate process environment.
+    fn isolated(test_name: &str, without_home: bool) -> Result<Option<tempfile::TempDir>> {
+        if std::env::var_os("ANYWORK_SKILL_SEARCH_TEST_CHILD").is_some() {
+            return Ok(None);
+        }
+        let directory = tempfile::tempdir()?;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args(["--exact", test_name, "--nocapture"])
+            .env("ANYWORK_SKILL_SEARCH_TEST_CHILD", "1");
+        if without_home {
+            command.env_remove("HOME").env_remove("USERPROFILE");
+        } else {
+            command
+                .env("HOME", directory.path())
+                .env("USERPROFILE", directory.path());
+        }
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(Some(directory))
+    }
+
+    #[tokio::test]
+    async fn configured_sources_follow_project_user_system_config_cli_priority() -> Result<()> {
+        if isolated("skill::provider::filesystem::tests::configured_sources_follow_project_user_system_config_cli_priority", false)?.is_some() { return Ok(()); }
+        let root = tempfile::tempdir()?;
+        let workspace = root.path().join("workspace");
+        let project = workspace.join(".agents/skills");
+        let user = crate::skill::util::agents_user_skills_dir()?;
+        let system = root.path().join("system");
+        let configured = root.path().join("configured");
+        let extra = root.path().join("extra");
+        let later = root.path().join("later");
+        let roots = [&project, &user, &system, &configured, &extra, &later];
+        for (index, directory) in roots.iter().enumerate() {
+            skill(
+                directory,
+                if index % 2 == 0 { "Shared" } else { "shared" },
+                &format!("layer-{index}"),
+            )?;
+        }
+        let options = SkillSearchOptions::resolve(
+            true,
+            [
+                extra.clone(),
+                root.path().join("extra/../extra"),
+                later.clone(),
+            ],
+            root.path(),
+        )?;
+        assert_eq!(options.additional_dirs, [extra.clone(), later.clone()]);
+        let config = SkillsConfig {
+            external_dirs: vec![configured.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let registry = SkillRegistry::new();
+        let _registration = registry.register(Arc::new(
+            FileSystemSkillProvider::configured_readonly_with_options(options),
+        ))?;
+        let files = Arc::new(crate::workspace_file::ExecutorWorkspaceFileBackend::new(
+            pl_remote_helper::Executor::local()?,
+            workspace.to_str().unwrap(),
+        )?);
+        let request = || SkillProviderRequest {
+            workspace_root: workspace.clone(),
+            config: config.clone(),
+            system_dir: Some(system.clone()),
+            cancellation: CancellationToken::new(),
+        };
+        for (index, directory) in roots.iter().enumerate() {
+            let catalog = registry.discover_project(request(), files.clone()).await?;
+            assert!(
+                catalog.snapshot().complete,
+                "{:?}",
+                catalog.snapshot().warnings
+            );
+            let winner = catalog.find("SHARED").unwrap();
+            assert_eq!(winner.description, format!("layer-{index}"));
+            let name = if index % 2 == 0 { "Shared" } else { "shared" };
+            std::fs::remove_dir_all(directory.join(name))?;
+        }
+        let other_workspace = root.path().join("other-workspace");
+        skill(
+            &other_workspace.join(".agents/skills"),
+            "other-project",
+            "other-project",
+        )?;
+        let other_files = Arc::new(crate::workspace_file::ExecutorWorkspaceFileBackend::new(
+            pl_remote_helper::Executor::local()?,
+            other_workspace.to_str().unwrap(),
+        )?);
+        let mut other_request = request();
+        other_request.workspace_root = other_workspace;
+        assert!(
+            registry
+                .discover_project(other_request, other_files)
+                .await?
+                .find("other-project")
+                .is_some()
+        );
+        assert!(
+            registry
+                .discover_project(request(), files)
+                .await?
+                .find("other-project")
+                .is_none()
+        );
+        let options = SkillSearchOptions::resolve(false, [user.clone()], root.path())?;
+        skill(&user, "explicit-user", "explicit-user")?;
+        let provider = FileSystemSkillProvider::configured_readonly_with_options(options);
+        let observed = provider.list(request()).await?;
+        assert!(
+            observed
+                .candidates
+                .iter()
+                .any(|candidate| candidate.summary.name == "explicit-user"
+                    && candidate.summary.source == SkillSourceKind::External)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_sources_without_home_stay_required_and_frozen() -> Result<()> {
+        if isolated("skill::provider::filesystem::tests::explicit_sources_without_home_stay_required_and_frozen", true)?.is_some() { return Ok(()); }
+        let root = tempfile::tempdir()?;
+        let extra = root.path().join("extra");
+        skill(&extra, "visible", "original")?;
+        let options = SkillSearchOptions::resolve(false, [extra.clone()], root.path())?;
+        let provider = FileSystemSkillProvider::configured_readonly_with_options(options.clone());
+        assert_ne!(
+            provider.discovery_identity(),
+            FileSystemSkillProvider::configured_readonly().discovery_identity()
+        );
+        let registry = SkillRegistry::new();
+        let _registration = registry.register(Arc::new(provider))?;
+        let request = SkillProviderRequest {
+            workspace_root: root.path().into(),
+            config: SkillsConfig {
+                system: crate::skill::SystemSkillsConfig { enabled: false },
+                ..Default::default()
+            },
+            system_dir: None,
+            cancellation: CancellationToken::new(),
+        };
+        let catalog = registry.discover(request).await?;
+        assert!(catalog.snapshot().complete);
+        assert!(catalog.find("visible").is_some());
+        let frozen = catalog.discovery_sources();
+        let other = root.path().join("other");
+        skill(&other, "unregistered-at-capture", "later")?;
+        let _later = registry.register(Arc::new(FileSystemSkillProvider::from_directories(
+            "late-provider",
+            vec![SkillDirectorySource::new(other, SkillSourceKind::External)],
+        )?))?;
+        assert!(
+            frozen
+                .discover(CancellationToken::new())
+                .await?
+                .find("unregistered-at-capture")
+                .is_none()
+        );
+        std::fs::remove_dir_all(&extra)?;
+        assert!(frozen.discover(CancellationToken::new()).await.is_err());
+        assert!(SkillSearchOptions::resolve(false, [extra], root.path()).is_err());
+        Ok(())
+    }
 }

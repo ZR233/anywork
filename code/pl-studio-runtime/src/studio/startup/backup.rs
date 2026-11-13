@@ -89,6 +89,10 @@ pub(in crate::studio) struct StartupBackup {
 }
 
 impl StartupBackup {
+    pub(in crate::studio) fn recovery_required(home: &Path) -> Result<bool> {
+        Ok(read_record(home)?.is_some_and(|record| record.phase != Phase::Completed))
+    }
+
     pub(in crate::studio) fn resume(home: &Path) -> Result<Option<Self>> {
         let path = home.join(JOURNAL);
         let Some(mut record) = read_record(home)? else {

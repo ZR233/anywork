@@ -198,8 +198,14 @@ impl SkillDiscoverySources {
         }
         let skills = winners
             .values()
-            .map(|entry| SkillMetadata::from(entry.candidate.summary.clone()))
+            .map(|entry| {
+                tracing::debug!(name = %entry.candidate.summary.name, source = ?entry.candidate.summary.source, provider = %entry.provider.id().as_str(), rank = entry.candidate.rank, "selected Skill candidate");
+                SkillMetadata::from(entry.candidate.summary.clone())
+            })
             .collect();
+        for warning in &warnings {
+            tracing::debug!(%warning, "Skill discovery warning");
+        }
         Ok((
             generation,
             FrozenSkillCatalog {

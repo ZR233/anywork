@@ -586,9 +586,26 @@ impl CredentialStore for SystemCredentialStore {
 
 #[derive(Default)]
 pub(super) struct MemoryCredentialStore {
+    reject_credential_migration: bool,
     lock_directory: std::sync::OnceLock<PathBuf>,
     values: Mutex<BTreeMap<String, String>>,
     leases: Mutex<BTreeMap<String, String>>,
+}
+
+impl MemoryCredentialStore {
+    pub(super) fn environment_only() -> Self {
+        Self {
+            reject_credential_migration: true,
+            ..Self::default()
+        }
+    }
+
+    fn check_migration(&self) -> Result<()> {
+        if self.reject_credential_migration {
+            return Err(PureError::ConfigError("CLI cannot migrate protected or inline credentials; prepare an environment-only configuration".into()));
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for MemoryCredentialStore {
@@ -682,6 +699,7 @@ impl CredentialStore for MemoryCredentialStore {
     }
 
     fn import_inline_secret(&self, account_id: &str, secret: &str) -> Result<LegacyCredentialCopy> {
+        self.check_migration()?;
         let mut values = self.values.lock().unwrap();
         match values.get(&account_key(account_id)) {
             Some(existing) if existing == secret => {
@@ -699,6 +717,7 @@ impl CredentialStore for MemoryCredentialStore {
     }
 
     fn copy_legacy_account(&self, account_id: &str) -> Result<LegacyCredentialCopy> {
+        self.check_migration()?;
         let mut values = self.values.lock().unwrap();
         let Some(source) = values.get(&legacy_provider_key(account_id)).cloned() else {
             return Ok(LegacyCredentialCopy::Absent);

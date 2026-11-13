@@ -5,5 +5,4 @@ mod query;
 mod system;
 mod types;
 
-pub(super) use discovery::skills_fingerprint;
 pub use types::{SkillCatalogRuntime, SkillSearchResult, SkillsStateData, SkillsStateSnapshot};

@@ -1,10 +1,49 @@
 # Main configuration
 
 `<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 33`. A missing
-file uses in-memory defaults; an invalid existing file is an error. Use Settings
+file uses in-memory defaults in interactive hosts; `anywk exec` requires an existing
+file and fails strictly. An invalid existing file is an error. Use Settings
 to create accounts from templates and preserve their provider-specific metadata.
 External edits require explicit settings reload; Settings saves validate and write
 atomically. A successful save is not proof of provider, usage API or MCP health.
+
+## Noninteractive CLI execution
+
+`anywk exec` requires explicit `--studio-home`, `--cwd`, `--account`, `--model`
+and `--prompt-file`. Prepare an existing valid native `config.toml`; CLI startup
+never creates defaults, resets invalid configuration or resumes startup recovery.
+It uses only the nonempty environment value named by the native account's
+`bearer_token_env`, without accessing the system credential store. ChatGPT/OAuth,
+interactive login and protected credential migration are unsupported. Compatible
+accounts may omit authentication according to the native protocol rule.
+
+```sh
+anywk exec --studio-home /runs/profile --cwd /workspace/task \
+  --account benchmark --model vendor/model --prompt-file /runs/prompt.txt \
+  --no-default-user-skills --skill-dir /opt/evaluation/skills
+```
+
+All relative paths resolve once against the process startup cwd; the task cwd is
+passed separately. The CLI does not change HOME/USERPROFILE or initialize Git.
+`--prompt-file -` reads UTF-8 from stdin to EOF. Optional `--reasoning-effort` uses
+the selected model's native validation; `--mode` defaults to `mode.simple`.
+`--max-model-steps` tightens only the root input's budget, not the whole tree.
+
+`--no-default-user-skills` only removes the implicit user source.
+`--skill-dir` repeats to append read-only collection roots after configured
+`skills.external_dirs`, in argument order; it does not append `.agents/skills` or
+grant write permission. Normalized duplicate argument paths keep the first.
+Explicitly adding the default user path still enables it as External. Missing or
+unreadable explicit directories fail, including later rediscovery. Project,
+System, configured External and existing enable/disable/platform rules remain.
+These options are process-local: `SkillSearchOptions`, `include_default_user_dir`
+and `additional_dirs` are not accepted TOML keys.
+
+Use explicit model catalogs and existing capability settings for an isolated
+evaluation profile. Keep unrelated MCP/model-discovery activity disabled and do
+not put enabled bots in the evaluation home. CLI diagnostics use stderr; stdout
+contains only the final assistant text after shutdown. This stage does not export
+complete trace or usage files.
 
 ## Accounts and model routes
 
