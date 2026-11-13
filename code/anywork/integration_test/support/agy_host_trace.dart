@@ -14,6 +14,33 @@ final class AgyHostTrace {
   List<AcpConversationToolItem> named(String name) =>
       calls.where((call) => call.fields.name == name).toList();
 
+  List<Map<String, Object?>> verifyCompletedHostCalls() {
+    final hostCalls = calls
+        .where(
+          (call) => (call.fields.name ?? call.fields.title ?? '').contains(
+            'anywork_',
+          ),
+        )
+        .toList();
+    expect(
+      hostCalls,
+      isNotEmpty,
+      reason: 'Expected real Host MCP tool updates',
+    );
+    expect(
+      hostCalls.map((call) => call.fields.status),
+      everyElement(AcpToolCallStatusView.completed),
+    );
+    return [
+      for (final call in hostCalls)
+        {
+          'toolCallId': call.toolCallId.value,
+          'name': call.fields.name,
+          'status': call.fields.status?.name,
+        },
+    ];
+  }
+
   Map<String, dynamic> input(AcpConversationToolItem call) =>
       _object(_value(call.fields.rawInput), 'ACP tool rawInput');
 
@@ -124,7 +151,6 @@ final class AgyHostTrace {
       'exec.cancelled',
     );
 
-    final shutdown = _commandTask(processCommand('shutdown'));
     return {
       'stdinTaskId': stdin,
       'stdinAcceptedBytes': delivery['acceptedBytes'],
@@ -132,8 +158,24 @@ final class AgyHostTrace {
       'stdinExitCode': exited['exitCode'],
       'cancelTaskId': cancelled,
       'cancelTerminalStatus': 'cancelled',
-      'shutdownTaskId': shutdown,
     };
+  }
+
+  Map<String, Object?> verifyShutdown(String expectedCommand) {
+    final id = _commandTask(expectedCommand);
+    final wait = named('anywork_wait')
+        .singleWhere((call) => (input(call)['taskIds'] as List).contains(id));
+    expect(input(wait)['timeoutMs'], 1);
+    final observed = _object(output(wait), 'shutdown task observation');
+    expect(observed['timedOut'], isTrue);
+    expect(
+      (observed['tasks'] as List).any(
+        (row) =>
+            row is Map && row['taskId'] == id && row['status'] == 'running',
+      ),
+      isTrue,
+    );
+    return {'shutdownTaskId': id, 'statusAtRootCompletion': 'running'};
   }
 
   Map<String, Object?> verifyChild(
@@ -192,12 +234,26 @@ final class AgyHostTrace {
     expect(original['generation'], isNotEmpty);
     expect(original['run'], source['run']);
     expect(original['completionSequence'], source['completionSequence']);
-    expect(original['summary'], source['summary']);
+    expect(
+      original['summary'] == source['summary'],
+      isTrue,
+      reason: 'Original summary differs from current source; text redacted',
+    );
     // acp_read serializes the original Rust Result; the current row uses its
     // public lowercase ok/error view. Compare the actual payload, not prose.
-    expect(_object(original['result'], 'original ACP result')['Ok'], success);
+    expect(
+      equals(
+        success,
+      ).matches(_object(original['result'], 'original ACP result')['Ok'], {}),
+      isTrue,
+      reason: 'Original result differs from current source',
+    );
     expect(original['truncated'], isFalse);
-    expect(original['summary'], contains('$marker-child'));
+    expect(
+      (original['summary'] as String).contains('$marker-child'),
+      isTrue,
+      reason: 'Child completion marker missing; summary text redacted',
+    );
     final run = _object(original['run'], 'original ACP run');
     expect(run['instance'], isPositive);
     expect(run['sequence'], isPositive);
@@ -220,6 +276,220 @@ final class AgyHostTrace {
       'childObservedHostToolCalls': childMcp['observedToolCalls'],
     };
   }
+
+  List<Map<String, Object?>> diagnostics({
+    required Set<String> safeCommands,
+    required Set<String> markers,
+  }) => [
+    for (final call in calls)
+      {
+        'toolCallId': call.toolCallId.value,
+        'name': call.fields.name,
+        'status': call.fields.status?.name,
+        if (call.fields.name?.startsWith('anywork_') == true) ...{
+          'rawInput': _diagnosticJson(
+            _value(call.fields.rawInput),
+            safeCommands,
+            markers,
+          ),
+          'rawOutput': _diagnosticJson(
+            _value(call.fields.rawOutput),
+            safeCommands,
+            markers,
+          ),
+        },
+      },
+  ];
+}
+
+// Keep formal task/report identities and state, not arbitrary tool text. This
+// whitelist deliberately excludes MCP launch env, headers, authorization,
+// capabilities, URLs, raw summaries and provider login messages.
+const _diagnosticKeys = {
+  'taskId',
+  'taskIds',
+  'targetTaskId',
+  'toolId',
+  'status',
+  'cancelRequested',
+  'command',
+  'cwd',
+  'interactive',
+  'timeoutSeconds',
+  'maxOutputChars',
+  'chars',
+  'closeStdin',
+  'inputReceipt',
+  'acceptedBytes',
+  'closeState',
+  'outcome',
+  'processStarted',
+  'exitCode',
+  'signal',
+  'state',
+  'kind',
+  'data',
+  'stdout',
+  'stderr',
+  'originalBytes',
+  'displayedBytes',
+  'wasTruncated',
+  'captureStatus',
+  'archiveStatus',
+  'diagnostic',
+  'code',
+  'task',
+  'tasks',
+  'result',
+  'resultCursor',
+  'nextCursor',
+  'totalBytes',
+  'format',
+  'version',
+  'content',
+  'value',
+  'output',
+  'is_error',
+  'isError',
+  'structuredContent',
+  'cancellation',
+  'timedOut',
+  'messagesReady',
+  'target',
+  'after',
+  'timeoutMs',
+  'cursor',
+  'reports',
+  'current',
+  'gap',
+  'generation',
+  'run',
+  'instance',
+  'sequence',
+  'completionSequence',
+  'lastCompleted',
+  'activeRun',
+  'summary',
+  'truncated',
+  'ok',
+  'Ok',
+  'stopReason',
+  'id',
+  'agentId',
+  'parentId',
+  'profileId',
+  'receipt',
+  'messageAccepted',
+  'messageSequence',
+  'executionClosed',
+  'backend',
+  'hostMcp',
+  'injected',
+  'observedToolCalls',
+  'force',
+};
+
+dynamic _diagnosticJson(
+  dynamic value,
+  Set<String> safeCommands,
+  Set<String> markers, [
+  String? key,
+]) {
+  if (value == null || value is num || value is bool) return value;
+  if (value is String) {
+    if (key == 'command') {
+      return safeCommands.contains(value)
+          ? value
+          : {'redacted': true, 'length': value.length};
+    }
+    if (key == 'chars') {
+      return markers.any((marker) => value == '$marker-stdin\n')
+          ? value
+          : {'redacted': true, 'length': value.length};
+    }
+    if (key == 'summary' || key == 'content') {
+      return {
+        'redacted': true,
+        'length': value.length,
+        'expectedMarkerPresent': markers.any(value.contains),
+      };
+    }
+    if (key == null) {
+      if (value.length > 128 * 1024) {
+        return {'redacted': true, 'length': value.length};
+      }
+      try {
+        return _diagnosticJson(jsonDecode(value), safeCommands, markers);
+      } on FormatException {
+        return {'redacted': true, 'length': value.length};
+      }
+    }
+    if (value.contains('://') ||
+        value.contains('Bearer ') ||
+        value.length > 4096) {
+      return {'redacted': true, 'length': value.length};
+    }
+    if (key == 'value' ||
+        key == 'output' ||
+        key == 'result' ||
+        key == 'structuredContent') {
+      return {'redacted': true, 'length': value.length};
+    }
+    // Other admitted fields are typed IDs, cursors, enums or relative cwd.
+    return value;
+  }
+  if (value is List) {
+    return value
+        .map((item) => _diagnosticJson(item, safeCommands, markers, key))
+        .toList();
+  }
+  if (value is Map) {
+    final result = <String, Object?>{};
+    for (final name in ['error', 'archiveError', 'messageError']) {
+      if (value.containsKey(name)) {
+        result['${name}Present'] = value[name] != null;
+      }
+    }
+    for (final entry in value.entries) {
+      final name = entry.key.toString();
+      if (!_diagnosticKeys.contains(name)) continue;
+      if (name == 'content' && entry.value is List) {
+        // MCP TextContent is formal protocol data, not assistant prose. Only
+        // decode JSON and retain the same whitelist, never arbitrary text.
+        result['mcpContent'] = [
+          for (final block in entry.value as List)
+            if (block is Map &&
+                block['type'] == 'text' &&
+                block['text'] is String)
+              _diagnosticJson(block['text'], safeCommands, markers),
+        ];
+      } else if (name == 'content' &&
+          value['format'] == 'pl.host.tool-result' &&
+          entry.value is String) {
+        try {
+          result['decodedContent'] = _diagnosticJson(
+            jsonDecode(entry.value as String),
+            safeCommands,
+            markers,
+          );
+        } on FormatException {
+          result['content'] = {
+            'redacted': true,
+            'length': (entry.value as String).length,
+          };
+        }
+      } else {
+        result[name] = _diagnosticJson(
+          entry.value,
+          safeCommands,
+          markers,
+          name,
+        );
+      }
+    }
+    return result;
+  }
+  return {'unsupportedType': value.runtimeType.toString()};
 }
 
 Map<String, dynamic> _object(dynamic value, String label) {

@@ -13,7 +13,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 
 import 'support/agy_remote_workspace.dart';
-import 'support/agy_host_trace.dart';
+import 'support/agy_phase_runner.dart';
 import 'support/presentation_capture.dart';
 import 'support/production_studio_harness.dart';
 
@@ -257,7 +257,7 @@ void main() {
       );
       final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
       final prompt =
-          remote?.prompt(marker, childProfileId) ??
+          remote?.promptA('${marker}A') ??
           'Reply with exactly $marker and nothing else. Do not call tools, '
               'run commands, use the network, or read or write any files.';
       await tester.enterText(
@@ -433,190 +433,26 @@ void main() {
       await scene.capture('agy-live-configured-shell');
       await record('real-configuration-confirmed');
 
-      evidence['promptCount'] = 1;
-      evidence['marker'] = marker;
-      await record('prompt-dispatch-once');
-      await tester.tap(
-        find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId))),
-      );
-      await scene.until(
-        () {
-          checkOwner();
-          if (remote != null && owner.state.pendingPermissions.isNotEmpty) {
-            throw StateError(
-              'Live remote run requires explicit permission handling; '
-              'no blanket approval or bypass is allowed',
-            );
-          }
-          return owner.state.lastCompleted != null;
-        },
-        'actual prompt terminal result',
-        timeout: Duration(seconds: remote == null ? 120 : 240),
-      );
-      final completed = owner.state.lastCompleted!;
-      final result = completed.result;
-      expect(result, isA<AcpSuccessView<AcpPromptResponseView>>());
-      final stop =
-          (result as AcpSuccessView<AcpPromptResponseView>).value.stopReason;
-      expect(stop, AcpStopReasonView.endTurn);
-      expect(owner.state.activeRun, isNull);
-      expect(owner.state.sendPending, isFalse);
-      expect(draft.state.draft, isEmpty);
-      final userMessages = owner.state.content
-          .whereType<AcpConversationMessageItem>()
-          .where((item) => item.kind == AcpConversationMessageKind.user)
-          .toList();
-      evidence['userMessageCount'] = userMessages.length;
-      expect(userMessages, hasLength(1));
-      final userText = userMessages.single.chunks
-          .map((chunk) => chunk.content)
-          .whereType<AcpTextContentView>()
-          .map((block) => block.text)
-          .join();
-      expect(userText, prompt);
-      evidence['actualUserText'] = userText;
-      final assistantMessages = owner.state.content
-          .whereType<AcpConversationMessageItem>()
-          .where((item) => item.kind == AcpConversationMessageKind.assistant)
-          .toList();
-      expect(assistantMessages, isNotEmpty);
-      // Tool-driven acceptance may include legitimate progress messages.
-      // Match the final response, not a concatenation of progress and final.
-      final responseMessages = remote == null
-          ? assistantMessages
-          : [assistantMessages.last];
-      final text = responseMessages
-          .expand((item) => item.chunks)
-          .map((chunk) => chunk.content)
-          .whereType<AcpTextContentView>()
-          .map((block) => block.text)
-          .join();
-      expect(text.trim(), marker);
-      expect(owner.state.pendingPermissions, isEmpty);
-      evidence['stopReason'] = stop.name;
-      evidence['actualAssistantText'] = text;
-      if (remote != null) {
-        final tools = owner.state.content
-            .whereType<AcpConversationToolItem>()
-            .where(
-              (item) => (item.fields.name ?? item.fields.title ?? '').contains(
-                'anywork_',
-              ),
-            )
-            .toList();
-        expect(
-          tools,
-          isNotEmpty,
-          reason: 'Expected real Host MCP tool updates',
-        );
-        expect(
-          tools.map((item) => item.fields.status),
-          everyElement(AcpToolCallStatusView.completed),
-        );
-        evidence['hostToolCalls'] = [
-          for (final item in tools)
-            {
-              'toolCallId': item.toolCallId.value,
-              'name': item.fields.name,
-              'status': item.fields.status?.name,
-            },
-        ];
-        evidence['remoteReadback'] = await remote.verifyResult(marker);
-        final trace = AgyHostTrace(owner.state.content);
-        evidence['taskLifecycle'] = trace.verifyTasks(
-          marker,
-          remote.processCommand,
-        );
-        evidence['childReport'] = trace.verifyChild(
-          childProfileId,
-          marker,
-          owner.state.target!.agentId,
-        );
-        evidence['cancellation'] =
-            'terminal payload and independent process exit';
-        await record('independent-remote-file-command-readback-confirmed');
-      }
-      await record('actual-text-and-end-turn-confirmed');
-      final assistantIndex = owner.state.content.lastIndexWhere(
-        (item) =>
-            item is AcpConversationMessageItem &&
-            item.kind == AcpConversationMessageKind.assistant,
-      );
-      final assistantItem = find.byKey(
-        ValueKey(AcpViewKeyValues.timelineItem(threadId, assistantIndex)),
-      );
-      await tester.scrollUntilVisible(
-        assistantItem,
-        250,
-        scrollable: find
-            .descendant(
-              of: find.byType(AcpConversationContentView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-        maxScrolls: 20,
-      );
-      await scene.until(
-        () => find
-            .descendant(
-              of: assistantItem,
-              matching: find.textContaining(marker, findRichText: true),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'real assistant text rendered in production content',
-      );
-      await scene.capture('agy-live-response-shell');
-      await record('real-text-and-end-turn-confirmed');
-      expect(tester.takeException(), isNull);
       expect(
         graph.client.project.state.projects!.values.any(
           (item) => item.id == project.id,
         ),
         isTrue,
       );
-      if (remote != null) {
-        final processes = AgyLocalProcesses();
-        await processes.capture(command!);
-        evidence['localOwnedBeforeClose'] = processes.evidence;
-        evidence['actualLocalAgyExecutableObserved'] = true;
-        await record('local-and-remote-process-identities-captured');
-        final close = await owner.closeMember();
-        evidence['acpClose'] = {
-          'localComplete': close.localComplete,
-          'sdkFinished': close.sdkFinished,
-          'cleanupTimedOut': close.cleanupTimedOut,
-          'unfinishedControls': close.unfinishedControls,
-          'ownerFailureCount': close.ownerFailures.length,
-          'remoteCloseErrorPresent': close.remoteCloseError != null,
-          'sdkErrorPresent': close.sdkError != null,
-          'workerErrorPresent': close.workerError != null,
-          'driverErrorPresent': close.driverError != null,
-        };
-        await record('acp-member-close-returned');
-        expect(close.localComplete, isTrue);
-        expect(close.sdkFinished, isTrue);
-        expect(close.cleanupTimedOut, isFalse);
-        expect(close.unfinishedControls, isFalse);
-        expect(close.unfinishedPrompt, isNull);
-        expect(close.ownerFailures, isEmpty);
-        expect(close.remoteCloseError, isNull);
-        expect(close.sdkError, isNull);
-        expect(close.workerError, isNull);
-        expect(close.driverError, isNull);
-        await scene.dispose();
-        await closeHarness();
-        evidence['remoteExitedAfterClose'] = await remote
-            .verifyClosedProcesses();
-        await processes.verifyClosed();
-        evidence['localOwnedExited'] = true;
-      }
-      evidence['verdict'] = remote == null
-          ? 'text-scenario-passed'
-          : 'acp-remote-scenario-passed';
-      await record('scenario-assertions-complete');
+      await runAgyAcceptancePhases(
+        scene: scene,
+        owner: owner,
+        remote: remote,
+        command: command,
+        marker: marker,
+        childProfileId: childProfileId,
+        evidence: evidence,
+        record: record,
+        closeHarness: closeHarness,
+      );
     },
-    timeout: const Timeout(Duration(minutes: 10)),
+    // Three independently bounded 240-second prompts, plus setup and closure.
+    timeout: const Timeout(Duration(minutes: 16)),
   );
 }
 

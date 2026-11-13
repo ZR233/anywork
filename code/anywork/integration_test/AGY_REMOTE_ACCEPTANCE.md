@@ -13,7 +13,22 @@ agy、ACP 协议进程与 Host MCP 都在运行 Studio 的宿主上；仅业务�
 没有 live 开关或缺少输入时失败，不使用测试内 `skip` 报绿；普通 full 集的
 显式供应商用例选择仍由 xtask 的 opt-in 机制负责。
 
-一轮远程场景的必要步骤：
+一轮远程场景在**同一真实 ACP session**中通过三个真实 UI 用户 prompt 执行，
+marker 分别为同一运行前缀加 `A`、`B`、`C`。每阶段独立有界 **240 秒**，不把
+单个 prompt 的期限累加放宽；外层 16 分钟仅容纳三个阶段、准备与关闭。
+
+| 阶段 | 业务与严格完成点 |
+| --- | --- |
+| A | 文件／位置挑战、STDIN/EOF、长命令取消；要求原任务终态与独立文件／进程回读，再取得 root 新 run 的成功终态 |
+| B | 同账号 ACP child、wait_agent 原报告身份及关闭 child、独立 child 挑战回读；不重做 A，不启动关闭测试任务 |
+| C | 第三个任务的真实受理、list 和一次 1 ms wait 证明仍运行；root 此时明确结束本阶段，不能继续等该业务任务终态，随后由测试关闭成员并核对回收 |
+
+每阶段先记录前一 completionSequence/run，再观察本次真实受理的 `activeRun`，
+仅接受相同新 run 且 completionSequence 严格增加的成功完成；上一阶段的 idle 或
+lastCompleted 不能充当新阶段完成。同一 session/target 身份、阶段用户原文与最终
+assistant marker 都须匹配。各阶段只用自己的新 tool call 集验证，再最终重验全阶段来源。
+
+完整场景保留以下必要断言：
 
 - 远程文件读取／写入与小命令的位置回读；
 - 阻塞输入的长命令、一次性 STDIN 与 EOF、精确任务 ID 的 wait／终态读取；
@@ -107,14 +122,25 @@ scratch 中准备好的目录；不能占用 1420 端口。
   ACP 成员的 backend／parentId 及原完成报告。只有取得报告后才关闭 child。
   ACP 的 `generation`、`run.instance`、`run.sequence`、`completionSequence`
   保持原身份，不从模型回答拼装。未知供应商 rawOutput 包装明确失败，不猜字段。
-- 主场景结束前留下一个仍运行的远端 shell/sleep 任务，捕获本机 GUI 所属
-  agy／MCP／传输后代的 PID/starttime，只读这些后代的 `/proc`，不扫描命令行。
-  检查公开 `closeMember` 的 localComplete、sdkFinished、所有错误和未完成标志，
+- 首个 prompt 前捕获本机 GUI 所属 agy／MCP／传输后代的 PID/starttime/exe，
+  随阶段及正式工具状态事件增量记录，包含非主线程所生后代；已记录原进程即使
+  reparent 也须以 PID/starttime 匹配后才能继续追踪。只读原所属树，不扫全系统命令行。
+  阶段 C 留下一个仍运行的远端 shell/sleep 任务。
+  检查公开 `closeMember` 的 localComplete、sdkFinished、宿主错误和未完成标志，
+  记录能力相关的远端协议关闭诊断；不把对端关闭 ACK 当作宿主资源释放的前提。
   再执行原 harness 关闭，独立确认所有已记录本机后代与远端任务身份均已退出。
   HTTP Host MCP 是宿主内服务，没有额外进程；其释放由公开 localComplete／
   driverError 关闭契约覆盖，不把缺少独立 MCP PID 当作进程退出证明。
-- 证据保留工具 call ID／名称／终态，不导出原始工具参数或输出，不读取用户凭据。
+- 每阶段 before-send、timeout/error、finally 以及关闭前写入独立 JSON 状态文件，
+  保存 phase、activeRun、lastCompleted、受理 run、真实 tool call ID/名称/status、
+  最后正式调用及进行中调用。必要 rawInput/rawOutput 采用白名单化正式投影：
+  保留 taskID、任务终态、stdin receipt、wait_agent cursor/generation/run/完成序号；
+  不导出任意命令正文、stdout/stderr/summary 正文、MCP 启动 env、authorization、
+  capability、登录链接或凭据。已知合成过程命令和 marker stdin 可保留，其他正文脱敏。
   既有报告和截图只属于本次真实运行，截图不能代证 SSH 任务退出。
+- 成功与失败均在同一 finally 路径显式 await closeMember 回执，再独立 await 原
+  harness shutdown，并用同一组增量身份核对进程退出。只结束测试等待不算业务回收；
+  原阶段错误优先保留，诊断与清理错误另记，不能用清理成功抹去阶段失败。
 - 意外权限请求明确失败，不自动授权；失败后由已有 harness 执行产品关闭并保留
   证据。权限交互本身须沿真实生产 UI 验证，不能使用 blanket approval 或测试专用生产接口。
 - 保存整个本次隔离 sandbox、远程临时项目路径和证据。测试不递归删除任何远程目录；
