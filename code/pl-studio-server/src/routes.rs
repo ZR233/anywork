@@ -27,9 +27,9 @@ use pl_protocol::studio::{
     StartAcpAuthRequest, StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest,
     StopThreadResponse, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
     StudioCommandRequest, StudioError, SubmitPromptRequest, SyncAccountModelsReply,
-    SyncAccountModelsRequest, ThreadMcpStateSnapshot, ThreadModelRouteCommandReply,
-    ThreadPageQuery, UpdateAcpAccountRequest, UpdateMcpDocumentRequest,
-    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+    SyncAccountModelsRequest, ThreadLspResetRequest, ThreadMcpStateSnapshot,
+    ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
+    UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -207,6 +207,9 @@ pub(crate) fn parse_product_topic(
         "threadMcp" => StudioProductTopic::ThreadMcp {
             thread_id: query.thread_id.clone().unwrap_or_default(),
         },
+        "threadLsp" => StudioProductTopic::ThreadLsp {
+            thread_id: query.thread_id.clone().unwrap_or_default(),
+        },
         "lsp" => StudioProductTopic::Lsp,
         "skills" => StudioProductTopic::Skills {
             // scope 身份原样保留（不 trim），与 runtime / FRB 保持同一身份；`validate()` 只用
@@ -248,12 +251,14 @@ pub(crate) fn parse_product_topic(
         (StudioProductTopic::ChildInteractions { .. }, false, false, true, false, false) => {}
         (StudioProductTopic::McpCatalog { .. }, false, false, false, true, false) => {}
         (StudioProductTopic::ThreadMcp { .. }, false, false, false, false, true) => {}
+        (StudioProductTopic::ThreadLsp { .. }, false, false, false, false, true) => {}
         (
             StudioProductTopic::Skills { .. }
             | StudioProductTopic::SessionCosts { .. }
             | StudioProductTopic::ChildInteractions { .. }
             | StudioProductTopic::McpCatalog { .. }
-            | StudioProductTopic::ThreadMcp { .. },
+            | StudioProductTopic::ThreadMcp { .. }
+            | StudioProductTopic::ThreadLsp { .. },
             _,
             _,
             _,
@@ -380,6 +385,8 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(delete_mcp_document))
         .routes(routes!(read_thread_mcp))
         .routes(routes!(reconnect_thread_mcp))
+        .routes(routes!(read_thread_lsp_state))
+        .routes(routes!(reset_thread_lsp_server))
         .routes(routes!(read_lsp))
         .routes(routes!(probe_lsp))
         .routes(routes!(reset_lsp))
@@ -1677,6 +1684,82 @@ async fn reconnect_thread_mcp(
             .reconnect_thread_mcp(request)
             .await
             .map_err(ApiError::from)?,
+    ))
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadLspResetBody {
+    binding_id: String,
+    server_id: String,
+}
+
+#[derive(utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[expect(
+    dead_code,
+    reason = "OpenAPI response schema fields are consumed by utoipa"
+)]
+struct ThreadLspStateSchema {
+    thread_id: String,
+    revision: u64,
+    binding_id: Option<String>,
+    servers: Vec<ThreadLspServerSchema>,
+}
+
+#[derive(utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[expect(
+    dead_code,
+    reason = "OpenAPI response schema fields are consumed by utoipa"
+)]
+struct ThreadLspServerSchema {
+    id: String,
+    configuration_path: Option<String>,
+    phase: String,
+    display_name: String,
+    extensions: Vec<String>,
+    language_ids: Vec<String>,
+    #[schema(value_type = Object)]
+    state: serde_json::Value,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/threads/{thread_id}/lsp",
+    operation_id = "thread.readLspState",
+    params(("thread_id" = String, Path)),
+    responses(StudioApiErrors, (status = 200, body = ThreadLspStateSchema))
+)]
+async fn read_thread_lsp_state(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<pl_studio_runtime::StudioThreadLspStateSnapshot>, ApiError> {
+    Ok(Json(state.runtime.read_thread_lsp_state(&thread_id).await?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/threads/{thread_id}/lsp/reset",
+    operation_id = "thread.resetLspServer",
+    params(("thread_id" = String, Path)),
+    request_body = ThreadLspResetBody,
+    responses(StudioApiErrors, (status = 200, body = ThreadLspStateSchema))
+)]
+async fn reset_thread_lsp_server(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    ApiJson(body): ApiJson<ThreadLspResetBody>,
+) -> Result<Json<pl_studio_runtime::StudioThreadLspStateSnapshot>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .reset_thread_lsp_server(ThreadLspResetRequest {
+                thread_id,
+                binding_id: body.binding_id,
+                server_id: body.server_id,
+            })
+            .await?,
     ))
 }
 

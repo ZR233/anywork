@@ -60,6 +60,9 @@ pub(crate) fn bridge_product_event(
             StudioProductEventKind::ThreadMcpStateChanged(state) => {
                 BridgeProductEventPayload::ThreadMcpStateChanged(state.into())
             }
+            StudioProductEventKind::ThreadLspStateChanged(state) => {
+                BridgeProductEventPayload::ThreadLspStateChanged(state.into())
+            }
             StudioProductEventKind::LspStateChanged(state) => {
                 BridgeProductEventPayload::LspStateChanged(bridge_lsp_state(state.state))
             }
@@ -160,6 +163,9 @@ pub(crate) fn bridge_product_baseline(
         }
         StudioProductBaselineState::ThreadMcp(state) => {
             BridgeProductBaseline::ThreadMcp((*state).into())
+        }
+        StudioProductBaselineState::ThreadLsp(state) => {
+            BridgeProductBaseline::ThreadLsp((*state).into())
         }
         StudioProductBaselineState::Lsp(state) => {
             BridgeProductBaseline::Lsp(bridge_lsp_state(state.state))

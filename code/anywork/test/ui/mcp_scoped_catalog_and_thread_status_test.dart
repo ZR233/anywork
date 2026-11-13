@@ -228,6 +228,45 @@ void main() {
         graph.client.bootstrap(),
         'thread mcp bootstrap',
       );
+      transport.setThreadLspSnapshot(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-other',
+          revision: 1,
+          bindingId: 'binding-other',
+          servers: [
+            _lspServer(
+              'dart',
+              const LspUnavailableState(
+                checkedAt: 1,
+                code: 'other-thread',
+                message: 'other thread only',
+                retryable: true,
+              ),
+            ),
+          ],
+        ),
+      );
+      final otherLspLease = graph.client.channels.acquireThreadLsp(
+        'thread-other',
+      );
+      await tester.pumpAndSettle();
+      expect(
+        graph.client
+            .existingThreadLsp('thread-other')
+            ?.state
+            .value
+            ?.servers
+            .single
+            .state,
+        isA<LspUnavailableState>(),
+      );
+      expect(
+        (await graph.client.directoryCommands.readThreadLspState(
+          'thread-unknown',
+        )).servers,
+        isEmpty,
+        reason: 'unknown demo threads must not borrow the global LSP list',
+      );
       await pumpClientFuture(
         tester,
         (graph..setConversationPageVisible(true)).client.directoryCommands
@@ -304,6 +343,15 @@ void main() {
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
+      final mainBaselinesBeforeReopen = transport.threadLspMainBaselineCount;
+      transport.setThreadLspSnapshot(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-main',
+          revision: 2,
+          bindingId: 'binding-main',
+          servers: transport.threadLspSnapshot.servers,
+        ),
+      );
       expect(
         find.byKey(StudioDriverKeys.mcpServerRow('postgres_prod')),
         findsNothing,
@@ -315,6 +363,23 @@ void main() {
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
+      await pumpClientUntil(
+        tester,
+        () =>
+            transport.threadLspMainBaselineCount > mainBaselinesBeforeReopen &&
+            graph.client
+                    .existingThreadLsp('thread-main')
+                    ?.state
+                    .value
+                    ?.revision ==
+                2 &&
+            container
+                .read(startedItemsViewModelProvider('thread-main'))
+                .requireValue
+                .lsp
+                .any((server) => server.id == 'dart'),
+        'new thread LSP baseline accepted after popover reopen',
+      );
 
       expect(
         find.byKey(StudioDriverKeys.mcpServerRow('postgres_prod')),
@@ -334,6 +399,7 @@ void main() {
         find.byTooltip('connection refused on 127.0.0.1:9400'),
         findsOneWidget,
       );
+      expect(find.byTooltip('other thread only'), findsNothing);
       expect(
         find.byKey(StudioDriverKeys.statusLspServer('dart')),
         findsOneWidget,
@@ -346,10 +412,11 @@ void main() {
       expect(find.text('就绪'), findsNWidgets(2));
       expect(find.text('/secret/dart.toml'), findsNothing);
 
-      transport.emitLsp(
-        LspStateSnapshot(
-          revision: 2,
-          activeServers: const [],
+      transport.emitThreadLsp(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-main',
+          revision: 3,
+          bindingId: 'binding-main',
           servers: [
             _lspServer(
               'dart',
@@ -447,12 +514,19 @@ void main() {
       // admitted reconnect; reopening still reflects the same pending command.
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      transport.emitLsp(
-        LspStateSnapshot(revision: 3, servers: transport.lspSnapshot.servers),
-      );
+      final mainBaselinesBeforePendingReopen =
+          transport.threadLspMainBaselineCount;
+      transport.emitMcp(transport.mcpSnapshot);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
       await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () =>
+            transport.threadLspMainBaselineCount >
+            mainBaselinesBeforePendingReopen,
+        'thread LSP observation re-established after pending MCP reopen',
+      );
       expect(
         tester
             .widget<IconButton>(
@@ -511,8 +585,66 @@ void main() {
         isEmpty,
       );
 
-      transport.failNextLspReset = true;
+      transport.lspResetGate = Completer<ThreadLspStateSnapshot>();
       await tester.tap(find.byKey(StudioDriverKeys.lspResetServer('dart')));
+      await tester.pump();
+      transport.emitThreadLsp(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-main',
+          revision: transport.threadLspSnapshot.revision + 1,
+          bindingId: 'binding-replaced',
+          servers: transport.threadLspSnapshot.servers,
+        ),
+      );
+      await tester.pumpAndSettle();
+      transport.lspResetGate!.completeError(
+        StateError('late result from retired binding'),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        container
+            .read(startedItemsViewModelProvider('thread-main'))
+            .requireValue
+            .errors['lsp:dart'],
+        isNull,
+      );
+      expect(
+        find.byTooltip('失败: Bad state: late result from retired binding'),
+        findsNothing,
+      );
+      transport.lspResetGate = null;
+
+      transport.lspResetGate = Completer<ThreadLspStateSnapshot>();
+      await tester.tap(find.byKey(StudioDriverKeys.lspResetServer('dart')));
+      await tester.pump();
+      expect(
+        container
+            .read(startedItemsViewModelProvider('thread-main'))
+            .requireValue
+            .pending,
+        contains('lsp:dart'),
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.statusLspServer('dart')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<IconButton>(
+              find.descendant(
+                of: find.byKey(StudioDriverKeys.lspResetServer('dart')),
+                matching: find.byType(IconButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      transport.lspResetGate!.completeError(
+        StateError('LSP reconnect rejected'),
+      );
       await tester.pumpAndSettle();
       expect(
         container
@@ -522,12 +654,37 @@ void main() {
         contains('LSP reconnect rejected'),
       );
       expect(
+        tester
+            .widget<IconButton>(
+              find.descendant(
+                of: find.byKey(StudioDriverKeys.lspResetServer('dart')),
+                matching: find.byType(IconButton),
+              ),
+            )
+            .tooltip,
+        contains('LSP reconnect rejected'),
+      );
+      expect(
         find.byKey(StudioDriverKeys.statusLspServer('dart')),
         findsOneWidget,
       );
+      transport.lspResetGate = null;
       await tester.tap(find.byKey(StudioDriverKeys.lspResetServer('dart')));
       await tester.pumpAndSettle();
-      expect(transport.lspResetCalls, ['dart', 'dart']);
+      expect(transport.lspResetCalls, ['dart', 'dart', 'dart']);
+      expect(transport.lspResetRequests, [
+        (threadId: 'thread-main', bindingId: 'binding-main', serverId: 'dart'),
+        (
+          threadId: 'thread-main',
+          bindingId: 'binding-replaced',
+          serverId: 'dart',
+        ),
+        (
+          threadId: 'thread-main',
+          bindingId: 'binding-replaced',
+          serverId: 'dart',
+        ),
+      ]);
       expect(
         container
             .read(startedItemsViewModelProvider('thread-main'))
@@ -553,18 +710,22 @@ void main() {
       expect(find.text('stale-active-id'), findsNothing);
       expect(find.text('没有 MCP 服务器'), findsOneWidget);
 
-      transport.emitLsp(
-        const LspStateSnapshot.fromState(
-          state: FailedObservedResource<LspStateData>(
-            revision: 99,
-            failedAt: 1,
-            operation: 'load',
-            error: ObservedResourceError(
-              code: 'config',
-              message: 'invalid server configuration',
-              retryable: true,
+      transport.emitThreadLsp(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-main',
+          revision: 99,
+          bindingId: 'binding-main',
+          servers: [
+            _lspServer(
+              'broken',
+              const LspUnavailableState(
+                checkedAt: 1,
+                code: 'config',
+                message: 'invalid server configuration',
+                retryable: true,
+              ),
             ),
-          ),
+          ],
         ),
       );
       await tester.pumpAndSettle();
@@ -581,6 +742,11 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await tester.pumpWidget(const SizedBox.shrink());
+      await pumpClientFuture(
+        tester,
+        otherLspLease.release(),
+        'other thread LSP observation released',
+      );
       container.dispose();
       final report = await pumpClientFuture(
         tester,
@@ -598,15 +764,17 @@ final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
   final List<({String threadId, String? serverId})> reconnectCalls = [];
   Completer<ThreadMcpStateSnapshot>? reconnectGate;
   final lspResetCalls = <String>[];
-  bool failNextLspReset = false;
+  final lspResetRequests =
+      <({String threadId, String bindingId, String serverId})>[];
+  Completer<ThreadLspStateSnapshot>? lspResetGate;
   ThreadMcpStateSnapshot mcpSnapshot = const ThreadMcpStateSnapshot(
     threadId: 'thread-main',
     scope: HostMcpScope(),
   );
-  LspStateSnapshot lspSnapshot = LspStateSnapshot(
+  ThreadLspStateSnapshot threadLspSnapshot = ThreadLspStateSnapshot(
+    threadId: 'thread-main',
     revision: 1,
-    // Deliberately empty: membership must come from the health snapshot.
-    activeServers: const [],
+    bindingId: 'binding-main',
     servers: [
       _lspServer(
         'dart',
@@ -626,39 +794,65 @@ final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
       ),
     ],
   );
+  final Map<String, ThreadLspStateSnapshot> _threadLspSnapshots = {};
   final _topics = <ProductTopic, StreamController<ProductTopicFrame>>{};
   int _sequence = 0;
+  int threadLspMainBaselineCount = 0;
 
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    if (topic is! LspTopic && topic is! ThreadMcpTopic) {
+    if (topic is! ThreadLspTopic && topic is! ThreadMcpTopic) {
       return super.subscribeProductTopic(topic);
     }
     late final StreamController<ProductTopicFrame> controller;
     controller = StreamController<ProductTopicFrame>(
-      onListen: () => controller.add(
-        ProductTopicBaselineFrame(
+      onListen: () {
+        if (topic is ThreadLspTopic && topic.threadId == 'thread-main') {
+          threadLspMainBaselineCount++;
+        }
+        final baseline = ProductTopicBaselineFrame(
           topic: topic,
-          revision: topic is LspTopic
-              ? lspSnapshot.revision
+          revision: topic is ThreadLspTopic
+              ? _threadLspSnapshot(topic.threadId).revision
               : mcpSnapshot.generation,
-          state: topic is LspTopic
-              ? LspBaseline(lspSnapshot)
+          state: topic is ThreadLspTopic
+              ? ThreadLspBaseline(_threadLspSnapshot(topic.threadId))
               : ThreadMcpBaseline(mcpSnapshot),
-        ),
-      ),
+        );
+        controller.add(baseline);
+      },
       onCancel: () {
-        _topics.remove(topic);
+        if (identical(_topics[topic], controller)) {
+          _topics.remove(topic);
+        }
       },
     );
     _topics[topic] = controller;
     return controller.stream;
   }
 
-  void emitLsp(LspStateSnapshot snapshot) {
-    lspSnapshot = snapshot;
-    _emit(const LspTopic(), LspStateChangedPayload(snapshot));
+  void emitThreadLsp(ThreadLspStateSnapshot snapshot) {
+    setThreadLspSnapshot(snapshot);
+    _emit(
+      ThreadLspTopic(threadId: snapshot.threadId),
+      ThreadLspStateChangedPayload(snapshot),
+    );
   }
+
+  void setThreadLspSnapshot(ThreadLspStateSnapshot snapshot) {
+    _threadLspSnapshots[snapshot.threadId] = snapshot;
+    if (snapshot.threadId == 'thread-main') threadLspSnapshot = snapshot;
+  }
+
+  ThreadLspStateSnapshot _threadLspSnapshot(String threadId) =>
+      _threadLspSnapshots[threadId] ??
+      (threadId == 'thread-main'
+          ? threadLspSnapshot
+          : ThreadLspStateSnapshot(
+              threadId: threadId,
+              revision: 1,
+              bindingId: null,
+            ));
 
   void emitMcp(ThreadMcpStateSnapshot snapshot) {
     mcpSnapshot = snapshot;
@@ -692,20 +886,31 @@ final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
   }
 
   @override
-  Future<LspStateSnapshot> resetLspServer(
-    String workspaceId,
-    String serverId,
-  ) async {
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId) async =>
+      _threadLspSnapshot(threadId);
+
+  @override
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) async {
     lspResetCalls.add(serverId);
-    if (failNextLspReset) {
-      failNextLspReset = false;
-      throw StateError('LSP reconnect rejected');
-    }
-    return lspSnapshot = LspStateSnapshot(
-      revision: lspSnapshot.revision + 1,
-      servers: lspSnapshot.servers,
-      activeServers: lspSnapshot.activeServers,
+    lspResetRequests.add((
+      threadId: threadId,
+      bindingId: bindingId,
+      serverId: serverId,
+    ));
+    final gate = lspResetGate;
+    if (gate != null) return gate.future;
+    final snapshot = ThreadLspStateSnapshot(
+      threadId: threadId,
+      revision: _threadLspSnapshot(threadId).revision + 1,
+      bindingId: bindingId,
+      servers: _threadLspSnapshot(threadId).servers,
     );
+    setThreadLspSnapshot(snapshot);
+    return snapshot;
   }
 }
 

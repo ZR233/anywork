@@ -86,6 +86,7 @@ pub use protocol::{
     StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
     StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
+    StudioThreadLspStateSnapshot,
 };
 
 pub use account_usage::{

@@ -101,6 +101,9 @@ impl LspQueryOperation {
 #[serde(rename_all = "camelCase")]
 pub struct LspQuery {
     pub operation: LspQueryOperation,
+    /// Explicit server selection within the bound workspace.
+    #[serde(default)]
+    pub server_id: Option<String>,
     pub file_path: Option<PathBuf>,
     pub line: Option<u32>,
     pub character: Option<u32>,

@@ -1,13 +1,10 @@
-use std::path::Path;
-
 use lsp_types::{
-    CallHierarchyClientCapabilities, ClientCapabilities, CompletionClientCapabilities,
-    CompletionItemCapability, ConfigurationParams, DidChangeWatchedFilesClientCapabilities,
-    DidChangeWatchedFilesParams, DocumentSymbolClientCapabilities, FileChangeType, FileEvent,
-    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams,
-    MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities,
-    WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceFolder,
+    CallHierarchyClientCapabilities, ClientCapabilities, ConfigurationParams,
+    DocumentSymbolClientCapabilities, GeneralClientCapabilities, GotoCapability,
+    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
+    TextDocumentClientCapabilities, WindowClientCapabilities, WorkDoneProgressParams,
+    WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::Value;
 
@@ -20,40 +17,40 @@ pub(crate) fn initialize_params(
     initialization_options: Value,
     style: crate::host::LspPathStyle,
 ) -> LspResult<Value> {
-    let workspace_uri = file_uri(&server.workspace_root, style)?;
-    let workspace_name = server
-        .workspace_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace")
-        .to_string();
+    let workspace = workspace_folder(server, style)?;
     #[allow(deprecated)]
     let params = InitializeParams {
         process_id: None,
         root_path: Some(server.workspace_root.display().to_string()),
-        root_uri: Some(workspace_uri.clone()),
+        root_uri: Some(workspace.uri.clone()),
         initialization_options: Some(initialization_options),
         capabilities: client_capabilities(),
-        workspace_folders: Some(vec![WorkspaceFolder {
-            uri: workspace_uri,
-            name: workspace_name,
-        }]),
+        workspace_folders: Some(vec![workspace]),
         work_done_progress_params: WorkDoneProgressParams::default(),
         ..InitializeParams::default()
     };
     Ok(serde_json::to_value(params)?)
 }
 
+pub(super) fn workspace_folder(
+    server: &ResolvedLspServer,
+    style: crate::host::LspPathStyle,
+) -> LspResult<WorkspaceFolder> {
+    Ok(WorkspaceFolder {
+        uri: file_uri(&server.workspace_root, style)?,
+        name: server
+            .workspace_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("workspace")
+            .to_string(),
+    })
+}
+
 pub(crate) fn workspace_configuration_response(
-    params: Option<&Value>,
+    params: ConfigurationParams,
     driver: &dyn LspServerDriver,
 ) -> Value {
-    let Some(params) = params
-        .cloned()
-        .and_then(|params| serde_json::from_value::<ConfigurationParams>(params).ok())
-    else {
-        return Value::Array(Vec::new());
-    };
     Value::Array(
         params
             .items
@@ -61,16 +58,6 @@ pub(crate) fn workspace_configuration_response(
             .map(|item| driver.configuration_response(item.section.as_deref()))
             .collect(),
     )
-}
-
-pub(crate) fn watched_file_event_params(
-    path: &Path,
-    typ: FileChangeType,
-    style: crate::host::LspPathStyle,
-) -> LspResult<DidChangeWatchedFilesParams> {
-    Ok(DidChangeWatchedFilesParams {
-        changes: vec![FileEvent::new(file_uri(path, style)?, typ)],
-    })
 }
 
 fn client_capabilities() -> ClientCapabilities {
@@ -81,29 +68,14 @@ fn client_capabilities() -> ClientCapabilities {
         }),
         workspace: Some(WorkspaceClientCapabilities {
             configuration: Some(true),
-            did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
-                dynamic_registration: Some(true),
-                ..DidChangeWatchedFilesClientCapabilities::default()
-            }),
+            workspace_folders: Some(true),
             ..WorkspaceClientCapabilities::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {
-            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
-                related_information: Some(true),
-                code_description_support: Some(true),
-                data_support: Some(true),
-                ..PublishDiagnosticsClientCapabilities::default()
-            }),
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
             hover: Some(HoverClientCapabilities {
                 content_format: Some(vec![MarkupKind::Markdown]),
                 ..HoverClientCapabilities::default()
-            }),
-            completion: Some(CompletionClientCapabilities {
-                completion_item: Some(CompletionItemCapability {
-                    documentation_format: Some(vec![MarkupKind::Markdown]),
-                    ..CompletionItemCapability::default()
-                }),
-                ..CompletionClientCapabilities::default()
             }),
             definition: Some(GotoCapability::default()),
             references: Some(ReferenceClientCapabilities::default()),

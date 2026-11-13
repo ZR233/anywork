@@ -11,14 +11,14 @@ use crate::runtime::{LspResult, LspRuntimeError};
 
 const MESSAGE_CHANNEL_CAPACITY: usize = 256;
 
-enum OutboundMessage {
+pub(super) enum OutboundMessage {
     Message(Message),
     Close,
 }
 
 #[derive(Clone)]
 pub(crate) struct TransportSender {
-    outbound: mpsc::Sender<OutboundMessage>,
+    pub(super) outbound: mpsc::Sender<OutboundMessage>,
 }
 
 pub(crate) struct LspTransport {
@@ -51,6 +51,7 @@ impl LspTransport {
         let (outbound, mut outbound_rx) =
             mpsc::channel::<OutboundMessage>(MESSAGE_CHANNEL_CAPACITY);
         let (inbound_tx, inbound) = mpsc::channel(MESSAGE_CHANNEL_CAPACITY);
+        let writer_inbound = inbound_tx.clone();
         let writer_runtime = runtime.clone();
         let writer = thread::Builder::new()
             .name("pl-lsp-writer".to_string())
@@ -59,7 +60,14 @@ impl LspTransport {
                 while let Some(outbound) = outbound_rx.blocking_recv() {
                     match outbound {
                         OutboundMessage::Message(message) => {
-                            if message.write(&mut writer).is_err() || writer.flush().is_err() {
+                            if let Err(error) =
+                                message.write(&mut writer).and_then(|()| writer.flush())
+                            {
+                                // Reject new sends before reporting the actual transport fault,
+                                // so a dispatcher writing a response cannot block this event.
+                                outbound_rx.close();
+                                let _ =
+                                    writer_inbound.blocking_send(Err(LspRuntimeError::Io(error)));
                                 break;
                             }
                         }
@@ -77,7 +85,9 @@ impl LspTransport {
                 loop {
                     let message = match Message::read(&mut reader) {
                         Ok(Some(message)) => Ok(message),
-                        Ok(None) => break,
+                        // The writer also owns an inbound sender to report write faults,
+                        // so EOF must be explicit rather than relying on channel closure.
+                        Ok(None) => Err(LspRuntimeError::Unavailable("LSP stdout closed".into())),
                         Err(error) => Err(LspRuntimeError::Io(error)),
                     };
                     let terminal = message.is_err();

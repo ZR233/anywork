@@ -144,7 +144,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - macOS 使用完整 Xcode 与 Flutter 官方 Swift Package Manager 集成，构建当前宿主架构的 `.app`；Rust bridge 由 xtask 预构建后放入 `Contents/Frameworks/`，SSH helper 放入 `Contents/Resources/data/remote-helper/`。构建收集保留 framework 符号链接，`run-gui --release` 启动 `dist/anywork-release/anywork.app/Contents/MacOS/anywork`。本地使用 ad-hoc 签名，不包含 Developer ID、公证或稳定发布授权。
 - Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件，由项目 Docker 镜像提供。宿主原生运行时，xtask 仍须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask test-project --suite desktop` 复用 bridge/helper 构建与进程树管理，运行官方桌面 `integration_test`；与 demo、capture、profile/native-launch 和 release 模式互斥。测试用 `WidgetTester` 操作真实生产组件。`wait_events` 的隔离 provider 由 `manual-gui --preset wait-events` 持有；`conversation_read_work` 的关闭 SQLite 预置由 `--preset conversation-read-work` 持有。`test-project` 在对应环境变量未齐时调用这些 preset。
-- `cargo xtask test-project --suite native` 在进程外裁判真实退出码、重开和第二实例；薄故障装配是 `tool/native_fault_main.dart`。
+- `cargo xtask test-project --suite native` 在一次真实关闭后核对原生退出码与所属进程无残留；准备入口是 `tool/native_shutdown_main.dart`，不编排界面、持久化核对或多阶段故障注入。
 - 人工截图使用 Widget Previewer/成熟浏览器工具或原生官方 Dart MCP；自定义内容捕获只保留自动化及原生测量的内部职责，不作为平行人工入口。
 - 原生 MCP 观察使用独立 debug Driver 入口；隔离模拟环境用 `cargo xtask manual-gui --preset gui --inspect`，复用已有 native launcher 和真实退出报告，不改变正式入口或 `integration_test` binding。Linux 无桌面时由系统 `xvfb-run` 提供显示，不需要伪终端；管道 stdin 的 `done` 请求退出后须等待并校验真实退出与后代回收，不重复录入 UI 动作。验收载体不提供 resident 热重载；确需跨层开发热重载才用普通 `run-gui --inspect`，其工具退出码不能代证产品正常退出。
 - UI 自动化在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，不准备 Rust/bridge。

@@ -1,18 +1,43 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lsp_server::{Message, Notification, Request, RequestId, Response};
-use serde_json::Value;
-use tokio::sync::{Mutex, oneshot};
+use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::runtime::{LspResult, LspRuntimeError};
 
-use super::transport::TransportSender;
+use super::transport::{OutboundMessage, TransportSender};
 
 type PendingResponseSender = oneshot::Sender<LspResult<Value>>;
 type PendingRequests = Arc<Mutex<HashMap<RequestId, PendingResponseSender>>>;
+
+struct PendingRequest<'a> {
+    id: RequestId,
+    pending: &'a PendingRequests,
+    cancellation: mpsc::PermitIterator<'a, OutboundMessage>,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.id);
+        if pending.is_some() {
+            // A reserved slot makes cancellation synchronous even when the write queue is
+            // full. The request was queued first; no detached cleanup task is needed.
+            if let Some(permit) = self.cancellation.next() {
+                permit.send(OutboundMessage::Message(
+                    Notification::new("$/cancelRequest".into(), json!({ "id": self.id })).into(),
+                ));
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct RpcClient {
@@ -37,18 +62,36 @@ impl RpcClient {
         timeout: Duration,
     ) -> LspResult<Value> {
         let id = RequestId::from(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let (sender, receiver) = oneshot::channel();
-        self.pending.lock().await.insert(id.clone(), sender);
         let result = tokio::time::timeout(timeout, async {
-            self.outbound
-                .send(Request::new(id.clone(), method.to_string(), params).into())
-                .await?;
+            // Reserve request and cancellation capacity together, avoiding deadlock between
+            // concurrent requests that would each otherwise hold half their required slots.
+            let mut permits =
+                self.outbound.outbound.reserve_many(2).await.map_err(|_| {
+                    LspRuntimeError::Unavailable("LSP writer channel closed".into())
+                })?;
+            let Some(request_permit) = permits.next() else {
+                return Err(LspRuntimeError::Unavailable(
+                    "LSP request slot unavailable".into(),
+                ));
+            };
+            let (sender, receiver) = oneshot::channel();
+            self.pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(id.clone(), sender);
+            let _pending = PendingRequest {
+                id: id.clone(),
+                pending: &self.pending,
+                cancellation: permits,
+            };
+            request_permit.send(OutboundMessage::Message(
+                Request::new(id.clone(), method.to_string(), params).into(),
+            ));
             receiver.await.map_err(|_| {
                 LspRuntimeError::Unavailable(format!("LSP request channel closed for {method}"))
             })?
         })
         .await;
-        self.pending.lock().await.remove(&id);
         result.unwrap_or_else(|_| Err(LspRuntimeError::Timeout(method.to_string())))
     }
 
@@ -68,14 +111,24 @@ impl RpcClient {
                 code: i64::from(error.code),
                 message: error.message,
             });
-        if let Some(sender) = self.pending.lock().await.remove(&response.id) {
+        if let Some(sender) = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&response.id)
+        {
             let _ = sender.send(result);
         }
     }
 
     pub(crate) async fn fail_pending(&self, message: impl Into<String>) {
         let message = message.into();
-        for (_, sender) in self.pending.lock().await.drain() {
+        for (_, sender) in self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain()
+        {
             let _ = sender.send(Err(LspRuntimeError::Unavailable(message.clone())));
         }
     }

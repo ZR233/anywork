@@ -78,17 +78,21 @@ impl From<StudioLspHealth> for BridgeLspHealthDto {
             lsp_servers: health
                 .lsp_servers
                 .into_iter()
-                .map(|server| BridgeLspServerDto {
-                    id: server.id,
-                    configuration_path: server.configuration_path,
-                    phase: server.phase,
-                    display_name: server.display_name,
-                    extensions: server.extensions,
-                    language_ids: server.language_ids,
-                    state: bridge_lsp_server_state(server.state),
-                })
+                .map(bridge_lsp_server)
                 .collect(),
         }
+    }
+}
+
+pub(crate) fn bridge_lsp_server(server: StudioLspServer) -> BridgeLspServerDto {
+    BridgeLspServerDto {
+        id: server.id,
+        configuration_path: server.configuration_path,
+        phase: server.phase,
+        display_name: server.display_name,
+        extensions: server.extensions,
+        language_ids: server.language_ids,
+        state: bridge_lsp_server_state(server.state),
     }
 }
 

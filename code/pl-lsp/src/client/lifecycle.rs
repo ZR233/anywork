@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lsp_types::InitializedParams;
@@ -16,6 +16,7 @@ use crate::runtime::{LspResult, LspRuntimeError};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+static NEXT_LSP_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 
 impl LspClient {
     pub(crate) async fn start(&self) -> LspResult<()> {
@@ -133,6 +134,11 @@ impl LspClient {
             }
         };
         let operations = negotiated_operations(&result.capabilities);
+        *self.negotiated_document_sync.write().map_err(|_| {
+            LspRuntimeError::Unavailable("LSP document sync state is poisoned".into())
+        })? = super::documents::DocumentSync::from_capability(
+            result.capabilities.text_document_sync.as_ref(),
+        );
         *self.negotiated_operations.write().map_err(|_| {
             LspRuntimeError::Unavailable("LSP capability state is poisoned".into())
         })? = operations;
@@ -164,9 +170,10 @@ impl LspClient {
 
     async fn spawn_server(&self) -> LspResult<LspHostProcess> {
         if let Some(host) = &self.host {
+            let sequence = NEXT_LSP_PROCESS_ID.fetch_add(1, Ordering::Relaxed);
             return host
                 .spawn(LspHostSpawnRequest {
-                    process_id: format!("lsp-{}", self.server.id),
+                    process_id: format!("lsp-{}-{}-{sequence}", self.server.id, std::process::id()),
                     program: self.server.program.clone(),
                     args: self.server.args.clone(),
                     env: self.server.env.clone(),

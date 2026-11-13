@@ -10,7 +10,7 @@ use crate::{
     host::{LspHostBackend, LspPathStyle},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -27,27 +27,7 @@ struct Source {
     config: Result<LspUserServerConfig, String>,
 }
 impl LspRuntimeRegistry {
-    /// Bind execution ownership, publish loading, then return without waiting for I/O or LSP.
-    pub async fn configure_workspace(
-        &self,
-        root: impl AsRef<Path>,
-        host: Option<Arc<dyn LspHostBackend>>,
-        defaults: BTreeMap<String, LspUserServerConfig>,
-    ) {
-        self.bind_workspace(root.as_ref(), host, defaults, None)
-            .await;
-    }
-    /// Product entry point: both host defaults and workspace documents are scanned by this owner.
-    pub async fn configure_workspace_from_directory(
-        &self,
-        root: impl AsRef<Path>,
-        host: Option<Arc<dyn LspHostBackend>>,
-        defaults_directory: Option<PathBuf>,
-    ) {
-        self.bind_workspace(root.as_ref(), host, BTreeMap::new(), defaults_directory)
-            .await;
-    }
-    async fn bind_workspace(
+    pub(super) async fn bind_workspace(
         &self,
         root: &Path,
         host: Option<Arc<dyn LspHostBackend>>,
@@ -89,7 +69,12 @@ impl LspRuntimeRegistry {
     /// Called by configuration mutation boundaries, never by snapshot/capability readers.
     pub async fn refresh_workspace_configuration(&self, root: impl AsRef<Path>) {
         let mut state = self.state.lock().await;
-        if state.closed || !state.workspaces.contains_key(root.as_ref()) {
+        if state.closed
+            || !state
+                .workspaces
+                .get(root.as_ref())
+                .is_some_and(|workspace| workspace.configured)
+        {
             return;
         }
         self.schedule_scan(&mut state, root.as_ref());
@@ -106,6 +91,9 @@ impl LspRuntimeRegistry {
         let Some(workspace) = state.workspaces.get_mut(root) else {
             return;
         };
+        if !workspace.configured {
+            return;
+        }
         for server in workspace.servers.values_mut() {
             if server.phase == LspLifecyclePhase::Failed
                 || (server.phase == LspLifecyclePhase::Ready && !server.healthy())
@@ -120,7 +108,8 @@ impl LspRuntimeRegistry {
     }
     fn schedule_scan(&self, state: &mut super::registry::LspRuntimeState, root: &Path) {
         use futures::FutureExt;
-        state.tasks.retain(|task| {
+        let workspace = state.workspaces.get_mut(root).expect("bound workspace");
+        workspace.tasks.retain(|task| {
             let Ok(mut task) = task.try_lock() else {
                 return true;
             };
@@ -143,7 +132,6 @@ impl LspRuntimeRegistry {
                 None => true,
             }
         });
-        let workspace = state.workspaces.get_mut(root).expect("bound workspace");
         workspace.retiring.retain(|_, (task, client)| {
             !(client.reclaimed()
                 && task
@@ -153,6 +141,7 @@ impl LspRuntimeRegistry {
         workspace.scan_cancel.cancel();
         workspace.scan_cancel = CancellationToken::new();
         workspace.scan_generation += 1;
+        workspace.scan_pending = true;
         let generation = workspace.scan_generation;
         let cancel = workspace.scan_cancel.clone();
         let host = workspace.host.clone();
@@ -249,34 +238,6 @@ impl LspRuntimeRegistry {
                         }
                     }
                 }
-                // Every member of a language conflict is excluded, not just the last one.
-                let mut languages: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                for (id, (_, catalog, matched, _)) in &members {
-                    if *matched {
-                        for language in &catalog.definition.language_ids {
-                            languages
-                                .entry(language.clone())
-                                .or_default()
-                                .push(id.clone());
-                        }
-                    }
-                }
-                let conflicts: BTreeSet<_> = languages
-                    .values()
-                    .filter(|ids| ids.len() > 1)
-                    .flatten()
-                    .cloned()
-                    .collect();
-                for id in conflicts {
-                    if let Some((path, _, _, _)) = members.remove(&id) {
-                        errors.push(configuration_error(
-                            &id,
-                            path,
-                            LspLifecyclePhase::Failed,
-                            "language ID conflicts with another LSP configuration",
-                        ));
-                    }
-                }
                 (members, errors)
             };
             let result = tokio::select! {
@@ -292,6 +253,7 @@ impl LspRuntimeRegistry {
                         && workspace.scan_generation == generation
                     {
                         workspace.has_scanned = true;
+                        workspace.scan_pending = false;
                         workspace.errors = vec![configuration_error(
                             "_configuration",
                             None,
@@ -313,14 +275,9 @@ impl LspRuntimeRegistry {
             if workspace.scan_generation != generation {
                 return;
             }
-            let previous: Vec<_> = workspace
-                .servers
-                .values()
-                .map(|server| server.snapshot(0))
-                .chain(workspace.errors.iter().cloned())
-                .collect();
             workspace.errors = errors;
             workspace.has_scanned = true;
+            workspace.scan_pending = false;
             let mut old = std::mem::take(&mut workspace.servers);
             let mut tasks = Vec::new();
             for (id, (path, catalog, matched, fingerprint)) in members {
@@ -434,19 +391,11 @@ impl LspRuntimeRegistry {
                     }
                 }
             }
-            let changed = previous
-                != workspace
-                    .servers
-                    .values()
-                    .map(|server| server.snapshot(0))
-                    .chain(workspace.errors.iter().cloned())
-                    .collect::<Vec<_>>();
-            state.tasks.extend(tasks);
-            if changed {
-                registry.emit_update();
-            }
+            workspace.tasks.extend(tasks);
+            // Completion also wakes explicit probes when membership is unchanged.
+            registry.emit_update();
         });
-        state.tasks.push(Arc::new(Mutex::new(Some(task))));
+        workspace.tasks.push(Arc::new(Mutex::new(Some(task))));
         if loading_changed {
             self.emit_update();
         }
@@ -529,7 +478,9 @@ impl LspRuntimeRegistry {
         }
         client.cancel();
         if let Err(error) = client.shutdown().await {
-            self.state.lock().await.retired_clients.push(client);
+            if let Some(workspace) = self.state.lock().await.workspaces.get_mut(&root) {
+                workspace.retired_clients.push(client);
+            }
             self.publish_phase(
                 &root,
                 &id,

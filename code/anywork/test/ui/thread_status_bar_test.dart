@@ -336,9 +336,14 @@ void main() {
       final beforeLsp = tester.widget<ContextUsageReadout>(
         find.byType(ContextUsageReadout),
       );
-      transport.emitLsp(
-        LspStateSnapshot(
-          revision: graph.client.lsp.state.revision + 1,
+      await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
+      await tester.pumpAndSettle();
+      final lsp = graph.client.existingThreadLsp('thread-main')!.state.value!;
+      transport.emitThreadLsp(
+        ThreadLspStateSnapshot(
+          threadId: 'thread-main',
+          bindingId: lsp.bindingId,
+          revision: lsp.revision + 1,
           servers: const [
             LspServerStateView(
               id: 'dart',
@@ -371,6 +376,9 @@ void main() {
         tester.widget<ContextUsageReadout>(find.byType(ContextUsageReadout)),
         same(beforeLsp),
       );
+
+      await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
+      await tester.pumpAndSettle();
 
       // Client command diagnostics intentionally diverge from VM presentation:
       // a direct Client call is pending while the last VM command is still failed.
@@ -686,7 +694,7 @@ final class _StatusTransport extends RecordingDemoTransport {
   @override
   Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
     final upstream = super.subscribeProductTopic(topic);
-    if (topic is! LspTopic) return upstream;
+    if (topic is! ThreadLspTopic) return upstream;
     StreamSubscription<ProductTopicFrame>? subscription;
     late final StreamController<ProductTopicFrame> controller;
     controller = StreamController<ProductTopicFrame>(
@@ -705,15 +713,15 @@ final class _StatusTransport extends RecordingDemoTransport {
     return controller.stream;
   }
 
-  void emitLsp(LspStateSnapshot snapshot) {
+  void emitThreadLsp(ThreadLspStateSnapshot snapshot) {
     _lspFrames!.add(
       ProductTopicDataFrame(
-        topic: const LspTopic(),
+        topic: ThreadLspTopic(threadId: snapshot.threadId),
         event: ProductTopicEventEnvelope(
           eventId: 'context-lsp-${snapshot.revision}',
           sequence: BigInt.from(snapshot.revision),
           createdAt: DateTime.utc(2026, 11, 3),
-          payload: LspStateChangedPayload(snapshot),
+          payload: ThreadLspStateChangedPayload(snapshot),
         ),
       ),
     );

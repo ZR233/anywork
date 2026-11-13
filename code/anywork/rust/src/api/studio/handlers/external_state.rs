@@ -4,7 +4,8 @@ use crate::api::studio::types::{
     BridgeCreateMcpDocumentInput, BridgeDeleteMcpDocumentInput, BridgeError,
     BridgeLspStateSnapshot, BridgeMcpCatalogSnapshot, BridgeMcpDocumentCommitReceipt,
     BridgeMcpDocumentContent, BridgeMcpDocumentRef, BridgeMcpScope, BridgeReconnectThreadMcpInput,
-    BridgeThreadMcpStateSnapshot, BridgeUpdateMcpDocumentInput, LspScopeInput,
+    BridgeThreadLspStateSnapshot, BridgeThreadMcpStateSnapshot, BridgeUpdateMcpDocumentInput,
+    LspScopeInput, ThreadLspResetInput,
 };
 
 pub async fn read_mcp_catalog(
@@ -84,6 +85,28 @@ pub async fn reconnect_thread_mcp(
     let bridge = active_bridge().await?;
     let snapshot = bridge.studio.reconnect_thread_mcp(input.into()).await?;
     Ok(snapshot.into())
+}
+
+pub async fn read_thread_lsp_state(
+    thread_id: String,
+) -> Result<BridgeThreadLspStateSnapshot, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bridge
+        .studio
+        .read_thread_lsp_state(&thread_id)
+        .await?
+        .into())
+}
+
+pub async fn reset_thread_lsp_server(
+    input: ThreadLspResetInput,
+) -> Result<BridgeThreadLspStateSnapshot, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bridge
+        .studio
+        .reset_thread_lsp_server(input.into())
+        .await?
+        .into())
 }
 
 pub async fn read_lsp_state() -> Result<BridgeLspStateSnapshot, BridgeError> {

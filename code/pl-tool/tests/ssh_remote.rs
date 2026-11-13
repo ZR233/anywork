@@ -1100,9 +1100,9 @@ root = "{workspaceRoot}/init"
         host.files().executor().clone(),
         host.files().canonical_path(),
     )?);
-    registry
-        .configure_workspace_from_directory(&workspace_root, Some(host), None)
-        .await;
+    let _lease = registry
+        .acquire_workspace(&workspace_root, Some(host), None)
+        .await?;
     let mut updates = registry.subscribe();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !registry.has_ready_servers(&workspace_root).await {
@@ -1164,6 +1164,7 @@ root = "{workspaceRoot}/init"
         .query_in_workspace(
             &workspace_root,
             LspQuery {
+                server_id: None,
                 operation: LspQueryOperation::DocumentSymbol,
                 file_path: Some(workspace_root.join("fixture.py")),
                 line: None,

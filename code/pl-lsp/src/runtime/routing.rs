@@ -97,6 +97,27 @@ impl LspRuntimeRegistry {
         workspace_root: &Path,
         query: &LspQuery,
     ) -> LspResult<String> {
+        if let Some(server_id) = &query.server_id {
+            let workspace_root = workspace_key(workspace_root);
+            let state = self.state.lock().await;
+            let server = state
+                .workspaces
+                .get(&workspace_root)
+                .and_then(|workspace| workspace.servers.get(server_id))
+                .ok_or_else(|| {
+                    LspRuntimeError::Unavailable(format!(
+                        "LSP server not configured in this workspace: {server_id}"
+                    ))
+                })?;
+            if let Some(language_id) = &query.language_id
+                && !server.resolved.language_ids.contains(language_id)
+            {
+                return Err(LspRuntimeError::InvalidQuery(format!(
+                    "LSP server {server_id} does not declare language {language_id}"
+                )));
+            }
+            return Ok(server_id.clone());
+        }
         if let Some(language_id) = &query.language_id {
             self.server_id_for_language_in_workspace(workspace_root, language_id)
                 .await
@@ -105,7 +126,7 @@ impl LspRuntimeRegistry {
                 .await
         } else {
             Err(LspRuntimeError::InvalidQuery(
-                "language_id or file_path is required".to_string(),
+                "server_id, language_id or file_path is required".to_string(),
             ))
         }
     }
@@ -218,47 +239,17 @@ impl LspRuntimeRegistry {
         }
     }
 
-    pub(crate) async fn open_client_for_path(&self, path: &Path) -> Option<Arc<LspClient>> {
-        let workspace_root = self.workspace_root_for_path(path).await?;
-        let server_id = self
-            .server_id_for_path_in_workspace(&workspace_root, path)
-            .await
-            .ok()?;
-        self.state
-            .lock()
-            .await
-            .workspaces
-            .get(&workspace_root)?
-            .servers
-            .get(&server_id)
-            .and_then(|server| server.client.clone())
-    }
-
     pub(crate) async fn open_clients_for_path(&self, path: &Path) -> Vec<Arc<LspClient>> {
-        let Some(workspace_root) = self.workspace_root_for_path(path).await else {
-            return Vec::new();
-        };
         self.state
             .lock()
             .await
             .workspaces
-            .get(&workspace_root)
-            .into_iter()
-            .flat_map(|workspace| workspace.servers.values())
+            .iter()
+            .filter(|(root, _)| path.starts_with(root) || root.starts_with(path))
+            .flat_map(|(_, workspace)| workspace.servers.values())
             .filter(|server| server.healthy())
             .filter_map(|server| server.client.clone())
             .collect()
-    }
-
-    async fn workspace_root_for_path(&self, path: &Path) -> Option<PathBuf> {
-        self.state
-            .lock()
-            .await
-            .workspaces
-            .keys()
-            .filter(|workspace_root| path.starts_with(workspace_root))
-            .max_by_key(|workspace_root| workspace_root.components().count())
-            .cloned()
     }
 }
 

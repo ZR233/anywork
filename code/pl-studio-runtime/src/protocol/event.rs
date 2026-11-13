@@ -33,6 +33,7 @@ pub enum StudioProductEventKind {
     RecoveryStateChanged(StudioRecoveryStateSnapshot),
     McpCatalogChanged(pl_protocol::McpCatalogSnapshot),
     ThreadMcpStateChanged(pl_protocol::ThreadMcpStateSnapshot),
+    ThreadLspStateChanged(crate::protocol::StudioThreadLspStateSnapshot),
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),

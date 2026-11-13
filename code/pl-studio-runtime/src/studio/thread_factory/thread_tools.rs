@@ -34,11 +34,13 @@ pub(super) struct PreparedThreadTools {
     pub environment: pl_tool::environment::ExecutionEnvironment,
     pub remote: Option<pl_tool::remote::SshWorkspaceBinding>,
     pub workspace: ToolWorkspace,
+    pub lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
 }
 
 pub(super) enum CatalogPreparation {
     Initial,
     Refresh {
+        lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
         commands: Option<crate::thread_assembler::StudioCommandProcesses>,
         remote: Option<Box<pl_tool::remote::SshWorkspaceBinding>>,
         policy_key: String,
@@ -97,7 +99,9 @@ impl StudioThreadFactory {
         let binding = super::tool_bindings::ToolBinding {
             assignment: assembly.assignment.cloned(),
             workspace_usage: assembly.workspace_usage.clone(),
-            lifetime: Default::default(),
+            lifetime: std::sync::Arc::new(super::tool_bindings::ThreadToolLifetime::new(
+                self.lsp_binding_updates(),
+            )),
             incarnation: std::sync::Arc::new(()),
             target_invalidated: false,
             permission_mode: assembly.config.runtime.permission_mode,
@@ -109,6 +113,8 @@ impl StudioThreadFactory {
             workspace: assembly.workspace.clone(),
             commands: None,
             remote: None,
+            lsp_lease: None,
+            lsp_binding_id: None,
             ssh_profile: match &assembly.project.ssh_alias {
                 Some(alias) => self
                     .services
@@ -139,6 +145,12 @@ impl StudioThreadFactory {
             }
         };
         let binding = super::tool_bindings::ToolBinding {
+            lsp_lease: tools.lsp_lease.clone(),
+            lsp_binding_id: tools
+                .lsp_lease
+                .as_ref()
+                .filter(|lease| !lease.is_closed())
+                .map(|_| crate::studio::ids::new_id("lsp-binding")),
             remote: tools.remote.clone(),
             catalog: tools.catalog.clone(),
             initial_skill_prompt: tools
@@ -165,10 +177,18 @@ impl StudioThreadFactory {
         let scope = self
             .resource_scope(&id)
             .ok_or(ThreadAssemblyError::Closed)?;
-        *scope
+        let previous = scope
             .binding
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(binding);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(binding);
+        self.notify_lsp_binding_changed();
+        if let Some(lease) = previous.and_then(|binding| binding.lsp_lease) {
+            lease
+                .close()
+                .await
+                .map_err(|error| resource_error("close previous LSP binding", error))?;
+        }
         Ok(tools)
     }
 
@@ -476,9 +496,16 @@ impl StudioThreadFactory {
             workspace: workspace.clone(),
             reviewer,
         };
+        let mut lsp_lease = None;
         if config.runtime.tool_capabilities.lsp {
             let lsp_started = std::time::Instant::now();
             tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_lsp", "starting");
+            let previous = match &preparation {
+                CatalogPreparation::Refresh { lsp_lease, .. } => {
+                    lsp_lease.clone().filter(|lease| !lease.is_closed())
+                }
+                CatalogPreparation::Initial => None,
+            };
             let root_str = root.to_str().ok_or_else(|| {
                 ThreadAssemblyError::Identity("LSP workspace path is not UTF-8".into())
             })?;
@@ -488,11 +515,20 @@ impl StudioThreadFactory {
             let defaults = remote
                 .is_none()
                 .then(|| self.services.store.paths().home().join("lsp/host"));
-            lsp.configure_workspace_from_directory(&root, host, defaults)
-                .await;
-            if matches!(&preparation, CatalogPreparation::Refresh { .. }) {
-                lsp.refresh_workspace_configuration(&root).await;
-            }
+            lsp_lease = if let Some(lease) = previous {
+                if let Err(error) = lease.refresh_configuration(host, defaults).await {
+                    tracing::warn!(%error, thread_id, "LSP directory refresh failed");
+                }
+                Some(lease)
+            } else {
+                match lsp.acquire_workspace(&root, host, defaults).await {
+                    Ok(lease) => Some(lease),
+                    Err(error) => {
+                        tracing::warn!(%error, thread_id, "LSP directory acquisition failed");
+                        None
+                    }
+                }
+            };
             let files = pl_tool::workspace_file::ExecutorWorkspaceFileBackend::new(
                 executor.clone(),
                 root_str,
@@ -538,6 +574,7 @@ impl StudioThreadFactory {
             environment,
             remote,
             workspace,
+            lsp_lease,
         })
     }
 }

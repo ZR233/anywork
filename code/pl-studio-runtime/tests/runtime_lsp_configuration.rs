@@ -12,6 +12,7 @@ use pl_provider_fixture::{Protocol, Reply, Step};
 use pl_studio_runtime::{
     StudioLspServerState, StudioLspStateSnapshot, StudioProductBaselineState,
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
+    StudioThreadLspStateSnapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -226,6 +227,69 @@ async fn wait_lsp(
     }
 }
 
+async fn wait_lsp_revision(
+    subscription: &mut StudioProductTopicSubscription,
+    id: &str,
+    after_revision: u64,
+) -> Result<()> {
+    loop {
+        let snapshot = match subscription.recv().await?.context("LSP topic closed")? {
+            StudioProductFrame::Baseline(baseline) => match baseline.state {
+                StudioProductBaselineState::Lsp(snapshot) => snapshot,
+                other => anyhow::bail!("unexpected LSP baseline: {other:?}"),
+            },
+            StudioProductFrame::Event(event) => match event.kind {
+                StudioProductEventKind::LspStateChanged(snapshot) => Box::new(snapshot),
+                other => anyhow::bail!("unexpected LSP event: {other:?}"),
+            },
+            StudioProductFrame::Lagged { dropped, .. } => {
+                anyhow::bail!("LSP fixture subscription lost {dropped} events")
+            }
+        };
+        if snapshot.state.revision() > after_revision && has_state(&snapshot, id, true) {
+            return Ok(());
+        }
+    }
+}
+
+async fn wait_thread_lsp(
+    subscription: &mut StudioProductTopicSubscription,
+    expected_ids: &[&str],
+) -> Result<StudioThreadLspStateSnapshot> {
+    loop {
+        let snapshot = match subscription
+            .recv()
+            .await?
+            .context("Thread LSP topic closed")?
+        {
+            StudioProductFrame::Baseline(baseline) => match baseline.state {
+                StudioProductBaselineState::ThreadLsp(snapshot) => *snapshot,
+                other => anyhow::bail!("unexpected Thread LSP baseline: {other:?}"),
+            },
+            StudioProductFrame::Event(event) => match event.kind {
+                StudioProductEventKind::ThreadLspStateChanged(snapshot) => snapshot,
+                other => anyhow::bail!("unexpected Thread LSP event: {other:?}"),
+            },
+            StudioProductFrame::Lagged { dropped, .. } => {
+                anyhow::bail!("Thread LSP fixture subscription lost {dropped} events")
+            }
+        };
+        if snapshot.binding_id.is_some() {
+            let mut actual = snapshot
+                .servers
+                .iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>();
+            actual.sort_unstable();
+            let mut expected = expected_ids.to_vec();
+            expected.sort_unstable();
+            if actual == expected {
+                return Ok(snapshot);
+            }
+        }
+    }
+}
+
 fn tool_ids(env: &Environment, call: &str) -> Result<Vec<String>> {
     serde_json::from_value(receipt(&env.root_provider, call)?["toolIds"].clone())
         .context("actual discover_tools result")
@@ -272,6 +336,21 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
             .subscribe_product_topic(StudioProductTopic::Lsp)
             .await?;
         wait_lsp(&mut events, "missing", false).await?;
+        let mut thread_lsp = env
+            .runtime
+            .subscribe_product_topic(StudioProductTopic::ThreadLsp {
+                thread_id: thread.clone(),
+            })
+            .await?;
+        let association = wait_thread_lsp(&mut thread_lsp, &["fixture", "missing"]).await?;
+        ensure!(association.thread_id == *thread);
+        ensure!(
+            association
+                .binding_id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty())
+        );
+        ensure!(association.revision > 0);
 
         submit(&env, thread, "inspect failure").await?;
         ensure!(tool_ids(&env, "failed-discovery")? == ["lsp_status"]);
@@ -344,6 +423,52 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
             hover["result"]
                 .as_str()
                 .is_some_and(|text| text.contains("fixture hover"))
+        );
+
+        let binding = association
+            .binding_id
+            .clone()
+            .context("current Thread LSP binding ID")?;
+        let before_reset_revision = env.runtime.read_lsp_state().await.state.revision();
+        let mut reset_events = env
+            .runtime
+            .subscribe_product_topic(StudioProductTopic::Lsp)
+            .await?;
+        let reset = env
+            .runtime
+            .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+                thread_id: thread.clone(),
+                binding_id: binding.clone(),
+                server_id: "fixture".into(),
+            })
+            .await?;
+        ensure!(reset.binding_id.as_deref() == Some(binding.as_str()));
+        ensure!(
+            reset
+                .servers
+                .iter()
+                .map(|server| server.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                == ["fixture", "missing"].into_iter().collect()
+        );
+        ensure!(
+            reset
+                .servers
+                .iter()
+                .find(|server| server.id == "missing")
+                .is_some_and(|server| server.phase == "failed"),
+            "reset of fixture must not reset the neighboring missing server"
+        );
+        wait_lsp_revision(&mut reset_events, "fixture", before_reset_revision).await?;
+        let after_reset = env.runtime.read_thread_lsp_state(thread).await?;
+        ensure!(after_reset.binding_id.as_deref() == Some(binding.as_str()));
+        ensure!(
+            after_reset
+                .servers
+                .iter()
+                .find(|server| server.id == "missing")
+                .is_some_and(|server| server.phase == "failed"),
+            "neighboring server state must remain in the Thread projection"
         );
 
         // Deferred declarations must really have reached the provider, not just a registry view.

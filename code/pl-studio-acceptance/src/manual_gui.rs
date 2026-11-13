@@ -17,6 +17,7 @@ mod realtime_presentation;
 mod shutdown;
 mod sidebar_query;
 mod skill_activity;
+mod thread_lsp_status;
 mod timeline_concept;
 mod timeline_history_20k;
 mod wait_events;
@@ -68,8 +69,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
     /// `wait-events`, `conversation-read-work`, `question-history`,
-    /// `realtime-presentation` and `sidebar-query` are automatic desktop runners;
-    /// `shutdown` covers native lifecycle and second-instance behavior.
+    /// `realtime-presentation`, `sidebar-query` and `thread-lsp-status` are automatic desktop runners;
+    /// `shutdown` checks normal native exit and remaining child processes.
     /// ACP native acceptance uses the official Flutter integration_test
     /// suites directly; see design/28-acp.md.
     #[arg(long, default_value = "gui", value_parser = parse_manual_gui_scenario)]
@@ -174,8 +175,10 @@ fn validate_realtime_focus(options: &ManualGuiOptions) -> Result<()> {
 }
 
 fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
-    if matches!(value, "realtime-presentation" | "sidebar-query")
-        || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
+    if matches!(
+        value,
+        "realtime-presentation" | "sidebar-query" | "thread-lsp-status"
+    ) || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
     {
         Ok(value.to_owned())
     } else {
@@ -851,12 +854,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "wait-events"
                     | "conversation-read-work"
                     | "sidebar-query"
+                    | "thread-lsp-status"
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
          timeline-history, timeline-history-20k, question-history, realtime-presentation, \
          timeline-concept, timeline-boundary, media-handoff, message-submission, stress-body-large, wait-events, conversation-read-work, \
-         sidebar-query and the delegation scenes"
+         sidebar-query, thread-lsp-status and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.preset == "timeline-history",
@@ -1008,6 +1012,29 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return result;
     }
 
+    if options.preset == "thread-lsp-status" {
+        ensure!(
+            cfg!(target_os = "linux"),
+            "Thread LSP integration requires Linux"
+        );
+        let working = tempfile::Builder::new()
+            .prefix("environment-")
+            .tempdir_in(&output)?;
+        let result = thread_lsp_status::run(&workspace, working.path(), &output, &interrupt_rx);
+        if options.retain_environment || result.is_err() {
+            let home = working.path().join("sandbox/studio-home");
+            let retained = keep_isolated_environment(working, &home, &output, None);
+            return match (result, retained) {
+                (Ok(()), retained) => retained,
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(retain_error)) => Err(error.context(format!(
+                    "retaining the Thread LSP environment also failed: {retain_error:#}"
+                ))),
+            };
+        }
+        return result;
+    }
+
     if options.preset == "sidebar-query" {
         let working = tempfile::Builder::new()
             .prefix("environment-")
@@ -1119,7 +1146,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
-            | "shutdown"
             | "timeline-history"
             | "timeline-history-20k"
             | "question-history"
@@ -1131,20 +1157,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     {
         fixture_command.arg("--fault").arg("unstructured");
     }
-    // The shutdown scenario's background-tool turns run the fixture binary in
-    // `--tool-peer` mode inside the opened project; the peer writes its business
-    // pids to these coordination files (absolute paths so the exec shell never
-    // depends on its working directory). Only the shutdown script reads them.
-    // The concurrent-stop turn writes its own file so a stale record from the
-    // earlier tool-reclamation turn can never be mistaken for the new subtree.
     if options.preset == "shutdown" {
         fixture_command.env(
             "ANYWORK_SHUTDOWN_TOOL_COORD",
             working.path().join("shutdown-tool-coord.json"),
-        );
-        fixture_command.env(
-            "ANYWORK_SHUTDOWN_CONCURRENT_TOOL_COORD",
-            working.path().join("shutdown-concurrent-tool-coord.json"),
         );
     }
     #[cfg(windows)]
@@ -1631,13 +1647,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         return shutdown::run(
             &shutdown::ShutdownScenario {
                 workspace: &workspace,
-                app_dir: &app_dir,
                 home: &home,
                 working: working.path(),
                 output: &output,
                 fixture_log: &fixture_log_path,
                 requests_file: &requests_file,
-                status_file: &status_file,
                 fixture_executable: &fixture_executable,
                 interrupt: &interrupt_rx,
             },
@@ -6104,30 +6118,6 @@ pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWater
     })
 }
 
-/// Runs `PRAGMA quick_check` on [database] through a read-only connection.
-///
-/// Proves the exact file committed before a forced exit still opens and passes
-/// SQLite's own integrity check after a reopen, rather than only that some file
-/// exists.
-pub(super) fn history_lock_quick_check(database: &Path) -> Result<String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let database = database.to_owned();
-    let display = database.clone();
-    runtime.block_on(async move {
-        let options = SqliteConnectOptions::new()
-            .filename(&database)
-            .read_only(true);
-        let mut connection = SqliteConnection::connect_with(&options).await?;
-        let (result,): (String,) = sea_orm::sqlx::query_as("PRAGMA quick_check")
-            .fetch_one(&mut connection)
-            .await
-            .with_context(|| format!("failed to run quick_check on {}", display.display()))?;
-        Ok(result)
-    })
-}
-
 /// Read the canonical persisted item type; invocation text is not tool execution.
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -6693,6 +6683,7 @@ mod scenario_cli_tests {
             "timeline-concept",
             "timeline-boundary",
             "sidebar-query",
+            "thread-lsp-status",
         ] {
             let options = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])
                 .expect("supported native presentation scenario");

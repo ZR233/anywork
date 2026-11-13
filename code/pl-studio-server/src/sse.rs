@@ -195,6 +195,10 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
             query.append_pair("topic", "threadMcp");
             query.append_pair("threadId", thread_id);
         }
+        StudioProductTopic::ThreadLsp { thread_id } => {
+            query.append_pair("topic", "threadLsp");
+            query.append_pair("threadId", thread_id);
+        }
         other => {
             query.append_pair("topic", topic_token(other));
         }
@@ -214,6 +218,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::Recovery => "recovery",
         StudioProductTopic::McpCatalog { .. } => "mcpCatalog",
         StudioProductTopic::ThreadMcp { .. } => "threadMcp",
+        StudioProductTopic::ThreadLsp { .. } => "threadLsp",
         StudioProductTopic::Lsp => "lsp",
         StudioProductTopic::Skills { .. } => "skills",
         StudioProductTopic::ThreadModeCatalog => "threadModeCatalog",

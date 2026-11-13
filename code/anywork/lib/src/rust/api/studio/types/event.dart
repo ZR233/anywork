@@ -21,6 +21,7 @@ import 'response.dart';
 import 'runtime.dart';
 import 'session_directory.dart';
 import 'settings.dart';
+import 'thread_lsp.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
 part 'event.freezed.dart';
@@ -91,6 +92,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.threadMcpStateChanged(
     BridgeThreadMcpStateSnapshot field0,
   ) = BridgeProductEventPayload_ThreadMcpStateChanged;
+  const factory BridgeProductEventPayload.threadLspStateChanged(
+    BridgeThreadLspStateSnapshot field0,
+  ) = BridgeProductEventPayload_ThreadLspStateChanged;
   const factory BridgeProductEventPayload.lspStateChanged(
     BridgeLspStateSnapshot field0,
   ) = BridgeProductEventPayload_LspStateChanged;

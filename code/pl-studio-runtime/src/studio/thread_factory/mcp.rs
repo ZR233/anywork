@@ -62,7 +62,7 @@ pub(crate) struct ThreadMcpOwner {
 
 impl ThreadMcpOwner {
     pub(crate) fn cancel_producers(&self) {
-        self.lifetime.cancellation.cancel();
+        self.lifetime.cancel();
     }
 
     fn new(
@@ -146,7 +146,7 @@ impl ThreadMcpOwner {
 
     fn start_close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseCompletion {
         use futures::FutureExt;
-        self.lifetime.cancellation.cancel();
+        self.lifetime.cancel();
         {
             let mut slot = self
                 .shutdown
@@ -1328,6 +1328,8 @@ pub(crate) mod tests {
             commands: None,
             remote: None,
             ssh_profile: None,
+            lsp_lease: None,
+            lsp_binding_id: None,
         });
         *scope.mcp.lock().unwrap() = Some(owner.clone());
         factory.bind_resource_scope(&owner.thread_id, &scope)?;
@@ -1473,10 +1475,7 @@ pub(crate) mod tests {
 
         let owner_a = ThreadMcpOwner::new(
             "thread-a".to_owned(),
-            Arc::new(ThreadToolLifetime {
-                gate: Arc::new(tokio::sync::Mutex::new(())),
-                cancellation: CancellationToken::new(),
-            }),
+            Arc::new(ThreadToolLifetime::default()),
             McpScope::Host,
             temp.path().to_path_buf(),
             None,
@@ -1485,10 +1484,7 @@ pub(crate) mod tests {
         );
         let owner_b = ThreadMcpOwner::new(
             "thread-b".to_owned(),
-            Arc::new(ThreadToolLifetime {
-                gate: Arc::new(tokio::sync::Mutex::new(())),
-                cancellation: CancellationToken::new(),
-            }),
+            Arc::new(ThreadToolLifetime::default()),
             McpScope::Host,
             temp.path().to_path_buf(),
             None,

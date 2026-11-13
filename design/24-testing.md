@@ -47,9 +47,9 @@ Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow
 
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；先完成编译缓存恢复，再校验和恢复本次工具。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 
-原生关闭与第二实例行为由同一个 `shutdown` 自动旅程证明：第二实例必须重定向并激活原实例、在创建第二个 Flutter engine 前退出，原实例继续工作并在重新打开后恢复持久化结果。原先单列的 `single-instance` 入口没有独立自动断言、实际进入人工交互，已从自动套件与预置入口中移除；清理重复入口不删除上述真实第二实例断言。
+原生关闭验收通过 `shutdown` 场景执行一次真实启动与正常关闭。同一应用实际持有 MCP、语言服务、后台命令及其后代进程；关闭前记录进程身份，关闭后核对原生退出码为 0、所属进程均已消失且启动器未代为强制回收。准备与退出只有防卡死期限，不断言精确耗时，不编排多阶段故障、第二实例、正文或数据库恢复检查，也不人为创建脱离受管进程组的额外后代；启动器仍观察全部实际后代，任何强制回收均判失败。语义查询与工具目录发布继续由 Rust 的 `runtime_lsp_configuration` 回归证明。
 
-Linux 原生宿主首次加载打包桥接库时使用系统 [dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html) 的 `RTLD_DEEPBIND`，优先从桥接库及其依赖解析符号，避免系统与 Flutter 导出的栈展开函数混用。该库由进程持有，随后 Dart 重开同一库，不另建加载器或桥接实例。`shutdown` 的重复退出场景在首次清理仍未完成时再次请求退出，核对共用同一 Future，并由进程外确认降级退出码 1、协调完成诊断与无残留进程；降级诊断继续实际采集 Rust 调用栈，不通过禁用诊断避开崩溃。
+Linux 原生宿主首次加载打包桥接库时使用系统 [dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html) 的 `RTLD_DEEPBIND`，优先从桥接库及其依赖解析符号，避免系统与 Flutter 导出的栈展开函数混用。该库由进程持有，随后 Dart 重开同一库，不另建加载器或桥接实例。
 
 轮次终态与时间线接纳独立推进。保存内容的库存读取须先等当前 Main 接纳该轮受理的输入，再固定原读取窗口；固定后仍严格核对窗口、轮次、输入、完成记录与正文身份，不能在读取失败后改用另一窗口或旧轮次内容。
 
@@ -110,6 +110,8 @@ Waiting 由 Core/Runtime 公开 API、生产 widget 集成和官方桌面 `integ
 官方入口及行为依据：[集成测试](https://docs.flutter.dev/testing/integration-tests)、[`pumpAndSettle`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)。既有原生历史规模和性能证据只在实际输入或依赖受影响时补验，不因更换 Waiting 测试组织方式自动失效。
 
 普通功能集成验证操作后的可观察结果，不给宿主调度增加性能门槛。双击等有输入时序要求的手势使用官方 [`PointerEventRecord`](https://api.flutter.dev/flutter/flutter_test/WidgetTester/handlePointerEventRecord.html) 发送有效事件：首次按下满足最小间隔后，将首次释放与第二次点击放在同一事件包内，再核对真实界面与持久化结果，不要求 CI 两次异步调度之间的墙钟时间小于双击窗口。重新解码的不可变事实按完整业务字段比较；局部作用域、订阅等资源所有权仍按真实身份核对。测试层级遵循 Flutter 的[测试分层建议](https://docs.flutter.dev/testing/overview)，已有单元或组件测试能完整证明的规则不重复提升到原生桌面测试。
+
+会话语言服务的原生用例使用 `cargo xtask test-project --suite desktop --case thread_lsp_status`。运行器通过现有隔离验收工具的 `thread-lsp-status` 场景自动准备全新 home、两个同名服务的项目目录和 `pl-provider-fixture`，不依赖会话临时脚本。界面状态、弹窗观察生命周期和重载交互由生产组件的视图模型及 Widget 测试证明；原生用例仅验证真实 Rust／FRB／Client 的主题与命令往返、会话绑定、另一项目进程不变与关闭回收，不重复界面断言或截图；证据保存在该次输出的 `thread-lsp-artifacts/`。当前进程身份核验仅覆盖 Linux。
 
 ### 24.1.3 时间线呈现与官方集成测试
 

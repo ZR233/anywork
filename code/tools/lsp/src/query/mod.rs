@@ -6,18 +6,25 @@ use std::{marker::PhantomData, path::PathBuf};
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LspQueryInput {
-    /// 目标语言 ID；运行期按 catalog 路由到对应 server。
+    /// Language ID from lsp_capabilities, not a file extension or project name.
     pub language_id: String,
+    /// Server ID from lsp_capabilities; select explicitly when the language is ambiguous.
+    pub server_id: Option<String>,
+    /// Semantic operation. Cursor-based operations require filePath, line and
+    /// character; documentSymbol locates declarations without a cursor.
     pub operation: Operation,
-    /// Workspace-relative or absolute path to the source file.
+    /// Source file path, relative to this Thread's execution workspace or absolute;
+    /// not relative to the language package or a previous shell command's cwd.
     pub file_path: Option<PathBuf>,
-    /// 1-based line number for position operations.
+    /// 1-based line in filePath itself, not a line in concatenated command output.
+    /// Required only for position operations; locate the symbol before querying.
     #[schemars(range(min = 1))]
     pub line: Option<u32>,
-    /// 1-based UTF-16 character offset for position operations.
+    /// 1-based UTF-16 code-unit offset within that source line, inside the target
+    /// identifier. Do not count line-number prefixes or UTF-8 bytes.
     #[schemars(range(min = 1))]
     pub character: Option<u32>,
-    /// Workspace symbol query string.
+    /// Symbol name/text filter for workspaceSymbol; not a file path or tool ID.
     pub query: Option<String>,
     /// Maximum results to return.
     #[schemars(range(min = 1))]
@@ -27,7 +34,7 @@ pub struct LspQueryInput {
 pub fn lsp_query_definition() -> ToolDefinition {
     ToolDefinition::json(
         "lsp_query",
-        "Query workspace language services for definitions, references, hover, symbols, call hierarchy or diagnostics. Discover supported languages with lsp_capabilities.",
+        "Resolve definitions, types, references, symbols, call relationships or diagnostics with workspace language services. Use lsp_capabilities for languages and server IDs. Read the target file or use documentSymbol/workspaceSymbol to locate a symbol before cursor queries; check that results describe the intended declaration, not just an import.",
         pl_agent_tool::typed::input_schema_for::<LspQueryInput>(),
     ).expect("static tool definition")
 }
@@ -116,18 +123,21 @@ impl<S: QueryService> Tool for LspQueryTool<S> {
             return Err(QueryError::Cancelled);
         }
         let language = input.language_id.clone();
+        let request = context.service.query(QueryRequest {
+            language_id: input.language_id,
+            server_id: input.server_id,
+            operation: input.operation,
+            file_path,
+            line: input.line,
+            character: input.character,
+            query: input.query,
+            max_results: input.max_results,
+        });
         let value = context
-            .service
-            .query(QueryRequest {
-                language_id: input.language_id,
-                operation: input.operation,
-                file_path,
-                line: input.line,
-                character: input.character,
-                query: input.query,
-                max_results: input.max_results,
-            })
+            .cancellation
+            .run_until_cancelled(request)
             .await
+            .ok_or(QueryError::Cancelled)?
             .map_err(|source| QueryError::Service { language, source })?;
         Ok(LspResult { value })
     }

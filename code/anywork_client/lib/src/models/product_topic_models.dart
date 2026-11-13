@@ -107,6 +107,19 @@ final class ThreadMcpTopic extends ProductTopic {
   int get hashCode => Object.hash(0x011c, threadId);
 }
 
+final class ThreadLspTopic extends ProductTopic {
+  const ThreadLspTopic({required this.threadId});
+
+  final String threadId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadLspTopic && threadId == other.threadId;
+
+  @override
+  int get hashCode => Object.hash(0x011d, threadId);
+}
+
 final class LspTopic extends ProductTopic {
   const LspTopic();
 
@@ -319,6 +332,12 @@ final class ThreadMcpBaseline extends ProductTopicBaselineState {
   final ThreadMcpStateSnapshot state;
 }
 
+final class ThreadLspBaseline extends ProductTopicBaselineState {
+  const ThreadLspBaseline(this.state);
+
+  final ThreadLspStateSnapshot state;
+}
+
 final class LspBaseline extends ProductTopicBaselineState {
   const LspBaseline(this.state);
 
@@ -518,6 +537,9 @@ sealed class ProductTopicEventPayload {
     ThreadMcpStateChangedPayload(:final state) => ThreadMcpTopic(
       threadId: state.threadId,
     ),
+    ThreadLspStateChangedPayload(:final state) => ThreadLspTopic(
+      threadId: state.threadId,
+    ),
     LspStateChangedPayload() => const LspTopic(),
     SkillsStateChangedPayload(:final state) => SkillsTopic(
       workspaceId: state.workspaceId,
@@ -595,6 +617,12 @@ final class ThreadMcpStateChangedPayload extends ProductTopicEventPayload {
   const ThreadMcpStateChangedPayload(this.state);
 
   final ThreadMcpStateSnapshot state;
+}
+
+final class ThreadLspStateChangedPayload extends ProductTopicEventPayload {
+  const ThreadLspStateChangedPayload(this.state);
+
+  final ThreadLspStateSnapshot state;
 }
 
 final class LspStateChangedPayload extends ProductTopicEventPayload {

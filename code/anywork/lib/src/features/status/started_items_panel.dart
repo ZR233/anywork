@@ -26,6 +26,15 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
   final _controller = MenuController();
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
+  bool _menuOpen = false;
+
+  void _onMenuOpen() {
+    if (mounted && !_menuOpen) setState(() => _menuOpen = true);
+  }
+
+  void _onMenuClose() {
+    if (mounted && _menuOpen) setState(() => _menuOpen = false);
+  }
 
   @override
   void dispose() {
@@ -38,6 +47,8 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
   Widget build(BuildContext context) => MenuAnchor(
     controller: _controller,
     childFocusNode: _focusNode,
+    onOpen: _onMenuOpen,
+    onClose: _onMenuClose,
     menuChildren: [
       SizedBox(
         width: math.max(
@@ -52,7 +63,10 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
             controller: _scrollController,
             primary: false,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: StartedItemsConnector(threadId: widget.threadId),
+            child: StartedItemsConnector(
+              threadId: widget.threadId,
+              observe: _menuOpen,
+            ),
           ),
         ),
       ),
@@ -69,12 +83,55 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
   );
 }
 
-class StartedItemsConnector extends ConsumerWidget {
-  const StartedItemsConnector({required this.threadId, super.key});
+class StartedItemsConnector extends ConsumerStatefulWidget {
+  const StartedItemsConnector({
+    required this.threadId,
+    required this.observe,
+    super.key,
+  });
   final String threadId;
+  final bool observe;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<StartedItemsConnector> createState() =>
+      _StartedItemsConnectorState();
+}
+
+class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
+  void Function()? _releaseLspObservation;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.observe) _attachLspObservation(widget.threadId);
+  }
+
+  @override
+  void didUpdateWidget(covariant StartedItemsConnector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId ||
+        oldWidget.observe != widget.observe) {
+      _releaseLspObservation?.call();
+      _releaseLspObservation = null;
+      if (widget.observe) _attachLspObservation(widget.threadId);
+    }
+  }
+
+  void _attachLspObservation(String threadId) {
+    _releaseLspObservation = ref
+        .read(startedItemsViewModelProvider(threadId).notifier)
+        .observeServices();
+  }
+
+  @override
+  void dispose() {
+    _releaseLspObservation?.call();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final threadId = widget.threadId;
     final state = ref.watch(startedItemsViewModelProvider(threadId));
     final commands = ref.read(startedItemsViewModelProvider(threadId).notifier);
     return state.when(

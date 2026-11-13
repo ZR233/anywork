@@ -1,17 +1,5 @@
-//! Scenario-owned stdio MCP server used by the shutdown acceptance.
-//!
-//! The product starts enabled `[mcp.servers.<id>]` entries through its own
-//! supervised worker and must reclaim that whole subtree on exit. This server
-//! mimics a real stdio MCP peer (the legacy `initialize` handshake plus
-//! `tools/list`) and, in addition, spawns a grandchild that ignores `SIGTERM`
-//! and lives in its own process group. That grandchild can only be reclaimed by
-//! the product's real descendant supervision, so the acceptance can tell a
-//! self-supervised service apart from a leaked one.
-//!
-//! The server records its own pid and the grandchild's pid (with `/proc` start
-//! times where available) into a coordination file so the coordinator can
-//! OS-poll the real business PIDs. It never kills the grandchild itself: the
-//! whole point is that the product's supervisor must do it.
+//! Scenario-owned MCP peer for one normal native shutdown.
+//! Records its real process identity; descendant cleanup is judged by the native launcher.
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -19,14 +7,12 @@ use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::stdio_peer::{proc_start_ticks, spawn_tracked_grandchild};
+use crate::stdio_peer::proc_start_ticks;
 
 /// Options for [`run_mcp_stdio`].
 pub struct McpStdioOptions {
-    /// File the server writes its own and the grandchild's pid/starttime into.
+    /// File receiving the peer process identity.
     pub coord_file: PathBuf,
-    /// Keep the descendant in the owned group for coordinated-stop scenarios.
-    pub inherit_process_group: bool,
 }
 
 /// The protocol versions the fixture accepts, newest first. Kept in step with
@@ -41,25 +27,17 @@ const ACCEPTED_PROTOCOL_VERSIONS: [&str; 5] = [
 
 /// Runs the scenario-owned stdio MCP server until the supervisor closes stdin.
 pub fn run_mcp_stdio(options: McpStdioOptions) -> Result<()> {
-    // Fail loudly rather than recording a pid that is already gone: a missing
-    // `sleep` (or any immediate exec failure) must not turn into a vacuous
-    // "reclamation" pass. The helper keeps the grandchild handle owned so it
-    // cannot become a zombie and never kills it here.
-    let grandchild_pid = spawn_tracked_grandchild(options.inherit_process_group)?;
     let mcp_pid = std::process::id();
-    write_coord_record(&options.coord_file, mcp_pid, grandchild_pid)?;
+    write_coord_record(&options.coord_file, mcp_pid)?;
     serve()
 }
 
-/// Writes the server and grandchild identities so the coordinator can OS-poll
-/// the real business PIDs with a pid-reuse guard.
-fn write_coord_record(coord_file: &Path, mcp_pid: u32, grandchild_pid: u32) -> Result<()> {
+/// Records the peer identity with a pid-reuse guard.
+fn write_coord_record(coord_file: &Path, mcp_pid: u32) -> Result<()> {
     let record = json!({
         "schema": "anywork-mcp-stdio/1",
         "mcpPid": mcp_pid,
         "mcpStartTicks": proc_start_ticks(mcp_pid),
-        "grandchildPid": grandchild_pid,
-        "grandchildStartTicks": proc_start_ticks(grandchild_pid),
     });
     if let Some(parent) = coord_file.parent() {
         fs::create_dir_all(parent)

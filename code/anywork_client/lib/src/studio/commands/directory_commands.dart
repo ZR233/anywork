@@ -377,6 +377,22 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
 
   Future<void> refreshLspState() => _applyLsp(_api.readLspState);
 
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId) =>
+      _applyThreadLsp(threadId, () => _api.readThreadLspState(threadId));
+
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) => _applyThreadLsp(
+    threadId,
+    () => _api.resetThreadLspServer(
+      threadId: threadId,
+      bindingId: bindingId,
+      serverId: serverId,
+    ),
+  );
+
   Future<void> probeLspServer() => _lane.run(() async {
     final workspaceId = _client.selection.state.selectedProjectId;
     if (workspaceId == null) return;
@@ -454,6 +470,17 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     final snapshot = await command();
     if (!_client.isClosed) {
       _client.threadMcp(threadId).apply(snapshot);
+    }
+    return snapshot;
+  });
+
+  Future<ThreadLspStateSnapshot> _applyThreadLsp(
+    String threadId,
+    Future<ThreadLspStateSnapshot> Function() command,
+  ) => _lane.run(() async {
+    final snapshot = await command();
+    if (!_client.isClosed) {
+      _client.threadLsp(threadId).apply(snapshot);
     }
     return snapshot;
   });

@@ -304,6 +304,7 @@ impl QueryService for ThreadLspPort {
             .query_in_workspace(
                 self.paths.workspace().root(),
                 LspQuery {
+                    server_id: request.server_id,
                     operation: host_operation(operation),
                     file_path: request.file_path,
                     line: request.line,
