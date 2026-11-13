@@ -25,11 +25,11 @@ Linux Rust 缓存位于 checkout 之外，并以相同路径挂载进构建容�
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
 | GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
 | Linux 构建输入 | 生成检查需要工程工具；原生集成和 GUI 编译才需要双架构 helper。仅平台 Clippy 不触发准备作业，也不因其 skipped 而连带跳过。工程工具与所需 helper 复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
-| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance 和开发配置 bridge，经既有受控构件交接供各 runner 只读消费。release/profile bridge 仍由场景所属 runner 编译。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
-| Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui --debug` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。debug 仍编译真实 App、Rust bridge、插件与 helper 资源，保留链接与平台装配检查；不在每个 PR 重复做 release 优化和打包。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
+| Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance、开发配置 bridge 及 release 模拟供应商进程，经既有受控构件交接供各 runner 只读消费。release/profile bridge 仍由场景所属 runner 编译。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
+| Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。默认构建 Release/AOT App 和 release Rust bridge，编译真实插件并暂存双架构 helper；沿用发布检查点归档 `dist/anywork-release` 与独立工程工具，记录源码、版本、平台、配置及摘要，供检查和后续显式打包使用。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
 | Linux server 构建 | 后端或共享构建输入受影响时提供 server 编译信号，不以 GUI 测试代替 |
 
-Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 Clippy 与 debug GUI 编译成功只证明对应宿主的静态检查、编译和链接，不证明 release/AOT、该宿主的运行行为、原生窗口生命周期、AppKit 终止或签名。`build-gui` 默认仍为 release；RC/稳定发布继续构建并验证 release 成品。debug 输出只留在 Flutter 的 build 目录，不写入 `dist/anywork-release`，不能作为发布输入。
+Linux 测试只提供该宿主的运行行为证据。Windows/macOS 的 Clippy 与默认 GUI 构建证明对应宿主的静态检查、Release/AOT 编译、链接及发布目录收集，不证明该宿主的运行行为、原生窗口生命周期、AppKit 终止或完整发布。macOS 保留现有 ad-hoc 签名，不包含 Developer ID 或公证。PR 构件不自动进入正式发布：PR 测试合并提交与发布版本提交通常不同，不能用跨运行旧构件替代发布源码。RC/稳定发布继续经精确构件 ID 和摘要传递同次 bundle 与工具，下游打包、签名和校验不重新编译。Windows/macOS 的 PR、RC 与稳定编译共用各平台的 Rust 缓存域、固定编译器和无调试符号的 dev/test 配置；只有默认分支保存共享缓存，命中后仍由 Cargo 校验。
 
 纯 Rust 集成测试路径按 crate 根 `tests/` 的结构识别，包含其专用 helper 和 fixture 数据；不能仅凭 `src/` 中的文件名含 test 推断它不会参与生产构建。产品共享 fixture、工程工具、验收工具和共享构建配置仍保守检查。混合生产改动恢复生产编译职责，不因同时包含测试而缩减覆盖。平台作业是否运行，与其中是否需要 GUI 编译分别由分类结果决定。
 
@@ -43,7 +43,7 @@ Linux CI 的桌面与原生测试输出按本次运行及重试编号隔离，�
 
 Linux 的 Cargo 源码与编译缓存按镜像身份与作业职责隔离，只从受信默认分支写入；宿主缓存动作与容器 Cargo 显式消费同一独立缓存目录，不挂载用户 Cargo 配置或凭据。缓存命中仍须经过 Cargo 的源码与锁文件核验，不是已验证程序或测试通过的证据。
 
-Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow 的验收工具与开发配置桥接库；这是 CI 工程输入，不是用户配置或持久缓存。交接沿用精确构件 ID、归档摘要、源码、编译工作区和不可变镜像校验，消费时再核对实际 Rust/Cargo 工具链、平台、构建配置、运行编号及各文件摘要。设置入口后缺失、损坏、源码有修改或身份不匹配均直接失败，不回退编译；未设置时保留普通本地 Cargo 构建。仅共享固定只读文件，不共享 Cargo target、Flutter 输出、进程、fixture、场景数据或报告；每个 runner 自己创建和释放调用内准备租约。下游重跑可复用同一 workflow run 的精确生产者构件，不接受跨 run 构件。
+Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow 的验收工具、开发配置桥接库和 release `pl-provider-fixture`；这是 CI 工程输入，不是用户配置或持久缓存。交接沿用精确构件 ID、归档摘要、源码、编译工作区和不可变镜像校验，消费时再核对实际 Rust/Cargo 工具链、平台、构建配置、运行编号及各文件的 profile 和摘要。校验由 `pl-dev-support` 统一提供，xtask 和验收工具均使用同一入口。设置入口后缺失、损坏、源码有修改或身份不匹配均直接失败，不回退编译；未设置时保留普通本地 Cargo 构建。仅共享固定只读二进制，不共享 Cargo target、Flutter 输出、进程、fixture 状态、场景数据或报告；每个 runner 自己创建和释放调用内准备租约。下游重跑可复用同一 workflow run 的精确生产者构件，不接受跨 run 构件。
 
 同次运行交接的只读工程工具、验收输出与私有桌面会话目录放在 Cargo target 及 Cargo 缓存之外；先完成编译缓存恢复，再校验和恢复本次工具。缓存恢复不能清理本次工具，也不能把旧证据目录冒充本次输出。交接与验收仍拒绝覆盖已存在目标，不以删除未知目录、重编译或路径兜底掩盖归属冲突。
 
@@ -350,7 +350,7 @@ FRB 慢消费者的严格等待证据来自同一 producer 的实际 credit 等�
 
 活动成员的展开验收绑定真实条目身份和已挂载标题，读取其纯视图公开的展开属性；官方展开组件仍读取其公开控制器。未知或缺失的状态不得解释为收起，详情入口中复用的活动行不得替代成员标题。展开与收起通过真实指针触发，并结合正文尺寸、滚动几何及同一展示代次判定，不为验收创建领域所有者或额外生产状态。
 
-人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
+人工验收 harness 使用官方 Cargo `release` profile 构建独立的 `pl-provider-fixture` 可执行文件，构建和产物定位仍由 Cargo 负责并在服务期限开始前完成；这不改变 GUI 的 debug/profile 选择，也不改变自动化测试链接 fixture 库的构建模式。同次 CI 显式提供校验后的 release fixture 时直接消费，不再在每个 desktop/native runner 重复编译；本地仍由 Cargo 构建。优化构建用于避免大型完整请求证据的序列化成本挤占退出预算，不允许因此删减记录、改变受控协议步骤或放宽既定停止期限。最终证据仍须完整写入并原子发布，且必须观察到供应商进程真实退出；两者缺一均视为验收失败。
 
 PR 中适用的 functional 与 native 生命周期由独立 Linux 作业通过 xtask 的 `test-project` 两类 suite 并行执行，桌面功能使用完整集合的确定性分片；Windows/macOS 仅按分类执行 clippy 与生产应用编译。目标宿主的运行行为可通过显式本地 `cargo xtask test-project` 验证，PR 标签不追加平台测试或截图采集。人工观察仍用 `cargo xtask manual-gui --preset`，人类 verdict 保持 pending。
 

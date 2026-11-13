@@ -37,6 +37,9 @@ jobs:
       toolSha256: ${{ steps.checkpoint.outputs.toolSha256 }}
       toolWorkspace: ${{ steps.checkpoint.outputs.toolWorkspace }}
     env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       PURE_REMOTE_HELPER_PREBUILT_DIR: ${{ github.workspace }}/dist/remote-helper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,9 +65,8 @@ jobs:
         with:
           flutter-version: 3.50.0
           cache: true
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: 1.99.1
+      - name: Set up cached native Rust build
+        uses: ./.github/actions/setup-studio-rust
       - name: Read stable package version
         id: version
         run: |

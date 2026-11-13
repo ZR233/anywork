@@ -20,15 +20,21 @@ struct Identity {
     workspace: PathBuf,
     environment: String,
     run: String,
-    profile: String,
     rustc: String,
     cargo: String,
     configuration: BTreeMap<String, String>,
-    artifacts: BTreeMap<String, String>,
+    artifacts: BTreeMap<String, Artifact>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Artifact {
+    profile: String,
+    sha256: String,
 }
 
 /// An explicitly selected handoff must be valid; it never falls back to Cargo.
-pub(crate) fn artifact(workspace: &Path, name: &str) -> Result<Option<PathBuf>> {
+pub fn artifact(workspace: &Path, name: &str) -> Result<Option<PathBuf>> {
     let Some(directory) = std::env::var_os(INPUTS_ENV) else {
         return Ok(None);
     };
@@ -79,7 +85,6 @@ impl Identity {
             self.environment == std::env::var("LINUX_BUILD_IMAGE")?,
             "CI test input image mismatch"
         );
-        ensure!(self.profile == "dev", "CI test input profile mismatch");
         ensure!(
             self.rustc == output(workspace, "rustc", &["-vV"])?,
             "CI test input Rust toolchain mismatch"
@@ -93,20 +98,30 @@ impl Identity {
             "CI test input build configuration mismatch"
         );
         ensure!(
-            self.artifacts
-                .keys()
-                .map(String::as_str)
-                .eq(["libpl_studio_bridge.so", "pl-studio-acceptance"]),
+            self.artifacts.keys().map(String::as_str).eq([
+                "libpl_studio_bridge.so",
+                "pl-provider-fixture",
+                "pl-studio-acceptance"
+            ]),
             "CI test input artifact set mismatch"
         );
         for (name, expected) in &self.artifacts {
+            let profile = if name == "pl-provider-fixture" {
+                "release"
+            } else {
+                "dev"
+            };
+            ensure!(
+                expected.profile == profile,
+                "CI test input profile mismatch: {name}"
+            );
             let path = directory.join(name);
             ensure!(
                 path.symlink_metadata()?.is_file(),
                 "CI test input is not a regular file: {name}"
             );
             ensure!(
-                digest(&path)? == *expected,
+                digest(&path)? == expected.sha256,
                 "CI test input digest mismatch: {name}"
             );
         }
@@ -178,6 +193,11 @@ mod tests {
                 assert!(error.contains(&expected), "{error}");
             } else {
                 assert!(result?.unwrap().is_file());
+                assert!(
+                    artifact(Path::new(&workspace), "pl-provider-fixture")?
+                        .unwrap()
+                        .is_file()
+                );
             }
             return Ok(());
         }
@@ -209,15 +229,20 @@ mod tests {
             "/target/\n/restored/\n/inputs.tar.gz\n",
         )?;
         fs::create_dir_all(workspace.join("target/debug"))?;
+        fs::create_dir_all(workspace.join("target/release"))?;
+        fs::write(
+            workspace.join("target/release/pl-provider-fixture"),
+            "fixture",
+        )?;
         for name in ["pl-studio-acceptance", "libpl_studio_bridge.so"] {
             fs::write(workspace.join("target/debug").join(name), name)?;
         }
-        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/scripts");
+        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/scripts");
         let image = format!("sha256:{}", "a".repeat(64));
         let producer = Command::new("python3")
             .args(["-c", "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import pr_quality_handoff as h; w=Path.cwd(); sha=h.subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); h._pack(w,w/'inputs.tar.gz',sha,False,sys.argv[2],True); h._restore(w,w/'inputs.tar.gz',h._file_sha256(w/'inputs.tar.gz'),sha,w/'restored',False,str(w),sys.argv[2],sys.argv[2],True)"])
             .arg(scripts).arg(&image)
-            .current_dir(&workspace).env("GITHUB_RUN_ID", "12345").output()?;
+            .current_dir(&workspace).env("GITHUB_RUN_ID", "12345").env("PYTHONDONTWRITEBYTECODE", "1").output()?;
         ensure!(
             producer.status.success(),
             "{}",
@@ -260,7 +285,6 @@ mod tests {
                 "workspace mismatch",
             ),
             ("environment", Value::from("other-image"), "image mismatch"),
-            ("profile", Value::from("release"), "profile mismatch"),
             (
                 "rustc",
                 Value::from("other-rustc"),
@@ -282,10 +306,20 @@ mod tests {
             fs::write(&manifest, serde_json::to_vec(&identity)?)?;
             consume(Some(expected))?;
         }
+        let mut identity: Value = serde_json::from_slice(&original)?;
+        identity["artifacts"]["pl-provider-fixture"]["profile"] = Value::from("dev");
+        fs::write(&manifest, serde_json::to_vec(&identity)?)?;
+        consume(Some("profile mismatch"))?;
         fs::write(&manifest, &original)?;
         fs::write(workspace.join("unexpected.rs"), "untracked source")?;
         consume(Some("source has local changes"))?;
         fs::remove_file(workspace.join("unexpected.rs"))?;
+        let fixture = directory.join("pl-provider-fixture");
+        fs::write(&fixture, "tampered fixture")?;
+        consume(Some("digest mismatch: pl-provider-fixture"))?;
+        fs::remove_file(&fixture)?;
+        consume(Some("No such file"))?;
+        fs::write(&fixture, "fixture")?;
         let library = directory.join("libpl_studio_bridge.so");
         fs::write(&library, "tampered")?;
         consume(Some("digest mismatch"))?;

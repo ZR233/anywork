@@ -21,6 +21,7 @@ _TOOL = {"pl-xtask": Path("target/xtask/debug/pl-xtask")}
 _TEST_INPUTS = {
     "pl-studio-acceptance": Path("target/debug/pl-studio-acceptance"),
     "libpl_studio_bridge.so": Path("target/debug/libpl_studio_bridge.so"),
+    "pl-provider-fixture": Path("target/release/pl-provider-fixture"),
 }
 _HELPERS = {
     f"{target}/{name}": Path("dist/remote-helper") / target / name
@@ -87,12 +88,14 @@ def _test_identity(workspace: Path, source_sha: str, environment: str) -> dict:
         "workspace": str(workspace),
         "environment": environment,
         "run": os.environ["GITHUB_RUN_ID"],
-        "profile": "dev",
         "rustc": subprocess.check_output(["rustc", "-vV"], cwd=workspace, text=True).strip(),
         "cargo": subprocess.check_output(["cargo", "-V"], cwd=workspace, text=True).strip(),
         "configuration": _build_configuration(),
         "artifacts": {
-            name: _file_sha256(workspace / relative)
+            name: {
+                "profile": "release" if relative.parts[1] == "release" else "dev",
+                "sha256": _file_sha256(workspace / relative),
+            }
             for name, relative in _TEST_INPUTS.items()
         },
     }
@@ -220,15 +223,18 @@ def _restore(
                 for name, value in {
                     "source": source_sha, "workspace": str(workspace),
                     "environment": expected_environment,
-                    "run": os.environ.get("GITHUB_RUN_ID"), "profile": "dev",
+                    "run": os.environ.get("GITHUB_RUN_ID"),
                 }.items():
                     if not value or identity.get(name) != value:
                         raise ValueError(f"Test input {name} mismatch")
                 if set(identity.get("artifacts", {})) != set(_TEST_INPUTS):
                     raise ValueError("Test input artifact set mismatch")
-                for name, digest in identity["artifacts"].items():
+                for name, artifact in identity["artifacts"].items():
+                    profile = "release" if _TEST_INPUTS[name].parts[1] == "release" else "dev"
+                    if artifact.get("profile") != profile:
+                        raise ValueError(f"Test input profile mismatch: {name}")
                     with tar.extractfile(name) as payload:
-                        if _sha256(payload) != digest:
+                        if _sha256(payload) != artifact.get("sha256"):
                             raise ValueError(f"Test input digest mismatch: {name}")
             destination.mkdir(parents=True, exist_ok=False)
             for member in members:

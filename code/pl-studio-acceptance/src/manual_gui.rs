@@ -3314,6 +3314,9 @@ fn write_config_with_lsp_server(
 /// its configured target directory and native executable suffix are not guessed.
 fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
     const PACKAGE: &str = "pl-provider-fixture";
+    if let Some(executable) = pl_dev_support::quality_inputs::artifact(workspace, PACKAGE)? {
+        return Ok(executable);
+    }
     let args = [
         "build",
         "--release",

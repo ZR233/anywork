@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -180,10 +181,10 @@ class HandoffTest(unittest.TestCase):
 
     def test_shared_test_inputs_require_exact_run_and_complete_payloads(self):
         (self.workspace / ".git/info/exclude").write_text("/target/\n/dist/\n")
-        for name in ("pl-studio-acceptance", "libpl_studio_bridge.so"):
-            path = self.workspace / "target/debug" / name
+        for relative in handoff._TEST_INPUTS.values():
+            path = self.workspace / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"same-run " + name.encode())
+            path.write_bytes(b"same-run " + path.name.encode())
         with patch.dict(os.environ, {"GITHUB_RUN_ID": "12345"}):
             code, stdout, stderr = self.cli(
                 "pack-tests", "--archive", str(self.archive),
@@ -201,17 +202,26 @@ class HandoffTest(unittest.TestCase):
             self.assertEqual(code, 0, stderr)
             identity = json.loads((self.destination / "identity.json").read_text())
             for name, expected in identity["artifacts"].items():
-                self.assertEqual(hashlib.sha256((self.destination / name).read_bytes()).hexdigest(), expected)
+                self.assertEqual(hashlib.sha256((self.destination / name).read_bytes()).hexdigest(), expected["sha256"])
             shutil.rmtree(self.destination)
-            # A valid outer digest cannot excuse a missing bridge inside the archive.
+            # A valid outer digest cannot excuse a wrong profile or missing payload.
             with tarfile.open(self.archive) as tar:
-                members = [(member, tar.extractfile(member).read()) for member in tar
-                           if member.name != "libpl_studio_bridge.so"]
-            with tarfile.open(self.archive, "w:gz") as tar:
-                for member, payload in members:
-                    tar.addfile(member, io.BytesIO(payload))
-            args[args.index("--sha256") + 1] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
-            self.assert_rejected(self.cli(*args))
+                original = [(member, tar.extractfile(member).read()) for member in tar]
+            for invalid in ("profile", "libpl_studio_bridge.so", "pl-provider-fixture"):
+                with self.subTest(invalid=invalid):
+                    with tarfile.open(self.archive, "w:gz") as tar:
+                        for member, payload in original:
+                            if member.name == invalid:
+                                continue
+                            member = copy.copy(member)
+                            if invalid == "profile" and member.name == "identity.json":
+                                identity = json.loads(payload)
+                                identity["artifacts"]["pl-provider-fixture"]["profile"] = "dev"
+                                payload = json.dumps(identity).encode()
+                                member.size = len(payload)
+                            tar.addfile(member, io.BytesIO(payload))
+                    args[args.index("--sha256") + 1] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+                    self.assert_rejected(self.cli(*args))
 
     def test_pack_rejects_missing_or_linked_inputs_before_archive(self):
         for tool, relative in (

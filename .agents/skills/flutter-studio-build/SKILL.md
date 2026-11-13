@@ -67,6 +67,7 @@ cargo xtask build-gui --check-generated
 `test-project` 的 native 套件继承同次调用的 debug 准备租约；相同 Flutter 构建参数只构建一次，
 完整程序包独立复制并在每次启动前校验，入口或 capture 不同的程序包互不覆盖。
 该准备不供 profile/demo、独立调用或其他 CI 作业消费；失效与损坏直接失败，不能用跳过构建参数替代。
+Linux CI 另通过同次 workflow 的受控交接共享验收工具、debug bridge 和 release 模拟供应商二进制；逐文件核对 profile、摘要及源码、镜像、工具链、工作区和运行编号，损坏直接失败。它不共享可变构建目录或场景状态。
 具体身份、计时与清理边界见[原生 GUI 观察与隔离](../../../design/24-testing.md#243-原生-gui-观察与隔离)。
 
 普通运行和构建不执行生成器或可写格式化。Riverpod、Freezed、本地化或 FRB 的生成与一致性检查入口为：
@@ -129,7 +130,7 @@ Flutter 原始 release 输出位于：
 - Linux：`code/anywork/build/linux/x64/release/bundle/`
 - macOS：`code/anywork/build/macos/Build/Products/Release/anywork.app`
 
-`cargo xtask build-gui` 完成后再把可发布文件收集到 `dist/anywork-release/`。讨论故障时明确区分
+`cargo xtask build-gui` 完成后再把可发布文件收集到 `dist/anywork-release/`。Windows/macOS PR 编译使用这一默认 Release/AOT 路线并保留 bundle 与工程工具检查点，不发布；Rust 测试与依赖 VM service 的 GUI 测试继续使用开发配置。讨论故障时明确区分
 Flutter 原始输出与 xtask 最终收集目录。
 
 Windows 稳定发布将编译与打包分开：先运行 `cargo xtask build-gui`，再以

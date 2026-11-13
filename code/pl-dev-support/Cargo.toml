@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ctrlc = { version = "3.5", features = ["termination"] }
