@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 pub mod agent_definitions;
 mod context_replay_recovery;
 pub mod delegation;
+mod lua;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
@@ -423,7 +424,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: "view_image",
                         arguments: json!({"path": "tool-image.png"}).to_string(),
-                    };
+                    }.program("view_image");
                 }
                 if matches!(item_id, "scroll-item-short" | "scroll-item-read-second") {
                     let path = if item_id == "scroll-item-short" {
@@ -441,7 +442,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: TOOL_EXEC_NAME,
                         arguments: realtime_exec_arguments(&command, None),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-medium" {
                     return RealtimeToolCall {
@@ -453,7 +454,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "head -n 12 -- 'scroll-fixture/long-read.txt'"
                         }, None),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-long" {
                     return RealtimeToolCall {
@@ -465,7 +466,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "cat -- 'scroll-fixture/long-read.txt'"
                         }, "maxOutputChars": 40000}).to_string(),
-                    };
+                    }.program("exec_command");
                 }
                 if item_id == "scroll-item-failed" {
                     return RealtimeToolCall {
@@ -477,7 +478,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         } else {
                             "cat -- 'scroll-fixture/missing.txt'"
                         }, None),
-                    };
+                    }.program("exec_command");
                 }
                 if let Some(arguments) = expected_arguments.get(call_id) {
                     return RealtimeToolCall {
@@ -485,7 +486,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id,
                         name: TOOL_EXEC_NAME,
                         arguments: arguments.clone(),
-                    };
+                    }.program("exec_command");
                 }
                 unreachable!("all tool scroll calls are defined above")
             })
@@ -552,11 +553,14 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         .collect();
     let calls: Vec<_> = identities
         .iter()
-        .map(|(item_id, call_id)| RealtimeToolCall {
-            item_id,
-            call_id,
-            name: "stat_path",
-            arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
+        .map(|(item_id, call_id)| {
+            RealtimeToolCall {
+                item_id,
+                call_id,
+                name: "stat_path",
+                arguments: json!({"path":"scroll-fixture/entry-000.txt"}).to_string(),
+            }
+            .program("stat_path")
         })
         .collect();
     script.add(|step| {
@@ -598,7 +602,8 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                         call_id: "resource-workflow-current",
                         name: "workflow_current",
                         arguments: "{}".into(),
-                    }],
+                    }
+                    .program("workflow_current")],
                 )),
             )
         });
@@ -2254,7 +2259,7 @@ pub fn gui_script() -> Vec<Step> {
                         ]
                     })
                     .to_string(),
-                }],
+                }.program("show_files")],
             )),
         )
         .optional(),
@@ -2986,7 +2991,8 @@ pub fn gui_realtime_script(
                         call_id: "realtime-long-call",
                         name: TOOL_EXEC_NAME,
                         arguments: realtime_exec_arguments(&realtime_long_command(), None),
-                    }],
+                    }
+                    .program("exec_command")],
                 )),
             )
         });
@@ -3016,9 +3022,10 @@ pub fn gui_realtime_script(
         // original prompt: the step matches that exact notice identity and nothing
         // else, and only here does the model report the command complete.
         script.add(|step| {
-            Step::delivery(
+            Step::tool_output(
                 Protocol::ResponsesHttp,
-                realtime_delivery_marker("realtime-long-call"),
+                "realtime-long-call",
+                "\"exitCode\":0",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_LONG_DONE_TEXT,
@@ -3038,7 +3045,8 @@ pub fn gui_realtime_script(
                     &realtime_parallel_command("a", GUI_REALTIME_PARALLEL_A_OUTPUT_LINES),
                     None,
                 ),
-            },
+            }
+            .program("exec_command"),
             RealtimeToolCall {
                 item_id: "realtime-parallel-item-b",
                 call_id: "realtime-parallel-call-b",
@@ -3047,7 +3055,8 @@ pub fn gui_realtime_script(
                     &realtime_parallel_command("b", GUI_REALTIME_PARALLEL_B_OUTPUT_LINES),
                     None,
                 ),
-            },
+            }
+            .program("exec_command"),
         ];
         let reply = if let Some(stages) = &observers {
             // Prepare the real group window before either command is issued.
@@ -3144,9 +3153,10 @@ pub fn gui_realtime_script(
                 &calls,
             ))
         };
-        Step::delivery(
+        Step::tool_output(
             Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-parallel-call-a"),
+            "realtime-parallel-call-a",
+            "\"exitCode\":0",
             step,
             reply,
         )
@@ -3155,9 +3165,10 @@ pub fn gui_realtime_script(
     // actually complete. This is not a fallback for the previous step: it
     // requires the exact receipt identity of the other command.
     script.add(|step| {
-        Step::delivery(
+        Step::tool_output(
             Protocol::ResponsesHttp,
-            realtime_delivery_marker("realtime-parallel-call-b"),
+            "realtime-parallel-call-b",
+            "\"exitCode\":0",
             step,
             Reply::Sse(responses_text(
                 GUI_REALTIME_PARALLEL_DONE_TEXT,
@@ -3173,7 +3184,8 @@ pub fn gui_realtime_script(
                 call_id: "realtime-host-cwd-call",
                 name: TOOL_EXEC_NAME,
                 arguments: realtime_exec_arguments(&realtime_host_cwd_command(), Some(host_cwd)),
-            }];
+            }
+            .program("exec_command")];
             let reply = if let Some(stages) = &observers {
                 let events = responses_reasoning_tool_calls(
                     &["realtime host cwd observers ready"],
@@ -3227,9 +3239,10 @@ pub fn gui_realtime_script(
         });
         // Only the committed result of the host-cwd command reaches this step.
         script.add(|step| {
-            Step::delivery(
+            Step::tool_output(
                 Protocol::ResponsesHttp,
-                realtime_delivery_marker("realtime-host-cwd-call"),
+                "realtime-host-cwd-call",
+                "\"exitCode\":0",
                 step,
                 Reply::Sse(responses_text(
                     GUI_REALTIME_HOST_CWD_DONE_TEXT,
@@ -3371,7 +3384,8 @@ pub fn gui_history_fault_script() -> Vec<Step> {
                         // approval and never competes with the storage fault gate
                         // (the fault must hold it back, not an approval prompt).
                         arguments: realtime_exec_arguments(&history_fault_command(), None),
-                    }],
+                    }
+                    .program("exec_command")],
                 ),
             },
         )
@@ -3551,7 +3565,8 @@ pub fn gui_mode_editor_script() -> Vec<Step> {
                 call_id: &call_id,
                 name: "workflow_graph",
                 arguments: "{}".to_string(),
-            }],
+            }
+            .program("workflow_graph")],
         );
         script.add(|step| {
             Step::prompt(
@@ -3607,7 +3622,8 @@ pub fn gui_shutdown_script() -> Vec<Step> {
                     name: TOOL_EXEC_NAME,
                     arguments: json!({"command": shutdown_tool_command(), "timeoutSeconds": 600})
                         .to_string(),
-                }],
+                }
+                .program("exec_command")],
             )),
         )
     });
@@ -3689,6 +3705,19 @@ pub struct RealtimeToolCall<'a> {
     pub arguments: String,
 }
 
+impl RealtimeToolCall<'_> {
+    /// A script's explicit native invocation, delivered through the production Lua entry.
+    pub fn program(self, name: &str) -> Self {
+        let arguments: Value =
+            serde_json::from_str(&self.arguments).expect("fixture JSON arguments");
+        Self {
+            name: "exec",
+            arguments: lua::arguments(name, &arguments).to_string(),
+            ..self
+        }
+    }
+}
+
 fn realtime_title_step(step: usize, title: &str) -> Step {
     Step::prompt(
         Protocol::ResponsesHttp,
@@ -3725,16 +3754,6 @@ fn realtime_wait_arguments(call_ids: &[&str]) -> String {
         "timeoutMs": GUI_REALTIME_WAIT_TIMEOUT_MILLIS,
     })
     .to_string()
-}
-
-/// Strict identity of one background delivery notice.
-///
-/// `pl-core` prefixes the delivered context with `Task <task> for tool <tool>
-/// finished: <status>.`; the task id is derived from the call id. Requiring the
-/// success status keeps a failed command from ever satisfying a completion step,
-/// so the scenario can never report success early.
-fn realtime_delivery_marker(call_id: &str) -> String {
-    format!("Task task:{call_id} for tool {TOOL_EXEC_NAME} finished: Succeeded.")
 }
 
 /// Long-command tool script. Prints one line per `sleep`, so the tool stays in a
@@ -4641,13 +4660,21 @@ fn match_step(
                         call_id,
                         marker,
                         step,
-                    } => *step == index && tool_output_contains(body, call_id, marker),
+                    } => {
+                        *step == index
+                            && (tool_output_contains(body, call_id, marker)
+                                || program_wait_needed(
+                                    body,
+                                    &[(call_id.clone(), marker.clone())],
+                                    index,
+                                ))
+                    }
                     RequestMatch::ToolOutputs { outputs, step } => {
                         *step == index
                             && !outputs.is_empty()
-                            && outputs.iter().all(|(call_id, marker)| {
+                            && (outputs.iter().all(|(call_id, marker)| {
                                 tool_output_contains(body, call_id, marker)
-                            })
+                            }) || program_wait_needed(body, outputs, index))
                     }
                     RequestMatch::ToolImages {
                         images,
@@ -4667,7 +4694,12 @@ fn match_step(
                     } => {
                         *step == index
                             && (tool_output_contains(body, call_id, marker)
-                                || tool_delivery_contains(body, call_id, tool_id, marker))
+                                || tool_delivery_contains(body, call_id, tool_id, marker)
+                                || program_wait_needed(
+                                    body,
+                                    &[(call_id.clone(), marker.clone())],
+                                    index,
+                                ))
                     }
                     RequestMatch::ToolScrollCompletion { call_ids, step } => {
                         *step == index
@@ -4688,6 +4720,13 @@ fn match_step(
     });
     let index = selected.ok_or(MatchError::Unexpected)?;
     let pending = match script.steps[index].request.base() {
+        RequestMatch::ToolOutput {
+            call_id, marker, ..
+        }
+        | RequestMatch::ToolCompletion {
+            call_id, marker, ..
+        } => pending_programs(body, &[(call_id.clone(), marker.clone())]),
+        RequestMatch::ToolOutputs { outputs, .. } => pending_programs(body, outputs),
         RequestMatch::ToolScrollCompletion { call_ids, .. } => tool_scroll_pending(body, call_ids),
         RequestMatch::ToolImages {
             images, outputs, ..
@@ -4697,16 +4736,28 @@ fn match_step(
     if let Some(pending) = pending.filter(|pending| !pending.is_empty()) {
         let wait_id = format!("scroll-wait-{index}-{}", script.requests.len());
         let borrowed = pending.iter().map(String::as_str).collect::<Vec<_>>();
-        return Ok(Reply::Sse(responses_tool_calls(
+        let arguments = realtime_wait_arguments(&borrowed);
+        if script.steps[index].protocol == Protocol::Chat {
+            return Ok(Reply::Sse(vec![
+                json!({"id":"scroll-wait","model":"fixture-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":wait_id,"type":"function","function":{"name":TOOL_WAIT_NAME,"arguments":arguments}}]},"finish_reason":null}]}),
+                json!({"id":"scroll-wait","choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+                json!({"id":"scroll-wait","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}),
+            ]));
+        }
+        let events = responses_tool_calls(
             "scroll-wait",
             "fixture-model",
             &[RealtimeToolCall {
                 item_id: &wait_id,
                 call_id: &wait_id,
                 name: TOOL_WAIT_NAME,
-                arguments: realtime_wait_arguments(&borrowed),
+                arguments,
             }],
-        )));
+        );
+        return Ok(match script.steps[index].protocol {
+            Protocol::ResponsesWebSocket => Reply::WebSocket(events),
+            _ => Reply::Sse(events),
+        });
     }
     let reply = script.steps[index].reply.clone();
     script.cursor = index + 1;
@@ -4933,15 +4984,20 @@ fn tool_images_pending(
     outputs: &[(String, String)],
 ) -> Option<Vec<String>> {
     let items = body["input"].as_array()?;
-    if images.is_empty()
-        || !outputs
-            .iter()
-            .all(|(id, marker)| tool_output_contains(body, id, marker))
-    {
+    if images.is_empty() {
         return None;
     }
+    let pending_outputs = pending_programs(body, outputs)?;
     let last_user = items.iter().rposition(|item| item["role"] == "user")?;
     let mut last_user_verified = false;
+    let mut verified_deliveries = Vec::new();
+    for (id, _) in outputs {
+        if let Some(delivery) = program_terminal_message(body, id) {
+            let index = items.iter().position(|item| std::ptr::eq(item, delivery))?;
+            last_user_verified |= index == last_user;
+            verified_deliveries.push(index);
+        }
+    }
     let mut pending = Vec::new();
     let mut previous_result = None;
     let mut previous_media = None;
@@ -4956,7 +5012,8 @@ fn tool_images_pending(
         }
         previous_result = Some(position);
         let output = result["output"].as_str()?;
-        if output.is_empty() {
+        let selected_receipt = image_receipt_matches(output, &image.png_sha256);
+        if output.is_empty() || selected_receipt {
             let label = format!(
                 "Image from view_image call {}: pl.studio.resource:{}",
                 image.call_id, image.png_sha256
@@ -4987,7 +5044,9 @@ fn tool_images_pending(
             previous_media = Some(position);
             immediate_media.push(position);
         } else if output == tool_running_receipt(&image.call_id) {
-            let prefix = format!("Task task:{} for tool view_image finished: ", image.call_id);
+            let lua = call_is_lua(body, &image.call_id);
+            let tool = if lua { "exec" } else { "view_image" };
+            let prefix = format!("Task task:{} for tool {tool} finished: ", image.call_id);
             let deliveries = items
                 .iter()
                 .enumerate()
@@ -5002,14 +5061,20 @@ fn tool_images_pending(
             let parts = delivery["content"].as_array()?;
             if deliveries.len() != 1
                 || delivery_index <= position
-                || parts.len() != 2
+                || parts.len() != if lua { 3 } else { 2 }
                 || parts[0]["type"] != "input_text"
                 || parts[0]["text"] != format!("{prefix}Succeeded.")
-                || !png_image_matches(&parts[1], &image.png_sha256)
+                || (lua
+                    && (parts[1]["type"] != "input_text"
+                        || !parts[1]["text"]
+                            .as_str()
+                            .is_some_and(|text| image_receipt_matches(text, &image.png_sha256))))
+                || !png_image_matches(&parts[if lua { 2 } else { 1 }], &image.png_sha256)
             {
                 return None;
             }
             last_user_verified |= delivery_index == last_user;
+            verified_deliveries.push(delivery_index);
         } else {
             return None;
         }
@@ -5025,13 +5090,30 @@ fn tool_images_pending(
             return None;
         }
         last_user_verified |= message_index == last_user;
+        verified_deliveries.push(message_index);
+    }
+    pending.extend(pending_outputs);
+    let last_result = previous_result?;
+    if items.iter().enumerate().any(|(index, item)| {
+        index > last_result && item["role"] == "user" && !verified_deliveries.contains(&index)
+    }) {
+        return None;
     }
     // Old media cannot complete this step after an unrelated new input.
     // Before a first delivery, the original input precedes the tool receipts.
-    if !last_user_verified && (pending.is_empty() || last_user > previous_result?) {
+    if !last_user_verified && (pending.is_empty() || last_user > last_result) {
         return None;
     }
     Some(pending)
+}
+
+fn image_receipt_matches(text: &str, digest: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .is_some_and(|receipt| {
+            receipt["original"]["contentDigest"].as_str()
+                == Some(format!("sha256:{digest}").as_str())
+        })
 }
 
 fn prompt(body: &Value) -> Option<&str> {
@@ -5145,24 +5227,7 @@ fn tool_scroll_pending(body: &Value, call_ids: &[String]) -> Option<Vec<String>>
         if !output.contains(&tool_running_receipt(call_id)) {
             return None;
         }
-        let notice_prefix = format!("Task task:{call_id} for tool exec finished: ");
-        let delivered = items.iter().any(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && user_text(item).is_some_and(|text| {
-                    ["Succeeded.", "Failed.", "Cancelled.", "TimedOut."]
-                        .iter()
-                        .any(|status| text.starts_with(&format!("{notice_prefix}{status}")))
-                })
-                && match item.get("content") {
-                    Some(Value::String(text)) => exec_result_is_terminal(text),
-                    Some(Value::Array(parts)) => parts.iter().any(|part| {
-                        part.get("text")
-                            .and_then(Value::as_str)
-                            .is_some_and(exec_result_is_terminal)
-                    }),
-                    _ => false,
-                }
-        });
+        let delivered = program_terminal_message(body, call_id).is_some();
         if !delivered {
             pending.push(call_id.clone());
         }
@@ -5179,11 +5244,18 @@ fn tool_scroll_wait_count(body: &Value, step: usize) -> usize {
             items
                 .iter()
                 .filter(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("function_call")
+                    (item.get("type").and_then(Value::as_str) == Some("function_call")
                         && item
                             .get("call_id")
                             .and_then(Value::as_str)
-                            .is_some_and(|id| id.starts_with(&prefix))
+                            .is_some_and(|id| id.starts_with(&prefix)))
+                        || item["tool_calls"].as_array().is_some_and(|calls| {
+                            calls.iter().any(|call| {
+                                call["id"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with(&prefix))
+                            })
+                        })
                 })
                 .count()
         })
@@ -5199,11 +5271,126 @@ fn exec_result_is_terminal(text: &str) -> bool {
     else {
         return false;
     };
-    value["state"]["kind"] == "final"
-        && matches!(
-            value["state"]["data"]["result"]["kind"].as_str(),
-            Some("succeeded" | "failed" | "cancelled" | "timedOut")
-        )
+    value["exitCode"].as_i64().is_some()
+        || (value["state"]["kind"] == "final"
+            && matches!(
+                value["state"]["data"]["result"]["kind"].as_str(),
+                Some("succeeded" | "failed" | "cancelled" | "timedOut")
+            ))
+}
+
+/// A program can outlive its initial tool response. The simulated model waits only
+/// for the exact real Lua task receipt; a terminal message with the wrong marker
+/// remains a hard mismatch, including when an unrelated task wakes `wait` first.
+fn call_is_lua(body: &Value, id: &str) -> bool {
+    body.get("input")
+        .or_else(|| body.get("messages"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                (item["type"] == "function_call" && item["call_id"] == id && item["name"] == "exec")
+                    || item["tool_calls"].as_array().is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|call| call["id"] == id && call["function"]["name"] == "exec")
+                    })
+            })
+        })
+}
+fn pending_programs(body: &Value, outputs: &[(String, String)]) -> Option<Vec<String>> {
+    let mut pending = Vec::new();
+    for (id, marker) in outputs {
+        if tool_output_contains(body, id, marker) {
+            continue;
+        }
+        if !call_is_lua(body, id)
+            || !direct_tool_output_contains(body, id, &tool_running_receipt(id))
+            || program_terminal_message(body, id).is_some()
+        {
+            return None;
+        }
+        pending.push(id.clone());
+    }
+    Some(pending)
+}
+fn program_wait_needed(body: &Value, outputs: &[(String, String)], step: usize) -> bool {
+    tool_scroll_wait_count(body, step) < 32
+        && pending_programs(body, outputs).is_some_and(|pending| !pending.is_empty())
+}
+fn program_terminal_message<'a>(body: &'a Value, id: &str) -> Option<&'a Value> {
+    if !call_is_lua(body, id) || !direct_tool_output_contains(body, id, &tool_running_receipt(id)) {
+        return None;
+    }
+    let items = body
+        .get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?;
+    let prefix = format!("Task task:{id} for tool exec finished: ");
+    items.iter().find(|item| {
+        item["role"] == "user"
+            && user_text(item).is_some_and(|text| {
+                ["Succeeded.", "Failed.", "Cancelled.", "TimedOut."]
+                    .iter()
+                    .any(|status| text.starts_with(&format!("{prefix}{status}")))
+            })
+    })
+}
+fn tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
+    direct_tool_output_contains(body, call_id, marker)
+        || program_terminal_message(body, call_id).is_some_and(|item| match &item["content"] {
+            Value::String(text) => text.contains(marker),
+            Value::Array(parts) => parts.iter().any(|part| {
+                part["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))
+            }),
+            _ => false,
+        })
+}
+
+/// Reads the model-visible result of one exact call, preferring a completed Lua
+/// program's real terminal delivery over its earlier running acknowledgement.
+/// This observes recorded provider input; it does not execute or replay tools.
+pub fn observed_tool_output(body: &Value, call_id: &str) -> Option<String> {
+    if let Some(item) = program_terminal_message(body, call_id) {
+        let texts = match &item["content"] {
+            Value::String(text) => vec![text.as_str()],
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect(),
+            _ => return None,
+        };
+        let mut selected = Vec::new();
+        for (index, text) in texts.into_iter().enumerate() {
+            if index == 0 {
+                let prefix = format!("Task task:{call_id} for tool exec finished: ");
+                let status = text.strip_prefix(&prefix)?;
+                let end = status.find('.')? + 1;
+                let rest = status[end..].trim_start_matches('\n');
+                if !rest.is_empty() {
+                    selected.push(rest);
+                }
+            } else {
+                selected.push(text);
+            }
+        }
+        return Some(selected.join("\n"));
+    }
+    body.get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|item| {
+            if item["type"] == "function_call_output" && item["call_id"] == call_id {
+                item["output"].as_str().map(str::to_owned)
+            } else if item["role"] == "tool" && item["tool_call_id"] == call_id {
+                item["content"].as_str().map(str::to_owned)
+            } else {
+                None
+            }
+        })
 }
 
 /// Whether the request carries the committed tool output for `call_id`.
@@ -5213,7 +5400,7 @@ fn exec_result_is_terminal(text: &str) -> bool {
 /// call identity and the marker inside that output keeps the comparison an
 /// identity check on one delivered result: the original prompt alone, or any
 /// unrelated request, never satisfies it.
-fn tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
+fn direct_tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
     let items = body
         .get("input")
         .or_else(|| body.get("messages"))

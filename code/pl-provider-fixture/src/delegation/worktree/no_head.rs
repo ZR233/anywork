@@ -487,7 +487,8 @@ pub(super) fn observed_failure(
             )?;
             require(
                 query.task.task_id == task_id
-                    && query.task.tool_id == tool
+                    && query.task.tool_id
+                        == flow.request.invocation(tool, serde_json::Value::Null).0
                     && query.task.status == ToolTaskStatus::Failed
                     && !query.task.cancel_requested,
                 "negative tool evidence is not the exact real Failed task",

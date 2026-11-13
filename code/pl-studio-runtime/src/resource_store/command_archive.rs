@@ -141,6 +141,7 @@ mod tests {
             .run_task(
                 "task-archive-prefix",
                 CommandStartRequest {
+                    interactive: false,
                     command: "printf '\\377\\000raw'; printf error >&2".into(),
                     cwd: None,
                     allow_workspace_escape: false,

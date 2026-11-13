@@ -20,6 +20,8 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
     let options = pl_core::persistence::SqliteSessionOptions { path };
     let store = SqliteSessionStore::open(options.clone()).await.unwrap();
     let mut task = TaskRecord {
+        parent_call_id: None,
+        invocation: None,
         id: "task:call-exec".into(),
         call_id: "call-exec".into(),
         tool_id: "exec".into(),
@@ -56,6 +58,8 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
     // 最新任务修订与最初完整结果跨过一页，不能把窗口边界当作历史终点。
     for sequence in 2..=257 {
         let unrelated = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: "task:unrelated".into(),
             call_id: "unrelated".into(),
             revision: sequence,
@@ -118,6 +122,8 @@ async fn sqlite_cold_store_reads_terminal_tool_payload_after_reopen() {
 async fn durable_task_includes_later_archive_repairs_once() {
     let store = SqliteSessionStore::open_memory().await.unwrap();
     let task = TaskRecord {
+        parent_call_id: None,
+        invocation: None,
         id: "task:repaired".into(),
         call_id: "repaired".into(),
         tool_id: "exec".into(),

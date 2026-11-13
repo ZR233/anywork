@@ -16,6 +16,7 @@ use super::paths::StudioPaths;
 pub enum StudioHostKind {
     Desktop,
     HttpServer,
+    Cli,
     Test,
 }
 
@@ -24,15 +25,26 @@ impl StudioHostKind {
         match self {
             Self::Desktop => "desktop",
             Self::HttpServer => "httpServer",
+            Self::Cli => "cli",
             Self::Test => "test",
         }
     }
+}
+
+/// Startup recovery belongs to the host and is never persisted in config.toml.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StudioStartupPolicy {
+    #[default]
+    InteractiveRecovery,
+    Strict,
 }
 
 #[derive(Debug, Clone)]
 pub struct StudioRuntimeOptions {
     pub studio_home: Option<PathBuf>,
     pub host: StudioHostKind,
+    pub startup_policy: StudioStartupPolicy,
+    pub skill_search: pl_tool::skill::SkillSearchOptions,
     pub helper_source: RemoteHelperSource,
     pub host_mcp_source: HostMcpSource,
     /// Optional host-selected SSH configuration; explicit handles also reach OpenSSH via `-F`.
@@ -44,6 +56,8 @@ impl StudioRuntimeOptions {
         Self {
             studio_home: None,
             host: StudioHostKind::Desktop,
+            startup_policy: StudioStartupPolicy::InteractiveRecovery,
+            skill_search: Default::default(),
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
             ssh_config: None,
@@ -54,9 +68,21 @@ impl StudioRuntimeOptions {
         Self {
             studio_home,
             host: StudioHostKind::HttpServer,
+            startup_policy: StudioStartupPolicy::InteractiveRecovery,
+            skill_search: Default::default(),
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
             ssh_config: None,
+        }
+    }
+
+    /// Production noninteractive host: explicit home, strict startup and environment-only credentials.
+    pub fn cli(studio_home: impl Into<PathBuf>) -> Self {
+        Self {
+            studio_home: Some(studio_home.into()),
+            host: StudioHostKind::Cli,
+            startup_policy: StudioStartupPolicy::Strict,
+            ..Self::desktop()
         }
     }
 
@@ -173,6 +199,8 @@ impl Drop for RuntimeLock {
 pub(super) struct ResolvedRuntimeOptions {
     pub paths: StudioPaths,
     pub host: StudioHostKind,
+    pub startup_policy: StudioStartupPolicy,
+    pub skill_search: pl_tool::skill::SkillSearchOptions,
     pub helper_source: RemoteHelperSource,
     pub host_mcp_source: HostMcpSource,
     pub ssh_config: Option<crate::SshConfigFile>,
@@ -180,11 +208,22 @@ pub(super) struct ResolvedRuntimeOptions {
 
 impl StudioRuntimeOptions {
     pub(super) fn resolve(self) -> StudioResult<ResolvedRuntimeOptions> {
+        if self.host == StudioHostKind::Cli && self.studio_home.is_none() {
+            return Err(StudioError::invalid_argument(
+                "CLI requires an explicit Studio home",
+            ));
+        }
         let paths = StudioPaths::resolve(self.studio_home)
             .map_err(|error| StudioError::invalid_argument(error.to_string()))?;
         Ok(ResolvedRuntimeOptions {
             paths,
             host: self.host,
+            startup_policy: if self.host == StudioHostKind::Cli {
+                StudioStartupPolicy::Strict
+            } else {
+                self.startup_policy
+            },
+            skill_search: self.skill_search,
             helper_source: self.helper_source,
             host_mcp_source: self.host_mcp_source,
             ssh_config: self.ssh_config,

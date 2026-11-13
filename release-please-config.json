@@ -25,6 +25,11 @@
         {
           "type": "generic",
           "path": "code/anywork/pubspec.yaml"
+        },
+        {
+          "type": "yaml",
+          "path": "code/anywork_previews/pubspec.lock",
+          "jsonpath": "$.packages.anywork.version"
         }
       ]
     }

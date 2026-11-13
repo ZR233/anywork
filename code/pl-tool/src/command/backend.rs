@@ -15,6 +15,8 @@ pub struct CommandSpawnRequest {
     pub start_control: CommandStartControl,
     pub process_id: String,
     pub command: String,
+    /// Request a writable stdin pipe; otherwise spawn with the null device.
+    pub interactive: bool,
     pub cwd: String,
     pub output_target: CommandOutputTarget,
     pub capture_limit_bytes: u64,
@@ -24,6 +26,7 @@ impl std::fmt::Debug for CommandSpawnRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommandSpawnRequest")
             .field("process_id", &self.process_id)
+            .field("interactive", &self.interactive)
             .field("cwd", &self.cwd)
             .field("capture_limit_bytes", &self.capture_limit_bytes)
             .finish_non_exhaustive()
@@ -264,7 +267,7 @@ pub struct CommandOutputSizes {
     pub stderr_bytes: u64,
 }
 
-/// 为统一的 `exec` / `write_stdin` 工具提供环境相关能力。
+/// 为统一的 `exec_command` / `write_stdin` 工具提供环境相关能力。
 ///
 /// PL 负责进程表、超时、stdin、输出截断和生命周期；实现只负责将命令映射到
 /// 本地、容器或远程 workspace，并在结束时发布完整输出与 artifact 元数据。

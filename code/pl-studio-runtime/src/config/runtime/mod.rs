@@ -136,6 +136,11 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error("required config.toml could not be read")]
+    RequiredConfiguration {
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     AcpDefinition(#[from] super::AcpDefinitionError),
     #[error("model discovery is unsupported for this account")]
@@ -159,6 +164,7 @@ type ConfigRuntimeResult<T> = std::result::Result<T, ConfigRuntimeError>;
 impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
+            ConfigRuntimeError::RequiredConfiguration { source } => PureError::Io(source),
             ConfigRuntimeError::AcpDefinition(error) => PureError::ConfigError(error.to_string()),
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 PureError::ConfigError("model discovery is unsupported".into())
@@ -195,6 +201,38 @@ impl ConfigRuntime {
         let acp = super::AcpDefinitionsResource::new(store.paths());
         let acp_snapshot = acp.read();
         let profiles = AgentProfilesResource::new(store.paths(), &config, &acp_snapshot);
+        if store.environment_only {
+            for (role, selector) in &config.models.routes {
+                crate::studio::delegation::validate_credential(
+                    &config.models.resolve_route(role.clone(), selector)?,
+                )?;
+            }
+            for selector in config.mode_model_routes.values() {
+                crate::studio::delegation::validate_credential(
+                    &config
+                        .models
+                        .resolve_route(super::root_agent_route_id(), selector)?,
+                )?;
+            }
+            for profile in profiles
+                .read()
+                .catalog
+                .profiles
+                .iter()
+                .filter(|profile| profile.enabled)
+            {
+                if matches!(profile.binding, pl_protocol::AgentBinding::Native(_)) {
+                    crate::studio::delegation::validate_credential(&super::resolve_profile_route(
+                        &config, profile,
+                    )?)?;
+                } else {
+                    return Err(PureError::ConfigError(
+                        "CLI does not support enabled ACP delegation profiles".into(),
+                    )
+                    .into());
+                }
+            }
+        }
         let mcp_catalog = McpCatalogResource::new(store.paths(), &config.models);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;

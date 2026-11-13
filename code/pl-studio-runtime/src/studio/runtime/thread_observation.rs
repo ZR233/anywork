@@ -3539,6 +3539,8 @@ mod storage_fault_tests {
             outcome: ToolOutcome::Succeeded,
         };
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: format!("task:{call}"),
             call_id: call.into(),
             tool_id: tool.into(),
@@ -4591,6 +4593,7 @@ mod storage_fault_tests {
                     events.clone(),
                     store.paths().home().join("isolated-observation-skills"),
                     pl_remote_helper::Executor::local()?,
+                    Default::default(),
                 ),
                 thread_modes: config.thread_mode_manager(),
                 ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),

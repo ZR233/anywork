@@ -152,7 +152,11 @@ impl StudioRuntime {
         self.thread_modes
             .snapshot()
             .mode(&request.mode)
-            .context("requested Thread Mode is unavailable")?;
+            .ok_or_else(|| {
+                pl_protocol::studio::StudioError::invalid_argument(
+                    "requested Thread Mode is unavailable",
+                )
+            })?;
 
         self.attachment_drafts
             .validate_for_model(&route.model, &drafts)?;

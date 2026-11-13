@@ -203,7 +203,7 @@ pub(crate) fn managed_child(
     })
 }
 fn exec_error(error: impl std::fmt::Display) -> PureError {
-    crate::tool_error("exec", error)
+    crate::tool_error("exec_command", error)
 }
 impl CommandBackend for ExecutorCommandBackend {
     type Error = PureError;
@@ -268,7 +268,11 @@ impl CommandBackend for ExecutorCommandBackend {
             .envs(self.child_environment.clone())
             .env_remove("BASH_ENV")
             .env_remove("ENV")
-            .stdin(pl_remote_helper::Stdio::Piped)
+            .stdin(if request.interactive {
+                pl_remote_helper::Stdio::Piped
+            } else {
+                pl_remote_helper::Stdio::Null
+            })
             .stdout(pl_remote_helper::Stdio::Piped)
             .stderr(pl_remote_helper::Stdio::Piped)
             .capture(pl_remote_helper::CaptureSpec {

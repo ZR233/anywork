@@ -511,6 +511,26 @@ impl ConfigStore {
     }
 
     pub(super) fn recover_credentials(&self) -> Result<()> {
+        if self.environment_only {
+            // A process-local empty store cannot acknowledge a durable credential recovery.
+            for relative in [
+                "data/credential-transactions",
+                "v2/credential-transactions",
+                "studio/v2/credential-transactions",
+            ] {
+                let root = self.paths().config_dir().join(relative);
+                match fs::read_dir(&root) {
+                    Ok(mut entries) => {
+                        if entries.next().transpose()?.is_some() {
+                            return Err(recovery_required());
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            return Ok(());
+        }
         self.recover_credentials_with(&atomic)
             .map_err(|_| recovery_required())
     }

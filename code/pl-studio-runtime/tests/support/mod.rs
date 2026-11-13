@@ -75,6 +75,20 @@ pub fn tool_reply(name: &str, call: &str, args: serde_json::Value) -> Reply {
     ))
 }
 
+pub fn program_reply(name: &str, call: &str, args: serde_json::Value) -> Reply {
+    Reply::Sse(pl_provider_fixture::responses_tool_calls(
+        call,
+        MODEL,
+        &[RealtimeToolCall {
+            item_id: call,
+            call_id: call,
+            name,
+            arguments: args.to_string(),
+        }
+        .program(name)],
+    ))
+}
+
 pub fn held_reply(stage: &ReplyStage, id: &str) -> Reply {
     stage.gated(
         vec![serde_json::json!({"type":"response.created","response":{"id":id,"model":MODEL}})],
@@ -327,19 +341,8 @@ pub fn receipt(provider: &FixtureServer, call: &str) -> Result<serde_json::Value
 
 pub fn tool_output(provider: &FixtureServer, call: &str) -> Result<String> {
     for request in provider.recorded().iter().rev() {
-        if let Some(input) = request
-            .body
-            .get("input")
-            .and_then(serde_json::Value::as_array)
-        {
-            for item in input.iter().rev() {
-                if item["type"] == "function_call_output" && item["call_id"] == call {
-                    return Ok(item["output"]
-                        .as_str()
-                        .context("tool output text")?
-                        .to_owned());
-                }
-            }
+        if let Some(text) = pl_provider_fixture::observed_tool_output(&request.body, call) {
+            return Ok(text);
         }
     }
     anyhow::bail!("provider did not observe a real tool receipt for {call}")
@@ -409,4 +412,37 @@ pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
         }
     }
     anyhow::bail!("no durable checkpoint for {id}")
+}
+
+pub async fn nested_delivery(
+    home: &std::path::Path,
+    thread: &str,
+    call: &str,
+) -> Result<pl_core::thread::ToolDelivery> {
+    let saved = saved(home, thread).await?;
+    let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
+            [call.into()],
+        ))
+        .await?
+        .context("original committed file delivery")?;
+    let parent: pl_core::thread::ToolDelivery =
+        serde_json::from_str(&row.try_get::<String>("", "delivery_payload")?)?;
+    let children =
+        pl_tool::lua::saved_nested_call_ids(parent.output.payload())?.context("Lua provenance")?;
+    ensure!(children.len() == 1);
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
+            [children[0].clone().into()],
+        ))
+        .await?
+        .context("original nested file delivery")?;
+    let result = serde_json::from_str(&row.try_get::<String>("", "delivery_payload")?)?;
+    db.close().await?;
+    Ok(result)
 }

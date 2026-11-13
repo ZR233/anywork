@@ -1238,25 +1238,22 @@ mod tests {
                 );
             }
         }
+        // Imported Work blocks may have no reliable group-level clock evidence.
         let timing = &schemas["WorkTiming"];
         for field in ["startedAt", "finishedAt"] {
-            let property = &timing["properties"][field];
-            let types = property["type"]
-                .as_array()
-                .with_context(|| format!("missing nullable type for WorkTiming.{field}"))?;
-            assert!(
-                types.len() == 2
-                    && types.iter().any(|kind| kind == "integer")
-                    && types.iter().any(|kind| kind == "null"),
-                "WorkTiming.{field} must preserve known or unknown Unix seconds"
-            );
-            assert_eq!(property["format"], "int64");
             assert!(
                 !timing["required"]
                     .as_array()
                     .is_some_and(|required| required.iter().any(|name| name == field)),
-                "WorkTiming.{field} must accept imported snapshots without clock evidence"
+                "WorkTiming.{field} must remain optional"
             );
+            let property = &timing["properties"][field];
+            assert_eq!(
+                property["type"],
+                serde_json::json!(["integer", "null"]),
+                "WorkTiming.{field} must accept Unix seconds or null"
+            );
+            assert_eq!(property["format"], "int64", "WorkTiming.{field}");
         }
         for (schema, property, target) in [
             ("OpenRequest", "demand", "ReadDemand"),

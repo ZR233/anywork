@@ -14,6 +14,15 @@ pub(super) struct PendingCall {
     pub(super) turn_id: String,
     pub(super) call: crate::model::ModelToolCall,
     pub(super) executor: crate::tool::opaque::FrozenTool,
+    pub(super) parent_call_id: Option<String>,
+    pub(super) nested_plan: Option<Arc<crate::tool::opaque::ToolPlan>>,
+}
+
+pub(super) struct NestedScope {
+    pub plan: Arc<crate::tool::opaque::ToolPlan>,
+    pub context: crate::context::ContextSnapshot,
+    pub model_projection: Option<OpaquePayload>,
+    pub invocations: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 pub(super) struct PendingEffect {
@@ -90,7 +99,13 @@ pub(super) struct Owner {
     pub(super) task_commands: mpsc::WeakSender<mailbox::MailboxCommand>,
     pub(super) background:
         futures::stream::FuturesUnordered<super::tool_execution::ToolExecutionFuture>,
+    pub(super) nested_sequence: u64,
+    pub(super) nested_plans: std::collections::BTreeMap<String, NestedScope>,
     pub(super) task_tokens: std::collections::BTreeMap<String, CancellationToken>,
+    pub(super) nested_replies: std::collections::BTreeMap<
+        String,
+        oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
+    >,
     pub(super) mailbox: mpsc::Receiver<super::mailbox::MailboxCommand>,
     pub(super) interrupt: cancellation::InterruptHandle,
     pub(super) id: String,

@@ -245,14 +245,40 @@ pub(in crate::studio) fn project_effect_items(
             .filter(|repair| repair.call_id == call_id)
             .map(|repair| repair.reference.clone())
             .collect();
-        let saved_call = state.context.records.iter().find_map(|record| {
-            record.turn_id.as_deref().zip(
-                record
-                    .tool_calls
-                    .iter()
-                    .find(|call| call.call_id == call_id),
-            )
-        });
+        // Nested invocations are execution facts owned by Task, not fabricated model
+        // messages. They enter the same projection/order/writer path as direct calls.
+        let nested_task = effect
+            .tasks
+            .iter()
+            .chain(state.tasks.values())
+            .find(|task| task.call_id == call_id);
+        let nested_call = match nested_task {
+            Some(task) => match (&task.parent_call_id, &task.invocation) {
+                (Some(parent), Some(call))
+                    if !parent.is_empty()
+                        && call.call_id == task.call_id
+                        && call.tool_id == task.tool_id =>
+                {
+                    Some((task.turn_id.as_str(), call))
+                }
+                (None, None) => None,
+                _ => return Err(ProjectionError::DuplicateCall(call_id.into())),
+            },
+            None => None,
+        };
+        let saved_call = state
+            .context
+            .records
+            .iter()
+            .find_map(|record| {
+                record.turn_id.as_deref().zip(
+                    record
+                        .tool_calls
+                        .iter()
+                        .find(|call| call.call_id == call_id),
+                )
+            })
+            .or(nested_call);
         let tool_id = order::tool_id(call_id);
         // A repair lands after its result was committed, so the delivery that carried the original
         // projection has already left resident state and cannot describe the terminal result here.

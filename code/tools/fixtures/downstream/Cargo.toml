@@ -9,6 +9,7 @@ publish = false
 [workspace]
 
 [dependencies]
+lua = { package = "pl-tool-lua", path = "../../lua" }
 filesystem = { package = "pl-tool-filesystem", path = "../../filesystem" }
 command = { package = "pl-tool-command", path = "../../command" }
 git = { package = "pl-tool-git", path = "../../git" }

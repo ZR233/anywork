@@ -117,6 +117,12 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             return original.clone();
         }
         let (code, retryable) = match startup.kind {
+            crate::StudioStartupErrorKind::Configuration => {
+                (StudioErrorCode::InvalidArgument, false)
+            }
+            crate::StudioStartupErrorKind::RecoveryRequired => {
+                (StudioErrorCode::Unavailable, false)
+            }
             crate::StudioStartupErrorKind::PersistentData => (StudioErrorCode::Storage, false),
             crate::StudioStartupErrorKind::Environment => (StudioErrorCode::Storage, true),
             crate::StudioStartupErrorKind::Cancelled => (StudioErrorCode::Cancelled, true),
@@ -176,6 +182,8 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     }
     if let Some(error) = error.downcast_ref::<ConfigRuntimeError>() {
         return match error {
+            ConfigRuntimeError::RequiredConfiguration { source } => StudioError::invalid_argument("required config.toml could not be read")
+                .with_details(serde_json::json!({"ioKind": format!("{:?}", source.kind()), "rawOsError": source.raw_os_error()})),
             ConfigRuntimeError::AcpDefinition(error) => {
                 use crate::config::AcpDefinitionError;
                 match error {

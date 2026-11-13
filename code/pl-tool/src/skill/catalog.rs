@@ -101,12 +101,25 @@ impl SkillCatalog {
 pub fn resolve_local_readonly_skill_sources(
     config: &SkillsConfig,
     system_dir: Option<&Path>,
+    options: &super::SkillSearchOptions,
 ) -> Result<Vec<super::SkillDirectorySource>> {
-    resolve_local_readonly_skill_sources_with_user_dir(
+    let user_dir = options
+        .include_default_user_dir
+        .then(super::util::agents_user_skills_dir)
+        .transpose()?;
+    let mut sources = resolve_local_readonly_skill_sources_with_user_dir(
         config,
         system_dir,
-        &super::util::agents_user_skills_dir()?,
-    )
+        user_dir.as_deref(),
+    )?;
+    for directory in &options.additional_dirs {
+        super::util::validate_explicit_skill_directory(directory)?;
+        sources.push(super::SkillDirectorySource::new(
+            directory,
+            SkillSourceKind::External,
+        ));
+    }
+    Ok(sources)
 }
 
 /// Builds the Skills prompt using an optional, explicitly supplied system source.
@@ -214,7 +227,8 @@ pub(super) fn skill_sources(
     config: &SkillsConfig,
     system_dir: Option<&Path>,
 ) -> Result<Vec<SkillSource>> {
-    let readonly_sources = resolve_local_readonly_skill_sources(config, system_dir)?;
+    let readonly_sources =
+        resolve_local_readonly_skill_sources(config, system_dir, &Default::default())?;
     skill_sources_from_readonly(workspace_root, config, readonly_sources)
 }
 
@@ -244,13 +258,15 @@ fn skill_sources_from_readonly(
 fn resolve_local_readonly_skill_sources_with_user_dir(
     config: &SkillsConfig,
     system_dir: Option<&Path>,
-    user_dir: &Path,
+    user_dir: Option<&Path>,
 ) -> Result<Vec<super::SkillDirectorySource>> {
     let mut sources = Vec::new();
-    sources.push(super::SkillDirectorySource::new(
-        user_dir,
-        SkillSourceKind::User,
-    ));
+    if let Some(user_dir) = user_dir {
+        sources.push(super::SkillDirectorySource::new(
+            user_dir,
+            SkillSourceKind::User,
+        ));
+    }
     if config.system.enabled
         && let Some(root) = system_dir
     {
@@ -285,7 +301,7 @@ mod tests {
         let sources = resolve_local_readonly_skill_sources_with_user_dir(
             &config,
             Some(system_dir),
-            &user_dir,
+            Some(&user_dir),
         )
         .unwrap();
 

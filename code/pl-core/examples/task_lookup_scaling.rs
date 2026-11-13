@@ -16,6 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{sync::Arc, time::Instant};
     let store = SqliteSessionStore::open_memory().await?;
     let task = TaskRecord {
+        parent_call_id: None,
+        invocation: None,
         id: "task:old".into(),
         call_id: "old".into(),
         tool_id: "exec".into(),

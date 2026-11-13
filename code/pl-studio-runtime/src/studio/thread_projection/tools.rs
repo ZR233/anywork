@@ -233,12 +233,19 @@ fn project_invocation(
     Ok(items)
 }
 
+pub(super) fn delivery_context(delivery: &ToolDelivery) -> &[pl_core::context::ContextContent] {
+    match delivery.target {
+        pl_core::thread::ToolDeliveryTarget::Nested { .. } => delivery.output.context(),
+        _ => &delivery.delivered_context,
+    }
+}
+
 fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, ProjectionError> {
     let mut resources = Vec::new();
     let task_query_payload = (delivery.tool_id == "get_tool_task"
         && delivery.output.payload().format() == "pl.tool.task")
         .then_some(delivery.output.payload());
-    for content in &delivery.delivered_context {
+    for content in delivery_context(delivery) {
         match content {
             pl_core::context::ContextContent::Text { .. } => {}
             pl_core::context::ContextContent::Resource { reference } => {
@@ -277,7 +284,7 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
         }
     }
     let output = ThreadToolOutput::new(
-        text_content(&delivery.delivered_context),
+        text_content(delivery_context(delivery)),
         super::delivery_attachments(delivery)?,
         resources,
         command_exit_code(delivery),
@@ -313,8 +320,10 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
 // authoritative even when a process receipt reports a different exit status.
 fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
     let payload = delivery.output.payload();
-    if !matches!(delivery.tool_id.as_str(), "exec" | "write_stdin")
-        || payload.format() != "pl.tool.exec"
+    if !matches!(
+        delivery.tool_id.as_str(),
+        "exec" | "exec_command" | "write_stdin"
+    ) || payload.format() != "pl.tool.exec"
         || !matches!(payload.version(), 1 | 2)
     {
         return None;

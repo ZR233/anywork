@@ -13,6 +13,67 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.39.0](https://github.com/ZR233/anywork/compare/v6.38.0...v6.39.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-runtime:** exec 接受 Lua code；原 shell 工具改名为 exec_command，并通过冻结的 tools 目录调用。嵌套工具回执可靠保存，模型只接收选定输出。
+* **studio:** presentation 协议升级为 v5，WorkTiming.startedAt 改为可空，Rust、FRB 与 Dart Client 必须同步升级。
+* **studio:** 更新快照改为 activity 与 readyUpdate，准备操作仅返回完成结果；取消当前轮次与停止后台调度拆为独立接口，调用方须同步升级。
+* **studio:** presentation v4 和 history22 仅支持当前工作组快照，旧快照明确拒绝且保留原文件，不迁移或清空。
+* **studio:** 更新 API 改从 pl-studio-update 导入，统计 API 改从 pl-studio-statistics 导入；删除 pl-studio-runtime 中的旧模块和重导出。
+* **studio:** 统一会话工作尾组与可见内容边界 ([#368](https://github.com/ZR233/anywork/issues/368))
+* **model:** ModelInvocationContext 和 ModelTurnOptions 的原始缓存键 setter 改为 with_prompt_cache_scope；ModelCompactionRequest 不再携带重复的 prompt_cache_key。
+
+### Features
+
+* **agent-runtime:** 使用 Lua 编排 Native 工具并隔离中间结果 ([#377](https://github.com/ZR233/anywork/issues/377)) ([fb85eab](https://github.com/ZR233/anywork/commit/fb85eabacd3b081ddd242481db805c1208cf3ce8))
+* **studio:** 侧栏设置旁显示更新 ([#407](https://github.com/ZR233/anywork/issues/407)) ([7fe2236](https://github.com/ZR233/anywork/commit/7fe22362ca355fff51f238616af0b2fcb15428d6))
+* **studio:** 实现 ACP Host MCP 与双向智能体协作 ([#376](https://github.com/ZR233/anywork/issues/376)) ([3965b77](https://github.com/ZR233/anywork/commit/3965b7732e7c74c94df2b9deb2bb9175b1e99eb1))
+
+
+### Bug Fixes
+
+* **model:** 统一缓存策略与智能体隔离 ([#373](https://github.com/ZR233/anywork/issues/373)) ([46dd64c](https://github.com/ZR233/anywork/commit/46dd64ceb9bd6fc81eaaf7996c07f6ed76538891))
+* **studio:** 优化输入控制并升级 Flutter 3.50 ([#372](https://github.com/ZR233/anywork/issues/372)) ([88d83ff](https://github.com/ZR233/anywork/commit/88d83ffdaf789aa461a4df91302d29855e75dd43))
+* **studio:** 修复 deb 安装后的桌面图标 ([#374](https://github.com/ZR233/anywork/issues/374)) ([33fcaba](https://github.com/ZR233/anywork/commit/33fcaba5708cb51fcba3baf3bf4bfc24a980de7c))
+* **studio:** 修复上下文压缩状态重复展示 ([#379](https://github.com/ZR233/anywork/issues/379)) ([7113ae5](https://github.com/ZR233/anywork/commit/7113ae5df352d594d3f00dad2f7d4d4aac8eb09b))
+* **studio:** 修复模型取消与 ACP 回收验证竞态 ([#406](https://github.com/ZR233/anywork/issues/406)) ([030199e](https://github.com/ZR233/anywork/commit/030199e2e3439d76cec048047dc01658c2d54758))
+* **studio:** 修复生命周期异步状态过大导致的栈溢出 ([#418](https://github.com/ZR233/anywork/issues/418)) ([b0aa4b0](https://github.com/ZR233/anywork/commit/b0aa4b0b46f62a0d754b7ba022600562c270577f))
+* **studio:** 修复组件预览热更新超时并收紧启动包装 ([#384](https://github.com/ZR233/anywork/issues/384)) ([e9fee9c](https://github.com/ZR233/anywork/commit/e9fee9c2d4bba64c3a168e61fcaaa456d9e4e6e5))
+* **studio:** 修复计划正文在导航后无法恢复加载 ([#375](https://github.com/ZR233/anywork/issues/375)) ([a7fc6cc](https://github.com/ZR233/anywork/commit/a7fc6cc64928da1db3ae4594a5a2f57e3c541509))
+* **studio:** 允许删除工作树注册已丢失的会话 ([#404](https://github.com/ZR233/anywork/issues/404)) ([63a1c13](https://github.com/ZR233/anywork/commit/63a1c131e6e901e1243357d7b0cc704a253acb39))
+* **studio:** 允许规划阶段准备项目探索环境 ([#366](https://github.com/ZR233/anywork/issues/366)) ([d6a0db1](https://github.com/ZR233/anywork/commit/d6a0db15b30ea9e5c8aa08c7a5a007ee99ceae1d))
+* **studio:** 同步可空工作组时间的 OpenAPI 契约测试 ([#420](https://github.com/ZR233/anywork/issues/420)) ([eb945be](https://github.com/ZR233/anywork/commit/eb945be6217207bbe94fa784fb909b623753df2b))
+* **studio:** 完善 MCP 会话隔离与显式恢复 ([#398](https://github.com/ZR233/anywork/issues/398)) ([4a756fe](https://github.com/ZR233/anywork/commit/4a756fe9f38409c66492ab4390c3f9d639a6666c))
+* **studio:** 底部状态栏左对齐并直接显示阶段与词元速度 ([#369](https://github.com/ZR233/anywork/issues/369)) ([fef18b3](https://github.com/ZR233/anywork/commit/fef18b3f587acd5eb33484b5ba396ed0c28871a3))
+* **studio:** 持续检查更新并统一事件分发 ([#412](https://github.com/ZR233/anywork/issues/412)) ([c336ad5](https://github.com/ZR233/anywork/commit/c336ad54cd924cb6ba37d64355e0b14a22bd9d0b))
+* **studio:** 按目录租约隔离并回收 LSP 资源 ([#370](https://github.com/ZR233/anywork/issues/370)) ([1a0142c](https://github.com/ZR233/anywork/commit/1a0142cf731cac78209588475fe6d452adf99045))
+* **studio:** 确认 Windows GUI 准备树完成并清理回收职责 ([#383](https://github.com/ZR233/anywork/issues/383)) ([5de7dcc](https://github.com/ZR233/anywork/commit/5de7dcc77887f6b4c8fb8ae89d809d3bf37edbd7))
+* **studio:** 等待工具条目改用旋转沙漏 ([#405](https://github.com/ZR233/anywork/issues/405)) ([80dff92](https://github.com/ZR233/anywork/commit/80dff922843a1f4461eb96ce35d658be97e58092))
+* **studio:** 精简模型请求并恢复旧会话读取 ([#416](https://github.com/ZR233/anywork/issues/416)) ([477bd49](https://github.com/ZR233/anywork/commit/477bd49a9993c43ee5a202bc4bb1dbc5f419841c))
+* **studio:** 统一会话工作尾组与可见内容边界 ([#368](https://github.com/ZR233/anywork/issues/368)) ([4471c46](https://github.com/ZR233/anywork/commit/4471c46ce3a6e9074149c276753b258b2bcccb8a))
+* **studio:** 统一工作组生命周期计时并精简快照 ([#410](https://github.com/ZR233/anywork/issues/410)) ([0e66d2a](https://github.com/ZR233/anywork/commit/0e66d2a1bd91661fd5a26fe1f289699da9334ca7))
+* **studio:** 缩小输入准入的异步栈占用 ([#409](https://github.com/ZR233/anywork/issues/409)) ([9e44466](https://github.com/ZR233/anywork/commit/9e4446633cc1a6442f2ddc6233b2020ecaba5faa))
+* **studio:** 隔离会话删除进度保存失败并明确删除中状态 ([#411](https://github.com/ZR233/anywork/issues/411)) ([1e40a2d](https://github.com/ZR233/anywork/commit/1e40a2d6ca9046dcaa10831a7cba33421c4c54a4))
+
+
+### Performance
+
+* **ci:** 修复 Rust 缓存并分离大规模测试 ([#402](https://github.com/ZR233/anywork/issues/402)) ([fa1c730](https://github.com/ZR233/anywork/commit/fa1c730c75a39a925b4999b6aa5102747cd66b30))
+* **ci:** 共享同次运行的桌面验收编译产物 ([#401](https://github.com/ZR233/anywork/issues/401)) ([641d81f](https://github.com/ZR233/anywork/commit/641d81f3aeeb956291b7a6b354747676f7d0194f))
+* **ci:** 减少原生生命周期套件重复构建 ([#396](https://github.com/ZR233/anywork/issues/396)) ([c93795c](https://github.com/ZR233/anywork/commit/c93795c82f69fda0799634e78ac387438148a5fc))
+* **ci:** 复用模拟供应商产物并验证 Release 构建 ([#403](https://github.com/ZR233/anywork/issues/403)) ([2945927](https://github.com/ZR233/anywork/commit/2945927e56f867a3e4aceacd744fb44f483cbf0d))
+
+
+### Refactoring
+
+* **remote:** 统一单 SSH 前台执行器与受管进程接口 ([#399](https://github.com/ZR233/anywork/issues/399)) ([bbe369a](https://github.com/ZR233/anywork/commit/bbe369a4f7c80e528bfcbda595055b9e927637d7))
+* **studio:** 拆分 runtime 更新与统计职责 ([#408](https://github.com/ZR233/anywork/issues/408)) ([e4431f7](https://github.com/ZR233/anywork/commit/e4431f787164daae8d6e8636e0cbe01203c70425))
+* **studio:** 统一无头实验并清理历史入口 ([#382](https://github.com/ZR233/anywork/issues/382)) ([25e7f63](https://github.com/ZR233/anywork/commit/25e7f63a5c9e9d65de0c0f618e3bcf8684c24e4e))
+* **test:** 下移 Flutter 组件测试并修复 ACP 中断交互 ([#395](https://github.com/ZR233/anywork/issues/395)) ([d3c152a](https://github.com/ZR233/anywork/commit/d3c152a7eb4c911a0e9624103707840fd87a89b9))
+
 ## [6.38.0](https://github.com/ZR233/anywork/compare/v6.37.0...v6.38.0) (2026-11-11)
 
 

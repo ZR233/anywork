@@ -5,11 +5,12 @@
 ## 2.1 依赖方向
 
 ```text
-pl-studio-bridge / pl-studio-server → pl-studio-runtime
+pl-studio-bridge / pl-studio-server / pl-studio-cli → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-studio-runtime → pl-studio-update / pl-studio-statistics
 pl-studio-bridge → pl-studio-update / pl-studio-statistics
-pl-studio-server → pl-studio-update
+pl-studio-server / pl-studio-cli → pl-studio-update
+pl-studio-cli → pl-tool / pl-protocol
 pl-studio-update → pl-remote-helper
 pl-studio-statistics → pl-protocol
 pl-model → pl-core
@@ -56,6 +57,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-statistics` | 模型性能快照与分页契约、同源不可变统计材料的发布、读取信用及关闭生命周期；不依赖 Studio runtime、模型、工具或数据库，不聚合计费事实，也不读取调用库。Runtime 原统计所有者串行提交单调版本并发布材料 |
 | `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)） |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
+| `pl-studio-cli` | `anywk` 非交互式生产宿主；命令参数、输入预检、原生任务终态观察与退出编排，不拥有第二套智能体循环，见 [29](./29-cli-harbor.md) |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
 | `pl-studio-acceptance` | 隔离的 GUI 与产品 API 人工验收工具（`manual-gui --preset`）、规范配置构造、模拟账号与模拟平台协调、数据库故障注入观察与验收证据采集 |
 | `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行、同次 CI 构件身份校验与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
@@ -94,3 +96,5 @@ SSH 远程开发场景中，技能发现与目录选择的过滤、排序由宿�
 存储与内核契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。
 
 项目技能、会话临时目录、命令捕获归档和 Git 工作树分别由各自领域适配同一个具体执行器。`SshWorkspaceBinding` 只携带冻结端点事实与公共工作区执行绑定，不持有多套物理 owner。工作树的 Git 算法、common-dir/backlink 归属校验和未知副作用分类仍归 Studio；确认的 Git 元数据位于 checkout 外时，在同一执行器上打开独立的受限读取视图。
+
+Lua 编排家族 `pl-tool-lua` 独立持有解释器、输入、计算环境、并发协调和有界输出。`pl-tool` 将其窄工具调用端口绑定到 Thread 的嵌套调用能力；core 只治理父子任务、冻结授权和可靠交付，不依赖 Lua 或解释工具声明。

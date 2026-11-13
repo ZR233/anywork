@@ -4443,6 +4443,8 @@ mod completion_boundary_tests {
             model_steps: 1,
         };
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: "task:approval-call".into(),
             call_id: "approval-call".into(),
             tool_id: "exec".into(),
@@ -5197,6 +5199,136 @@ mod completion_boundary_tests {
             let digest = delta.digest()?;
             super::restore_tests::save(&history, &second, &prepared).await?;
             assert_eq!(prepared.display.as_ref().unwrap().digest()?, digest);
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn nested_task_invocation_survives_the_production_projection_and_cold_history()
+    -> Result<()> {
+        use pl_core::{
+            model::ModelToolCall,
+            thread::{
+                ToolDelivery, ToolDeliveryTarget, ToolOutcome,
+                task::{TaskRecord, TaskStatus},
+            },
+            tool::ToolOutput,
+        };
+        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let thread = pl_protocol::Thread::from(
+                env.runtime
+                    .create_thread(&env.project.id, "nested projection regression")
+                    .await?,
+            );
+            let path = env._temp.path().join("nested-projection.sqlite");
+            let history = HistoryStore::open(&path, &thread.id).await?;
+            history.prepare_write().await?;
+            let database = history
+                .conversation_database_id()
+                .await?
+                .context("database")?;
+            let chat = Session::new(history.clone(), TimelineEpoch::new("nested-hot")?);
+            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            let mut projection = LiveProjection::new();
+            projection.bind_execution_history(channel.order_index(), history.clone())?;
+            projection.bind_conversation_identity(database)?;
+            let turn = TurnRecord {
+                turn_id: "nested-turn".into(),
+                input_id: None,
+                state: TurnState::Running,
+                elapsed_ms: None,
+                model_steps: 1,
+            };
+            let call = ModelToolCall {
+                call_id: "outer:nested:1".into(),
+                tool_id: "exec_command".into(),
+                arguments: OpaquePayload::new(
+                    "application/json",
+                    1,
+                    "{\"command\":\"printf original\"}",
+                )?,
+                presentation_contract: None,
+                rejection: None,
+            };
+            let mut task = TaskRecord {
+                id: format!("task:{}", call.call_id),
+                call_id: call.call_id.clone(),
+                tool_id: call.tool_id.clone(),
+                turn_id: turn.turn_id.clone(),
+                revision: 1,
+                status: TaskStatus::Running,
+                cancel_requested: false,
+                acknowledgement: None,
+                started_sequence: Some(1),
+                parent_call_id: Some("outer".into()),
+                invocation: Some(call.clone()),
+            };
+            let mut state = ThreadSnapshot {
+                turns: vec![turn.clone()].into(),
+                ..Default::default()
+            };
+            state.tasks.insert(task.id.clone(), task.clone());
+            let mut effect = ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 1,
+                committed_at: 1,
+                turn: Some(turn),
+                tasks: vec![task.clone()].into(),
+                ..Default::default()
+            };
+            // There is deliberately no fabricated model call in context: Task owns this invocation.
+            let prepared =
+                publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
+            let id = super::super::order::tool_id(&call.call_id);
+            let item = prepared
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .context("nested start item")?;
+            assert_eq!(
+                item.tool().context("tool")?.invocation().arguments(),
+                call.arguments.content()
+            );
+            task.revision = 2;
+            task.status = TaskStatus::Succeeded;
+            state.tasks.insert(task.id.clone(), task.clone());
+            let delivery = ToolDelivery {
+                target: ToolDeliveryTarget::Nested {
+                    parent_call_id: "outer".into(),
+                },
+                call_id: call.call_id.clone(),
+                tool_id: call.tool_id.clone(),
+                output: ToolOutput::new(
+                    OpaquePayload::text("PRIVATE_ORIGINAL"),
+                    vec![pl_core::context::ContextContent::Text {
+                        text: "PRIVATE_ORIGINAL".into(),
+                    }],
+                ),
+                delivered_context: vec![],
+                outcome: ToolOutcome::Succeeded,
+            };
+            state.deliveries = vec![delivery.clone()].into();
+            effect.sequence = 2;
+            effect.committed_at = 2;
+            effect.turn = None;
+            effect.tasks = vec![task].into();
+            effect.deliveries = vec![delivery].into();
+            publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
+            assert!(state.context.records.is_empty());
+            drop(projection);
+            drop(chat);
+            drop(history);
+            let cold = HistoryStore::open(&path, &thread.id).await?;
+            let item = cold.item(&id).await?.context("cold nested item")?;
+            let tool = item.tool().context("cold tool")?;
+            assert_eq!(tool.invocation().name(), "exec_command");
+            assert_eq!(
+                tool.terminal_output().context("terminal output")?.result(),
+                "PRIVATE_ORIGINAL"
+            );
             Ok(())
         }
         .await;

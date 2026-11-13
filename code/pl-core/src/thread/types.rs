@@ -697,7 +697,7 @@ impl ThreadSnapshot {
             .collect::<std::collections::BTreeSet<_>>();
         let resident_delivery = |delivery: &ToolDelivery| match &delivery.target {
             ToolDeliveryTarget::Inbox { message_id } => undelivered.contains(message_id.as_str()),
-            ToolDeliveryTarget::CallResult => false,
+            ToolDeliveryTarget::CallResult | ToolDeliveryTarget::Nested { .. } => false,
         };
         // A settled result is committed history: the complete delivery stays in the matching effect
         // batch inside the bounded live [`EffectWindow`], so the snapshot keeps only the results
@@ -1206,6 +1206,9 @@ pub enum ToolDispatch {
 pub enum ToolDeliveryTarget {
     #[default]
     CallResult,
+    Nested {
+        parent_call_id: String,
+    },
     Inbox {
         message_id: String,
     },

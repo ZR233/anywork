@@ -7,7 +7,8 @@
 | 目录 | Package | 范围 |
 | --- | --- | --- |
 | `filesystem` | `pl-tool-filesystem` | 补丁、写入、元数据、目录、删除、复制与移动 |
-| `command` | `pl-tool-command` | exec、stdin 与共用进程领域观测 |
+| `lua` | `pl-tool-lua` | Lua 编排、计算环境、并发和输出边界 |
+| `command` | `pl-tool-command` | exec_command、stdin 与共用进程领域观测 |
 | `git` | `pl-tool-git` | Git 系列与凭据、命令规划、结果 |
 | `lsp` | `pl-tool-lsp` | 能力发现与查询 |
 | `mcp` | `pl-tool-mcp` | 动态工具、资源与共用内容处理 |

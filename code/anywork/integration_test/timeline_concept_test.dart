@@ -67,7 +67,7 @@ const _hotUpdatePrompt = '同一正文内依次追加二十个可控增量，保
 const _hotUpdateHead = '热更新正文：';
 const _imageCalls = ['concept-image-a', 'concept-image-b', 'concept-image-c'];
 const _imageReasoningCount = 40;
-const _imageMemberCount = 44;
+const _imageMemberCount = 48;
 
 /// Three native processes, one isolated SQLite database, one strict provider.
 /// Only the journey sends requests. Reopen phases consume saved input/atom IDs,
@@ -1763,7 +1763,9 @@ final class _ConceptScene {
           .where(
             (entry) =>
                 entry.record.atom.source == source &&
-                entry.record.atom.tool?.callId == call &&
+                entry.record.atom.tool?.name == 'view_image' &&
+                (entry.record.atom.tool?.callId.startsWith('$call:nested:') ??
+                    false) &&
                 entry.record.contentSource is CompletedOriginal,
           )
           .toList();
@@ -1779,42 +1781,9 @@ final class _ConceptScene {
         displayId: starts.single.member?.memberKey ?? starts.single.unit.id,
       );
       final foreground = receipt.atom!;
-      final frontTool = (receipt.toolCard as DecodedToolCard).value;
-      ObservedDisplayRecord location = starts.single;
-      ChatItemPresentation value = receipt;
-      if (foreground.delivery == ChatDeliveryKind.backgroundHandoff) {
-        expect(
-          (foreground.lifecycle as TerminalChatAtom).outcome,
-          ChatTerminalOutcome.transferred,
-        );
-        expect(frontTool.statusString, 'backgroundStarted');
-        expect(frontTool.outcome, isNull);
-        expect(frontTool.taskId, isNotEmpty);
-        final finals = records
-            .where(
-              (entry) =>
-                  entry.record.atom.source is BackgroundResultChatSource &&
-                  entry.record.atom.tool?.callId == call &&
-                  entry.record.contentSource is CompletedOriginal,
-            )
-            .toList();
-        if (finals.isEmpty) continue;
-        expect(finals, hasLength(1));
-        location = finals.single;
-        value = await readDisplayRecord(
-          lease,
-          location.record,
-          displayId: location.member?.memberKey ?? location.unit.id,
-        );
-        expect(value.atom!.source, isA<BackgroundResultChatSource>());
-        expect(value.atom!.delivery, ChatDeliveryKind.independent);
-        expect(
-          (value.toolCard as DecodedToolCard).value.taskId,
-          frontTool.taskId,
-        );
-      } else {
-        expect(foreground.delivery, ChatDeliveryKind.foreground);
-      }
+      final location = starts.single;
+      final value = receipt;
+      expect(foreground.delivery, ChatDeliveryKind.foreground);
       final tool = (value.toolCard as DecodedToolCard).value;
       expectImageOriginalOutcome(
         value.atom!,
@@ -1822,7 +1791,7 @@ final class _ConceptScene {
       );
       expect(value.atom!.turnId, source.turnId);
       expect(tool.name, 'view_image');
-      expect(tool.toolCallId, call);
+      expect(tool.toolCallId, startsWith('$call:nested:'));
       expect(
         tool.outcome,
         call == 'concept-image-failed'
@@ -1924,10 +1893,12 @@ final class _ConceptScene {
           atom.kind == ChatAtomKind.toolCall && atom.tool?.name == 'view_image',
     );
     expect(tools, hasLength(_imageCalls.length + 1));
-    expect(tools.map((atom) => atom.tool?.callId).toSet(), {
-      ..._imageCalls,
-      'concept-image-failed',
-    });
+    for (final call in [..._imageCalls, 'concept-image-failed']) {
+      expect(
+        tools.where((atom) => atom.tool!.callId.startsWith('$call:nested:')),
+        hasLength(1),
+      );
+    }
     final results = await _imageResults(unit, atoms);
     expect(results, hasLength(_imageCalls.length + 1));
     expect(
@@ -2167,9 +2138,9 @@ final class _ConceptScene {
     expect(firstWork.memberReference, initialWork.memberReference);
     final firstMembers = await observed.readFixtureAtoms(
       firstWork,
-      expectedCount: 4,
+      expectedCount: 7,
     );
-    expect(firstMembers, hasLength(4));
+    expect(firstMembers, hasLength(7));
     expect(firstMembers.every((atom) => atom.source == source), isTrue);
     expect(
       firstMembers.every((atom) => atom.lifecycle is TerminalChatAtom),
@@ -2177,7 +2148,7 @@ final class _ConceptScene {
     );
     expect(
       firstMembers
-          .where((atom) => atom.tool != null)
+          .where((atom) => atom.tool?.name == 'exec')
           .map((atom) => atom.tool!.callId),
       unorderedEquals([
         'concept-read-call',
@@ -2185,6 +2156,20 @@ final class _ConceptScene {
         'concept-command-b',
       ]),
     );
+    final commands = firstMembers.where(
+      (atom) => atom.tool?.name == 'exec_command',
+    );
+    expect(commands, hasLength(3));
+    for (final call in [
+      'concept-read-call',
+      'concept-command-a',
+      'concept-command-b',
+    ]) {
+      expect(
+        commands.where((atom) => atom.tool!.callId.startsWith('$call:nested:')),
+        hasLength(1),
+      );
+    }
     // Atomic completions are saved, but a Work without a boundary stays live.
     expect(main.any((unit) => unit.id == g1), isFalse);
     await capture('group-idle');
@@ -4029,7 +4014,10 @@ final class _ConceptScene {
     report['readImageResourceIds'] = [
       for (final call in _imageCalls)
         results
-            .singleWhere((result) => result.foreground.tool!.callId == call)
+            .singleWhere(
+              (result) =>
+                  result.foreground.tool!.callId.startsWith('$call:nested:'),
+            )
             .presentation
             .attachments
             .single

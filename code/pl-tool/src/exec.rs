@@ -9,5 +9,5 @@ pub use output::permission_denied;
 pub use pl_tool_command::exec::{ExecInput, ValidatedExecInput, exec_definition};
 pub use pl_tool_command::write_stdin::{WriteStdinInput, write_stdin_definition};
 pub use thread::{CommandAccess, CommandOutputArchive, ExecFailure, ThreadExecTool};
-pub const TOOL_EXEC: &str = "exec";
+pub const TOOL_EXEC: &str = "exec_command";
 pub const TOOL_WRITE_STDIN: &str = "write_stdin";
