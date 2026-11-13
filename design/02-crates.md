@@ -51,7 +51,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
 | `pl-studio-acceptance` | 隔离的 GUI 与产品 API 人工验收工具（`manual-gui --preset`）、规范配置构造、模拟账号与模拟平台协调、数据库故障注入观察与验收证据采集 |
-| `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
+| `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行、同次 CI 构件身份校验与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
 
 Native 完成记录的读取分类由 Runtime 唯一确定，Core 只比较不透明 hint 并在原发布边界分配 seq/run；原 writer 保存不可变记录和两个段索引，不持久化展示组。Flutter 原 controller 按明确呈现类别与 run.start_seq 唯一组合代表卡，SDK 不组合，Widget 不重写分类；段详情沿 Run 独立读取。完整所有权与读取契约见 [26](./26-timeline-content.md)，存储迁移见 [17](./17-studio-storage.md)。
 

@@ -3921,10 +3921,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ctrlc",
+ "hex",
  "libc",
  "nix",
  "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "process-wrap 10.0.1 (git+https://github.com/watchexec/process-wrap?rev=2f4bc393d8bd03b4b1c81fee2e13ce82dd42906e)",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "windows-sys 0.61.2",
 ]

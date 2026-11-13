@@ -47,7 +47,7 @@ pub(crate) fn build_workspace_artifacts(
     let workspace_root = resolve_workspace_root(workspace_root)?;
     if configuration == BridgeConfiguration::Debug
         && let Some(dynamic_library) =
-            crate::quality_inputs::artifact(&workspace_root, "libpl_studio_bridge.so")?
+            pl_dev_support::quality_inputs::artifact(&workspace_root, "libpl_studio_bridge.so")?
     {
         return Ok(RustBridgeArtifacts {
             dynamic_library,

@@ -402,10 +402,16 @@ jobs:
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
-      - name: Compile acceptance tool
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-acceptance
-      - name: Compile debug bridge
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-bridge
+      - name: Compile acceptance tool and debug bridge together
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-acceptance -p pl-studio-bridge
+      - name: Compile the shared optimized provider fixture
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --release --locked -p pl-provider-fixture --bin pl-provider-fixture
+      - name: Compile the shared native Host MCP executable
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
+            CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_PANIC=abort \
+            cargo build --release --locked -p pl-studio-mcp --bin pl-studio-mcp --target x86_64-unknown-linux-gnu
       - name: Checkpoint immutable test inputs
         id: checkpoint
         env:
@@ -497,14 +503,7 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
+      # This consumer uses same-run Rust binaries; only producers need Cargo caches.
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -623,14 +622,7 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      # Non-exact Rust cache restores may clean target; restore this run's tool afterwards.
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
+      # This consumer uses same-run Rust binaries; only producers need Cargo caches.
       - name: Restore this run's Linux engineering tool
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -746,9 +738,36 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Compile the application in debug mode without running tests
+      - name: Compile the Release AOT application without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
-        run: cargo xtask build-gui --debug
+        run: cargo xtask build-gui
+
+      - name: Checkpoint the Release bundle and engineering tool
+        if: needs.changes.outputs.windows_gui_build == 'true'
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          . .github/scripts/studio-compile-handoff.ps1
+          New-StudioCompileCheckpoint
+          $version = (Get-Content studio-version.txt -Raw).Trim()
+          Assert-StudioProductVersion -Executable (Join-Path $env:GITHUB_WORKSPACE 'dist/anywork-release/anywork.exe') -Version $version
+          Copy-Item 'target/xtask/debug/pl-xtask.exe' (Join-Path $env:RUNNER_TEMP 'pl-xtask.exe')
+          Copy-Item $env:GITHUB_OUTPUT (Join-Path $env:RUNNER_TEMP 'checkpoint.txt')
+          "sourceSha=$env:SOURCE_SHA`nversion=$version`nplatform=windows-x64`nflutterProfile=release`nbridgeProfile=release`nbuildCommand=cargo xtask build-gui" | Out-File (Join-Path $env:RUNNER_TEMP 'checkpoint.txt') -Append -Encoding utf8
+          Get-Content (Join-Path $env:RUNNER_TEMP 'checkpoint.txt') | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Preserve the Release checkpoint without publishing
+        if: needs.changes.outputs.windows_gui_build == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-release-windows-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bundle.zip
+            ${{ runner.temp }}/checkpoint.txt
+            ${{ runner.temp }}/pl-xtask.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
   macos-build:
     name: Clippy and GUI build (macOS)
@@ -793,9 +812,32 @@ jobs:
       - name: Check Rust on macOS
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Compile the application in debug mode without running tests
+      - name: Compile the Release AOT application without running tests
         if: needs.changes.outputs.macos_gui_build == 'true'
-        run: cargo xtask build-gui --debug
+        run: cargo xtask build-gui
+
+      - name: Checkpoint the Release bundle and engineering tool
+        if: needs.changes.outputs.macos_gui_build == 'true'
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          bash .github/scripts/studio-macos-handoff.sh checkpoint
+          cp "$GITHUB_OUTPUT" "$RUNNER_TEMP/checkpoint.txt"
+          printf 'sourceSha=%s\nversion=%s\nplatform=macos-arm64\nflutterProfile=release\nbridgeProfile=release\nbuildCommand=cargo xtask build-gui\n' \
+            "$SOURCE_SHA" "$(cat studio-version.txt)" >> "$RUNNER_TEMP/checkpoint.txt"
+          cat "$RUNNER_TEMP/checkpoint.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve the Release checkpoint without publishing
+        if: needs.changes.outputs.macos_gui_build == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-release-macos-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/macos-bundle.tar.gz
+            ${{ runner.temp }}/macos-tool.tar.gz
+            ${{ runner.temp }}/checkpoint.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
   # Configure this stable aggregate as the repository required check.
   ci-gate:

@@ -45,7 +45,9 @@ pub(crate) fn run(args: &[OsString]) -> Result<()> {
 pub(crate) fn build_acceptance_tool(workspace: &Path) -> Result<PathBuf> {
     use std::process::Stdio;
 
-    if let Some(executable) = crate::quality_inputs::artifact(workspace, ACCEPTANCE_PACKAGE)? {
+    if let Some(executable) =
+        pl_dev_support::quality_inputs::artifact(workspace, ACCEPTANCE_PACKAGE)?
+    {
         return Ok(executable);
     }
 

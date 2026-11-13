@@ -38,7 +38,10 @@ pub(crate) fn current_target() -> Result<&'static str> {
 
 pub(crate) fn prepare_bundle_resources(workspace: &Path) -> Result<PathBuf> {
     let target = current_target()?;
-    let executable = native_binary(workspace, BINARY, target)?;
+    let executable = match pl_dev_support::quality_inputs::artifact(workspace, BINARY)? {
+        Some(executable) => executable,
+        None => native_binary(workspace, BINARY, target)?,
+    };
     // Signing changes executable bytes: do it before metadata and compression.
     #[cfg(target_os = "macos")]
     pl_dev_support::process::run_checked(

@@ -5,3 +5,4 @@
 
 pub mod paths;
 pub mod process;
+pub mod quality_inputs;
