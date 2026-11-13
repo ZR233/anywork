@@ -44,6 +44,7 @@ use crate::studio::storage::history::{
 use crate::studio::thread_projection::PreparedEffect;
 
 mod batch;
+pub(in crate::studio) use batch::CommittedBatch;
 
 #[cfg(feature = "benchmarks")]
 pub(crate) mod benchmark;
@@ -994,6 +995,7 @@ impl Drop for RuntimeOrderIndex {
 /// One admitted effect waiting for its ordered durable write.
 #[derive(Debug)]
 struct QueuedEffect {
+    _conversation: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
     sequence: u64,
     /// Starts the private batching deadline; later arrivals never reset it.
     admitted_at: Instant,
@@ -1923,8 +1925,18 @@ impl HistoryChannel {
     /// this same queue — so an unknown or already durable sequence is refused rather than stored in a
     /// second, unordered slot. Returns whether the batch was attached.
     pub(in crate::studio) fn prepare(&self, prepared: Arc<PreparedEffect>) -> bool {
+        self.prepare_with(None, prepared, || Ok(())).is_ok()
+    }
+
+    /// 在唯一可靠记录上校验原批次及预算，再同步发布并接收同一原件。
+    pub(in crate::studio) fn prepare_with(
+        &self,
+        original: Option<&Arc<ThreadWrite>>,
+        prepared: Arc<PreparedEffect>,
+        publish: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
         if prepared.completion_drafts.is_some() {
-            return false;
+            anyhow::bail!("reliable channel refused prepared effect");
         }
         // Measure before taking the lock: the batch is immutable, and the owner's one estimate
         // (see `PreparedEffect::retained_bytes`) walks text lengths instead of encoding a payload
@@ -1936,18 +1948,28 @@ impl HistoryChannel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if sequence <= progress.durable {
-            return false;
+            anyhow::bail!("reliable channel refused prepared effect");
         }
         let Some(index) = progress.queue_offset(sequence) else {
-            return false;
+            anyhow::bail!("reliable channel refused prepared effect");
         };
+        if let Some(original) = original {
+            ensure!(
+                Arc::ptr_eq(&progress.effects[index].write, original),
+                "original effect is not this channel's accepted write"
+            );
+        }
         if let Some(existing) = &progress.effects[index].prepared {
             // Retries hand over the original frozen batch; replacing it could lose a published
             // completion or change the bytes behind an unchanged reliable-budget charge.
-            return Arc::ptr_eq(existing, &prepared);
+            ensure!(
+                Arc::ptr_eq(existing, &prepared),
+                "prepared effect identity differs"
+            );
+            return publish();
         }
         if progress.next_unprojected_offset() != Some(index) {
-            return false;
+            anyhow::bail!("reliable channel refused prepared effect");
         }
         let mut order_index = self
             .order_index
@@ -1956,7 +1978,7 @@ impl HistoryChannel {
             .unwrap_or_else(|error| error.into_inner());
         let transferred = match progress.projection_pending {
             Some(source) if source.sequence == sequence && source.prepared_bytes == bytes => bytes,
-            Some(_) => return false,
+            Some(_) => anyhow::bail!("prepared effect budget differs"),
             None => 0,
         };
         let other = Self::other_resident_bytes(&progress);
@@ -1970,8 +1992,9 @@ impl HistoryChannel {
             if newly_blocked {
                 self.changed.notify_one();
             }
-            return false;
+            anyhow::bail!("reliable channel refused prepared effect");
         }
+        publish()?;
         if transferred > 0 || progress.projection_pending.is_some() {
             progress.projection_bytes -= transferred;
             progress.projection_pending = None;
@@ -1992,7 +2015,7 @@ impl HistoryChannel {
             self.status.send_modify(|_| {});
         }
         self.changed.notify_one();
-        true
+        Ok(())
     }
 
     /// Oldest admitted effect the Thread's live projection owner has not taken over yet.
@@ -2359,7 +2382,9 @@ impl std::fmt::Debug for HistoryChannel {
 struct Inner {
     store: StudioStore,
     thread: pl_protocol::Thread,
+    #[cfg(test)]
     chat: pl_core::chat::Session,
+    conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     /// This writer incarnation's coordinator identity; see [`NEXT_WRITER_INCARNATION`].
     owner: usize,
     /// One durable history reader for the life of this writer.
@@ -2386,8 +2411,25 @@ pub(crate) struct ThreadStorageSink(Arc<Inner>);
 /// One actual writer incarnation, retained through attachment and all close joins.
 #[derive(Debug, Clone)]
 pub(crate) struct ThreadStorageBinding {
+    pub(crate) conversation: Arc<crate::studio::conversation_store::ConversationStore>,
+    pub(crate) incarnation: usize,
     pub(crate) storage: pl_core::thread::cold::ColdStoreHandle,
     pub(crate) channel: Arc<HistoryChannel>,
+}
+
+impl ThreadStorageBinding {
+    pub(crate) fn new(
+        storage: pl_core::thread::cold::ColdStoreHandle,
+        channel: Arc<HistoryChannel>,
+        conversation: Arc<crate::studio::conversation_store::ConversationStore>,
+    ) -> Self {
+        Self {
+            storage,
+            channel,
+            conversation,
+            incarnation: NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 impl std::fmt::Debug for ThreadStorageSink {
@@ -2582,7 +2624,9 @@ impl ThreadStorageSink {
                 let _ = release.await;
             }
         }
-        let chat = store.chat_session(&thread.id).await?;
+        let conversation = store.conversation_store(&thread.id).await?;
+        #[cfg(test)]
+        let chat = conversation.session().clone();
         let mut workers = channel.workers.lock().await;
         ensure!(
             !channel.stopping.is_cancelled(),
@@ -2635,7 +2679,9 @@ impl ThreadStorageSink {
         let inner = Arc::new(Inner {
             store,
             thread,
+            #[cfg(test)]
             chat,
+            conversation,
             owner,
             history: tokio::sync::OnceCell::new(),
             changed: channel.changed.clone(),
@@ -2815,10 +2861,11 @@ impl ThreadStorageSink {
     }
 
     pub(crate) fn binding(&self) -> ThreadStorageBinding {
-        ThreadStorageBinding {
-            storage: pl_core::thread::cold::ColdStoreHandle::new(self.clone()),
-            channel: self.0.channel.clone(),
-        }
+        ThreadStorageBinding::new(
+            pl_core::thread::cold::ColdStoreHandle::new(self.clone()),
+            self.0.channel.clone(),
+            self.0.conversation.clone(),
+        )
     }
 }
 
@@ -3528,6 +3575,7 @@ impl ColdStore for ThreadStorageSink {
             }
             let admitted_at = Instant::now();
             progress.effects.push_back(QueuedEffect {
+                _conversation: Some(self.0.conversation.clone()),
                 sequence,
                 admitted_at,
                 write: Arc::new(write.clone()),
@@ -4601,6 +4649,7 @@ mod watchdog_tests {
             });
             let bytes = serde_json::to_vec(&write.effect)?.len() as u64;
             progress.effects.push_back(QueuedEffect {
+                _conversation: None,
                 sequence,
                 admitted_at: Instant::now(),
                 write: Arc::new(write),
@@ -7418,8 +7467,9 @@ pub(crate) mod storage_fault_tests {
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store
             .thread_persistence()
-            .chat_session(&thread.id)
-            .expect("initialized writer Session");
+            .conversation_store(&thread.id)
+            .expect("initialized writer Store");
+        let chat = chat.session().clone();
         tokio::spawn(async move {
             let mut projection = crate::studio::thread_projection::LiveProjection::new();
             projection
@@ -7542,7 +7592,7 @@ pub(crate) mod storage_fault_tests {
 
     /// One ticket whose effect commits a visible prompt item, i.e. the shortest effect that projects
     /// a durable body the writer must confirm.
-    pub(super) fn visible_input_ticket(
+    pub(crate) fn visible_input_ticket(
         thread_id: &str,
         sequence: u64,
         input_id: &str,

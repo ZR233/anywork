@@ -2250,6 +2250,68 @@ impl LiveProjection {
     }
 
     /// Publishes only the retained batch's original drafts. Every wait belongs to that batch.
+    pub(in crate::studio) fn plan_display(
+        &self,
+        prepared: &PreparedEffect,
+        records: &[Arc<ChatItem>],
+    ) -> anyhow::Result<(
+        super::presentation::PresentationState,
+        Arc<super::presentation::PreparedDisplayDelta>,
+    )> {
+        let presentation = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let display_facts = prepared
+            .display_atom_updates
+            .iter()
+            .filter(|atom| presentation.accepts_update(atom))
+            .chain(prepared.current.atom_facts.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        presentation.plan_visible(
+            prepared.sequence,
+            prepared.committed_at,
+            super::presentation::DisplayInput {
+                facts: &display_facts,
+                visible: &prepared.display_text_visible,
+                observations: Some(&prepared.display_observation_plan),
+            },
+            records,
+            |member| {
+                prepared
+                    .display_observations
+                    .get(&member.association_key)
+                    .ok_or_else(|| anyhow::anyhow!("boundary has no retained effect observation"))?
+                    .freeze()
+            },
+        )
+    }
+
+    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationState) {
+        self.presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apply_visible(plan);
+    }
+
+    pub(in crate::studio) fn complete_prepared(
+        prepared: &mut PreparedEffect,
+        records: Arc<[Arc<ChatItem>]>,
+        display: Arc<super::presentation::PreparedDisplayDelta>,
+    ) {
+        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
+        prepared.display = Some(display);
+        prepared.display_atom_updates = Arc::from([]);
+        prepared.display_text_visible = Arc::from([]);
+        prepared.display_observation_plan = Arc::new(BTreeMap::new());
+        prepared.display_observations = Arc::new(BTreeMap::new());
+        prepared.completions = records;
+        prepared.completion_drafts = None;
+    }
+
+    /// 明确的恢复／重放入口；普通新批次由 Store 的同步准入负责。
+    #[cfg(test)]
     pub(in crate::studio) async fn publish_prepared(
         &mut self,
         chat: &Session,

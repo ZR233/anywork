@@ -196,11 +196,22 @@ impl SessionRuntime {
                     .map(|services| services.store.thread_persistence().history_channel(id)),
             )
         };
-        let binding = channel.map(|channel| {
-            Arc::new(ThreadStorageBinding {
-                storage: storage.clone(),
+        let conversation = match services.as_ref() {
+            Some(services) => Some(
+                services
+                    .store
+                    .conversation_store(id)
+                    .await
+                    .map_err(preparation_storage_error)?,
+            ),
+            None => None,
+        };
+        let binding = channel.zip(conversation).map(|(channel, conversation)| {
+            Arc::new(ThreadStorageBinding::new(
+                storage.clone(),
                 channel,
-            })
+                conversation,
+            ))
         });
         let completion = async move { thread.attach_storage(storage).await.map_err(Arc::new) }
             .boxed()
@@ -441,7 +452,7 @@ impl SessionRuntime {
 
     /// Only ordinary execution entries legitimately have no close-only binding. A missing or
     /// unfinished binding on either storage-only purpose cannot count as successful cleanup.
-    pub(super) fn close_storage_binding(
+    pub(crate) fn close_storage_binding(
         &self,
         id: &str,
     ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {

@@ -28,7 +28,7 @@ pub use item::{
     ChatReadHint, ChatRunPosition, ChatRunSeed, ChatSelection, PresentationPart,
     presentation_item_id, presentation_prefix,
 };
-pub use session::{Session, WeakSession};
+pub use session::{ChatAdmission, Session, WeakSession};
 pub use tail::{ChatCompletedBatch, ChatTail, ChatTailBaseline, ChatTailUpdate};
 
 #[cfg(test)]

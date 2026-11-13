@@ -599,42 +599,6 @@ pub(in crate::studio) async fn recovery(db: &impl ConnectionTrait) -> Result<Dis
 }
 
 impl super::super::HistoryStore {
-    pub(in crate::studio) async fn display_cut(
-        &self,
-        database: &str,
-        before_order: Option<u64>,
-        limit: usize,
-    ) -> Result<StoredDisplayCut> {
-        let connection = self
-            .reader()
-            .await?
-            .context("display database is missing")?;
-        ensure!(connection.database_id == database, "stale display database");
-        let tx = connection.db.begin().await?;
-        let (published, effect) = watermarks(&tx).await?;
-        let open: Vec<_> = open_heads(&tx, before_order, limit)
-            .await?
-            .into_iter()
-            .map(Arc::new)
-            .collect();
-        let current_work_id = if before_order.is_none() {
-            open.iter()
-                .find(|header| {
-                    !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. })
-                })
-                .map(|header| header.id.clone())
-        } else {
-            None
-        };
-        tx.commit().await?;
-        Ok(StoredDisplayCut {
-            published,
-            effect,
-            current_work_id,
-            open,
-        })
-    }
-
     /// Fresh SQLite snapshot is established only after the caller captured P/Dp.
     pub(in crate::studio) async fn display_history_heads(
         &self,
@@ -705,13 +669,69 @@ impl super::super::HistoryStore {
         before: Option<u64>,
         limit: usize,
     ) -> Result<StoredDisplayMembers> {
-        let connection = self
-            .reader()
+        let mut snapshot = self
+            .conversation_snapshot()
             .await?
             .context("display database is missing")?;
-        ensure!(connection.database_id == database, "stale display database");
+        snapshot.pin(&self.state.thread_id).await?;
+        snapshot
+            .display_member_page(database, block_id, before, limit)
+            .await
+    }
+
+    pub(in crate::studio) async fn display_recovery(&self) -> Result<Option<DisplayRecovery>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
         let tx = connection.db.begin().await?;
-        let row = tx
+        let result = recovery(&tx).await?;
+        tx.commit().await?;
+        Ok(Some(result))
+    }
+}
+
+impl super::super::ConversationSnapshot {
+    pub(in crate::studio) async fn display_cut(
+        self,
+        database: &str,
+        before_order: Option<u64>,
+        limit: usize,
+    ) -> Result<StoredDisplayCut> {
+        ensure!(self.database_id == database, "stale display database");
+        let (published, effect) = watermarks(&self.tx).await?;
+        let open: Vec<_> = open_heads(&self.tx, before_order, limit)
+            .await?
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        let current_work_id = if before_order.is_none() {
+            open.iter()
+                .find(|header| {
+                    !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. })
+                })
+                .map(|header| header.id.clone())
+        } else {
+            None
+        };
+        self.tx.commit().await?;
+        Ok(StoredDisplayCut {
+            published,
+            effect,
+            current_work_id,
+            open,
+        })
+    }
+
+    pub(in crate::studio) async fn display_member_page(
+        self,
+        database: &str,
+        block_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<StoredDisplayMembers> {
+        ensure!(self.database_id == database, "stale display database");
+        let row = self
+            .tx
             .query_one_raw(statement(
                 &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE block_id=?"),
                 vec![block_id.into()],
@@ -719,8 +739,8 @@ impl super::super::HistoryStore {
             .await?
             .context("display block reference is missing")?;
         let header = Arc::new(decode_header(&row)?);
-        let entries = member_page(&tx, block_id, before, limit).await?;
-        validate_original_references(&tx, &entries).await?;
+        let entries = member_page(&self.tx, block_id, before, limit).await?;
+        validate_original_references(&self.tx, &entries).await?;
         let upper = header
             .next_member
             .min(before.unwrap_or(u64::MAX).saturating_sub(1));
@@ -735,18 +755,8 @@ impl super::super::HistoryStore {
                     .all(|pair| pair[0].head.member_order + 1 == pair[1].head.member_order),
             "display member page has missing rows; original history preserved"
         );
-        tx.commit().await?;
+        self.tx.commit().await?;
         Ok(StoredDisplayMembers { header, entries })
-    }
-
-    pub(in crate::studio) async fn display_recovery(&self) -> Result<Option<DisplayRecovery>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let result = recovery(&tx).await?;
-        tx.commit().await?;
-        Ok(Some(result))
     }
 }
 

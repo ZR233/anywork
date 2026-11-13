@@ -172,7 +172,7 @@ pub(in crate::studio) struct DisplayMemberCut {
     pub complete: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(in crate::studio) struct PresentationState {
     database: String,
     open_work: Option<u64>,
@@ -431,6 +431,7 @@ impl PresentationState {
         self.retained
     }
 
+    #[cfg(test)]
     pub fn subscribe_members(&mut self) -> tokio::sync::watch::Receiver<u64> {
         self.changes
             .get_or_insert_with(|| tokio::sync::watch::channel(self.member_change).0)
@@ -877,7 +878,43 @@ impl PresentationState {
         )
     }
 
+    #[cfg(test)]
     pub fn prepare_visible(
+        &mut self,
+        effect: u64,
+        committed_at: i64,
+        input: DisplayInput<'_>,
+        completions: &[Arc<ChatItem>],
+        capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+    ) -> Result<Arc<PreparedDisplayDelta>> {
+        let (next, delta) = self.plan_visible(effect, committed_at, input, completions, capture)?;
+        self.apply_visible(next);
+        Ok(delta)
+    }
+
+    pub(super) fn plan_visible(
+        &self,
+        effect: u64,
+        committed_at: i64,
+        input: DisplayInput<'_>,
+        completions: &[Arc<ChatItem>],
+        capture: impl FnMut(&DisplayMemberWrite) -> Result<ObservationInput>,
+    ) -> Result<(Self, Arc<PreparedDisplayDelta>)> {
+        let mut next = self.clone();
+        let delta = next.fold_visible(effect, committed_at, input, completions, capture)?;
+        Ok((next, delta))
+    }
+
+    pub(super) fn apply_visible(&mut self, next: Self) {
+        *self = next;
+        if let Some(changes) = &self.changes
+            && *changes.borrow() != self.member_change
+        {
+            changes.send_replace(self.member_change);
+        }
+    }
+
+    fn fold_visible(
         &mut self,
         effect: u64,
         committed_at: i64,
@@ -1186,11 +1223,6 @@ impl PresentationState {
                 .sum::<u64>(),
         );
         self.applied_effect = effect;
-        if let Some(changes) = &self.changes
-            && *changes.borrow() != self.member_change
-        {
-            changes.send_replace(self.member_change);
-        }
         Ok(Arc::new(delta))
     }
 
@@ -1534,6 +1566,7 @@ mod cost {
         pub keys: BTreeSet<K>,
     }
 
+    #[derive(Clone)]
     struct Probe<K> {
         enabled: Cell<bool>,
         access: RefCell<Access<K>>,
@@ -1559,6 +1592,7 @@ mod cost {
         }
     }
 
+    #[derive(Clone)]
     pub(super) struct ObservedMap<K, V> {
         inner: BTreeMap<K, V>,
         probe: Probe<K>,

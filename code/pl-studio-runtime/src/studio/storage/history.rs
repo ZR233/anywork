@@ -65,6 +65,83 @@ pub(crate) struct HistoryStore {
 #[derive(Clone)]
 pub(crate) struct HistoryStoreShare(std::sync::Weak<HistoryStoreState>);
 
+/// 连接排队在生命周期 gate 外完成；pin 的首次 meta SELECT 才建立 SQLite 切面。
+pub(in crate::studio) struct ConversationSnapshot {
+    pub(super) tx: sea_orm::DatabaseTransaction,
+    pub(in crate::studio) database_id: String,
+}
+impl ConversationSnapshot {
+    pub(in crate::studio) async fn pin(&mut self, thread_id: &str) -> Result<()> {
+        let (database, _) = validate_existing_identity(&self.tx, thread_id).await?;
+        ensure!(
+            database == self.database_id,
+            "conversation database identity changed"
+        );
+        Ok(())
+    }
+    pub(in crate::studio) async fn presentation_baseline(self) -> Result<ColdConversation> {
+        let current = conversation::completed::cold(&self.tx).await?;
+        let head = conversation::latest_append_seq(&self.tx).await?;
+        self.tx.commit().await?;
+        Ok(ColdConversation {
+            database_id: self.database_id,
+            head,
+            current: current.projection().clone(),
+            sources: Vec::new(),
+            page: ChatHistoryPage {
+                items: Vec::new(),
+                exhausted: true,
+            },
+        })
+    }
+    pub(in crate::studio) async fn cold_conversation(
+        self,
+        query: pl_core::chat::ChatQuery,
+        demand: pl_core::chat::ReadDemand,
+        budget: &dyn ChatBudget,
+    ) -> Result<Option<ColdConversation>> {
+        let head = conversation::latest_append_seq(&self.tx).await?;
+        let cold = conversation::completed::cold(&self.tx).await?;
+        let current = cold.projection().clone();
+        demand.validate()?;
+        let include_current = query.parent_id.is_none()
+            && query.query_class == "conversation"
+            && query.selection == pl_core::chat::ChatSelection::RunHeads;
+        // State and Activity own their budgets. A completion page reserves only its own shell.
+        let fixed = budget.fixed_bytes();
+        let bytes = demand
+            .max_bytes
+            .checked_sub(fixed)
+            .filter(|bytes| *bytes > 0)
+            .context(ChatError::InvalidDemand(
+                "cold current cannot fit demand".into(),
+            ))?;
+        let request = ChatHistoryRequest {
+            query: Some(query),
+            after: 0,
+            before: None,
+            ceiling: head,
+            demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
+        };
+        let page = conversation::page(&self.tx, &request, budget, false).await?;
+        ensure!(
+            page.exhausted || !page.items.is_empty(),
+            ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
+        );
+        let sources =
+            conversation::sources::read_selected(&self.tx, &page, &current, include_current)
+                .await?;
+        self.tx.commit().await?;
+        Ok(Some(ColdConversation {
+            database_id: self.database_id,
+            head,
+            current,
+            sources,
+            page,
+        }))
+    }
+}
+
 impl std::fmt::Debug for HistoryStoreShare {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -285,6 +362,18 @@ impl std::fmt::Debug for HistoryStore {
 }
 
 impl HistoryStore {
+    pub(in crate::studio) async fn conversation_snapshot(
+        &self,
+    ) -> Result<Option<ConversationSnapshot>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        Ok(Some(ConversationSnapshot {
+            tx: connection.db.begin().await?,
+            database_id: connection.database_id.clone(),
+        }))
+    }
+
     /// Binds one Thread history database path without touching the filesystem or database.
     ///
     /// The first write creates the directory/database and initializes/upgrades the schema; reads
@@ -1607,29 +1696,6 @@ impl HistoryStore {
         }))
     }
 
-    /// Presentation read qualification without completion bodies, State replay or execution.
-    pub(in crate::studio) async fn cold_presentation_baseline(
-        &self,
-    ) -> Result<Option<ColdConversation>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx).await?;
-        let head = conversation::latest_append_seq(&tx).await?;
-        tx.commit().await?;
-        Ok(Some(ColdConversation {
-            database_id: connection.database_id.clone(),
-            head,
-            current: current.projection().clone(),
-            sources: Vec::new(),
-            page: ChatHistoryPage {
-                items: Vec::new(),
-                exhausted: true,
-            },
-        }))
-    }
-
     /// Same domain-head projection as State, from one fresh SQLite read transaction.
     /// Missing history means this Thread has no established business read resources yet.
     pub(in crate::studio) async fn read_business_refs(
@@ -1770,54 +1836,18 @@ impl HistoryStore {
         Ok(states)
     }
 
+    #[cfg(test)]
     pub(in crate::studio) async fn cold_conversation(
         &self,
         query: pl_core::chat::ChatQuery,
         demand: pl_core::chat::ReadDemand,
         budget: &dyn ChatBudget,
     ) -> Result<Option<ColdConversation>> {
-        let Some(connection) = self.reader().await? else {
+        let Some(mut snapshot) = self.conversation_snapshot().await? else {
             return Ok(None);
         };
-        let tx = connection.db.begin().await?;
-        let head = conversation::latest_append_seq(&tx).await?;
-        let cold = conversation::completed::cold(&tx).await?;
-        let current = cold.projection().clone();
-        demand.validate()?;
-        let include_current = query.parent_id.is_none()
-            && query.query_class == "conversation"
-            && query.selection == pl_core::chat::ChatSelection::RunHeads;
-        // State and Activity own their budgets. A completion page reserves only its own shell.
-        let fixed = budget.fixed_bytes();
-        let bytes = demand
-            .max_bytes
-            .checked_sub(fixed)
-            .filter(|bytes| *bytes > 0)
-            .context(ChatError::InvalidDemand(
-                "cold current cannot fit demand".into(),
-            ))?;
-        let request = ChatHistoryRequest {
-            query: Some(query),
-            after: 0,
-            before: None,
-            ceiling: head,
-            demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
-        };
-        let page = conversation::page(&tx, &request, budget, false).await?;
-        ensure!(
-            page.exhausted || !page.items.is_empty(),
-            ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
-        );
-        let sources =
-            conversation::sources::read_selected(&tx, &page, &current, include_current).await?;
-        tx.commit().await?;
-        Ok(Some(ColdConversation {
-            database_id: connection.database_id.clone(),
-            head,
-            current,
-            sources,
-            page,
-        }))
+        snapshot.pin(&self.state.thread_id).await?;
+        snapshot.cold_conversation(query, demand, budget).await
     }
 
     pub(in crate::studio) async fn page_current(
