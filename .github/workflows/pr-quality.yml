@@ -743,6 +743,9 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Verify native Windows long-path identity
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked -p pl-remote-helper --test windows_paths
       - name: Verify Windows installer handoff from published and current clients
         if: needs.changes.outputs.windows_gui_build == 'true'
         shell: pwsh
