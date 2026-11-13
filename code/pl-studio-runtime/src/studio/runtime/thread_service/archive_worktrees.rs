@@ -147,9 +147,13 @@ impl StudioRuntime {
             cleaned.transition(WorktreeLeaseState::Cleaned);
             leases.record_durable(cleaned).await?;
         }
-        operation.worktrees[index].cleaned = true;
-        operation.changed()?;
-        self.store.save_thread_archive(operation).await?;
+        // Failed completion ACKs must not leak into another worktree's independent save.
+        // The physical removal and durable lease remain available for a safe retry.
+        let mut completed = operation.clone();
+        completed.worktrees[index].cleaned = true;
+        completed.changed()?;
+        self.store.save_thread_archive(&completed).await?;
+        *operation = completed;
         removal.complete();
         leases.release_workspace_seal(owner, &entry.identity)?;
         Ok(())
