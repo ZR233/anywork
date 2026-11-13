@@ -242,7 +242,9 @@ async fn session_close_cancels_an_active_http_body_and_seals_admission() {
     let runtime = runtime(fixture.base_url(), false);
     let session = ModelSession::default();
     let (events, mut received) = tokio::sync::broadcast::channel(64);
-    let context = traced(session.clone(), events);
+    let caller_cancellation = tokio_util::sync::CancellationToken::new();
+    let context =
+        traced(session.clone(), events).with_cancellation(Some(caller_cancellation.clone()));
     let invocation = tokio::spawn({
         let runtime = runtime.clone();
         async move { runtime.complete(request(), context).await }
@@ -254,6 +256,10 @@ async fn session_close_cancels_an_active_http_body_and_seals_admission() {
         .unwrap();
     let failure = invocation.await.unwrap().unwrap_err();
     assert!(failure.is_cancelled());
+    assert!(
+        !caller_cancellation.is_cancelled(),
+        "session close must not cancel the caller's token"
+    );
     assert!(
         runtime
             .complete(request(), ModelInvocationContext::new(session))

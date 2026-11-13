@@ -155,3 +155,5 @@ requestClose 同步封闭本观察的新准入并唤醒等待，close 汇合该�
 Native 模型成员的 Started 保持与内容独立的真实开始。ContentAvailable 沿同一可靠成员准入通道，每公开 part 至多一次，在下一归一化事件前交接；call registry、预算、effect/journal 和原保存责任共同覆盖，不能依赖仅保最新值的 progress/watch。显示边界使用其真实位置，不改原 start_fact，也不分配完成 ID/seq。Started/ContentAvailable/Completed 保持真实顺序；空正文、完整返回、权威终值和失败取消的展示规则见 [26](./26-timeline-content.md)。不新增传输通道、DTO 副本或 ACP 义务。
 
 三种成员事实统一使用原调用 cancellation：reserve 等待可取消，取得 permit 后 send 前复查并释放本次临时预算；已 send 后必须等待同一 owner 的真实接纳或 typed 拒绝，不 drop、重发、伪造 ACK 或套总超时丢事实。发送前取消映射原 Cancelled 收束，不转成供应商重试错误；已从 accumulator 取出的条目和计费通过原 partial/presentation 返回材料保全。Owner 接纳不等待 SQLite，关闭先关闭/排空 receiver 再 join 原调用。网络 300 秒 idle 仍只计 provider_read；member_capacity/member_reply/durability_wait 是本地阶段，不冒充网络超时。
+
+ModelRuntime 从原调用令牌派生 `CancellationToken::child_token()`，使调用方取消在返回时已传递至 collector 和成员发送检查，不依赖外层 future 再次轮询。物理 session 关闭只取消本次调用的子令牌，并继续等待原 invocation 收束，不反向取消调用方令牌。

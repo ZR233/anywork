@@ -384,7 +384,11 @@ impl InvocationRunner {
         // first provider event and make a reused invocation look like an unowned observation.
         let caller_cancellation = context.cancellation.take().unwrap_or_default();
         let closing = context.session.closing_token();
-        let cancellation = tokio_util::sync::CancellationToken::new();
+        // Propagate caller cancellation synchronously, including when it happens inside an
+        // invocation poll (for example while charging a member before sending it). Waiting for
+        // the outer select to be polled again would let that same poll send after cancellation.
+        // Session close may cancel this child without cancelling the caller's parent token.
+        let cancellation = caller_cancellation.child_token();
         context.cancellation = Some(cancellation.clone());
         let invocation = self.complete_inner(request, context);
         tokio::pin!(invocation);
@@ -392,10 +396,6 @@ impl InvocationRunner {
         // accounting and transport guards finish before releasing admission.
         let mut result = tokio::select! {
             biased;
-            _ = caller_cancellation.cancelled() => {
-                cancellation.cancel();
-                invocation.await
-            }
             _ = closing.cancelled() => {
                 cancellation.cancel();
                 invocation.await
