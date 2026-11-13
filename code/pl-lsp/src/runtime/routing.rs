@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::client::LspClient;
-use crate::query::{LspQuery, LspQueryOperation};
+use crate::query::LspQuery;
 
 use super::{
     LspResult, LspRoutingError, LspRuntimeError, LspRuntimeRegistry, ResolvedLspServer,
@@ -205,37 +205,6 @@ impl LspRuntimeRegistry {
                 extension,
                 servers: matches,
             })),
-        }
-    }
-
-    /// Diagnostics 查询的 server 端操作校验（不启动 client）。
-    pub(crate) async fn ensure_operation_supported_in_workspace(
-        &self,
-        workspace_root: &Path,
-        server_id: &str,
-        operation: LspQueryOperation,
-    ) -> LspResult<()> {
-        let state = self.state.lock().await;
-        let server = state
-            .workspaces
-            .get(workspace_root)
-            .and_then(|workspace| workspace.servers.get(server_id))
-            .ok_or_else(|| {
-                LspRuntimeError::Unavailable(format!("LSP server not configured: {server_id}"))
-            })?;
-        if server.healthy()
-            && server.resolved.supports(operation)
-            && server
-                .client
-                .as_ref()
-                .is_some_and(|client| client.supports(operation))
-        {
-            Ok(())
-        } else {
-            Err(LspRuntimeError::InvalidQuery(format!(
-                "operation `{}` is not supported by LSP server {server_id}",
-                operation.as_str(),
-            )))
         }
     }
 

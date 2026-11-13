@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Position,
-    Range, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, Position, Range, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncSaveOptions, Uri, VersionedTextDocumentIdentifier,
 };
 
 use super::connection::LspClient;
@@ -16,6 +17,7 @@ const MAX_FILE_SIZE_BYTES: u64 = 10_000_000;
 pub(super) struct DocumentSync {
     open_close: bool,
     change: TextDocumentSyncKind,
+    save_include_text: Option<bool>,
 }
 
 impl Default for DocumentSync {
@@ -23,6 +25,7 @@ impl Default for DocumentSync {
         Self {
             open_close: false,
             change: TextDocumentSyncKind::NONE,
+            save_include_text: None,
         }
     }
 }
@@ -33,10 +36,18 @@ impl DocumentSync {
             Some(TextDocumentSyncCapability::Kind(change)) => Self {
                 open_close: *change != TextDocumentSyncKind::NONE,
                 change: *change,
+                save_include_text: None,
             },
             Some(TextDocumentSyncCapability::Options(options)) => Self {
                 open_close: options.open_close.unwrap_or(false),
                 change: options.change.unwrap_or(TextDocumentSyncKind::NONE),
+                save_include_text: match options.save.as_ref() {
+                    Some(TextDocumentSyncSaveOptions::Supported(true)) => Some(false),
+                    Some(TextDocumentSyncSaveOptions::SaveOptions(options)) => {
+                        Some(options.include_text.unwrap_or(false))
+                    }
+                    _ => None,
+                },
             },
             None => Self::default(),
         }
@@ -48,6 +59,7 @@ pub(super) struct OpenDocument {
     uri: Uri,
     version: i32,
     content: String,
+    pending_save: bool,
 }
 
 impl LspClient {
@@ -69,19 +81,37 @@ impl LspClient {
         })?;
         if let Some(document) = documents.get_mut(path) {
             self.diagnostics.restore_file(path).await;
-            if document.content == content {
-                return Ok(());
+            if document.content != content {
+                if sync.change != TextDocumentSyncKind::NONE {
+                    let next_version = document.version + 1;
+                    self.notify(
+                        "textDocument/didChange",
+                        document_change(document, next_version, &content, sync.change),
+                    )
+                    .await?;
+                    document.version = next_version;
+                }
+                document.content = content;
+                document.pending_save = sync.save_include_text.is_some();
             }
-            if sync.change != TextDocumentSyncKind::NONE {
-                let next_version = document.version + 1;
+            // These are disk snapshots, so a changed document is already saved.
+            // Keep a failed save pending without replaying a successful change.
+            if document.pending_save {
                 self.notify(
-                    "textDocument/didChange",
-                    document_change(document, next_version, &content, sync.change),
+                    "textDocument/didSave",
+                    DidSaveTextDocumentParams {
+                        text_document: TextDocumentIdentifier {
+                            uri: document.uri.clone(),
+                        },
+                        text: sync
+                            .save_include_text
+                            .filter(|include| *include)
+                            .map(|_| document.content.clone()),
+                    },
                 )
                 .await?;
-                document.version = next_version;
+                document.pending_save = false;
             }
-            document.content = content;
         } else if let Some(uri) = uri {
             let language_id = self.server.language_for_path(path).unwrap_or("text");
             let uri = parse_uri(uri)?;
@@ -106,6 +136,7 @@ impl LspClient {
                     uri,
                     version: 1,
                     content,
+                    pending_save: false,
                 },
             );
         }

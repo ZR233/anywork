@@ -171,3 +171,11 @@ and build context, with a meaningful location/type result. Server process presen
 valid TOML, readiness alone or an empty query result is insufficient. Preserve
 failures and unrelated working configurations; configuration failure must not
 prevent ordinary messages, filesystem tools or authorized commands.
+
+For a diagnostic check after editing, specify the intended `serverId` or
+`languageId` and `filePath`. This synchronizes the execution-side disk file before
+reading diagnostics. Changed open files send the negotiated change and save
+notifications, including saved text only when the server requests it. Diagnostics
+are published asynchronously: use bounded observation to verify that the original
+error disappears after a real fix. Sending a save notification does not itself
+prove a clean result; unchanged queries do not trigger another save.
