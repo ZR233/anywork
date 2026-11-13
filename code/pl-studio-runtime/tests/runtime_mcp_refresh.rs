@@ -212,8 +212,12 @@ async fn catalog(env: &Environment, id: &str, phase: &str, present: bool) -> Res
             "{call}: unexpected terminal state {:?}",
             turn.state
         );
-        let ids: Vec<String> =
-            serde_json::from_value(receipt(&env.root_provider, &call)?["toolIds"].clone())?;
+        let output = tool_output(&env.root_provider, &call)?;
+        let Some(ids) = catalog_probe_ids(&output)
+            .with_context(|| format!("catalog probe {call}: {output}"))?
+        else {
+            continue;
+        };
         let schema_installed = !present
             || env
                 .root_provider
@@ -230,6 +234,28 @@ async fn catalog(env: &Environment, id: &str, phase: &str, present: bool) -> Res
         }
     }
     anyhow::bail!("{phase}: real Thread catalog never reached presence={present}")
+}
+
+fn catalog_probe_ids(output: &str) -> Result<Option<Vec<String>>> {
+    let mut values = serde_json::Deserializer::from_str(output).into_iter::<serde_json::Value>();
+    let value = values.next().context("missing discovery receipt")??;
+    let ids: Vec<String> = serde_json::from_value(value["toolIds"].clone())?;
+    let diagnostic = output[values.byte_offset()..].trim();
+    if diagnostic.is_empty() {
+        return Ok(Some(ids));
+    }
+    // The MCP owner can remove the tool after discovery reads its frozen
+    // directory and before the Thread validates the reveal. Its observed JSON
+    // remains in the failed receipt; it cannot establish catalog installation.
+    let removed = format!(
+        "Framework recorded tool failure: {}",
+        pl_core::tool::opaque::RegistryError::UnknownIdentity(TOOL.to_owned())
+    );
+    ensure!(
+        diagnostic == removed && ids.iter().any(|id| id == TOOL),
+        "unexpected discovery receipt diagnostic: {diagnostic}"
+    );
+    Ok(None)
 }
 
 async fn state(env: &Environment, id: &str, present: bool, after: u64) -> Result<()> {
@@ -645,4 +671,23 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
         Ok(())
     }).await.context("MCP reconnect integration watchdog").and_then(std::convert::identity);
     env.finish(result).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_tool_reveal_does_not_confirm_catalog_installation() -> Result<()> {
+        let payload = json!({"toolIds": [TOOL]}).to_string();
+        ensure!(catalog_probe_ids(&payload)? == Some(vec![TOOL.to_owned()]));
+        let refusal = format!(
+            "{payload}\nFramework recorded tool failure: {}",
+            pl_core::tool::opaque::RegistryError::UnknownIdentity(TOOL.to_owned())
+        );
+        ensure!(catalog_probe_ids(&refusal)?.is_none());
+        ensure!(catalog_probe_ids(&format!("{payload}\nUnexpected failure")).is_err());
+        ensure!(catalog_probe_ids("{\"toolIds\":[}").is_err());
+        Ok(())
+    }
 }
