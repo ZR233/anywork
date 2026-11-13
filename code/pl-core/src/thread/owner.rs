@@ -721,7 +721,11 @@ impl Owner {
         self.pending.clear();
         if self.interrupt.is_deleting() {
             // All executions joined above. Deletion owns disposal of their retained completions,
-            // including frozen executor leases that tools.close must no longer wait for.
+            // including both shared and Native references to the frozen executor leases that
+            // tools.close must no longer wait for. Preserving close retains its original retries.
+            for id in self.executions.keys() {
+                self.executions.forget(&id);
+            }
             self.uncommitted_tools.clear();
             self.pending_effects.clear();
         }
