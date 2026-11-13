@@ -13,8 +13,9 @@ use super::{
     BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeReadyResource,
     BridgeRecoveryStateSnapshot, BridgeRefreshingResource, BridgeSessionCostsState,
     BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeStaleResource,
-    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadMcpStateSnapshot,
-    BridgeThreadModeCatalogSnapshot, BridgeUninitializedResource, BridgeUpdaterStateSnapshot,
+    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadLspStateSnapshot,
+    BridgeThreadMcpStateSnapshot, BridgeThreadModeCatalogSnapshot, BridgeUninitializedResource,
+    BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -29,6 +30,7 @@ pub enum BridgeProductTopic {
     Recovery,
     McpCatalog { scope: BridgeMcpScope },
     ThreadMcp { thread_id: String },
+    ThreadLsp { thread_id: String },
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
@@ -58,6 +60,9 @@ impl BridgeProductTopic {
             Self::ThreadMcp { thread_id } if thread_id.trim().is_empty() => {
                 Err(invalid("ThreadMcp topic requires a non-empty threadId"))
             }
+            Self::ThreadLsp { thread_id } if thread_id.trim().is_empty() => {
+                Err(invalid("ThreadLsp topic requires a non-empty threadId"))
+            }
             Self::Skills { workspace_id } if workspace_id.trim().is_empty() => {
                 Err(invalid("Skills topic requires a non-empty workspaceId"))
             }
@@ -84,6 +89,7 @@ impl BridgeProductTopic {
                 scope: scope.into(),
             },
             Self::ThreadMcp { thread_id } => StudioProductTopic::ThreadMcp { thread_id },
+            Self::ThreadLsp { thread_id } => StudioProductTopic::ThreadLsp { thread_id },
             Self::Lsp => StudioProductTopic::Lsp,
             Self::Skills { workspace_id } => StudioProductTopic::Skills { workspace_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
@@ -118,6 +124,7 @@ pub enum BridgeProductBaseline {
     Recovery(BridgeRecoveryStateSnapshot),
     McpCatalog(BridgeMcpCatalogSnapshot),
     ThreadMcp(BridgeThreadMcpStateSnapshot),
+    ThreadLsp(BridgeThreadLspStateSnapshot),
     Lsp(BridgeLspStateSnapshot),
     Skills(BridgeSkillsStateSnapshot),
     ThreadModeCatalog(BridgeThreadModeCatalogSnapshot),

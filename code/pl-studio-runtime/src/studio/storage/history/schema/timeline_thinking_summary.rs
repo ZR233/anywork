@@ -71,6 +71,7 @@ mod tests {
                             | DISPLAY_SNAPSHOTS
                             | DISPLAY_OBSERVATIONS
                             | TOOL_WORK
+                            | VISIBLE_TAIL_WORKGROUPS
                     )
                 })
                 .collect()

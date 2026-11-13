@@ -89,6 +89,7 @@ pub use protocol::{
     StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
     StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
+    StudioThreadLspStateSnapshot,
 };
 
 pub use account_usage::{
@@ -111,8 +112,9 @@ pub use studio::{
     StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
-    StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
-    StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioUpdateStateSnapshot,
+    StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
+    StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
+    StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioUpdateStateSnapshot,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
     ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,

@@ -477,6 +477,10 @@ mod tests {
             fs::write(notice, "fixture third-party notices\n")?;
             // Real libc imports and SONAME-bearing private libraries exercise
             // dpkg's same-package handling, not a mock dependency resolver.
+            // Tests run in an environment containing real distribution package
+            // dependency information (such as the project's Ubuntu 22.04 Docker
+            // image or a Debian/Ubuntu host with dpkg-dev and libc6 symbols)
+            // so dpkg-shlibdeps resolves dependencies against the real package database.
             fs::write(
                 root.join("library.c"),
                 "#include <stdio.h>\nint fixture(void) { return puts(\"fixture\"); }\n",

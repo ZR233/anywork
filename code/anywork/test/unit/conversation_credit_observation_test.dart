@@ -18,6 +18,7 @@ const _body = ContentRef(
 final _bytes = List<int>.filled(54, 120);
 
 SingleDisplayBlock _single(String id) => SingleDisplayBlock(
+  visibility: SingleVisibility.content,
   record: DisplayRecord(
     atom: ChatAtom(
       id: '$id-atom',
@@ -55,6 +56,7 @@ DisplayBlock _block(String id, int pos) =>
 
 LiveDisplayWindow _live(int through, {bool showTarget = false}) =>
     LiveDisplayWindow(
+      currentWorkId: null,
       revision: through,
       historyThrough: through,
       executionPresent: true,
@@ -77,7 +79,7 @@ ConversationTimelineEvent _append(
   bool showTarget = false,
 }) => ConversationTimelineEvent(
   batch: TimelineBatch(
-    presentationVersion: 2,
+    presentationVersion: presentationVersion,
     placement: ChatPlacement.append,
     blocks: blocks,
     fromPos: from,
@@ -365,7 +367,7 @@ final class _Feed extends Fake implements TimelineFeed {
     _script = [
       ConversationTimelineEvent(
         batch: TimelineBatch(
-          presentationVersion: 2,
+          presentationVersion: presentationVersion,
           placement: ChatPlacement.set,
           blocks: [for (var i = 1; i <= 3; i++) _block('seed-$i', i)],
           throughPos: 3,

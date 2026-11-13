@@ -35,6 +35,7 @@ impl MigratorTraitSelf for Published16 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .collect()

@@ -50,6 +50,7 @@ void main() {
     final global = h.owner.source.value;
     final appends = lease.appliedAppends;
     final next = LiveDisplayWindow(
+      currentWorkId: 'work',
       revision: 2,
       historyThrough: 0,
       executionPresent: true,
@@ -1172,6 +1173,7 @@ TimelineBatch _batch(
 );
 
 LiveDisplayWindow _emptyLive(int through) => LiveDisplayWindow(
+  currentWorkId: null,
   revision: 1,
   historyThrough: through,
   executionPresent: false,

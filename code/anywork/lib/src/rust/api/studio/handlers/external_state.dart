@@ -9,6 +9,7 @@ import '../types/mcp.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
 import '../types/settings.dart';
+import '../types/thread_lsp.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -58,6 +59,16 @@ Future<BridgeThreadMcpStateSnapshot> reconnectThreadMcp({
   required BridgeReconnectThreadMcpInput input,
 }) => RustLib.instance.api
     .crateApiStudioHandlersExternalStateReconnectThreadMcp(input: input);
+
+Future<BridgeThreadLspStateSnapshot> readThreadLspState({
+  required String threadId,
+}) => RustLib.instance.api
+    .crateApiStudioHandlersExternalStateReadThreadLspState(threadId: threadId);
+
+Future<BridgeThreadLspStateSnapshot> resetThreadLspServer({
+  required ThreadLspResetInput input,
+}) => RustLib.instance.api
+    .crateApiStudioHandlersExternalStateResetThreadLspServer(input: input);
 
 Future<BridgeLspStateSnapshot> readLspState() =>
     RustLib.instance.api.crateApiStudioHandlersExternalStateReadLspState();

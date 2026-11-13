@@ -106,6 +106,9 @@ pub struct ThreadEffectBatch {
     /// Validated part beginnings; older effects do not imply any historical start facts.
     #[serde(default)]
     pub model_member_starts: Arc<[crate::model::ModelStartedMember]>,
+    /// First public content evidence; absent older effects do not imply known empty parts.
+    #[serde(default)]
+    pub model_member_content_available: Vec<crate::model::ModelContentAvailableMember>,
     /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
@@ -174,10 +177,14 @@ impl ThreadEffectBatch {
         previous: &ThreadSnapshot,
         current: &ThreadSnapshot,
         sequence: u64,
-        model_members: Arc<[crate::model::ModelCompletedMember]>,
-        model_member_starts: Arc<[crate::model::ModelStartedMember]>,
+        members: super::model_members::MemberEffects,
         context_compactions: Arc<[ContextCompactionEvent]>,
     ) -> Option<Self> {
+        let super::model_members::MemberEffects {
+            completed: model_members,
+            started: model_member_starts,
+            content_available: model_member_content_available,
+        } = members;
         let context = if previous.context == current.context {
             None
         } else if current
@@ -302,6 +309,7 @@ impl ThreadEffectBatch {
             && attempt.is_none()
             && model_members.is_empty()
             && model_member_starts.is_empty()
+            && model_member_content_available.is_empty()
             && context_compactions.is_empty()
             && turn.is_none()
             && discovered_tools.is_none()
@@ -333,6 +341,7 @@ impl ThreadEffectBatch {
             attempt,
             model_members,
             model_member_starts,
+            model_member_content_available,
             context_compactions,
             turn,
             discovered_tools,

@@ -1,11 +1,9 @@
-use std::process::Stdio;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lsp_types::InitializedParams;
 use serde_json::Value;
 use tokio::io::BufReader;
-use tokio::process::Command;
 
 use super::configuration::initialize_params;
 use super::connection::LspClient;
@@ -13,11 +11,12 @@ use super::message::{clear_progress_status, record_last_error_status};
 use super::rpc::RpcClient;
 use super::status::LspClientRuntimeStatus;
 use super::transport::LspTransport;
-use crate::host::{LspChild, LspHostSpawnRequest, spawn_background};
+use crate::host::{LspHostProcess, LspHostSpawnRequest};
 use crate::runtime::{LspResult, LspRuntimeError};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+static NEXT_LSP_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 
 impl LspClient {
     pub(crate) async fn start(&self) -> LspResult<()> {
@@ -135,6 +134,11 @@ impl LspClient {
             }
         };
         let operations = negotiated_operations(&result.capabilities);
+        *self.negotiated_document_sync.write().map_err(|_| {
+            LspRuntimeError::Unavailable("LSP document sync state is poisoned".into())
+        })? = super::documents::DocumentSync::from_capability(
+            result.capabilities.text_document_sync.as_ref(),
+        );
         *self.negotiated_operations.write().map_err(|_| {
             LspRuntimeError::Unavailable("LSP capability state is poisoned".into())
         })? = operations;
@@ -164,11 +168,12 @@ impl LspClient {
         Ok(())
     }
 
-    async fn spawn_server(&self) -> LspResult<LspChild> {
+    async fn spawn_server(&self) -> LspResult<LspHostProcess> {
         if let Some(host) = &self.host {
+            let sequence = NEXT_LSP_PROCESS_ID.fetch_add(1, Ordering::Relaxed);
             return host
                 .spawn(LspHostSpawnRequest {
-                    process_id: format!("lsp-{}", self.server.id),
+                    process_id: format!("lsp-{}-{}-{sequence}", self.server.id, std::process::id()),
                     program: self.server.program.clone(),
                     args: self.server.args.clone(),
                     env: self.server.env.clone(),
@@ -177,7 +182,6 @@ impl LspClient {
                     deadline: tokio::time::Instant::now() + STARTUP_TIMEOUT,
                 })
                 .await
-                .map(LspChild::Hosted)
                 .map_err(|error| {
                     LspRuntimeError::Unavailable(format!(
                         "Failed to start LSP server '{}': {error}",
@@ -185,26 +189,9 @@ impl LspClient {
                     ))
                 });
         }
-        if cfg!(target_os = "linux") {
-            return Err(LspRuntimeError::Unavailable(
-                "LSP requires a supervised execution host on Linux; no native fallback is permitted".into(),
-            ));
-        }
-        let mut command = Command::new(&self.server.program);
-        command.args(&self.server.args);
-        command.envs(&self.server.env);
-        command.current_dir(&self.server.workspace_root);
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        spawn_background(command)
-            .map(LspChild::Local)
-            .map_err(|error| {
-                LspRuntimeError::Unavailable(format!(
-                    "Failed to start LSP server '{}': {error}",
-                    self.server.id
-                ))
-            })
+        Err(LspRuntimeError::Unavailable(
+            "LSP requires an explicit execution host".into(),
+        ))
     }
 
     fn observe_stderr(&self, stderr: Option<crate::host::LspHostReader>) {
@@ -270,30 +257,26 @@ impl LspClient {
                 Some(child) => {
                     if was_initialized {
                         match tokio::time::timeout(SHUTDOWN_WAIT_TIMEOUT, child.wait()).await {
-                            Ok(Ok(())) => Ok(Vec::new()),
-                            Ok(Err(error)) => match child.terminate_and_wait().await {
-                                Ok(issue) => Ok(prefix_issue(
-                                    format!("LSP process wait failed: {error}"),
-                                    issue,
-                                )),
+                            Ok(Ok(_)) => Ok(Vec::new()),
+                            Ok(Err(error)) => match child.terminate().await {
+                                Ok(()) => Ok(vec![format!("LSP process wait failed: {error}")]),
                                 Err(terminate) => {
                                     Err(format!("LSP process wait failed: {error}; {terminate}"))
                                 }
                             },
-                            Err(_elapsed) => match child.terminate_and_wait().await {
-                                Ok(issue) => Ok(prefix_issue(
-                                    "LSP process did not exit after shutdown".to_string(),
-                                    issue,
-                                )),
+                            Err(_elapsed) => match child.terminate().await {
+                                Ok(()) => {
+                                    Ok(vec!["LSP process did not exit after shutdown".to_string()])
+                                }
                                 Err(terminate) => Err(format!(
                                     "LSP process did not exit after shutdown; {terminate}"
                                 )),
                             },
                         }
                     } else {
-                        match child.terminate_and_wait().await {
-                            Ok(issue) => Ok(issue.into_iter().collect()),
-                            Err(error) => Err(error),
+                        match child.terminate().await {
+                            Ok(()) => Ok(Vec::new()),
+                            Err(error) => Err(error.to_string()),
                         }
                     }
                 }
@@ -303,7 +286,7 @@ impl LspClient {
                     degraded.extend(issues);
                     startup_failure = child_guard
                         .as_ref()
-                        .and_then(LspChild::startup_failure)
+                        .and_then(LspHostProcess::startup_failure)
                         .map(str::to_owned);
                     child_guard.take();
                     Ok(())
@@ -399,7 +382,7 @@ impl LspClient {
             };
             alive.store(false, Ordering::Release);
             let message = match outcome {
-                Ok(()) => "LSP process exited".to_string(),
+                Ok(_) => "LSP process exited".to_string(),
                 Err(error) => format!("LSP process exit observation failed: {error}"),
             };
             record_last_error_status(&status, message).await;
@@ -439,13 +422,6 @@ impl LspClient {
 
 fn shutting_down_error() -> LspRuntimeError {
     LspRuntimeError::Unavailable("LSP client is shutting down".to_string())
-}
-
-/// Combine an escalation reason with any issue reported by the confirmed termination.
-fn prefix_issue(primary: String, issue: Option<String>) -> Vec<String> {
-    let mut issues = vec![primary];
-    issues.extend(issue);
-    issues
 }
 
 fn is_error_stderr_line(line: &str) -> bool {

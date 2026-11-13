@@ -17,6 +17,7 @@ KNOWN_JOBS = (
     "flutter-checks",
     "gui-generated",
     "linux-inputs",
+    "linux-test-inputs",
     "linux-desktop",
     "linux-native",
     "windows-build",

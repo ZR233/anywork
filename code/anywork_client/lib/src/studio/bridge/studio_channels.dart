@@ -39,6 +39,8 @@ class StudioChannels {
         _client.mcpCatalog(scope);
       case ThreadMcpTopic(:final threadId):
         _client.threadMcp(threadId);
+      case ThreadLspTopic(:final threadId):
+        _client.threadLsp(threadId);
       case SkillsTopic(:final workspaceId):
         _client.skills(workspaceId);
       case SessionCostsTopic(:final rootThreadId):
@@ -71,6 +73,9 @@ class StudioChannels {
 
   BridgeTopicLease acquireThreadMcp(String threadId) =>
       acquireTopic(ThreadMcpTopic(threadId: threadId));
+
+  BridgeTopicLease acquireThreadLsp(String threadId) =>
+      acquireTopic(ThreadLspTopic(threadId: threadId));
 
   /// 页面或在途决议按宿主租用子任务待决交互主题。
   BridgeTopicLease acquireChildInteractions(String hostThreadId) =>
@@ -164,6 +169,9 @@ class StudioChannels {
       ThreadMcpTopic(:final threadId) => _clock(
         _client.existingThreadMcp(threadId)?.state,
       ),
+      ThreadLspTopic(:final threadId) => _clock(
+        _client.existingThreadLsp(threadId)?.state,
+      ),
       LspTopic() => _clock(_client.lsp.state),
       SkillsTopic(:final workspaceId) => _clock(
         _client.existingSkills(workspaceId)?.state,
@@ -229,6 +237,8 @@ class StudioChannels {
         _client.existingMcpCatalog(state.scope)?.apply(state);
       case ThreadMcpBaseline(:final state):
         _client.existingThreadMcp(state.threadId)?.apply(state);
+      case ThreadLspBaseline(:final state):
+        _client.existingThreadLsp(state.threadId)?.apply(state);
       case LspBaseline(:final state):
         _client.lsp.apply(state);
       case SkillsBaseline(:final state):
@@ -288,6 +298,8 @@ class StudioChannels {
         _client.existingMcpCatalog(state.scope)?.apply(state);
       case ThreadMcpStateChangedPayload(:final state):
         _client.existingThreadMcp(state.threadId)?.apply(state);
+      case ThreadLspStateChangedPayload(:final state):
+        _client.existingThreadLsp(state.threadId)?.apply(state);
       case LspStateChangedPayload(:final state):
         _client.lsp.apply(state);
       case SkillsStateChangedPayload(:final state):
@@ -338,6 +350,8 @@ class StudioChannels {
         _client.existingMcpCatalog(scope)?.applyTransport(sync);
       case ThreadMcpTopic(:final threadId):
         _client.existingThreadMcp(threadId)?.applyTransport(sync);
+      case ThreadLspTopic(:final threadId):
+        _client.existingThreadLsp(threadId)?.applyTransport(sync);
       case LspTopic():
         _client.lsp.applyTransport(sync);
       case SkillsTopic(:final workspaceId):
@@ -410,6 +424,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         RecoveryBaseline(:final state) => state.revision,
         McpCatalogBaseline(:final state) => state.revision,
         ThreadMcpBaseline(:final state) => state.generation,
+        ThreadLspBaseline(:final state) => state.revision,
         LspBaseline(:final state) => state.revision,
         SkillsBaseline(:final state) => state.revision,
         ThreadModeCatalogBaseline(:final state) => state.revision,
@@ -435,6 +450,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       RecoveryStateChangedPayload(:final state) => state.revision,
       McpCatalogChangedPayload(:final state) => state.revision,
       ThreadMcpStateChangedPayload(:final state) => state.generation,
+      ThreadLspStateChangedPayload(:final state) => state.revision,
       LspStateChangedPayload(:final state) => state.revision,
       SkillsStateChangedPayload(:final state) => state.revision,
       ThreadModeCatalogChangedPayload(:final state) => state.revision,

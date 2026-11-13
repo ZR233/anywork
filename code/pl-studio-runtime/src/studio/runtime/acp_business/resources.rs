@@ -10,7 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
 use crate::studio::runtime::acp_host_mcp::HostMcp;
-use crate::studio::runtime::acp_worker::{AcpSpawnRequest, AcpWorker, Reclaim, WorkerSource};
+use crate::studio::runtime::acp_worker::{AcpSpawnRequest, AcpWorker, Reclaim};
+use pl_remote_helper::Executor;
 
 /// A thin delivery into the original parent's inbox, bound by the Session owner.
 pub(crate) type AcpReportDelivery = Arc<
@@ -287,7 +288,7 @@ impl AcpResources {
     pub(super) async fn start(
         &self,
         launch: AcpSpawnRequest,
-        workers: &WorkerSource,
+        workers: &Executor,
         usage: WorkspaceUsageLease,
     ) -> Result<()> {
         let mut owned = self.owned.lock().await;

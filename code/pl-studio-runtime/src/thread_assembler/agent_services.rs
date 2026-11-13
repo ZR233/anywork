@@ -12,6 +12,10 @@ use pl_protocol::{AgentSessionPage, AgentSessionReadDetail, AgentSessionReadOrde
 use pl_tool::binding::prepare_registration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+#[cfg(test)]
+mod tests;
 
 /// Publishes (or refreshes) the Recovery diagnosis of a member whose workspace could not be used.
 ///
@@ -287,10 +291,23 @@ impl QueryTool {
                     .context("agent session target is outside the caller's session")?
                     .thread_id
                     .to_string();
-                let path = services
-                    .authorize(&context.thread_id, &input.target)
-                    .await?;
-                output(&services.session_page(&owner, input, path).await?)
+                let read = async {
+                    let path = services
+                        .authorize(&context.thread_id, &input.target)
+                        .await?;
+                    output(
+                        &services
+                            .session_page(input, path, &context.cancellation)
+                            .await?,
+                    )
+                };
+                tokio::select! {
+                    biased;
+                    () = context.cancellation.cancelled() => {
+                        Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).into())
+                    }
+                    result = read => result,
+                }
             }
             Kind::Evaluate => output(
                 &owner
@@ -498,88 +515,93 @@ impl AgentServices {
     }
     async fn session_page(
         &self,
-        owner: &SessionRuntime,
         input: SessionInput,
         path: Vec<pl_protocol::AgentId>,
+        cancellation: &CancellationToken,
     ) -> Result<AgentSessionPage> {
-        self.recovery
-            .ensure_thread_read_access(&self.record(&input.target).await?)?;
-        if !(1..=50).contains(&input.limit) {
-            bail!("session limit must be between 1 and 50");
-        }
-        // A resident target must be durable before its history keyset is read.
-        if let Some(thread) = owner.thread(&input.target) {
-            thread.flush().await?;
-        }
-        let cursor = input
-            .cursor
-            .as_ref()
-            .map(|value| {
-                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value)?;
-                Ok::<Cursor, anyhow::Error>(serde_json::from_slice(&bytes)?)
+        let read = async {
+            self.recovery
+                .ensure_thread_read_access(&self.record(&input.target).await?)?;
+            if !(1..=50).contains(&input.limit) {
+                bail!("session limit must be between 1 and 50");
+            }
+            let cursor = input
+                .cursor
+                .as_ref()
+                .map(|value| {
+                    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value)?;
+                    Ok::<Cursor, anyhow::Error>(serde_json::from_slice(&bytes)?)
+                })
+                .transpose()?;
+            if let Some(cursor) = &cursor
+                && (cursor.version != 2
+                    || cursor.target != input.target
+                    || cursor.order != input.order
+                    || cursor.detail != input.detail)
+            {
+                bail!("session cursor does not belong to this query");
+            }
+            let history = self.store.history(&input.target).await?;
+            let (watermark, ceiling, items, has_more) = history
+                .agent_page(
+                    input.order == Order::Descending,
+                    input.detail == Detail::Text,
+                    cursor.as_ref().map(|cursor| cursor.anchor),
+                    cursor.as_ref().map(|cursor| cursor.ceiling),
+                    cursor.as_ref().map(|cursor| cursor.through),
+                    input.limit,
+                    cancellation,
+                )
+                .await?;
+            let through = cursor.as_ref().map_or(watermark, |cursor| cursor.through);
+            let next_cursor =
+                if has_more {
+                    let anchor = items
+                        .last()
+                        .context("session continuation has no anchor")?
+                        .ordinal;
+                    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                        serde_json::to_vec(&Cursor {
+                            version: 2,
+                            target: input.target.clone(),
+                            through,
+                            ceiling,
+                            order: input.order,
+                            detail: input.detail,
+                            anchor,
+                        })?,
+                    ))
+                } else {
+                    None
+                };
+            Ok(AgentSessionPage {
+                agent_id: self
+                    .events
+                    .agent_execution_identity(&input.target)
+                    .map(|(identity, _, _)| identity.agent_id)
+                    .context("agent directory identity is missing")?,
+                path,
+                through_sequence: through,
+                order: match input.order {
+                    Order::Ascending => AgentSessionReadOrder::Ascending,
+                    Order::Descending => AgentSessionReadOrder::Descending,
+                },
+                detail: match input.detail {
+                    Detail::Text => AgentSessionReadDetail::Text,
+                    Detail::Full => AgentSessionReadDetail::Full,
+                },
+                items,
+                has_more,
+                next_cursor,
             })
-            .transpose()?;
-        if let Some(cursor) = &cursor
-            && (cursor.version != 2
-                || cursor.target != input.target
-                || cursor.order != input.order
-                || cursor.detail != input.detail)
-        {
-            bail!("session cursor does not belong to this query");
-        }
-        let history = self.store.history(&input.target).await?;
-        let (watermark, ceiling, items, has_more) = history
-            .agent_page(
-                input.order == Order::Descending,
-                input.detail == Detail::Text,
-                cursor.as_ref().map(|cursor| cursor.anchor),
-                cursor.as_ref().map(|cursor| cursor.ceiling),
-                cursor.as_ref().map(|cursor| cursor.through),
-                input.limit,
-            )
-            .await?;
-        let through = cursor.as_ref().map_or(watermark, |cursor| cursor.through);
-        let next_cursor = if has_more {
-            let anchor = items
-                .last()
-                .context("session continuation has no anchor")?
-                .ordinal;
-            Some(
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(
-                    &Cursor {
-                        version: 2,
-                        target: input.target.clone(),
-                        through,
-                        ceiling,
-                        order: input.order,
-                        detail: input.detail,
-                        anchor,
-                    },
-                )?),
-            )
-        } else {
-            None
         };
-        Ok(AgentSessionPage {
-            agent_id: self
-                .events
-                .agent_execution_identity(&input.target)
-                .map(|(identity, _, _)| identity.agent_id)
-                .context("agent directory identity is missing")?,
-            path,
-            through_sequence: through,
-            order: match input.order {
-                Order::Ascending => AgentSessionReadOrder::Ascending,
-                Order::Descending => AgentSessionReadOrder::Descending,
-            },
-            detail: match input.detail {
-                Detail::Text => AgentSessionReadDetail::Text,
-                Detail::Full => AgentSessionReadDetail::Full,
-            },
-            items,
-            has_more,
-            next_cursor,
-        })
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).into())
+            }
+            result = read => result,
+        }
     }
 }
 fn output(value: &impl Serialize) -> Result<ToolOutput> {
@@ -688,7 +710,7 @@ impl SessionRuntime {
             ),
             (
                 "read_agent_session",
-                "Read this agent or a descendant's saved timeline. Continuation cursors freeze the original history watermark and filters.",
+                "Read this agent or a descendant's saved timeline; unsaved records may be absent. throughSequence describes the saved read range. Reading does not flush or activate the target; an empty page does not imply execution has ended. Continuation cursors freeze the original history watermark and filters.",
                 Kind::Session,
                 pl_agent_tool::typed::input_schema_for::<SessionInput>(),
             ),

@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use pl_protocol::{McpAvailabilityDescriptor, McpHealthSnapshot, PureError, Result};
 use rmcp::model::Tool;
 use tokio::sync::{broadcast, mpsc};
@@ -23,6 +24,8 @@ mod dispatch;
 mod reconcile;
 mod redaction;
 mod server;
+#[cfg(test)]
+mod tests;
 mod tools;
 
 use reconcile::{
@@ -58,6 +61,10 @@ struct RuntimeWorker {
     shutting_down: bool,
     /// Single-owned closing completion shared with every runtime handle.
     shutdown_completion: ShutdownCompletion,
+    requests: FuturesUnordered<BoxFuture<'static, McpGeneration>>,
+    /// Retired/unpublished owners stay here until close confirms exit or returns
+    /// them for retry. Cleanup must never suspend request deadlines or admission.
+    cleanups: FuturesUnordered<BoxFuture<'static, Vec<RuntimeGeneration>>>,
 }
 
 struct ActiveToolRefresh {
@@ -109,6 +116,8 @@ impl RuntimeWorker {
             next_generation: 1,
             shutting_down: false,
             shutdown_completion,
+            requests: FuturesUnordered::new(),
+            cleanups: FuturesUnordered::new(),
         }
     }
 
@@ -203,23 +212,29 @@ impl RuntimeWorker {
                 }
             }
             tokio::select! {
+                Some(generation) = self.requests.next(), if !self.requests.is_empty() => {
+                    self.release_lease(generation);
+                }
+                Some(owners) = self.cleanups.next(), if !self.cleanups.is_empty() => {
+                    self.restore_cleanup_owners(owners);
+                }
                 generation = await_preparation(&mut preparation), if preparation.is_some() => {
                     let active = preparation
                         .take()
                         .expect("completed MCP preparation must exist");
                     let result = if let Err(error) = generation.ensure_active() {
-                        self.close_unpublished_generation(generation).await;
+                        self.close_unpublished_generation(generation);
                         Err(error)
                     } else if active.reset_scope.as_ref().is_some_and(|scope| {
                         reset_failed(scope, &generation)
                     }) {
-                        self.close_unpublished_generation(generation).await;
+                        self.close_unpublished_generation(generation);
                         Err(PureError::ToolExecutionFailed {
                             tool: "mcp".to_string(),
                             error: "MCP reset candidate failed; current generation was preserved".to_string(),
                         })
                     } else {
-                        self.activate_generation(generation).await
+                        self.activate_generation(generation)
                     };
                     let _ = active.reply.send(result);
                 }
@@ -238,8 +253,11 @@ impl RuntimeWorker {
                         if let Some(explicit) = explicit_refresh.take() {
                             let _ = explicit.reply.send(Err(shutting_down_error()));
                         }
-                        if let Some(mut unpublished) =
-                            cancel_and_collect_reconciles(preparation.take(), &mut pending).await
+                        let (unpublished, ()) = tokio::join!(
+                            cancel_and_collect_reconciles(preparation.take(), &mut pending),
+                            self.drain_owned_work(),
+                        );
+                        if let Some(mut unpublished) = unpublished
                         {
                             unpublished.retired = true;
                             self.generations.insert(unpublished.id, unpublished);
@@ -319,7 +337,7 @@ impl RuntimeWorker {
                     let _ = reply.send(self.acquire_lease());
                 }
                 RuntimeCommand::ReleaseLease { generation } => {
-                    self.release_lease(generation).await;
+                    self.release_lease(generation);
                 }
                 RuntimeCommand::Snapshots { reply } => {
                     let _ = reply.send(self.snapshots());
@@ -341,6 +359,9 @@ impl RuntimeWorker {
                         let _ = reply.send(Err(shutting_down_error()));
                         continue;
                     }
+                    if reply.is_closed() {
+                        continue;
+                    }
                     self.spawn_tool_call(generation, server_id, raw_name, arguments, reply);
                 }
                 RuntimeCommand::ResourceQuery {
@@ -353,16 +374,28 @@ impl RuntimeWorker {
                         let _ = reply.send(Err(shutting_down_error()));
                         continue;
                     }
+                    if reply.is_closed() {
+                        continue;
+                    }
                     self.spawn_resource_query(generation, server_id, operation, reply);
                 }
                 RuntimeCommand::MarkUnavailable {
-                    generation,
+                    identity,
                     server_id,
                     error,
-                } => self.mark_unavailable(generation, &server_id, error),
-                RuntimeCommand::ToolListChanged { server_id } => {
-                    if !self.shutting_down {
-                        pending_tool_refreshes.insert(server_id);
+                } => self.mark_unavailable(&identity, &server_id, error),
+                RuntimeCommand::ConnectionEvent { server_id, identity, event } => {
+                    match event {
+                        crate::mcp::connector::ConnectionEvent::Closed => {
+                            self.mark_unavailable(&identity, &server_id, "MCP connection ended".into());
+                        }
+                        crate::mcp::connector::ConnectionEvent::ToolListChanged => {
+                            if !self.shutting_down && self.current_generation().servers.get(&server_id)
+                                .and_then(|server| server.session.as_ref())
+                                .is_some_and(|session| Arc::ptr_eq(&session.identity, &identity)) {
+                                pending_tool_refreshes.insert(server_id);
+                            }
+                        }
                     }
                 }
                 RuntimeCommand::Shutdown { reply } => {
@@ -372,8 +405,11 @@ impl RuntimeWorker {
                         let _ = explicit.reply.send(Err(shutting_down_error()));
                     }
                     pending_tool_refreshes.clear();
-                    if let Some(mut unpublished) =
-                        cancel_and_collect_reconciles(preparation.take(), &mut pending).await
+                    let (unpublished, ()) = tokio::join!(
+                        cancel_and_collect_reconciles(preparation.take(), &mut pending),
+                        self.drain_owned_work(),
+                    );
+                    if let Some(mut unpublished) = unpublished
                     {
                         unpublished.retired = true;
                         self.generations.insert(unpublished.id, unpublished);
@@ -401,6 +437,22 @@ impl RuntimeWorker {
     }
 
     fn start_preparation(&mut self, request: PendingReconcile) -> ActivePreparation {
+        if let Some(scope) = &request.reset_scope {
+            // A reset replaces the target's session state, not just its current catalog.
+            // Stop admission through every old frozen lease, without revoking siblings
+            // or interrupting requests already captured by `requests`.
+            for generation in self.generations.values_mut() {
+                for (server_id, server) in &mut generation.servers {
+                    if matches!(scope, McpResetScope::All)
+                        || matches!(scope, McpResetScope::Server { server_id: target } if target == server_id)
+                    {
+                        server.availability = McpAvailabilityKind::Unavailable;
+                        server.message = Some("MCP session reset is in progress".into());
+                    }
+                }
+            }
+            self.emit_update();
+        }
         let generation_id = McpGeneration(self.next_generation);
         self.next_generation += 1;
         let mut reusable = self.current_generation().servers.clone();
@@ -439,16 +491,28 @@ impl RuntimeWorker {
         let timeout = configured_startup_timeout(server.config.startup_timeout_secs);
         let config = server.config.clone();
         let redactor = server.redactor.clone();
+        let commands = self.commands.clone();
         Some(ActiveToolRefresh {
             future: async move {
-                let definitions = match tokio::time::timeout(timeout, session.list_tools()).await {
-                    Ok(Ok(tools)) => Ok(filter_tool_definitions(tools, &config)),
-                    Ok(Err(error)) => Err(redactor.redact(error.to_string())),
-                    Err(_) => Err(format!(
-                        "MCP tool refresh timed out after {} seconds",
-                        timeout.as_secs()
-                    )),
-                };
+                let definitions =
+                    match tokio::time::timeout(timeout, session.discover_tools()).await {
+                        Ok(Ok(tools)) => Ok(filter_tool_definitions(tools, &config)),
+                        Ok(Err(error)) => {
+                            let message = redactor.redact(error.to_string());
+                            if crate::mcp::connector::is_connection_failure(&error) {
+                                let _ = commands.send(RuntimeCommand::MarkUnavailable {
+                                    identity: session.identity.clone(),
+                                    server_id: server_id.clone(),
+                                    error: message.clone(),
+                                });
+                            }
+                            Err(message)
+                        }
+                        Err(_) => Err(format!(
+                            "MCP tool refresh timed out after {} seconds",
+                            timeout.as_secs()
+                        )),
+                    };
                 ToolRefreshCandidate {
                     observed_generation: generation,
                     server_id,
@@ -533,7 +597,7 @@ impl RuntimeWorker {
         server.last_checked_at = Some(crate::unix_seconds());
         server.definitions = definitions;
         assign_tool_descriptors(&mut next.servers);
-        if let Err(error) = self.activate_generation(next).await {
+        if let Err(error) = self.activate_generation(next) {
             return McpServerToolRefresh {
                 server_id: candidate.server_id,
                 status: McpToolRefreshStatus::Failed,
@@ -585,9 +649,9 @@ impl RuntimeWorker {
             })
     }
 
-    async fn activate_generation(&mut self, mut next: RuntimeGeneration) -> Result<()> {
+    fn activate_generation(&mut self, mut next: RuntimeGeneration) -> Result<()> {
         if let Err(error) = next.ensure_active() {
-            self.close_unpublished_generation(next).await;
+            self.close_unpublished_generation(next);
             return Err(error);
         }
         self.propagate_pending_session_failures(&mut next);
@@ -597,12 +661,12 @@ impl RuntimeWorker {
         }
         self.current = next.id;
         self.generations.insert(next.id, next);
-        self.cleanup_retired().await;
+        self.cleanup_retired();
         self.emit_update();
         Ok(())
     }
 
-    async fn close_unpublished_generation(&mut self, mut generation: RuntimeGeneration) {
+    fn close_unpublished_generation(&mut self, mut generation: RuntimeGeneration) {
         let current_sessions = self
             .current_generation()
             .servers
@@ -614,31 +678,8 @@ impl RuntimeWorker {
             .into_iter()
             .filter(|session| !current_sessions.contains(&(Arc::as_ptr(session) as usize)))
             .collect::<Vec<_>>();
-        // Independent owners: cancel and await them concurrently so one slow server cannot
-        // consume the budget of the others.
-        let outcomes =
-            futures::future::join_all(sessions.iter().map(|session| session.close())).await;
-        let mut failed = BTreeSet::new();
-        for (session, outcome) in sessions.iter().zip(outcomes) {
-            if let Err(error) = outcome {
-                failed.insert(Arc::as_ptr(session) as usize);
-                tracing::warn!(
-                    %error,
-                    "MCP session did not confirm closure while discarding an unpublished generation"
-                );
-            }
-        }
-        if !failed.is_empty() {
-            // Keep unconfirmed owners for the runtime's existing retirement/shutdown retry.
-            generation.servers.retain(|_, server| {
-                server
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| failed.contains(&(Arc::as_ptr(session) as usize)))
-            });
-            generation.retired = true;
-            self.generations.insert(generation.id, generation);
-        }
+        generation.retired = true;
+        self.schedule_cleanup(vec![generation], sessions);
     }
 
     fn propagate_pending_session_failures(&self, next: &mut RuntimeGeneration) {
@@ -646,6 +687,11 @@ impl RuntimeWorker {
             let Some(session) = pending.session.as_ref() else {
                 continue;
             };
+            if session.has_ended() {
+                pending.availability = McpAvailabilityKind::Unavailable;
+                pending.message = Some("MCP connection ended".into());
+                continue;
+            }
             let failed = self.generations.values().find_map(|generation| {
                 generation.servers.values().find(|active| {
                     active.availability == McpAvailabilityKind::Unavailable
@@ -701,11 +747,11 @@ impl RuntimeWorker {
         })
     }
 
-    async fn release_lease(&mut self, generation: McpGeneration) {
+    fn release_lease(&mut self, generation: McpGeneration) {
         if let Some(state) = self.generations.get_mut(&generation) {
             state.leases = state.leases.saturating_sub(1);
         }
-        self.cleanup_retired().await;
+        self.cleanup_retired();
     }
 
     fn snapshots(&self) -> BTreeMap<String, McpAvailabilitySnapshot> {
@@ -756,7 +802,7 @@ impl RuntimeWorker {
             .collect()
     }
 
-    async fn cleanup_retired(&mut self) {
+    fn cleanup_retired(&mut self) {
         let retired = self
             .generations
             .iter()
@@ -798,40 +844,88 @@ impl RuntimeWorker {
                 Arc::strong_count(session) == local_references
             })
             .collect::<Vec<_>>();
-        // Independent owners: cancel and await them concurrently so one slow server cannot
-        // consume the budget of the others.
-        let outcomes =
-            futures::future::join_all(sessions.iter().map(|session| session.close())).await;
-        let mut failed = BTreeSet::new();
-        for (session, outcome) in sessions.iter().zip(outcomes) {
-            if let Err(error) = outcome {
-                failed.insert(Arc::as_ptr(session) as usize);
-                tracing::warn!(
-                    %error,
-                    "MCP session did not confirm closure while retiring a generation"
-                );
-            }
-        }
-        for mut generation in owners {
-            generation.servers.retain(|_, server| {
+        self.schedule_cleanup(owners, sessions);
+    }
+
+    fn schedule_cleanup(
+        &mut self,
+        mut owners: Vec<RuntimeGeneration>,
+        sessions: Vec<Arc<crate::mcp::ConnectedMcp>>,
+    ) {
+        let closing = sessions
+            .iter()
+            .map(|session| Arc::as_ptr(session) as usize)
+            .collect::<BTreeSet<_>>();
+        // Shared sessions remain owned by live generations. Do not keep extra references
+        // in an unrelated cleanup future that could mask their final retirement.
+        for owner in &mut owners {
+            owner.servers.retain(|_, server| {
                 server
                     .session
                     .as_ref()
-                    .is_some_and(|session| failed.contains(&(Arc::as_ptr(session) as usize)))
+                    .is_some_and(|session| closing.contains(&(Arc::as_ptr(session) as usize)))
             });
-            if !generation.servers.is_empty() {
-                self.generations.insert(generation.id, generation);
+        }
+        owners.retain(|owner| !owner.servers.is_empty());
+        if owners.is_empty() {
+            return;
+        }
+        self.cleanups.push(
+            async move {
+                let outcomes =
+                    futures::future::join_all(sessions.iter().map(|session| session.close())).await;
+                let failed = sessions
+                    .iter()
+                    .zip(outcomes)
+                    .filter_map(|(session, outcome)| {
+                        outcome.err().map(|_| Arc::as_ptr(session) as usize)
+                    })
+                    .collect::<BTreeSet<_>>();
+                for owner in &mut owners {
+                    owner.servers.retain(|_, server| {
+                        server.session.as_ref().is_some_and(|session| {
+                            failed.contains(&(Arc::as_ptr(session) as usize))
+                        })
+                    });
+                }
+                owners.retain(|owner| !owner.servers.is_empty());
+                owners
+            }
+            .boxed(),
+        );
+    }
+
+    fn restore_cleanup_owners(&mut self, owners: Vec<RuntimeGeneration>) {
+        for owner in owners {
+            self.generations.insert(owner.id, owner);
+        }
+    }
+
+    async fn drain_owned_work(&mut self) {
+        while !self.requests.is_empty() || !self.cleanups.is_empty() {
+            tokio::select! {
+                Some(generation) = self.requests.next(), if !self.requests.is_empty() => {
+                    if let Some(state) = self.generations.get_mut(&generation) {
+                        state.leases = state.leases.saturating_sub(1);
+                    }
+                }
+                Some(owners) = self.cleanups.next(), if !self.cleanups.is_empty() => {
+                    self.restore_cleanup_owners(owners);
+                }
             }
         }
     }
 
-    /// 关闭全部 generation 的 session 并确认整树回收。
+    /// 关闭全部 generation 的 session 并确认各协议 owner 与受管根进程退出。
     ///
     /// 独立 session 的关闭并发发出，任一 hang 不会阻止其它 session 收到 cancel；只有
     /// 确认回收的 session 才从 generation 中移除，未确认的 owner 由 `ConnectedMcp`
     /// 自有的 close task 保留到任务结束或进程终止。返回 typed `Result`，失败带明确
     /// server id，让 runtime 能定位到具体未回收的 server 而不是泛化的 "mcp"。
     async fn shutdown(&mut self) -> Result<()> {
+        // Accepted work owns its original generation even if the caller dropped its
+        // receiver. Let the actual result or SDK deadline settle before closing I/O.
+        self.drain_owned_work().await;
         let sessions = {
             let mut seen = BTreeSet::new();
             let mut sessions = Vec::new();
@@ -840,21 +934,30 @@ impl RuntimeWorker {
                     if let Some(session) = &server.session
                         && seen.insert(Arc::as_ptr(session) as usize)
                     {
-                        sessions.push((server_id.clone(), session.clone()));
+                        sessions.push((
+                            server_id.clone(),
+                            session.clone(),
+                            server.redactor.clone(),
+                        ));
                     }
                 }
             }
             sessions
         };
-        let results = futures::future::join_all(sessions.iter().map(|(server_id, session)| {
-            let server_id = server_id.clone();
-            let session = session.clone();
-            async move {
-                let outcome = session.close().await;
-                (server_id, session, outcome)
-            }
-        }))
-        .await;
+        let results =
+            futures::future::join_all(sessions.iter().map(|(server_id, session, redactor)| {
+                let server_id = server_id.clone();
+                let session = session.clone();
+                let redactor = redactor.clone();
+                async move {
+                    let outcome = session
+                        .close()
+                        .await
+                        .map_err(|error| redactor.redact(error.to_string()));
+                    (server_id, session, outcome)
+                }
+            }))
+            .await;
         // Only drop the owner of a session whose process tree was confirmed reclaimed. An
         // unconfirmed owner stays in its generation so it is never cleared (and dropped)
         // while the tree may still be alive; it is retained until the worker — and its

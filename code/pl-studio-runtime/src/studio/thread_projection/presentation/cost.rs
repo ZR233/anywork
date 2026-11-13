@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Default)]
-pub(in crate::studio::thread_projection) struct Access<K> {
+pub(in crate::studio) struct Access<K> {
     pub reads: u64,
     pub writes: u64,
     pub misses: u64,
@@ -149,17 +149,17 @@ where
 }
 
 #[derive(Debug)]
-pub(in crate::studio::thread_projection) struct Visits {
+pub(in crate::studio) struct Visits {
     pub members: Access<(u64, u64)>,
     pub heads: Access<u64>,
 }
 impl super::PresentationState {
-    pub(in crate::studio::thread_projection) fn begin_cost_observation(&self) {
+    pub(in crate::studio) fn begin_cost_observation(&self) {
         self.members.begin();
         self.blocks.begin();
         self.frozen_headers.begin();
     }
-    pub(in crate::studio::thread_projection) fn finish_cost_observation(&self) -> Visits {
+    pub(in crate::studio) fn finish_cost_observation(&self) -> Visits {
         let members = self.members.finish();
         let mut heads = self.blocks.finish();
         let frozen = self.frozen_headers.finish();
@@ -168,5 +168,8 @@ impl super::PresentationState {
         heads.misses += frozen.misses;
         heads.keys.extend(frozen.keys);
         Visits { members, heads }
+    }
+    pub(in crate::studio) fn resident_member_count(&self) -> usize {
+        self.members.len()
     }
 }

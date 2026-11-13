@@ -318,6 +318,8 @@ pub(in crate::studio) struct PreparedEffect {
     /// Reliable effect-local changes of already admitted members, not new immutable phases.
     /// Publication consumes these into the original frozen display delta.
     display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
+    display_text_visible: Arc<[super::presentation::TextVisible]>,
+    display_observation_plan: Arc<super::presentation::ObservationPlan>,
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
     display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
@@ -432,6 +434,14 @@ impl PreparedEffect {
             )
             .saturating_add(
                 serde_json::to_vec(self.display_atom_updates.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.display_text_visible.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.display_observation_plan.as_ref())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(self.display_observations.iter().fold(
@@ -1627,6 +1637,7 @@ impl LiveProjection {
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         self.ensure_database_identity().await?;
         let mut provenance = self.begin_provenance(effect)?;
+        let display_text_visible = self.text_visibility(effect)?;
         let observation_inputs = self
             .observation_inputs(&thread.id)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -1646,12 +1657,12 @@ impl LiveProjection {
             .chain(provenance.0.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let display_observations = self
+        let (display_observations, display_observation_plan) = self
             .retain_display_observations(
                 &thread.id,
                 effect.sequence,
                 &display_facts,
-                &provenance.1,
+                &display_text_visible,
                 observation_inputs,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -1667,6 +1678,8 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_text_visible,
+            display_observation_plan,
             display_observations,
             items,
             completions: Arc::from(Vec::new()),
@@ -1707,6 +1720,7 @@ impl LiveProjection {
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.ensure_database_identity().await?;
         let mut provenance = self.begin_provenance(effect)?;
+        let display_text_visible = self.text_visibility(effect)?;
         let observation_inputs = self
             .observation_inputs(&thread.id)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -1723,12 +1737,12 @@ impl LiveProjection {
             .chain(provenance.0.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let display_observations = self
+        let (display_observations, display_observation_plan) = self
             .retain_display_observations(
                 &thread.id,
                 effect.sequence,
                 &display_facts,
-                &provenance.1,
+                &display_text_visible,
                 observation_inputs,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -1742,6 +1756,8 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_text_visible,
+            display_observation_plan,
             display_observations,
             items,
             completions: Arc::from(Vec::new()),
@@ -2278,11 +2294,14 @@ impl LiveProjection {
             .cloned()
             .collect::<Vec<_>>();
         let display = presentation
-            .prepare_capturing(
+            .prepare_visible(
                 prepared.sequence,
                 prepared.committed_at,
-                &display_facts,
-                &prepared.current.source_changes,
+                super::presentation::DisplayInput {
+                    facts: &display_facts,
+                    visible: &prepared.display_text_visible,
+                    observations: Some(&prepared.display_observation_plan),
+                },
                 &records,
                 |member| {
                     prepared
@@ -2299,6 +2318,8 @@ impl LiveProjection {
         Arc::make_mut(&mut prepared.current).display = Some(display.clone());
         prepared.display = Some(display);
         prepared.display_atom_updates = Arc::from([]);
+        prepared.display_text_visible = Arc::from([]);
+        prepared.display_observation_plan = Arc::new(BTreeMap::new());
         prepared.display_observations = Arc::new(BTreeMap::new());
         prepared.completions = records;
         prepared.completion_drafts = None;

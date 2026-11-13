@@ -60,5 +60,6 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
 }
 
 pub fn thread_stat_path_tool_definition() -> pl_agent_tool::ToolDefinition {
-    pl_tool_filesystem::stat_path::definition::<FileCapability<super::LocalWorkspaceFileBackend>>()
+    pl_tool_filesystem::stat_path::definition::<FileCapability<super::ExecutorWorkspaceFileBackend>>(
+    )
 }

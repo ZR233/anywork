@@ -17,119 +17,166 @@ import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
 
 void main() {
-  testWidgets(
-    'Main reveal waits for the renderer of a mounted canonical row without scrolling',
-    (tester) async {
-      final content = _NoQueries();
-      final lease = (await tester.runAsync(
-        () async => TimelineDisplayLease(
-          threadId: 'pending-main-renderer',
-          generation: 11,
-          demand: chatDemand,
-          content: content,
-        ),
-      ))!..bind();
-      final projection = TimelineMessageController(
-        lease.controller as InMemoryChatController,
-        generation: lease.generation,
-      );
-      const id = 'canonical:pending-renderer';
-      await projection.applyTimeline(
-        displayBatch([
-          displaySingle(chatMessage(id, body: 'Ready canonical body')),
-        ]),
-      );
-      final unit = chatItemPresentationOf(lease.controller.messages.single)!
-          .displayUnit!;
-      var loadingFrames = 0;
-      try {
-        await tester.pumpWidget(
-          MaterialApp(
-            theme: pureStudioTheme(),
-            locale: const Locale('zh'),
-            localizationsDelegates: [
-              AppLocalizations.delegate,
-              ...GlobalMaterialLocalizations.delegates,
-            ],
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: SizedBox(
-                width: 500,
-                height: 240,
-                child: Chat(
-                  chatController: lease.controller,
-                  currentUserId: 'user',
-                  resolveUser: (id) async => User(id: id),
-                  builders: Builders(
-                    composerBuilder: (_) => const SizedBox.shrink(),
-                    scrollToBottomBuilder: (_, _, _) => const SizedBox.shrink(),
-                    chatAnimatedListBuilder: (_, _) => ChatAnimatedListReversed(
-                      scrollController: lease.scrollController,
-                      insertAnimationDuration: Duration.zero,
-                      removeAnimationDuration: Duration.zero,
-                      scrollToEndAnimationDuration: Duration.zero,
-                      itemBuilder:
-                          (
-                            context,
-                            message,
-                            index,
-                            animation, {
-                            messagesGroupingMode,
-                            messageGroupingTimeoutInSeconds,
-                            isRemoved,
-                          }) => ChatMessage(
-                            key: StudioDriverKeys.timelineRow(message.id),
-                            message: message,
-                            index: index,
-                            animation: animation,
-                            padding: EdgeInsets.zero,
-                            child: _FrameDelayedRenderer(
-                              onLoading: () => loadingFrames++,
-                              child: ChatItemView(
-                                item: chatItemPresentationOf(message)!,
+  for (final work in [false, true]) {
+    testWidgets(
+      'Main reveal waits for its ${work ? 'Work' : 'Single'} renderer while another scrollable has the fragment',
+      (tester) async {
+        final content = _NoQueries();
+        final lease = (await tester.runAsync(
+          () async => TimelineDisplayLease(
+            threadId: 'pending-main-renderer',
+            generation: 11,
+            demand: chatDemand,
+            content: content,
+          ),
+        ))!..bind();
+        final projection = TimelineMessageController(
+          lease.controller as InMemoryChatController,
+          generation: lease.generation,
+        );
+        const id = 'canonical:pending-renderer';
+        await projection.applyTimeline(
+          displayBatch([
+            if (work)
+              displayWork(id, 1, total: 1)
+            else
+              displaySingle(chatMessage(id, body: 'Ready canonical body')),
+          ]),
+        );
+        final presentation = chatItemPresentationOf(
+          lease.controller.messages.single,
+        )!;
+        final unit = presentation.displayUnit!;
+        var loadingFrames = 0;
+        final otherScroll = ScrollController();
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: pureStudioTheme(),
+              locale: const Locale('zh'),
+              localizationsDelegates: [
+                AppLocalizations.delegate,
+                ...GlobalMaterialLocalizations.delegates,
+              ],
+              supportedLocales: AppLocalizations.supportedLocales,
+              home: Scaffold(
+                body: Row(
+                  children: [
+                    SizedBox(
+                      width: 500,
+                      height: 240,
+                      child: Chat(
+                        chatController: lease.controller,
+                        currentUserId: 'user',
+                        resolveUser: (id) async => User(id: id),
+                        builders: Builders(
+                          composerBuilder: (_) => const SizedBox.shrink(),
+                          scrollToBottomBuilder: (_, _, _) =>
+                              const SizedBox.shrink(),
+                          chatAnimatedListBuilder: (_, _) =>
+                              ChatAnimatedListReversed(
+                                scrollController: lease.scrollController,
+                                insertAnimationDuration: Duration.zero,
+                                removeAnimationDuration: Duration.zero,
+                                scrollToEndAnimationDuration: Duration.zero,
+                                itemBuilder:
+                                    (
+                                      context,
+                                      message,
+                                      index,
+                                      animation, {
+                                      messagesGroupingMode,
+                                      messageGroupingTimeoutInSeconds,
+                                      isRemoved,
+                                    }) => ChatMessage(
+                                      key: StudioDriverKeys.timelineRow(
+                                        message.id,
+                                      ),
+                                      message: message,
+                                      index: index,
+                                      animation: animation,
+                                      padding: EdgeInsets.zero,
+                                      child: _FrameDelayedRenderer(
+                                        onLoading: () => loadingFrames++,
+                                        child: ChatItemView(
+                                          item: chatItemPresentationOf(
+                                            message,
+                                          )!,
+                                        ),
+                                      ),
+                                    ),
                               ),
-                            ),
-                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                    SizedBox(
+                      width: 200,
+                      height: 240,
+                      child: ListView(
+                        controller: otherScroll,
+                        children: [
+                          if (work)
+                            ChatItemView(item: presentation)
+                          else
+                            const Text('Ready canonical body'),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
-        );
-        expect(find.byKey(StudioDriverKeys.timelineRow(id)), findsOneWidget);
-        expect(find.byType(ChatItemView), findsNothing);
-        expect(lease.scrollController.position.maxScrollExtent, 0);
-        final observed = TimelineObservation(tester, () => lease);
-        final body = find.descendant(
-          of: find.byKey(StudioDriverKeys.timelineRow(id)),
-          matching: find.text('Ready canonical body'),
-        );
-        await observed.reveal(body, id);
-        expect(loadingFrames, greaterThan(0));
-        expect(body.hitTestable(), findsOneWidget);
-        expect(
-          tester
-              .widget<ChatItemView>(find.byType(ChatItemView))
-              .item
-              .displayUnit,
-          same(unit),
-        );
-        expect(lease.scrollController.position.pixels, 0);
-        expect(content.calls, 0);
-        expect(tester.takeException(), isNull);
-      } finally {
-        await tester.pumpWidget(const SizedBox.shrink());
-        await tester.runAsync(() async {
-          projection.dispose();
-          final unbound = lease.unbind();
-          await lease.retire();
-          await unbound;
-        });
-      }
-      expect(lease.isReleased, isTrue);
-    },
-  );
+          );
+          expect(find.byKey(StudioDriverKeys.timelineRow(id)), findsOneWidget);
+          final mainRow = find.byKey(StudioDriverKeys.timelineRow(id));
+          final mainRenderer = find.descendant(
+            of: mainRow,
+            matching: find.byType(ChatItemView),
+          );
+          expect(mainRenderer, findsNothing);
+          expect(lease.scrollController.position.maxScrollExtent, 0);
+          final observed = TimelineObservation(tester, () => lease);
+          final body = work
+              ? observed.groupHeader(id)
+              : find.text('Ready canonical body');
+          expect(body, findsOneWidget);
+          expect(
+            Scrollable.maybeOf(tester.element(body))!.widget.controller,
+            same(otherScroll),
+          );
+          await observed.reveal(body, id);
+          expect(loadingFrames, greaterThan(0));
+          expect(body, findsNWidgets(2));
+          final mainBody = find.descendant(of: mainRow, matching: body);
+          expect(mainBody, findsOneWidget);
+          expect(
+            work
+                ? timelineGroupTitleFinder(tester, mainBody).hitTestable()
+                : mainBody.hitTestable(),
+            findsOneWidget,
+          );
+          expect(
+            tester.widget<ChatItemView>(mainRenderer).item.displayUnit,
+            same(unit),
+          );
+          expect(lease.scrollController.position.pixels, 0);
+          expect(otherScroll.position.pixels, 0);
+          expect(content.calls, 0);
+          expect(tester.takeException(), isNull);
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.runAsync(() async {
+            projection.dispose();
+            final unbound = lease.unbind();
+            await lease.retire();
+            await unbound;
+            otherScroll.dispose();
+          });
+        }
+        expect(lease.isReleased, isTrue);
+      },
+    );
+  }
 
   testWidgets(
     'Main reveal ignores offscreen keepalives in both directions and never scrolls Atoms',

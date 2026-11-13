@@ -148,7 +148,7 @@ fn verify_local_asset(binary: &Path, target: &str) -> Result<()> {
         metadata.target == target
             && metadata.worker_protocol_version
                 == pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
-            && metadata.remote_protocol_version == pl_protocol::remote::REMOTE_PROTOCOL_VERSION
+            && metadata.remote_protocol_version == pl_remote_helper::EXECUTOR_WIRE_VERSION
             && metadata.sha256 == actual,
         "helper build metadata mismatch for {target}; rebuild the application bundle or supply matching prebuilt assets"
     );
@@ -247,7 +247,7 @@ mod tests {
                 target: target.into(),
                 worker_protocol_version:
                     pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION,
-                remote_protocol_version: pl_protocol::remote::REMOTE_PROTOCOL_VERSION,
+                remote_protocol_version: pl_remote_helper::EXECUTOR_WIRE_VERSION,
                 sha256,
             })
             .unwrap(),

@@ -356,11 +356,10 @@ impl StudioRuntime {
             context,
         };
         let driver = pl_core::thread::input::InputDriverOptions {
-            max_model_steps: if thread_record.parent_thread_id.is_none() {
-                pl_core::thread::ModelStepLimit::Unlimited
-            } else {
-                crate::studio::thread_factory::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT
-            },
+            max_model_steps: submission_step_limit(
+                options.max_model_steps,
+                thread_record.parent_thread_id.is_none(),
+            ),
         };
         // The only semantic difference between the product admissions. `input_and_run` lets the
         // actor own the queued input and consume it after the current Turn, while
@@ -410,6 +409,25 @@ impl StudioRuntime {
     }
 }
 
+fn submission_step_limit(
+    requested: Option<std::num::NonZeroU32>,
+    is_root: bool,
+) -> pl_core::thread::ModelStepLimit {
+    use pl_core::thread::ModelStepLimit;
+    let policy = if is_root {
+        ModelStepLimit::Unlimited
+    } else {
+        crate::studio::thread_factory::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT
+    };
+    match (policy, requested) {
+        (policy, None) => policy,
+        (ModelStepLimit::Unlimited, Some(limit)) => ModelStepLimit::Limited(limit),
+        (ModelStepLimit::Limited(policy), Some(limit)) => {
+            ModelStepLimit::Limited(policy.min(limit))
+        }
+    }
+}
+
 pub(in crate::studio::runtime) fn validate_prompt_content(
     input: &pl_protocol::studio::StudioPromptInput,
 ) -> Result<()> {
@@ -418,4 +436,30 @@ pub(in crate::studio::runtime) fn validate_prompt_content(
         bail!("prompt is empty");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::submission_step_limit;
+    use pl_core::thread::ModelStepLimit;
+    use std::num::NonZeroU32;
+
+    #[test]
+    fn explicit_submission_budget_tightens_without_loosening_child_policy() {
+        let short = NonZeroU32::new(3).unwrap();
+        let large = NonZeroU32::new(1000).unwrap();
+        let child_policy =
+            crate::studio::thread_factory::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT;
+        assert_eq!(submission_step_limit(None, true), ModelStepLimit::Unlimited);
+        assert_eq!(submission_step_limit(None, false), child_policy);
+        assert_eq!(
+            submission_step_limit(Some(short), true),
+            ModelStepLimit::Limited(short)
+        );
+        assert_eq!(
+            submission_step_limit(Some(short), false),
+            ModelStepLimit::Limited(short)
+        );
+        assert_eq!(submission_step_limit(Some(large), false), child_policy);
+    }
 }

@@ -114,6 +114,18 @@ for raw in sys.stdin:
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
     elif method == "tools/call":
+        if msg.get("params", {}).get("arguments", {}).get("mode") == "late_disconnect":
+            release = os.environ["MCP_LATE_DISCONNECT_RELEASE"]
+            deadline = time.monotonic() + 5
+            while not os.path.exists(release):
+                if time.monotonic() >= deadline:
+                    sys.exit("timed out waiting for late disconnect release")
+                time.sleep(0.01)
+            sys.stdout.write(json.dumps({
+                "jsonrpc": "2.0", "method": "notifications/tools/list_changed"
+            }) + "\n")
+            sys.stdout.flush()
+            sys.exit(0)
         if hang_call_ms > 0:
             time.sleep(hang_call_ms / 1000.0)
         payload = {
@@ -194,6 +206,7 @@ pub fn stdio_effective_config(
         config: McpServerConfig {
             required: false,
             transport: McpServerTransport::Stdio,
+            startup_mode: Default::default(),
             command: Some("python3".to_owned()),
             args,
             env,

@@ -1,20 +1,5 @@
-//! Scenario-owned fake LSP server used by the shutdown acceptance.
-//!
-//! The product starts a matching `[lsp.servers.<id>]` entry through its own
-//! supervised worker when a language-service query is issued, and must reclaim
-//! that whole subtree on exit. This server speaks the real LSP base protocol
-//! (Content-Length framed `initialize`/`initialized`/`shutdown`/`exit`) so the
-//! client's handshake succeeds, and in addition spawns a grandchild that ignores
-//! `SIGTERM` and lives in its own process group. That grandchild can only be
-//! reclaimed by the product's real descendant supervision, so the acceptance can
-//! tell a self-supervised language server apart from a leaked one.
-//!
-//! The server records its own pid and the grandchild's pid (with `/proc` start
-//! times where available) into a coordination file so the coordinator can
-//! OS-poll the real business PIDs. It never kills the grandchild itself.
-//!
-//! The same binary also answers `<program> --version` (see `main.rs`) because the
-//! catalog probe runs exactly that before the server is considered available.
+//! Scenario-owned LSP peer for one normal native shutdown.
+//! Records its real process identity; descendant cleanup is judged by the native launcher.
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -22,31 +7,27 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use crate::stdio_peer::{proc_start_ticks, spawn_tracked_grandchild};
+use crate::stdio_peer::proc_start_ticks;
 
 /// Options for [`run_lsp_stdio`].
 pub struct LspStdioOptions {
-    /// File the server writes its own and the grandchild's pid/starttime into.
+    /// File receiving the peer process identity.
     pub coord_file: PathBuf,
 }
 
 /// Runs the scenario-owned LSP server until the client sends `exit`.
 pub fn run_lsp_stdio(options: LspStdioOptions) -> Result<()> {
-    let grandchild_pid = spawn_tracked_grandchild()?;
     let lsp_pid = std::process::id();
-    write_coord_record(&options.coord_file, lsp_pid, grandchild_pid)?;
+    write_coord_record(&options.coord_file, lsp_pid)?;
     serve()
 }
 
-/// Writes the server and grandchild identities so the coordinator can OS-poll
-/// the real business PIDs with a pid-reuse guard.
-fn write_coord_record(coord_file: &Path, lsp_pid: u32, grandchild_pid: u32) -> Result<()> {
+/// Records the peer identity with a pid-reuse guard.
+fn write_coord_record(coord_file: &Path, lsp_pid: u32) -> Result<()> {
     let record = json!({
         "schema": "anywork-lsp-stdio/1",
         "lspPid": lsp_pid,
         "lspStartTicks": proc_start_ticks(lsp_pid),
-        "grandchildPid": grandchild_pid,
-        "grandchildStartTicks": proc_start_ticks(grandchild_pid),
     });
     if let Some(parent) = coord_file.parent() {
         fs::create_dir_all(parent)

@@ -7,10 +7,16 @@ import 'package:anywork/src/features/conversation/timeline/connectors/conversati
 import 'package:anywork/src/features/conversation/timeline/connectors/completion_run_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
@@ -24,6 +30,9 @@ import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/display_fixtures.dart';
+import '../support/timeline_text_observation.dart';
 
 const _source = ForegroundTurnChatSource(turnId: 'T');
 ContentRef _ref({int revision = 1}) => ContentRef(
@@ -229,8 +238,10 @@ final class _Harness {
   int revision = 0;
   bool active = true;
   final live = ValueNotifier<LiveDisplayWindow?>(null);
-  Future<LiveDisplayWindow> Function(String)? loadLiveOlder;
+  ValueChanged<String>? onLoadOlder;
+  LiveStatusAggregate presentation = LiveStatusAggregate.initial('thread');
   void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
+    currentWorkId: null,
     revision: ++revision,
     historyThrough: 0,
     executionPresent: true,
@@ -241,6 +252,7 @@ final class _Harness {
           blockOrder: index + 1,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: entry.atom,
               contentSource: const CurrentAtom(),
@@ -251,24 +263,52 @@ final class _Harness {
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
-        ConversationCurrentConnector(
-          section: ConversationLiveSection.output,
-          key: ObjectKey(content),
-          session: const ThreadSessionState(threadId: 'thread'),
-          content: content,
-          live: live,
-          loadLiveOlder: loadLiveOlder,
-          liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
-            block: block,
-            executionPresent: executionPresent,
-            expansion: TimelineExpansionIntent(),
-          ),
-          images: images,
-          readAttachment: (_) async => Uint8List(0),
-          isDisplayActive: () => active,
-          registerDisplay: (value) {
-            display = value;
-            return () => display = null;
+        ValueListenableBuilder<LiveDisplayWindow?>(
+          valueListenable: live,
+          builder: (_, window, _) {
+            presentation = LiveStatusStateMachine.transition(
+              presentation,
+              LiveStatusObserved(
+                LiveStatusObservation(
+                  cut: window == null
+                      ? const LiveWindowCut.inactive()
+                      : LiveWindowCut(
+                          revision: window.revision,
+                          historyThrough: window.historyThrough,
+                          executionPresent: window.executionPresent,
+                          attemptId: 1,
+                          isDisplayActive: active,
+                        ),
+                  latestLive: window,
+                  hasContentOwner: true,
+                ),
+              ),
+            ).state;
+            final state = presentation.barState;
+            return ConversationCurrentConnector(
+              section: ConversationLiveSection.output,
+              key: ObjectKey(content),
+              threadId: 'thread',
+              content: content,
+              presenting: switch (state) {
+                LiveStatusPresenting() => state,
+                LiveStatusDockMasked(:final obscured) => obscured,
+                LiveStatusHidden() => null,
+              },
+              onLoadOlder: onLoadOlder,
+              liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+                block: block,
+                executionPresent: executionPresent,
+                expansion: TimelineExpansionIntent(),
+              ),
+              images: images,
+              readAttachment: (_) async => Uint8List(0),
+              isDisplayActive: () => active,
+              registerDisplay: (value) {
+                display = value;
+                return () => display = null;
+              },
+            );
           },
         ),
         disableAnimations: disableAnimations,
@@ -288,6 +328,314 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
 );
 
 void main() {
+  for (final bounded in [true, false]) {
+    testWidgets(
+      '#364 small ${bounded ? 'bounded' : '45-percent'} dock scrolls notices and pagers without replacing the expanded tail owners',
+      (tester) async {
+        final content = _Content();
+        final images = TimelineImageResources(threadId: 'thread');
+        final handle = _FreezeMembers();
+        final expansion = TimelineExpansionIntent()..expanded = true;
+        const reference = DisplayBlockRef(
+          databaseId: 'database',
+          blockId: 'tail',
+        );
+        var opens = 0;
+        expansion.openDisplayMembers = (_, _, _) async {
+          opens++;
+          return handle;
+        };
+        addTearDown(() {
+          expansion.retire();
+          images.release();
+        });
+        var now = DateTime.fromMillisecondsSinceEpoch(1000000);
+        const work = LiveDisplayBlock(
+          id: 'tail',
+          blockOrder: 1,
+          state: DisplayBlockState.open,
+          body: WorkDisplayBlock(
+            members: reference,
+            summary: WorkSummary(
+              total: 1,
+              terminal: 0,
+              running: 1,
+              waiting: 0,
+              failed: 0,
+              cancelled: 0,
+              transferred: 0,
+              unavailable: 0,
+              createdAt: 1000,
+            ),
+          ),
+        );
+        final latest = LiveDisplayWindow(
+          currentWorkId: 'tail',
+          revision: 1,
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: const [work],
+        );
+        final older = LiveDisplayWindow(
+          currentWorkId: null,
+          revision: 1,
+          historyThrough: 0,
+          executionPresent: true,
+          blocks: const [],
+          older: 'next-older',
+        );
+        final live = ValueNotifier<LiveDisplayWindow?>(latest);
+        addTearDown(live.dispose);
+        TimelineCurrentDisplay? display;
+        final pagingRequests = <String>[];
+        var returnsToLatest = 0;
+        Widget scene(bool active, {bool showLeading = false}) {
+          final paging = showLeading
+              ? ViewingOlderLiveWindow(
+                  before: 'older',
+                  window: older,
+                  cut: const LiveWindowCut(
+                    revision: 1,
+                    historyThrough: 0,
+                    executionPresent: true,
+                    attemptId: 1,
+                    isDisplayActive: true,
+                  ),
+                )
+              : const LatestLiveWindow();
+          final window = showLeading ? older : latest;
+          final projected =
+              LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+                latestWindow: latest,
+                effectiveOutputWindow: window,
+                effectiveTimelineWindow: latest,
+                activeTurnId: null,
+                outputPaging: paging,
+                rawNotices: [
+                  if (active)
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'real-activity',
+                        kind: ConversationActivityKind.thinking,
+                      ),
+                    ),
+                  if (showLeading) ...[
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'stopping',
+                        kind: ConversationActivityKind.stopping,
+                        summary: '等待执行收束',
+                      ),
+                    ),
+                    const ExecutionLiveNotice(
+                      ConversationActivityView(
+                        identity: 'storage',
+                        kind: ConversationActivityKind.storageBlocked,
+                        errorMessage: '保存已暂停',
+                      ),
+                    ),
+                  ],
+                ],
+              );
+          final connector = ConversationCurrentConnector(
+            section: ConversationLiveSection.output,
+            threadId: 'thread',
+            content: content,
+            presenting: LiveStatusPresenting(
+              surface: projected.surface!,
+              effectiveWindow: window,
+              paging: paging,
+              showInteractionDetails: false,
+            ),
+            liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
+              block: block,
+              executionPresent: executionPresent,
+              expansion: expansion,
+            ),
+            images: images,
+            readAttachment: (_) async => Uint8List(0),
+            isDisplayActive: () => true,
+            registerDisplay: (value) {
+              display = value;
+              return () => display = null;
+            },
+            onLoadOlder: pagingRequests.add,
+            onReturnToLatest: () => returnsToLatest++,
+            now: () => now,
+          );
+          return _host(
+            MediaQuery(
+              data: const MediaQueryData(size: Size(480, 360)),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 480,
+                  height: bounded ? 162 : null,
+                  child: bounded
+                      ? connector
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [connector],
+                        ),
+                ),
+              ),
+            ),
+          );
+        }
+
+        await tester.pumpWidget(scene(true));
+        handle.send(
+          DisplayMemberPage(
+            block: reference,
+            revision: 1,
+            sealed: false,
+            entries: [
+              DisplayMemberHead(
+                memberKey: 'stable-row',
+                memberOrder: 1,
+                record: DisplayRecord(
+                  atom: _textItem(),
+                  contentSource: const CurrentAtom(),
+                ),
+              ),
+            ],
+          ),
+        );
+        await _flush(tester);
+        final members = expansion.members;
+        final memberState = tester.state(find.byType(TimelineMemberAtom));
+        final groupState = tester.state(find.byType(TimelineDisplayUnitView));
+        final originalDisplay = display;
+        expect(originalDisplay, isNotNull);
+        final scope = content.scopes.single;
+        scope.watches.single.add(_window('合法打开的正文'));
+        await _flush(tester);
+        for (final update in [
+          (active: false, leading: true),
+          (active: true, leading: false),
+          (active: true, leading: true),
+          (active: false, leading: false),
+        ]) {
+          now = now.add(const Duration(days: 1));
+          await tester.pumpWidget(
+            scene(update.active, showLeading: update.leading),
+          );
+          await _flush(tester);
+          expect(tester.takeException(), isNull);
+          expect(expansion.expanded, isTrue);
+          expect(expansion.members, same(members));
+          expect(
+            tester.state(find.byType(TimelineMemberAtom)),
+            same(memberState),
+          );
+          expect(
+            tester.state(find.byType(TimelineDisplayUnitView)),
+            same(groupState),
+          );
+          expect(scope.isActive, isTrue);
+          expect(scope.cancels, 0);
+          expect(scope.requests, hasLength(1));
+          expect(opens, 1);
+          expect(content.scopes, hasLength(1));
+          expect(display, same(originalDisplay));
+          expect(find.text('合法打开的正文'), findsOneWidget);
+          expect(find.text('合法打开的正文').hitTestable(), findsOneWidget);
+          expect(find.textContaining('执行了'), findsNothing);
+          final header = find.byKey(
+            const ValueKey('completion-run-header:tail'),
+          );
+          expect(header.hitTestable(), findsOneWidget);
+          final member = find.byType(TimelineMemberAtom);
+          expect(tester.getSize(member).height, greaterThan(0));
+          expect(
+            tester.getRect(member).overlaps(tester.getRect(header)),
+            isFalse,
+          );
+          if (update.leading) {
+            final notices = find.byType(ConversationRealtimeNotices);
+            final scroll = find
+                .ancestor(of: notices, matching: find.byType(Scrollable))
+                .first;
+            final position = tester.state<ScrollableState>(scroll).position;
+            expect(position.maxScrollExtent, greaterThan(0));
+            for (final target in [
+              find.text('等待执行收束'),
+              find.text('保存已暂停'),
+              find.text('更早实时片段'),
+              find.text('最新实时片段'),
+            ]) {
+              position.jumpTo(0);
+              await tester.pump();
+              await tester.dragUntilVisible(
+                target,
+                scroll,
+                const Offset(0, -24),
+              );
+              expect(target.hitTestable(), findsOneWidget);
+            }
+            await tester.tap(find.text('最新实时片段'));
+            expect(returnsToLatest, greaterThan(0));
+            position.jumpTo(0);
+            await tester.pump();
+            await tester.dragUntilVisible(
+              find.text('更早实时片段'),
+              scroll,
+              const Offset(0, -24),
+            );
+            await tester.tap(find.text('更早实时片段'));
+            expect(pagingRequests.last, 'next-older');
+            expect(header.hitTestable(), findsOneWidget);
+            expect(tester.getSize(member).height, greaterThan(0));
+            expect(tester.takeException(), isNull);
+          }
+        }
+        await tester.pumpWidget(const SizedBox());
+        expansion.retire();
+        await _flush(tester);
+        expect(handle.closed, isTrue);
+        expect(scope.isActive, isFalse);
+      },
+    );
+  }
+
+  testWidgets(
+    '#364 FinalEmptyAfterContent retires the stream and renders its typed explanation',
+    (tester) async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      h.accept([_part(_textItem())]);
+      await tester.pumpWidget(h.host());
+      await _flush(tester);
+      final scope = h.content.scopes.single;
+      final previous = h.live.value!;
+      h.live.value = LiveDisplayWindow(
+        currentWorkId: null,
+        revision: previous.revision + 1,
+        historyThrough: 0,
+        executionPresent: true,
+        blocks: [
+          LiveDisplayBlock(
+            id: previous.blocks.single.id,
+            blockOrder: 1,
+            state: DisplayBlockState.sealed,
+            body: SingleDisplayBlock(
+              visibility: SingleVisibility.finalEmptyAfterContent,
+              record: DisplayRecord(
+                atom: _textItem(),
+                contentSource: const CompletedOriginal(completionId: 'empty'),
+              ),
+            ),
+          ),
+        ],
+      );
+      await _flush(tester);
+      expect(find.text('该输出的最终内容为空'), findsOneWidget);
+      expect(scope.isActive, isFalse);
+      expect(h.content.scopes, hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final bounded in [true, false]) {
     testWidgets(
       'active response preserves body scrolling with ${bounded ? "bounded" : "unbounded"} member height',
@@ -794,6 +1142,7 @@ void main() {
           blockOrder: 2,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
             record: DisplayRecord(
               atom: _textItem(revision: 2),
               contentSource: const CurrentAtom(),
@@ -802,6 +1151,7 @@ void main() {
         );
         LiveDisplayWindow latest({int revision = 7, int through = 0}) =>
             LiveDisplayWindow(
+              currentWorkId: null,
               revision: revision,
               historyThrough: through,
               executionPresent: true,
@@ -809,6 +1159,7 @@ void main() {
               older: 'older-cursor',
             );
         final page = LiveDisplayWindow(
+          currentWorkId: null,
           revision: 7,
           historyThrough: 0,
           executionPresent: true,
@@ -818,6 +1169,7 @@ void main() {
               blockOrder: 1,
               state: DisplayBlockState.open,
               body: SingleDisplayBlock(
+                visibility: SingleVisibility.content,
                 record: DisplayRecord(
                   atom: _textItem(),
                   contentSource: const CurrentAtom(),
@@ -827,14 +1179,32 @@ void main() {
           ],
         );
         var reads = 0;
-        h.loadLiveOlder = (before) async {
+        h.onLoadOlder = (before) {
           expect(before, 'older-cursor');
           reads++;
-          return page;
         };
         h.live.value = latest();
         await tester.pumpWidget(h.host());
         await tester.tap(find.widgetWithText(TextButton, '更早实时片段'));
+        expect(reads, 1);
+        // Supply the ViewModel result explicitly; the component owns no query or reducer.
+        final requested = LiveStatusStateMachine.transition(
+          h.presentation,
+          const LiveStatusLoadOlderRequested(
+            target: LiveStatusSectionTarget.outputBar,
+            before: 'older-cursor',
+          ),
+        ).state;
+        h.presentation = LiveStatusStateMachine.transition(
+          requested,
+          LiveStatusOlderLoaded(
+            target: LiveStatusSectionTarget.outputBar,
+            before: 'older-cursor',
+            window: page,
+            cut: requested.cut,
+          ),
+        ).state;
+        await tester.pumpWidget(h.host());
         await _flush(tester);
         final scope = h.content.scopes.last;
         scope.watches.single.add(_window('older text'));
@@ -860,8 +1230,8 @@ void main() {
           revision: handoffWithoutRevisionChange ? 7 : 8,
           through: handoffWithoutRevisionChange ? 1 : 0,
         );
-        expect(scope.active, isFalse);
         await tester.pumpWidget(h.host());
+        expect(scope.active, isFalse);
         await _flush(tester);
         expect(find.widgetWithText(TextButton, '最新实时片段'), findsNothing);
         expect(find.text('older text'), findsNothing);
@@ -1002,7 +1372,7 @@ void main() {
   );
 
   testWidgets(
-    'Activity retirement revokes bodies synchronously and a new qualification cannot reuse old IO',
+    'presentation retirement revokes bodies before a new qualification can reuse IO',
     (tester) async {
       final h = _Harness();
       addTearDown(h.dispose);
@@ -1016,6 +1386,7 @@ void main() {
       expect(find.text('旧值'), findsOneWidget);
       final borrowed = h.display!.windows.single;
       h.accept([]);
+      await tester.pumpWidget(h.host());
       expect(old.active, isFalse);
       expect(h.display!.windows, isEmpty);
       expect(borrowed.window, isNull);
@@ -1128,46 +1499,158 @@ void main() {
           key: 'part.summaryText.0',
         ),
       );
-      TimelineMemberDisplay? display;
-      Widget scene({bool withBody = true}) => _host(
-        TimelineMemberAtom(
-          key: const ValueKey('reasoning-member'),
-          content: content,
-          isActive: () => true,
-          images: images,
-          readAttachment: null,
-          registerDisplay: (value) {
-            display = value;
-            return () => display = null;
-          },
-          record: DisplayRecord(
-            atom: ChatAtom(
-              id: 'reasoning-member',
-              source: _source,
-              sourceOrder: 1,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const ActiveChatAtom(
-                started: null,
-                status: ChatActiveStatus.running,
-              ),
-              contents: [
-                const ChatAtomContent(
-                  role: ChatContentRole.reasoningSummary,
-                  reference: summaryRef,
-                ),
-                if (withBody)
-                  ChatAtomContent(
-                    role: ChatContentRole.body,
-                    reference: _ref(),
-                  ),
-              ],
-            ),
-            contentSource: const CurrentAtom(),
-          ),
-          displayId: "fixture-current",
+      const backgroundText = '后台结果一\n后台结果二\n后台结果三\n后台结果四\n后台结果已返回';
+      const backgroundRef = ContentRef(
+        databaseId: 'database',
+        target: BodyContentTarget(
+          owner: ItemContentOwner(itemId: 'background-completion'),
+          key: 'tool.result',
         ),
       );
+      content.onRead = (reference, range) async {
+        expect(
+          contentReferenceIdentity(reference),
+          contentReferenceIdentity(backgroundRef),
+        );
+        final bytes = utf8.encode(backgroundText);
+        return ContentWindow(
+          bytes: bytes,
+          offset: 0,
+          generation: 'background',
+          availableThrough: bytes.length,
+          sealed: true,
+        );
+      };
+      TimelineMemberDisplay? display;
+      Widget scene({bool withBody = true, bool withBackground = false}) =>
+          _host(
+            CompletionRunView(
+              id: 'mixed-current-work',
+              summary: displaySummary(
+                withBackground ? 2 : 1,
+                terminal: withBackground ? 1 : 0,
+                running: 1,
+              ),
+              location: WorkDisplayLocation.live,
+              executionPresent: true,
+              initiallyExpanded: true,
+              childBuilder: (_) => Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (withBackground)
+                    TimelineMemberAtom(
+                      key: const ValueKey("background-result"),
+                      content: content,
+                      isActive: () => true,
+                      images: images,
+                      readAttachment: null,
+                      displayId: "background-result",
+                      record: DisplayRecord(
+                        contentSource: const CompletedOriginal(
+                          completionId: "background-completion",
+                        ),
+                        atom: ChatAtom(
+                          id: "background-result",
+                          completionItemId: "background-completion",
+                          completionSeq: 8,
+                          source: const BackgroundResultChatSource(
+                            messageId: "task-result",
+                          ),
+                          sourceOrder: 1,
+                          kind: ChatAtomKind.toolCall,
+                          delivery: ChatDeliveryKind.independent,
+                          lifecycle: const TerminalChatAtom(
+                            started: null,
+                            ended: null,
+                            outcome: ChatTerminalOutcome.completed,
+                          ),
+                          contents: const [
+                            ChatAtomContent(
+                              role: ChatContentRole.toolOutput,
+                              reference: backgroundRef,
+                            ),
+                          ],
+                          payload: InlinePayload(
+                            bytes: utf8.encode(
+                              jsonEncode({
+                                "contract": "anywork.chat/1",
+                                "type": "tool",
+                                "data": {
+                                  "invocation": {
+                                    "toolCallId": "background-call",
+                                    "name": "独立后台命令",
+                                    "presentationContract": "generic@1",
+                                  },
+                                  "state": {
+                                    "kind": "succeeded",
+                                    "completedAt": 12,
+                                    "output": {
+                                      "exitCode": 0,
+                                      "attachments": [],
+                                    },
+                                  },
+                                },
+                                "bodies": [
+                                  {
+                                    "key": "tool.arguments",
+                                    "byteLength": 2,
+                                    "inline": [123, 125],
+                                  },
+                                  {
+                                    "key": "tool.result",
+                                    "byteLength": utf8
+                                        .encode(backgroundText)
+                                        .length,
+                                    "inline": utf8.encode(backgroundText),
+                                  },
+                                ],
+                              }),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  TimelineMemberAtom(
+                    key: const ValueKey('reasoning-member'),
+                    content: content,
+                    isActive: () => true,
+                    images: images,
+                    readAttachment: null,
+                    registerDisplay: (value) {
+                      display = value;
+                      return () => display = null;
+                    },
+                    record: DisplayRecord(
+                      atom: ChatAtom(
+                        id: 'reasoning-member',
+                        source: _source,
+                        sourceOrder: 1,
+                        kind: ChatAtomKind.reasoning,
+                        delivery: ChatDeliveryKind.foreground,
+                        lifecycle: const ActiveChatAtom(
+                          started: null,
+                          status: ChatActiveStatus.running,
+                        ),
+                        contents: [
+                          const ChatAtomContent(
+                            role: ChatContentRole.reasoningSummary,
+                            reference: summaryRef,
+                          ),
+                          if (withBody)
+                            ChatAtomContent(
+                              role: ChatContentRole.body,
+                              reference: _ref(),
+                            ),
+                        ],
+                      ),
+                      contentSource: const CurrentAtom(),
+                    ),
+                    displayId: "fixture-current",
+                  ),
+                ],
+              ),
+            ),
+          );
       await tester.pumpWidget(scene());
       final original = content.scopes.single;
       expect(original.requests.single.$1, same(summaryRef));
@@ -1212,10 +1695,53 @@ void main() {
       );
       expect(find.text('折叠后迟到正文'), findsNothing);
       expect(find.text('按需读取的思考正文'), findsNothing);
-      await tester.pumpWidget(scene(withBody: false));
-      expect(find.byType(ExpansionTile), findsNothing);
+      await tester.pumpWidget(scene(withBody: false, withBackground: true));
+      await tester.pump();
+      expect(find.textContaining("独立后台命令").hitTestable(), findsOneWidget);
+      expect(
+        find.textContaining("折叠后仍可更新概要", findRichText: true).hitTestable(),
+        findsOneWidget,
+      );
+      expect(content.scopes, hasLength(2));
+      expect(
+        find.descendant(
+          of: find.byType(TimelineReasoningView),
+          matching: find.byType(ExpansionTile),
+        ),
+        findsNothing,
+      );
       expect(tester.widget<TimelineActivityRow>(row).expandable, isFalse);
       expect(fresh.requests, hasLength(1));
+      final backgroundRow = find.byKey(const ValueKey('background-result'));
+      await tester.tap(find.textContaining('独立后台命令'));
+      await _flush(tester);
+      final reasoningRow = find.byKey(const ValueKey('reasoning-member'));
+      await revealTimelineTextFragment(
+        tester,
+        reasoningRow,
+        '折叠后仍可更新概要',
+        alignment: 1,
+      );
+      expect(
+        find
+            .byKey(const ValueKey('completion-run-header:mixed-current-work'))
+            .hitTestable(),
+        findsOneWidget,
+      );
+      expectTimelineTextFragmentVisible(
+        tester,
+        backgroundRow,
+        '后台结果已返回',
+        hitTestable: true,
+      );
+      expectTimelineTextFragmentVisible(
+        tester,
+        reasoningRow,
+        '折叠后仍可更新概要',
+        hitTestable: true,
+      );
+      expect(content.scopes, hasLength(3));
+      expect(content.scopes.last.reads.single.$1, same(backgroundRef));
       await tester.pumpWidget(const SizedBox());
       await _flush(tester);
       expect(content.scopes.every((scope) => scope.closed), isTrue);

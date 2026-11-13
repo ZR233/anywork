@@ -22,6 +22,7 @@ import 'response.dart';
 import 'runtime.dart';
 import 'session_directory.dart';
 import 'settings.dart';
+import 'thread_lsp.dart';
 import 'thread_stream.dart';
 import 'updater.dart';
 part 'product_topic.freezed.dart';
@@ -130,6 +131,9 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.threadMcp(
     BridgeThreadMcpStateSnapshot field0,
   ) = BridgeProductBaseline_ThreadMcp;
+  const factory BridgeProductBaseline.threadLsp(
+    BridgeThreadLspStateSnapshot field0,
+  ) = BridgeProductBaseline_ThreadLsp;
   const factory BridgeProductBaseline.lsp(BridgeLspStateSnapshot field0) =
       BridgeProductBaseline_Lsp;
   const factory BridgeProductBaseline.skills(BridgeSkillsStateSnapshot field0) =
@@ -189,6 +193,8 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_McpCatalog;
   const factory BridgeProductTopic.threadMcp({required String threadId}) =
       BridgeProductTopic_ThreadMcp;
+  const factory BridgeProductTopic.threadLsp({required String threadId}) =
+      BridgeProductTopic_ThreadLsp;
   const factory BridgeProductTopic.lsp() = BridgeProductTopic_Lsp;
   const factory BridgeProductTopic.skills({required String workspaceId}) =
       BridgeProductTopic_Skills;

@@ -32,6 +32,7 @@ pub struct LspRuntimeRegistry {
     pub(super) state: Arc<Mutex<LspRuntimeState>>,
     pub(super) lifecycle: Arc<RwLock<()>>,
     pub(super) updates: broadcast::Sender<()>,
+    pub(super) directories: super::lease::DirectoryLeases,
     scopes: std::sync::Weak<std::sync::Mutex<ExecutionScopes>>,
     _scope_owner: Option<Arc<std::sync::Mutex<ExecutionScopes>>>,
     pub(super) is_global: bool,
@@ -41,6 +42,7 @@ pub struct LspRuntimeRegistry {
 struct ExecutionPartition {
     state: Arc<Mutex<LspRuntimeState>>,
     lifecycle: Arc<RwLock<()>>,
+    directories: super::lease::DirectoryLeases,
 }
 
 #[derive(Default)]
@@ -66,6 +68,7 @@ impl LspRuntimeRegistry {
             state: Arc::new(Mutex::new(LspRuntimeState::default())),
             lifecycle: Arc::new(RwLock::new(())),
             updates,
+            directories: Default::default(),
             scopes: Arc::downgrade(&scopes),
             _scope_owner: Some(scopes),
             is_global: true,
@@ -82,6 +85,7 @@ impl LspRuntimeRegistry {
                 })),
                 lifecycle: Default::default(),
                 updates: self.updates.clone(),
+                directories: Default::default(),
                 scopes: self.scopes.clone(),
                 _scope_owner: None,
                 is_global: false,
@@ -98,11 +102,13 @@ impl LspRuntimeRegistry {
                     ..Default::default()
                 })),
                 lifecycle: Default::default(),
+                directories: Default::default(),
             })
             .clone();
         Self {
             state: partition.state,
             lifecycle: partition.lifecycle,
+            directories: partition.directories,
             updates: self.updates.clone(),
             scopes: self.scopes.clone(),
             _scope_owner: None,
@@ -124,6 +130,7 @@ impl LspRuntimeRegistry {
             views.extend(scopes.partitions.values().map(|partition| Self {
                 state: partition.state.clone(),
                 lifecycle: partition.lifecycle.clone(),
+                directories: partition.directories.clone(),
                 updates: self.updates.clone(),
                 scopes: self.scopes.clone(),
                 _scope_owner: None,
@@ -165,7 +172,7 @@ impl LspRuntimeRegistry {
 
     async fn shutdown_partition(&self) -> LspResult<()> {
         let _guard = self.lifecycle.write().await;
-        let tasks = {
+        let roots = {
             let mut state = self.state.lock().await;
             state.closed = true;
             for workspace in state.workspaces.values_mut() {
@@ -177,57 +184,23 @@ impl LspRuntimeRegistry {
                     }
                 }
             }
-            state.tasks.clone()
+            state.workspaces.keys().cloned().collect::<Vec<_>>()
         };
-        let joined = futures::future::join_all(tasks.iter().map(join_task)).await;
-        let mut failures: Vec<String> = joined
+        let (leased_roots, mut failures) = self.close_directory_users().await;
+        // Until callers of the old bare configuration entry points are migrated,
+        // global shutdown must also reclaim workspaces without directory users.
+        failures.extend(
+            futures::future::join_all(
+                roots
+                    .iter()
+                    .filter(|root| !leased_roots.contains(root))
+                    .map(|root| self.reclaim_workspace(root)),
+            )
+            .await
             .into_iter()
             .filter_map(Result::err)
-            .map(|error| error.to_string())
-            .collect();
-        let clients = {
-            let state = self.state.lock().await;
-            let mut clients = state.retired_clients.clone();
-            clients.extend(state.workspaces.values().flat_map(|workspace| {
-                workspace
-                    .servers
-                    .values()
-                    .filter_map(|server| server.client.clone())
-            }));
-            clients.extend(state.workspaces.values().flat_map(|workspace| {
-                workspace
-                    .retiring
-                    .values()
-                    .map(|(_, client)| client.clone())
-            }));
-            clients.sort_by_key(|client| Arc::as_ptr(client) as usize);
-            clients.dedup_by_key(|client| Arc::as_ptr(client) as usize);
-            clients
-        };
-        let outcomes =
-            futures::future::join_all(clients.iter().map(|client| client.shutdown())).await;
-        failures.extend(
-            outcomes
-                .into_iter()
-                .filter_map(Result::err)
-                .map(|error| error.to_string()),
+            .map(|error| error.to_string()),
         );
-        {
-            let mut state = self.state.lock().await;
-            // Keep failed reclamation owners reachable for a later close attempt.
-            if failures.is_empty() {
-                state.retired_clients.clear();
-                for workspace in state.workspaces.values_mut() {
-                    workspace.host = None;
-                    workspace.retiring.clear();
-                    for server in workspace.servers.values_mut() {
-                        server.client = None;
-                        server.set_phase(LspLifecyclePhase::Stopped, None);
-                    }
-                }
-            }
-            state.tasks.clear();
-        }
         self.emit_update();
         if failures.is_empty() {
             Ok(())
@@ -249,13 +222,14 @@ pub(super) fn workspace_key(root: &std::path::Path) -> PathBuf {
 pub(super) struct LspRuntimeState {
     pub workspaces: BTreeMap<PathBuf, LspWorkspaceState>,
     pub closed: bool,
-    pub tasks: Vec<ManagedTask>,
-    pub retired_clients: Vec<Arc<LspClient>>,
 }
 #[derive(Default)]
 pub(super) struct LspWorkspaceState {
+    pub tasks: Vec<ManagedTask>,
+    pub retired_clients: Vec<Arc<LspClient>>,
     pub configured: bool,
     pub has_scanned: bool,
+    pub scan_pending: bool,
     pub servers: BTreeMap<String, LspRuntimeServerState>,
     pub host: Option<Arc<dyn LspHostBackend>>,
     pub defaults: BTreeMap<String, LspUserServerConfig>,

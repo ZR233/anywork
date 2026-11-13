@@ -64,7 +64,14 @@ pub enum BridgeDisplayBlockBody {
     },
     Single {
         record: Box<BridgeDisplayRecord>,
+        visibility: BridgeSingleVisibility,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeSingleVisibility {
+    Content,
+    FinalEmptyAfterContent,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +95,7 @@ pub struct BridgeLiveDisplayWindow {
     pub revision: u64,
     pub history_through: u64,
     pub execution_present: bool,
+    pub current_work_id: Option<String>,
     pub blocks: Vec<BridgeLiveDisplayBlock>,
     pub older: Option<String>,
 }

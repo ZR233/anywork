@@ -112,6 +112,7 @@ impl Tool for HeldToolInstance {
 
 #[derive(Debug, Default)]
 struct SaveProbe {
+    admitted: AtomicU64,
     durable: AtomicU64,
     admissions: AtomicUsize,
     flushes: AtomicUsize,
@@ -124,7 +125,8 @@ struct SaveProbe {
 impl ColdStore for Arc<SaveProbe> {
     fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
         self.admissions.fetch_add(1, Ordering::SeqCst);
-        self.durable.store(write.effect.sequence, Ordering::SeqCst);
+        self.admitted
+            .fetch_max(write.effect.sequence, Ordering::SeqCst);
         Ok(())
     }
 
@@ -135,7 +137,7 @@ impl ColdStore for Arc<SaveProbe> {
         }
     }
 
-    async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
+    async fn flush(&self, _: &str, through: u64) -> Result<(), ColdStoreError> {
         self.flushes.fetch_add(1, Ordering::SeqCst);
         if self.block_flush.load(Ordering::SeqCst) {
             let _waiting = CallDrop(self.flush_exited.clone());
@@ -149,6 +151,8 @@ impl ColdStore for Arc<SaveProbe> {
                 )),
             })
         } else {
+            assert!(through <= self.admitted.load(Ordering::SeqCst));
+            self.durable.fetch_max(through, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -423,6 +427,17 @@ async fn deletion_seal_releases_an_existing_preservation_wait_without_confirming
         let store = Arc::new(SaveProbe::default());
         thread
             .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread
+            .submit_input(ThreadInput {
+                id: "owed-before-flush".into(),
+                purpose: InputPurpose::Message,
+                payload: OpaquePayload::text("unsaved input"),
+                context: vec![ContextContent::Text {
+                    text: "unsaved input".into(),
+                }],
+            })
             .await
             .unwrap();
         store.block_flush.store(true, Ordering::SeqCst);

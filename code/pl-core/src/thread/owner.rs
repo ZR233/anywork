@@ -42,6 +42,8 @@ pub(super) struct Owner {
     pub(super) model_members: Option<super::model_members::MemberCall>,
     pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,
     pub(super) pending_model_member_starts: Vec<crate::model::ModelStartedMember>,
+    pub(super) pending_model_member_content_available:
+        Vec<crate::model::ModelContentAvailableMember>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
@@ -143,6 +145,10 @@ pub(super) struct Owner {
     /// execution state, never persisted.
     pub(super) output_obligations:
         std::collections::BTreeMap<String, (u64, Arc<dyn cold::OutputRetryObligation>)>,
+    /// Completion of the one original output retry in flight; callers own their own waits.
+    pub(super) output_retry_finished: Option<CancellationToken>,
+    /// The attached backend cannot be replaced; never reopen its known-closed notification source.
+    pub(super) pressure_watch_closed: bool,
     /// Repaired resource references whose committed result is not resident yet, keyed by call id.
     ///
     /// A producer can report its failed archive the moment it happens, so the user may retry before
@@ -361,14 +367,15 @@ impl Owner {
         // fault that just latched — reaches this Thread without waiting for its next command. It is
         // a wake-up only: the latch and the readiness are still computed here, by this one owner.
         let mut pressure_updates = self.subscribe_pressure();
-        let mut pressure_watch_closed = false;
+        let mut pressure_subscribed = self.cold.is_some();
         loop {
             tokio::task::consume_budget().await;
             if self.tools.poll_cleanup() {
                 self.publish_snapshot();
             }
-            if pressure_updates.is_none() && !pressure_watch_closed {
+            if !pressure_subscribed && self.cold.is_some() {
                 pressure_updates = self.subscribe_pressure();
+                pressure_subscribed = true;
             }
             if let Some(Some(completion)) =
                 futures::FutureExt::now_or_never(futures::StreamExt::next(&mut self.background))
@@ -409,7 +416,7 @@ impl Owner {
                                 // closes its watch, read its final report below and never subscribe
                                 // to the same closed source again.
                                 pressure_updates = None;
-                                pressure_watch_closed = true;
+                                self.pressure_watch_closed = true;
                             }
                             // A storage change is a wake-up, never a second fact source: this owner
                             // re-reads the backend's typed report, re-presents what it never handed
@@ -654,7 +661,10 @@ impl Owner {
     ///
     /// `None` while no store is attached: there is no storage fact to wait on then, so the idle loop
     /// arms nothing instead of polling.
-    fn subscribe_pressure(&self) -> Option<watch::Receiver<()>> {
+    pub(super) fn subscribe_pressure(&self) -> Option<watch::Receiver<()>> {
+        if self.pressure_watch_closed {
+            return None;
+        }
         self.cold
             .as_ref()
             .and_then(|store| store.subscribe_pressure(&self.id))
@@ -858,8 +868,11 @@ impl Owner {
             &self.published,
             &self.state,
             sequence,
-            std::mem::take(&mut self.pending_model_members).into(),
-            std::mem::take(&mut self.pending_model_member_starts).into(),
+            super::model_members::MemberEffects {
+                completed: std::mem::take(&mut self.pending_model_members).into(),
+                started: std::mem::take(&mut self.pending_model_member_starts).into(),
+                content_available: std::mem::take(&mut self.pending_model_member_content_available),
+            },
             std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {
             // Nothing was committed, so no fact can take a reservation over: the claim is dropped

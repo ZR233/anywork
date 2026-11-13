@@ -1,9 +1,10 @@
 use super::super::*;
 use super::record;
+use pl_protocol::{ChatAtomKind, ChatSourceId};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
-    GUI_TIMELINE_HISTORY_20K_SEED_BATCHES, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS,
-    gui_timeline_history_20k_seed_prompt, gui_timeline_history_20k_seed_script,
+    GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
+    gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -15,7 +16,15 @@ pub(super) struct Inventory {
     pub project_id: Option<String>,
     pub thread_id: Option<String>,
     pub main_items: Option<usize>,
+    model_text_items: Option<usize>,
+    normal_input_turns: Option<usize>,
     batches: Vec<BatchReceipt>,
+}
+
+struct MainInventory {
+    main_items: usize,
+    model_text_items: usize,
+    normal_input_turns: usize,
 }
 
 #[derive(Serialize)]
@@ -46,7 +55,9 @@ pub(super) fn run(
                 project_id: None,
                 thread_id: None,
                 main_items: None,
-                batches: Vec::with_capacity(GUI_TIMELINE_HISTORY_20K_SEED_BATCHES),
+                model_text_items: None,
+                normal_input_turns: None,
+                batches: Vec::with_capacity(GUI_TIMELINE_READ_PROFILE_SEED_BATCHES),
             };
             let result = Box::pin(write_one(context, &project, index, &mut inventory)).await;
             inventories.push(inventory);
@@ -61,10 +72,31 @@ pub(super) fn run(
                 Some(id) => Box::pin(count(&runtime, id, context.interrupt)).await,
                 None => Err(anyhow::anyhow!("seed has no Thread identity")),
             };
-            inventory.main_items = record(&mut errors, "Main inventory", counted);
-            if inventory.main_items.is_some_and(|count| {
-                count < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES * GUI_TIMELINE_HISTORY_20K_SEED_ITEMS
-            }) {
+            if let Some(counts) = record(&mut errors, "Main inventory", counted) {
+                inventory.main_items = Some(counts.main_items);
+                inventory.model_text_items = Some(counts.model_text_items);
+                inventory.normal_input_turns = Some(counts.normal_input_turns);
+                if counts.model_text_items != GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS {
+                    errors.push(format!(
+                        "{:?} has {} model text items, expected {}",
+                        inventory.thread_id,
+                        counts.model_text_items,
+                        GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS
+                    ));
+                }
+                if counts.normal_input_turns != GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
+                    errors.push(format!(
+                        "{:?} has {} normal input turns, expected {}",
+                        inventory.thread_id,
+                        counts.normal_input_turns,
+                        GUI_TIMELINE_READ_PROFILE_SEED_BATCHES
+                    ));
+                }
+            }
+            if inventory
+                .main_items
+                .is_some_and(|count| count < GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS)
+            {
                 errors.push(format!(
                     "{:?} has fewer than 20,000 Main items",
                     inventory.thread_id
@@ -88,7 +120,7 @@ async fn write_one(
     inventory: &mut Inventory,
 ) -> Result<()> {
     let fixture = FixtureServer::start_with_options(
-        gui_timeline_history_20k_seed_script(),
+        gui_timeline_read_profile_seed_script(),
         FixtureOptions {
             request_body_limit: Some(GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES),
             ..FixtureOptions::default()
@@ -170,7 +202,7 @@ async fn seed_batches(
                 title: Some(format!("conversation-read-profile-{index}")),
                 input: StudioPromptInput {
                     input_id: input_id(1),
-                    text: gui_timeline_history_20k_seed_prompt(1),
+                    text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
                 mode: pl_protocol::ThreadModeId::simple().label().into(),
@@ -201,7 +233,7 @@ async fn seed_batches(
         &mut inventory.batches,
     )
     .await?;
-    for batch in 2..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+    for batch in 2..=GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
         checkpoint(interrupt)?;
         runtime
             .submit_prompt_command(
@@ -209,7 +241,7 @@ async fn seed_batches(
                 SubmitPromptRequest {
                     input: StudioPromptInput {
                         input_id: input_id(batch),
-                        text: gui_timeline_history_20k_seed_prompt(batch),
+                        text: gui_timeline_read_profile_seed_prompt(batch),
                         attachment_draft_ids: Vec::new(),
                     },
                     expected_model_route_revision: revision,
@@ -243,7 +275,7 @@ async fn completed(
     // while a large batch is processed rather than treating a timer as progress.
     cancellable(interrupt, async {
         ensure!(
-            batches.len() < GUI_TIMELINE_HISTORY_20K_SEED_BATCHES,
+            batches.len() < GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
             "seed batch evidence exceeded the required batch count"
         );
         let turn_id = loop {
@@ -358,7 +390,7 @@ async fn count(
     runtime: &StudioRuntime,
     thread_id: &str,
     interrupt: &mpsc::Receiver<()>,
-) -> Result<usize> {
+) -> Result<MainInventory> {
     let demand = ReadDemand {
         max_items: 128,
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
@@ -382,6 +414,8 @@ async fn count(
         };
         let reader = feed.reader().clone();
         let mut total = 0usize;
+        let mut model_text_items = 0usize;
+        let mut inputs = BTreeSet::new();
         let mut seen = BTreeSet::new();
         loop {
             checkpoint(interrupt)?;
@@ -389,6 +423,20 @@ async fn count(
             total = total
                 .checked_add(batch.entries.len())
                 .context("Main count overflow")?;
+            for entry in &batch.entries {
+                match (&entry.atom.kind, &entry.atom.source) {
+                    (ChatAtomKind::Text, ChatSourceId::ForegroundTurn { .. }) => {
+                        model_text_items += 1;
+                    }
+                    (ChatAtomKind::Input, ChatSourceId::Input { input_id }) => {
+                        ensure!(
+                            inputs.insert(input_id.clone()),
+                            "Main inventory repeated input {input_id}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
             let Some(before) = batch.before else {
                 break;
             };
@@ -398,7 +446,11 @@ async fn count(
             );
             batch = reader.load_older(&before, demand).await?;
         }
-        Ok(total)
+        Ok(MainInventory {
+            main_items: total,
+            model_text_items,
+            normal_input_turns: inputs.len(),
+        })
     })
     .await;
     let mut errors = Vec::new();

@@ -27,6 +27,7 @@ DisplayBlock displaySingle(CompletedEntry entry, {int? historyPos}) =>
       id: entry.recordId,
       historyPos: historyPos ?? entry.completionSeq,
       body: SingleDisplayBlock(
+        visibility: SingleVisibility.content,
         record: DisplayRecord(
           atom: entry.atom,
           contentSource: CompletedOriginal(completionId: entry.recordId),

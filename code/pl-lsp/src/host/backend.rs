@@ -182,7 +182,7 @@ impl LspHostProcess {
 pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
     /// Path semantics of the machine owning these files and the language server.
     fn path_style(&self) -> LspPathStyle;
-    /// 标识当前 workspace handle；transport 重连后必须变化。
+    /// 标识逻辑执行会话与目录；传输重挂和临时句柄不改变身份，实际会话替换才改变。
     fn identity(&self) -> String;
 
     /// 读取一个 workspace 内文件的原始字节。

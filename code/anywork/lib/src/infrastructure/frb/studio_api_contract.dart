@@ -1871,8 +1871,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );
@@ -1889,8 +1887,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );
@@ -1907,8 +1903,6 @@ class FrbStudioTransport
       state: snapshot.state,
       helperVersion: snapshot.helperVersion,
       architecture: snapshot.architecture,
-      attempt: snapshot.attempt,
-      delaySeconds: snapshot.delaySeconds?.toInt(),
       errorCode: snapshot.errorCode,
       errorMessage: snapshot.errorMessage,
     );
@@ -3268,6 +3262,34 @@ class FrbStudioTransport
         () => frb.reconnectThreadMcp(
           input: frb.BridgeReconnectThreadMcpInput(
             threadId: threadId,
+            serverId: serverId,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ThreadLspStateSnapshot> readThreadLspState(String threadId) async {
+    await _ensureReady();
+    return _threadLspStateFromFrb(
+      await _bridgeCall(() => frb.readThreadLspState(threadId: threadId)),
+    );
+  }
+
+  @override
+  Future<ThreadLspStateSnapshot> resetThreadLspServer({
+    required String threadId,
+    required String bindingId,
+    required String serverId,
+  }) async {
+    await _ensureReady();
+    return _threadLspStateFromFrb(
+      await _bridgeCall(
+        () => frb.resetThreadLspServer(
+          input: frb_thread_lsp_types.ThreadLspResetInput(
+            threadId: threadId,
+            bindingId: bindingId,
             serverId: serverId,
           ),
         ),

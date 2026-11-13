@@ -35,6 +35,8 @@ pub struct StudioRuntimeOptions {
     pub host: StudioHostKind,
     pub helper_source: RemoteHelperSource,
     pub host_mcp_source: HostMcpSource,
+    /// Optional host-selected SSH configuration; explicit handles also reach OpenSSH via `-F`.
+    pub ssh_config: Option<crate::SshConfigFile>,
 }
 
 impl StudioRuntimeOptions {
@@ -44,6 +46,7 @@ impl StudioRuntimeOptions {
             host: StudioHostKind::Desktop,
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
+            ssh_config: None,
         }
     }
 
@@ -53,6 +56,7 @@ impl StudioRuntimeOptions {
             host: StudioHostKind::HttpServer,
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
+            ssh_config: None,
         }
     }
 
@@ -171,6 +175,7 @@ pub(super) struct ResolvedRuntimeOptions {
     pub host: StudioHostKind,
     pub helper_source: RemoteHelperSource,
     pub host_mcp_source: HostMcpSource,
+    pub ssh_config: Option<crate::SshConfigFile>,
 }
 
 impl StudioRuntimeOptions {
@@ -182,6 +187,7 @@ impl StudioRuntimeOptions {
             host: self.host,
             helper_source: self.helper_source,
             host_mcp_source: self.host_mcp_source,
+            ssh_config: self.ssh_config,
         })
     }
 }

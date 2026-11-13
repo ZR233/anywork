@@ -121,6 +121,9 @@ pub struct StudioSubmitPromptOptions {
     /// their caller. Initial submission of an explicitly routed new Thread has
     /// no prior Client mirror and remains in the same lifecycle transaction.
     pub expected_model_route_revision: Option<u64>,
+    /// Tightens this input's model-step budget without changing the Thread default.
+    /// Child submissions remain bounded by the existing child policy.
+    pub max_model_steps: Option<std::num::NonZeroU32>,
 }
 
 /// Studio 输入受理回执；实际 Turn 关联由 Thread 事实流提供。
@@ -209,7 +212,7 @@ pub struct StudioRuntime {
     rejected_tools: rejected_tools::RejectedToolOwners,
     tool_catalog_updates: std::sync::Arc<tokio::sync::Notify>,
     sessions: crate::session::SessionTable,
-    acp_workers: std::sync::Arc<acp_worker::WorkerSource>,
+    acp_workers: std::sync::Arc<pl_remote_helper::Executor>,
     #[cfg(test)]
     s2_delete_publication_failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,
@@ -239,11 +242,6 @@ pub struct StudioRuntime {
     activation: ProjectActivationRuntime,
     attachment_drafts: attachment_drafts::AttachmentDraftRuntime,
     ssh_manager: std::sync::Arc<pl_tool::remote::SshManager>,
-    /// Linux 本地工作区按需物化受监督 worker（本地工具执行与本地 LSP 宿主）时保留的 remote
-    /// helper 来源；其他平台没有本地 worker 物化路径（Windows 本地执行走原生 Job 监督、远端
-    /// helper 分发走 `ssh_manager`），因此不保留该字段。
-    #[cfg(target_os = "linux")]
-    helper_source: crate::worker_assets::RemoteHelperSource,
     host_mcp_source: crate::host_mcp_assets::HostMcpSource,
     /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
     service_stops: lifecycle::shutdown::ServiceStopSlots,

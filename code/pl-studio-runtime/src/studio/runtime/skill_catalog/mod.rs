@@ -2,7 +2,6 @@
 
 mod discovery;
 mod query;
-mod remote;
 mod system;
 mod types;
 

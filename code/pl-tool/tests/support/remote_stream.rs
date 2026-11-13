@@ -66,3 +66,31 @@ impl AsyncRead for GatedPattern {
         Poll::Ready(Ok(()))
     }
 }
+
+/// Validates every downloaded byte without collecting the file in memory.
+#[derive(Default)]
+pub struct PatternSink {
+    pub bytes: u64,
+}
+impl tokio::io::AsyncWrite for PatternSink {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if bytes.iter().any(|byte| *byte != 0xa5) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "downloaded pattern differs",
+            )));
+        }
+        self.bytes += bytes.len() as u64;
+        Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}

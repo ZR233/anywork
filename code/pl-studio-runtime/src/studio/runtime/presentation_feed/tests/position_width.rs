@@ -10,16 +10,24 @@ async fn handoff_at_decimal_boundary(delivered: u64) -> Result<()> {
     let env = Environment::new(vec![], vec![]).await?;
     let result = async {
         let mut h = Harness::new(&env).await?;
-        // Use real reliable boundaries. Empty text closes each Work without adding a text card,
-        // keeping the initial history page smaller than the later multi-head live window.
-        for i in 0..delivered {
+        // One initial visible Single, followed by Work/Single pairs, produces the odd prefix.
+        // Every separator has actual nonempty content and its own reliable content phase.
+        assert_eq!(delivered % 2, 1);
+        h.effect(vec![start("seed-initial", false)], vec![]).await?;
+        h.content_available(vec![start("seed-initial", false)])
+            .await?;
+        h.effect(vec![], vec![finish("seed-initial", false, "initial")?])
+            .await?;
+        for i in 0..(delivered - 1) / 2 {
             let work = format!("seed-work-{i}");
-            let empty = format!("seed-empty-{i}");
+            let text = format!("seed-text-{i}");
             h.effect(vec![start(&work, true)], vec![]).await?;
             h.effect(vec![], vec![finish(&work, true, "finished")?])
                 .await?;
-            h.effect(vec![start(&empty, false)], vec![]).await?;
-            h.effect(vec![], vec![finish(&empty, false, "")?]).await?;
+            h.effect(vec![start(&text, false)], vec![]).await?;
+            h.content_available(vec![start(&text, false)]).await?;
+            h.effect(vec![], vec![finish(&text, false, "separator")?])
+                .await?;
         }
         h.effect(vec![start("handoff-work", true)], vec![]).await?;
         h.effect(vec![], vec![finish("handoff-work", true, "finished")?])
@@ -47,10 +55,11 @@ async fn handoff_at_decimal_boundary(delivered: u64) -> Result<()> {
         // The first text begins the handoff, and the unfinished text prefix holds all eight
         // subsequent live heads. Long but bounded provider identities make that window larger
         // than the initial history page, without loading or padding any content body.
-        let starts = (0..8)
+        let starts: Vec<_> = (0..8)
             .map(|i| start(&format!("pending-text-{i}-{}", "p".repeat(512)), false))
             .collect();
-        h.effect(starts, vec![]).await?;
+        h.effect(starts.clone(), vec![]).await?;
+        h.content_available(starts).await?;
         let cut = feed
             .reader()
             .capture_display(None, 9, Some(u64::MAX), 0)

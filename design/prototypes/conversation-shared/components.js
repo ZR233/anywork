@@ -363,17 +363,20 @@
         this.body.hidden = !hasContent;
         this.markdown.update(member.content || '');
       }
-      if (this.status !== member.status) {
-        this.status = member.status;
-        if (member.status === 'running') {
+      const shownStatus = this.mode === 'history' && member.status === 'running'
+        ? 'frozen' : member.status;
+      if (this.status !== shownStatus) {
+        this.status = shownStatus;
+        if (shownStatus === 'running') {
           this.symbol.innerHTML = spinner();
         } else {
           const kindIcon = kinds[member.kind]?.icon || 'wrench';
           this.symbol.innerHTML = icon(member.status === 'failed' ? 'circle-alert' : member.status === 'stopped' ? 'square' : kindIcon);
           icons(this.symbol);
         }
-        this.node.dataset.status = member.status;
-        this.statusText.textContent = statusLabel(member.status);
+        this.node.dataset.status = shownStatus;
+        this.statusText.textContent = shownStatus === 'frozen'
+          ? '封存时尚未结束' : statusLabel(shownStatus);
       }
       const interrupted = member.status === 'failed' || member.status === 'stopped' ? statusLabel(member.status) + ' · ' : '';
       this.meta.textContent = thinking ? '' : interrupted + member.elapsed + 's';
@@ -391,7 +394,8 @@
               : target.status === 'stopped'
                 ? 'square'
                 : (target.icon || 'git-fork');
-            const sym = target.status === 'running' ? spinner() : icon(targetIcon);
+            const sym = target.status === 'running' && this.mode === 'live'
+              ? spinner() : icon(targetIcon);
             const row = node(`<div class="cv-wait-target"><span class="cv-status-symbol" data-status="${escape(target.status)}">${sym}</span><div><b>${escape(target.name)}</b><span>${escape(target.task)}</span></div><span class="cv-wait-state">${statusLabel(target.status)}</span></div>`);
             if (target.status === 'completed') row.append(button('查看报告', 'arrow-up-right', () => this.actions.detail(target.name + ' 的报告', target.report), 'cv-quiet'));
             return row;
@@ -462,10 +466,20 @@
       const follow = this.rail.scrollHeight - this.rail.scrollTop - this.rail.clientHeight < 22;
       const added = group.members.slice(this.members.length).map(member => new MemberView(member, this.mode, this.actions));
       added.forEach(view => { this.members.push(view); this.rail.append(view.node); });
-      this.members.forEach((view, index) => view.update(group.members[index]));
+      this.members.forEach((view, index) => {
+        view.mode = this.mode;
+        view.update(group.members[index]);
+      });
       if (added.length && follow) this.rail.scrollTop = this.rail.scrollHeight;
       this.node.dataset.status = group.status;
-      if (this.mode !== 'live') return;
+      if (this.mode === 'history') return;
+      if (this.indicator) this.indicator.hidden = this.mode === 'resting';
+      if (this.mode === 'resting') {
+        this.node.dataset.phase = 'resting';
+        this.title.textContent = '工作记录';
+        this.meta.textContent = `${group.members.length} 项`;
+        return;
+      }
       const running = group.members.filter(member => member.status === 'running');
       const runningExec = running.some(member => member.kind === 'command');
       const latestThought = group.members
@@ -497,7 +511,7 @@
         this.currentStep.textContent = '';
         this.currentStep.hidden = true;
       }
-      this.meta.textContent = groupElapsedLabel(group.elapsed, '执行了');
+      this.meta.textContent = `${group.members.length} 项`;
     }
     flush() { this.members.forEach(member => member.flush()); }
   }
@@ -606,7 +620,11 @@
         content.append(files);
       }
     } else {
-      new MarkdownView(content, actions).update(item.text);
+      if (item.visibility === 'finalEmptyAfterContent') {
+        content.append(node('<p role="status">该输出的最终内容为空</p>'));
+      } else {
+        new MarkdownView(content, actions).update(item.text);
+      }
     }
     const footer = element.querySelector('.cv-message-footer');
     if (item.hideFooter) {

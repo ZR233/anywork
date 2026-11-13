@@ -5,12 +5,13 @@ use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
 use std::time::Duration;
 #[path = "mcp_refresh_barrier_tests.rs"]
 mod barrier_tests;
-#[cfg(target_os = "linux")]
-#[path = "../../../../pl-tool/tests/support/helper.rs"]
-mod helper;
+#[path = "../../../../pl-tool/tests/support/binding_host.rs"]
+mod binding_host;
 #[expect(dead_code, reason = "shared real stdio protocol fixture")]
 #[path = "../../../../pl-tool/tests/support/mcp_stdio.rs"]
 mod mcp_stdio;
+#[path = "mcp_reconnect_tests.rs"]
+mod reconnect_tests;
 
 fn owner(
     factory: &StudioThreadFactory,
@@ -21,15 +22,10 @@ fn owner(
 ) -> Result<Arc<ThreadMcpOwner>> {
     factory.bind_resource_scope(id, resources)?;
     let connector = factory.services.mcp_connector.clone();
-    #[cfg(target_os = "linux")]
-    let connector = connector.with_stdio_worker(helper::remote_helper_executable().to_path_buf());
     let runtime = McpRuntime::new(connector);
     let owner = ThreadMcpOwner::new(
         id.into(),
-        Arc::new(ThreadToolLifetime {
-            gate: Arc::new(tokio::sync::Mutex::new(())),
-            cancellation: CancellationToken::new(),
-        }),
+        Arc::new(ThreadToolLifetime::default()),
         scope,
         root.into(),
         None,

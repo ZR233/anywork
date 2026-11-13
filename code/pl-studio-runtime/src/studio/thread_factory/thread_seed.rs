@@ -30,8 +30,8 @@ pub(super) async fn capture(
     let root = seed.root.to_owned();
     let documents = match &seed.resources.remote {
         Some(host) => {
-            pl_tool::remote::load_remote_workspace_instructions(
-                &host.files,
+            pl_tool::workspace_file::load_workspace_instructions(
+                &host.files(),
                 config.project_doc_max_bytes,
                 &config.project_doc_fallback_filenames,
             )

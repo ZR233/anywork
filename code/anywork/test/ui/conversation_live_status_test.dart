@@ -932,6 +932,7 @@ void main() {
         state: state,
         source: const ForegroundTurnChatSource(turnId: 'turn-1'),
         body: SingleDisplayBlock(
+          visibility: SingleVisibility.content,
           record: DisplayRecord(
             atom: atom ?? activeCompaction,
             contentSource: contentSource,
@@ -945,6 +946,7 @@ void main() {
         revision: 1,
         historyThrough: 0,
         executionPresent: executionPresent,
+        currentWorkId: null,
         blocks: blocks,
       );
       ExecutionLiveNotice notice({
@@ -1113,6 +1115,7 @@ void main() {
           <
             ({
               String name,
+              String? currentWorkId,
               bool collapsedSingleRow,
               TimelineActivityIndicatorStyle expectedStyle,
               String expectedTitle,
@@ -1122,6 +1125,7 @@ void main() {
           >[
             (
               name: 'preparing',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '准备中',
@@ -1137,6 +1141,7 @@ void main() {
             ),
             (
               name: 'thinking',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1153,6 +1158,7 @@ void main() {
             ),
             (
               name: 'old-sealed-before-new-model-request',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1177,6 +1183,7 @@ void main() {
             ),
             (
               name: 'new-work-waiting-api-without-result-or-summary',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1202,6 +1209,7 @@ void main() {
             ),
             (
               name: 'new-work-thinking-before-exec',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1218,6 +1226,7 @@ void main() {
             ),
             (
               name: 'workgroup',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1249,6 +1258,7 @@ void main() {
             ),
             (
               name: 'all-members-terminal-transferred-waiting-api-again',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1273,6 +1283,7 @@ void main() {
             ),
             (
               name: 'failed-call-thinking',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1288,6 +1299,7 @@ void main() {
             ),
             (
               name: 'failed-call-with-thought',
+              currentWorkId: 'work-1',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: longThought,
@@ -1311,6 +1323,7 @@ void main() {
             ),
             (
               name: 'text',
+              currentWorkId: null,
               collapsedSingleRow: false,
               expectedStyle: TimelineActivityIndicatorStyle.writing,
               expectedTitle: '正在输出',
@@ -1328,6 +1341,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
+                    visibility: SingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'text-1',
@@ -1378,6 +1392,7 @@ void main() {
             ),
             (
               name: 'after-text',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '思考中',
@@ -1401,6 +1416,7 @@ void main() {
             ),
             (
               name: 'next-group-exec-only',
+              currentWorkId: 'work-2',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.circularProgress,
               expectedTitle: '工作中',
@@ -1438,6 +1454,7 @@ void main() {
             ),
             (
               name: 'next-group',
+              currentWorkId: 'work-2',
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '运行测试并核对布局',
@@ -1475,6 +1492,7 @@ void main() {
             ),
             (
               name: 'compacting',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
               expectedTitle: '正在压缩上下文',
@@ -1485,6 +1503,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
+                    visibility: SingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'compact-1',
@@ -1517,6 +1536,7 @@ void main() {
             ),
             (
               name: 'compacting-without-record',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.compactingZip,
               expectedTitle: '正在压缩上下文',
@@ -1532,6 +1552,7 @@ void main() {
             ),
             (
               name: 'stopping',
+              currentWorkId: null,
               collapsedSingleRow: true,
               expectedStyle: TimelineActivityIndicatorStyle.restingCat,
               expectedTitle: '停止中',
@@ -1553,6 +1574,7 @@ void main() {
       double? previousCatPhase;
 
       for (final stage in stages) {
+        harness.currentWorkId = stage.currentWorkId;
         harness.blocks = stage.blocks;
         harness.status = stage.status;
         await tester.pumpWidget(harness.build());
@@ -1585,9 +1607,17 @@ void main() {
             findsNothing,
           );
           expect(
-            find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
+            find.descendant(
+              of: barFinder,
+              matching: find.byKey(const ValueKey('work-header-member-count')),
+            ),
             findsOneWidget,
-            reason: '${stage.name}: group elapsed is never the phase timer',
+            reason: '${stage.name}: the open tail exposes its reliable count',
+          );
+          expect(
+            find.descendant(of: barFinder, matching: find.text('执行了 7 分 8 秒')),
+            findsNothing,
+            reason: '${stage.name}: group creation is not an active-work clock',
           );
           expect(
             find.descendant(
@@ -1753,24 +1783,6 @@ void main() {
   });
 }
 
-class _ZeroJitterSession extends Fake implements ThreadSessionState {
-  @override
-  String get threadId => 'thread';
-  @override
-  ThreadActivityView? get activity => null;
-  @override
-  StudioTurnView get activeTurn => StudioTurnView(
-    turnId: 'turn-1',
-    threadId: 'thread',
-    revision: 1,
-    state: const RunningStudioTurnState(
-      startedAt: 100,
-      activity: StudioTurnActivity.thinking,
-    ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(225000),
-  );
-}
-
 class _ZeroJitterContent extends Fake implements ConversationContent {
   final source = LatestValue<ChatUiState<bool>>(
     const ChatReady('thread', true),
@@ -1790,10 +1802,12 @@ class _ZeroJitterHarness {
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = const [];
   ThreadActivityView? status;
+  String? currentWorkId;
   int revision = 0;
 
   Widget build() {
     final window = LiveDisplayWindow(
+      currentWorkId: currentWorkId,
       revision: ++revision,
       historyThrough: 0,
       executionPresent: true,
@@ -1821,10 +1835,8 @@ class _ZeroJitterHarness {
     final presenting = aggregate.barState as LiveStatusPresenting;
     Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
       section: s,
-      managedByViewModel: true,
-      session: _ZeroJitterSession(),
+      threadId: 'thread',
       content: content,
-      live: live,
       presenting: s == ConversationLiveSection.output ? presenting : null,
       workSlice: s == ConversationLiveSection.work
           ? aggregate.timelineWork

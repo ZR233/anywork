@@ -15,57 +15,55 @@ use std::sync::Arc;
 
 /// Paths belong to the physical service host selected during Thread assembly.
 #[derive(Debug, Clone)]
-pub enum LspPathBinding {
-    Local(ToolWorkspace),
-    Remote {
-        workspace: ToolWorkspace,
-        files: Arc<crate::remote::RemoteWorkspaceFileBackend>,
-    },
+pub struct LspPathBinding {
+    workspace: ToolWorkspace,
+    files: Arc<crate::workspace_file::ExecutorWorkspaceFileBackend>,
 }
 
 impl LspPathBinding {
-    pub fn workspace_root(&self) -> &std::path::Path {
-        self.workspace().root()
-    }
-
-    fn workspace(&self) -> &ToolWorkspace {
-        match self {
-            Self::Local(workspace) | Self::Remote { workspace, .. } => workspace,
+    pub fn new(
+        workspace: ToolWorkspace,
+        files: crate::workspace_file::ExecutorWorkspaceFileBackend,
+    ) -> Self {
+        Self {
+            files: Arc::new(files.with_workspace(workspace.clone())),
+            workspace,
         }
     }
-
+    pub fn workspace_root(&self) -> &std::path::Path {
+        self.workspace.root()
+    }
+    fn workspace(&self) -> &ToolWorkspace {
+        &self.workspace
+    }
+    fn configuration_directory(&self) -> Result<String, ToolError> {
+        let executor = self.files.executor();
+        let root = executor
+            .path(self.files.canonical_path())
+            .map_err(ToolError::new)?;
+        Ok(executor
+            .join_path(&root, ".anywork/lsp")
+            .map_err(ToolError::new)?
+            .as_str()
+            .into())
+    }
     async fn resolve(
         &self,
         path: std::path::PathBuf,
         operation: pl_lsp::query::LspQueryOperation,
         grant: &pl_core::tool::execution_policy::ExecutionGrant,
     ) -> Result<std::path::PathBuf, ToolError> {
-        let resolved = match self {
-            Self::Local(workspace) => {
-                let root = workspace.root().to_owned();
-                let host_access = workspace.workspace().boundary().allows_host_paths()
-                    && grant.contains(crate::approval::HOST_WORKSPACE_ACCESS);
-                tokio::task::spawn_blocking(move || {
-                    let policy =
-                        crate::workspace::ToolPathPolicy::new(root, host_access, "lsp_query")?;
-                    let display = path.display().to_string();
-                    if operation.requires_file() {
-                        policy.resolve_existing_path(&path, &display)
-                    } else {
-                        policy.resolve_existing_or_parent_path(&path, &display)
-                    }
-                })
-                .await
-                .map_err(ToolError::new)?
-                .map_err(ToolError::new)?
-            }
-            Self::Remote { files, .. } => {
-                crate::remote::resolve_lsp_query_path(files, &path, operation)
-                    .await
-                    .map_err(ToolError::new)?
-            }
-        };
-        Ok(resolved)
+        use crate::workspace_file::WorkspaceFileBackend;
+        let granted = self.files.for_grant(grant);
+        let files = granted.as_ref().unwrap_or(&self.files);
+        let path = path.to_str().ok_or_else(|| {
+            ToolError::new(crate::tool_error("lsp_query", "query path is not UTF-8"))
+        })?;
+        let target = files
+            .resolve_query_path(path, operation.requires_file())
+            .await
+            .map_err(ToolError::new)?;
+        Ok(target.as_str().into())
     }
 }
 
@@ -234,7 +232,7 @@ impl StatusReader for ThreadLspPort {
         let servers = self.registry.snapshots_for_workspace(root).await;
         Ok(pl_tool_lsp::support::WorkspaceStatus {
             workspace_root: root.display().to_string(),
-            configuration_directory: root.join(".anywork/lsp").display().to_string(),
+            configuration_directory: self.paths.configuration_directory()?,
             servers: servers
                 .into_iter()
                 .map(|server| pl_tool_lsp::support::ServerStatus {
@@ -306,6 +304,7 @@ impl QueryService for ThreadLspPort {
             .query_in_workspace(
                 self.paths.workspace().root(),
                 LspQuery {
+                    server_id: request.server_id,
                     operation: host_operation(operation),
                     file_path: request.file_path,
                     line: request.line,

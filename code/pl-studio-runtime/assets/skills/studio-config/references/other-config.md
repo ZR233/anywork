@@ -80,3 +80,13 @@ Host transfer staging, attachment drafts, helper caches, credential transaction
 journals, migration backups and startup recovery records are not general-purpose
 scratch or editable settings. Preserve originals and diagnostics on failure;
 never reset data or remove journals to make an unrelated configuration task pass.
+
+SSH connections are explicit and shared by active workspaces on the same server.
+Disconnect or transport failure permanently closes existing process/file/LSP
+handles. Connect creates a fresh execution binding; it does not resume commands,
+file uploads, directory cursors or language servers. Do not retry a mutation from
+a lost response without checking its actual result. OpenSSH user settings still
+apply; anywork does not add keepalive settings or an automatic reconnect policy.
+Project Skills and LSP files are read on their workspace target; user, system and
+external read-only Skills remain on the desktop. Check each resource's actual
+source before editing. No configuration format or field changes are required.

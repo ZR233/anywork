@@ -70,7 +70,66 @@ Widget _host(Widget child, {double width = 720, double scale = 1}) =>
       ),
     );
 
+Finder _workTitle(Finder header) => find.descendant(
+  of: header,
+  matching: find.byKey(const ValueKey('work-header-title')),
+);
+
 void main() {
+  testWidgets('#364 terminal cold tail is Resting, not Unrestored', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        CompletionRunView(
+          id: 'resting-tail',
+          summary: _summary(),
+          location: WorkDisplayLocation.live,
+          state: DisplayBlockState.open,
+          executionPresent: false,
+          initiallyExpanded: false,
+          childBuilder: (_) => const Text('真实成员'),
+        ),
+      ),
+    );
+    expect(find.textContaining('尚未恢复'), findsNothing);
+    final indicator = tester.widget<TimelineActivityIndicator>(
+      find.byType(TimelineActivityIndicator),
+    );
+    expect(indicator.active, isFalse);
+    expect(indicator.icon, Icons.work_outline);
+    expect(find.text('工作记录'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('#364 open tail never counts overnight idle as working time', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        CompletionRunView(
+          id: 'overnight-tail',
+          summary: _summary(createdAt: 1000, elapsedMs: 86400000),
+          location: WorkDisplayLocation.live,
+          state: DisplayBlockState.open,
+          executionPresent: true,
+          initiallyExpanded: false,
+          now: () => DateTime.fromMillisecondsSinceEpoch(86401000000),
+          childBuilder: (_) => const Text('真实成员'),
+        ),
+      ),
+    );
+    expect(
+      tester
+          .widget<TimelineActivityClock>(find.byType(TimelineActivityClock))
+          .running,
+      isFalse,
+    );
+    expect(find.textContaining('执行了'), findsNothing);
+    expect(find.textContaining('工作了'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'official model request preview projects transferred Work into one current row',
     (tester) async {
@@ -79,7 +138,8 @@ void main() {
       expect(find.byType(TimelineActivityIndicator), findsOneWidget);
       expect(find.byType(TimelineRestingCat), findsOneWidget);
       expect(find.text('思考中'), findsOneWidget);
-      expect(find.text('执行了 7 分 8 秒'), findsOneWidget);
+      expect(find.textContaining('执行了'), findsNothing);
+      expect(find.text('1 项'), findsOneWidget);
       expect(find.text('等待下一步'), findsNothing);
       expect(find.textContaining('思考了'), findsNothing);
       expect(
@@ -224,6 +284,10 @@ void main() {
               id: 'row',
               location: WorkDisplayLocation.live,
               summary: _summary(thought: thought),
+              activity: const ConversationActivityView(
+                identity: 'real-thinking',
+                kind: ConversationActivityKind.thinking,
+              ),
               executionPresent: true,
               initiallyExpanded: false,
               now: () => DateTime.fromMillisecondsSinceEpoch(1125000),
@@ -240,7 +304,7 @@ void main() {
         expect(find.text('成员正文'), findsNothing);
         expect(find.text('工作记录 · 4 项'), findsNothing);
         final label = find.text(thought);
-        final elapsed = find.text('执行了 2 分 5 秒');
+        final elapsed = find.byKey(const ValueKey('work-header-member-count'));
         final arrow = find.byIcon(Icons.chevron_right_rounded);
         expect(elapsed, findsOneWidget);
         expect(tester.widget<Text>(label).maxLines, 1);
@@ -267,6 +331,10 @@ void main() {
           id: 'constrained',
           location: WorkDisplayLocation.live,
           summary: _summary(createdAt: null, thought: '当前工作概要'),
+          activity: const ConversationActivityView(
+            identity: 'real-working',
+            kind: ConversationActivityKind.thinking,
+          ),
           executionPresent: true,
           initiallyExpanded: false,
           onExpandedChanged: expanded.add,
@@ -302,7 +370,8 @@ void main() {
           await tester.pump(const Duration(milliseconds: 32));
           expect(tester.takeException(), isNull);
         }
-        await tester.pumpAndSettle();
+        // The real activity indicator intentionally keeps animating.
+        await tester.pump(const Duration(milliseconds: 300));
         expect(reads, greaterThan(0));
         final workFinder = find.byType(CompletionRunView);
         final viewport = find.descendant(
@@ -343,14 +412,14 @@ void main() {
         final last = find.text('成员 11');
         expect(last.hitTestable(), findsNothing);
         await tester.dragUntilVisible(last, scrollable, const Offset(0, -80));
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(position.pixels, greaterThan(0));
         expect(last.hitTestable(), findsOneWidget);
         expect(header.hitTestable(), findsOneWidget);
         await tester.tap(header);
         await tester.pump(const Duration(milliseconds: 32));
         expect(tester.takeException(), isNull);
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 300));
         expect(find.text('成员 11'), findsNothing);
         expect(expanded, [true, false]);
         expect(
@@ -369,7 +438,7 @@ void main() {
   }
 
   testWidgets(
-    'all terminal without a boundary keeps the creation clock, then history freezes elapsed',
+    'all terminal open Work is static; reliable sealed legacy duration remains frozen',
     (tester) async {
       var now = DateTime.fromMillisecondsSinceEpoch(1125000);
       Widget view(WorkDisplayLocation location) => _host(
@@ -384,16 +453,18 @@ void main() {
         ),
       );
       await tester.pumpWidget(view(WorkDisplayLocation.live));
-      expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
+      expect(find.textContaining('执行了'), findsNothing);
+      expect(find.text('工作记录'), findsOneWidget);
       expect(
         tester
             .widget<TimelineActivityClock>(find.byType(TimelineActivityClock))
             .running,
-        isTrue,
+        isFalse,
       );
-      now = now.add(const Duration(seconds: 2));
+      now = now.add(const Duration(days: 1));
       await tester.pump(const Duration(seconds: 2));
-      expect(find.text('执行了 2 分 7 秒'), findsOneWidget);
+      expect(find.textContaining('执行了'), findsNothing);
+      expect(find.text('工作记录'), findsOneWidget);
       await tester.pumpWidget(view(WorkDisplayLocation.history));
       expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
       expect(
@@ -428,8 +499,8 @@ void main() {
   );
 
   for (final (location, owner, milliseconds, expected) in [
-    (WorkDisplayLocation.live, false, 125000, '执行了 2 分 5 秒'),
-    (WorkDisplayLocation.live, false, 0, '执行了不到 1 秒'),
+    (WorkDisplayLocation.live, false, 125000, '工作记录'),
+    (WorkDisplayLocation.live, false, 0, '工作记录'),
     (WorkDisplayLocation.history, false, 500, '工作了不到 1 秒'),
     (WorkDisplayLocation.history, false, null, '工作记录'),
     (WorkDisplayLocation.history, false, -1, '工作记录'),
@@ -458,7 +529,7 @@ void main() {
         isFalse,
       );
       if (location == WorkDisplayLocation.live && !owner) {
-        expect(find.text('上次执行未收束，尚未恢复'), findsOneWidget);
+        expect(find.text('上次执行未收束，尚未恢复'), findsNothing);
       }
       await tester.pumpWidget(const SizedBox());
     });
@@ -519,6 +590,7 @@ void main() {
       (tester) async {
         final h = _LiveHarness();
         addTearDown(h.dispose);
+        h.currentWorkId = 'current';
         h.blocks = [
           _work('older', state: DisplayBlockState.sealed, thought: '前段概要'),
           _work(
@@ -608,6 +680,7 @@ void main() {
           isTrue,
         );
         expect(h.content.reads, 0);
+        h.currentWorkId = null;
         h.blocks = [
           _work('older', state: DisplayBlockState.sealed, thought: '前段概要'),
           LiveDisplayBlock(
@@ -615,6 +688,7 @@ void main() {
             blockOrder: 3,
             state: DisplayBlockState.open,
             body: SingleDisplayBlock(
+              visibility: SingleVisibility.content,
               record: DisplayRecord(
                 atom: chatAtomMessage('text', body: '后继正文'),
                 contentSource: const CurrentAtom(),
@@ -638,6 +712,7 @@ void main() {
       final h = _LiveHarness();
       addTearDown(h.dispose);
       final summary = _summary(total: 2, thought: '已结束成员的思考概要');
+      h.currentWorkId = 'work';
       h.blocks = [_work('work', summary: summary)];
       h.notices = [
         const ExecutionLiveNotice(
@@ -679,6 +754,7 @@ void main() {
       );
 
       // Without a thinking summary on the open Work, group-idle falls back to 思考中.
+      h.currentWorkId = 'work';
       h.blocks = [_work('work', summary: _summary(total: 2))];
       await tester.pumpWidget(h.host());
       expect(
@@ -697,6 +773,7 @@ void main() {
       addTearDown(h.dispose);
 
       // 1. Open Work before any thinking summary arrives: shows 思考中.
+      h.currentWorkId = 'work-1';
       h.blocks = [_work('work-1', summary: _summary(total: 1, running: 1))];
       h.notices = [
         const ExecutionLiveNotice(
@@ -712,13 +789,7 @@ void main() {
       final header1 = find.byKey(
         const ValueKey('completion-run-header:work-1'),
       );
-      expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
-        '思考中',
-      );
+      expect(timelineGroupTitleText(tester, _workTitle(header1)), '思考中');
       final baselineBarSize = tester.getRect(barFinder).size;
 
       // 2. Streaming first Markdown thinking summary: replaces 思考中, renders
@@ -736,7 +807,7 @@ void main() {
         ),
       ];
       await tester.pumpWidget(h.host());
-      final titleA = timelineGroupTitleFinder(tester, header1);
+      final titleA = _workTitle(header1);
       expect(tester.widget(titleA), isA<TimelineReasoningSummary>());
       expect(
         timelineGroupTitleText(tester, titleA),
@@ -768,6 +839,7 @@ void main() {
 
       // 3. Exec command running: summary.thinkingSummary retains mdThoughtA,
       // replacing command line copy while leading icon stays restingCat.
+      h.currentWorkId = 'work-1';
       h.blocks = [
         _work(
           'work-1',
@@ -796,10 +868,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
       );
       expect(find.text('cargo flutter test'), findsNothing);
@@ -821,6 +890,7 @@ void main() {
 
       // 4. group-idle: members completed, waiting for next step; retains mdThoughtA
       // instead of reverting to 思考中, while icon returns to resting cat.
+      h.currentWorkId = 'work-1';
       h.blocks = [
         _work(
           'work-1',
@@ -838,10 +908,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '梳理 会话共享组件 与 LiveStatusBar 锁定边界',
       );
       expect(
@@ -856,6 +923,7 @@ void main() {
       // 5. Same open Work receives a newer thinking summary with H1 heading:
       // immediately replaces older summary in-place without H1 divider or height jump.
       const mdThoughtB = '# 复核 `Timeline` 封存契约';
+      h.currentWorkId = 'work-1';
       h.blocks = [
         _work(
           'work-1',
@@ -874,10 +942,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '复核 Timeline 封存契约',
       );
       expect(
@@ -891,6 +956,7 @@ void main() {
 
       // 6. Boundary seals work-1 into Timeline (kept as 工作了 2 分 5 秒) and opens
       // a new work-2 (no leaked thinkingSummary from work-1).
+      h.currentWorkId = 'work-2';
       h.blocks = [
         _work(
           'work-1',
@@ -926,10 +992,7 @@ void main() {
       ];
       await tester.pumpWidget(h.host());
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header1),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header1)),
         '工作了 2 分 5 秒',
       );
       expect(
@@ -943,10 +1006,7 @@ void main() {
         const ValueKey('completion-run-header:work-2'),
       );
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, header2),
-        ),
+        timelineGroupTitleText(tester, _workTitle(header2)),
         'cargo flutter analyze',
       );
       expect(h.content.reads, 0);
@@ -966,6 +1026,10 @@ void main() {
                 id: 'live-md',
                 location: WorkDisplayLocation.live,
                 executionPresent: true,
+                activity: const ConversationActivityView(
+                  identity: 'live-md-thinking',
+                  kind: ConversationActivityKind.thinking,
+                ),
                 initiallyExpanded: false,
                 summary: _summary(
                   createdAt: null,
@@ -994,7 +1058,7 @@ void main() {
       final liveHeader = find.byKey(
         const ValueKey('completion-run-header:live-md'),
       );
-      final liveTitle = timelineGroupTitleFinder(tester, liveHeader);
+      final liveTitle = _workTitle(liveHeader);
       expect(
         timelineGroupTitleText(tester, liveTitle),
         '检查 LiveStatusBar 与 设计文档 契约',
@@ -1018,10 +1082,7 @@ void main() {
         const ValueKey('completion-run-header:history-md'),
       );
       expect(
-        timelineGroupTitleText(
-          tester,
-          timelineGroupTitleFinder(tester, historyHeader),
-        ),
+        timelineGroupTitleText(tester, _workTitle(historyHeader)),
         '工作了 2 分 5 秒',
       );
       await tester.pumpWidget(const SizedBox());
@@ -1050,6 +1111,7 @@ void main() {
           h.now = () => DateTime.fromMillisecondsSinceEpoch(1428000);
           Size? baseline;
           for (final thought in [null, '有界思考概要']) {
+            h.currentWorkId = 'work';
             h.blocks = [
               _work(
                 'work',
@@ -1079,7 +1141,8 @@ void main() {
             expect(find.byType(TimelineActivityIndicator), findsOneWidget);
             expect(find.byType(TimelineRestingCat), findsOneWidget);
             expect(find.text(thought ?? '思考中'), findsOneWidget);
-            expect(find.text('执行了 7 分 8 秒'), findsOneWidget);
+            expect(find.textContaining('执行了'), findsNothing);
+            expect(find.text('1 项'), findsOneWidget);
             expect(find.text('等待下一步'), findsNothing);
             expect(find.textContaining('思考了'), findsNothing);
             expect(
@@ -1117,7 +1180,8 @@ void main() {
             final description = tester.getSemantics(header).label;
             if (result != null) expect(description, contains(result));
             expect(description, contains('思考中'));
-            expect(description, contains('执行了 7 分 8 秒'));
+            expect(description, contains('1 项'));
+            expect(description, isNot(contains('执行了')));
             expect(
               tester
                   .widget<TimelineActivityClock>(
@@ -1127,7 +1191,7 @@ void main() {
                     ),
                   )
                   .running,
-              isTrue,
+              isFalse,
             );
           }
           expect(h.content.reads, 0);
@@ -1177,9 +1241,7 @@ void main() {
             expect(find.text('等待下一步'), findsNothing);
             expect(
               find.text(
-                location == WorkDisplayLocation.live
-                    ? '执行了 7 分 8 秒'
-                    : '工作了 7 分 8 秒',
+                location == WorkDisplayLocation.live ? '工作记录' : '工作了 7 分 8 秒',
               ),
               findsOneWidget,
             );
@@ -1202,10 +1264,11 @@ void main() {
   }
 
   testWidgets(
-    'unproven Turn keeps its independent notice; cold Work keeps its unrestored message',
+    'different Turn activity belongs to current Work; unfinished cold Work alone is unrestored',
     (tester) async {
       final h = _LiveHarness();
       addTearDown(h.dispose);
+      h.currentWorkId = 'work';
       h.blocks = [_work('work', thought: '独立概要')];
       h.notices = [
         const ExecutionLiveNotice(
@@ -1218,8 +1281,10 @@ void main() {
         ),
       ];
       await tester.pumpWidget(h.host());
-      expect(find.text('另一来源提示'), findsOneWidget);
+      expect(find.text('独立概要'), findsOneWidget);
+      expect(find.byType(ConversationActivityStatus), findsNothing);
       h.executionPresent = false;
+      h.blocks = [_work('work', summary: _summary(running: 1))];
       h.notices = [const UnrestoredLiveNotice()];
       await tester.pumpWidget(h.host());
       expect(find.text('上次执行未收束，尚未恢复'), findsOneWidget);
@@ -1258,6 +1323,7 @@ void main() {
       );
 
       // 1. 尚无思考摘要且前台正在执行 exec 命令：顶栏显示圆形进度。
+      h.currentWorkId = 'work-exec';
       h.blocks = [_work('work-exec', summary: _summary(running: 1))];
       h.notices = const [runningExecNotice];
       await tester.pumpWidget(h.host());
@@ -1277,6 +1343,7 @@ void main() {
       );
 
       // 2. 现工作组展示思考摘要时，即使 exec 仍在运行，顶栏也使用趴卧摇尾猫图标。
+      h.currentWorkId = 'work-exec';
       h.blocks = [
         _work(
           'work-exec',
@@ -1298,6 +1365,7 @@ void main() {
       );
 
       // 3. exec 结束、工作组转入等待交接思考时继续保持趴卧摇尾猫。
+      h.currentWorkId = 'work-exec';
       h.blocks = [_work('work-exec', summary: _summary(running: 0))];
       h.notices = [
         const ExecutionLiveNotice(
@@ -1342,24 +1410,6 @@ LiveDisplayBlock _work(
   ),
 );
 
-class _Session extends Fake implements ThreadSessionState {
-  @override
-  String get threadId => 'thread';
-  @override
-  ThreadActivityView? get activity => null;
-  @override
-  StudioTurnView get activeTurn => StudioTurnView(
-    turnId: 'turn',
-    threadId: 'thread',
-    revision: 1,
-    state: const RunningStudioTurnState(
-      startedAt: 1000,
-      activity: StudioTurnActivity.thinking,
-    ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(1000000),
-  );
-}
-
 class _Content extends Fake implements ConversationContent {
   int reads = 0;
   @override
@@ -1378,21 +1428,23 @@ class _LiveHarness {
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = [];
   List<LiveStatusNotice> notices = [];
+  String? currentWorkId;
   bool executionPresent = true;
   DateTime Function()? now;
   int revision = 0;
   Widget host() {
     live.value = LiveDisplayWindow(
+      currentWorkId: currentWorkId,
       revision: ++revision,
       historyThrough: 0,
       executionPresent: executionPresent,
       blocks: blocks,
     );
     final projected = LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+      latestWindow: live.value,
       effectiveOutputWindow: live.value,
       effectiveTimelineWindow: live.value,
       activeTurnId: 'turn',
-      confirmingPlan: false,
       outputPaging: const LatestLiveWindow(),
       rawNotices: notices,
     );
@@ -1411,10 +1463,8 @@ class _LiveHarness {
     Widget section(ConversationLiveSection section) =>
         ConversationCurrentConnector(
           section: section,
-          managedByViewModel: true,
-          session: _Session(),
+          threadId: 'thread',
           content: content,
-          live: live,
           now: now,
           presenting: section == ConversationLiveSection.output
               ? presenting

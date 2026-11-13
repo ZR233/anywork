@@ -78,8 +78,17 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
             summary: Box::new(summary(*value)),
             members: block_ref(members),
         },
-        protocol::DisplayBlockBody::Single { record: value } => BridgeDisplayBlockBody::Single {
+        protocol::DisplayBlockBody::Single {
+            record: value,
+            visibility,
+        } => BridgeDisplayBlockBody::Single {
             record: Box::new(record(*value)),
+            visibility: match visibility {
+                protocol::SingleVisibility::Content => BridgeSingleVisibility::Content,
+                protocol::SingleVisibility::FinalEmptyAfterContent => {
+                    BridgeSingleVisibility::FinalEmptyAfterContent
+                }
+            },
         },
     }
 }
@@ -89,6 +98,7 @@ pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDispl
         revision: value.revision,
         history_through: value.history_through,
         execution_present: value.execution_present,
+        current_work_id: value.current_work_id,
         blocks: value
             .blocks
             .into_iter()
@@ -212,6 +222,7 @@ mod tests {
             revision: 8,
             history_through: 4,
             execution_present: false,
+            current_work_id: None,
             blocks: vec![protocol::LiveDisplayBlock {
                 id: "unresolved".into(),
                 block_order: 11,
@@ -251,6 +262,7 @@ mod tests {
             revision: 1,
             history_through: 0,
             execution_present: false,
+            current_work_id: Some("not-an-encoded-turn".into()),
             blocks: vec![protocol::LiveDisplayBlock {
                 id: "not-an-encoded-turn".into(),
                 block_order: 1,
@@ -260,7 +272,9 @@ mod tests {
             }],
             older: None,
         };
-        assert!(live_window(window.clone()).blocks[0].source.is_none());
+        let mapped = live_window(window.clone());
+        assert!(mapped.blocks[0].source.is_none());
+        assert_eq!(mapped.current_work_id, window.current_work_id);
         window.blocks[0].source = Some(protocol::ChatSourceId::Input {
             input_id: "independent-input".into(),
         });
@@ -269,9 +283,44 @@ mod tests {
     }
 
     #[test]
+    fn single_visibility_keeps_authoritative_empty_content_typed() {
+        for (visibility, expected) in [
+            (
+                protocol::SingleVisibility::Content,
+                BridgeSingleVisibility::Content,
+            ),
+            (
+                protocol::SingleVisibility::FinalEmptyAfterContent,
+                BridgeSingleVisibility::FinalEmptyAfterContent,
+            ),
+        ] {
+            let mapped = body(protocol::DisplayBlockBody::Single {
+                record: Box::new(protocol::DisplayRecord {
+                    atom: atom(protocol::ChatAtomLifecycle::Terminal {
+                        started: None,
+                        ended: None,
+                        outcome: protocol::ChatTerminalOutcome::Completed,
+                    }),
+                    start_fact: None,
+                    end_fact: None,
+                    content_source: protocol::DisplayContentSource::CompletedOriginal {
+                        completion_id: "empty".into(),
+                    },
+                }),
+                visibility,
+            });
+            let BridgeDisplayBlockBody::Single { visibility, record } = mapped else {
+                panic!("expected Single");
+            };
+            assert_eq!(visibility, expected);
+            assert!(record.atom.payload.is_none());
+        }
+    }
+
+    #[test]
     fn unsupported_presentation_is_rejected_before_bridge_delivery() {
         let mut value = cut();
-        value.presentation_version = 0;
+        value.presentation_version = 2;
         let error = batch(value).unwrap_err();
         assert_eq!(error.code, BridgeErrorCode::Protocol);
         let details: serde_json::Value =

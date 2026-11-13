@@ -87,6 +87,10 @@ impl PatchOutcome {
         self.exact = false;
     }
 
+    pub(crate) fn is_exact(&self) -> bool {
+        self.exact
+    }
+
     pub(crate) fn failure_suffix(&self, paths: &impl PatchPathDisplay) -> String {
         if self.applied.is_empty() {
             let mut output = "\nNo files were modified before failure.".to_string();

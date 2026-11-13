@@ -8,7 +8,7 @@
 
 Studio 认证所有者（Owner）统一持有已解析启动定义的冻结身份、操作代次、探测工作区、子进程树、通信管道、取消令牌与汇合句柄（Join Handle）。下述既有固定发行安装、专用登录帮助与额度能力只适用于 Antigravity 模板，通用服务按实际协议方法与能力准入：
 
-- **受管启动来源**：统一解析 [20](./20-config.md) 的用户定义。command 按最终环境的 PATH、实际 cwd 和官方平台查找规则在准备边界解析一次并冻结绝对程序路径，参数独立传递；模板解析到原已验证安装及固定参数。两者进入同一受监督 worker，不增加模板/供应商运行时或另一关闭通路，也不从旧备份恢复已退役程序字段。安装包完整性校验仅归模板安装边界；耗时 I/O 不进入 `Settings` 提交锁。Linux 复用原受监督 worker，其他平台复用原后台进程工厂，一律不使用裸 Shell 后备路径。白名单宿主环境之后再应用用户显式 env，不扩展为整个宿主环境继承，不记录覆盖值。
+- **受管启动来源**：统一解析 [20](./20-config.md) 的用户定义。command 按最终环境的 PATH、实际 cwd 和官方平台查找规则在准备边界解析一次并冻结绝对程序路径，参数独立传递；模板解析到原已验证安装及固定参数。两者进入同一本地执行器，不增加模板/供应商运行时或另一关闭通路，也不从旧备份恢复已退役程序字段。安装包完整性校验仅归模板安装边界；耗时 I/O 不进入 `Settings` 提交锁。各平台复用公共 `Executor / Command / Child` 及原生进程工厂，一律不使用裸 Shell 后备路径。白名单宿主环境之后再应用用户显式 env，不扩展为整个宿主环境继承，不记录覆盖值。
 - **标准流隔离与脱敏**：官方 SDK 负责协议编解码、请求路由与错误分类，子进程 `stdout` 仅作为纯协议字节流消费；`stderr` 由独立有界缓冲区消费并脱敏，不原样发布至界面，也不从中正则提取认证链接或登录状态；进程环境变量与日志中不得携带可公开的凭据副本。
 - **宿主环境白名单**：子进程按平台白名单原样透传官方程序启动、定位用户配置及打开登录浏览器所需的既有环境值，不复制其他凭据类变量。Windows 保留系统目录、用户配置目录、临时目录与标准命令查找上下文，包含初始化 Winsock 所需的 `SystemRoot`；变量查询遵循 Windows 原生的大小写无关语义。Linux X11 环境下，`DISPLAY` 与继承的 `XAUTHORITY` 必须成对传递（仅传递既有文件路径，不读取或记录认证文件内容，不放宽显示服务器访问控制，也不通过浏览器垫片绕过官方认证流程）。同时按原样透传宿主既有的 `XDG_SESSION_TYPE` 与 `XDG_CURRENT_DESKTOP`，使官方程序及其唤起的浏览器遵循实际显示平台与桌面服务；若宿主未设置则保持缺省，不猜测或合成环境变量，也不强制指定浏览器凭据后端。隔离显示验收使用与目标虚拟显示一致的会话上下文，不混用操作者真实桌面的显示标识。
 - **代理环境**：原样透传宿主既有的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及其小写形式，由官方程序的网络库解释；不记录其值、不修改宿主环境，也不将 Windows 系统代理或自动代理脚本转换成另一套规则。服务器下载使用产品 HTTP 客户端的系统代理能力，官方程序自身仅支持环境变量代理时，登录验收必须明确配置并记录该运行条件。
@@ -220,7 +220,7 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 原实例固定可信 caller、具体运行代次及原 Session 的弱访问入口；成员发布前允许发现、拒绝域调用，发布后逐次校验原资格。HTTP bearer 经标准 header 校验；stdio 只从 `ANYWORK_HOST_IPC_ENDPOINT`、`ANYWORK_HOST_IPC_CAPABILITY` 临时环境取得本地 IPC 端点与每实例随机 capability，不放入 argv。IPC 每次请求验证 capability，连接不能更换调用者；调用参数不能提供可信 caller 或 call ID。真实 call ID 由原运行时生成，MCP/IPC request ID 不充当持久消息 ID。凭据不进入模型内容、参数、持久配置、历史或日志，实例关闭后失效。
 
-桌面安装包分发并校验当前 Linux/Windows/macOS 宿主原生 `pl-studio-mcp`，资源在 `data/host-mcp/<target>/`，由显式 `HostMcpSource` 解析。bundled 缺失或校验不符明确失败，不回退 PATH；非打包入口使用显式 external 来源。复用原工程的摘要、压缩及映像租约能力，传给 Agent 的绝对命令路径必须可跨进程使用，原实例持有映像直至进程树回收。原 SSH helper 的两种 Linux worker 保持独立职责，不代替 MCP 服务程序；不在业务会话下载代理或复制临时凭据到资源包。
+桌面安装包分发并校验当前 Linux/Windows/macOS 宿主原生 `pl-studio-mcp`，资源在 `data/host-mcp/<target>/`，由显式 `HostMcpSource` 解析。bundled 缺失或校验不符明确失败，不回退 PATH；非打包入口使用显式 external 来源。复用原工程的摘要、压缩及映像租约能力，传给 Agent 的绝对命令路径必须可跨进程使用，原实例持有映像直至进程树回收。ACP 本机进程沿统一 native Executor 创建和回收；SSH helper 的两种 Linux 前台 server 资产保持独立职责，不代替 MCP 服务程序，也不承担本地监督 worker 角色；不在业务会话下载代理或复制临时凭据到资源包。
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 

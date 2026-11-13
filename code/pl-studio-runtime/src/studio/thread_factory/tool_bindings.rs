@@ -27,20 +27,57 @@ pub(crate) struct ToolBinding {
     pub project: WorkspaceRecord,
     pub workspace: ToolWorkspace,
     pub commands: Option<WeakCommandProcesses>,
-    pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub remote: Option<pl_tool::remote::SshWorkspaceBinding>,
+    pub lsp_lease: Option<pl_lsp::runtime::LspWorkspaceLease>,
+    pub lsp_binding_id: Option<String>,
     pub ssh_profile: Option<pl_tool::remote::SshServerProfile>,
 }
 
-#[derive(Default)]
 pub(crate) struct ThreadToolLifetime {
     pub(crate) gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(crate) cancellation: tokio_util::sync::CancellationToken,
+    qualification_gate: std::sync::Mutex<()>,
+    lsp_binding_updates: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl ThreadToolLifetime {
+    pub(crate) fn new(lsp_binding_updates: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            qualification_gate: std::sync::Mutex::new(()),
+            lsp_binding_updates,
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        let _qualification = self
+            .qualification_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.cancellation.cancel();
+        self.lsp_binding_updates.notify_one();
+    }
+
+    pub(crate) fn qualification_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.qualification_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+impl Default for ThreadToolLifetime {
+    fn default() -> Self {
+        Self::new(std::sync::Arc::new(tokio::sync::Notify::new()))
+    }
 }
 
 /// Candidate metadata is published only after the Thread accepts its registrations.
 pub(in crate::studio) struct RefreshedToolBinding {
     previous: std::sync::Arc<()>,
     binding: ToolBinding,
+    release_lsp: Option<pl_lsp::runtime::LspWorkspaceLease>,
 }
 
 impl StudioThreadFactory {
@@ -172,7 +209,18 @@ impl StudioThreadFactory {
                     .into(),
             ));
         }
+        let lifetime = current.lifetime.clone();
+        let _qualification = lifetime.qualification_guard();
+        if lifetime.cancellation.is_cancelled() {
+            return Err(pl_core::thread::ThreadError::Closed.into());
+        }
         *current = candidate.binding;
+        self.notify_lsp_binding_changed();
+        if let Some(lease) = candidate.release_lsp {
+            // close eagerly invalidates the user and records the async reclaim
+            // with the directory owner; commit itself remains synchronous.
+            drop(lease.close());
+        }
         Ok(())
     }
     pub(in crate::studio) fn session_files_fact(
@@ -228,6 +276,10 @@ impl StudioThreadFactory {
                 && binding.project.ssh_alias.as_deref() == Some(server_id)
             {
                 binding.target_invalidated = true;
+                binding.lifetime.cancel();
+                if let Some(lease) = &binding.lsp_lease {
+                    drop(lease.close());
+                }
             }
         }
     }
@@ -244,18 +296,35 @@ impl StudioThreadFactory {
             .as_ref()
             .map(|binding| binding.lifetime.clone());
         if let Some(lifetime) = &lifetime {
-            lifetime.cancellation.cancel();
+            lifetime.cancel();
         }
         let _guard = match &lifetime {
             Some(lifetime) => Some(lifetime.gate.lock().await),
             None => None,
         };
-        self.shutdown_scope_mcp(scope).await?;
+        let lsp_lease = scope
+            .binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|binding| binding.lsp_lease.clone());
+        let (mcp_result, lsp_result) = tokio::join!(self.shutdown_scope_mcp(scope), async {
+            match lsp_lease {
+                Some(lease) => lease.close().await.map_err(anyhow::Error::from),
+                None => Ok(()),
+            }
+        });
+        // Preserve the binding when either owner failed, so close can be retried.
+        mcp_result?;
+        lsp_result?;
         let removed = scope
             .binding
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        if removed.is_some() {
+            self.notify_lsp_binding_changed();
+        }
         if removed.is_some() && self.services.worktrees.get(id).is_none() {
             self.services
                 .worktrees
@@ -271,7 +340,11 @@ impl StudioThreadFactory {
         if let Some(binding) = self.binding_snapshot(id)
             && std::sync::Arc::ptr_eq(&binding.lifetime, lifetime)
         {
-            binding.lifetime.cancellation.cancel();
+            binding.lifetime.cancel();
+            if let Some(lease) = &binding.lsp_lease {
+                drop(lease.close());
+            }
+            self.notify_lsp_binding_changed();
         }
     }
 
@@ -283,7 +356,7 @@ impl StudioThreadFactory {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
             {
-                binding.lifetime.cancellation.cancel();
+                binding.lifetime.cancel();
             }
         }
     }
@@ -401,13 +474,13 @@ impl StudioThreadFactory {
                 let opening = self
                     .services
                     .ssh_manager
-                    .open_workspace_host(server, requested.clone());
+                    .open_workspace_binding(server, requested.clone());
                 let host = tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => return Err(pl_core::thread::ThreadError::Cancelled.into()),
                     result = opening => result.map_err(|error| resource_error("reopen Thread remote workspace", error))?,
                 };
-                if host.files.canonical_path() != requested.as_str() {
+                if host.files().canonical_path() != requested.as_str() {
                     return Err(ThreadAssemblyError::InvalidatedBinding(
                         "remote workspace target changed; reactivate this Thread".into(),
                     ));
@@ -417,7 +490,9 @@ impl StudioThreadFactory {
             None => None,
         };
         let same_connection = match (&binding.remote, &remote) {
-            (Some(previous), Some(current)) => previous.files.is_same_binding(&current.files),
+            (Some(previous), Some(current)) => {
+                previous.execution.is_same_binding(&current.execution)
+            }
             (None, None) => true,
             _ => false,
         };
@@ -446,6 +521,7 @@ impl StudioThreadFactory {
                 },
                 &binding.lifetime,
                 CatalogPreparation::Refresh {
+                    lsp_lease: binding.lsp_lease.clone(),
                     policy_key: binding.policy_key.clone(),
                     policies: binding.policies.clone(),
                     remote: remote.map(Box::new),
@@ -493,9 +569,35 @@ impl StudioThreadFactory {
             .as_ref()
             .map(|commands| commands.downgrade())
             .or(previous_commands);
+        let next_lsp_lease = prepared.lsp_lease.clone();
+        let next_lsp_binding_id = next_lsp_lease
+            .as_ref()
+            .filter(|lease| !lease.is_closed())
+            .map(|lease| {
+                let same_lease = binding.lsp_lease.as_ref().is_some_and(|previous| {
+                    !previous.is_closed()
+                        && previous.workspace_root() == lease.workspace_root()
+                        && binding.project.ssh_alias == project.ssh_alias
+                });
+                if same_lease {
+                    binding
+                        .lsp_binding_id
+                        .clone()
+                        .unwrap_or_else(|| crate::studio::ids::new_id("lsp-binding"))
+                } else {
+                    crate::studio::ids::new_id("lsp-binding")
+                }
+            });
         let candidate = RefreshedToolBinding {
             previous: binding.incarnation.clone(),
+            release_lsp: if prepared.lsp_lease.is_none() {
+                binding.lsp_lease.clone()
+            } else {
+                None
+            },
             binding: ToolBinding {
+                lsp_lease: next_lsp_lease,
+                lsp_binding_id: next_lsp_binding_id,
                 incarnation: std::sync::Arc::new(()),
                 commands,
                 remote: prepared.remote.clone(),

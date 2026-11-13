@@ -12,7 +12,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeDisplayBlock {
   final String id;
@@ -48,6 +48,7 @@ sealed class BridgeDisplayBlockBody with _$BridgeDisplayBlockBody {
   }) = BridgeDisplayBlockBody_Work;
   const factory BridgeDisplayBlockBody.single({
     required BridgeDisplayRecord record,
+    required BridgeSingleVisibility visibility,
   }) = BridgeDisplayBlockBody_Single;
 }
 
@@ -230,6 +231,7 @@ class BridgeLiveDisplayWindow {
   final BigInt revision;
   final BigInt historyThrough;
   final bool executionPresent;
+  final String? currentWorkId;
   final List<BridgeLiveDisplayBlock> blocks;
   final String? older;
 
@@ -237,6 +239,7 @@ class BridgeLiveDisplayWindow {
     required this.revision,
     required this.historyThrough,
     required this.executionPresent,
+    this.currentWorkId,
     required this.blocks,
     this.older,
   });
@@ -246,6 +249,7 @@ class BridgeLiveDisplayWindow {
       revision.hashCode ^
       historyThrough.hashCode ^
       executionPresent.hashCode ^
+      currentWorkId.hashCode ^
       blocks.hashCode ^
       older.hashCode;
 
@@ -257,9 +261,12 @@ class BridgeLiveDisplayWindow {
           revision == other.revision &&
           historyThrough == other.historyThrough &&
           executionPresent == other.executionPresent &&
+          currentWorkId == other.currentWorkId &&
           blocks == other.blocks &&
           older == other.older;
 }
+
+enum BridgeSingleVisibility { content, finalEmptyAfterContent }
 
 class BridgeTimelineBatch {
   final int presentationVersion;

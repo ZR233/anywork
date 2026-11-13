@@ -1,107 +1,102 @@
-//! Isolated real-helper acceptance fixture. No simulated framing or production-data access.
-use anyhow::{Context, ensure};
-use pl_protocol::remote::*;
-use pl_tool::remote::RemoteClient;
+#![allow(dead_code)]
+//! A real foreground helper process and its one immutable execution connection.
+use anyhow::Context;
+use pl_remote_helper::Executor;
+use pl_tool::command::ExecutorCommandBackend;
+use pl_tool::workspace_file::ExecutorWorkspaceFileBackend;
 use std::{path::Path, process::Stdio, time::Duration};
-use tokio_util::sync::CancellationToken;
-
+use tokio::io::AsyncReadExt;
 pub struct Helper {
-    pub client: RemoteClient,
-    pub workspace: String,
+    pub executor: Executor,
+    pub files: ExecutorWorkspaceFileBackend,
     pub root: tempfile::TempDir,
-    pub(super) relay: tokio::process::Child,
-    pub(super) heartbeat_stop: CancellationToken,
-    pub(super) heartbeat: tokio::task::JoinHandle<()>,
+    relay: tokio::process::Child,
+    stderr: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
+    transport: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 impl Helper {
     pub async fn start(executable: &Path) -> anyhow::Result<Self> {
         let root = tempfile::tempdir()?;
-        let mut relay = spawn_relay(executable, None)?;
-        let client = RemoteClient::from_streams(
-            relay.stdout.take().context("stdout")?,
-            relay.stdin.take().context("stdin")?,
-        )
-        .await?;
-        client
-            .request(
-                RemoteRequest::Hello {
-                    protocol_version: REMOTE_PROTOCOL_VERSION,
-                },
-                &[],
-            )
-            .await?;
-        let opened = client
-            .request(
-                RemoteRequest::OpenWorkspace {
-                    path: root.path().to_string_lossy().into_owned(),
-                },
-                &[],
-            )
-            .await?;
-        let RemoteResponse::WorkspaceOpened(opened) = opened.response else {
-            anyhow::bail!("expected workspace");
-        };
-        heartbeat(&client).await?;
-        let stop = CancellationToken::new();
-        let heartbeat_stop = stop.clone();
-        let observer = client.clone();
-        let heartbeat = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! { _ = stop.cancelled() => break, _ = interval.tick() => {} }
-                tokio::select! {
-                    _ = stop.cancelled() => break,
-                    result = observer.request(RemoteRequest::Heartbeat, &[]) => if result.is_err() { break; },
-                }
-            }
+        let mut relay = tokio::process::Command::new(executable)
+            .arg("--stdio")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut diagnostic = relay.stderr.take().context("stderr")?;
+        let stderr = tokio::spawn(async move {
+            let mut prefix = Vec::new();
+            (&mut diagnostic)
+                .take(16 * 1024)
+                .read_to_end(&mut prefix)
+                .await?;
+            tokio::io::copy(&mut diagnostic, &mut tokio::io::sink()).await?;
+            Ok(prefix)
         });
+        let mut stdout = relay.stdout.take().context("stdout")?;
+        let mut stdin = relay.stdin.take().context("stdin")?;
+        let (transport, proxy) = tokio::io::duplex(64 * 1024);
+        let forwarding = tokio::spawn(async move {
+            // Client close delivers stdin EOF, while this process owner keeps stdout open until
+            // exit. Dropping both OS pipe ends together would manufacture a server BrokenPipe.
+            let (mut requests, mut responses) = tokio::io::split(proxy);
+            let input = async {
+                let result = tokio::io::copy(&mut requests, &mut stdin).await;
+                // ChildStdin::shutdown does not close the Unix pipe; drop the owned handle.
+                drop(stdin);
+                result.map(|_| ())
+            };
+            let output = async {
+                match tokio::io::copy(&mut stdout, &mut responses).await {
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                        tokio::io::copy(&mut stdout, &mut tokio::io::sink())
+                            .await
+                            .map(|_| ())
+                    }
+                    result => result.map(|_| ()),
+                }
+            };
+            let (input, output) = tokio::join!(input, output);
+            input?;
+            output
+        });
+        let executor = Executor::remote(transport).await?;
+        let files = ExecutorWorkspaceFileBackend::new(
+            executor.clone(),
+            root.path().to_str().context("UTF-8 root")?,
+        )?;
         Ok(Self {
-            client,
-            workspace: opened.workspace_id,
+            executor,
+            files,
             root,
             relay,
-            heartbeat_stop,
-            heartbeat,
+            stderr,
+            transport: forwarding,
         })
     }
+    pub fn commands(&self) -> anyhow::Result<ExecutorCommandBackend> {
+        Ok(ExecutorCommandBackend::new(
+            self.executor.clone(),
+            self.root.path().to_str().context("UTF-8 root")?,
+            pl_tool::environment::ExecutionEnvironment::for_ssh(
+                pl_tool::environment::ExecutionOs::Linux,
+                pl_tool::environment::ShellDialect::Bash,
+                "/bin/bash",
+            ),
+        )?)
+    }
     pub async fn close(mut self) -> anyhow::Result<()> {
-        self.heartbeat_stop.cancel();
-        self.heartbeat.await?;
-        self.client.close().await?;
-        tokio::time::timeout(Duration::from_secs(8), self.relay.wait()).await??;
+        self.executor.close().await?;
+        let status = tokio::time::timeout(Duration::from_secs(3), self.relay.wait()).await??;
+        let diagnostic = self.stderr.await??;
+        let transport = self.transport.await?;
+        anyhow::ensure!(
+            status.success(),
+            "foreground helper failed: {status}: {}",
+            String::from_utf8_lossy(&diagnostic),
+        );
+        transport?;
         Ok(())
     }
-}
-pub(super) fn spawn_relay(
-    executable: &Path,
-    socket: Option<&str>,
-) -> anyhow::Result<tokio::process::Child> {
-    let mut command = tokio::process::Command::new(executable);
-    if let Some(socket) = socket {
-        command.arg("--attach").arg(socket);
-    } else {
-        command.arg("--serve");
-    }
-    Ok(command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()?)
-}
-pub async fn heartbeat(client: &RemoteClient) -> anyhow::Result<RemoteHeartbeat> {
-    let response = tokio::time::timeout(
-        Duration::from_secs(10),
-        client.request(RemoteRequest::Heartbeat, &[]),
-    )
-    .await??;
-    let RemoteResponse::Heartbeat(stats) = response.response else {
-        anyhow::bail!("expected heartbeat resources");
-    };
-    ensure!(
-        stats.active_connections == 1,
-        "helper does not have exactly one current attachment"
-    );
-    Ok(stats)
 }

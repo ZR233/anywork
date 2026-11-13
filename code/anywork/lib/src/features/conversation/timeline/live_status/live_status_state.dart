@@ -383,9 +383,11 @@ final class LiveStatusDockMasked extends LiveStatusMachineState {
   const LiveStatusDockMasked({
     required this.interactionId,
     required this.showInteractionDetails,
+    this.obscured,
   });
 
   final String interactionId;
+  final LiveStatusPresenting? obscured;
   @override
   final bool showInteractionDetails;
 
@@ -394,10 +396,12 @@ final class LiveStatusDockMasked extends LiveStatusMachineState {
       identical(this, other) ||
       other is LiveStatusDockMasked &&
           interactionId == other.interactionId &&
+          obscured == other.obscured &&
           showInteractionDetails == other.showInteractionDetails;
 
   @override
-  int get hashCode => Object.hash(interactionId, showInteractionDetails);
+  int get hashCode =>
+      Object.hash(interactionId, showInteractionDetails, obscured);
 }
 
 /// 状态 3：底部实时状态栏激活呈现中。

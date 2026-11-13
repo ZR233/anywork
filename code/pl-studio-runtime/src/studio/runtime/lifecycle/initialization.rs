@@ -233,6 +233,7 @@ impl StudioRuntime {
             resolved.paths.system_skills_dir(),
             resolved.helper_source.clone(),
             resolved.host_mcp_source.clone(),
+            resolved.ssh_config.clone(),
         )
         .await;
         let runtime = match assembled {

@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use pl_protocol::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
+use pl_tool::command::ExecutorCommandBackend;
 use pl_tool::mcp::{
     McpAvailabilityKind, McpAvailabilitySnapshot, McpResetScope, McpRuntime, McpRuntimeHandle,
     McpTurnLease,
 };
-use pl_tool::remote::{RemoteCommandBackend, RemoteWorkspaceHost};
+use pl_tool::remote::SshWorkspaceBinding;
 use pl_tool::workspace::ToolWorkspace;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,7 @@ pub(super) struct ThreadMcpPreparation<'a> {
     pub lifetime: &'a Arc<ThreadToolLifetime>,
     pub project: &'a WorkspaceRecord,
     pub workspace: &'a ToolWorkspace,
-    pub remote: Option<&'a RemoteWorkspaceHost>,
+    pub remote: Option<&'a SshWorkspaceBinding>,
     pub preparation: &'a CatalogPreparation,
     pub cancellation: &'a CancellationToken,
 }
@@ -45,7 +46,7 @@ pub(crate) struct ThreadMcpOwner {
     pub(super) lifetime: Arc<ThreadToolLifetime>,
     pub(super) scope: McpScope,
     pub(super) workspace_root: PathBuf,
-    remote_commands: Mutex<Option<Arc<RemoteCommandBackend>>>,
+    remote_commands: Mutex<Option<Arc<ExecutorCommandBackend>>>,
     pub(super) runtime: McpRuntimeHandle,
     servers: Mutex<BTreeMap<String, ResolvedThreadMcpServer>>,
     settings_revision: Mutex<u64>,
@@ -61,7 +62,7 @@ pub(crate) struct ThreadMcpOwner {
 
 impl ThreadMcpOwner {
     pub(crate) fn cancel_producers(&self) {
-        self.lifetime.cancellation.cancel();
+        self.lifetime.cancel();
     }
 
     fn new(
@@ -69,7 +70,7 @@ impl ThreadMcpOwner {
         lifetime: Arc<ThreadToolLifetime>,
         scope: McpScope,
         workspace_root: PathBuf,
-        remote_commands: Option<Arc<RemoteCommandBackend>>,
+        remote_commands: Option<Arc<ExecutorCommandBackend>>,
         runtime: McpRuntimeHandle,
         servers: BTreeMap<String, ResolvedThreadMcpServer>,
     ) -> Arc<Self> {
@@ -145,7 +146,7 @@ impl ThreadMcpOwner {
 
     fn start_close(self: &Arc<Self>, events: &ProductEventBus) -> McpCloseCompletion {
         use futures::FutureExt;
-        self.lifetime.cancellation.cancel();
+        self.lifetime.cancel();
         {
             let mut slot = self
                 .shutdown
@@ -209,7 +210,7 @@ impl ThreadMcpOwner {
         self.start_close(events).await
     }
 
-    fn remote_commands(&self) -> Option<Arc<RemoteCommandBackend>> {
+    fn remote_commands(&self) -> Option<Arc<ExecutorCommandBackend>> {
         self.remote_commands
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -219,7 +220,7 @@ impl ThreadMcpOwner {
     fn update_resolved(
         &self,
         servers: BTreeMap<String, ResolvedThreadMcpServer>,
-        remote: Option<Arc<RemoteCommandBackend>>,
+        remote: Option<Arc<ExecutorCommandBackend>>,
     ) {
         *self
             .remote_commands
@@ -365,7 +366,7 @@ impl ThreadMcpOwner {
         self: &Arc<Self>,
         resolved: BTreeMap<String, ResolvedThreadMcpServer>,
         authorization: Option<pl_core::tool::opaque::ToolAuthorization>,
-        remote: Option<Arc<RemoteCommandBackend>>,
+        remote: Option<Arc<ExecutorCommandBackend>>,
         events: &ProductEventBus,
         cancellation: &CancellationToken,
     ) -> Result<McpTurnLease, ThreadAssemblyError> {
@@ -475,9 +476,16 @@ impl ThreadMcpOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let previous = self.read_snapshot();
         let next_servers: Vec<ThreadMcpServerState> = servers
             .values()
             .map(|entry| {
+                if server_id.is_some_and(|id| entry.id != id)
+                    && let Some(previous) =
+                        previous.servers.iter().find(|server| server.id == entry.id)
+                {
+                    return previous.clone();
+                }
                 let override_connecting = match server_id {
                     Some(id) => entry.id == id,
                     None => entry.server.config.enabled,
@@ -526,7 +534,7 @@ impl ThreadMcpOwner {
         product_events.emit_thread_mcp_state(snapshot);
     }
 
-    fn publish_reconnect_failure(&self, product_events: &ProductEventBus) {
+    fn publish_reconnect_failure(&self, server_id: Option<&str>, product_events: &ProductEventBus) {
         let servers = self
             .servers
             .lock()
@@ -540,6 +548,12 @@ impl ThreadMcpOwner {
         guard.servers = servers
             .values()
             .map(|entry| {
+                if server_id.is_some_and(|id| entry.id != id)
+                    && let Some(previous) =
+                        guard.servers.iter().find(|server| server.id == entry.id)
+                {
+                    return previous.clone();
+                }
                 server_state_from_availability(
                     entry,
                     None,
@@ -667,7 +681,7 @@ impl StudioThreadFactory {
             },
             None => McpScope::Host,
         };
-        let remote_commands = remote.map(|host| Arc::new(host.commands.clone()));
+        let remote_commands = remote.map(|host| Arc::new(host.commands().clone()));
         let resolved = self
             .services
             .config_runtime
@@ -843,62 +857,85 @@ impl StudioThreadFactory {
                 "Thread '{thread_id}' is not active"
             ))
         })?;
-        let _guard = owner.command_lock.lock().await;
-        anyhow::ensure!(
-            !owner.lifetime.cancellation.is_cancelled(),
-            "member MCP is closing"
-        );
-        self.ensure_current_mcp_owner(&owner)?;
-        // Reject invalid commands without fencing projection or joining another producer.
-        let resolved = self.resolve_mcp_owner_snapshot(&owner)?;
-        if let Some(target_id) = server_id
-            && !resolved.servers.contains_key(target_id)
-        {
-            return Err(pl_protocol::studio::StudioError::invalid_argument(format!(
-                "MCP server '{target_id}' is not enabled in Thread '{thread_id}'"
-            ))
-            .into());
-        }
-        let configuration_changed = !owner.matches_servers(&resolved.servers);
-        owner.pause_projection();
+        let (_, _, state) = self
+            .reconnect_mcp_for_owner(&owner, server_id, CancellationToken::new())
+            .await?;
+        Ok(state)
+    }
+
+    /// Both UI and model reconnect use this physical owner and the same command boundary.
+    pub(super) async fn reconnect_mcp_for_owner(
+        &self,
+        owner: &Arc<ThreadMcpOwner>,
+        server_id: Option<&str>,
+        cancellation: CancellationToken,
+    ) -> Result<(u64, u64, ThreadMcpStateSnapshot)> {
         tokio::select! {
             biased;
-            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
-            result = owner.finish_preparation() => result.map_err(|error| resource_error("finish MCP preparation before reconnect", error))?,
-        }
-        owner.set_servers(resolved.servers.clone());
-        owner.publish_connecting(server_id, &self.services.product_events);
-        let effective_servers = resolved
-            .servers
-            .into_iter()
-            .map(|(id, entry)| (id, entry.server))
-            .collect();
-        let reset_scope = match server_id {
-            Some(id) => McpResetScope::Server {
-                server_id: id.to_owned(),
+            () = cancellation.cancelled() => {
+                // The worker still owns any command already accepted. Let the existing
+                // owner reconcile its eventual result; never replay a tool invocation.
+                owner.reconcile_requested.notify_one();
+                anyhow::bail!("MCP reconnect was cancelled")
             },
-            None => McpResetScope::All,
-        };
-        let reset = tokio::select! {
-            biased;
-            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("member MCP is closing"),
-            result = owner.runtime.reset_authorized(reset_scope, effective_servers, resolved.authorization.clone()) => result,
-        };
-        if reset.is_err() && configuration_changed {
-            // reset preserves the old worker generation on failure. It must not be projected
-            // as readiness of a changed endpoint/configuration with the same server id.
-            // Keep projection paused; the next config preparation must prove the new set.
-            owner.publish_reconnect_failure(&self.services.product_events);
-            return reset
-                .map(|()| owner.read_snapshot())
-                .map_err(anyhow::Error::from);
+            () = owner.lifetime.cancellation.cancelled() => anyhow::bail!("MCP owner is closing"),
+            result = async {
+                let _command = owner.command_lock.lock().await;
+                self.ensure_current_mcp_owner(owner)?;
+                // Reject before fencing projection, joining preparation, or sending a reset.
+                let resolved = self.resolve_mcp_owner_snapshot(owner)?;
+                if let Some(target_id) = server_id {
+                    let target = resolved.servers.get(target_id).ok_or_else(|| {
+                        pl_protocol::studio::StudioError::invalid_argument(format!(
+                            "MCP server '{target_id}' is not enabled in Thread '{}'",
+                            owner.thread_id
+                        ))
+                    })?;
+                    anyhow::ensure!(
+                        target.server.status_kind != pl_tool::mcp::config::McpServerStatusKind::MissingCredential,
+                        "MCP server '{target_id}' is missing credentials"
+                    );
+                }
+                self.ensure_mcp_authorization(owner, &resolved.authorization)?;
+                let configuration_changed = !owner.matches_servers(&resolved.servers);
+                owner.pause_projection();
+                owner.finish_preparation().await
+                    .map_err(|error| resource_error("finish MCP preparation before reconnect", error))?;
+                self.ensure_mcp_authorization(owner, &resolved.authorization)?;
+                owner.set_servers(resolved.servers.clone());
+                owner.publish_connecting(server_id, &self.services.product_events);
+                let effective_servers = resolved.servers
+                    .iter()
+                    .map(|(id, entry)| (id.clone(), entry.server.clone()))
+                    .collect();
+                let reset_scope = match server_id {
+                    Some(id) => McpResetScope::Server { server_id: id.to_owned() },
+                    None => McpResetScope::All,
+                };
+                let reset = owner.runtime.reset_authorized(
+                    reset_scope, effective_servers, resolved.authorization.clone()
+                ).await;
+                self.ensure_mcp_authorization(owner, &resolved.authorization)?;
+                if let Err(source) = reset {
+                    // A failed candidate must never be presented as a successful new session,
+                    // even if the old generation is retained by the runtime for cleanup.
+                    owner.publish_reconnect_failure(server_id, &self.services.product_events);
+                    if !configuration_changed {
+                        // The worker already stopped target admission in the retained
+                        // generation. This terminal projection lets later model steps keep
+                        // its remaining tools without preparing optional servers again.
+                        owner.resume_projection();
+                    }
+                    return Err(anyhow::Error::new(source)
+                        .context("MCP reconnect failed; the target remains unavailable"));
+                }
+                owner.resume_projection();
+                owner.update_snapshot(&self.services.product_events, true).await;
+                let lease = self.acquire_mcp_owner_lease(owner).await?;
+                self.ensure_mcp_authorization(owner, &resolved.authorization)?;
+                Ok((resolved.catalog_revision, lease.generation().0, owner.read_snapshot()))
+            } => result,
         }
-        self.ensure_mcp_authorization(&owner, &resolved.authorization)?;
-        owner.resume_projection();
-        owner.refresh_snapshot(&self.services.product_events).await;
-        self.ensure_mcp_authorization(&owner, &resolved.authorization)?;
-        reset?;
-        Ok(owner.read_snapshot())
     }
 
     pub(crate) async fn reconcile_open_threads_for_scopes(&self, scopes: &[McpScope]) {
@@ -1169,6 +1206,7 @@ pub(crate) mod tests {
             enabled: true,
             required: false,
             transport: McpServerTransport::StreamableHttp,
+            startup_mode: Default::default(),
             command: None,
             args: Vec::new(),
             env: BTreeMap::new(),
@@ -1290,6 +1328,8 @@ pub(crate) mod tests {
             commands: None,
             remote: None,
             ssh_profile: None,
+            lsp_lease: None,
+            lsp_binding_id: None,
         });
         *scope.mcp.lock().unwrap() = Some(owner.clone());
         factory.bind_resource_scope(&owner.thread_id, &scope)?;
@@ -1435,10 +1475,7 @@ pub(crate) mod tests {
 
         let owner_a = ThreadMcpOwner::new(
             "thread-a".to_owned(),
-            Arc::new(ThreadToolLifetime {
-                gate: Arc::new(tokio::sync::Mutex::new(())),
-                cancellation: CancellationToken::new(),
-            }),
+            Arc::new(ThreadToolLifetime::default()),
             McpScope::Host,
             temp.path().to_path_buf(),
             None,
@@ -1447,10 +1484,7 @@ pub(crate) mod tests {
         );
         let owner_b = ThreadMcpOwner::new(
             "thread-b".to_owned(),
-            Arc::new(ThreadToolLifetime {
-                gate: Arc::new(tokio::sync::Mutex::new(())),
-                cancellation: CancellationToken::new(),
-            }),
+            Arc::new(ThreadToolLifetime::default()),
             McpScope::Host,
             temp.path().to_path_buf(),
             None,

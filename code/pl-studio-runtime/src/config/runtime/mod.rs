@@ -446,7 +446,7 @@ impl ConfigRuntime {
         scope: &McpScope,
         workspace_root: &std::path::Path,
         host_base_cwd: &std::path::Path,
-        remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
+        remote_commands: Option<Arc<pl_tool::command::ExecutorCommandBackend>>,
     ) -> ConfigRuntimeResult<BTreeMap<String, ResolvedThreadMcpServer>> {
         let _command = self
             .command_lock
@@ -469,7 +469,7 @@ impl ConfigRuntime {
         scope: &McpScope,
         workspace_root: &std::path::Path,
         host_base_cwd: &std::path::Path,
-        remote_commands: Option<Arc<pl_tool::remote::RemoteCommandBackend>>,
+        remote_commands: Option<Arc<pl_tool::command::ExecutorCommandBackend>>,
     ) -> ConfigRuntimeResult<super::mcp_resource::ResolvedThreadMcpSnapshot> {
         let _command = self
             .command_lock

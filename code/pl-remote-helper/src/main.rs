@@ -7,18 +7,14 @@ mod process_worker;
 fn main() -> std::process::ExitCode {
     let mut arguments = std::env::args_os().skip(1);
     let result = match arguments.next() {
-        None => bootstrap_server(),
-        Some(mode) if mode == "--serve" && arguments.next().is_none() => run_server(),
+        None => Err("expected --stdio or --process-worker".into()),
         #[cfg(target_os = "linux")]
-        Some(mode) if mode == "--session-owner" => match (arguments.next(), arguments.next()) {
-            (Some(socket), None) => run_owner(socket.into()),
-            _ => Err("session owner requires one socket path".into()),
-        },
-        #[cfg(target_os = "linux")]
-        Some(mode) if mode == "--attach" => match (arguments.next(), arguments.next()) {
-            (Some(socket), None) => run_attach(socket.into()),
-            _ => Err("attachment requires one socket path".into()),
-        },
+        Some(mode) if mode == "--stdio" && arguments.next().is_none() => {
+            environment::bootstrap_mode("--serve-connection").map_err(Into::into)
+        }
+        Some(mode) if mode == "--serve-connection" && arguments.next().is_none() => {
+            run_connection()
+        }
         #[cfg(target_os = "linux")]
         Some(mode) if mode == "--emit-environment" => match (arguments.next(), arguments.next()) {
             (Some(socket), None) => {
@@ -39,29 +35,18 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn bootstrap_server() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "linux")]
-    {
-        environment::bootstrap().map_err(Into::into)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        run_server()
-    }
-}
-
-fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+fn run_connection() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(pl_remote_helper::run_stdio());
-    // Tokio's stdin reader uses a blocking thread. A lost SSH connection can
-    // leave that thread inside an uncancelable read after the lease expires.
-    // The server has already joined command cleanup here, so bound runtime
-    // shutdown and let process exit release the remaining stdin reader.
-    runtime.shutdown_timeout(std::time::Duration::from_millis(250));
-    result?;
-    Ok(())
+    let io = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+    let result = runtime.block_on(pl_remote_helper::serve_connection(io));
+    runtime.shutdown_timeout(std::time::Duration::ZERO);
+    if matches!(result, Err(pl_remote_helper::ServerError::CleanupTimedOut)) {
+        eprintln!("foreground server cleanup unconfirmed");
+        std::process::exit(1);
+    }
+    result.map_err(Into::into)
 }
 
 #[cfg(target_os = "linux")]
@@ -94,25 +79,4 @@ fn run_worker(arguments: Vec<std::ffi::OsString>) -> Result<(), Box<dyn std::err
 #[cfg(not(target_os = "linux"))]
 fn run_worker(_: Vec<std::ffi::OsString>) -> Result<(), Box<dyn std::error::Error>> {
     Err("process worker requires Linux".into())
-}
-
-#[cfg(target_os = "linux")]
-fn run_owner(socket: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(pl_remote_helper::run_owner(socket));
-    runtime.shutdown_timeout(std::time::Duration::from_millis(250));
-    result?;
-    Ok(())
-}
-#[cfg(target_os = "linux")]
-fn run_attach(socket: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(pl_remote_helper::attach_stdio(&socket));
-    runtime.shutdown_timeout(std::time::Duration::from_millis(250));
-    result?;
-    Ok(())
 }

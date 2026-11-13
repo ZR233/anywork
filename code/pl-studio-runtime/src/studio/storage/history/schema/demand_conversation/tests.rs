@@ -35,6 +35,7 @@ impl MigratorTraitSelf for Published11 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|step| {
@@ -71,6 +72,7 @@ impl MigratorTraitSelf for Published12 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|step| {

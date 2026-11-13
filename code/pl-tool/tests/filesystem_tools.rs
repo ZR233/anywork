@@ -8,7 +8,7 @@ use pl_core::{
 };
 use pl_tool::{
     binding::prepare_native_tool,
-    file::{CopyPathTool, CreateDirectoryTool, DeletePathTool, MovePathTool, WriteFileInput},
+    file::WriteFileInput,
     workspace::{AgentWorkspace, ToolWorkspace, WorkspaceMutability},
     workspace_file::*,
 };
@@ -47,6 +47,23 @@ where
         )
         .await
 }
+async fn mutation(
+    kind: WorkspaceMutationKind,
+    workspace: ToolWorkspace,
+    input: Value,
+) -> Result<ToolOutput, ToolError> {
+    let backend = Arc::new(
+        ExecutorWorkspaceFileBackend::confined(workspace.clone())
+            .await
+            .map_err(ToolError::new)?,
+    );
+    WorkspaceMutationTool::new(kind, kind.definition(), backend, workspace)
+        .execute(
+            OpaquePayload::new("application/json", 1, input.to_string()).unwrap(),
+            context(),
+        )
+        .await
+}
 fn patch<B: WorkspaceFileBackend + 'static>(
     backend: Arc<B>,
     workspace: ToolWorkspace,
@@ -63,12 +80,13 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
         WorkspaceMutability::ReadWrite,
     ));
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::confined(workspace.clone())
+        ExecutorWorkspaceFileBackend::confined(workspace.clone())
             .await
             .unwrap(),
     );
-    let create = call(
-        CreateDirectoryTool::new(workspace.clone()),
+    let create = mutation(
+        WorkspaceMutationKind::CreateDirectory,
+        workspace.clone(),
         json!({"path":"nested"}),
     )
     .await
@@ -137,22 +155,25 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
         serde_json::from_str::<Value>(absent.payload().content()).unwrap(),
         json!({"path":"absent","exists":false})
     );
-    let copied = call(
-        CopyPathTool::new(workspace.clone()),
+    let copied = mutation(
+        WorkspaceMutationKind::Copy,
+        workspace.clone(),
         json!({"from":"nested/a","to":"nested/b","collision":"failIfExists"}),
     )
     .await
     .unwrap();
     assert_eq!(copied.payload().content(), "Copied nested/a to nested/b");
-    let moved = call(
-        MovePathTool::new(workspace.clone()),
+    let moved = mutation(
+        WorkspaceMutationKind::Move,
+        workspace.clone(),
         json!({"from":"nested/b","to":"nested/c","collision":"failIfExists"}),
     )
     .await
     .unwrap();
     assert_eq!(moved.payload().content(), "Moved nested/b to nested/c");
-    let deleted = call(
-        DeletePathTool::new(workspace.clone()),
+    let deleted = mutation(
+        WorkspaceMutationKind::Delete,
+        workspace.clone(),
         json!({"path":"nested/c","mode":"file"}),
     )
     .await
@@ -209,7 +230,7 @@ async fn host_policy_and_grants_do_not_expand_confined_paths() {
             .with_writable_paths(Some(vec![root.path().join("allowed")])),
     );
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::confined(workspace.clone())
+        ExecutorWorkspaceFileBackend::confined(workspace.clone())
             .await
             .unwrap(),
     );
@@ -240,8 +261,9 @@ async fn host_policy_and_grants_do_not_expand_confined_paths() {
         let physical = root.path().join(&destination);
         assert!(!physical.exists());
         assert!(
-            call(
-                CreateDirectoryTool::new(workspace.clone()),
+            mutation(
+                WorkspaceMutationKind::CreateDirectory,
+                workspace.clone(),
                 json!({"path":destination})
             )
             .await
@@ -254,8 +276,9 @@ async fn host_policy_and_grants_do_not_expand_confined_paths() {
         WorkspaceMutability::ReadOnly,
     ));
     assert!(
-        call(
-            CreateDirectoryTool::new(readonly.clone()),
+        mutation(
+            WorkspaceMutationKind::CreateDirectory,
+            readonly.clone(),
             json!({"path":"no"})
         )
         .await
@@ -271,7 +294,7 @@ async fn host_policy_and_grants_do_not_expand_confined_paths() {
     );
     let host_workspace = ToolWorkspace::new(AgentWorkspace::local(root.path()));
     let host_backend = Arc::new(
-        LocalWorkspaceFileBackend::confined(host_workspace.clone())
+        ExecutorWorkspaceFileBackend::confined(host_workspace.clone())
             .await
             .unwrap(),
     );
@@ -320,7 +343,7 @@ async fn every_local_adapter_rejects_symlink_traversal() {
         WorkspaceMutability::ReadWrite,
     ));
     let backend = Arc::new(
-        LocalWorkspaceFileBackend::confined(workspace.clone())
+        ExecutorWorkspaceFileBackend::confined(workspace.clone())
             .await
             .unwrap(),
     );
@@ -341,32 +364,36 @@ async fn every_local_adapter_rejects_symlink_traversal() {
         .is_err()
     );
     assert!(
-        call(
-            CreateDirectoryTool::new(workspace.clone()),
+        mutation(
+            WorkspaceMutationKind::CreateDirectory,
+            workspace.clone(),
             json!({"path":"link/new"})
         )
         .await
         .is_err()
     );
     assert!(
-        call(
-            DeletePathTool::new(workspace.clone()),
+        mutation(
+            WorkspaceMutationKind::Delete,
+            workspace.clone(),
             json!({"path":"link","mode":"recursiveDirectory"})
         )
         .await
         .is_err()
     );
     assert!(
-        call(
-            CopyPathTool::new(workspace.clone()),
+        mutation(
+            WorkspaceMutationKind::Copy,
+            workspace.clone(),
             json!({"from":"source","to":"link/keep","collision":"overwrite"})
         )
         .await
         .is_err()
     );
     assert!(
-        call(
-            MovePathTool::new(workspace.clone()),
+        mutation(
+            WorkspaceMutationKind::Move,
+            workspace.clone(),
             json!({"from":"link/keep","to":"moved","collision":"overwrite"})
         )
         .await
@@ -382,7 +409,7 @@ async fn every_local_adapter_rejects_symlink_traversal() {
 
 #[derive(Debug)]
 struct GrantProbe {
-    inner: LocalWorkspaceFileBackend,
+    inner: ExecutorWorkspaceFileBackend,
     grants: Arc<AtomicUsize>,
 }
 impl WorkspaceFileBackend for GrantProbe {
@@ -428,7 +455,7 @@ async fn patch_preserves_lock_then_cancel_then_grant_order() {
     ));
     let grants = Arc::new(AtomicUsize::new(0));
     let backend = Arc::new(GrantProbe {
-        inner: LocalWorkspaceFileBackend::confined(workspace.clone())
+        inner: ExecutorWorkspaceFileBackend::confined(workspace.clone())
             .await
             .unwrap(),
         grants: grants.clone(),

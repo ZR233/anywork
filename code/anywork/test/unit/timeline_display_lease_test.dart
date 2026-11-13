@@ -563,6 +563,7 @@ TimelineBatch _mainBatch(
     through: through,
     live: placement == ChatPlacement.set
         ? LiveDisplayWindow(
+            currentWorkId: null,
             revision: 1,
             historyThrough: through,
             executionPresent: false,

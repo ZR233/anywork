@@ -60,6 +60,16 @@ pub struct StudioLspServer {
     pub state: crate::StudioLspServerState,
 }
 
+/// The currently published LSP association projection for one Thread.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioThreadLspStateSnapshot {
+    pub thread_id: String,
+    pub revision: u64,
+    pub binding_id: Option<String>,
+    pub servers: Vec<StudioLspServer>,
+}
+
 /// Observable startup milestones before the normal product stream is available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

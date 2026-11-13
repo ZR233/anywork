@@ -25,7 +25,7 @@ pub(crate) struct AcpBusinessOwner {
     config: crate::config::ConfigRuntime,
     store: crate::studio::StudioStore,
     events: crate::studio::ProductEventBus,
-    workers: std::sync::Arc<super::super::acp_worker::WorkerSource>,
+    workers: std::sync::Arc<pl_remote_helper::Executor>,
     mcp_source: crate::host_mcp_assets::HostMcpSource,
 }
 
@@ -199,7 +199,7 @@ impl AcpBusinessOwner {
         config: crate::config::ConfigRuntime,
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
-        workers: std::sync::Arc<super::super::acp_worker::WorkerSource>,
+        workers: std::sync::Arc<pl_remote_helper::Executor>,
         mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
         Self {

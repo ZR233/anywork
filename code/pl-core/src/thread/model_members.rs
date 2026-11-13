@@ -1,9 +1,17 @@
 //! Admission on the original serial owner, while its prepared call is still running.
 use super::*;
 use crate::model::{
-    MemberFact, MemberRegistry, ModelMemberAdmission, ModelMemberError, ObservedPartIdentity,
-    StartedKey, same_started_identity,
+    AdmittedPart, MemberFact, MemberRegistry, ModelMemberAdmission, ModelMemberError,
+    ObservedPartIdentity, StartedKey, same_started_identity,
 };
+
+/// The member facts carried by one ordinary owner publication.
+#[derive(Default)]
+pub(super) struct MemberEffects {
+    pub(super) completed: Arc<[crate::model::ModelCompletedMember]>,
+    pub(super) started: Arc<[crate::model::ModelStartedMember]>,
+    pub(super) content_available: Vec<crate::model::ModelContentAvailableMember>,
+}
 
 pub(super) struct MemberCall {
     pub(super) receiver: tokio::sync::mpsc::Receiver<ModelMemberAdmission>,
@@ -100,8 +108,22 @@ impl Owner {
                         || member.attempt_id != call.attempt_id
                         || member.generation != generation
                         || matches!(&member.identity, ObservedPartIdentity::Provider(p) if p.item_id.is_empty()),
-                    old.is_some_and(|(old, _)| !same_started_identity(old, &member.identity)),
+                    old.is_some_and(|old| !same_started_identity(&old.identity, &member.identity)),
                     old.is_some(),
+                )
+            }
+            MemberFact::ContentAvailable(member) => {
+                let old = seen
+                    .started
+                    .get(&(member.generation, StartedKey::of(&member.identity)));
+                (
+                    member.turn_id != call.turn_id
+                        || member.attempt_id != call.attempt_id
+                        || member.generation != generation
+                        || old.is_none()
+                        || matches!(&member.identity, ObservedPartIdentity::Provider(p) if p.item_id.is_empty()),
+                    old.is_some_and(|old| !same_started_identity(&old.identity, &member.identity)),
+                    old.is_some_and(|old| old.content_available),
                 )
             }
         };
@@ -117,11 +139,17 @@ impl Owner {
             return;
         }
         if duplicate {
-            if let MemberFact::Started(member) = &member
-                && let ObservedPartIdentity::Provider(new) = &member.identity
-                && let Some((ObservedPartIdentity::Provider(old), _)) = seen
+            let beginning = match &member {
+                MemberFact::Started(member) => Some((member.generation, &member.identity)),
+                MemberFact::ContentAvailable(member) => Some((member.generation, &member.identity)),
+                MemberFact::Completed(_) => None,
+            };
+            if let Some((generation, identity)) = beginning
+                && let ObservedPartIdentity::Provider(new) = identity
+                && let Some(old) = seen
                     .started
-                    .get_mut(&(member.generation, StartedKey::of(&member.identity)))
+                    .get_mut(&(generation, StartedKey::of(identity)))
+                && let ObservedPartIdentity::Provider(old) = &mut old.identity
             {
                 old.output_index = old.output_index.or(new.output_index);
                 old.item_kind = new.item_kind;
@@ -132,17 +160,21 @@ impl Owner {
         // Fund the *whole* encoded effect before publishing, separately from the opaque allocation
         // that the registry still owns. Its claim can transfer this effect funding, not those
         // resident opaque bytes or the accumulator/progress and dedup metadata on the reservation.
-        let (completed, started) = match &member {
-            MemberFact::Completed(member) => (vec![member.clone()], vec![]),
-            MemberFact::Started(member) => (vec![], vec![member.clone()]),
+        let (completed, started, content_available) = match &member {
+            MemberFact::Completed(member) => (vec![member.clone()], vec![], vec![]),
+            MemberFact::Started(member) => (vec![], vec![member.clone()], vec![]),
+            MemberFact::ContentAvailable(member) => (vec![], vec![], vec![member.clone()]),
         };
         let effect = ThreadEffectBatch::between(
             &self.id,
             &self.published,
             &self.state,
             self.state.commit_sequence.saturating_add(1),
-            completed.into(),
-            started.into(),
+            MemberEffects {
+                completed: completed.into(),
+                started: started.into(),
+                content_available,
+            },
             Arc::from([]),
         )
         .expect("a member always produces an effect");
@@ -171,8 +203,27 @@ impl Owner {
             MemberFact::Started(member) => {
                 seen.started.insert(
                     (member.generation, StartedKey::of(&member.identity)),
-                    (member.identity.clone(), charge),
+                    AdmittedPart {
+                        identity: member.identity.clone(),
+                        _start_charge: charge,
+                        content_available: false,
+                        _content_charge: None,
+                    },
                 );
+            }
+            MemberFact::ContentAvailable(member) => {
+                let part = seen
+                    .started
+                    .get_mut(&(member.generation, StartedKey::of(&member.identity)))
+                    .expect("validated start");
+                part.content_available = true;
+                part._content_charge = charge;
+                if let (ObservedPartIdentity::Provider(old), ObservedPartIdentity::Provider(new)) =
+                    (&mut part.identity, &member.identity)
+                {
+                    old.output_index = old.output_index.or(new.output_index);
+                    old.item_kind = new.item_kind;
+                }
             }
         }
         drop(seen);
@@ -180,6 +231,9 @@ impl Owner {
         match member {
             MemberFact::Completed(member) => self.pending_model_members.push(member),
             MemberFact::Started(member) => self.pending_model_member_starts.push(member),
+            MemberFact::ContentAvailable(member) => {
+                self.pending_model_member_content_available.push(member)
+            }
         }
         self.claim_output(operation);
         if let Err(error) = self.publish() {

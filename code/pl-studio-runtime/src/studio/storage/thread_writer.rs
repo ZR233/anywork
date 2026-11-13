@@ -49,6 +49,8 @@ mod batch;
 mod batch_tests;
 #[cfg(feature = "benchmarks")]
 pub(crate) mod benchmark;
+#[cfg(test)]
+mod watchdog_tests;
 #[cfg(feature = "benchmarks")]
 use super::calls::observation::Metric as BenchMetric;
 
@@ -1011,6 +1013,23 @@ struct QueuedEffect {
     prepared_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryStage {
+    ProjectionPrepare,
+    WriterQueue,
+    SqlCommit,
+}
+
+impl HistoryStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectionPrepare => "projection_prepare",
+            Self::WriterQueue => "writer_queue",
+            Self::SqlCommit => "sql_commit",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Progress {
     stopped: bool,
@@ -1083,16 +1102,45 @@ struct Progress {
     fault_recovered: bool,
     fault_target: u64,
     retry_requested: bool,
+    /// The oldest undurable obligation's actual stage, shared with the existing watchdog.
+    stage: Option<HistoryStage>,
     last_progress_at: Option<Instant>,
     /// Actual accepted output, separate from each operation's upper bound.
     operation_output: BTreeMap<String, OperationOutput>,
 }
 
 impl Progress {
-    fn has_writable_head(&self) -> bool {
-        self.effects
-            .front()
-            .is_some_and(|queued| queued.prepared.is_some())
+    fn enter_stage(&mut self, stage: Option<HistoryStage>, now: Instant) {
+        if self.stage != stage {
+            self.stage = stage;
+            self.last_progress_at = stage.map(|_| now);
+        }
+    }
+
+    fn refresh_head_stage(&mut self, now: Instant) {
+        // Admissions and projection handoffs cannot end an outstanding SQL call.
+        if self.stage == Some(HistoryStage::SqlCommit) {
+            return;
+        }
+        let stage = self.effects.front().map(|head| {
+            if head.prepared.is_some() {
+                HistoryStage::WriterQueue
+            } else {
+                HistoryStage::ProjectionPrepare
+            }
+        });
+        self.enter_stage(stage, now);
+    }
+
+    fn prepared_through(&self) -> u64 {
+        let mut through = self.durable;
+        for effect in &self.effects {
+            if effect.prepared.is_none() || through.checked_add(1) != Some(effect.sequence) {
+                break;
+            }
+            through = effect.sequence;
+        }
+        through
     }
     /// Locate a sequence in the continuous original queue without scanning it.
     fn queue_offset(&self, sequence: u64) -> Option<usize> {
@@ -1212,6 +1260,8 @@ pub(crate) struct HistoryChannel {
     >,
     #[cfg(test)]
     resident_gate: Mutex<Option<MaterializeGate>>,
+    #[cfg(test)]
+    sql_pending: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     #[cfg(test)]
     delivery_admission_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     progress: Mutex<Progress>,
@@ -1635,6 +1685,8 @@ impl HistoryChannel {
             #[cfg(test)]
             resident_gate: Mutex::new(None),
             #[cfg(test)]
+            sql_pending: Mutex::new(None),
+            #[cfg(test)]
             delivery_admission_entered: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
             changed: Arc::new(tokio::sync::Notify::new()),
@@ -1930,10 +1982,8 @@ impl HistoryChannel {
         progress.prepared_bytes = progress.prepared_bytes.saturating_add(bytes);
         progress.effects[index].prepared_bytes = bytes;
         progress.effects[index].prepared = Some(prepared);
-        progress.handoff = progress.handoff.max(sequence);
-        if progress.has_writable_head() {
-            progress.last_progress_at.get_or_insert_with(Instant::now);
-        }
+        progress.handoff = sequence;
+        progress.refresh_head_stage(Instant::now());
         #[cfg(test)]
         self.pause_resident_commit();
         self.commit_residents(&progress, &order_index);
@@ -2010,6 +2060,13 @@ impl HistoryChannel {
             progress.fault_recovered = false;
             progress.saving_revision = 0;
             if published {
+                self.diagnose(
+                    &progress,
+                    Instant::now(),
+                    "projection_prepare",
+                    pl_protocol::studio::HistoryFault::WriteFailed,
+                    &["projection_failed"],
+                );
                 self.report(&progress);
             }
             published
@@ -2214,15 +2271,19 @@ impl HistoryChannel {
     }
 
     fn detect_stall(&self) {
+        self.detect_stall_at(Instant::now());
+    }
+
+    fn detect_stall_at(&self, now: Instant) {
         let mut progress = self
             .progress
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if progress.error.is_some()
-            || !progress.has_writable_head()
+            || progress.effects.is_empty()
             || !progress
                 .last_progress_at
-                .is_some_and(|last| last.elapsed() >= NO_PROGRESS_WINDOW)
+                .is_some_and(|last| now.saturating_duration_since(last) >= NO_PROGRESS_WINDOW)
         {
             return;
         }
@@ -2235,7 +2296,58 @@ impl HistoryChannel {
         progress.error = Some("history writer made no progress with queued facts".to_owned());
         progress.fault_recovered = false;
         progress.retry_requested = false;
+        self.diagnose(
+            &progress,
+            now,
+            "watchdog",
+            pl_protocol::studio::HistoryFault::NoProgress,
+            &["no_progress"],
+        );
         self.report(&progress);
+    }
+
+    /// Log only identities, counters and bounded reason categories. Raw error Display/source
+    /// strings may contain provider responses, paths or credentials and never enter this event.
+    fn diagnose(
+        &self,
+        progress: &Progress,
+        now: Instant,
+        source: &str,
+        kind: pl_protocol::studio::HistoryFault,
+        reasons: &[&str],
+    ) {
+        let head = progress.effects.front();
+        let execution_id = head
+            .and_then(|effect| effect.write.checkpoint.state.execution.as_ref())
+            .map(|execution| execution.id.as_str());
+        // The reliable queue carries execution identity, not live provider request/generation
+        // metadata. Attempt IDs and the execution counter cannot substitute for those identities.
+        tracing::warn!(
+            target: "conversation_work",
+            operation = "history_persistence",
+            thread_id = ?head.map(|effect| effect.write.checkpoint.thread_id.as_str()),
+            execution_id = ?execution_id,
+            request_id = ?Option::<&str>::None,
+            generation = ?Option::<u32>::None,
+            effect = ?head.map(|effect| effect.sequence),
+            stage = ?progress.stage.map(HistoryStage::as_str),
+            stage_started_at = ?progress.last_progress_at,
+            stage_elapsed_ms = ?progress.last_progress_at.map(|started|
+                now.saturating_duration_since(started).as_millis().min(u128::from(u64::MAX)) as u64),
+            head = ?head.map(|effect| effect.sequence),
+            admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
+            prepared_through = progress.prepared_through(),
+            durable = progress.durable,
+            flush_target = ?(progress.flush_target > progress.durable).then_some(progress.flush_target),
+            pending_count = progress.effects.len(),
+            pending_bytes = progress.effect_bytes.saturating_add(progress.queue_metadata_bytes)
+                .saturating_add(progress.prepared_bytes),
+            fault_kind = ?kind,
+            fault_generation = progress.fault_generation,
+            error_source = source,
+            reason_chain = ?reasons,
+            "history persistence stalled or failed"
+        );
     }
 }
 
@@ -2653,7 +2765,7 @@ impl ThreadStorageSink {
                     }
                     Ok(Step::Idle) => {
                         // Upstream preparation and delivery capacity are event-driven.
-                        // The existing watchdog owns writable-prefix stall detection.
+                        // The existing watchdog owns oldest-undurable stage detection.
                         tokio::select! {
                             () = inner.changed.notified() => {}
                             () = accounting_retry_due(&inner) => {}
@@ -2680,7 +2792,13 @@ impl ThreadStorageSink {
                                 .map_or(pl_protocol::studio::HistoryFault::WriteFailed, |typed| {
                                     typed.kind
                                 });
-                            record_error(&inner, kind, message);
+                            record_error(
+                                &inner,
+                                kind,
+                                FaultTarget::Queued,
+                                message,
+                                &safe_error_reasons(&error),
+                            );
                             retrying_since = None;
                         } else {
                             note_absorbed_conflict(&inner);
@@ -2712,11 +2830,9 @@ async fn step(inner: &Inner) -> Result<Step> {
     let _single_writer = inner.channel.step_lock.lock().await;
     {
         let mut progress = lock_progress(inner);
-        // An explicit retry may arrive after QueueFull's fixed fence already
-        // committed. Settle it even when no later effect can trigger a commit.
-        if progress.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
-            && clear_recovered_fault(&mut progress)
-        {
+        // An explicit retry can arrive after an outstanding SQL call completed the fault's
+        // fixed fence. Settle it even when no later effect can trigger a commit.
+        if clear_recovered_fault(&mut progress) {
             report(inner, &progress);
         }
         // Another attached writer may have failed while this worker waited for step_lock.
@@ -2783,7 +2899,10 @@ async fn step(inner: &Inner) -> Result<Step> {
         progress.durable = committed.sequence;
     }
     progress.in_flight = None;
-    progress.last_progress_at = progress.has_writable_head().then(Instant::now);
+    // Advancing the queue head is progress even when the next head has the same stage.
+    progress.stage = None;
+    progress.last_progress_at = None;
+    progress.refresh_head_stage(Instant::now());
     #[cfg(test)]
     let sequence = progress.durable;
     inner.channel.commit_residents(&progress, &index);
@@ -3006,7 +3125,19 @@ fn frozen_route_revision(snapshot: &ThreadSnapshot) -> Option<u64> {
         .map(|(record, _)| record.revision)
 }
 
-fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message: String) {
+#[derive(Clone, Copy)]
+enum FaultTarget {
+    Queued,
+    NextWrite,
+}
+
+fn record_error(
+    inner: &Inner,
+    kind: pl_protocol::studio::HistoryFault,
+    target: FaultTarget,
+    message: String,
+    reasons: &[&str],
+) {
     {
         let mut progress = lock_progress(inner);
         progress.fault_generation = progress.fault_generation.saturating_add(1);
@@ -3014,6 +3145,13 @@ fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message:
             .effects
             .back()
             .map_or(progress.durable, |queued| queued.sequence);
+        if matches!(target, FaultTarget::NextWrite) {
+            // Rejecting a ticket did not save any new fact. Equal old watermarks cannot
+            // verify repair; a later successful write must cross this failure boundary.
+            progress.fault_target = progress
+                .fault_target
+                .max(progress.durable.saturating_add(1));
+        }
         progress.retry_requested = false;
         progress.fault = Some(kind);
         progress.error = Some(message);
@@ -3022,9 +3160,46 @@ fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message:
         // for retry, and the metric must not keep reporting it as actively saving.
         progress.saving_revision = 0;
         progress.in_flight_bytes = 0;
+        inner.channel.diagnose(
+            &progress,
+            Instant::now(),
+            if kind == pl_protocol::studio::HistoryFault::BlobFailed {
+                "blob_fence"
+            } else {
+                "history_writer"
+            },
+            kind,
+            reasons,
+        );
         report(inner, &progress);
     }
     inner.changed.notify_one();
+}
+
+fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
+    error
+        .chain()
+        .take(4)
+        .map(|cause| {
+            if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+                match io.kind() {
+                    std::io::ErrorKind::NotFound => "io_not_found",
+                    std::io::ErrorKind::PermissionDenied => "io_permission_denied",
+                    std::io::ErrorKind::TimedOut => "io_timed_out",
+                    std::io::ErrorKind::Interrupted => "io_interrupted",
+                    _ => "io_error",
+                }
+            } else if cause.is::<sea_orm::DbErr>() {
+                "database_error"
+            } else if cause.is::<sqlx::Error>() {
+                "sql_driver_error"
+            } else if cause.is::<ClassifiedWriteError>() {
+                "classified_history_error"
+            } else {
+                "redacted_error"
+            }
+        })
+        .collect()
 }
 
 /// Keeps the observable metrics honest while one retryable conflict is absorbed.
@@ -3069,7 +3244,9 @@ impl ColdStore for ThreadStorageSink {
                 } else {
                     pl_protocol::studio::HistoryFault::WriteFailed
                 },
+                FaultTarget::Queued,
                 error.to_string(),
+                &safe_error_reasons(error),
             );
         } else {
             let progress = lock_progress(&self.0);
@@ -3197,7 +3374,9 @@ impl ColdStore for ThreadStorageSink {
             record_error(
                 &self.0,
                 pl_protocol::studio::HistoryFault::WriteFailed,
+                FaultTarget::NextWrite,
                 "Thread persistence ticket mismatch".to_owned(),
+                &["ticket_mismatch"],
             );
             return Err(ColdStoreError {
                 source: Box::new(std::io::Error::other("Thread persistence ticket mismatch")),
@@ -3262,26 +3441,52 @@ impl ColdStore for ThreadStorageSink {
             let added = bytes
                 .saturating_add(PENDING_AGE_METADATA_BYTES)
                 .saturating_sub(covered);
-            if progress.effects.len() >= MAX_HISTORY_BATCHES
-                || queued_bytes
-                    .checked_add(bytes.saturating_add(PENDING_AGE_METADATA_BYTES))
-                    .is_none_or(|total| total > MAX_HISTORY_THREAD_BYTES)
-                || (added > 0 && !self.0.channel.reserve(added))
+            // Preserve the admission checks' short-circuit order. In particular, never reserve
+            // process bytes when an earlier limit refuses the ticket, or reserve twice for logging.
+            let rejection_kind = if progress.effects.len() >= MAX_HISTORY_BATCHES {
+                Some("slot")
+            } else if queued_bytes
+                .checked_add(bytes.saturating_add(PENDING_AGE_METADATA_BYTES))
+                .is_none_or(|total| total > MAX_HISTORY_THREAD_BYTES)
             {
+                Some("thread_bytes")
+            } else if added > 0 && !self.0.channel.reserve(added) {
+                Some("process_budget")
+            } else {
+                None
+            };
+            if let Some(rejection_kind) = rejection_kind {
                 let message =
                     format!("history queue full for Thread {thread_id} at write_seq {sequence}");
-                if progress.error.is_none() {
-                    progress.fault_generation = progress.fault_generation.saturating_add(1);
-                    progress.retry_requested = false;
-                }
-                progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::QueueFull);
-                progress.error = Some(message.clone());
-                progress.fault_recovered = false;
+                tracing::debug!(
+                    target: "conversation_work",
+                    operation = "history_admission",
+                    rejection_kind,
+                    thread_id,
+                    write_seq = sequence,
+                    queued_effects = progress.effects.len(),
+                    // Same retained-byte scope as the Thread admission check, not the broader
+                    // pressure gauge that also includes projection/prepared/output residents.
+                    queued_thread_bytes = queued_bytes,
+                    effect_bytes = bytes,
+                    thread_bytes_increment = bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
+                    process_bytes_increment = added,
+                    // Other Threads can change this atomic after reserve refused; this is an
+                    // observation, not the failed compare/update's exact budget value.
+                    process_bytes_observed = self.0.channel.process_bytes.load(Ordering::Acquire),
+                    head = ?progress.effects.front().map(|effect| effect.sequence),
+                    admitted = progress.effects.back().map_or(progress.durable, |effect| effect.sequence),
+                    durable = progress.durable,
+                    stage = ?progress.stage.map(HistoryStage::as_str),
+                    fault_generation = progress.fault_generation,
+                    "history admission refused"
+                );
                 drop(index);
                 report(&self.0, &progress);
                 self.0.changed.notify_one();
-                return Err(cold_error(&message));
+                return Err(ColdStoreError {
+                    source: Box::new(pl_core::thread::cold::StorageAdmissionBackpressure(message)),
+                });
             }
             if let Err(error) = self.0.channel.order_index.reserve_boundaries_locked(
                 &mut index,
@@ -3294,16 +3499,22 @@ impl ColdStore for ThreadStorageSink {
                     .process_bytes
                     .fetch_sub(added, Ordering::AcqRel);
                 let message = error.to_string();
+                if error.is::<ExecutionIndexBudgetFull>() {
+                    drop(index);
+                    report(&self.0, &progress);
+                    self.0.changed.notify_one();
+                    return Err(ColdStoreError {
+                        source: Box::new(pl_core::thread::cold::StorageAdmissionBackpressure(
+                            message,
+                        )),
+                    });
+                }
                 if progress.error.is_none() {
                     progress.fault_generation = progress.fault_generation.saturating_add(1);
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(if error.is::<ExecutionIndexBudgetFull>() {
-                    pl_protocol::studio::HistoryFault::QueueFull
-                } else {
-                    pl_protocol::studio::HistoryFault::WriteFailed
-                });
+                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 drop(index);
@@ -3318,15 +3529,17 @@ impl ColdStore for ThreadStorageSink {
                     output.transferred += taken;
                 }
             }
+            let admitted_at = Instant::now();
             progress.effects.push_back(QueuedEffect {
                 sequence,
-                admitted_at: Instant::now(),
+                admitted_at,
                 write: Arc::new(write.clone()),
                 bytes,
                 // The projection owner takes this entry over from the same queue, in this order.
                 prepared: None,
                 prepared_bytes: 0,
             });
+            progress.refresh_head_stage(admitted_at);
             progress.effect_bytes += bytes;
             progress.admit_saved_at(write.checkpoint.saved_at);
             self.0.channel.commit_residents(&progress, &index);
@@ -4030,9 +4243,11 @@ pub(crate) mod storage_fault_tests {
             config_runtime: config.clone(),
             mcp_connector: pl_tool::mcp::McpConnector::default(),
             lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
+            local_executor: pl_remote_helper::Executor::local()?,
             skills: crate::studio::runtime::SkillCatalogRuntime::new(
                 events.clone(),
                 store.paths().home().join("isolated-test-skills"),
+                pl_remote_helper::Executor::local()?,
             ),
             thread_modes: config.thread_mode_manager(),
             ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
@@ -4350,7 +4565,7 @@ pub(crate) mod storage_fault_tests {
     async fn close_worktree_preserves_original_history_refs_and_terminal_replacements() -> Result<()>
     {
         use crate::agent::worktree::{
-            LocalWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
         };
         use crate::studio::agent_host::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
@@ -4404,7 +4619,9 @@ pub(crate) mod storage_fault_tests {
         let fixture = close_factory(&store)?;
         let manager = WorktreeManager::new(
             repository.clone(),
-            Arc::new(LocalWorktreeBackend::default()),
+            Arc::new(ExecutorWorktreeBackend::new(
+                pl_remote_helper::Executor::local()?,
+            )),
         );
         let ownership = WorktreeOwnership::Child {
             child_id: child.id.clone(),
@@ -6045,7 +6262,10 @@ pub(crate) mod storage_fault_tests {
         let lease = sink.0.channel.step_lock.lock().await;
         let first = visible_input_ticket(id, 1, "first")?;
         sink.admit(id, first.clone())?;
-        assert!(lock_progress(&sink.0).last_progress_at.is_none());
+        assert_eq!(
+            lock_progress(&sink.0).stage,
+            Some(HistoryStage::ProjectionPrepare)
+        );
         sink.0.channel.detect_stall();
         assert!(sink.0.channel.subscribe().borrow().fault.is_none());
         let mut prepared = projection
@@ -6064,13 +6284,21 @@ pub(crate) mod storage_fault_tests {
             .await?;
         projection.publish_prepared(&chat, &mut prepared).await?;
         assert!(sink.0.channel.prepare(prepared));
+        assert_eq!(
+            lock_progress(&sink.0).stage,
+            Some(HistoryStage::WriterQueue)
+        );
         assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
+        let retained = sink.pressure(id).thread_bytes;
         sink.0.channel.detect_stall();
         let failed = sink.0.channel.subscribe().borrow().clone();
         assert_eq!(
             failed.fault,
             Some(pl_protocol::studio::HistoryFault::NoProgress)
         );
+        assert_eq!(lock_progress(&sink.0).prepared_through(), 2);
+        assert_eq!(sink.pressure(id).thread_bytes, retained);
+        assert!(sink.flush(id, 2).await.is_err());
         sink.0.channel.detect_stall();
         assert_eq!(
             sink.0.channel.subscribe().borrow().fault_generation,
@@ -7351,7 +7579,9 @@ pub(crate) mod storage_fault_tests {
                 + accounting_only.display.as_ref().context("frozen display handoff")?.retained_bytes
                 // Publication consumed the effect-local member updates, but their empty
                 // Arc collection remains part of PreparedEffect's retained shell.
-                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64,
+                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64
+                // Empty first-content evidence and observation plans are also retained.
+                + 2 * b"[]".len() as u64,
             "content-empty handoffs still own their accounting and persisted current material"
         );
         assert!(
@@ -8553,7 +8783,7 @@ pub(crate) mod storage_fault_tests {
     /// reservations would be held forever waiting for the queue they themselves block. The rule under
     /// test is the transfer instead — the bytes a reservation covers become the fact's own charge, so
     /// a fully reserved process still hands its facts over — together with the boundaries that stay
-    /// real: an uncovered fact is refused with a typed fault instead of being admitted over budget,
+    /// real: an uncovered fact is refused with typed backpressure instead of being admitted over budget,
     /// the refused fact is handed over unchanged once its Thread's ceiling comes back, and the
     /// process gauge returns to the baseline once everything is durable.
     #[tokio::test]
@@ -8635,15 +8865,17 @@ pub(crate) mod storage_fault_tests {
         // The next continuous fact has no reservation and is refused while there is no headroom and
         // no projection can free any: typed backpressure, nothing dropped, ticket untouched.
         let uncovered = visible_input_ticket(&sink.0.thread.id, 3, "input-uncovered")?;
-        sink.admit(&sink.0.thread.id, uncovered.clone())
+        let error = sink
+            .admit(&sink.0.thread.id, uncovered.clone())
             .expect_err("an unfunded fact cannot be admitted into a full budget");
-        let refused = channel.subscribe().borrow().clone();
-        assert_eq!(
-            refused.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
+        assert!(
+            error
+                .source
+                .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
         );
-        // Both live incarnations observe the same real fault before recovery.
-        // Neither may leave its own coordinator report blocked after it clears.
+        let refused = channel.subscribe().borrow().clone();
+        assert!(refused.fault.is_none() && refused.error.is_none());
+        // Overlapping owners must not invent a fault from the same shared capacity refusal.
         let overlapping =
             ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
 
@@ -8656,8 +8888,7 @@ pub(crate) mod storage_fault_tests {
         }
 
         // The Thread's own projection owner hands the admitted facts over in admission order, which
-        // is what lets the writer save them; then the fixed fault generation is retried and every
-        // fact is durable.
+        // is what lets the writer save them; every fact becomes durable without a fault retry.
         for (index, sink) in sinks.iter().enumerate() {
             let mut projection = live_projection(sink).await?;
             while let Some(write) = sink.0.channel.next_unprojected() {
@@ -8681,12 +8912,11 @@ pub(crate) mod storage_fault_tests {
             )
             .await?;
         }
-        // Force the late-retry ordering: QueueFull allows the writer to commit
-        // the fixed target before the explicit recovery request is accepted.
+        // The original writer drains every fact without an explicit fault-recovery request.
         let mut drained = channel.subscribe();
         await_durable(
             Duration::from_secs(10),
-            "parallel reservations durable before retry",
+            "parallel reservations durable after backpressure",
             async {
                 loop {
                     let status = drained.borrow_and_update().clone();
@@ -8700,29 +8930,11 @@ pub(crate) mod storage_fault_tests {
             || channel_facts(sink),
         )
         .await??;
-        {
-            let progress = lock_progress(&sink.0);
-            assert_eq!(
-                progress.fault,
-                Some(pl_protocol::studio::HistoryFault::QueueFull)
-            );
-            assert_eq!(progress.fault_generation, refused.fault_generation);
-            assert_eq!(progress.fault_target, 3);
-            assert!(progress.published_revision >= progress.fault_target);
-            assert!(!progress.retry_requested);
-        }
-        await_durable(
-            Duration::from_secs(10),
-            "parallel reservations recover already-durable target",
-            store
-                .thread_persistence()
-                .retry_history(&sink.0.thread.id, refused.fault_generation),
-            || channel_facts(sink),
-        )
-        .await??;
+        assert!(lock_progress(&sink.0).fault.is_none());
+        assert_eq!(lock_progress(&sink.0).fault_generation, 0);
         assert!(
             store.thread_persistence().snapshot().error.is_none(),
-            "all live writer reports must reflect the recovered shared fault"
+            "all live writer reports stay healthy after ordinary backpressure"
         );
         for (index, sink) in sinks.iter().enumerate() {
             let target = if index == 0 { 4 } else { 3 };
@@ -8744,36 +8956,141 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
+    #[derive(Clone, Default)]
+    struct AdmissionRefusals(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    #[derive(Default)]
+    struct AdmissionFields(BTreeMap<String, String>);
+
+    impl tracing::field::Visit for AdmissionFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    impl tracing::Subscriber for AdmissionRefusals {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == "conversation_work"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = AdmissionFields::default();
+            event.record(&mut fields);
+            if fields.0.contains_key("rejection_kind") {
+                self.0.lock().unwrap().push(fields.0);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    impl AdmissionRefusals {
+        fn matching_events(
+            &self,
+            kind: &str,
+            thread: &str,
+            sequence: u64,
+        ) -> BTreeMap<String, String> {
+            let events = self.0.lock().unwrap();
+            let event = events.first().expect("refusal diagnostic").clone();
+            assert!(events.iter().all(|next| next == &event));
+            assert_eq!(event["operation"], "\"history_admission\"");
+            assert_eq!(event["rejection_kind"], format!("{kind:?}"));
+            assert_eq!(event["thread_id"], format!("{thread:?}"));
+            assert_eq!(event["write_seq"], sequence.to_string());
+            assert!(!format!("{event:?}").contains("SYNTHETIC-PRIVATE-CHECKPOINT"));
+            eprintln!("HISTORY_ADMISSION_REFUSAL {event:?}");
+            event
+        }
+    }
+
     #[tokio::test]
     async fn queue_pressure_keeps_the_original_ticket_until_retry_and_commit() -> Result<()> {
-        let (_temp, store, sink) = sink("queue-pressure").await?;
-        let write = ticket("queue-pressure", 1);
-        sink.0
-            .channel
-            .process_bytes
-            .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-        assert!(sink.admit("queue-pressure", write.clone()).is_err());
-        let fault = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            fault.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
-        );
-        assert_eq!(fault.admitted_sequence, 0);
-        assert_eq!(fault.queued_records, 0);
-        sink.0.channel.process_bytes.store(0, Ordering::Release);
-        sink.admit("queue-pressure", write)?;
-        assert!(sink.flush("queue-pressure", 1).await.is_err());
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("queue-pressure", fault.fault_generation),
-        )
-        .await??;
-        assert_eq!(store.history("queue-pressure").await?.watermark().await?, 1);
-        let recovered = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(recovered.queued_records, 0);
-        assert_eq!(recovered.fault, None);
+        for kind in ["thread_bytes", "process_budget"] {
+            let id = format!("queue-pressure-{kind}");
+            let (_temp, store, sink) = sink(&id).await?;
+            let channel = &sink.0.channel;
+            for sequence in 1..=2 {
+                let writer = channel.step_lock.lock().await;
+                let mut write = ticket(&id, sequence);
+                write.checkpoint.state.persistence.error =
+                    Some("SYNTHETIC-PRIVATE-CHECKPOINT".to_owned());
+                let baseline = channel.process_bytes.load(Ordering::Acquire);
+                let index_baseline = channel.order_index.retained_bytes();
+                // Supply only occupied-budget environment, never replace the production classifier.
+                // Both limits are full in the Thread case to pin the original short-circuit priority.
+                if kind == "thread_bytes" {
+                    channel
+                        .order_index
+                        .bytes
+                        .store(MAX_HISTORY_THREAD_BYTES, Ordering::Release);
+                }
+                channel
+                    .process_bytes
+                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+                let capture = AdmissionRefusals::default();
+                tracing::subscriber::with_default(capture.clone(), || {
+                    for _ in 0..3 {
+                        let error = sink.admit(&id, write.clone()).unwrap_err();
+                        assert!(
+                            error
+                                .source
+                                .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
+                        );
+                        assert_eq!(channel.subscribe().borrow().fault_generation, 0);
+                    }
+                });
+                assert_eq!(capture.0.lock().unwrap().len(), 3);
+                let event = capture.matching_events(kind, &id, sequence);
+                assert_eq!(event["fault_generation"], "0");
+                assert_eq!(event["queued_effects"], "0");
+                assert_eq!(
+                    event["queued_thread_bytes"],
+                    if kind == "thread_bytes" {
+                        MAX_HISTORY_THREAD_BYTES
+                    } else {
+                        index_baseline
+                    }
+                    .to_string()
+                );
+                assert_eq!(
+                    event["process_bytes_observed"],
+                    MAX_HISTORY_PROCESS_BYTES.to_string()
+                );
+                let increment = encoded_bytes(&write.effect) + PENDING_AGE_METADATA_BYTES;
+                assert_eq!(event["thread_bytes_increment"], increment.to_string());
+                assert_eq!(event["process_bytes_increment"], increment.to_string());
+                assert_eq!(
+                    channel.process_bytes.load(Ordering::Acquire),
+                    MAX_HISTORY_PROCESS_BYTES
+                );
+                let fault = channel.subscribe().borrow().clone();
+                assert!(fault.fault.is_none() && fault.error.is_none());
+                assert_eq!(fault.admitted_sequence, sequence - 1);
+                assert_eq!(fault.queued_records, 0);
+                channel
+                    .order_index
+                    .bytes
+                    .store(index_baseline, Ordering::Release);
+                channel.process_bytes.store(baseline, Ordering::Release);
+                sink.admit(&id, write)?;
+                let flush = sink.flush(&id, sequence);
+                tokio::pin!(flush);
+                assert!(futures::poll!(&mut flush).is_pending());
+                drop(writer);
+                tokio::time::timeout(Duration::from_secs(5), flush).await??;
+                assert_eq!(store.history(&id).await?.watermark().await?, sequence);
+                let recovered = channel.subscribe().borrow().clone();
+                assert_eq!(recovered.queued_records, 0);
+                assert_eq!(recovered.fault, None);
+                assert_eq!(channel.process_bytes.load(Ordering::Acquire), baseline);
+            }
+            channel.stop_and_join().await?;
+        }
         Ok(())
     }
 
@@ -8847,13 +9164,42 @@ pub(crate) mod storage_fault_tests {
             assert!(channel.prepare(prepared));
         }
         let refused = ticket(id, MAX_HISTORY_BATCHES as u64 + 1);
-        sink.admit(id, refused.clone())
-            .expect_err("the first ticket beyond the real record limit must be refused");
-        let full = channel.subscribe().borrow().clone();
+        let before = sink.pressure(id);
+        let queued_before = {
+            let progress = lock_progress(&sink.0);
+            progress.effect_bytes
+                + progress.queue_metadata_bytes
+                + channel.order_index.retained_bytes()
+        };
+        let capture = AdmissionRefusals::default();
+        tracing::subscriber::with_default(capture.clone(), || {
+            for _ in 0..3 {
+                let error = sink
+                    .admit(id, refused.clone())
+                    .expect_err("the first ticket beyond the real record limit must be refused");
+                assert!(
+                    error
+                        .source
+                        .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
+                );
+                assert_eq!(channel.subscribe().borrow().fault_generation, 0);
+            }
+        });
+        assert_eq!(capture.0.lock().unwrap().len(), 3);
+        let event = capture.matching_events("slot", id, refused.effect.sequence);
+        assert_eq!(event["queued_effects"], MAX_HISTORY_BATCHES.to_string());
+        assert_eq!(event["queued_thread_bytes"], queued_before.to_string());
         assert_eq!(
-            full.fault,
-            Some(pl_protocol::studio::HistoryFault::QueueFull)
+            event["process_bytes_observed"],
+            before.store_bytes.to_string()
         );
+        let increment = encoded_bytes(&refused.effect) + PENDING_AGE_METADATA_BYTES;
+        assert_eq!(event["thread_bytes_increment"], increment.to_string());
+        assert_eq!(event["process_bytes_increment"], increment.to_string());
+        assert_eq!(sink.pressure(id).thread_bytes, before.thread_bytes);
+        assert_eq!(sink.pressure(id).store_bytes, before.store_bytes);
+        let full = channel.subscribe().borrow().clone();
+        assert!(full.fault.is_none() && full.error.is_none());
         assert_eq!(full.queued_records, MAX_HISTORY_BATCHES as u64);
         assert!(
             channel.next_unprojected().is_none(),
@@ -8881,10 +9227,6 @@ pub(crate) mod storage_fault_tests {
             .publish_prepared(&sink.0.chat, &mut prepared)
             .await?;
         assert!(channel.prepare(prepared));
-        store
-            .thread_persistence()
-            .retry_history(id, full.fault_generation)
-            .await?;
         sink.flush(id, refused.effect.sequence).await?;
         assert_eq!(
             store.history(id).await?.watermark().await?,
@@ -9971,14 +10313,11 @@ pub(crate) mod storage_fault_tests {
             };
             let (_temp, store, sink) = sink(id).await?;
             let channel = &sink.0.channel;
-            channel
-                .process_bytes
-                .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+            // Recovery generations belong to real faults, not temporary capacity pressure.
+            assert!(sink.admit(id, ticket("wrong-owner", 1)).is_err());
             let first = ticket(id, 1);
-            assert!(sink.admit(id, first.clone()).is_err());
             let failed = channel.subscribe().borrow().clone();
             let generation = failed.fault_generation;
-            channel.process_bytes.store(0, Ordering::Release);
             sink.admit(id, first)?;
             let (entered, release) = store.thread_persistence().pause_retry_before_reports();
             let coordinator = store.thread_persistence().clone();
@@ -10008,11 +10347,7 @@ pub(crate) mod storage_fault_tests {
                 );
                 channel.stop_and_join().await?;
             } else {
-                channel
-                    .process_bytes
-                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-                assert!(sink.admit(id, ticket(id, 2)).is_err());
-                channel.process_bytes.store(0, Ordering::Release);
+                assert!(sink.admit(id, ticket("wrong-owner", 2)).is_err());
             }
             release
                 .send(())
@@ -10041,52 +10376,56 @@ pub(crate) mod storage_fault_tests {
 
     #[tokio::test]
     async fn empty_queue_retry_does_not_clear_a_ticket_contract_failure() -> Result<()> {
-        let (_temp, store, sink) = sink("ticket-contract").await?;
-        assert!(
-            sink.admit("ticket-contract", ticket("another-thread", 1))
-                .is_err()
-        );
-        let failed = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
-        assert_eq!(failed.queued_records, 0);
-        sink.0.channel.retry(failed.fault_generation)?;
-        // Exercise the worker after the retry, with equal zero watermarks but no
-        // successful write that could repair the rejected ticket's contract.
-        assert!(matches!(step(&sink.0).await?, Step::Idle));
-        let pressure = sink.pressure("ticket-contract");
-        assert!(pressure.error.is_some());
-        assert_eq!(
-            pressure.fault,
-            Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
-        );
-        assert_eq!(pressure.recovered_generation, None);
-        assert_eq!(
-            store.history("ticket-contract").await?.watermark().await?,
-            0
-        );
+        for durable in [0, 1] {
+            let (_temp, store, sink) = sink("ticket-contract").await?;
+            if durable != 0 {
+                sink.admit("ticket-contract", ticket("ticket-contract", durable))?;
+                sink.flush("ticket-contract", durable).await?;
+            }
+            assert!(
+                sink.admit("ticket-contract", ticket("another-thread", durable + 1))
+                    .is_err()
+            );
+            let failed = sink.0.channel.subscribe().borrow().clone();
+            assert_eq!(
+                failed.fault,
+                Some(pl_protocol::studio::HistoryFault::WriteFailed)
+            );
+            assert_eq!(failed.queued_records, 0);
+            sink.0.channel.retry(failed.fault_generation)?;
+            // Exercise the worker after the retry, with equal old watermarks but no
+            // successful write that could repair the rejected ticket's contract.
+            assert!(matches!(step(&sink.0).await?, Step::Idle));
+            let pressure = sink.pressure("ticket-contract");
+            assert!(pressure.error.is_some());
+            assert_eq!(
+                pressure.fault,
+                Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
+            );
+            assert_eq!(pressure.recovered_generation, None);
+            assert_eq!(
+                store.history("ticket-contract").await?.watermark().await?,
+                durable
+            );
+        }
         Ok(())
     }
 
     #[tokio::test]
-    async fn stale_fault_generation_cannot_resume_a_new_queue_failure() -> Result<()> {
+    async fn stale_fault_generation_cannot_resume_a_new_ticket_failure() -> Result<()> {
         let (_temp, store, sink) = sink("fault-generation").await?;
         for sequence in [1, 2] {
-            sink.0
-                .channel
-                .process_bytes
-                .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
             let write = ticket("fault-generation", sequence);
-            assert!(sink.admit("fault-generation", write.clone()).is_err());
+            assert!(
+                sink.admit("fault-generation", ticket("wrong-owner", sequence))
+                    .is_err()
+            );
             let failed = sink.0.channel.subscribe().borrow().clone();
             assert_eq!(failed.fault_generation, sequence);
             if sequence == 2 {
                 assert!(sink.0.channel.retry(1).is_err());
                 assert_eq!(sink.0.channel.subscribe().borrow().fault_generation, 2);
             }
-            sink.0.channel.process_bytes.store(0, Ordering::Release);
             sink.admit("fault-generation", write)?;
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -10276,14 +10615,9 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
-    /// The archive duty a real command capture owes after its append failed.
-    ///
-    /// It re-materializes the accepted chunk through the real local backend and then archives the
-    /// fragment with the real content-addressed store, so the reference the retry names is a genuine
-    /// durable resource and not a stand-in.
+    /// Archive retry for an already complete capture, using the real content-addressed store.
     #[derive(Debug)]
-    struct CaptureRepairObligation {
-        backend: pl_tool::command::LocalCommandBackend,
+    struct CaptureArchiveObligation {
         archive: crate::resource_store::FileResourceStore,
         capture_file: std::path::PathBuf,
         call_id: String,
@@ -10292,27 +10626,13 @@ pub(crate) mod storage_fault_tests {
         retries: Arc<AtomicUsize>,
     }
 
-    impl pl_core::thread::cold::OutputRetryObligation for CaptureRepairObligation {
+    impl pl_core::thread::cold::OutputRetryObligation for CaptureArchiveObligation {
         fn identity(&self) -> String {
             self.capture_file.display().to_string()
         }
         fn retry(&self) -> pl_core::thread::cold::OutputRetryFuture<'_> {
             Box::pin(async move {
                 self.retries.fetch_add(1, Ordering::SeqCst);
-                // The real backend truncates the fragment back to its committed offset and re-appends
-                // exactly the accepted chunk with the same framing a successful append would produce,
-                // so a repeated retry reproduces the same bytes instead of appending them twice.
-                pl_tool::command::CommandBackend::repair_output_chunk(
-                    &self.backend,
-                    &self.capture_file,
-                    pl_tool::command::CommandCaptureStream::Stdout,
-                    self.committed_len,
-                    &self.pending,
-                )
-                .await
-                .map_err(|error| pl_core::thread::cold::ColdStoreError {
-                    source: Box::new(std::io::Error::other(error.to_string())),
-                })?;
                 let reference = self
                     .archive
                     .retain_command_capture(&self.capture_file)
@@ -10339,20 +10659,19 @@ pub(crate) mod storage_fault_tests {
         }
     }
 
-    /// A command whose capture append really failed, so its archive still owes the accepted bytes.
+    /// A completed capture whose desktop archive failed, retaining the confirmed source.
     #[derive(Debug)]
-    struct FailedAppendCaptureTool {
+    struct FailedArchiveTool {
         definition: ToolDefinition,
-        backend: pl_tool::command::LocalCommandBackend,
         archive: crate::resource_store::FileResourceStore,
         capture_file: std::path::PathBuf,
         committed_len: u64,
         pending: Vec<u8>,
         retries: Arc<AtomicUsize>,
-        created: Arc<Mutex<Vec<Arc<CaptureRepairObligation>>>>,
+        created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>>,
     }
 
-    impl Tool for FailedAppendCaptureTool {
+    impl Tool for FailedArchiveTool {
         type Input = OpaquePayload;
         type Context = CallContext;
         type Output = ToolOutput;
@@ -10367,8 +10686,7 @@ pub(crate) mod storage_fault_tests {
             input: OpaquePayload,
             context: CallContext,
         ) -> Result<ToolOutput, ToolError> {
-            let obligation = Arc::new(CaptureRepairObligation {
-                backend: self.backend.clone(),
+            let obligation = Arc::new(CaptureArchiveObligation {
                 archive: self.archive.clone(),
                 capture_file: self.capture_file.clone(),
                 call_id: context.call_id.clone(),
@@ -10378,7 +10696,7 @@ pub(crate) mod storage_fault_tests {
             });
             self.created.lock().unwrap().push(obligation.clone());
             let source = pl_core::thread::cold::ColdStoreError {
-                source: Box::new(std::io::Error::other("capture append failed")),
+                source: Box::new(std::io::Error::other("capture archive failed")),
             };
             let fault = pl_core::thread::cold::OutputStorageFault::new(
                 pl_core::thread::cold::StorageFaultKind::WriteFailed,
@@ -10521,14 +10839,9 @@ pub(crate) mod storage_fault_tests {
 
     /// The reference a repaired capture stored reaches the durable tool result, not just memory.
     ///
-    /// The append failed after the fragment already held a partial write, so the retry must repair
-    /// the fragment through the real local backend before archiving it: the archived bytes are the
-    /// accepted content, verbatim and without duplication. The writer must then record that reference
-    /// on the tool identity it was committed under — on the projected item *and* on the delivery
-    /// history keeps — so the UI and a cold reopen can both locate the complete output, and the pause
-    /// must stay closed until the archive really landed.
+    /// A retry archives the same confirmed bytes and attaches its durable reference exactly once.
     #[tokio::test]
-    async fn a_repaired_capture_reference_reaches_the_durable_tool_result() -> Result<()> {
+    async fn a_confirmed_capture_archive_retry_reaches_the_durable_tool_result() -> Result<()> {
         use pl_core::context::ResourceReader;
         use pl_core::thread::cold::OutputRetryObligation as _;
 
@@ -10536,30 +10849,24 @@ pub(crate) mod storage_fault_tests {
         let resources_root = temp.path().join("resources");
         std::fs::create_dir_all(&resources_root)?;
         let archive = crate::resource_store::FileResourceStore::new(resources_root);
-        let backend = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
 
         let capture_file = temp.path().join("capture.fragment");
         let committed = b"accepted line one\n".to_vec();
         let pending = b"accepted line two".to_vec();
-        // The failed append left the fragment short of the bytes already accepted and published live:
-        // a few bytes of the pending chunk were written, without their framing and without the rest.
-        let mut partial = committed.clone();
-        partial.extend_from_slice(&pending[..4]);
-        std::fs::write(&capture_file, &partial)?;
         let mut expected = committed.clone();
         expected.extend_from_slice(&pending);
+        std::fs::write(&capture_file, &expected)?;
 
         let retries = Arc::new(AtomicUsize::new(0));
-        let created: Arc<Mutex<Vec<Arc<CaptureRepairObligation>>>> =
+        let created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>> =
             Arc::new(Mutex::new(Vec::new()));
         let thread =
             ThreadHandle::start("archive-repair".into(), DynModelSession::new(CaptureModel))?;
         thread
             .register_tools(vec![
                 Registration::prepare("capture".into(), OpaquePayload::text("Tool capture"))?
-                    .attach(ToolHandle::new(FailedAppendCaptureTool {
+                    .attach(ToolHandle::new(FailedArchiveTool {
                         definition: ToolDefinition::text("capture", "Tool capture")?,
-                        backend,
                         archive: archive.clone(),
                         capture_file: capture_file.clone(),
                         committed_len: committed.len() as u64,
@@ -10869,544 +11176,10 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(
             std::fs::read(&capture_file)?,
             expected,
-            "repeating the repair reproduces the fragment instead of duplicating the chunk"
+            "repeating archive retention preserves the confirmed source bytes"
         );
         assert_eq!(retries.load(Ordering::SeqCst), 2);
         thread.close().await?;
-        Ok(())
-    }
-
-    /// Re-materializes a whole multi-chunk capture plan through the real local backend, then archives
-    /// the fragment: the same shape core retries for a failed command capture.
-    #[derive(Debug)]
-    struct CapturePlanObligation {
-        backend: pl_tool::command::LocalCommandBackend,
-        archive: crate::resource_store::FileResourceStore,
-        capture_file: std::path::PathBuf,
-        call_id: String,
-        plan: pl_tool::command::CaptureRepair,
-        retries: Arc<AtomicUsize>,
-    }
-
-    impl pl_core::thread::cold::OutputRetryObligation for CapturePlanObligation {
-        fn identity(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn retry(&self) -> pl_core::thread::cold::OutputRetryFuture<'_> {
-            Box::pin(async move {
-                self.retries.fetch_add(1, Ordering::SeqCst);
-                // Replay the plan in acceptance order: one truncation back to the backend-confirmed
-                // offset, then every accepted chunk re-appended with its own framing.
-                let mut confirmed = self.plan.confirmed;
-                for chunk in &self.plan.chunks {
-                    let capture = match chunk.stream {
-                        pl_tool::command::CommandCaptureStream::Stdout => self.capture_file.clone(),
-                        pl_tool::command::CommandCaptureStream::Stderr => {
-                            self.capture_file.with_file_name("stderr.log")
-                        }
-                    };
-                    let committed_len = pl_tool::command::CommandBackend::repair_output_chunk(
-                        &self.backend,
-                        &capture,
-                        chunk.stream,
-                        confirmed.get(chunk.stream),
-                        &chunk.pending,
-                    )
-                    .await
-                    .map_err(|error| {
-                        pl_core::thread::cold::ColdStoreError {
-                            source: Box::new(std::io::Error::other(error.to_string())),
-                        }
-                    })?;
-                    confirmed.set(chunk.stream, committed_len);
-                }
-                let reference = self
-                    .archive
-                    .retain_command_capture(&self.capture_file)
-                    .await
-                    .map_err(|error| pl_core::thread::cold::ColdStoreError {
-                        source: Box::new(error),
-                    })?;
-                Ok(pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(
-                    pl_core::thread::cold::OutputRepair {
-                        call_id: self.call_id.clone(),
-                        reference,
-                    },
-                ))
-            })
-        }
-        fn received_bytes(&self) -> u64 {
-            self.plan.confirmed.total()
-        }
-        fn location(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn kind(&self) -> pl_core::thread::cold::StorageFaultKind {
-            pl_core::thread::cold::StorageFaultKind::WriteFailed
-        }
-    }
-
-    /// Two streams' accepted chunks survive one reader's partial capture write.
-    ///
-    /// The first stdout append failed after writing part of its chunk, and the stderr reader had
-    /// already accepted (and published) a chunk. Both must be re-materialized verbatim, once, in
-    /// acceptance order: the second append must not land past the fault, and a repeated retry must not
-    /// duplicate or truncate either chunk. The archived reference must read back the whole fragment.
-    #[tokio::test]
-    async fn a_two_stream_capture_repair_replays_every_accepted_chunk_once() -> Result<()> {
-        use pl_core::context::ResourceReader;
-        use pl_core::thread::cold::OutputRetryObligation as _;
-
-        let temp = tempfile::tempdir()?;
-        let resources_root = temp.path().join("resources");
-        std::fs::create_dir_all(&resources_root)?;
-        let archive = crate::resource_store::FileResourceStore::new(resources_root);
-        let backend = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
-
-        // The committed offset comes from the real backend's confirmed writes, not a hand-computed or
-        // swallowed fragment length: prepare the header, then append the chunk the capture already
-        // stored. That returned length is exactly what a repair truncates back to.
-        let target = pl_tool::command::CommandBackend::output_target(
-            &backend,
-            "session",
-            "exec",
-            "capture-2",
-            "capture",
-        )
-        .await?;
-        pl_tool::command::CommandBackend::prepare_output(
-            &backend,
-            &target,
-            "capture",
-            "/tmp",
-            pl_tool::command::MAX_CAPTURE_BYTES,
-        )
-        .await?;
-        let capture_file = target.capture_file().to_path_buf();
-        let committed = b"committed line\n".to_vec();
-        let committed_len = pl_tool::command::CommandBackend::append_output_chunk(
-            &backend,
-            &target,
-            pl_tool::command::CommandCaptureStream::Stdout,
-            &committed,
-        )
-        .await?;
-        let committed_prefix = std::fs::read(&capture_file)?;
-        assert_eq!(
-            committed_len,
-            committed_prefix.len() as u64,
-            "the repair offset is the backend-confirmed fragment length"
-        );
-
-        let stdout_pending = b"first failed stdout chunk".to_vec();
-        let stderr_pending = b"second stream accepted chunk".to_vec();
-        // The failed append left its framing and a few bytes of its chunk past the confirmed offset;
-        // the stderr chunk was accepted and published before the fault, so it is still owed.
-        {
-            use std::io::Write as _;
-            let mut fragment = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&capture_file)?;
-            fragment.write_all(b"=== STDOUT ===\n")?;
-            fragment.write_all(&stdout_pending[..7])?;
-        }
-
-        let expected = {
-            let mut expected = committed_prefix;
-            expected.extend_from_slice(&stdout_pending);
-            expected
-        };
-
-        let retries = Arc::new(AtomicUsize::new(0));
-        let obligation = Arc::new(CapturePlanObligation {
-            backend,
-            archive: archive.clone(),
-            capture_file: capture_file.clone(),
-            call_id: "capture-2".to_owned(),
-            plan: pl_tool::command::CaptureRepair {
-                confirmed: pl_tool::command::CommandCaptureOffsets {
-                    stdout: committed_len,
-                    stderr: 0,
-                },
-                chunks: vec![
-                    pl_tool::command::CaptureRepairChunk {
-                        stream: pl_tool::command::CommandCaptureStream::Stdout,
-                        pending: Arc::from(stdout_pending.clone()),
-                    },
-                    pl_tool::command::CaptureRepairChunk {
-                        stream: pl_tool::command::CommandCaptureStream::Stderr,
-                        pending: Arc::from(stderr_pending.clone()),
-                    },
-                ],
-            },
-            retries: retries.clone(),
-        });
-
-        let first = obligation.retry().await?;
-        assert_eq!(
-            std::fs::read(capture_file.with_file_name("stderr.log"))?,
-            stderr_pending
-        );
-        let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(first) = first else {
-            anyhow::bail!("the repair must name the stored reference");
-        };
-        assert_eq!(
-            std::fs::read(&capture_file)?,
-            expected,
-            "the retry stores both accepted chunks verbatim, in order, without the partial write"
-        );
-        let stored =
-            ResourceReader::read(&archive, first.reference.clone(), CancellationToken::new())
-                .await?;
-        assert_eq!(
-            stored.as_ref(),
-            expected.as_slice(),
-            "the archived reference reads back the whole accepted fragment"
-        );
-
-        let again = obligation.retry().await?;
-        let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(again) = again else {
-            anyhow::bail!("the repeated retry must name the same stored reference");
-        };
-        assert_eq!(again.reference, first.reference);
-        assert_eq!(
-            std::fs::read(&capture_file)?,
-            expected,
-            "the repeated retry reproduces the same fragment instead of duplicating a chunk"
-        );
-        assert_eq!(retries.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    use pl_tool::command::CommandBackend as _;
-
-    /// A command backend whose capture append is held and then failed, over in-memory IO.
-    ///
-    /// The read/repair and header capabilities delegate to a real [`pl_tool::command::LocalCommandBackend`],
-    /// but `spawn` hands back a [`pl_tool::command::ManagedCommand`] over duplex pipes the test feeds
-    /// directly, and `append_output_chunk` waits for a gate and then fails like a real disk write error.
-    /// That makes the operation's single writer task — not a hand-made plan — the thing that observes the
-    /// fault.
-    struct ScriptedCaptureBackend {
-        inner: pl_tool::command::LocalCommandBackend,
-        stdout: std::sync::Mutex<Option<pl_tool::command::CommandReader>>,
-        stderr: std::sync::Mutex<Option<pl_tool::command::CommandReader>>,
-        exit: Arc<Notify>,
-        gate: Arc<Notify>,
-    }
-
-    impl std::fmt::Debug for ScriptedCaptureBackend {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter
-                .debug_struct("ScriptedCaptureBackend")
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl pl_tool::command::CommandBackend for ScriptedCaptureBackend {
-        type Error = pl_protocol::PureError;
-
-        fn capture_ownership(&self) -> pl_tool::command::CommandCaptureOwnership {
-            self.inner.capture_ownership()
-        }
-        fn capture_storage_cost(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            stream: pl_tool::command::CommandCaptureStream,
-            chunk: &[u8],
-        ) -> u64 {
-            self.inner.capture_storage_cost(target, stream, chunk)
-        }
-
-        async fn resolve_cwd(
-            &self,
-            cwd: Option<&std::path::Path>,
-            allow_workspace_escape: bool,
-        ) -> Result<String, Self::Error> {
-            self.inner.resolve_cwd(cwd, allow_workspace_escape).await
-        }
-
-        async fn output_target(
-            &self,
-            session_id: &str,
-            tool_id: &str,
-            call_id: &str,
-            command: &str,
-        ) -> Result<pl_tool::command::CommandOutputTarget, Self::Error> {
-            self.inner
-                .output_target(session_id, tool_id, call_id, command)
-                .await
-        }
-
-        async fn spawn(
-            &self,
-            _request: pl_tool::command::CommandSpawnRequest,
-        ) -> Result<pl_tool::command::ManagedCommand, Self::Error> {
-            let stdout = self.stdout.lock().expect("stdout reader").take();
-            let stderr = self.stderr.lock().expect("stderr reader").take();
-            let exit = self.exit.clone();
-            Ok(pl_tool::command::ManagedCommand::new(
-                None,
-                pl_tool::command::CommandIo {
-                    stdin: None,
-                    stdout,
-                    stderr,
-                },
-                move |_cancellation| async move {
-                    exit.notified().await;
-                    Ok(pl_tool::command::CommandExit {
-                        supervision_failure: None,
-                        signal: None,
-                        capture_failure: None,
-                        exit_code: Some(0),
-                        capture: None,
-                    })
-                },
-            ))
-        }
-
-        async fn prepare_output(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            command: &str,
-            working_directory: &str,
-            capture_limit_bytes: u64,
-        ) -> Result<u64, Self::Error> {
-            self.inner
-                .prepare_output(target, command, working_directory, capture_limit_bytes)
-                .await
-        }
-
-        async fn append_output_chunk(
-            &self,
-            _target: &pl_tool::command::CommandOutputTarget,
-            _stream: pl_tool::command::CommandCaptureStream,
-            _chunk: &[u8],
-        ) -> Result<u64, Self::Error> {
-            // Hold the operation's single writer until the test has confirmed both streams' accepted
-            // chunks, then fail the append the way a real capture write error would.
-            self.gate.notified().await;
-            Err(pl_protocol::PureError::ToolExecutionFailed {
-                tool: "exec".to_owned(),
-                error: "capture append failed".to_owned(),
-            })
-        }
-
-        async fn repair_output_chunk(
-            &self,
-            capture_file: &std::path::Path,
-            stream: pl_tool::command::CommandCaptureStream,
-            committed_len: u64,
-            chunk: &[u8],
-        ) -> Result<u64, Self::Error> {
-            self.inner
-                .repair_output_chunk(capture_file, stream, committed_len, chunk)
-                .await
-        }
-
-        async fn publish_output(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-        ) -> Result<(), Self::Error> {
-            self.inner.publish_output(target).await
-        }
-
-        async fn collect_output_artifacts(
-            &self,
-            target: &pl_tool::command::CommandOutputTarget,
-            sizes: pl_tool::command::CommandOutputSizes,
-        ) -> Result<Vec<serde_json::Value>, Self::Error> {
-            self.inner.collect_output_artifacts(target, sizes).await
-        }
-    }
-
-    /// Signals once both command streams have published an accepted chunk.
-    #[derive(Debug, Default)]
-    struct BothStreamsSeen {
-        stdout: AtomicUsize,
-        stderr: AtomicUsize,
-        both: Notify,
-    }
-
-    impl pl_tool::command::CommandOutputObserver for BothStreamsSeen {
-        fn output_chunk(
-            &self,
-            stream: pl_tool::command::CommandOutputStream,
-            chunk: &[u8],
-            _revision: u64,
-        ) {
-            let counter = match stream {
-                pl_tool::command::CommandOutputStream::Stdout => &self.stdout,
-                pl_tool::command::CommandOutputStream::Stderr => &self.stderr,
-            };
-            counter.fetch_add(chunk.len().max(1), Ordering::SeqCst);
-            if self.stdout.load(Ordering::SeqCst) > 0 && self.stderr.load(Ordering::SeqCst) > 0 {
-                self.both.notify_one();
-            }
-        }
-    }
-
-    /// The real command lifecycle retains and replays a two-stream capture fault.
-    ///
-    /// This drives the operation, not a hand-made plan: both readers accept *and publish* a chunk from
-    /// their stream, the operation's single writer is held until then and only then fails its append,
-    /// and the scripted process then exits. So the retained repair plan must hold both streams' accepted
-    /// chunks, the terminal result must not be a success, and replaying the plan through the real local
-    /// backend must archive exactly those bytes under one reference that reads back whole.
-    #[tokio::test]
-    async fn a_two_stream_capture_fault_is_retained_and_replayed_by_the_lifecycle() -> Result<()> {
-        use pl_core::context::ResourceReader;
-
-        let temp = tempfile::tempdir()?;
-        let resources_root = temp.path().join("resources");
-        std::fs::create_dir_all(&resources_root)?;
-        let archive = crate::resource_store::FileResourceStore::new(resources_root);
-
-        let (mut stdout_writer, stdout_reader) = tokio::io::duplex(1024);
-        let (mut stderr_writer, stderr_reader) = tokio::io::duplex(1024);
-        let gate = Arc::new(Notify::new());
-        let exit = Arc::new(Notify::new());
-        let backend = ScriptedCaptureBackend {
-            inner: pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf()),
-            stdout: std::sync::Mutex::new(Some(
-                Box::pin(stdout_reader) as pl_tool::command::CommandReader
-            )),
-            stderr: std::sync::Mutex::new(Some(
-                Box::pin(stderr_reader) as pl_tool::command::CommandReader
-            )),
-            exit: exit.clone(),
-            gate: gate.clone(),
-        };
-        let manager = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-            backend,
-        )));
-
-        let seen = Arc::new(BothStreamsSeen::default());
-        let observer: Arc<dyn pl_tool::command::CommandOutputObserver> = seen.clone();
-        let request = pl_tool::command::CommandStartRequest {
-            command: "scripted".to_owned(),
-            cwd: Some(temp.path().to_path_buf()),
-            allow_workspace_escape: false,
-            timeout: Duration::from_secs(30),
-            yield_time: Duration::ZERO,
-            max_output_chars: 4096,
-            session_id: "two-stream-lifecycle".to_owned(),
-            tool_id: "task-two-stream-lifecycle".to_owned(),
-            call_id: "task-two-stream-lifecycle".to_owned(),
-            cancellation_token: None,
-            output_observer: Some(observer),
-        };
-        let runner = {
-            let manager = manager.clone();
-            tokio::spawn(
-                async move { manager.run_task("task-two-stream-lifecycle", request).await },
-            )
-        };
-
-        tokio::io::AsyncWriteExt::write_all(&mut stdout_writer, b"OUT-1\n").await?;
-        tokio::io::AsyncWriteExt::write_all(&mut stderr_writer, b"ERR-1\n").await?;
-        tokio::time::timeout(Duration::from_secs(30), seen.both.notified())
-            .await
-            .context("both streams should have published an accepted chunk")?;
-
-        // Both accepted chunks are queued in the one plan; now let the held append fail for real, then
-        // close the streams and exit the scripted process so the operation settles.
-        gate.notify_one();
-        drop(stdout_writer);
-        drop(stderr_writer);
-        exit.notify_one();
-
-        let snapshot = match tokio::time::timeout(Duration::from_secs(30), runner).await {
-            Ok(Ok(Ok(snapshot))) => snapshot,
-            Ok(Ok(Err(error))) => {
-                anyhow::bail!("the operation returned an error instead of a snapshot: {error}")
-            }
-            Ok(Err(error)) => anyhow::bail!("the operation task failed: {error}"),
-            Err(_) => {
-                anyhow::bail!("the operation never settled: the capture writer did not drain")
-            }
-        };
-
-        assert!(
-            matches!(
-                &snapshot.output_failure,
-                Some(pl_tool::command::CommandCaptureFailure::Write { .. })
-            ),
-            "the real append failure must surface as a typed capture write failure: {:?}",
-            snapshot.output_failure
-        );
-        assert!(
-            snapshot.state.final_result().is_some(),
-            "the snapshot is only returned once the operation settled"
-        );
-        assert!(
-            !matches!(
-                snapshot.state.final_result(),
-                Some(pl_tool::command::CommandProcessFinalResult::Succeeded { .. })
-            ),
-            "a capture write failure must never be reported as a successful command"
-        );
-
-        let plan = snapshot
-            .capture_repair()
-            .cloned()
-            .context("both accepted chunks must stay owed after the failed append")?;
-        assert_eq!(
-            plan.chunks.len(),
-            2,
-            "both streams' accepted chunks are retained"
-        );
-        assert!(
-            plan.chunks.iter().any(|chunk| {
-                chunk.stream == pl_tool::command::CommandCaptureStream::Stdout
-                    && &chunk.pending[..] == b"OUT-1\n".as_slice()
-            }),
-            "the stdout chunk is retained verbatim"
-        );
-        assert!(
-            plan.chunks.iter().any(|chunk| {
-                chunk.stream == pl_tool::command::CommandCaptureStream::Stderr
-                    && &chunk.pending[..] == b"ERR-1\n".as_slice()
-            }),
-            "the stderr chunk is retained verbatim"
-        );
-
-        // Replay the plan through the real local backend and archive it: the stored reference must read
-        // back exactly the accepted bytes, in acceptance order, with the failed append left off.
-        let real = pl_tool::command::LocalCommandBackend::new(temp.path().to_path_buf());
-        let mut confirmed = plan.confirmed;
-        for chunk in &plan.chunks {
-            let capture = match chunk.stream {
-                pl_tool::command::CommandCaptureStream::Stdout => &snapshot.capture_file,
-                pl_tool::command::CommandCaptureStream::Stderr => &snapshot.stderr_capture_file,
-            };
-            let committed_len = real
-                .repair_output_chunk(
-                    capture,
-                    chunk.stream,
-                    confirmed.get(chunk.stream),
-                    &chunk.pending,
-                )
-                .await?;
-            confirmed.set(chunk.stream, committed_len);
-        }
-        let reference = archive
-            .retain_command_capture(&snapshot.capture_file)
-            .await?;
-        let stored = ResourceReader::read(&archive, reference, CancellationToken::new()).await?;
-        let stored = String::from_utf8_lossy(stored.as_ref());
-        assert!(
-            stored.contains("OUT-1"),
-            "the archive keeps the stdout chunk: {stored}"
-        );
-        let stderr_reference = archive
-            .retain_command_capture(&snapshot.stderr_capture_file)
-            .await?;
-        let stderr =
-            ResourceReader::read(&archive, stderr_reference, CancellationToken::new()).await?;
-        assert_eq!(stderr.as_ref(), b"ERR-1\n");
-        assert_eq!(stored.as_ref(), "OUT-1\n");
-
         Ok(())
     }
 }

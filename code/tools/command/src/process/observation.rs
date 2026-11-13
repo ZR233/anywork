@@ -26,40 +26,56 @@ pub enum CommandCaptureStream {
     Stderr,
 }
 
-/// 实际捕获写入者交回的终态磁盘计量，拒绝量只包含实际观察到但未接纳的块。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandCaptureReceipt {
-    pub captured_bytes: u64,
-    pub limit_bytes: u64,
-    /// 主捕获文件的确认偏移，与包含所有副本的计费成本分开。
-    pub confirmed: CommandCaptureOffsets,
-    pub charged_bytes: u64,
-    pub refused_bytes: u64,
-}
-
-/// Each raw stream advances only after its writer confirms the append.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Per-stream target capture facts. Unknown counts are never replaced with zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CommandCaptureOffsets {
-    pub stdout: u64,
-    pub stderr: u64,
+pub enum CommandCaptureState {
+    Complete,
+    LimitExceeded,
+    IoFailed,
+    Incomplete,
 }
-
-impl CommandCaptureOffsets {
-    pub fn total(self) -> u64 {
-        self.stdout.saturating_add(self.stderr)
-    }
-    pub fn get(self, stream: CommandCaptureStream) -> u64 {
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCaptureIoError {
+    #[serde(serialize_with = "serialize_io_kind")]
+    pub kind: std::io::ErrorKind,
+    pub raw_os_error: Option<i32>,
+}
+fn serialize_io_kind<S: serde::Serializer>(
+    kind: &std::io::ErrorKind,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&format!("{kind:?}"))
+}
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCapturedStream {
+    pub state: CommandCaptureState,
+    pub confirmed_bytes: Option<u64>,
+    pub error: Option<CommandCaptureIoError>,
+}
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandCaptureResult {
+    pub stdout: CommandCapturedStream,
+    pub stderr: CommandCapturedStream,
+}
+impl CommandCaptureResult {
+    pub fn stream(&self, stream: CommandCaptureStream) -> &CommandCapturedStream {
         match stream {
-            CommandCaptureStream::Stdout => self.stdout,
-            CommandCaptureStream::Stderr => self.stderr,
+            CommandCaptureStream::Stdout => &self.stdout,
+            CommandCaptureStream::Stderr => &self.stderr,
         }
     }
-    pub fn set(&mut self, stream: CommandCaptureStream, value: u64) {
-        match stream {
-            CommandCaptureStream::Stdout => self.stdout = value,
-            CommandCaptureStream::Stderr => self.stderr = value,
-        }
+    pub fn confirmed_total(&self) -> Option<u64> {
+        self.stdout
+            .confirmed_bytes?
+            .checked_add(self.stderr.confirmed_bytes?)
+    }
+    pub fn complete(&self) -> bool {
+        self.stdout.state == CommandCaptureState::Complete
+            && self.stderr.state == CommandCaptureState::Complete
     }
 }
 
@@ -76,9 +92,6 @@ pub enum CommandInputOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct CommandInputReceipt {
     pub accepted_bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote_confirmed_bytes: Option<u64>,
-    pub delivery_pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_state: Option<StdinCloseState>,
     pub outcome: CommandInputOutcome,
@@ -101,7 +114,6 @@ pub struct CommandOutputSnapshot {
     pub output_revision: u64,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
-    pub supervision_failure: Option<String>,
     pub input_receipt: Option<CommandInputReceipt>,
     pub stdout_text_lossy: bool,
     pub stderr_text_lossy: bool,
@@ -111,26 +123,8 @@ pub struct CommandOutputSnapshot {
     /// `None` for a normal exit; a producer maps the category to its own storage boundary without
     /// parsing [`CommandOutputSnapshot::message`].
     pub output_failure: Option<CommandCaptureFailure>,
-    /// Accepted capture chunks a failed capture did not store, in acceptance order.
-    ///
-    /// Derived from the operation's one capture plan when the snapshot is taken, so a retry replays
-    /// every accepted chunk (not only the ones the first failing append saw).
-    pub capture_plan: Option<CaptureRepair>,
-    /// Length of the capture fragment the backend last confirmed writing.
-    ///
-    /// The accepted bytes this operation really holds are this length plus every chunk still owed, so
-    /// a reported size never depends on a fragment-length read that could fail and understate it.
-    pub capture_offsets: CommandCaptureOffsets,
-    /// 本 operation 实际生效的单命令落盘上限（字节）。
-    ///
-    /// 它是 backend 声明的值，因此快照能自证"这次上限是多少"，
-    /// 调用方不需要回读 backend 配置。
+    pub capture: Option<CommandCaptureResult>,
     pub capture_limit_bytes: u64,
-    /// 唯一预算执行者确认的存储用量；Producer 回执尚未到达时为 `None`。
-    ///
-    /// Manager 的 charged 是已接纳的精确写入成本，可能尚在写队列；Producer 的 charged
-    /// 来自物理写入者终态回执。`None` 不表示零字节，也不由客户端接收量估算。
-    pub capture_usage: Option<CommandCaptureReceipt>,
     /// 本 operation 生效的模型可见输出上限（字节）；`None` 表示沿用既有截断语义。
     ///
     /// 它只约束模型可见正文（stdout/stderr 截断结果之和），不约束工具结果的元数据，
@@ -139,16 +133,9 @@ pub struct CommandOutputSnapshot {
 }
 
 impl CommandOutputSnapshot {
-    /// The accepted bytes a failed capture append could not write, when the failure left a repair.
-    ///
-    /// A write failure that reached the capture file part-way keeps the offset the backend last
-    /// confirmed and every accepted chunk it did not store, so a producer re-materializes those bytes
-    /// before it archives anything. `None` means every accepted chunk is already on disk, so no repair
-    /// is owed.
-    pub fn capture_repair(&self) -> Option<&CaptureRepair> {
-        self.capture_plan.as_ref()
+    pub fn confirmed_bytes(&self, stream: CommandCaptureStream) -> Option<u64> {
+        self.capture.as_ref()?.stream(stream).confirmed_bytes
     }
-
     /// 本 operation 是否按单命令落盘上限终止；`None` 表示不是容量终止。
     ///
     /// 容量终止是一次**预期内的、自己声明上限**的停止，不是可靠保存故障：已接纳的字节仍在捕获里
@@ -180,7 +167,7 @@ pub struct CommandOutputLimit {
     /// 本 operation 生效的落盘上限（字节）。
     pub limit_bytes: u64,
     /// 已接纳（因此已保留、最终由归档保存）的存储成本。
-    pub charged_bytes: u64,
+    pub charged_bytes: Option<u64>,
     /// 被拒绝接纳的存储成本；这些字节从未进入修复计划。
-    pub refused_bytes: u64,
+    pub refused_bytes: Option<u64>,
 }

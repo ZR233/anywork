@@ -26,7 +26,7 @@ impl LspRuntimeRegistry {
                     LspScope::Workspace { workspace_root }
                     | LspScope::Server { workspace_root, .. } => workspace_root == root,
                 };
-                if !selected {
+                if !selected || !workspace.configured {
                     continue;
                 }
                 for (id, server) in &mut workspace.servers {

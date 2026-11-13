@@ -44,27 +44,13 @@ struct Args {
     /// Optional web-search fault so the operator can observe an error path.
     #[arg(long, value_name = "NAME")]
     fault: Option<String>,
-    /// Run the scenario-owned stdio MCP server instead of the HTTP fixture.
-    ///
-    /// The product starts this through its supervised worker; the server mimics
-    /// a real MCP peer and spawns a SIGTERM-ignoring grandchild so the shutdown
-    /// acceptance can prove the product reclaims its own subprocess subtree.
+    /// Run the stdio MCP peer for normal shutdown acceptance.
     #[arg(long)]
     mcp_stdio: bool,
-    /// Run the scenario-owned fake LSP server instead of the HTTP fixture.
-    ///
-    /// The product starts this through its supervised worker when a matching
-    /// `[lsp.servers.*]` entry is queried; the server speaks the LSP base
-    /// protocol and spawns a SIGTERM-ignoring grandchild so the shutdown
-    /// acceptance can prove the product reclaims its own subprocess subtree.
+    /// Run the LSP peer for normal shutdown acceptance.
     #[arg(long)]
     lsp_stdio: bool,
-    /// Run the scenario-owned background tool instead of the HTTP fixture.
-    ///
-    /// The product starts this through the real supervised tool worker when the
-    /// scripted model issues the acceptance `exec` call; the peer spawns a
-    /// SIGTERM-ignoring grandchild and keeps running so the shutdown acceptance
-    /// can prove the product reclaims its own tool subtree.
+    /// Run the background command peer for normal shutdown acceptance.
     #[arg(long)]
     tool_peer: bool,
     /// Coordination file the stdio peer records its pids into.

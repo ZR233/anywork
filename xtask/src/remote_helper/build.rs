@@ -180,7 +180,7 @@ fn build_target(workspace_root: &Path, target: &str, builder: CargoBuilder) -> R
             target: target.into(),
             worker_protocol_version:
                 pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION,
-            remote_protocol_version: pl_protocol::remote::REMOTE_PROTOCOL_VERSION,
+            remote_protocol_version: pl_remote_helper::EXECUTOR_WIRE_VERSION,
             sha256: digest,
         })?,
     )?;

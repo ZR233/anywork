@@ -183,6 +183,7 @@ struct Environment {
     home: std::path::PathBuf,
     project_id: String,
     runtime: StudioRuntime,
+    prompt_sequence: AtomicUsize,
 }
 impl Environment {
     async fn new(servers: &[(&str, &Server, bool, &str)]) -> Result<Self> {
@@ -197,6 +198,17 @@ impl Environment {
                 pl_provider_fixture::Reply::Sse(pl_provider_fixture::responses_text(
                     "done",
                     "initial",
+                    "standalone-model",
+                )),
+            )
+            .optional(),
+            pl_provider_fixture::Step::prompt(
+                pl_provider_fixture::Protocol::ResponsesHttp,
+                "hello second",
+                1,
+                pl_provider_fixture::Reply::Sse(pl_provider_fixture::responses_text(
+                    "done",
+                    "second",
                     "standalone-model",
                 )),
             )
@@ -237,15 +249,18 @@ impl Environment {
             home,
             project_id,
             runtime,
+            prompt_sequence: AtomicUsize::new(0),
         })
     }
     async fn create(&self) -> Result<crate::StudioStartNewThreadResponse> {
+        let mut request = request(pl_protocol::ThreadWorkspaceMode::Local);
+        let prompt_index = self.prompt_sequence.fetch_add(1, Ordering::Relaxed);
+        request.input.input_id = format!("standalone-start-{prompt_index}");
+        if prompt_index == 1 {
+            request.input.text = "hello second".into();
+        }
         self.runtime
-            .create_thread_command(
-                self.project_id.clone(),
-                request(pl_protocol::ThreadWorkspaceMode::Local),
-                None,
-            )
+            .create_thread_command(self.project_id.clone(), request, None)
             .await
     }
     async fn shutdown(&self) -> Result<()> {
@@ -290,6 +305,312 @@ async fn wait_state(
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+async fn wait_thread_lsp_binding(
+    runtime: &StudioRuntime,
+    thread_id: &str,
+) -> Result<crate::protocol::StudioThreadLspStateSnapshot> {
+    let mut subscription = runtime
+        .subscribe_product_topic(crate::StudioProductTopic::ThreadLsp {
+            thread_id: thread_id.to_owned(),
+        })
+        .await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let Some(frame) = subscription.recv().await? else {
+                anyhow::bail!("Thread LSP topic closed");
+            };
+            let snapshot = match frame {
+                crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                    crate::StudioProductBaselineState::ThreadLsp(snapshot) => Some(*snapshot),
+                    _ => anyhow::bail!("Thread LSP topic produced a different baseline"),
+                },
+                crate::StudioProductFrame::Event(event) => match event.kind {
+                    crate::StudioProductEventKind::ThreadLspStateChanged(snapshot) => {
+                        Some(snapshot)
+                    }
+                    _ => None,
+                },
+                crate::StudioProductFrame::Lagged { .. } => None,
+            };
+            if let Some(snapshot) = snapshot
+                && snapshot.binding_id.is_some()
+            {
+                return Ok(snapshot);
+            }
+        }
+    })
+    .await
+    .context("Thread LSP binding was not published")?
+}
+
+#[tokio::test]
+async fn thread_lsp_projection_is_scoped_to_each_accepted_binding() -> Result<()> {
+    let env = Environment::new(&[]).await?;
+    let first = env.create().await?;
+    let first_state = wait_thread_lsp_binding(&env.runtime, &first.thread.id).await?;
+    assert!(!first_state.binding_id.as_deref().unwrap().is_empty());
+    assert!(first_state.servers.is_empty());
+    let first_read = env.runtime.read_thread_lsp_state(&first.thread.id).await?;
+    assert_eq!(first_read.revision, first_state.revision);
+    assert_eq!(first_read.binding_id, first_state.binding_id);
+
+    let second = env.create().await?;
+    let second_state = wait_thread_lsp_binding(&env.runtime, &second.thread.id).await?;
+    assert!(!second_state.binding_id.as_deref().unwrap().is_empty());
+    assert_ne!(first_state.binding_id, second_state.binding_id);
+    assert!(second_state.revision > first_state.revision);
+    let first_after_second = env.runtime.read_thread_lsp_state(&first.thread.id).await?;
+    assert_eq!(first_after_second.binding_id, first_state.binding_id);
+    assert_eq!(first_after_second.servers, first_state.servers);
+
+    let stale = env
+        .runtime
+        .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+            thread_id: first.thread.id.clone(),
+            binding_id: "expired-binding-qualification".into(),
+            server_id: "irrelevant-while-stale".into(),
+        })
+        .await
+        .expect_err("stale qualification must be rejected before member lookup");
+    let stale = stale
+        .downcast_ref::<pl_protocol::studio::StudioError>()
+        .expect("typed stale binding error");
+    assert_eq!(stale.code, pl_protocol::studio::StudioErrorCode::Conflict);
+    assert_eq!(
+        stale.reason(),
+        Some(pl_protocol::studio::StudioErrorReason::StaleLspBinding.label())
+    );
+
+    let absent = env
+        .runtime
+        .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+            thread_id: first.thread.id.clone(),
+            binding_id: first_state.binding_id.clone().unwrap(),
+            server_id: "not-a-member".into(),
+        })
+        .await
+        .expect_err("a server outside this binding must be rejected");
+    assert_eq!(
+        absent
+            .downcast_ref::<pl_protocol::studio::StudioError>()
+            .map(|error| error.code),
+        Some(pl_protocol::studio::StudioErrorCode::NotFound)
+    );
+
+    let mut retired_subscription = env
+        .runtime
+        .subscribe_product_topic(crate::StudioProductTopic::ThreadLsp {
+            thread_id: first.thread.id.clone(),
+        })
+        .await?;
+    let scope = env
+        .runtime
+        .thread_factory
+        .resource_scope(&first.thread.id)
+        .expect("active Thread resource scope");
+    env.runtime
+        .thread_factory
+        .close_scope_tools(&first.thread.id, &scope)
+        .await?;
+    let retired = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let Some(frame) = retired_subscription.recv().await? else {
+                anyhow::bail!("Thread LSP topic closed before retirement");
+            };
+            let snapshot = match frame {
+                crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                    crate::StudioProductBaselineState::ThreadLsp(snapshot) => Some(*snapshot),
+                    _ => anyhow::bail!("Thread LSP topic produced a different baseline"),
+                },
+                crate::StudioProductFrame::Event(event) => match event.kind {
+                    crate::StudioProductEventKind::ThreadLspStateChanged(snapshot) => {
+                        Some(snapshot)
+                    }
+                    _ => None,
+                },
+                crate::StudioProductFrame::Lagged { .. } => None,
+            };
+            if let Some(snapshot) = snapshot
+                && snapshot.binding_id.is_none()
+                && snapshot.revision > first_state.revision
+            {
+                return Ok(snapshot);
+            }
+        }
+    })
+    .await
+    .context("retired Thread LSP empty projection was not published")??;
+    assert!(retired.servers.is_empty());
+    let empty_read = env.runtime.read_thread_lsp_state(&first.thread.id).await?;
+    assert_eq!(empty_read.revision, retired.revision);
+    assert_eq!(empty_read.binding_id, None);
+    assert!(empty_read.servers.is_empty());
+
+    let released = env
+        .runtime
+        .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+            thread_id: first.thread.id.clone(),
+            binding_id: first_state.binding_id.clone().unwrap(),
+            server_id: "released-binding-server".into(),
+        })
+        .await
+        .expect_err("a retired Thread binding must be rejected as stale");
+    let released = released
+        .downcast_ref::<pl_protocol::studio::StudioError>()
+        .expect("typed released binding error");
+    assert_eq!(
+        released.code,
+        pl_protocol::studio::StudioErrorCode::Conflict
+    );
+    assert_eq!(
+        released.reason(),
+        Some(pl_protocol::studio::StudioErrorReason::StaleLspBinding.label())
+    );
+
+    let unknown = env
+        .runtime
+        .read_thread_lsp_state("unknown-thread-lsp")
+        .await
+        .expect_err("unknown Thread must not become an empty successful projection");
+    assert_eq!(
+        unknown
+            .downcast_ref::<pl_protocol::studio::StudioError>()
+            .map(|error| error.code),
+        Some(pl_protocol::studio::StudioErrorCode::NotFound)
+    );
+    env.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_lsp_cancellation_after_snapshot_commits_only_empty_projection() -> Result<()> {
+    let env = Environment::new(&[]).await?;
+    let project = env
+        .runtime
+        .agent_facility
+        .product_events
+        .project_snapshot()
+        .await
+        .into_iter()
+        .find(|project| project.id == env.project_id)
+        .context("fixture project record")?;
+    let root = std::path::PathBuf::from(project.path);
+    let configuration = root.join(".anywork/lsp/fixture.toml");
+    tokio::fs::create_dir_all(configuration.parent().unwrap()).await?;
+    let peer = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("Runtime crate parent")?
+        .join("pl-tool/tests/support/lsp_fixture.py");
+    anyhow::ensure!(peer.is_file(), "missing real LSP fixture {peer:?}");
+    let source = format!(
+        "schema_version = 1\nid = 'fixture'\ncommand = 'python3'\nargs = {}\nlanguage_ids = ['fixture']\nextensions = ['fixture']\noperations = ['hover']\n",
+        serde_json::to_string(&[
+            "-u".to_owned(),
+            peer.display().to_string(),
+            "{workspaceRoot}/lsp-requests.jsonl".to_owned(),
+        ])?
+    );
+    tokio::fs::write(&configuration, source).await?;
+
+    let created = env.create().await?;
+    let thread_id = created.thread.id.clone();
+    let mut topic = env
+        .runtime
+        .subscribe_product_topic(crate::StudioProductTopic::ThreadLsp {
+            thread_id: thread_id.clone(),
+        })
+        .await?;
+    let initial = loop {
+        let Some(frame) = topic.recv().await? else {
+            anyhow::bail!("Thread LSP topic closed");
+        };
+        let snapshot = match frame {
+            crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                crate::StudioProductBaselineState::ThreadLsp(snapshot) => Some(*snapshot),
+                _ => anyhow::bail!("unexpected Thread LSP baseline"),
+            },
+            crate::StudioProductFrame::Event(event) => match event.kind {
+                crate::StudioProductEventKind::ThreadLspStateChanged(snapshot) => Some(snapshot),
+                _ => None,
+            },
+            crate::StudioProductFrame::Lagged { dropped, .. } => {
+                anyhow::bail!("Thread LSP topic lost {dropped} frames")
+            }
+        };
+        if let Some(snapshot) = snapshot
+            && snapshot.binding_id.is_some()
+            && snapshot.servers.iter().any(|server| server.id == "fixture")
+        {
+            break snapshot;
+        }
+    };
+    let binding_id = initial.binding_id.clone().unwrap();
+    let mut result_topic = env
+        .runtime
+        .subscribe_product_topic(crate::StudioProductTopic::ThreadLsp {
+            thread_id: thread_id.clone(),
+        })
+        .await?;
+    let (entered, resume) = env
+        .runtime
+        .external_runtimes
+        .lsp_state
+        .pause_thread_snapshot_for_test("fixture");
+    let refresh_runtime = env.runtime.clone();
+    let refresh = tokio::spawn(async move { refresh_runtime.refresh_thread_lsp_states().await });
+    let mut entered = entered;
+    entered.wait_for(|paused| *paused).await?;
+    let current = env.runtime.thread_factory.binding_snapshot(&thread_id);
+    let Some(current) = current else {
+        resume.send_replace(true);
+        anyhow::bail!("current accepted Thread binding disappeared before cancellation");
+    };
+    let same_binding = current.lsp_binding_id.as_deref() == Some(binding_id.as_str());
+    let captured_member = initial.servers.iter().any(|server| server.id == "fixture");
+    current.lifetime.cancel();
+    resume.send_replace(true);
+    assert!(
+        same_binding,
+        "the cancellation must target the captured binding"
+    );
+    assert!(
+        captured_member,
+        "captured LSP server member must be non-empty"
+    );
+    refresh.await??;
+    let published = env.runtime.read_thread_lsp_state(&thread_id).await?;
+    assert!(published.revision > initial.revision);
+    assert_eq!(published.binding_id, None);
+    assert!(published.servers.is_empty());
+    let retired_event = loop {
+        let Some(frame) = result_topic.recv().await? else {
+            anyhow::bail!("Thread LSP topic closed before invalidation event");
+        };
+        let snapshot = match frame {
+            crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                crate::StudioProductBaselineState::ThreadLsp(snapshot) => Some(*snapshot),
+                _ => anyhow::bail!("unexpected Thread LSP baseline"),
+            },
+            crate::StudioProductFrame::Event(event) => match event.kind {
+                crate::StudioProductEventKind::ThreadLspStateChanged(snapshot) => Some(snapshot),
+                _ => None,
+            },
+            crate::StudioProductFrame::Lagged { dropped, .. } => {
+                anyhow::bail!("Thread LSP topic lost {dropped} events")
+            }
+        };
+        if let Some(snapshot) = snapshot
+            && snapshot.revision > initial.revision
+        {
+            break snapshot;
+        }
+    };
+    assert_eq!(retired_event.binding_id, None);
+    assert!(retired_event.servers.is_empty());
+    env.shutdown().await?;
+    Ok(())
 }
 fn tool_id(server: &str) -> String {
     format!("mcp__{server}__probe")
@@ -542,6 +863,13 @@ async fn invalid_reconnect_preserves_pending_optional_preparation() -> Result<()
             .await
             .context("invalid reconnect waited for the unrelated optional handshake")?
             .expect_err("a missing reconnect target must be rejected");
+            let public = rejected
+                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .context("invalid reconnect must preserve its public error classification")?;
+            assert_eq!(
+                public.code,
+                pl_protocol::studio::StudioErrorCode::InvalidArgument
+            );
             assert!(rejected.to_string().contains("not enabled"), "{rejected:#}");
             assert!(!server.gate.release.is_cancelled());
             assert_eq!(

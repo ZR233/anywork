@@ -2,8 +2,8 @@
 use super::StudioThreadFactory;
 use crate::{
     agent::worktree::{
-        LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeHandle,
-        WorktreeManager, WorktreeRetirementRequest,
+        ExecutorWorktreeBackend, WorktreeBackend, WorktreeHandle, WorktreeManager,
+        WorktreeRetirementRequest,
     },
     studio::{
         agent_close::state_error,
@@ -288,7 +288,9 @@ impl StudioThreadFactory {
     ) -> Result<WorktreeManager> {
         let root = PathBuf::from(&binding.lease.repository_root);
         let backend: Arc<dyn WorktreeBackend> = match &binding.identity.endpoint {
-            WorkspaceEndpoint::Local => Arc::new(LocalWorktreeBackend::default()),
+            WorkspaceEndpoint::Local => Arc::new(ExecutorWorktreeBackend::new(
+                pl_remote_helper::Executor::local()?,
+            )),
             WorkspaceEndpoint::Ssh { .. } => {
                 let profile = self
                     .services
@@ -302,11 +304,20 @@ impl StudioThreadFactory {
                     })
                     .context("frozen close SSH endpoint is not configured")?
                     .profile;
-                Arc::new(RemoteWorktreeBackend::canonical_repository(
-                    self.services.ssh_manager.clone(),
-                    profile,
-                    root.clone(),
-                )?)
+                let host = self
+                    .services
+                    .ssh_manager
+                    .open_workspace_binding(&profile.alias, root.to_string_lossy().into_owned())
+                    .await?;
+                anyhow::ensure!(
+                    WorkspaceEndpoint::from_profile(Some(&host.profile))
+                        == binding.identity.endpoint
+                        && host.files().canonical_path() == binding.lease.repository_root,
+                    "frozen close endpoint or repository canonical identity changed"
+                );
+                Arc::new(ExecutorWorktreeBackend::new(
+                    host.files().executor().clone(),
+                ))
             }
         };
         Ok(WorktreeManager::new(root, backend))
@@ -330,14 +341,18 @@ impl StudioThreadFactory {
 pub(in crate::studio) fn removal_definitely_refused(
     error: &crate::agent::worktree::WorktreeError,
 ) -> bool {
-    use crate::agent::worktree::{RemoteExecutionError, WorktreeError};
+    use crate::agent::worktree::{ExecutionFailure, WorktreeError};
     match error {
         WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {
             args.starts_with("worktree remove ")
         }
-        WorktreeError::RemoteExecution {
+        WorktreeError::Execution {
             args,
-            source: RemoteExecutionError::WorkingDirectory,
+            source:
+                ExecutionFailure::Spawn(pl_remote_helper::SpawnError {
+                    knowledge: pl_remote_helper::StartKnowledge::NotStarted,
+                    ..
+                }),
         } => args.starts_with("worktree remove "),
         _ => false,
     }

@@ -144,7 +144,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - macOS 使用完整 Xcode 与 Flutter 官方 Swift Package Manager 集成，构建当前宿主架构的 `.app`；Rust bridge 由 xtask 预构建后放入 `Contents/Frameworks/`，SSH helper 放入 `Contents/Resources/data/remote-helper/`。构建收集保留 framework 符号链接，`run-gui --release` 启动 `dist/anywork-release/anywork.app/Contents/MacOS/anywork`。本地使用 ad-hoc 签名，不包含 Developer ID、公证或稳定发布授权。
 - Linux 原生 GUI 需要 Clang/C++ 标准库、CMake、Ninja、pkg-config 与 GTK 3 开发文件，由项目 Docker 镜像提供。宿主原生运行时，xtask 仍须用当前 PATH 和真实最小 GTK/C++ 工程预检，缺失时透传实际命令与原始错误；不得写死编译器版本、系统库路径或注入机器专用 include/library 环境。Rust 桥以 `libpl_studio_bridge.so` 预构建并经 `ANYWORK_BRIDGE_LIBRARY` 环境变量注入 CMake，与 Windows 的 DLL 契约一致。
 - `cargo xtask test-project --suite desktop` 复用 bridge/helper 构建与进程树管理，运行官方桌面 `integration_test`；与 demo、capture、profile/native-launch 和 release 模式互斥。测试用 `WidgetTester` 操作真实生产组件。`wait_events` 的隔离 provider 由 `manual-gui --preset wait-events` 持有；`conversation_read_work` 的关闭 SQLite 预置由 `--preset conversation-read-work` 持有。`test-project` 在对应环境变量未齐时调用这些 preset。
-- `cargo xtask test-project --suite native` 在进程外裁判真实退出码、重开和第二实例；薄故障装配是 `tool/native_fault_main.dart`。
+- `cargo xtask test-project --suite native` 在一次真实关闭后核对原生退出码与所属进程无残留；准备入口是 `tool/native_shutdown_main.dart`，不编排界面、持久化核对或多阶段故障注入。
 - 人工截图使用 Widget Previewer/成熟浏览器工具或原生官方 Dart MCP；自定义内容捕获只保留自动化及原生测量的内部职责，不作为平行人工入口。
 - 原生 MCP 观察使用独立 debug Driver 入口；隔离模拟环境用 `cargo xtask manual-gui --preset gui --inspect`，复用已有 native launcher 和真实退出报告，不改变正式入口或 `integration_test` binding。Linux 无桌面时由系统 `xvfb-run` 提供显示，不需要伪终端；管道 stdin 的 `done` 请求退出后须等待并校验真实退出与后代回收，不重复录入 UI 动作。验收载体不提供 resident 热重载；确需跨层开发热重载才用普通 `run-gui --inspect`，其工具退出码不能代证产品正常退出。
 - UI 自动化在 `code/anywork` 执行 `flutter test --no-pub test/ui`，不加 `-d`，不准备 Rust/bridge。
@@ -154,7 +154,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   Flutter/Dart 包装命令不链接该工具及其 Studio/数据库依赖。全 workspace 检查仍覆盖验收工具。
 - 本地原生验收默认使用当前受支持宿主平台，报告中明确平台与覆盖范围，不把单平台结果外推为跨平台通过；跨平台任务按实际影响说明其他平台的验证结果或缺口。
 - `run-gui --demo` 不作为人工实验的默认入口，也不能证明真实 bridge、持久化或 provider 行为。纯界面使用官方预览，业务使用隔离真实产品；人工结论独立记录，默认为待评审。
-- `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，原生退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。
+- `test-project` 与 `manual-gui` 在正常完成、失败或取消后都必须等待并回收所属 Flutter、GUI 及其子进程，不得残留；Windows 使用 Job Object 管理进程树，Linux 使用项目的进程树生命周期机制；macOS 使用现有 `process-wrap` 的 Unix 进程组管理，正常退出报告若发现必须由 harness 强制回收的残留组则明确失败，不将其报告为应用已自行收束。显式阻塞隔离层并触发应用强制退出的故障场景按统一执行器契约记录后代及裁判介入，不把该阶段的裁判回收列为产品保证。
 - AI 运行时观察优先通过官方 Dart/Flutter MCP / Inspector 操作 Flutter 层，重复功能验证使用 `WidgetTester` / `integration_test`。Windows、Linux 共用这些接口；Linux 没有显示服务时用 Xvfb 提供原生启动环境，Windows 原生验证仍需可运行桌面应用的会话。平台窗口、IME、托盘等边界按需使用真实键盘/指针或系统工具；不把 Flutter 层截图外推为系统行为验证。专用工具可覆盖时不使用 Computer Use。截图来源与覆盖边界见 [测试与人工验收](design/24-testing.md#2413-时间线呈现与官方集成测试)。
 
 ### GUI 生成文件
@@ -228,9 +228,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo xtask test-project --suite desktop --set smoke
   ```
 
-- Linux 外部 helper 模式需要与源码匹配的生产 worker 位于 PATH，可用
-  `cargo install --path code/pl-remote-helper --locked` 安装或更新。
-  桌面 xtask 构建将 worker 作为 Flutter bundle 资源分发，不嵌入 bridge；两种宿主均不使用裸 shell 后备路径。
+- 本地命令、MCP、LSP 与 ACP 通过 `pl-remote-helper` library 的 native Executor 创建业务进程，不要求 PATH 中存在监督 worker。SSH 使用与源码匹配的前台 `pl-remote-helper --stdio` server；桌面 xtask 将远端 server 资产作为 Flutter bundle 资源分发，不嵌入 bridge，不使用其他传输后备路径。
 
 - 不默认启用 `--all-features`。性能与真实外部服务观察按明确目标和授权显式选择，不将费用、凭据或机器敏感采样带入普通检查；不保留专项实验 example、永久截图脚本或第二套业务运行时。
 - 真实模型与 GUI 观察遵循统一实验方法，按边界选择载体；模拟通过不等于真实供应商兼容，人工结论独立记录，默认为待评审。

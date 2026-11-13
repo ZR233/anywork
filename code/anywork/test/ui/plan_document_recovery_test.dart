@@ -58,6 +58,7 @@ void main() {
       final live = LiveDisplayWindow(
         revision: previous.revision + 1,
         historyThrough: previous.historyThrough,
+        currentWorkId: null,
         executionPresent: true,
         blocks: const [],
       );

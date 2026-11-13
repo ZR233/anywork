@@ -30,6 +30,23 @@ pub(super) struct LspStateRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<StudioLspStateSnapshot>>,
     events: ProductEventBus,
+    thread_states: Arc<
+        std::sync::RwLock<
+            std::collections::BTreeMap<String, crate::protocol::StudioThreadLspStateSnapshot>,
+        >,
+    >,
+    thread_revision: Arc<std::sync::atomic::AtomicU64>,
+    thread_commit_lock: Arc<Mutex<()>>,
+    thread_refresh_lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    thread_snapshot_pause: Arc<std::sync::Mutex<Option<Arc<ThreadSnapshotPause>>>>,
+}
+
+#[cfg(test)]
+struct ThreadSnapshotPause {
+    server_id: String,
+    entered: tokio::sync::watch::Sender<bool>,
+    resume: tokio::sync::watch::Receiver<bool>,
 }
 
 impl LspStateRuntime {
@@ -40,6 +57,12 @@ impl LspStateRuntime {
                 state: ObservedResource::uninitialized(unix_seconds()),
             })),
             events,
+            thread_states: Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new())),
+            thread_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            thread_commit_lock: Arc::new(Mutex::new(())),
+            thread_refresh_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            thread_snapshot_pause: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -163,6 +186,138 @@ impl LspStateRuntime {
         *self.state.write().await = snapshot.clone();
         self.events.emit_lsp_state(snapshot);
     }
+
+    pub(super) async fn read_thread(
+        &self,
+        thread_id: &str,
+    ) -> crate::protocol::StudioThreadLspStateSnapshot {
+        let _commit = self.thread_commit_lock.lock().await;
+        self.thread_states
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(|| crate::protocol::StudioThreadLspStateSnapshot {
+                thread_id: thread_id.to_owned(),
+                revision: self
+                    .thread_revision
+                    .load(std::sync::atomic::Ordering::Acquire),
+                binding_id: None,
+                servers: Vec::new(),
+            })
+    }
+
+    pub(super) fn thread_ids(&self) -> Vec<String> {
+        self.thread_states
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    pub(super) async fn thread_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.thread_refresh_lock.lock().await
+    }
+
+    pub(super) async fn thread_commit(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.thread_commit_lock.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_thread_snapshot_for_test(
+        &self,
+        server_id: impl Into<String>,
+    ) -> (
+        tokio::sync::watch::Receiver<bool>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        let (entered, entered_receiver) = tokio::sync::watch::channel(false);
+        let (resume, resume_receiver) = tokio::sync::watch::channel(false);
+        *self
+            .thread_snapshot_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(ThreadSnapshotPause {
+                server_id: server_id.into(),
+                entered,
+                resume: resume_receiver,
+            }));
+        (entered_receiver, resume)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_after_thread_snapshot_for_test(&self, servers: &[StudioLspServer]) {
+        let pause = self
+            .thread_snapshot_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(pause) = pause
+            && servers.iter().any(|server| server.id == pause.server_id)
+        {
+            pause.entered.send_replace(true);
+            let mut resume = pause.resume.clone();
+            let _ = resume.wait_for(|released| *released).await;
+        }
+    }
+
+    /// Caller holds `thread_commit_lock` and the current binding/lifetime qualification.
+    pub(super) fn commit_thread(
+        &self,
+        thread_id: String,
+        binding_id: Option<String>,
+        servers: Vec<StudioLspServer>,
+    ) -> crate::protocol::StudioThreadLspStateSnapshot {
+        {
+            let states = self
+                .thread_states
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (&binding_id, states.get(&thread_id)) {
+                (Some(binding_id), Some(current))
+                    if current.binding_id.as_ref() == Some(binding_id)
+                        && current.servers == servers =>
+                {
+                    return current.clone();
+                }
+                (None, None) => {
+                    return crate::protocol::StudioThreadLspStateSnapshot {
+                        thread_id,
+                        revision: self
+                            .thread_revision
+                            .load(std::sync::atomic::Ordering::Acquire),
+                        binding_id: None,
+                        servers,
+                    };
+                }
+                _ => {}
+            }
+        }
+        let revision = self
+            .thread_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_add(1);
+        let snapshot = crate::protocol::StudioThreadLspStateSnapshot {
+            thread_id: thread_id.clone(),
+            revision,
+            binding_id,
+            servers,
+        };
+        {
+            let mut states = self
+                .thread_states
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if snapshot.binding_id.is_some() {
+                states.insert(thread_id, snapshot.clone());
+            } else {
+                states.remove(&thread_id);
+            }
+            self.events.emit_thread_lsp_state(snapshot.clone());
+        }
+        snapshot
+    }
 }
 
 pub(super) async fn health(registry: &LspRuntimeRegistry) -> StudioLspHealth {
@@ -186,7 +341,7 @@ pub(super) async fn health(registry: &LspRuntimeRegistry) -> StudioLspHealth {
     }
 }
 
-fn lsp_lifecycle_phase(phase: LspLifecyclePhase) -> &'static str {
+pub(super) fn lsp_lifecycle_phase(phase: LspLifecyclePhase) -> &'static str {
     match phase {
         LspLifecyclePhase::Loading => "loading",
         LspLifecyclePhase::Probing => "probing",
@@ -211,7 +366,10 @@ fn latest_checked_at(health: &StudioLspHealth) -> Option<i64> {
         .max()
 }
 
-fn lsp_server_state(server: &LspServerSnapshot, observed_at: i64) -> StudioLspServerState {
+pub(super) fn lsp_server_state(
+    server: &LspServerSnapshot,
+    observed_at: i64,
+) -> StudioLspServerState {
     match &server.availability_kind {
         LspAvailabilityKind::Checking => StudioLspServerState::Checking(LspChecking::new(
             server

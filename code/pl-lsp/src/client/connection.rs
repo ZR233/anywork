@@ -10,14 +10,14 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::diagnostics::DiagnosticSink;
-use super::documents::OpenDocument;
+use super::documents::{DocumentSync, OpenDocument};
 use super::retry::is_content_modified_error;
 use super::rpc::RpcClient;
 use super::status::LspClientStatus;
 use super::transport::LspTransport;
 type ClientTask = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 use crate::driver::LspServerDriver;
-use crate::host::{LspChild, LspHostBackend};
+use crate::host::{LspHostBackend, LspHostProcess};
 use crate::runtime::{LspResult, LspRuntimeError, ResolvedLspServer};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -26,11 +26,12 @@ pub(crate) struct LspClient {
     pub(super) server: ResolvedLspServer,
     pub(super) driver: Arc<dyn LspServerDriver>,
     pub(super) host: Option<Arc<dyn LspHostBackend>>,
-    pub(super) child: Arc<Mutex<Option<LspChild>>>,
+    pub(super) child: Arc<Mutex<Option<LspHostProcess>>>,
     pub(super) transport: Mutex<Option<LspTransport>>,
     pub(super) rpc: RwLock<Option<RpcClient>>,
     pub(super) opened_files: Mutex<HashMap<PathBuf, OpenDocument>>,
     pub(super) document_sync: Mutex<()>,
+    pub(super) negotiated_document_sync: RwLock<DocumentSync>,
     pub(super) initialized: Arc<AtomicBool>,
     pub(super) connection_alive: Arc<AtomicBool>,
     pub(super) negotiated_operations: RwLock<Vec<crate::query::LspQueryOperation>>,
@@ -105,6 +106,7 @@ impl LspClient {
             rpc: RwLock::new(None),
             opened_files: Mutex::new(HashMap::new()),
             document_sync: Mutex::new(()),
+            negotiated_document_sync: RwLock::new(DocumentSync::default()),
             initialized: Arc::new(AtomicBool::new(false)),
             connection_alive: Arc::new(AtomicBool::new(false)),
             negotiated_operations: RwLock::new(Vec::new()),

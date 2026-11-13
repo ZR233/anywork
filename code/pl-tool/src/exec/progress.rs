@@ -4,13 +4,11 @@
 //! `Arc` per change; the pump then reports only the bytes the Thread has not accepted yet. Appending
 //! a chunk therefore copies no accumulated text at all — neither here nor in the Thread — and the
 //! canonical result still comes from the archived capture, not from this preview.
-use crate::command::process_manager::{
-    CommandCaptureFailure, CommandOutputObserver, CommandOutputStream,
-};
+use crate::command::process_manager::{CommandOutputObserver, CommandOutputStream};
 use pl_core::model::{ContentBlock, ToolProgressUpdate};
 use pl_core::thread::TaskAccess;
 use std::{future::Future, sync::Arc};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 /// Producer-chosen identity of the live preview.
 ///
@@ -36,40 +34,22 @@ pub(super) struct CommandPreview {
     decoders: std::sync::Mutex<[Option<encoding_rs::Decoder>; 2]>,
 }
 
-/// The exec tool's own observer: it keeps the live preview and relays a hard capture failure to its
-/// owner the moment the reader observes it.
-///
-/// `output_chunk` stays on the preview's shared chain (no per-chunk copy of the accumulated text),
-/// while `output_failed` hands the typed failure to the reporter task that latches it through the
-/// running call's channel — before the process tree finishes draining, not when `execute` returns.
+/// A bounded preview adapter; capture completion is reported by the executor.
 pub(super) struct ExecOutputObserver {
     preview: Arc<CommandPreview>,
-    failures: mpsc::UnboundedSender<CommandCaptureFailure>,
 }
-
 impl ExecOutputObserver {
-    pub(super) fn channel() -> (
-        Arc<Self>,
-        watch::Receiver<Arc<ContentBlock>>,
-        mpsc::UnboundedReceiver<CommandCaptureFailure>,
-    ) {
+    pub(super) fn channel() -> (Arc<Self>, watch::Receiver<Arc<ContentBlock>>) {
         let (preview, windows) = CommandPreview::channel();
-        let (failures, failure_rx) = mpsc::unbounded_channel();
-        (Arc::new(Self { preview, failures }), windows, failure_rx)
+        (Arc::new(Self { preview }), windows)
     }
 }
-
 impl CommandOutputObserver for ExecOutputObserver {
     fn output_chunk(&self, stream: CommandOutputStream, chunk: &[u8], revision: u64) {
         self.preview.output_chunk(stream, chunk, revision);
     }
     fn output_closed(&self, stream: CommandOutputStream) {
         self.preview.output_closed(stream);
-    }
-    fn output_failed(&self, failure: &CommandCaptureFailure) {
-        // A send that finds no receiver only means the call already returned and reports the same
-        // typed fault on its return path, so it is never the only report.
-        let _ = self.failures.send(failure.clone());
     }
 }
 

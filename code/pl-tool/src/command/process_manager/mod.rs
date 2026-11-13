@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,8 +10,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{
-    CommandBackend, CommandCaptureOffsets, CommandCaptureOwnership, CommandCaptureReceipt,
-    CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest, CommandWriter,
+    CommandBackend, CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest, CommandWriter,
 };
 use super::head_tail_buffer::HeadTailBuffer;
 use crate::tool_error;
@@ -30,24 +29,14 @@ use lifecycle::{CommandLifecycle, spawn_lifecycle_task, wait_for_process_activit
 use snapshot::message_for_state;
 use state::CommandProcessTransition;
 pub use state::{
-    CaptureRepair, CaptureRepairChunk, CommandCaptureFailure, CommandProcessFailure,
-    CommandProcessFinalResult, CommandProcessLifecycle, CommandTerminationReason,
-    DrainingCommandProcess, FinalCommandProcess, RunningCommandProcess, TerminatingCommandProcess,
+    CommandCaptureFailure, CommandProcessFailure, CommandProcessFinalResult,
+    CommandProcessLifecycle, CommandTerminationReason, DrainingCommandProcess, FinalCommandProcess,
+    RunningCommandProcess, TerminatingCommandProcess,
 };
-use stream_io::{read_stderr, read_stdout, run_capture_writer};
+use stream_io::{read_stderr, read_stdout};
 
 const INTERNAL_BUFFER_BYTES: usize = 64 * 1024;
-/// PL 默认的单命令落盘捕获上限（字节）。
-///
-/// stdout 与 stderr 共享这一个额度，因此一直写下去的命令无法把捕获文件撑到无界。它与 core 为
-/// 单次 operation 预留的可靠输出上限同量级，避免捕获静默超出流水线其余部分能保存的规模。
-///
-/// 计费的是 backend 自己估算的**存储成本**（见
-/// [`CommandBackend::capture_storage_cost`](crate::command::CommandBackend::capture_storage_cost)），
-/// 不是原始流字节数：会把同一份输出写进多个文件的 backend 必须如实放大，否则这个上限只约束了
-/// 其中一份，磁盘仍会超。生产者可以用
-/// [`CommandBackend::capture_limit_bytes`](crate::command::CommandBackend::capture_limit_bytes)
-/// 声明自己的上限；没有声明时用这个默认值。
+/// Execution-side raw stdout/stderr share this per-command budget.
 pub const MAX_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -105,14 +94,8 @@ struct CommandProcessEntry {
     state: Mutex<CommandProcessState>,
     notify: Notify,
     output_observer: Option<Arc<dyn CommandOutputObserver>>,
-    /// Wakes the operation's single capture writer task when an accepted chunk or a state change may
-    /// give it work.
-    ///
-    /// stdout and stderr readers only accept chunks into the shared plan and notify this; the one
-    /// writer task drains the plan to the backend, so both streams keep accepting up to the shared
-    /// budget without ever waiting on disk. `notify_one` keeps a permit when the writer is between
-    /// drains, so an accepted chunk is never silently dropped.
-    capture_wake: Notify,
+    /// Ends abandoned preview reads; each Drop settles its capture observation.
+    drain_stopped: CancellationToken,
     /// Asks the lifecycle to terminate the process after a hard output failure.
     ///
     /// The read tasks hold a clone, so a capture that can no longer continue stops the process tree
@@ -143,40 +126,10 @@ struct CommandProcessState {
     exit: Option<crate::command::CommandExit>,
     /// 本 operation 的落盘上限（字节），启动时由 backend 声明或取 PL 默认值。
     capture_limit_bytes: u64,
-    capture_ownership: CommandCaptureOwnership,
-    producer_capture: Option<CommandCaptureReceipt>,
-    /// 已接纳 chunk 按 backend 估算折出来的存储成本累计；stdout 与 stderr 共享这一个额度。
-    capture_charged_bytes: u64,
-    capture_received_bytes: u64,
-    /// 因额度耗尽或已失败而被拒绝接纳的 chunk 折算成本累计。
-    ///
-    /// 被拒的字节从不进入修复计划（计划只保留已接纳的字节），这里只记录"有多少输出被拒绝"，
-    /// 让返回的快照能完整说明一次容量终止，而不需要解析诊断文本。
-    capture_refused_bytes: u64,
+    capture_result: Option<crate::command::CommandCaptureResult>,
+    capture_completion_observed: bool,
     /// 本 operation 生效的模型可见输出字节上限；`None` 表示沿用既有截断语义。
     model_output_bytes_cap: Option<u64>,
-    /// Length of the capture fragment the backend last confirmed writing.
-    ///
-    /// The prepared header before any chunk, then updated to the exact length each confirmed append
-    /// reported. A repair truncates back to this fact, so it never depends on a fragment-length read
-    /// that could fail and be mistaken for "nothing written".
-    capture_offsets: CommandCaptureOffsets,
-    /// Accepted capture chunks the backend has not confirmed writing yet, in acceptance order.
-    ///
-    /// Both streams push here through one plan, so a chunk one reader already accepted survives the
-    /// other reader's failed append instead of being overwritten or appended past the fault. Bounded
-    /// by the operation's capture limit ([`MAX_CAPTURE_BYTES`] unless the backend declares its own):
-    /// each entry already counted against that shared budget.
-    capture_pending: VecDeque<CaptureRepairChunk>,
-    /// Whether a capture write already failed, so no further chunk may be appended.
-    capture_write_failed: bool,
-    /// Whether the operation's single capture writer has drained the plan and stopped.
-    ///
-    /// The operation may only publish its terminal result once this is set: the writer still draining
-    /// the accepted plan is what turns "the process exited" into "every accepted byte is written or
-    /// owed as one repair", so a snapshot taken before it settles could report a success that has not
-    /// captured the bytes the observers already saw.
-    capture_drained: bool,
     /// Exact reason a hard output capture failure terminated this operation, if any.
     output_failure: Option<CommandCaptureFailure>,
 }
@@ -198,7 +151,6 @@ pub struct CommandStartRequest {
 impl std::fmt::Debug for CommandStartRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommandStartRequest")
-            .field("command", &self.command)
             .field("cwd", &self.cwd)
             .field("allow_workspace_escape", &self.allow_workspace_escape)
             .field("timeout", &self.timeout)
@@ -270,11 +222,7 @@ where
         }
     }
 
-    /// The host backend this manager drives, shared so a repair can re-materialize accepted bytes.
-    ///
-    /// A caller that holds an accepted capture fragment a failed append could not write reaches the
-    /// same backend through this handle, so the repair writes through the one backend that owns the
-    /// capture path instead of a parallel copy.
+    /// The immutable execution binding used by this product task table.
     pub fn backend(&self) -> Arc<B> {
         self.backend.clone()
     }
@@ -406,7 +354,6 @@ where
             .backend
             .capture_limit_bytes()
             .unwrap_or(MAX_CAPTURE_BYTES);
-        let capture_ownership = self.backend.capture_ownership();
         if request
             .cancellation_token
             .as_ref()
@@ -419,8 +366,7 @@ where
                 "Task cancelled or expired before capture preparation",
             ));
         }
-        let capture_committed_len = self
-            .backend
+        self.backend
             .prepare_output(
                 &output_target,
                 &request.command,
@@ -429,12 +375,6 @@ where
             )
             .await
             .map_err(|error| tool_error("exec", error))?;
-        if capture_committed_len > capture_limit_bytes {
-            return Err(tool_error(
-                "exec",
-                "backend prepared capture beyond its declared budget",
-            ));
-        }
         // 模型可见字节上限同样在启动时定一次；backend 没声明就是 `None`（既有语义）。
         let model_output_bytes_cap = self.backend.model_output_bytes_cap();
 
@@ -457,7 +397,6 @@ where
         let stderr = child.take_stderr();
         let stdout_open = stdout.is_some();
         let stderr_open = stderr.is_some();
-        let input_progress = child.take_input_progress();
         let stdin = child.take_stdin();
         let output_failure = CancellationToken::new();
         let entry = Arc::new(CommandProcessEntry {
@@ -467,19 +406,16 @@ where
                 writer: stdin,
                 accepted_bytes: 0,
                 close_state: crate::command::StdinCloseState::Open,
-                progress: input_progress,
             }),
             input_stopped: CancellationToken::new(),
             state: Mutex::new(CommandProcessState::new(
                 stdout_open,
                 stderr_open,
-                capture_committed_len,
                 capture_limit_bytes,
-                capture_ownership,
                 model_output_bytes_cap,
             )),
             notify: Notify::new(),
-            capture_wake: Notify::new(),
+            drain_stopped: CancellationToken::new(),
             output_observer: request.output_observer,
             output_failure: output_failure.clone(),
         });
@@ -505,15 +441,11 @@ where
             },
         );
 
-        // The single capture writer owns the shared fragment. It is spawned here, before the readers,
-        // so it is already waiting on `capture_wake` when the first chunk is accepted; a wake-up that
-        // races the spawn is still held as a permit, so no accepted chunk is lost.
-        tokio::spawn(run_capture_writer(entry.clone(), self.backend.clone()));
         if let Some(stdout) = stdout {
-            tokio::spawn(read_stdout(entry.clone(), self.backend.clone(), stdout));
+            tokio::spawn(read_stdout(entry.clone(), stdout));
         }
         if let Some(stderr) = stderr {
-            tokio::spawn(read_stderr(entry.clone(), self.backend.clone(), stderr));
+            tokio::spawn(read_stderr(entry.clone(), stderr));
         }
         Ok(entry)
     }
@@ -557,11 +489,7 @@ where
             .cloned()
     }
 
-    /// Reads a live operation's current snapshot without consuming it.
-    ///
-    /// The producer path uses this the moment a capture failure is observed, so it can build the
-    /// typed storage fault — and its retriable obligation — from the operation's stable capture path
-    /// before the process tree has finished draining. `None` once the operation is no longer known.
+    /// Reads current root and output observations without consuming the operation.
     pub async fn snapshot(
         &self,
         process_id: &str,
@@ -658,34 +586,15 @@ impl CommandProcessEntry {
                 stderr_budget = cap_bytes - stdout_budget;
             }
         }
-        let capture_plan = state.capture_repair();
-        let capture_offsets = state.capture_offsets;
-        let capture_limit_bytes = state.capture_limit_bytes();
-        let capture_usage = state.capture_usage();
+        let capture_limit_bytes = state.capture_limit_bytes;
+        let capture = state.capture_result.clone();
         let stdout_text_lossy = state.stdout.text_lossy();
         let stderr_text_lossy = state.stderr.text_lossy();
         let state_exit_code = state.exit.as_ref().and_then(|exit| exit.exit_code);
         let state_signal = state.exit.as_ref().and_then(|exit| exit.signal);
-        let supervision_failure = state
-            .exit
-            .as_ref()
-            .and_then(|exit| exit.supervision_failure.clone());
         let lifecycle = state.lifecycle.clone();
         let output_revision = state.output_revision;
-        let output_failure = state.output_failure.as_ref().map(|failure| match failure {
-            CommandCaptureFailure::OutputLimitExceeded { .. } => match state.capture_ownership {
-                CommandCaptureOwnership::Manager => CommandCaptureFailure::OutputLimitExceeded {
-                    limit_bytes: capture_limit_bytes,
-                    charged_bytes: state.capture_charged_bytes,
-                    refused_bytes: state.capture_refused_bytes,
-                },
-                // Producer 的载荷已经是唯一写入者的终态回执，不由客户端累加重写。
-                CommandCaptureOwnership::Producer => failure.clone(),
-            },
-            CommandCaptureFailure::Read { .. }
-            | CommandCaptureFailure::Write { .. }
-            | CommandCaptureFailure::Flush { .. } => failure.clone(),
-        });
+        let output_failure = state.output_failure.clone();
         drop(state);
         let (stdout, stdout_omission_marker) = stdout_excerpt.project_with_omission(stdout_budget);
         let (stderr, stderr_omission_marker) = stderr_excerpt.project_with_omission(stderr_budget);
@@ -711,16 +620,13 @@ impl CommandProcessEntry {
                 output_revision,
                 exit_code: state_exit_code,
                 signal: state_signal,
-                supervision_failure,
                 input_receipt: None,
                 stdout_text_lossy,
                 stderr_text_lossy,
                 output_artifacts: Vec::new(),
                 output_failure,
-                capture_plan,
-                capture_offsets,
+                capture,
                 capture_limit_bytes,
-                capture_usage,
                 model_output_bytes_cap,
             },
             sizes,

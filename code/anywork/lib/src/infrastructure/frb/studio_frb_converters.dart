@@ -24,6 +24,8 @@ ProductTopicEventPayload _productPayloadFromFrb(
       McpCatalogChangedPayload(_mcpCatalogFromFrb(field0)),
     frb.BridgeProductEventPayload_ThreadMcpStateChanged(:final field0) =>
       ThreadMcpStateChangedPayload(_threadMcpStateFromFrb(field0)),
+    frb.BridgeProductEventPayload_ThreadLspStateChanged(:final field0) =>
+      ThreadLspStateChangedPayload(_threadLspStateFromFrb(field0)),
     frb.BridgeProductEventPayload_LspStateChanged(:final field0) =>
       LspStateChangedPayload(_lspStateFromFrb(field0)),
     frb.BridgeProductEventPayload_SkillsStateChanged(:final field0) =>
@@ -124,6 +126,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       McpCatalogTopic(scope: _mcpScopeFromFrb(scope)),
     frb_topic_types.BridgeProductTopic_ThreadMcp(:final threadId) =>
       ThreadMcpTopic(threadId: threadId),
+    frb_topic_types.BridgeProductTopic_ThreadLsp(:final threadId) =>
+      ThreadLspTopic(threadId: threadId),
     frb_topic_types.BridgeProductTopic_Lsp() => const LspTopic(),
     frb_topic_types.BridgeProductTopic_Skills(:final workspaceId) =>
       SkillsTopic(workspaceId: workspaceId),
@@ -170,6 +174,8 @@ ProductTopic _productPayloadTopicFromBridge(
       McpCatalogTopic(scope: _mcpScopeFromFrb(field0.scope)),
     frb.BridgeProductEventPayload_ThreadMcpStateChanged(:final field0) =>
       ThreadMcpTopic(threadId: field0.threadId),
+    frb.BridgeProductEventPayload_ThreadLspStateChanged(:final field0) =>
+      ThreadLspTopic(threadId: field0.threadId),
     frb.BridgeProductEventPayload_LspStateChanged() => const LspTopic(),
     frb.BridgeProductEventPayload_SkillsStateChanged(:final field0) =>
       SkillsTopic(workspaceId: field0.workspaceId),
@@ -216,6 +222,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
       ),
     ThreadMcpTopic(:final threadId) =>
       frb_topic_types.BridgeProductTopic.threadMcp(threadId: threadId),
+    ThreadLspTopic(:final threadId) =>
+      frb_topic_types.BridgeProductTopic.threadLsp(threadId: threadId),
     LspTopic() => const frb_topic_types.BridgeProductTopic.lsp(),
     SkillsTopic(:final workspaceId) =>
       frb_topic_types.BridgeProductTopic.skills(workspaceId: workspaceId),
@@ -266,6 +274,8 @@ ProductTopicBaselineState _productBaselineFromFrb(
       McpCatalogBaseline(_mcpCatalogFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_ThreadMcp(:final field0) =>
       ThreadMcpBaseline(_threadMcpStateFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_ThreadLsp(:final field0) =>
+      ThreadLspBaseline(_threadLspStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Lsp(:final field0) => LspBaseline(
       _lspStateFromFrb(field0),
     ),
@@ -1235,6 +1245,70 @@ LspStateSnapshot _lspStateFromFrb(frb.BridgeLspStateSnapshot snapshot) {
     },
   );
 }
+
+ThreadLspStateSnapshot _threadLspStateFromFrb(
+  frb_thread_lsp_types.BridgeThreadLspStateSnapshot snapshot,
+) => ThreadLspStateSnapshot(
+  threadId: snapshot.threadId,
+  revision: snapshot.revision.toInt(),
+  bindingId: snapshot.bindingId,
+  servers: snapshot.servers.map(_threadLspServerFromFrb).toList(),
+);
+
+LspServerStateView _threadLspServerFromFrb(frb.BridgeLspServerDto server) =>
+    LspServerStateView(
+      id: server.id,
+      displayName: server.displayName,
+      configurationPath: server.configurationPath,
+      phase: server.phase,
+      state: switch (server.state) {
+        frb.BridgeLspServerState_Checking(:final message) => LspCheckingState(
+          message: message,
+        ),
+        frb.BridgeLspServerState_Available(
+          :final checkedAt,
+          :final diagnosticCount,
+          :final activity,
+        ) =>
+          LspAvailableState(
+            checkedAt: checkedAt.toInt(),
+            diagnosticCount: diagnosticCount.toInt(),
+            activity: switch (activity) {
+              frb.BridgeLspActivity_Idle() => const LspIdleActivity(),
+              frb.BridgeLspActivity_Busy(
+                :final title,
+                :final message,
+                :final percentage,
+              ) =>
+                LspBusyActivity(
+                  title: title,
+                  message: message,
+                  percentage: percentage,
+                ),
+              frb.BridgeLspActivity_Indexing(
+                :final title,
+                :final message,
+                :final percentage,
+              ) =>
+                LspIndexingActivity(
+                  title: title,
+                  message: message,
+                  percentage: percentage,
+                ),
+            },
+          ),
+        frb.BridgeLspServerState_Unavailable(:final checkedAt, :final error) =>
+          LspUnavailableState(
+            checkedAt: checkedAt.toInt(),
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+          ),
+        frb.BridgeLspServerState_Disabled(:final message) => LspDisabledState(
+          message: message,
+        ),
+      },
+    );
 
 SkillsStateSnapshot _skillsStateFromFrb(
   frb.BridgeSkillsStateSnapshot snapshot,

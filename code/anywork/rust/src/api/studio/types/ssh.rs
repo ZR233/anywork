@@ -48,8 +48,6 @@ pub struct SshConnectionSnapshotDto {
     pub state: String,
     pub helper_version: Option<String>,
     pub architecture: Option<String>,
-    pub attempt: Option<u32>,
-    pub delay_seconds: Option<u64>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
 }

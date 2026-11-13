@@ -4,6 +4,10 @@
 //! owner's selection -> first nonempty content layout span is admitted.
 
 use super::*;
+use pl_provider_fixture::{
+    GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
+    GUI_TIMELINE_READ_PROFILE_SEED_ITEMS,
+};
 use serde_json::{Value, json};
 
 mod identity;
@@ -66,7 +70,13 @@ impl ProfileEvidence {
                 "runner": "native-profile-owner-layout",
                 "platform": {"os": env::consts::OS, "arch": env::consts::ARCH},
                 "flutterBuildMode": "profile",
-                "seedRequirements": {"threads": 2, "minimumMainItemsPerThread": 20_000},
+                "seedRequirements": {
+                    "threads": 2,
+                    "minimumMainItemsPerThread": GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS,
+                    "modelTextItemsPerThread": GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS,
+                    "normalInputTurnsPerThread": GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
+                    "modelTextItemsPerTurn": GUI_TIMELINE_READ_PROFILE_SEED_ITEMS,
+                },
                 "freshApplicationLaunchesRequested": 21,
                 "artifactPolicy": "all started applications must have the same actual native and packaged bridge Git blob identities",
                 "timing": "same owner monotonic selectionStartedMicros -> layoutCompletedMicros",

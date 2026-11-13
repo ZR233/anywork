@@ -41,6 +41,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import '../test/support/timeline_text_observation.dart';
+
 import 'support/fixture_gate.dart';
 import 'support/composer_target_diagnostic.dart';
 import 'support/presentation_capture.dart';
@@ -320,7 +322,7 @@ void main() {
         'Real expanded members in the original parallel Work window.',
       );
       await fixtureGate(tester, provider, _backgroundResultObserverStage);
-      await scene.captureBackgroundResultWithForeground(parallelObserver);
+      await scene.observeBackgroundResultWithForeground(parallelObserver);
       await fixtureGate(
         tester,
         provider,
@@ -431,10 +433,10 @@ void main() {
             )
             .first;
         await scene.until(
-          () => _laidOut(failureText),
+          () => isTimelineContentLaidOut(failureText),
           'provider failure laid out',
         );
-        await _revealTextFragment(
+        await revealTimelineTextFragment(
           tester,
           failureText,
           'realtime fixture provider error',
@@ -709,7 +711,7 @@ final class _RealtimeScene {
     return evidence;
   }
 
-  Future<void> captureBackgroundResultWithForeground(
+  Future<void> observeBackgroundResultWithForeground(
     _PreparedToolObserver prepared,
   ) async {
     final evidence = <String, Object?>{
@@ -916,159 +918,47 @@ final class _RealtimeScene {
       'A canonical result output is actually rendered',
       timeout: remaining(),
     );
-    await observed.revealMember(reasoning, reference: prepared.reference);
-    final reasoningRow = find.byWidgetPredicate(
-      (widget) =>
-          widget is TimelineMemberAtom && widget.atom.id == reasoning.id,
+    // The native boundary proves that the same active foreground reference is readable
+    // while the independent result has really arrived. Co-display geometry and disclosure
+    // are covered by data-driven component tests, without another native scroll protocol.
+    final summary = reasoning.contents.singleWhere(
+      (content) => content.role == ChatContentRole.reasoningSummary,
     );
-    await until(
-      () => _laidOut(reasoningRow),
-      'real still-active reasoning member laid out',
-      timeout: remaining(),
+    final scope = prepared.lease.content.openScope(
+      generation: prepared.generation,
     );
-    await _revealTextFragment(tester, reasoningRow, _backgroundResultReasoning);
-    // Reserve the remaining Main viewport for the foreground Work; the cut
-    // below still requires its header and both glyph ranges in the same frame.
-    final mainPosition = prepared.lease.scrollController.position;
-    final backgroundAlignment = switch (mainPosition.axisDirection) {
-      AxisDirection.up => 1.0,
-      AxisDirection.down => 0.0,
-      _ => throw StateError('Main timeline must scroll vertically'),
-    };
-    evidence['backgroundRevealFraming'] = {
-      'mainAxis': mainPosition.axisDirection.name,
-      'alignment': backgroundAlignment,
-      'mainViewportExtent': mainPosition.viewportDimension,
-      'actualLogicalWidth':
-          tester.view.physicalSize.width / tester.view.devicePixelRatio,
-      'actualLogicalHeight':
-          tester.view.physicalSize.height / tester.view.devicePixelRatio,
-    };
-    await _revealTextFragment(
-      tester,
-      backgroundOutput,
-      'realtime-parallel-a-line-05',
-      alignment: backgroundAlignment,
-      expectedScrollPosition: mainPosition,
-    );
-    remaining();
-    final executionId = graph.client.conversations
-        .session(lease.threadId)
-        .state
-        .runtime
-        ?.execution
-        ?.id;
-    expect(executionId, isNotNull);
-    final frozenBody = block.body;
-
-    Map<String, Object?> cut() {
-      expect(_expectPreparedToolObserver(prepared), isTrue);
-      final state = graph.client.conversations.session(lease.threadId).state;
-      expect(state.activeTurn?.turnId, prepared.turnId);
-      expect(state.activeTurn?.state.isBusy, isTrue);
-      expect(state.activeTurn?.state.isTerminal, isFalse);
-      expect(state.runtime?.execution?.id, executionId);
-      expect(state.runtime?.execution?.turnId, prepared.turnId);
-      expect(state.runtime?.execution?.phase.isStopping, isFalse);
-      final foreground = observed.unitForBlock(prepared.reference);
-      expect(foreground.id, prepared.display.unitId);
-      expect(foreground.historyPos, isNull);
-      expect(foreground.state, DisplayBlockState.open);
-      expect(lease.live.value!.executionPresent, isTrue);
-      final currentReasoning = _preparedToolDisplay(prepared).atoms
-          .singleWhere((member) => member.id == reasoning.id);
-      expect(currentReasoning.source, source);
-      expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
-      expect(
-        currentReasoning.contents.map(
-          (content) => contentReferenceIdentity(content.reference).toString(),
-        ),
-        orderedEquals(
-          reasoning.contents.map(
-            (content) => contentReferenceIdentity(content.reference).toString(),
-          ),
-        ),
-      );
-      final currentResult = observed.unit(block.id);
-      expect(currentResult.body, same(frozenBody));
-      expect(currentResult.historyPos, block.historyPos);
-      expect(currentResult.memberReference, block.memberReference);
-      final member = tester.widget<ChatItemView>(backgroundRow).item.atom!;
-      expect(member.source, backgroundSource);
-      expect(member.id, atom.id);
-      expect(member.completionItemId, atom.completionItemId);
-      expect(member.completionSeq, atom.completionSeq);
-      expect(member.delivery, ChatDeliveryKind.independent);
-      expect(
-        (member.lifecycle as TerminalChatAtom).outcome,
-        ChatTerminalOutcome.completed,
-      );
-      expect(observed.main.where((unit) => unit.id == foreground.id), isEmpty);
-      if (resultHead == null) {
-        expect(
-          observed.liveBlocks.where((unit) => unit.id == block.id),
-          isEmpty,
-        );
-      }
-      // The completed result and active foreground reasoning coexist.
-      final header = observed.groupHeader(foreground.id);
-      expect(observed.groupExpanded(foreground.id), isTrue);
-      final label = timelineGroupTitleFinder(tester, header);
-      expect(label.hitTestable(), findsOneWidget);
-      expect(timelineGroupTitleText(tester, label).trim(), isNotEmpty);
-      expect(backgroundRow, findsOneWidget);
-      expect(_laidOut(backgroundRow), isTrue);
-      expect(tester.widget<ChatItemView>(backgroundRow).item, same(rendered));
-      _expectTextFragmentVisible(
-        tester,
-        backgroundOutput,
-        'realtime-parallel-a-line-05',
-        hitTestable: true,
-      );
-      _expectTextFragmentVisible(
-        tester,
-        reasoningRow,
-        _backgroundResultReasoning,
-      );
-      expect(_laidOut(reasoningRow), isTrue);
-      return {
-        'executionId': executionId,
-        'executionPhase': state.runtime!.execution!.phase.name,
-        'turnId': prepared.turnId,
-        'foregroundBlockId': foreground.id,
-        'foregroundMemberBlockId': foreground.memberReference!.blockId,
-        'reasoningMemberId': reasoning.id,
-        'reasoningLifecycle': currentReasoning.lifecycle.runtimeType.toString(),
-        'backgroundBlockId': block.id,
-        'backgroundHistoryPos': currentResult.historyPos,
-        'backgroundMemberId': atom.id,
-        'backgroundMessageId': backgroundSource.messageId,
-        'toolCallId': tool.toolCallId,
-        'taskId': taskId,
-        'mainSets': lease.appliedSets,
-        'mainAppends': lease.appliedAppends,
-        'mainBlockIds': observed.main.map((unit) => unit.id).toList(),
-      };
+    try {
+      final window = await scope
+          .watchContent(
+            reference: summary.reference,
+            range: const ContentRange(offset: 0, maxBytes: 4096),
+          )
+          .first
+          .timeout(remaining());
+      expect(utf8.decode(window.bytes), contains(_backgroundResultReasoning));
+    } finally {
+      expect((await scope.close()).complete, isTrue);
     }
-
-    evidence['stage'] = 'capturing validated coexistence cut';
-    evidence['beforeCapture'] = cut();
-    evidence['capture'] = await captureEvidence(
-      'background-final-foreground-active.png',
-      _backgroundResultObserverStage,
-      'A independent final result coexists with the original live foreground '
-          'Work and a real nonterminal reasoning member; B may already be terminal.',
-      identities: {
-        'backgroundBlockId': block.id,
-        'backgroundMemberId': atom.id,
-        'backgroundMessageId': backgroundSource.messageId,
-        'foregroundBlockId': prepared.display.unitId,
-        'reasoningMemberId': reasoning.id,
-        'taskId': taskId,
-      },
-    );
-    evidence['afterCapture'] = cut();
-    evidence['stage'] = 'capture checked; ready for gate release';
+    expect(_expectPreparedToolObserver(prepared), isTrue);
+    final state = graph.client.conversations.session(lease.threadId).state;
+    expect(state.activeTurn?.turnId, prepared.turnId);
+    expect(state.activeTurn?.state.isBusy, isTrue);
+    expect(state.activeTurn?.state.isTerminal, isFalse);
+    expect(state.runtime?.execution?.turnId, prepared.turnId);
+    expect(state.runtime?.execution?.phase.isStopping, isFalse);
+    final currentReasoning = _preparedToolDisplay(prepared).atoms
+        .singleWhere((member) => member.id == reasoning.id);
+    expect(currentReasoning.source, source);
+    expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
+    expect(observed.unitForBlock(prepared.reference).historyPos, isNull);
+    expect(lease.live.value!.executionPresent, isTrue);
+    evidence.addAll({
+      'stage': 'native result and active foreground content verified',
+      'executionId': state.runtime?.execution?.id,
+      'foregroundSummaryObserved': true,
+      'backgroundCompletionId': atom.completionItemId,
+      'backgroundAndForegroundShareWork': block.id == prepared.display.unitId,
+    });
   }
 
   Future<void> captureStoppingIfVisible(ChatAtom partial) async {
@@ -1090,7 +980,7 @@ final class _RealtimeScene {
           command.target.label == executionId &&
           command.startedAtMs > 0 &&
           (command.isPending || command.accepted) &&
-          _laidOut(stopping);
+          isTimelineContentLaidOut(stopping);
     }
 
     final evidence = <String, Object?>{
@@ -1272,11 +1162,15 @@ final class _RealtimeScene {
     );
     // Reveal and inspect the actual text boxes while the provider is gated.
     // This completes the original disclosure layout before the exec calls start.
-    await _revealTextFragment(tester, observed.memberRow(reasoning.id), prefix);
+    await revealTimelineTextFragment(
+      tester,
+      observed.memberRow(reasoning.id),
+      prefix,
+    );
     Rect? previousBounds;
     await until(() {
       final row = observed.memberRow(reasoning.id);
-      if (!_laidOut(row)) return false;
+      if (!isTimelineContentLaidOut(row)) return false;
       final bounds = tester.getRect(row);
       final stable = previousBounds == bounds;
       previousBounds = bounds;
@@ -1451,7 +1345,7 @@ final class _RealtimeScene {
                       .widget<TimelineToolDetails>(currentToolCard(atom))
                       .item
                       .taskId,
-                  'laidOut': _laidOut(currentToolCard(atom)),
+                  'laidOut': isTimelineContentLaidOut(currentToolCard(atom)),
                   'finder': _toolFinderObservation(atom),
                 },
             ],
@@ -1528,7 +1422,9 @@ final class _RealtimeScene {
     late ChatItemPresentation rendered;
     await until(
       () {
-        if (row.evaluate().length != 1 || !_laidOut(row)) return false;
+        if (row.evaluate().length != 1 || !isTimelineContentLaidOut(row)) {
+          return false;
+        }
         final value = tester.widget<ChatItemView>(row).item;
         if (value.compatibility == ChatItemCompatibility.deferred) return false;
         expect(value.compatibility, ChatItemCompatibility.current);
@@ -1895,9 +1791,9 @@ final class _RealtimeScene {
       );
       await until(() {
         expectAutomaticRead();
-        return _laidOut(rendered);
+        return isTimelineContentLaidOut(rendered);
       }, 'actual bounded body text');
-      await _revealTextFragment(tester, rendered, fragment);
+      await revealTimelineTextFragment(tester, rendered, fragment);
       expectAutomaticRead();
       expect(owner.window, same(window));
       return window;
@@ -2456,8 +2352,8 @@ final class _RealtimeScene {
         (display) => display.unitId == foregroundBlockId,
       );
       expect(
-        foregroundDisplay.atoms.every((atom) => atom.source == source),
-        isTrue,
+        foregroundDisplay.atoms.where((atom) => atom.source == source),
+        isNotEmpty,
       );
       while (true) {
         remaining();
@@ -3057,7 +2953,7 @@ final class _RealtimeScene {
           remaining();
           expect(admittedAnswer(), same(item));
           expect(observed.unit(item.id), same(unit));
-          if (!_laidOut(row)) return false;
+          if (!isTimelineContentLaidOut(row)) return false;
           final rendered = tester.widget<ChatItemView>(row).item;
           expect(rendered.compatibility, ChatItemCompatibility.current);
           expect(rendered.type, 'text');
@@ -3066,7 +2962,7 @@ final class _RealtimeScene {
             Scrollable.maybeOf(tester.element(row)),
             same(originalScrollable),
           );
-          return _laidOut(text);
+          return isTimelineContentLaidOut(text);
         },
         'completed answer "$answer"',
         timeout: remaining(),
@@ -3109,7 +3005,12 @@ final class _RealtimeScene {
         // State proves the outcome; Main admission remains independent and
         // uses the original wait budget, without a normal completion item.
         if (!observed.singleBlocks.any((item) => item.atom!.source == source) ||
-            observed.liveBlocks.isNotEmpty) {
+            graph.client.conversations
+                    .session(turn.threadId)
+                    .state
+                    .runtime
+                    ?.execution !=
+                null) {
           return false;
         }
         if (kind == StudioTurnStatus.failed ||
@@ -3228,7 +3129,7 @@ final class _RealtimeScene {
               for (final view in views)
                 {
                   'id': view.id,
-                  'laidOut': _laidOut(find.byWidget(view)),
+                  'laidOut': isTimelineContentLaidOut(find.byWidget(view)),
                   'textCodeUnits': view.text.length,
                   'error': view.error?.toString(),
                   'offset': view.offset,
@@ -3287,7 +3188,7 @@ final class _RealtimeScene {
                     widget.text.isNotEmpty,
               ),
             );
-            if (!_laidOut(view)) continue;
+            if (!isTimelineContentLaidOut(view)) continue;
             final body = atom.contents
                 .where((content) => content.role == ChatContentRole.body)
                 .singleOrNull;
@@ -3693,6 +3594,7 @@ final class _RealtimeScene {
             preparedObserver == null ||
             _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
+        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         if (preparedObserver != null) {
           expect(units.single.id, preparedObserver.display.unitId);
           expect(units.single.historyPos, isNull);
@@ -3704,7 +3606,11 @@ final class _RealtimeScene {
             final display = lease.groupDisplays.singleWhere(
               (display) => display.unitId == preparedObserver.display.unitId,
             );
-            for (final atom in display.atoms) {
+            for (final atom in display.atoms.where(
+              (atom) =>
+                  atom.delivery != ChatDeliveryKind.independent &&
+                  expectedCallIds.contains(atom.tool?.callId),
+            )) {
               expect(
                 atom.source,
                 ForegroundTurnChatSource(turnId: preparedObserver.turnId),
@@ -3719,7 +3625,11 @@ final class _RealtimeScene {
                   .where(
                     (atom) =>
                         atom.turnId == _submittedTurnId &&
-                        atom.kind == ChatAtomKind.toolCall,
+                        atom.kind == ChatAtomKind.toolCall &&
+                        // A completed background receipt can join this same
+                        // Work and retain its original call ID. Observe the
+                        // foreground calls here; receipts have their own check.
+                        atom.delivery != ChatDeliveryKind.independent,
                   )
                   .toList();
         final handedOff = tools
@@ -3733,7 +3643,6 @@ final class _RealtimeScene {
             )
             .map((atom) => atom.tool!.callId)
             .toSet();
-        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         final required = tools == null
             ? null
             : expectedCallIds.isEmpty
@@ -3742,7 +3651,7 @@ final class _RealtimeScene {
                   .where((atom) => expectedCallIds.contains(atom.tool?.callId))
                   .toList();
         final laidOut = required
-            ?.where((atom) => _laidOut(currentToolCard(atom)))
+            ?.where((atom) => isTimelineContentLaidOut(currentToolCard(atom)))
             .length;
         frame?.addAll({
           'sampleMillis': clock.elapsedMilliseconds,
@@ -3757,7 +3666,7 @@ final class _RealtimeScene {
                     required?.any(
                       (atom) =>
                           atom.tool?.callId == callId &&
-                          _laidOut(currentToolCard(atom)),
+                          isTimelineContentLaidOut(currentToolCard(atom)),
                     ) ??
                     false,
               },
@@ -3775,7 +3684,7 @@ final class _RealtimeScene {
                   'id': atom.id,
                   'callId': atom.tool?.callId,
                   'active': atom.lifecycle is ActiveChatAtom,
-                  'laidOut': _laidOut(currentToolCard(atom)),
+                  'laidOut': isTimelineContentLaidOut(currentToolCard(atom)),
                   'finder': _toolFinderObservation(atom),
                 },
               )
@@ -3818,7 +3727,7 @@ final class _RealtimeScene {
               matching: find.byType(TimelineActivityRow),
             );
             expect(title, findsOneWidget);
-            expect(_laidOut(title), isTrue);
+            expect(isTimelineContentLaidOut(title), isTrue);
             final row = tester.widget<TimelineActivityRow>(title);
             expect(row.label.trim(), isNotEmpty);
             // A full-width row's center can be empty space. The real title
@@ -3828,7 +3737,7 @@ final class _RealtimeScene {
               matching: find.text(row.label),
             );
             expect(label, findsOneWidget);
-            expect(_laidOut(label), isTrue);
+            expect(isTimelineContentLaidOut(label), isTrue);
             expect(label.hitTestable(), findsOneWidget);
           }
           // Dispatch waits for each exec's foreground window in order. Both
@@ -3936,7 +3845,7 @@ final class _RealtimeScene {
             'loading': display.loading,
             'membersAvailable': display.isCurrent && !display.loading,
             'error': display.error?.toString(),
-            'members': display.isCurrent && !display.loading ? display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': _laidOut(currentToolCard(atom))}).toList() : null,
+            'members': display.isCurrent && !display.loading ? display.atoms.map((atom) => {'id': atom.id, 'callId': atom.tool?.callId, 'active': atom.lifecycle is ActiveChatAtom, 'laidOut': isTimelineContentLaidOut(currentToolCard(atom))}).toList() : null,
           }).toList(),
         })}',
       );
@@ -3973,131 +3882,5 @@ final class _RealtimeScene {
     if (threadId != _submittedThreadId) return null;
     final turn = graph.client.conversations.session(threadId).state.lastTurn;
     return turn?.threadId == threadId ? turn : null;
-  }
-}
-
-bool _laidOut(Finder finder) {
-  final elements = finder.evaluate();
-  if (elements.length != 1) return false;
-  final render = elements.single.findRenderObject();
-  return render is RenderBox &&
-      render.attached &&
-      render.hasSize &&
-      !render.size.isEmpty;
-}
-
-Future<void> _revealTextFragment(
-  WidgetTester tester,
-  Finder finder,
-  String fragment, {
-  double alignment = 0.5,
-  ScrollPosition? expectedScrollPosition,
-}) async {
-  expect(_laidOut(finder), isTrue);
-  // Consume the existing layout allowance before measuring the glyphs: an
-  // admitted body can still be inside an expanding outer disclosure.
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 400));
-  expect(tester.takeException(), isNull);
-  expect(_laidOut(finder), isTrue);
-  final text = find.descendant(
-    of: finder,
-    matching: find.byWidgetPredicate(
-      (widget) =>
-          widget is RichText && widget.text.toPlainText().contains(fragment),
-    ),
-  );
-  expect(text, findsOneWidget);
-  final paragraph = tester.renderObject<RenderParagraph>(text);
-  final start = paragraph.text.toPlainText().indexOf(fragment);
-  expect(start, greaterThanOrEqualTo(0));
-  final selection = TextSelection(
-    baseOffset: start,
-    extentOffset: start + fragment.length,
-  );
-  final boxes = paragraph.getBoxesForSelection(selection);
-  expect(boxes, isNotEmpty);
-  final bounds = boxes
-      .map((box) => box.toRect())
-      .reduce((left, right) => left.expandToInclude(right));
-  final viewport = RenderAbstractViewport.of(paragraph);
-  final position = Scrollable.of(tester.element(text)).position;
-  if (expectedScrollPosition != null) {
-    expect(position, same(expectedScrollPosition));
-  }
-  // Align the actual glyph range in its own viewport, centered by default.
-  // Explicit edge alignment can reserve space for related content in Main.
-  final reveal = viewport.getOffsetToReveal(paragraph, alignment, rect: bounds);
-  await position.moveTo(reveal.offset, duration: Duration.zero);
-  await tester.pump();
-  expect(tester.takeException(), isNull);
-  expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
-  // Preserve outward reveal for callers inside nested disclosures, using the
-  // current glyph geometry rather than the pre-scroll measurement.
-  final currentBounds = paragraph
-      .getBoxesForSelection(selection)
-      .map((box) => box.toRect())
-      .reduce((left, right) => left.expandToInclude(right));
-  paragraph.showOnScreen(rect: currentBounds);
-  await tester.pump();
-  expect(tester.takeException(), isNull);
-  expect(tester.renderObject<RenderParagraph>(text), same(paragraph));
-  _expectTextFragmentVisible(tester, finder, fragment);
-}
-
-void _expectTextFragmentVisible(
-  WidgetTester tester,
-  Finder finder,
-  String fragment, {
-  bool hitTestable = false,
-}) {
-  expect(_laidOut(finder), isTrue);
-  final text = find.descendant(
-    of: finder,
-    matching: find.byWidgetPredicate(
-      (widget) =>
-          widget is RichText && widget.text.toPlainText().contains(fragment),
-    ),
-  );
-  expect(text, findsOneWidget);
-  final paragraph = tester.renderObject<RenderParagraph>(text);
-  final start = paragraph.text.toPlainText().indexOf(fragment);
-  expect(start, greaterThanOrEqualTo(0));
-  final boxes = paragraph.getBoxesForSelection(
-    TextSelection(baseOffset: start, extentOffset: start + fragment.length),
-  );
-  expect(boxes, isNotEmpty);
-  for (final box in boxes) {
-    final local = box.toRect();
-    final rect = Rect.fromPoints(
-      paragraph.localToGlobal(local.topLeft),
-      paragraph.localToGlobal(local.bottomRight),
-    );
-    RenderObject? ancestor = paragraph.parent;
-    while (ancestor != null) {
-      if ((ancestor is RenderClipRect || ancestor is RenderAbstractViewport) &&
-          ancestor is RenderBox) {
-        final viewport = (ancestor.localToGlobal(Offset.zero) & ancestor.size)
-            .inflate(1);
-        final diagnostic =
-            '$fragment $rect in ${ancestor.runtimeType} $viewport; '
-            '${Scrollable.maybeOf(tester.element(text))?.position}';
-        expect(viewport.contains(rect.topLeft), isTrue, reason: diagnostic);
-        expect(viewport.contains(rect.bottomRight), isTrue, reason: diagnostic);
-      }
-      ancestor = ancestor.parent;
-    }
-    if (hitTestable) {
-      expect(
-        tester
-            .hitTestOnBinding(rect.center)
-            .path
-            .any((entry) => identical(entry.target, paragraph)),
-        isTrue,
-        reason:
-            'The actual $fragment glyphs must be hit-testable, not the '
-            'center of a larger multi-line text widget',
-      );
-    }
   }
 }

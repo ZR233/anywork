@@ -1,6 +1,6 @@
 import 'chat_models.dart';
 
-const presentationVersion = 2;
+const presentationVersion = 3;
 
 final class DisplayBlockRef {
   const DisplayBlockRef({required this.databaseId, required this.blockId});
@@ -49,12 +49,16 @@ final class WorkSummary {
   /// The first information's creation time in Unix seconds.
   final int? createdAt;
 
-  /// The observed group lifetime in milliseconds, frozen at the real boundary.
+  /// A frozen legacy group lifetime, not an active-work clock.
   ///
-  /// This includes waiting gaps and is not the accumulated [durationMs].
+  /// Open tails may include arbitrary idle gaps, so this value must not be
+  /// extrapolated or displayed as their accumulated work duration.
   final int? elapsedMs;
   final String? thinkingSummary;
   final ContentRef? thinkingContent;
+
+  bool get hasUnfinishedOrUnavailableMembers =>
+      terminal < total || unavailable > 0;
 }
 
 sealed class DisplayBlockBody {
@@ -68,9 +72,12 @@ final class WorkDisplayBlock extends DisplayBlockBody {
 }
 
 final class SingleDisplayBlock extends DisplayBlockBody {
-  const SingleDisplayBlock({required this.record});
+  const SingleDisplayBlock({required this.record, required this.visibility});
   final DisplayRecord record;
+  final SingleVisibility visibility;
 }
+
+enum SingleVisibility { content, finalEmptyAfterContent }
 
 final class DisplayRecord {
   const DisplayRecord({
@@ -137,12 +144,14 @@ final class LiveDisplayWindow {
     required this.revision,
     required this.historyThrough,
     required this.executionPresent,
+    required this.currentWorkId,
     required List<LiveDisplayBlock> blocks,
     this.older,
   }) : blocks = List.unmodifiable(blocks);
   final int revision;
   final int historyThrough;
   final bool executionPresent;
+  final String? currentWorkId;
   final List<LiveDisplayBlock> blocks;
   final String? older;
 }
