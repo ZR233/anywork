@@ -15,11 +15,9 @@ use super::payload::{
     ToolInvocation, ToolOutputDescriptor, ToolState, TurnDescriptor, TurnOutcome,
     UserInputDescriptor, UserInputState,
 };
-use crate::plan_tool::{
-    TOOL_PLAN_SUBMIT,
-    state::{AgentSessionPlanConfirmationDecision, confirmation_decision},
-};
+use crate::plan_tool::TOOL_PLAN_SUBMIT;
 use crate::thread_assembler::encode_interaction_key;
+use pl_studio_workflow::plan::{AgentSessionPlanConfirmationDecision, confirmation_decision};
 
 pub(super) const PLAN_DOCUMENT_FIELD: &str = "plan.document";
 pub(super) const PLAN_FEEDBACK_FIELD: &str = "plan.feedback";

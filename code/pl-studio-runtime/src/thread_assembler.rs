@@ -33,6 +33,7 @@ mod permission_projection;
 mod plan_confirmation;
 pub(crate) use approval::{ApprovalHost, StudioApprovalOptions};
 pub use permission_projection::{PermissionProjectionError, project_execution_permission};
+pub use pl_studio_workflow::plan::AgentSessionPlanError;
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
 mod child_resources;

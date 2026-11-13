@@ -43,7 +43,7 @@ pub enum PlanInteractionError {
     #[error("Plan state could not be decoded or frozen")]
     State(#[from] pl_core::tool::opaque::ToolError),
     #[error("Plan state transition failed")]
-    Machine(#[from] crate::plan_tool::state::AgentSessionPlanError),
+    Machine(#[from] pl_studio_workflow::plan::AgentSessionPlanError),
     #[error("Plan context projection failed")]
     Context(#[from] crate::PureError),
     #[error("Plan continuation payload could not be frozen")]
@@ -214,11 +214,11 @@ fn prepare_resolution(
     let answer = UserInputResolution {
         answers: resolution.answers.clone(),
     };
-    let decision = crate::plan_tool::state::confirmation_decision(&answer)
+    let decision = pl_studio_workflow::plan::confirmation_decision(&answer)
         .map_err(PlanInteractionError::Answer)?;
     let payload = answer_payload(resolution)?;
-    let mut machine = crate::plan_tool::state::AgentSessionPlanMachine::new(state)?;
-    let result = machine.resolve(crate::plan_tool::state::AgentSessionPlanResolveCommand {
+    let mut machine = pl_studio_workflow::plan::AgentSessionPlanMachine::new(state)?;
+    let result = machine.resolve(pl_studio_workflow::plan::AgentSessionPlanResolveCommand {
         expected_revision: prompt.expected_plan_revision,
         interaction_id: current.request.id.clone(),
         operation_id: format!("resolve:{}", current.request.id),

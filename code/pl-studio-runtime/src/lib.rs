@@ -13,6 +13,7 @@ pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 // Execution/storage diagnostics may name the Core's opaque completion records.
 pub use pl_core::chat::{ChatError, ChatItem};
 pub use pl_core::model::ContentBlock;
+mod extension_payload;
 mod hash;
 mod toml_schema;
 
@@ -126,7 +127,7 @@ pub mod plan_tool;
 
 pub mod workflow_tool;
 
-pub mod mode;
+mod mode_snapshot;
 
 mod tool_review;
 

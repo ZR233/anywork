@@ -40,7 +40,7 @@ pub(crate) fn preparer(
     route: &ResolvedModelRoute,
     model: ThreadModel,
     mode: OpenAiCompactionMode,
-    modes: crate::mode::ThreadModeManager,
+    modes: pl_studio_workflow::mode::ThreadModeManager,
     models: &pl_model::config::AgentModelConfig,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
     let instruction_binding = instruction_binding(route, &model);
@@ -65,7 +65,7 @@ pub(crate) fn preparer(
 #[derive(Debug)]
 struct StudioCompaction {
     model: ThreadModel,
-    modes: crate::mode::ThreadModeManager,
+    modes: pl_studio_workflow::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
     auto_compact_limit: Option<u64>,
@@ -652,7 +652,7 @@ fn restore_current_instructions(
     request: &mut ContextPreparationRequest,
     base_instructions: &str,
     binding: &InstructionBinding,
-    mode: Option<&crate::mode::RegisteredThreadMode>,
+    mode: Option<&pl_studio_workflow::mode::RegisteredThreadMode>,
     mut mutations: Vec<ExtensionMutation>,
 ) -> Result<InstructionRepair, pl_core::model::ModelError> {
     use pl_core::context::{ContextContent, ContextRecord, ContextSource};
@@ -790,14 +790,14 @@ fn restore_current_instructions(
 /// Capture once at initiating root input admission. Repeated preparation, retries and all tools
 /// consume the same self-contained snapshot even when the catalog changes during the Turn.
 struct ModePreparation {
-    mode: Option<std::sync::Arc<crate::mode::RegisteredThreadMode>>,
+    mode: Option<std::sync::Arc<pl_studio_workflow::mode::RegisteredThreadMode>>,
     mutations: Vec<ExtensionMutation>,
     new_turn: bool,
 }
 
 fn freeze_mode_for_turn(
     request: &mut ContextPreparationRequest,
-    modes: &crate::mode::ThreadModeManager,
+    modes: &pl_studio_workflow::mode::ThreadModeManager,
 ) -> Result<ModePreparation, pl_core::model::ModelError> {
     if request
         .extensions
@@ -814,7 +814,8 @@ fn freeze_mode_for_turn(
             "root Thread has no saved Mode snapshot",
         ))
     })?;
-    let previous = crate::mode::decode_mode_snapshot(&record.payload).map_err(receipt_error)?;
+    let previous =
+        crate::mode_snapshot::decode_mode_snapshot(&record.payload).map_err(receipt_error)?;
     let root_prompt = request
         .turn_input
         .as_ref()
@@ -838,7 +839,7 @@ fn freeze_mode_for_turn(
         previous
     };
     let mode = next.registered().map_err(receipt_error)?;
-    let payload = crate::mode::encode_mode_snapshot(&next).map_err(receipt_error)?;
+    let payload = crate::mode_snapshot::encode_mode_snapshot(&next).map_err(receipt_error)?;
     if record.payload == payload {
         return Ok(ModePreparation {
             mode: Some(mode),
@@ -884,7 +885,8 @@ fn prepare_workflow(
         .extensions
         .get("studio.mode")
         .ok_or_else(|| receipt_error(std::io::Error::other("root Thread has no saved Mode")))?;
-    let saved = crate::mode::decode_mode_snapshot(&mode_record.payload).map_err(receipt_error)?;
+    let saved =
+        crate::mode_snapshot::decode_mode_snapshot(&mode_record.payload).map_err(receipt_error)?;
     let mode_id = saved.definition.id.clone();
     let mode = saved.registered().map_err(receipt_error)?;
     let root_prompt = request
@@ -919,7 +921,7 @@ fn prepare_workflow(
         return Ok(None);
     }
     let expected_revision = record.map(|record| record.revision);
-    let Some(state) = crate::mode::reconcile_workflow_for_turn(
+    let Some(state) = pl_studio_workflow::mode::reconcile_workflow_for_turn(
         state,
         &mode,
         &request.model.thread_id,
@@ -1012,15 +1014,15 @@ fn current_facts(
                     "current workflow Mode snapshot is unavailable",
                 ))
             })?;
-            let mode = crate::mode::decode_mode_snapshot(&saved.payload)
+            let mode = crate::mode_snapshot::decode_mode_snapshot(&saved.payload)
                 .and_then(|mode| mode.registered())
                 .map_err(receipt_error)?;
-            let section =
-                crate::mode::workflow_model_context_section(&state, &mode).ok_or_else(|| {
-                    receipt_error(std::io::Error::other(
-                        "current workflow state does not match its registered graph",
-                    ))
-                })?;
+            let section = pl_studio_workflow::mode::workflow_model_context_section(&state, &mode)
+                .ok_or_else(|| {
+                receipt_error(std::io::Error::other(
+                    "current workflow state does not match its registered graph",
+                ))
+            })?;
             put("studio.workflow", section.content);
         }
     }
@@ -1274,7 +1276,7 @@ mod tests {
         let source_route = resolve("source")?;
         let target_route = resolve("target")?;
         let source_model = ThreadModel::new(ModelRuntime::from_route(&source_route)?, None);
-        let modes = crate::mode::ThreadModeManager::default();
+        let modes = pl_studio_workflow::mode::ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&modes)?;
         let mode = registry
             .mode(&pl_protocol::ThreadModeId::simple())
@@ -1307,8 +1309,8 @@ mod tests {
                 ExtensionMutation::Put {
                     id: "studio.mode".into(),
                     expected_revision: None,
-                    payload: crate::mode::encode_mode_snapshot(
-                        &crate::mode::SavedThreadMode::capture(&mode, None),
+                    payload: crate::mode_snapshot::encode_mode_snapshot(
+                        &crate::mode_snapshot::SavedThreadMode::capture(&mode, None),
                     )?,
                 },
                 ExtensionMutation::Put {

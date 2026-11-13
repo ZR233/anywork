@@ -3,13 +3,13 @@ use pl_protocol::{
     AgentSessionPlanMutationResponse, AgentSessionPlanOperation, AgentSessionPlanOperationReceipt,
     AgentSessionPlanPhase, AgentSessionPlanResultCode, AgentSessionPlanSnapshot,
     AgentSessionPlanState, AgentSessionPlanTransitionActor, AgentSessionPlanTransitionError,
-    AgentSessionPlanTransitionRecord,
+    AgentSessionPlanTransitionRecord, PureError,
 };
 
-use crate::canonical_content_hash;
+use pl_core::context::content_hash as canonical_content_hash;
 
 const MAX_PLAN_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_FEEDBACK_BYTES: usize = 8 * 1024;
+pub const MAX_FEEDBACK_BYTES: usize = 8 * 1024;
 const MAX_REASON_BYTES: usize = 2 * 1024;
 const MAX_HISTORY: usize = 32;
 const MAX_RECEIPTS: usize = 32;
@@ -479,7 +479,8 @@ impl AgentSessionPlanMachine {
         self.state.history_tail.push(transition);
         while self.state.history_tail.len() > MAX_HISTORY {
             let archived = self.state.history_tail.remove(0);
-            let encoded = serde_json::to_vec(&archived).unwrap_or_default();
+            let encoded = serde_json::to_vec(&archived)
+                .expect("plan transition records contain only JSON strings, integers and enums");
             let mut digest_input = self.state.archived_transition_digest.as_bytes().to_vec();
             digest_input.extend(encoded);
             self.state.archived_transition_digest = canonical_content_hash(&digest_input);
@@ -648,4 +649,85 @@ pub fn validate_state(state: &AgentSessionPlanState) -> Result<(), AgentSessionP
         ));
     }
     Ok(())
+}
+
+pub const MAX_PLAN_SESSION_STATE_BYTES: usize = 128 * 1024;
+
+/// 验证 Plan 热状态的领域不变量和持久化大小边界。
+pub fn validate_session_state_size(state: &AgentSessionPlanState) -> Result<(), PureError> {
+    validate_state(state).map_err(|error| PureError::ConfigError(error.to_string()))?;
+    let bytes = serde_json::to_vec(state)?.len();
+    if bytes > MAX_PLAN_SESSION_STATE_BYTES {
+        return Err(PureError::ConfigError(format!(
+            "AgentSession Plan state exceeds {MAX_PLAN_SESSION_STATE_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmation_binds_exact_plan_and_retries_do_not_repeat_mutations() {
+        let mut machine = AgentSessionPlanMachine::default();
+        let submit = AgentSessionPlanSubmitCommand {
+            expected_revision: 0,
+            plan: "# Plan\n\nReview and deliver the changes.".into(),
+            interaction_id: "confirmation".into(),
+            operation_id: "submit".into(),
+            argument_hash: "submit-hash".into(),
+            submitted_at: 10,
+        };
+        assert!(machine.submit(submit.clone()).accepted);
+        assert_eq!(
+            machine.submit(submit).code,
+            AgentSessionPlanResultCode::AlreadyApplied
+        );
+        let pending = machine.state().clone();
+        let mut resolve = AgentSessionPlanResolveCommand {
+            expected_revision: pending.revision,
+            interaction_id: "another-confirmation".into(),
+            operation_id: "answer".into(),
+            argument_hash: "answer-hash".into(),
+            decision: AgentSessionPlanConfirmationDecision::Approve,
+            resolved_at: 20,
+        };
+        assert_eq!(
+            machine.resolve(resolve.clone()).code,
+            AgentSessionPlanResultCode::InvalidInteraction
+        );
+        assert_eq!(machine.state(), &pending);
+        resolve.interaction_id = "confirmation".into();
+        assert_eq!(
+            machine.resolve(resolve.clone()).code,
+            AgentSessionPlanResultCode::Approved
+        );
+        let approved = machine.state().clone();
+        assert_eq!(
+            machine.resolve(resolve).code,
+            AgentSessionPlanResultCode::AlreadyApplied
+        );
+        assert_eq!(machine.state(), &approved);
+        assert_eq!(
+            approved.document.as_ref().unwrap().markdown,
+            pending.document.as_ref().unwrap().markdown
+        );
+        let mut corrupt = approved.clone();
+        corrupt
+            .document
+            .as_mut()
+            .unwrap()
+            .markdown
+            .push_str(" altered");
+        assert!(AgentSessionPlanMachine::new(corrupt).is_err());
+        assert_eq!(
+            AgentSessionPlanMachine::new(approved)
+                .unwrap()
+                .state()
+                .state,
+            AgentSessionPlanPhase::Approved
+        );
+    }
 }

@@ -1,6 +1,5 @@
 //! Product workflow state transitions and Thread-owned dynamic tools.
 mod dynamic;
-pub(crate) mod machine;
 mod restart;
 mod transition;
 pub use dynamic::{

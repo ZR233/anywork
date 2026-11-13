@@ -1,5 +1,5 @@
-use super::machine::RestartInput;
 use pl_protocol::PureError;
+use pl_studio_workflow::mode::RestartInput;
 pub const TOOL_WORKFLOW_RESTART: &str = "workflow_restart";
 /// Validates the same typed input accepted by the dynamic workflow tool.
 pub fn validate_workflow_restart_arguments(arguments: serde_json::Value) -> Result<(), PureError> {

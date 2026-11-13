@@ -15,7 +15,7 @@ pub(in crate::studio) fn project_runtime(
     let mode = state
         .extensions
         .get("studio.mode")
-        .map(|record| crate::mode::decode_mode_snapshot(&record.payload))
+        .map(|record| crate::mode_snapshot::decode_mode_snapshot(&record.payload))
         .transpose()?;
     project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
 }
@@ -30,7 +30,7 @@ pub(in crate::studio) fn project_cold_runtime(
     let mode = state
         .extensions
         .get("studio.mode")
-        .map(|record| crate::mode::presentation_mode(&record.payload))
+        .map(|record| crate::mode_snapshot::presentation_mode(&record.payload))
         .transpose()?
         .flatten();
     project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
@@ -41,7 +41,7 @@ fn project_with_mode(
     state: &ThreadSnapshot,
     updated_at: i64,
     summary: &pl_core::thread::UsageSummary,
-    mode: Option<&crate::mode::SavedThreadMode>,
+    mode: Option<&crate::mode_snapshot::SavedThreadMode>,
 ) -> Result<ThreadRuntimeSnapshot, ProjectionError> {
     // Totals come from the Thread's cumulative summary, never from whatever attempts are still
     // resident: finished attempts are dropped by the commit that produced them, so aggregating

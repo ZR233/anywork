@@ -745,7 +745,7 @@ fn parse_embedded_json(value: &serde_json::Value, label: &str) -> Result<serde_j
 fn compile_workflow_hash(workflow: serde_json::Value) -> Result<String> {
     let definition = serde_json::from_value(workflow)
         .context("saved Mode workflow does not match the workflow protocol")?;
-    let compiled = pl_studio_runtime::mode::compile_workflow_definition(definition)
+    let compiled = pl_studio_workflow::mode::compile_workflow_definition(definition)
         .map_err(|error| anyhow::anyhow!("saved Mode workflow is invalid: {error}"))?;
     Ok(compiled.graph_hash().to_owned())
 }

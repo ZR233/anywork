@@ -116,7 +116,7 @@ pub(super) fn installation_id(provider: AcpProvider, resolved: &ResolvedRelease)
         "command": resolved.command,
         "args": resolved.args,
     });
-    crate::hash::canonical_json_hash(&descriptor)
+    pl_core::context::canonical_json_hash(&descriptor)
 }
 
 /// wire 安装身份的**存储键**：必须是 `sha256:` + 64 位小写十六进制。

@@ -469,8 +469,8 @@ mod tests {
             commit_sequence: 3,
             ..Default::default()
         };
-        let mut plan = crate::plan_tool::state::AgentSessionPlanMachine::new(Default::default())?;
-        plan.submit(crate::plan_tool::state::AgentSessionPlanSubmitCommand {
+        let mut plan = pl_studio_workflow::plan::AgentSessionPlanMachine::new(Default::default())?;
+        plan.submit(pl_studio_workflow::plan::AgentSessionPlanSubmitCommand {
             expected_revision: 0,
             plan: "# 完整计划\n\n- 保全旧记录".into(),
             interaction_id: "plan-confirmation".into(),

@@ -21,7 +21,6 @@ pub fn workflow_model_context_section(
     let current = graph.state(&run.current_state_id)?;
     let outgoing = graph
         .outgoing(&run.current_state_id)
-        .into_iter()
         .map(|transition| WorkflowTransitionProjection {
             target_state_id: &transition.target_state_id,
             guard: &transition.guard,

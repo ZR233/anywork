@@ -4088,6 +4088,7 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "pl-studio-workflow",
  "reqwest",
  "sea-orm",
  "serde",
@@ -4175,6 +4176,7 @@ dependencies = [
  "pl-studio-mcp",
  "pl-studio-statistics",
  "pl-studio-update",
+ "pl-studio-workflow",
  "pl-tool",
  "pl-trace",
  "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4268,6 +4270,18 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "pl-studio-workflow"
+version = "0.1.0"
+dependencies = [
+ "pl-core",
+ "pl-protocol",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ use pl_model::{
 pub(crate) fn deferred_update(
     route: &ResolvedModelRoute,
     config: &crate::StudioConfig,
-    modes: crate::mode::ThreadModeManager,
+    modes: pl_studio_workflow::mode::ThreadModeManager,
 ) -> Result<DeferredModelUpdate> {
     let search = pl_tool::search::plan_web_searches(
         &config.models,
@@ -23,7 +23,7 @@ pub(crate) fn deferred_update(
     let mut hosted = search.hosted_tools(&config.web_search)?;
     hosted.extend(crate::programmatic::hosted_tool(route));
     // The key has the existing model-binding identity domain. It never enters model context/logs.
-    let key = crate::hash::canonical_json_hash(&serde_json::json!({
+    let key = pl_core::context::canonical_json_hash(&serde_json::json!({
         "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
         "effort": route.effort, "pricing": route.pricing_mode, "contextPolicy": route.context,
         "modelDefinition": route.model, "compaction": config.runtime.openai_compaction_mode,

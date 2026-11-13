@@ -12,7 +12,7 @@ use pl_protocol::{
 };
 
 use crate::config::{ConfigPaths, ConfigRuntimeError};
-use crate::mode::{
+use pl_studio_workflow::mode::{
     MAX_MODE_DOCUMENT_BYTES, ThreadModeManager, ThreadModeSource, ThreadModeSourceId,
     ThreadModeSourceKind, validate_mode_document,
 };
@@ -348,7 +348,7 @@ fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadMo
             path.display()
         );
         let pl_protocol::ThreadModeValidationResult { document, issues } =
-            crate::mode::validate_mode_json(&json);
+            pl_studio_workflow::mode::validate_mode_json(&json);
         let document = document.ok_or_else(|| mode_file_validation_error(&path, issues))?;
         let mode_id = document.definition.id.clone();
         let expected_name = mode_file_name(&mode_id)?;

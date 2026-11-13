@@ -10,7 +10,7 @@ use pl_protocol::{
 use super::{RegisteredThreadMode, ThreadModeManagerError as ManagerError};
 
 /// Upper bound for one persisted or submitted Mode document.
-pub(crate) const MAX_MODE_DOCUMENT_BYTES: usize = 256 * 1024;
+pub const MAX_MODE_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_LAYOUT_ABSOLUTE_COORDINATE: f64 = 1_000_000.0;
 
 /// Validate and canonicalize one complete authoring document.

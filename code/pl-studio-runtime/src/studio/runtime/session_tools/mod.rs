@@ -238,7 +238,7 @@ impl SessionTool {
                     "revision feedback is required"
                 );
                 ensure!(
-                    args.feedback.len() <= crate::plan_tool::state::MAX_FEEDBACK_BYTES,
+                    args.feedback.len() <= pl_studio_workflow::plan::MAX_FEEDBACK_BYTES,
                     "revision feedback is too long"
                 );
                 runtime

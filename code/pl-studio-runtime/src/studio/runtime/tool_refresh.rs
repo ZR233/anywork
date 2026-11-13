@@ -56,7 +56,7 @@ impl CatalogSources {
                     for project in &data.projects {
                         self.0.insert(
                             format!("project:{}", project.id),
-                            crate::hash::canonical_json_hash(&serde_json::json!((
+                            pl_core::context::canonical_json_hash(&serde_json::json!((
                                 &project.path,
                                 &project.ssh_alias
                             ))),
@@ -132,7 +132,8 @@ impl CatalogSources {
             | StudioProductEventKind::ChildInteractionsChanged(_) => None,
         };
         if let Some((key, value)) = entry {
-            self.0.insert(key, crate::hash::canonical_json_hash(&value));
+            self.0
+                .insert(key, pl_core::context::canonical_json_hash(&value));
         }
     }
 }
@@ -613,7 +614,7 @@ fn catalog_fingerprint(
             )
         })
         .map(|delivery| &delivery.call_id);
-    crate::hash::canonical_json_hash(&serde_json::json!({
+    pl_core::context::canonical_json_hash(&serde_json::json!({
         "sources": sources.0,
         "skillMutation": mutation,
         "workspaceMutation": workspace_mutation,

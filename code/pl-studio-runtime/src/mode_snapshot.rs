@@ -1,7 +1,7 @@
 //! Self-contained execution snapshots. Execution recovery requires a full definition; passive reads preserve old run facts.
-use super::{RegisteredThreadMode, ThreadModeManager};
 use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 use pl_protocol::{PureError, ThreadModeDefinition, ThreadModeId};
+use pl_studio_workflow::mode::{RegisteredThreadMode, ThreadModeManager};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

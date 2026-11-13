@@ -6,7 +6,7 @@ use std::fmt;
 use pl_protocol::{WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition};
 use serde::Serialize;
 
-use crate::hash::canonical_json_hash;
+use pl_core::context::canonical_json_hash;
 
 pub const MAX_WORKFLOW_STATES: usize = 32;
 pub const MAX_WORKFLOW_TRANSITIONS: usize = 96;
@@ -49,18 +49,16 @@ impl CompiledWorkflowDefinition {
             .map(|index| &self.definition.states[*index])
     }
 
-    pub fn outgoing(&self, state_id: &str) -> Vec<&WorkflowTransition> {
+    pub fn outgoing(&self, state_id: &str) -> impl Iterator<Item = &WorkflowTransition> {
         self.outgoing_by_state
             .get(state_id)
             .into_iter()
             .flatten()
             .map(|index| &self.definition.transitions[*index])
-            .collect()
     }
 
     pub fn transition(&self, source: &str, target: &str) -> Option<&WorkflowTransition> {
         self.outgoing(source)
-            .into_iter()
             .find(|transition| transition.target_state_id == target)
     }
 }
@@ -505,5 +503,63 @@ fn issue(
         code,
         path: path.into(),
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::graph;
+
+    #[test]
+    fn graph_identity_normalizes_order_and_queries_direct_successors() {
+        let graph = graph();
+        let compiled = compile_workflow_definition(graph.clone()).unwrap();
+        let mut reordered = graph;
+        reordered.states.reverse();
+        reordered.transitions.reverse();
+        reordered.title = format!("  {}  ", reordered.title);
+        let reordered = compile_workflow_definition(reordered).unwrap();
+        assert_eq!(compiled.graph_hash(), reordered.graph_hash());
+        assert_eq!(compiled.initial_state().id, "review");
+        assert_eq!(compiled.outgoing("review").count(), 2);
+        assert_eq!(compiled.outgoing("done").count(), 0);
+        assert!(compiled.transition("review", "done").is_some());
+        assert!(compiled.transition("done", "review").is_none());
+        let mut changed = compiled.definition().clone();
+        changed.transitions[0].guard.push_str(" with evidence");
+        assert_ne!(
+            compiled.graph_hash(),
+            compile_workflow_definition(changed).unwrap().graph_hash()
+        );
+    }
+
+    #[test]
+    fn invalid_topologies_are_rejected_before_registration() {
+        let mut missing_endpoint = graph();
+        missing_endpoint.transitions[0].target_state_id = "missing".into();
+        let mut duplicate = graph();
+        duplicate.states.push(duplicate.states[0].clone());
+        let mut no_terminal_path = graph();
+        no_terminal_path
+            .transitions
+            .retain(|edge| edge.target_state_id != "done");
+        let mut final_outgoing = graph();
+        final_outgoing.transitions[0].source_state_id = "done".into();
+        for (invalid, expected_code) in [
+            (missing_endpoint, "unknownEndpoint"),
+            (duplicate, "duplicateStateId"),
+            (no_terminal_path, "cannotReachFinal"),
+            (final_outgoing, "finalHasOutgoingTransition"),
+        ] {
+            let error = compile_workflow_definition(invalid).unwrap_err();
+            assert!(
+                error
+                    .issues()
+                    .iter()
+                    .any(|issue| issue.code == expected_code),
+                "{error:?}"
+            );
+        }
     }
 }
