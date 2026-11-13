@@ -208,6 +208,8 @@ impl ThreadHandle {
             verified_recovery_generation: None,
             local_fault: None,
             output_obligations: Default::default(),
+            output_retry_finished: None,
+            pressure_watch_closed: false,
             pending_output_repairs: Default::default(),
             satisfied_output_obligations: Default::default(),
             output_backpressure: false,
@@ -220,6 +222,7 @@ impl ThreadHandle {
             model_members: None,
             pending_model_members: Vec::new(),
             pending_model_member_starts: Vec::new(),
+            pending_model_member_content_available: Vec::new(),
             resources: None,
             retry_plan: None,
             published,
@@ -976,12 +979,17 @@ impl ThreadHandle {
     /// [`ThreadError::StorageRecoveryUnverified`] when the attached backend cannot own the
     /// obligation, or [`ThreadError::Closed`] when the owner is gone.
     pub async fn retry_output_storage(&self) -> Result<(), ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::RetryOutputStorage(reply))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
+        loop {
+            let (reply, response) = oneshot::channel();
+            self.mailbox
+                .send(super::mailbox::MailboxCommand::RetryOutputStorage(reply))
+                .await
+                .map_err(|_| ThreadError::Closed)?;
+            match response.await.map_err(|_| ThreadError::Closed)? {
+                super::mailbox::OutputRetryReply::Finished(result) => return result,
+                super::mailbox::OutputRetryReply::Waiting(finished) => finished.cancelled().await,
+            }
+        }
     }
 
     /// Retries pending admissions and waits for durability without rolling back runtime facts.
@@ -996,7 +1004,8 @@ impl ThreadHandle {
     /// meaning while a Turn is paused, instead of waiting on a Turn that cannot end on its own.
     ///
     /// # Errors
-    /// Returns storage failure, or an unavailable owner that never confirmed a durable close.
+    /// Returns storage failure, temporary admission backpressure for an unhanded tail (without
+    /// certifying a smaller prefix), or an owner that never confirmed a durable close.
     pub async fn flush(&self) -> Result<(), ThreadError> {
         if self.durably_released() {
             return Ok(());
@@ -1016,9 +1025,36 @@ impl ThreadHandle {
         {
             return self.settled_flush();
         }
-        match response.await {
-            Ok(result) => result,
-            Err(_) => self.settled_flush(),
+        let ticket = match response.await {
+            Ok(result) => result?,
+            Err(_) => return self.settled_flush(),
+        };
+        let through = ticket.pending_target();
+        let result = ticket.wait().await;
+        let Some(through) = through else {
+            return result;
+        };
+        let completion = match result {
+            Ok(()) => Ok(through),
+            Err(ThreadError::Storage(error)) => Err(error),
+            Err(error) => return Err(error),
+        };
+        // A backend may not publish pressure notifications. Both a successful fixed-target
+        // receipt and an explicit failed ACK belong to the original owner's public snapshot.
+        let (reply, response) = oneshot::channel();
+        let sent = self
+            .mailbox
+            .send(super::mailbox::MailboxCommand::CompleteFlush {
+                result: completion.clone(),
+                reply,
+            })
+            .await
+            .is_ok();
+        let published = sent && response.await.is_ok();
+        match completion {
+            Err(error) => Err(ThreadError::Storage(error)),
+            Ok(_) if published => Ok(()),
+            Ok(_) => self.settled_flush(),
         }
     }
 
@@ -1026,6 +1062,7 @@ impl ThreadHandle {
     fn durably_released(&self) -> bool {
         let snapshot = self.snapshot();
         snapshot.lifecycle == ThreadLifecycle::Closed
+            && snapshot.persistence.error.is_none()
             && (!snapshot.persistence.attached
                 || snapshot.persistence.durable_sequence >= snapshot.commit_sequence)
     }

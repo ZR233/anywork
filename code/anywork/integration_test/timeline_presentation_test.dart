@@ -188,20 +188,8 @@ Future<void> _runLive(
   Map<String, Object?> report,
 ) async {
   await scene.submit(_seedPrompt);
-  final seedConsumption = await scene.outputConsumption();
-  try {
-    await seedConsumption.readMany(
-      loadOlder: () => scene.loadOlder(seedConsumption.lease),
-      pump: () async {
-        await scene.tester.pump(const Duration(milliseconds: 16));
-        expect(scene.tester.takeException(), isNull);
-      },
-      expectedItems: 2000,
-      expectedBytes: 256000,
-    );
-  } finally {
-    report['manyBodyConsumption'] = await seedConsumption.close();
-  }
+  // Runtime backlog tests own full original-byte and bounded-consumer audits.
+  // Keep the unchanged 2,000-item seed here for native page/layout and reopen handoff.
   await scene.waitForCompletedTurn();
   final seed = await scene.readyLease('seed actual content layout');
   expect(seed.loadedCount, greaterThan(0));
@@ -526,11 +514,20 @@ final class _TimelineScene {
       final composer = tester.widget<PromptComposerView>(
         find.byType(PromptComposerView),
       );
+      final storage = _submittedThreadId == null
+          ? null
+          : graph.client.conversations
+                .existingSession(_submittedThreadId!)
+                ?.state
+                .storage;
       debugPrintSynchronously(
         'Timeline submission failure: draft=${composer.state.composer.draft}, '
         'pending=${composer.state.composer.isSubmissionPending}, '
         'execution=${composer.state.execution?.id}/${composer.state.execution?.phase}, '
-        'blocker=${composer.state.blocker}, failure=${composer.state.failure}',
+        'blocker=${composer.state.blocker}, failure=${composer.state.failure}, '
+        'storageFault=${storage?.fault}, storageError=${storage?.lastError}, '
+        'saved=${storage?.durableSequence}/${storage?.acceptedSequence}, '
+        'pressurePaused=${storage?.pressurePaused}, resumeRequired=${storage?.resumeRequired}',
       );
       rethrow;
     }
@@ -564,7 +561,12 @@ final class _TimelineScene {
             graph.timeline.lease(selected) == null) {
           return false;
         }
-        return observed.liveBlocks.isEmpty;
+        return graph.client.conversations
+                .session(selected)
+                .state
+                .runtime
+                ?.execution ==
+            null;
       },
       'completed timeline Turn',
       timeout: timeout,
@@ -574,14 +576,13 @@ final class _TimelineScene {
     // source: inspect an actual bounded member page if no Single proves it.
     while (!observed.singleBlocks.any((unit) => unit.atom!.source == source)) {
       final work = await observed.workForSource(source);
-      if (work.any((unit) => unit.historyPos != null)) break;
+      if (work.isNotEmpty) break;
       if (clock.elapsed >= timeout) {
-        fail('Completed Turn has not admitted its original source into Main');
+        fail('Completed Turn has not admitted its original source');
       }
       await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
     }
-    expect(observed.liveBlocks, isEmpty);
     latestTurnId = turn!.turnId;
   }
 
@@ -691,7 +692,7 @@ final class _TimelineScene {
       // bodies need no member query. Neither path scans original history.
       for (final block in display.live.value!.blocks) {
         if (block.body is WorkDisplayBlock &&
-            (block.source == null || block.source == source)) {
+            block.id == display.live.value!.currentWorkId) {
           await observed.openWork(block.id, timeout: remaining());
         }
       }
@@ -926,7 +927,7 @@ final class _TimelineScene {
               completed?.state.isTerminal == true &&
               state.activeTurn?.turnId != turnId &&
               live != null &&
-              live.blocks.isEmpty;
+              state.runtime?.execution == null;
         },
         'terminal canonical Turn $turnId',
         timeout: const Duration(minutes: 6),

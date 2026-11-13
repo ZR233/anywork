@@ -36,6 +36,15 @@ fn started(id: &str) -> ModelStartedMember {
     }
 }
 
+fn content_available(start: &ModelStartedMember) -> pl_core::model::ModelContentAvailableMember {
+    pl_core::model::ModelContentAvailableMember {
+        turn_id: start.turn_id.clone(),
+        attempt_id: start.attempt_id.clone(),
+        generation: start.generation,
+        identity: start.identity.clone(),
+    }
+}
+
 async fn publish(
     projection: &mut LiveProjection,
     history: &HistoryStore,
@@ -48,6 +57,96 @@ async fn publish(
     projection.publish_prepared(chat, &mut prepared).await?;
     super::restore_tests::save(history, effect, &prepared).await?;
     Ok(prepared)
+}
+
+#[tokio::test]
+async fn v364_reliable_empty_text_start_preserves_work_and_atomic_started() -> Result<()> {
+    let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
+    let result = async {
+        let thread = pl_protocol::Thread::from(
+            env.runtime
+                .create_thread(&env.project.id, "v364 empty Text")
+                .await?,
+        );
+        let history =
+            HistoryStore::open(&env._temp.path().join("v364-empty.sqlite"), &thread.id).await?;
+        history.prepare_write().await?;
+        let database = history
+            .conversation_database_id()
+            .await?
+            .context("database")?;
+        let chat = Session::new(history.clone(), TimelineEpoch::new("v364-empty")?);
+        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        let mut projection = LiveProjection::new();
+        projection.bind_execution_history(channel.order_index(), history.clone())?;
+        projection.bind_conversation_identity(database)?;
+        let state = ThreadSnapshot {
+            turns: vec![TurnRecord {
+                turn_id: "boundary-turn".into(),
+                input_id: None,
+                state: TurnState::Running,
+                elapsed_ms: None,
+                model_steps: 1,
+            }]
+            .into(),
+            attempts: vec![RequestAttempt::new(
+                "boundary-turn".into(),
+                "boundary-attempt".into(),
+                0,
+                AttemptStatus::Running,
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let first = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 1,
+            committed_at: 10,
+            model_member_starts: vec![started("R")].into(),
+            ..Default::default()
+        };
+        publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
+        let text = ModelStartedMember {
+            identity: ObservedPartIdentity::Provider(ProviderPartIdentity {
+                item_id: "empty".into(),
+                output_index: None,
+                content_index: 0,
+                item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
+                part: ObservedPartKind::OutputText,
+            }),
+            ..started("empty")
+        };
+        let second = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 2,
+            committed_at: 20,
+            model_member_starts: vec![text].into(),
+            ..Default::default()
+        };
+        let prepared = publish(&mut projection, &history, &chat, &thread, &state, &second).await?;
+        assert!(
+            prepared
+                .current
+                .atom_facts
+                .iter()
+                .any(|atom| atom.kind == ChatAtomKind::Text)
+        );
+        assert_eq!(chat.head_seq(), 0);
+        let presentation = projection.presentation();
+        let cut = presentation.lock().unwrap().capture(None, 8, 0, 8);
+        assert_eq!(
+            cut.published, 0,
+            "reliable Started is not content availability"
+        );
+        assert_eq!(cut.open.len(), 1, "no empty Single shell");
+        assert!(matches!(
+            cut.open[0].body,
+            pl_protocol::DisplayBlockBody::Work { .. }
+        ));
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
 }
 
 async fn read_frozen_payload(
@@ -193,6 +292,7 @@ async fn a07_streamed_summary_payload_owns_prefix_through_progress_terminal_and_
             item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
             part: ObservedPartKind::OutputText,
         });
+        boundary.model_member_content_available = vec![content_available(&text)];
         boundary.model_member_starts = vec![text].into();
         let prepared =
             publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
@@ -789,6 +889,7 @@ async fn reliable_permission_status_changes_update_display_without_rewriting_sta
             item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
             part: ObservedPartKind::OutputText,
         });
+        boundary.model_member_content_available = vec![content_available(&text)];
         boundary.model_member_starts = vec![text].into();
         publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
         let page = history
@@ -828,7 +929,7 @@ async fn reliable_permission_status_changes_update_display_without_rewriting_sta
 }
 
 #[tokio::test]
-async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() -> Result<()> {
+async fn reliable_text_visibility_hands_off_work_without_a_new_atomic_completion() -> Result<()> {
     let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
     let result = async {
         let thread = pl_protocol::Thread::from(
@@ -875,7 +976,7 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
         let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
         assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
             pl_protocol::DisplayBlockBody::Work { summary, .. }
-            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms == Some(0)));
+            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms.is_none()));
         started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
         let receipt = ModelMemberReceipt {
@@ -915,7 +1016,7 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
                 matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { summary, .. }
                 if summary.total == 1 && summary.terminal == 1
                     && summary.created_at == Some(first.committed_at)
-                    && summary.elapsed_ms == Some(1000))
+                    && summary.elapsed_ms.is_none())
             );
         }
         let mut text = started("T");
@@ -927,13 +1028,14 @@ async fn reliable_text_start_hands_off_work_without_a_new_atomic_completion() ->
             part: ObservedPartKind::OutputText,
         });
         let mut third = effect(3);
+        third.model_member_content_available = vec![content_available(&text)];
         third.model_member_starts = vec![text].into();
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
         let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
             .find(|block| block.published.is_some()).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
             pl_protocol::DisplayBlockBody::Work { summary, .. }
-            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms == Some(2000)));
+            if summary.created_at == Some(first.committed_at) && summary.elapsed_ms.is_none()));
         let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
         assert_eq!(cold_work[0].body, frozen_work.header.body);
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
@@ -1226,6 +1328,7 @@ async fn same_effect_text_boundary_retains_preterminal_prefix_after_the_current_
             item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
             part: ObservedPartKind::OutputText,
         });
+        second.model_member_content_available = vec![content_available(&text)];
         second.model_member_starts = vec![text].into();
         let receipt = ModelMemberReceipt {
             item: CompletionPresentationItem {

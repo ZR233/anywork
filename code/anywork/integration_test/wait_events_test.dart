@@ -516,19 +516,15 @@ final class _Scene {
         return false;
       }
       final source = ForegroundTurnChatSource(turnId: candidate.turnId);
-      // State proves completion; Main must separately accept this source and
-      // mount its original viewport within this same wait budget before reveal.
-      // An independent background timer may still be live after this Turn.
-      if (observed.liveBlocks.any((block) => block.source == source)) {
-        return false;
-      }
+      // Completion and display admission are independent. A resting mixed-source
+      // tail can remain live while this Turn and its original result are complete.
       final mainScrollable = find.byWidgetPredicate(
         (widget) =>
             widget is Scrollable &&
             identical(widget.controller, originalLease.scrollController),
       );
       if (mainScrollable.evaluate().length != 1) return false;
-      if (!await observed.hasHistoricalSource(source)) return false;
+      if (!await observed.hasDisplayedSource(source)) return false;
       // A bounded member query cannot qualify a later selection/generation.
       if (graph.client.selection.state.selectedThreadId != id ||
           !identical(graph.timeline.lease(id), originalLease) ||
@@ -543,7 +539,7 @@ final class _Scene {
       if (current?.turnId != candidate.turnId ||
           current?.state.isTerminal != true ||
           current?.state.status != outcome ||
-          observed.liveBlocks.any((block) => block.source == source)) {
+          !await observed.hasDisplayedSource(source)) {
         return false;
       }
       if (checkActivity && backgroundTask != null) {

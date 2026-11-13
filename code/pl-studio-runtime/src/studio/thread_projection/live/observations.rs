@@ -18,6 +18,11 @@ pub(super) struct Observation {
     bodies: BTreeMap<String, CapturedBody>,
 }
 
+type RetainedDisplayObservations = (
+    Arc<BTreeMap<String, Observation>>,
+    Arc<super::super::presentation::ObservationPlan>,
+);
+
 impl Observation {
     pub(super) fn freeze(&self) -> Result<super::super::presentation::ObservationInput> {
         let mut atom = self.atom.clone();
@@ -151,9 +156,9 @@ impl LiveProjection {
         thread_id: &str,
         effect: u64,
         facts: &[ChatAtom],
-        sources: &[pl_protocol::ChatSourceState],
+        visible: &[super::super::presentation::TextVisible],
         mut before: BTreeMap<String, Observation>,
-    ) -> Result<Arc<BTreeMap<String, Observation>>> {
+    ) -> Result<RetainedDisplayObservations> {
         let presentation = self
             .presentation
             .lock()
@@ -163,7 +168,8 @@ impl LiveProjection {
                 || presentation.accepts_update(atom)
         }).cloned().collect::<Vec<_>>();
         let mut retained = BTreeMap::new();
-        for (key, (_, member)) in presentation.observation_requests(effect, &facts, sources)? {
+        let plan = presentation.observation_requests(effect, &facts, visible)?;
+        for (key, (_, member)) in &plan {
             let observed = if let Some(atom) = self.atom_starts.get(&member.head.record.atom.id) {
                 ensure!(
                     atom.source == member.head.record.atom.source,
@@ -172,11 +178,11 @@ impl LiveProjection {
                 self.observation_input(thread_id, atom)?
             } else {
                 before
-                    .remove(&key)
+                    .remove(key)
                     .context("boundary has no retained pre-terminal owner cut")?
             };
-            retained.insert(key, observed);
+            retained.insert(key.clone(), observed);
         }
-        Ok(Arc::new(retained))
+        Ok((Arc::new(retained), Arc::new(plan)))
     }
 }

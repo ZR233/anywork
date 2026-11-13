@@ -27,6 +27,7 @@ pub(super) struct DisplayReadCut {
     pub durable: u64,
     pub revision: u64,
     pub execution_present: bool,
+    pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
     pub pending: Vec<Arc<DisplayBlock>>,
 }
@@ -63,6 +64,10 @@ impl ConversationReader {
                 durable: cut.durable,
                 revision: cut.revision,
                 execution_present: source.current.projection().execution_present,
+                current_work_id: live_before
+                    .is_none()
+                    .then_some(cut.current_work_id)
+                    .flatten(),
                 open: cut.open,
                 pending: cut.pending,
             }
@@ -78,6 +83,7 @@ impl ConversationReader {
                         durable: stored.published,
                         revision: stored.effect,
                         execution_present: false,
+                        current_work_id: stored.current_work_id,
                         open: stored.open,
                         pending: Vec::new(),
                     }
@@ -87,6 +93,7 @@ impl ConversationReader {
                     durable: 0,
                     revision: 0,
                     execution_present: false,
+                    current_work_id: None,
                     open: Vec::new(),
                     pending: Vec::new(),
                 },
@@ -122,6 +129,7 @@ impl ConversationReader {
             cut.revision,
             cut.published,
             cut.execution_present,
+            cut.current_work_id.clone(),
             heads.iter().rev(),
             demand,
             |boundary| tokens.live_before(cut.revision, boundary),
@@ -392,6 +400,8 @@ impl ConversationReader {
             window,
             demand,
             delivered: None,
+            #[cfg(test)]
+            cut_barrier: None,
         })
     }
 
@@ -400,7 +410,9 @@ impl ConversationReader {
         reference: &DisplayBlockRef,
         window: DisplayMemberWindow,
         demand: ReadDemand,
+        fixed_snapshot: bool,
         delivered: Option<(u64, bool)>,
+        #[cfg(test)] cut_barrier: &mut Option<DisplayMemberReadBarrier>,
     ) -> Result<Option<DisplayMemberPage>> {
         let permit = self.resources().await?;
         let resources = permit.as_ref().ok_or_else(cancelled)?;
@@ -422,16 +434,31 @@ impl ConversationReader {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let header = owner.member_cut(&reference.block_id, before, 0);
-            if header
-                .as_ref()
-                .is_some_and(|cut| delivered == Some((cut.header.revision, cut.header.sealed)))
-            {
+            if header.as_ref().is_some_and(|cut| {
+                delivered == Some((cut.header.revision, fixed_snapshot || cut.header.sealed))
+            }) {
                 return Ok(None);
             }
             owner.member_cut(&reference.block_id, before, demand.max_items as usize + 1)
         } else {
             None
         };
+        #[cfg(test)]
+        if let Some(barrier) = cut_barrier.take() {
+            // The owner lock is already released; retain the real cut while the test commits.
+            ensure!(
+                hot.as_ref().is_some_and(|cut| !cut.complete),
+                "member-read barrier requires a sparse owner cut"
+            );
+            barrier
+                .entered
+                .send(())
+                .map_err(|_| anyhow::anyhow!("member-read barrier observer dropped"))?;
+            barrier
+                .resume
+                .await
+                .map_err(|_| anyhow::anyhow!("member-read barrier released without resuming"))?;
+        }
         let (header, mut members) = match hot {
             Some(cut) if cut.complete => (cut.header, cut.overlay),
             overlay => {
@@ -476,7 +503,8 @@ impl ConversationReader {
                 }
             }
         };
-        let stamp = (header.revision, header.sealed);
+        // A cold window is fixed by its original short read, without freezing the business block.
+        let stamp = (header.revision, fixed_snapshot || header.sealed);
         if delivered == Some(stamp) {
             return Ok(None);
         }
@@ -494,12 +522,20 @@ impl ConversationReader {
     }
 }
 
+#[cfg(test)]
+struct DisplayMemberReadBarrier {
+    entered: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
 pub struct DisplayMembers {
     observation: ReadObservation,
     reference: DisplayBlockRef,
     window: DisplayMemberWindow,
     demand: ReadDemand,
     delivered: Option<(u64, bool)>,
+    #[cfg(test)]
+    cut_barrier: Option<DisplayMemberReadBarrier>,
 }
 
 impl DisplayMembers {
@@ -522,7 +558,10 @@ impl DisplayMembers {
                     &self.reference,
                     self.window,
                     self.demand,
+                    self.observation.is_fixed_snapshot(),
                     self.delivered,
+                    #[cfg(test)]
+                    &mut self.cut_barrier,
                 ))
                 .await?;
             if let Some(page) = page {
@@ -578,6 +617,7 @@ pub(super) fn live_window<'a>(
     revision: u64,
     history_through: u64,
     execution_present: bool,
+    current_work_id: Option<String>,
     newest_first: impl IntoIterator<Item = &'a LiveDisplayBlock>,
     demand: ReadDemand,
     mut continuation: impl FnMut(u64) -> Result<String>,
@@ -587,6 +627,7 @@ pub(super) fn live_window<'a>(
         revision,
         history_through,
         execution_present,
+        current_work_id: current_work_id.clone(),
         blocks: Vec::new(),
         older: None,
     };
@@ -606,6 +647,7 @@ pub(super) fn live_window<'a>(
             revision,
             history_through,
             execution_present,
+            current_work_id: current_work_id.clone(),
             blocks: Vec::new(),
             older: None,
         };
@@ -640,6 +682,7 @@ pub(super) fn live_window<'a>(
             revision,
             history_through,
             execution_present,
+            current_work_id: current_work_id.clone(),
             blocks: Vec::new(),
             older: result.older.clone(),
         };
@@ -652,6 +695,16 @@ pub(super) fn live_window<'a>(
         result.older = Some(continuation(oldest.block_order)?);
     }
     result.blocks.reverse();
+    ensure!(
+        current_work_id
+            .as_ref()
+            .is_none_or(|id| result.blocks.iter().any(|block| {
+                &block.id == id
+                    && block.state == DisplayBlockState::Open
+                    && matches!(block.body, pl_protocol::DisplayBlockBody::Work { .. })
+            })),
+        too_small()
+    );
     ensure!(
         encoded_size(&result)? <= demand.max_bytes as usize,
         too_small()

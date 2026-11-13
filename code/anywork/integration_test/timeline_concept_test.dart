@@ -61,8 +61,8 @@ const _overlapPrompt = 'A07：推理尚未结束时开始正文，并保留可�
 const _overlapText = '正文已经开始且可以读取，先前推理稍后才结束。';
 const _overlapReasoning = '这段推理在正文开始后继续保持活动。';
 const _overlapEarlyReasoning = '后开始的推理 B 已先完成，推理 A 仍在进行。';
-const _emptyTextPrompt = 'A13：空正文保留真实边界，前后工作使用不同展示组。';
-const _emptyTextAnswer = '空正文不显示卡片，前后工作分别保留。';
+const _emptyTextPrompt = 'A13：始终空正文不切组，前后工作继续使用同一尾组。';
+const _emptyTextAnswer = '空正文不显示卡片，前后工作保留在同一尾组。';
 const _hotUpdatePrompt = '同一正文内依次追加二十个可控增量，保持展示身份不变。';
 const _hotUpdateHead = '热更新正文：';
 const _imageCalls = ['concept-image-a', 'concept-image-b', 'concept-image-c'];
@@ -713,8 +713,8 @@ final class _ConceptScene {
               'displayActive': widget.isDisplayActive(),
               'section': widget.section.name,
               'surface': widget.presenting?.surface.runtimeType.toString(),
-              'stateActivityKind': widget.session.activity?.kind.name,
-              'stateActiveTurnId': widget.session.activeTurn?.turnId,
+              'activityId': widget.activityId,
+              'activeTurnId': widget.turnId,
             },
         ],
         'treeLimit': 20,
@@ -1541,28 +1541,25 @@ final class _ConceptScene {
     return resumed;
   }
 
-  Future<void> idle() async {
-    final currentDisplays = lease.currentDisplays.toList();
-    await _until(
-      tester,
-      () =>
-          observed.liveBlocks.isEmpty &&
-          find.byKey(StudioDriverKeys.composerStop).evaluate().isEmpty &&
-          find
-              .byKey(const ValueKey('conversation-activity'))
-              .evaluate()
-              .isEmpty,
-      'idle with no current strip',
-    );
-    expect(
-      find.byType(ConversationCurrentConnector, skipOffstage: false),
-      findsNothing,
-    );
-    expect(lease.currentDisplays, isEmpty);
-    for (final current in currentDisplays) {
-      expect(current.isCurrent, isFalse);
-      expect(current.windows, isEmpty);
-    }
+  Future<void> idle({String? expectedTurnId}) async {
+    final initial = graph.client.conversations.existingSession(threadId)!.state;
+    final targetTurnId =
+        expectedTurnId ??
+        initial.activeTurn?.turnId ??
+        initial.lastTurn?.turnId;
+    // Native coverage ends at the real execution release. Static tail rendering,
+    // indicators and disclosure state are covered by data-driven widget tests.
+    await _until(tester, () {
+      final state = graph.client.conversations.existingSession(threadId)?.state;
+      return state != null &&
+          state.hasSnapshot &&
+          state.runtime?.execution == null &&
+          state.activity == null &&
+          state.activeTurn?.state.isBusy != true &&
+          (targetTurnId == null ||
+              (state.lastTurn?.turnId == targetTurnId &&
+                  state.lastTurn?.state.isTerminal == true));
+    }, 'terminal Turn and released native execution');
   }
 
   Future<void> showUnit(String id) async {
@@ -3108,7 +3105,8 @@ final class _ConceptScene {
     expect(
       observed.liveBlocks.any((block) => block.id == work.id),
       isFalse,
-      reason: 'Text Started freezes the old Work immediately; it is not footer work',
+      reason:
+          'First reliable text content freezes the old Work, not empty Started',
     );
     final textBlock = observed.liveBlocks.singleWhere(
       (block) => block.body is SingleDisplayBlock,
@@ -3323,10 +3321,13 @@ final class _ConceptScene {
       lease.groupDisplays.singleWhere((d) => d.unitId == lateEnd.unit.id),
     );
     await release('a07-reasoning-terminal');
-    await idle();
+    await idle(expectedTurnId: source.turnId);
     await unchanged();
     final endUnit = observed.unit(lateEnd.unit.id);
-    expect(endUnit.historyPos, greaterThan(completedText.historyPos!));
+    expect(endUnit.historyPos, isNull);
+    expect(lease.live.value!.currentWorkId, endUnit.id);
+    expect(main.where((unit) => unit.id == endUnit.id), isEmpty);
+    expect(endUnit.summary!.terminal, endUnit.summary!.total);
     final handoff = <String, Object?>{
       'sourceTurnId': source.turnId,
       'frozenCut': frozenCut,
@@ -3367,11 +3368,25 @@ final class _ConceptScene {
     await _record('a07-sealed-history-reopened');
   }
 
-  Future<void> verifyOverlapHistory(Map<String, dynamic> saved) async {
+  Future<void> verifyOverlapHistory(
+    Map<String, dynamic> saved, {
+    bool restingTail = true,
+  }) async {
     final oldId = saved['oldWorkId'] as String;
     final textId = saved['textRowId'] as String;
     final endId = saved['endWorkId'] as String;
-    await _admitSavedMain({oldId, textId, endId});
+    await _admitSavedMain({oldId, textId, if (!restingTail) endId});
+    if (restingTail) {
+      await _until(
+        tester,
+        () => lease.live.value?.currentWorkId == endId,
+        'same durable resting tail after reopening',
+      );
+      expect(main.where((unit) => unit.id == endId), isEmpty);
+      expect(observed.unit(endId).historyPos, isNull);
+    } else {
+      expect(observed.unit(endId).historyPos, isNotNull);
+    }
     final old = observed.unit(oldId);
     expect(await _overlapFrozenCut(old), saved['frozenCut']);
     final frozenHeads = await observed.readMemberInventory(
@@ -3439,222 +3454,42 @@ final class _ConceptScene {
           (block) => block.body is WorkDisplayBlock,
         ) ??
         const [];
-    Iterable<ChatAtom> liveText() =>
-        lease.live.value?.blocks
-            .map((block) => block.body)
-            .whereType<SingleDisplayBlock>()
-            .map((body) => body.record.atom)
-            .where((atom) => atom.kind == ChatAtomKind.text) ??
-        const [];
-    await reach('a14-before-empty', () {
-      final turn = graph.client.conversations
-          .session(threadId)
-          .state
-          .activeTurn;
-      if (turn == null) return false;
-      return liveWork().any((block) {
+    await reach(
+      'a14-before-empty',
+      () => liveWork().any((block) {
         final summary = (block.body as WorkDisplayBlock).summary;
         return summary.total == 1 && summary.terminal == 1;
-      });
-    });
-    final source = ForegroundTurnChatSource(
-      turnId: graph.client.conversations
-          .session(threadId)
-          .state
-          .activeTurn!
-          .turnId,
+      }),
     );
     final before = liveWork().single;
-    final beforeBody = before.body as WorkDisplayBlock;
-    expect(beforeBody.summary.total, 1);
-    expect(
-      main.where((unit) => unit.id == before.id),
-      isEmpty,
-      reason: 'Completed members wait in live until the real text boundary',
-    );
     await release('a14-before-empty');
-    await reach(
-      'a14-empty-start',
-      () => liveText().isNotEmpty && main.any((unit) => unit.id == before.id),
-    );
-    final empty = liveText().single;
-    final firstPublished = main.singleWhere((unit) => unit.id == before.id);
-    expect(firstPublished.memberReference, beforeBody.members);
-    final owner = lease;
-    final scope = owner.content.openScope(generation: owner.generation);
-    final emptyObservation = <String, Object?>{'atomId': empty.id};
-    report['emptyTextEvidence'] = emptyObservation;
-    final readClock = Stopwatch()..start();
-    Duration remainingReadTime() {
-      final remaining = const Duration(seconds: 60) - readClock.elapsed;
-      if (remaining <= Duration.zero) {
-        fail('Timed out reading original A14 empty text evidence');
-      }
-      return remaining;
-    }
-
-    try {
-      emptyObservation['phase'] = 'active-body';
-      expect(empty.source, source);
-      expect(empty.lifecycle, isA<ActiveChatAtom>());
-      expect(empty.completionSeq, isNull);
-      expect(empty.contentPresent, isNull);
-      final activeBody = empty.contents
-          .where((content) => content.role == ChatContentRole.body)
-          .single;
-      final activeWindow = await scope
-          .readContent(
-            reference: activeBody.reference,
-            range: const ContentRange(offset: 0, maxBytes: 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(lease, same(owner));
-      expect(activeWindow.offset, 0);
-      expect(activeWindow.bytes, isEmpty);
-      expect(activeWindow.availableThrough, 0);
-      emptyObservation['active'] = {
-        'contentPresent': 'unknown',
-        'completionSeq': empty.completionSeq,
-        'bodyBytes': activeWindow.bytes.length,
-        'availableThrough': activeWindow.availableThrough,
-        'generation': activeWindow.generation,
-        'sealed': activeWindow.sealed,
-      };
-      await release('a14-empty-start');
-      await reach(
-        'a14-empty-terminal',
-        () => !liveText().any((atom) => atom.id == empty.id),
-      );
-      readClock.reset();
-      emptyObservation['phase'] = 'terminal-completion';
-      // Ordinary text freezes under its original atom ID. Hidden excludes this
-      // completion from Main, not from the original reader's point lookup.
-      final completed = await scope
-          .readCompleted(
-            recordId: empty.id,
-            demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(lease, same(owner));
-      expect(completed.recordId, empty.id);
-      expect(completed.atom.id, empty.id);
-      expect(completed.atom.completionItemId, completed.recordId);
-      expect(completed.atom.completionSeq, completed.completionSeq);
-      expect(completed.completionSeq, greaterThan(0));
-      expect(completed.atom.source, source);
-      expect(completed.atom.lifecycle, isA<TerminalChatAtom>());
-      expect(completed.atom.contentPresent, isFalse);
-      expect(completed.mainPresentation, MainPresentation.hidden);
-      expect(completed.run, isNull);
-      expect(completed.atom.payload, isA<InlinePayload>());
-      expect(
-        (completed.atom.payload as InlinePayload).bytes.length,
-        lessThanOrEqualTo(64 * 1024),
-      );
-      final value = ChatItemPresentation.decode(completed.atom);
-      expect(value.compatibility, ChatItemCompatibility.current);
-      expect(value.type, 'text');
-      expect(value.data['attachments'], isA<List>());
-      expect(value.attachments, isEmpty);
-      expect(value.bodies, hasLength(1));
-      expect(value.bodies.single.byteLength, 0);
-      final terminalBody = completed.atom.contents
-          .where((content) => content.role == ChatContentRole.body)
-          .single;
-      final terminalWindow = await scope
-          .readContent(
-            reference: terminalBody.reference,
-            range: const ContentRange(offset: 0, maxBytes: 1024),
-          )
-          .timeout(remainingReadTime());
-      expect(terminalWindow.offset, 0);
-      expect(terminalWindow.bytes, isEmpty);
-      expect(terminalWindow.availableThrough, 0);
-      expect(terminalWindow.sealed, isTrue);
-      emptyObservation['terminal'] = {
-        'recordId': completed.recordId,
-        'completionSeq': completed.completionSeq,
-        'contentPresent': completed.atom.contentPresent,
-        'mainPresentation': completed.mainPresentation.name,
-        'payloadType': value.type,
-        'attachmentCount': value.attachments.length,
-        'bodyByteLength': value.bodies.single.byteLength,
-        'bodyBytes': terminalWindow.bytes.length,
-        'availableThrough': terminalWindow.availableThrough,
-        'sealed': terminalWindow.sealed,
-      };
-      emptyObservation['phase'] = 'verified';
-    } finally {
-      scope.retire();
-      final cleanup = await scope.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      );
-      emptyObservation['scopeJoined'] = cleanup.complete;
-      expect(cleanup.complete, isTrue);
-    }
-    expect(
-      main.where((unit) => unit.atom?.id == empty.id),
-      isEmpty,
-      reason: 'Empty text keeps its atomic record but never receives a display position',
-    );
+    await fixtureGate(tester, provider, 'a14-empty-start');
+    await release('a14-empty-start');
+    await fixtureGate(tester, provider, 'a14-empty-terminal');
     await release('a14-empty-terminal');
     await reach(
       'a14-after-empty',
       () => liveWork().any(
         (block) =>
-            block.id != before.id &&
-            (block.body as WorkDisplayBlock).summary.total == 1,
+            block.id == before.id &&
+            (block.body as WorkDisplayBlock).summary.total == 2,
       ),
     );
-    final after = liveWork().singleWhere((block) => block.id != before.id);
-    final afterBody = after.body as WorkDisplayBlock;
-    expect(after.id, isNot(before.id));
-    expect(afterBody.members, isNot(beforeBody.members));
-    expect(main.where((unit) => unit.id == before.id), hasLength(1));
-    await capture('a14-empty-separator');
+    // This is the bridge/page handoff. Original preservation and member paging
+    // belong to Runtime tests; card styles and controls belong to widget tests.
+    expect(liveWork().single.id, before.id);
+    expect(main.where((unit) => unit.id == before.id), isEmpty);
+    await capture('a14-empty-keeps-tail');
     await release('a14-after-empty');
     await reach('a14-text-readable', () => hasText(_emptyTextAnswer));
     await release('a14-text-readable');
     await reach(
       'a14-before-turn-end',
-      () => (lease.live.value?.blocks.isEmpty ?? true),
+      () => main.any((unit) => unit.id == before.id),
     );
-    expect(
-      main.where((unit) => unit.id == before.id || unit.id == after.id),
-      hasLength(2),
-    );
-    expect(
-      itemFinder(empty.id),
-      findsNothing,
-      reason: 'Structural empty text must not paint an empty bubble',
-    );
+    expect(main.where((unit) => unit.id == before.id), hasLength(1));
     await release('a14-before-turn-end');
     await idle();
-    final membersByBlock = <String, List<String>>{};
-    for (final reference in [beforeBody.members, afterBody.members]) {
-      final members = await lease.openDisplayMembers(
-        reference: reference,
-        window: const LatestDisplayMembers(),
-        demand: const ReadDemand(maxItems: 2, maxBytes: 16384),
-      );
-      try {
-        final page = await members.next();
-        expect(page, isNotNull);
-        expect(page!.block, reference);
-        expect(page.sealed, isTrue);
-        expect(page.entries, hasLength(1));
-        expect(page.entries.single.record.atom.source, source);
-        expect(page.entries.single.record.atom.id, isNot(empty.id));
-        membersByBlock[reference.blockId] = page.entries
-            .map((member) => member.record.atom.id)
-            .toList();
-        expect(await members.next(), isNull);
-      } finally {
-        members.requestClose();
-        await members.close();
-      }
-    }
-    report['emptySeparatorWorkBlocks'] = membersByBlock;
   }
 
   Future<void> _verifyImageResult(
@@ -4545,7 +4380,10 @@ final class _ConceptScene {
         );
       }
     }
-    await verifyOverlapHistory(saved['a07Handoff'] as Map<String, dynamic>);
+    await verifyOverlapHistory(
+      saved['a07Handoff'] as Map<String, dynamic>,
+      restingTail: false,
+    );
     for (final field in [
       'partialItemId',
       'failureItemId',

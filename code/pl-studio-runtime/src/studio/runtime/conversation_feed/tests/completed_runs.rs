@@ -3,8 +3,8 @@ use crate::studio::thread_projection::{LiveProjection, PreparedEffect};
 use pl_core::{
     context::OpaquePayload,
     model::{
-        ModelCompletedMember, ModelStartedMember, ModelTextChannel, ObservedItemKind,
-        ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
+        ModelCompletedMember, ModelContentAvailableMember, ModelStartedMember, ModelTextChannel,
+        ObservedItemKind, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
     },
     thread::{
         ThreadEffectBatch, ThreadSnapshot as CoreSnapshot, TurnRecord, TurnState as CoreTurnState,
@@ -173,16 +173,66 @@ impl Harness {
         starts: Vec<ModelStartedMember>,
         members: Vec<ModelCompletedMember>,
     ) -> Result<Arc<PreparedEffect>> {
+        self.effect_phases(starts, vec![], members, CoreTurnState::Running)
+            .await
+    }
+    pub async fn content_available(
+        &mut self,
+        starts: Vec<ModelStartedMember>,
+    ) -> Result<Arc<PreparedEffect>> {
+        self.effect_phases(
+            vec![],
+            starts
+                .into_iter()
+                .map(|start| ModelContentAvailableMember {
+                    turn_id: start.turn_id,
+                    attempt_id: start.attempt_id,
+                    generation: start.generation,
+                    identity: start.identity,
+                })
+                .collect(),
+            vec![],
+            CoreTurnState::Running,
+        )
+        .await
+    }
+    pub async fn finish_successfully(&mut self) -> Result<Arc<PreparedEffect>> {
+        self.effect_phases(
+            vec![],
+            vec![],
+            vec![],
+            CoreTurnState::Finished(pl_core::thread::TurnOutcome::Completed),
+        )
+        .await
+    }
+    async fn effect_phases(
+        &mut self,
+        starts: Vec<ModelStartedMember>,
+        visible: Vec<ModelContentAvailableMember>,
+        members: Vec<ModelCompletedMember>,
+        turn_state: CoreTurnState,
+    ) -> Result<Arc<PreparedEffect>> {
         self.sequence += 1;
         let turn = TurnRecord {
             elapsed_ms: None,
             input_id: None,
             turn_id: "atomic-turn".into(),
-            state: CoreTurnState::Running,
+            state: turn_state.clone(),
             model_steps: 1,
         };
         let state = CoreSnapshot {
             turns: vec![turn.clone()].into(),
+            attempts: if matches!(turn_state, CoreTurnState::Running) {
+                vec![pl_core::thread::RequestAttempt::new(
+                    "atomic-turn".into(),
+                    "atomic-attempt".into(),
+                    0,
+                    pl_core::thread::AttemptStatus::Running,
+                )]
+            } else {
+                vec![]
+            }
+            .into(),
             ..Default::default()
         };
         let effect = ThreadEffectBatch {
@@ -191,6 +241,7 @@ impl Harness {
             committed_at: self.sequence as i64 + 10,
             turn: Some(turn),
             model_member_starts: starts.into(),
+            model_member_content_available: visible,
             model_members: members.into(),
             ..Default::default()
         };
@@ -207,7 +258,10 @@ impl Harness {
     pub async fn save(&self, prepared: &PreparedEffect) -> Result<()> {
         save_effect(&self.history, &self.session, prepared).await
     }
-    async fn background_result(&mut self, index: u64) -> Result<Arc<PreparedEffect>> {
+    pub(in crate::studio::runtime) async fn background_result(
+        &mut self,
+        index: u64,
+    ) -> Result<Arc<PreparedEffect>> {
         self.prepare_background_result(index, true).await
     }
     async fn prepare_background_result(
@@ -342,6 +396,17 @@ impl Harness {
                 vec![]
             }
             .into(),
+            model_member_content_available: if separator {
+                let start = start("separator", false);
+                vec![ModelContentAvailableMember {
+                    turn_id: start.turn_id,
+                    attempt_id: start.attempt_id,
+                    generation: start.generation,
+                    identity: start.identity,
+                }]
+            } else {
+                vec![]
+            },
             ..Default::default()
         };
         let (_, mut prepared) = self

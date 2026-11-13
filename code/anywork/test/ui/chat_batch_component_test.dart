@@ -1484,6 +1484,7 @@ sdk.TimelineBatch _mainBatch({
           id: entry.recordId,
           historyPos: start + i,
           body: sdk.SingleDisplayBlock(
+            visibility: sdk.SingleVisibility.content,
             record: sdk.DisplayRecord(
               atom: entry.atom,
               contentSource: sdk.CompletedOriginal(

@@ -37,6 +37,7 @@ fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
         revision: 7,
         history_through: through,
         execution_present: true,
+        current_work_id: ids.last().map(|order| format!("block-{order}")),
         blocks: ids
             .iter()
             .map(|order| {
@@ -46,7 +47,11 @@ fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
                     id,
                     block_order: *order,
                     source: None,
-                    state: pl_protocol::DisplayBlockState::Open,
+                    state: if ids.last() == Some(order) {
+                        pl_protocol::DisplayBlockState::Open
+                    } else {
+                        pl_protocol::DisplayBlockState::Sealed
+                    },
                 }
             })
             .collect(),

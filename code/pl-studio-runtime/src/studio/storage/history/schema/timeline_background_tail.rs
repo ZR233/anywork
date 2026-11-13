@@ -76,6 +76,7 @@ mod tests {
                         | DISPLAY_SNAPSHOTS
                         | DISPLAY_OBSERVATIONS
                         | TOOL_WORK
+                        | VISIBLE_TAIL_WORKGROUPS
                 ) && !is_lifecycle_migration(step.name())
             })
             .collect()

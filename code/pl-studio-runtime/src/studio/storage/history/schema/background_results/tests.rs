@@ -38,6 +38,7 @@ impl MigratorTraitSelf for Published {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|step| !is_lifecycle_migration(step.name()) && step.name() != BACKGROUND_RESULTS)

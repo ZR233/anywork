@@ -154,6 +154,7 @@
 
         history: [],
         live: null,
+        pendingText: null,
         pending: null,
         draft: spec.initialDraft || '',
         attachments: spec.initialAttachments ? clone(spec.initialAttachments) : [],
@@ -862,16 +863,14 @@
       const live = this.state.live;
       if (!live) return null;
       if (live.kind === 'workGroup') {
-        live.members.forEach(member => {
-          if (member.status !== 'running') return;
-          member.status = status === 'completed' ? 'completed' : 'stopped';
-          member.targets?.forEach(target => { if (target.status === 'running') target.status = member.status; });
-        });
         if (live.members.length) {
           this.snapshot({ id: live.id, kind: 'workGroup', status, elapsed: live.elapsed, members: live.members });
         }
       } else if (live.kind === 'textOutput') {
-        if (live.text.trim()) this.snapshot({ id: live.id, kind: 'text', status, error, text: live.text });
+        if (live.visible) this.snapshot({
+          id: live.id, kind: 'text', status, error, text: live.text,
+          visibility: live.text.length ? 'content' : 'finalEmptyAfterContent'
+        });
       } else if (live.kind === 'compacting' && status === 'completed') {
         this.snapshot({ id: live.id, kind: 'compression', status: 'completed' });
         this.state.context = 18;
@@ -883,7 +882,6 @@
     closeGroupFor(reason) {
       const live = this.state.live;
       if (live?.kind === 'workGroup') {
-        if (runningCount(live)) throw new Error('A work group with running members cannot be closed by ' + reason);
         this.seal();
         return true;
       }
@@ -897,7 +895,11 @@
       switch (event.type) {
         case 'tick': break;
         case 'waitForModel':
-          if (live?.kind === 'workGroup') break;
+          if (live?.kind === 'workGroup') {
+            live.resting = false;
+            this.state.running = true;
+            break;
+          }
           if (live) throw new Error('A live item must end before waiting for the model');
           this.state.live = { id: event.id, kind: 'waiting', elapsed: 0 };
           this.state.running = true;
@@ -909,6 +911,7 @@
             this.state.live = { id: event.groupId, kind: 'workGroup', status: 'running', elapsed: live?.elapsed || 0, members: [] };
           }
           const grp = this.state.live;
+          grp.resting = false;
           grp.members.push(clone(event.member));
           this.state.running = true;
           this.note(grp.members.length === 1 ? '新工作组 · 首个成员插入状态栏' : `插入成员 · 当前工作组共 ${grp.members.length} 步`);
@@ -941,17 +944,30 @@
           }
           break;
         case 'startText': {
-          const moved = this.closeGroupFor('text output');
-          this.state.live = { id: event.id, kind: 'textOutput', text: '', elapsed: 0 };
+          this.state.pendingText = { id: event.id, kind: 'textOutput', text: '', elapsed: 0, visible: false };
           this.state.running = true;
-          this.note(moved ? '正文开始 · 工作组整组移入时间线' : '开始输出正文');
+          this.note('真实正文开始 · 尚无公开内容，不建立边界');
           break;
         }
         case 'appendText':
-          if (live?.kind === 'textOutput') live.text += event.text;
+          if (this.state.pendingText && event.text.length) {
+            this.closeGroupFor('first visible content');
+            this.state.live = this.state.pendingText;
+            this.state.pendingText = null;
+            this.state.live.visible = true;
+            this.note('首次内容可读 · 冻结前工作组');
+          }
+          if (this.state.live?.kind === 'textOutput') this.state.live.text += event.text;
           break;
         case 'finishText':
-          if (live?.kind === 'textOutput') { this.seal(); this.note('正文结束 · 整段移入时间线'); }
+          if (this.state.pendingText) {
+            this.state.pendingText = null;
+            this.note('始终空正文结束 · 原工作尾组继续保留');
+          } else if (live?.kind === 'textOutput') {
+            if (typeof event.finalText === 'string') live.text = event.finalText;
+            this.seal();
+            this.note('正文结束 · 仅结束自己的块，不产生第二次工作边界');
+          }
           break;
         case 'finishCompression':
           if (live?.kind === 'compacting' && (!event.id || event.id === live.id)) {
@@ -960,13 +976,16 @@
           }
           break;
         case 'finishTurn': {
-          if (live && live.kind !== 'compacting' && isWaitingForModel(live)) {
-            const moved = this.closeGroupFor('turn end');
-            this.note(moved ? '轮次结束 · 工作组移入时间线，状态栏收起，模型选择器已解锁' : '轮次结束 · 状态栏收起，模型选择器已解锁');
+          if (live?.kind === 'workGroup') {
+            live.resting = true;
+            this.note('轮次结束 · 同一工作尾组静态保留，可继续追加');
+          } else if (live?.kind === 'waiting') {
+            this.state.live = null;
+            this.note('轮次结束 · 状态栏收起，模型选择器已解锁');
           } else if (!live) {
             this.note('轮次结束 · 状态栏收起，模型选择器已解锁');
           }
-          if (!this.state.live) {
+          if (!this.state.live || this.state.live.resting) {
             this.state.running = false;
             this.state.resumable = false;
             this.state.continuationReason = null;
@@ -986,7 +1005,7 @@
       const event = this.state.queue[this.state.cursor];
       if (!event) return false;
       const live = this.state.live;
-      if (live) {
+      if (live && this.state.running) {
         live.elapsed++;
         live.members?.forEach(member => { if (member.status === 'running') member.elapsed++; });
       }
@@ -1219,8 +1238,10 @@
 
       const text = this.state.draft;
       const attachments = clone(this.state.attachments);
-      const wasRunning = Boolean(this.state.live);
-      if (wasRunning) {
+      const wasRunning = this.state.running;
+      if (this.state.live?.kind === 'workGroup') {
+        this.closeGroupFor('accepted input');
+      } else if (wasRunning) {
         this.stop({ immediate: true, silentEmit: true });
       }
       this.snapshot({

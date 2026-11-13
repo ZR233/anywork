@@ -176,6 +176,9 @@ class _ChatItemViewState extends State<ChatItemView> {
         ],
       );
     }
+    if (item.finalEmptyAfterContent) {
+      return const Text('该输出的最终内容为空');
+    }
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {

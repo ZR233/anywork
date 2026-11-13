@@ -32,6 +32,7 @@ abstract final class TimelinePreviewFixtures {
         id: 'preview-user-deferred',
         historyPos: 1,
         body: SingleDisplayBlock(
+          visibility: SingleVisibility.content,
           record: DisplayRecord(
             atom: ChatAtom(
               id: 'preview-user-deferred',

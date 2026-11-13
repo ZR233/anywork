@@ -16360,8 +16360,13 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                 let mut var_record = <Box<
                     crate::api::studio::types::presentation::BridgeDisplayRecord,
                 >>::sse_decode(deserializer);
+                let mut var_visibility =
+                    <crate::api::studio::types::presentation::BridgeSingleVisibility>::sse_decode(
+                        deserializer,
+                    );
                 return crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
                     record: var_record,
+                    visibility: var_visibility,
                 };
             }
             _ => {
@@ -16965,6 +16970,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
         let mut var_revision = <u64>::sse_decode(deserializer);
         let mut var_historyThrough = <u64>::sse_decode(deserializer);
         let mut var_executionPresent = <bool>::sse_decode(deserializer);
+        let mut var_currentWorkId = <Option<String>>::sse_decode(deserializer);
         let mut var_blocks =
             <Vec<crate::api::studio::types::presentation::BridgeLiveDisplayBlock>>::sse_decode(
                 deserializer,
@@ -16974,6 +16980,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
             revision: var_revision,
             history_through: var_historyThrough,
             execution_present: var_executionPresent,
+            current_work_id: var_currentWorkId,
             blocks: var_blocks,
             older: var_older,
         };
@@ -20003,6 +20010,18 @@ impl SseDecode for crate::api::studio::types::shutdown::BridgeShutdownReport {
             outcome: var_outcome,
             issues: var_issues,
             persistence: var_persistence,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::presentation::BridgeSingleVisibility {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::presentation::BridgeSingleVisibility::Content,
+1 => crate::api::studio::types::presentation::BridgeSingleVisibility::FinalEmptyAfterContent,
+            _ => unreachable!("Invalid variant for BridgeSingleVisibility: {}", inner),
         };
     }
 }
@@ -36505,9 +36524,15 @@ impl flutter_rust_bridge::IntoDart
                 members.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single { record } => {
-                [1.into_dart(), record.into_into_dart().into_dart()].into_dart()
-            }
+            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
+                record,
+                visibility,
+            } => [
+                1.into_dart(),
+                record.into_into_dart().into_dart(),
+                visibility.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -37399,6 +37424,7 @@ impl flutter_rust_bridge::IntoDart
             self.revision.into_into_dart().into_dart(),
             self.history_through.into_into_dart().into_dart(),
             self.execution_present.into_into_dart().into_dart(),
+            self.current_work_id.into_into_dart().into_dart(),
             self.blocks.into_into_dart().into_dart(),
             self.older.into_into_dart().into_dart(),
         ]
@@ -40907,6 +40933,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::shutdown::Brid
     for crate::api::studio::types::shutdown::BridgeShutdownReport
 {
     fn into_into_dart(self) -> crate::api::studio::types::shutdown::BridgeShutdownReport {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeSingleVisibility
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Content => 0.into_dart(),
+            Self::FinalEmptyAfterContent => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeSingleVisibility
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeSingleVisibility,
+    > for crate::api::studio::types::presentation::BridgeSingleVisibility
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeSingleVisibility {
         self
     }
 }
@@ -52005,10 +52056,16 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlockBo
                     members, serializer,
                 );
             }
-            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single { record } => {
+            crate::api::studio::types::presentation::BridgeDisplayBlockBody::Single {
+                record,
+                visibility,
+            } => {
                 <i32>::sse_encode(1, serializer);
                 <Box<crate::api::studio::types::presentation::BridgeDisplayRecord>>::sse_encode(
                     record, serializer,
+                );
+                <crate::api::studio::types::presentation::BridgeSingleVisibility>::sse_encode(
+                    visibility, serializer,
                 );
             }
             _ => {
@@ -52477,6 +52534,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
         <u64>::sse_encode(self.revision, serializer);
         <u64>::sse_encode(self.history_through, serializer);
         <bool>::sse_encode(self.execution_present, serializer);
+        <Option<String>>::sse_encode(self.current_work_id, serializer);
         <Vec<crate::api::studio::types::presentation::BridgeLiveDisplayBlock>>::sse_encode(
             self.blocks,
             serializer,
@@ -54890,6 +54948,15 @@ impl SseEncode for crate::api::studio::types::shutdown::BridgeShutdownReport {
             self.persistence,
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::presentation::BridgeSingleVisibility {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(match self {crate::api::studio::types::presentation::BridgeSingleVisibility::Content => { 0 }
+crate::api::studio::types::presentation::BridgeSingleVisibility::FinalEmptyAfterContent => { 1 }
+ _ => { unimplemented!(""); }}, serializer);
     }
 }
 

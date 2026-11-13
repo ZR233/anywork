@@ -59,6 +59,7 @@ void main() {
           activity: const ConversationActivityView(
             identity: 'observed-model-wait',
             kind: ConversationActivityKind.thinking,
+            thinkingSeconds: 2,
           ),
         ),
       );
@@ -86,7 +87,11 @@ void main() {
       expect(tester.widget<Text>(label).data, '思考中');
       expect(find.byType(TimelineRestingCat), findsOneWidget);
       expect(tester.widget<Text>(label).maxLines, 1);
-      expect(tester.widget<Text>(elapsed).data, startsWith('执行了'));
+      expect(
+        tester.widget<Text>(elapsed).data,
+        activityDurationLabel(tester.element(header), 2),
+      );
+      expect(find.textContaining('执行了'), findsNothing);
       await tester.tap(header);
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -109,7 +114,7 @@ void main() {
 
   for (final location in WorkDisplayLocation.values) {
     testWidgets(
-      'Work observer reads static duration without duplicate elapsed column: $location',
+      'Work observer distinguishes open record from sealed duration: $location',
       (tester) async {
         await tester.pumpWidget(_host(location));
         final header = find.byKey(
@@ -119,13 +124,13 @@ void main() {
         expect(label, findsOneWidget);
         expect(
           tester.widget<Text>(label).data,
-          activityDurationLabel(
-            tester.element(header),
-            2,
-            kind: location == WorkDisplayLocation.history
-                ? ActivityDurationKind.worked
-                : ActivityDurationKind.executing,
-          ),
+          location == WorkDisplayLocation.history
+              ? activityDurationLabel(
+                  tester.element(header),
+                  2,
+                  kind: ActivityDurationKind.worked,
+                )
+              : AppLocalizations.of(tester.element(header)).timelineGroupRecord,
         );
         expect(find.byType(TimelineRestingCat), findsNothing);
         expect(find.text('思考中'), findsNothing);

@@ -219,7 +219,8 @@ Finder timelineGroupTitleFinder(
     }
     if (widget is! TimelineReasoningSummary &&
         (widget is! Text ||
-            widget.key == const ValueKey('work-header-elapsed'))) {
+            widget.key == const ValueKey('work-header-elapsed') ||
+            widget.key == const ValueKey('work-header-member-count'))) {
       return false;
     }
     var insideSummaryOrTitle = false;
@@ -459,29 +460,46 @@ final class TimelineObservation {
     }
   }
 
-  Future<List<TimelineDisplayUnit>> workForSource(ChatSourceId source) async {
-    final matched = <TimelineDisplayUnit>[];
-    for (final block in allWork.toList()) {
-      final page = await readMemberPage(block.memberReference!);
-      expect(page.entries, isNotEmpty);
-      if (page.entries.single.record.atom.source == source) matched.add(block);
+  Future<bool> _workContainsSource(
+    TimelineDisplayUnit block,
+    ChatSourceId source,
+  ) async {
+    DisplayMemberWindow window = const LatestDisplayMembers();
+    while (true) {
+      final page = await readMemberPage(
+        block.memberReference!,
+        window: window,
+        demand: const ReadDemand(maxItems: 32, maxBytes: 16384),
+      );
+      if (page.entries.any((head) => head.record.atom.source == source)) {
+        return true;
+      }
+      final before = page.before;
+      if (before == null) return false;
+      window = BeforeDisplayMembers(memberOrder: before);
     }
-    return matched;
   }
+
+  Future<List<TimelineDisplayUnit>> workForSource(ChatSourceId source) async =>
+      [
+        for (final block in allWork.toList())
+          if (await _workContainsSource(block, source)) block,
+      ];
+
+  Future<bool> hasDisplayedSource(ChatSourceId source) async =>
+      singleBlocks.any((unit) => unit.atom!.source == source) ||
+      (await workForSource(source)).isNotEmpty;
 
   Future<bool> hasHistoricalSource(ChatSourceId source) async {
     final original = lease;
     if (singleBlocks.any((unit) => unit.atom!.source == source)) return true;
-    // A tool-only successful Turn need not manufacture a Single/receipt.
-    // Borrow only one bounded member head per already admitted Work.
     for (final block in workBlocks.toList()) {
-      final page = await readMemberPage(block.memberReference!);
+      final contains = await _workContainsSource(block, source);
       expect(lease, same(original));
       final admitted = main.where((unit) => unit.id == block.id).single;
       expect(admitted.historyPos, block.historyPos);
       expect(admitted.memberReference, block.memberReference);
-      expect(page.entries, hasLength(1));
-      if (page.entries.single.record.atom.source == source) return true;
+      if (contains) return true;
     }
     return false;
   }
@@ -1883,168 +1901,30 @@ final class TimelineObservation {
     Map<String, Object?>? diagnostics,
   }) async {
     final owner = lease;
-    final controller = owner.controller;
-    final generation = owner.generation;
-    final ids = (await workForSource(source)).map((unit) => unit.id).toList();
-    expect(ids, isNotEmpty);
-    expect(ids.toSet(), hasLength(ids.length));
-    final evidence = diagnostics ?? <String, Object?>{};
-    final samples = <Map<String, Object?>>[];
-    final tracked = <TimelineGroupDisplay>{};
-    final clicked = <String>{};
-    final clock = Stopwatch()..start();
-    Map<String, Object?> displayState(TimelineGroupDisplay display) => {
-      'identity': identityHashCode(display),
-      'unitId': display.unitId,
-      'expanded': display.expanded,
-      'isCurrent': display.isCurrent,
-      'atomCount': display.atoms.length,
-      'windowCount': display.windows.length,
-      'before': display.before,
-      'loading': display.loading,
-      'errorType': display.error?.runtimeType.toString(),
-    };
-    void sample(String stage, {String? id}) {
-      final current = owner.groupDisplays
-          .where((display) => ids.contains(display.unitId))
-          .toList();
-      tracked.addAll(current);
-      final value = <String, Object?>{
-        'stage': stage,
-        'unitId': id,
-        'elapsedMillis': clock.elapsedMilliseconds,
-        'displays': current.take(32).map(displayState).toList(),
-        'tracked': tracked.take(32).map(displayState).toList(),
-        'clickedUnitIds': clicked.toList(),
-      };
-      evidence['last'] = value;
-      if (samples.length < 64) samples.add(value);
-    }
-
-    Duration remaining() {
-      final value = const Duration(seconds: 60) - clock.elapsed;
-      if (value <= Duration.zero) {
-        sample('timeout');
-        fail('Timed out closing the original source Main cards');
-      }
-      return value;
-    }
-
-    void requireOwnerAndCollapsedCards() {
-      expect(lease, same(owner));
-      expect(owner.controller, same(controller));
-      expect(owner.generation, generation);
-      expect(owner.isRetired, isFalse);
-      for (final id in clicked) {
-        expect(
-          unit(id).expansion.expanded,
-          isFalse,
-          reason: 'A real collapsed Main card must not reopen on remount: $id',
-        );
-      }
-    }
-
-    evidence.addAll({
-      'generation': generation,
-      'targetUnitIds': ids,
-      'samples': samples,
+    final groups = await workForSource(source);
+    expect(groups, isNotEmpty);
+    diagnostics?.addAll({
+      'targetUnitIds': groups.map((unit) => unit.id).toList(),
       'complete': false,
     });
-    sample('initial');
-    try {
-      for (final id in ids) {
-        requireOwnerAndCollapsedCards();
-        sample('before-reveal', id: id);
-        if (unit(id).historyPos != null) {
-          await reveal(groupHeader(id), id, timeout: remaining());
-        } else {
-          await until(
-            () => groupHeader(id).evaluate().length == 1,
-            'live Work header before collapse',
-            timeout: remaining(),
-          );
-        }
-        sample('after-reveal', id: id);
-        requireOwnerAndCollapsedCards();
-        final header = groupHeader(id);
-        expect(header, findsOneWidget);
-        if (groupExpanded(id)) {
-          TimelineGroupDisplay? current;
-          await until(
-            () {
-              current = owner.groupDisplays
-                  .where((display) => display.unitId == id)
-                  .singleOrNull;
-              if (current?.error case final error?) throw StateError('$error');
-              return current?.isCurrent == true && current?.expanded == true;
-            },
-            'current display after revealing exact Main header $id',
-            timeout: remaining(),
-          );
-          final original = current!;
-          tracked.add(original);
-          expect(original.blockReference, unit(id).memberReference!);
-          sample('before-click', id: id);
-          // Borrow after navigation. This exact-card header remains the
-          // target if layout replaces its Element; retirement is not a click.
-          await tapGroupHeader(id, timeout: remaining());
-          // Collapsing a tall history card may virtualize its header out of
-          // Main. Check the retained expansion intent before revealing it
-          // again; absence of an Element is not the collapsed UI assertion.
-          expect(unit(id).expansion.expanded, isFalse);
-          clicked.add(id);
-          sample('after-click', id: id);
-          requireOwnerAndCollapsedCards();
-          await until(
-            () =>
-                !original.expanded &&
-                !original.isCurrent &&
-                original.atoms.isEmpty &&
-                original.windows.isEmpty &&
-                original.before == null &&
-                !original.loading,
-            'clicked original source member scope revoked',
-            timeout: remaining(),
-          );
-          expect(original.error, isNull);
-          if (unit(id).historyPos != null) {
-            await reveal(groupHeader(id), id, timeout: remaining());
-          }
-          expect(groupExpanded(id), isFalse);
-        } else {
-          expect(unit(id).expansion.expanded, isFalse);
-        }
-        sample('card-collapsed', id: id);
-      }
-      requireOwnerAndCollapsedCards();
-      expect(
-        owner.groupDisplays.where(
-          (display) => ids.contains(display.unitId) && display.expanded,
-        ),
-        isEmpty,
-      );
-      for (final id in ids) {
-        expect(unit(id).expansion.expanded, isFalse);
+    for (final group in groups) {
+      if (group.expansion.expanded != true) continue;
+      if (group.historyPos != null) {
+        await reveal(groupHeader(group.id), group.id);
       }
       await until(
-        () => tracked.every(
-          (display) =>
-              !display.expanded &&
-              !display.isCurrent &&
-              display.atoms.isEmpty &&
-              display.windows.isEmpty &&
-              display.before == null &&
-              !display.loading,
+        () => owner.groupDisplays.any(
+          (display) => display.unitId == group.id && display.expanded,
         ),
-        'all borrowed source display resources revoked',
-        timeout: remaining(),
+        'mounted expanded Work before closing',
       );
-      for (final display in tracked) {
-        expect(display.error, isNull);
-      }
-      evidence['complete'] = true;
-    } finally {
-      sample('final');
+      final display = owner.groupDisplays.singleWhere(
+        (display) => display.unitId == group.id,
+      );
+      await closeWork(display);
+      expect(lease, same(owner));
+      expect(group.expansion.expanded, isFalse);
     }
+    diagnostics?['complete'] = true;
   }
 }

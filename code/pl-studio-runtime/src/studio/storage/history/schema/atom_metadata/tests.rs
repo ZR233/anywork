@@ -45,6 +45,7 @@ impl MigratorTraitSelf for Published13 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))

@@ -581,6 +581,7 @@ TimelineBatch _timelineBatch(
     live: placement == ChatPlacement.prepend
         ? null
         : LiveDisplayWindow(
+            currentWorkId: null,
             revision: 0,
             historyThrough: through,
             executionPresent: false,

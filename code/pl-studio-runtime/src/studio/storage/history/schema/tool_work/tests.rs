@@ -102,7 +102,7 @@ async fn seed(db: &impl ConnectionTrait, index: u64, name: Option<&str>) -> Resu
     };
     let member = DisplayMemberWrite {
         block_id: id.clone(),
-        association_key: format!("association-{index}"),
+        association_key: crate::studio::thread_projection::presentation::member_key(&atom)?,
         terminal: true,
         head: DisplayMemberHead {
             member_key: format!("member-{index}"),
@@ -161,7 +161,22 @@ async fn preserved(db: &impl ConnectionTrait) -> Result<Vec<String>> {
 }
 
 async fn migrate(db: &DatabaseConnection) -> Result<()> {
-    prepare(db, THREAD, Preparation::Schema, None).await
+    struct WithToolWork;
+    impl MigratorTraitSelf for WithToolWork {
+        fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+            Migrator {
+                thread_id: THREAD.into(),
+                execution_identity: None,
+                bot_root: None,
+            }
+            .migrations()
+            .into_iter()
+            .take_while(|step| step.name() != VISIBLE_TAIL_WORKGROUPS)
+            .collect()
+        }
+    }
+    WithToolWork.up(db, None).await?;
+    Ok(())
 }
 async fn applied(db: &impl ConnectionTrait) -> Result<i64> {
     Ok(db
@@ -223,6 +238,7 @@ async fn singles_upgrade_in_place_preserving_originals_members_and_reopen_identi
     assert_eq!(headers(&db).await?, converted);
     assert_eq!(applied(&db).await?, 1);
     assert_eq!(preserved(&db).await?, facts);
+    prepare(&db, THREAD, Preparation::Schema, None).await?;
     let history = conversation::display::history_heads(&db, 3, None, 8).await?;
     assert_eq!(history.len(), 3);
     assert_eq!(history[0].id, converted[0].id);

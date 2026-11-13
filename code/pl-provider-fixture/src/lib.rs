@@ -707,6 +707,21 @@ pub fn gui_timeline_history_20k_growth_prompt(batch: usize) -> String {
     format!("Grow timeline history batch {batch:02} of {GUI_TIMELINE_HISTORY_20K_GROWTH_BATCHES}")
 }
 
+/// Normal provider turns used only to prepare the untimed native read profile.
+pub const GUI_TIMELINE_READ_PROFILE_SEED_BATCHES: usize = 200;
+/// Independently completed model text items in each read-profile turn.
+pub const GUI_TIMELINE_READ_PROFILE_SEED_ITEMS: usize = 100;
+/// Model text inventory, excluding user inputs, titles and compaction summaries.
+pub const GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS: usize =
+    GUI_TIMELINE_READ_PROFILE_SEED_BATCHES * GUI_TIMELINE_READ_PROFILE_SEED_ITEMS;
+
+/// Strict one-based identity for an untimed read-profile seed turn.
+pub fn gui_timeline_read_profile_seed_prompt(batch: usize) -> String {
+    format!(
+        "Seed timeline read profile batch {batch:03} of {GUI_TIMELINE_READ_PROFILE_SEED_BATCHES}"
+    )
+}
+
 /// Realtime acceptance prompts. Each prompt drives one deterministic state of the
 /// realtime journey; the tool follow-up steps reuse the same prompt text so the
 /// strict script can tell the original request from the post-tool continuation.
@@ -2648,6 +2663,26 @@ pub fn gui_timeline_history_20k_seed_script() -> Vec<Step> {
     steps
 }
 
+/// Independent untimed read-profile preparation, not the cumulative stress seed.
+///
+/// All 200 normal turns are required and each completes 100 distinct 32-byte
+/// model text items without event delay. Title ordering and exact optional
+/// inter-turn text compaction reuse the cumulative fixture's private assembly.
+pub fn gui_timeline_read_profile_seed_script() -> Vec<Step> {
+    let mut steps = Vec::new();
+    for batch in 1..=GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
+        push_timeline_history_20k_batch(
+            &mut steps,
+            "read-profile-seed",
+            batch,
+            gui_timeline_read_profile_seed_prompt(batch),
+            GUI_TIMELINE_READ_PROFILE_SEED_ITEMS,
+            0,
+        );
+    }
+    steps
+}
+
 /// Thirty normal provider turns for the Linux cumulative-history acceptance.
 ///
 /// The first ten turns seed 20,000 independently completed text items. The
@@ -2685,13 +2720,27 @@ fn push_timeline_history_20k_batch(
     item_count: usize,
     step_millis: u64,
 ) {
-    if (phase == "seed" && batch > 1) || phase == "growth" {
-        let completed_seed_batches = if phase == "seed" {
-            batch - 1
-        } else {
+    if (matches!(phase, "seed" | "read-profile-seed") && batch > 1) || phase == "growth" {
+        let completed_seed_batches = if phase == "growth" {
             GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
+        } else {
+            batch - 1
         };
         let completed_growth_batches = if phase == "growth" { batch - 1 } else { 0 };
+        let summary = if phase == "read-profile-seed" {
+            format!(
+                "Timeline read profile fixture: {completed_seed_batches} seed batches of \
+                 {GUI_TIMELINE_READ_PROFILE_SEED_ITEMS} model text items completed \
+                 ({} model text items). Continue according to the next explicit batch prompt.",
+                completed_seed_batches * GUI_TIMELINE_READ_PROFILE_SEED_ITEMS
+            )
+        } else {
+            format!(
+                "Timeline history fixture: {completed_seed_batches} seed batches and \
+                 {completed_growth_batches} growth batches completed. \
+                 Continue according to the next explicit batch prompt."
+            )
+        };
         let compaction_step = steps.len();
         steps.push(
             Step::prompt(
@@ -2699,11 +2748,7 @@ fn push_timeline_history_20k_batch(
                 "请根据以上完整上下文生成压缩摘要。",
                 compaction_step,
                 Reply::Sse(responses_text(
-                    &format!(
-                        "Timeline history fixture: {completed_seed_batches} seed batches and \
-                         {completed_growth_batches} growth batches completed. \
-                         Continue according to the next explicit batch prompt."
-                    ),
+                    &summary,
                     &format!("timeline-history-20k-{phase}-{batch:02}-compaction"),
                     "fixture-model",
                 )),
@@ -5864,6 +5909,196 @@ fn paced_sse_reply(
 mod timeline_history_20k_tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn read_profile_seed_has_200_required_zero_delay_turns_and_20000_distinct_texts() {
+        let script = gui_timeline_read_profile_seed_script();
+        let required: Vec<_> = script.iter().filter(|step| !step.optional).collect();
+        assert_eq!(required.len(), 200);
+        assert_eq!(script.len(), 200 * 3 + 199);
+        for (index, step) in script.iter().enumerate() {
+            assert_eq!(step.protocol, Protocol::ResponsesHttp);
+            let RequestMatch::Prompt { step, .. } = &step.request else {
+                panic!("expected strict prompt");
+            };
+            assert_eq!(*step, index);
+        }
+        let mut identities = HashSet::new();
+        let mut text_items = 0;
+        for (index, step) in required.iter().enumerate() {
+            let batch = index + 1;
+            let RequestMatch::Prompt { text, .. } = &step.request else {
+                unreachable!();
+            };
+            assert_eq!(text, &gui_timeline_read_profile_seed_prompt(batch));
+            let Reply::PacedEvents {
+                initial_delay_ms,
+                step_millis,
+                events,
+            } = &step.reply
+            else {
+                panic!("expected independent paced text events");
+            };
+            assert_eq!((*initial_delay_ms, *step_millis), (0, 0));
+            assert_eq!(events.len(), 100 * 3 + 2);
+            assert_eq!(events[0]["type"], "response.created");
+            assert_eq!(events.last().unwrap()["type"], "response.completed");
+            let response_id = events[0]["response"]["id"].as_str().unwrap();
+            assert!(identities.insert(response_id.to_owned()));
+            assert_eq!(events.last().unwrap()["response"]["id"], response_id);
+            for (ordinal, triplet) in events[1..events.len() - 1]
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .enumerate()
+            {
+                let [added, delta, done] = triplet;
+                assert_eq!(added["type"], "response.output_item.added");
+                assert_eq!(delta["type"], "response.output_text.delta");
+                assert_eq!(done["type"], "response.output_item.done");
+                for event in triplet {
+                    assert_eq!(event["output_index"], ordinal);
+                }
+                let item = &done["item"];
+                assert_eq!(item["type"], "message");
+                assert_eq!(item["role"], "assistant");
+                assert_eq!(item["phase"], "final_answer");
+                assert_eq!(item["content"].as_array().unwrap().len(), 1);
+                assert_eq!(item["content"][0]["type"], "output_text");
+                let text = item["content"][0]["text"].as_str().unwrap();
+                assert_eq!(text.len(), 32);
+                assert_eq!(text, GUI_TIMELINE_HISTORY_20K_TEXT);
+                assert_eq!(delta["delta"], text);
+                let item_id = item["id"].as_str().unwrap();
+                let part_id = item["content"][0]["id"].as_str().unwrap();
+                assert_eq!(added["item"]["id"], item_id);
+                assert_eq!(delta["item_id"], item_id);
+                assert!(identities.insert(item_id.to_owned()));
+                assert!(identities.insert(part_id.to_owned()));
+                text_items += 1;
+            }
+        }
+        assert_eq!(text_items, 20_000);
+        assert_eq!(text_items, GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS);
+    }
+
+    async fn read_profile_prompt(
+        client: &reqwest::Client,
+        fixture: &FixtureServer,
+        prompt: &str,
+    ) -> (StatusCode, String) {
+        let response = client
+            .post(format!("{}/responses", fixture.base_url()))
+            .json(&json!({"stream": true, "input": [{"role": "user", "content": prompt}]}))
+            .send()
+            .await
+            .unwrap();
+        (response.status(), response.text().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn read_profile_consumes_every_required_batch_with_optional_titles_and_compaction() {
+        let client = reqwest::Client::new();
+        for compact in [false, true] {
+            let fixture = FixtureServer::start(gui_timeline_read_profile_seed_script())
+                .await
+                .unwrap();
+            let mut completed_items = 0;
+            for batch in 1..=200 {
+                if compact && batch > 1 {
+                    let (status, body) = read_profile_prompt(
+                        &client,
+                        &fixture,
+                        "Preserve the finished read-profile batches.\n\n\n请根据以上完整上下文生成压缩摘要。",
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::OK, "{body}");
+                    assert!(body.contains(&format!(
+                        "{} seed batches of 100 model text items completed ({} model text items)",
+                        batch - 1,
+                        (batch - 1) * 100
+                    )));
+                    assert!(!body.contains("-item-"));
+                }
+                let prompt = gui_timeline_read_profile_seed_prompt(batch);
+                // Exercise both normal title positions, including the first turn.
+                if batch % 2 == 1 {
+                    let (status, body) =
+                        read_profile_prompt(&client, &fixture, &session_title_prompt(&prompt))
+                            .await;
+                    assert_eq!(status, StatusCode::OK, "{body}");
+                    assert!(body.contains("Fixture Session"));
+                }
+                let (status, body) = read_profile_prompt(&client, &fixture, &prompt).await;
+                assert_eq!(status, StatusCode::OK, "batch {batch}: {body}");
+                let done = body
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter(|data| *data != "[DONE]")
+                    .map(|data| serde_json::from_str::<Value>(data).unwrap())
+                    .filter(|event| event["type"] == "response.output_item.done")
+                    .count();
+                assert_eq!(done, 100, "batch {batch}");
+                completed_items += done;
+                if batch % 2 == 0 {
+                    let (status, body) =
+                        read_profile_prompt(&client, &fixture, &session_title_prompt(&prompt))
+                            .await;
+                    assert_eq!(status, StatusCode::OK, "{body}");
+                    assert!(body.contains("Fixture Session"));
+                }
+            }
+            assert_eq!(completed_items, 20_000);
+            let requests = fixture.finish().await.unwrap();
+            assert_eq!(requests.len(), 400 + if compact { 199 } else { 0 });
+            assert!(requests.iter().all(|request| request.accepted));
+        }
+    }
+
+    #[tokio::test]
+    async fn read_profile_rejects_early_repeated_or_inexact_compaction_and_missing_batches() {
+        let fixture = FixtureServer::start(gui_timeline_read_profile_seed_script())
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let compact = "Preserve profile history.\n\n\n请根据以上完整上下文生成压缩摘要。";
+        assert_eq!(
+            read_profile_prompt(&client, &fixture, compact).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            read_profile_prompt(&client, &fixture, &gui_timeline_read_profile_seed_prompt(1))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        // The exact last prompt is required; a marker elsewhere is insufficient.
+        assert_eq!(
+            read_profile_prompt(&client, &fixture, &format!("{compact}\nUnrelated request."))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            read_profile_prompt(&client, &fixture, compact).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            read_profile_prompt(&client, &fixture, compact).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        let report = fixture.shutdown().await.unwrap();
+        assert!(!report.remaining_optional, "199 required turns remain");
+        assert_eq!(
+            report
+                .requests
+                .iter()
+                .filter(|request| !request.accepted)
+                .count(),
+            3
+        );
+        assert!(report.verify().is_err());
+    }
 
     #[tokio::test]
     async fn seed_batches_finish_with_and_without_text_compaction() {

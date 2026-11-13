@@ -120,11 +120,11 @@ return single(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult Function( BridgeDisplayRecord record)?  single,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult Function( BridgeDisplayRecord record,  BridgeSingleVisibility visibility)?  single,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work() when work != null:
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single() when single != null:
-return single(_that.record);case _:
+return single(_that.record,_that.visibility);case _:
   return orElse();
 
 }
@@ -142,11 +142,11 @@ return single(_that.record);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)  work,required TResult Function( BridgeDisplayRecord record)  single,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)  work,required TResult Function( BridgeDisplayRecord record,  BridgeSingleVisibility visibility)  single,}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work():
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single():
-return single(_that.record);}
+return single(_that.record,_that.visibility);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -160,11 +160,11 @@ return single(_that.record);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult? Function( BridgeDisplayRecord record)?  single,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeWorkSummary summary,  BridgeDisplayBlockRef members)?  work,TResult? Function( BridgeDisplayRecord record,  BridgeSingleVisibility visibility)?  single,}) {final _that = this;
 switch (_that) {
 case BridgeDisplayBlockBody_Work() when work != null:
 return work(_that.summary,_that.members);case BridgeDisplayBlockBody_Single() when single != null:
-return single(_that.record);case _:
+return single(_that.record,_that.visibility);case _:
   return null;
 
 }
@@ -246,10 +246,11 @@ as BridgeDisplayBlockRef,
 
 
 class BridgeDisplayBlockBody_Single extends BridgeDisplayBlockBody {
-  const BridgeDisplayBlockBody_Single({required this.record}): super._();
+  const BridgeDisplayBlockBody_Single({required this.record, required this.visibility}): super._();
 
 
  final  BridgeDisplayRecord record;
+ final  BridgeSingleVisibility visibility;
 
 /// Create a copy of BridgeDisplayBlockBody
 /// with the given fields replaced by the non-null parameter values.
@@ -261,18 +262,18 @@ $BridgeDisplayBlockBody_SingleCopyWith<BridgeDisplayBlockBody_Single> get copyWi
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayBlockBody_Single&&(identical(other.record, record) || other.record == record));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeDisplayBlockBody_Single&&(identical(other.record, record) || other.record == record)&&(identical(other.visibility, visibility) || other.visibility == visibility));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,record);
+    return Object.hash(runtimeType,record,visibility);
 }
 
 @override
 String toString() {
-    return 'BridgeDisplayBlockBody.single(record: $record)';
+    return 'BridgeDisplayBlockBody.single(record: $record, visibility: $visibility)';
 }
 
 
@@ -283,7 +284,7 @@ abstract mixin class $BridgeDisplayBlockBody_SingleCopyWith<$Res> implements $Br
   factory $BridgeDisplayBlockBody_SingleCopyWith(BridgeDisplayBlockBody_Single value, $Res Function(BridgeDisplayBlockBody_Single) _then) = _$BridgeDisplayBlockBody_SingleCopyWithImpl;
 @useResult
 $Res call({
- BridgeDisplayRecord record
+ BridgeDisplayRecord record, BridgeSingleVisibility visibility
 });
 
 
@@ -300,10 +301,11 @@ class _$BridgeDisplayBlockBody_SingleCopyWithImpl<$Res>
 
 /// Create a copy of BridgeDisplayBlockBody
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? record = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? record = null,Object? visibility = null,}) {
   return _then(BridgeDisplayBlockBody_Single(
 record: null == record ? _self.record : record // ignore: cast_nullable_to_non_nullable
-as BridgeDisplayRecord,
+as BridgeDisplayRecord,visibility: null == visibility ? _self.visibility : visibility // ignore: cast_nullable_to_non_nullable
+as BridgeSingleVisibility,
   ));
 }
 

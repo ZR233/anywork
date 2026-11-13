@@ -11,7 +11,6 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../composer/composer.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
@@ -308,13 +307,11 @@ class _TimelineConnectorBodyState
           return ConversationCurrentConnector(
             key: ValueKey(('work', lease.generation)),
             section: ConversationLiveSection.work,
-            managedByViewModel: true,
             workSlice: workSlice,
             onLoadOlder: notifier.loadOlderTimelineWork,
             onReturnToLatest: notifier.returnToLatestTimelineWork,
-            session: ref.watch(threadSessionStoreProvider(threadId)),
+            threadId: threadId,
             content: lease.content,
-            live: lease.live,
             liveUnit: lease.liveUnit,
             registerDisplay: lease.registerCurrentDisplay,
             images: lease.imageResources,

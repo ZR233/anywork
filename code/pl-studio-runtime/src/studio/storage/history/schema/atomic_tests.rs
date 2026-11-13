@@ -28,6 +28,7 @@ impl MigratorTraitSelf for PublishedV11 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|migration| {
@@ -69,6 +70,7 @@ impl MigratorTraitSelf for PublishedV9 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|migration| {
@@ -115,6 +117,7 @@ impl MigratorTraitSelf for PublishedV10 {
                     | DISPLAY_SNAPSHOTS
                     | DISPLAY_OBSERVATIONS
                     | TOOL_WORK
+                    | VISIBLE_TAIL_WORKGROUPS
             )
         })
         .filter(|migration| {

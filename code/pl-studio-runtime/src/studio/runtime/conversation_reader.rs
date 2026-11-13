@@ -832,15 +832,6 @@ impl ConversationReader {
             {
                 let content = content.content();
                 let bytes = content.data.range(range.offset, range.max_bytes as usize)?;
-                tracing::debug!(
-                    target: "conversation_work",
-                    thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                    content_bytes = bytes.as_bytes().len(),
-                    content_database_id = reference.database_id.as_str(),
-                    content_target = ?reference.target,
-                    content_offset = range.offset,
-                    "content range completed"
-                );
                 self.ensure()?;
                 return Ok(ContentWindow {
                     offset: range.offset,
@@ -875,15 +866,6 @@ impl ConversationReader {
                         .ok_or_else(stale)?;
                     let data = core::ContentData::Bytes(entry.payload.clone());
                     let bytes = data.range(range.offset, range.max_bytes as usize)?;
-                    tracing::debug!(
-                        target: "conversation_work",
-                        thread_id = self.thread_id(), trace_id = self.subscription_id(),
-                        content_bytes = bytes.as_bytes().len(),
-                        content_database_id = reference.database_id.as_str(),
-                        content_target = ?reference.target,
-                        content_offset = range.offset,
-                        "content range completed"
-                    );
                     self.ensure()?;
                     return Ok(ContentWindow {
                         offset: range.offset,
@@ -918,15 +900,6 @@ impl ConversationReader {
             })
             .await?;
         self.ensure()?;
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id = self.thread_id(), trace_id = self.subscription_id(),
-            content_bytes = window.bytes.as_bytes().len(),
-            content_database_id = reference.database_id.as_str(),
-            content_target = ?reference.target,
-            content_offset = range.offset,
-            "content range completed"
-        );
         Ok(ContentWindow {
             offset: window.offset,
             bytes: window.bytes.as_bytes().to_vec(),
@@ -1084,6 +1057,8 @@ impl ContentWatch {
 pub(super) struct ReadObservation {
     pub(super) reader: ConversationReader,
     changed: Option<watch::Receiver<u64>>,
+    /// Fixed at registration; dropping a live watch during close/seal cannot grant this status.
+    fixed_snapshot: bool,
     slot_changed: watch::Receiver<u64>,
     initial: bool,
     cancel: CancellationToken,
@@ -1094,9 +1069,11 @@ impl ReadObservation {
     pub(super) fn new(reader: ConversationReader, changed: Option<watch::Receiver<u64>>) -> Self {
         let (_, slot_changed) = reader.inner.slot.capture();
         let cancel = reader.inner.cancel.child_token();
+        let fixed_snapshot = changed.is_none();
         Self {
             reader,
             changed,
+            fixed_snapshot,
             slot_changed,
             initial: true,
             cancel,
@@ -1104,6 +1081,9 @@ impl ReadObservation {
     }
     pub(super) fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+    pub(super) fn is_fixed_snapshot(&self) -> bool {
+        self.fixed_snapshot
     }
     pub(super) fn request_close(&self) {
         self.cancel.cancel();

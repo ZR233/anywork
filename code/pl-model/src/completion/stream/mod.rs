@@ -7,6 +7,8 @@
 //! （`trace_projection`）是独立子状态机。
 
 mod accumulator;
+#[cfg(test)]
+mod admission_tests;
 pub(super) mod chat_presentation;
 pub(crate) mod decode;
 pub(crate) mod event;
@@ -21,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
+use tracing::Instrument;
 
 use pl_protocol::PureError;
 use pl_protocol::trace::{AgentEventSender, TraceEventSink};
@@ -32,6 +35,14 @@ pub(crate) use decode::{CompletionEventStream, OpenAiRawEventStream, decode_raw_
 pub(crate) use tool_stream::ToolStream;
 
 pub(crate) const MAX_COMPLETION_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+enum StreamAdmissionError {
+    #[error(transparent)]
+    Completion(#[from] PureError),
+    #[error(transparent)]
+    Member(#[from] pl_core::model::ModelMemberError),
+}
 
 /// 流收集期间的宿主上下文：事件输出、trace 目标与取消信号。
 pub(crate) struct StreamCollectContext<'a> {
@@ -45,6 +56,14 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) generation: u32,
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        thread_id = context.trace.as_ref().map(|trace| trace.session_id.as_str()),
+        request_id = context.trace.as_ref().map(|trace| trace.inference_id.as_str()),
+        generation = context.generation,
+    )
+)]
 pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
     mut stream: CompletionEventStream,
     context: StreamCollectContext<'_>,
@@ -70,7 +89,12 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 Some(timeout) => tokio::time::timeout(timeout, stream.next()).await,
                 None => Ok(stream.next().await),
             }
-        };
+        }
+        .instrument(tracing::debug_span!(
+            "model_wait",
+            stage = "provider_read",
+            stage_started_at = ?std::time::Instant::now(),
+        ));
         let next_event = match cancellation.as_ref() {
             Some(token) => {
                 tokio::select! {
@@ -134,9 +158,17 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 for identity in accumulator.take_started_members() {
                     if let Some(sender) = members.as_ref() {
                         sender
-                            .start(generation, identity)
-                            .await
-                            .map_err(|error| PureError::LlmError(error.to_string()))?;
+                            .start(generation, identity, cancellation.as_ref())
+                            .await?;
+                    }
+                }
+                for identity in accumulator.take_content_available_members() {
+                    if let Some(sender) = members.as_ref() {
+                        // Preserve the reliable first-content position before the next normalized
+                        // event, even if progress coalesces or cancellation arrives while awaiting.
+                        sender
+                            .content_available(generation, identity, cancellation.as_ref())
+                            .await?;
                     }
                 }
                 if let Some((item, state)) = accumulator.take_completed_member()
@@ -147,16 +179,39 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                     // No cancellation select here: a fact already sent belongs to this original call
                     // until the owner's explicit admission reply. Do not poll another provider event.
                     sender
-                        .submit(generation, item.provider_item_id.clone(), payload)
-                        .await
-                        .map_err(|error| PureError::LlmError(error.to_string()))?;
+                        .submit(
+                            generation,
+                            item.provider_item_id.clone(),
+                            payload,
+                            cancellation.as_ref(),
+                        )
+                        .await?;
                 }
             }
-            Ok::<(), PureError>(())
+            Ok::<(), StreamAdmissionError>(())
         }
         .await;
         if let Err(error) = admission {
             on_stream_end();
+            if matches!(
+                error,
+                StreamAdmissionError::Member(pl_core::model::ModelMemberError::Cancelled)
+            ) {
+                accumulator.cancel_attempt("model invocation cancelled", event_tx);
+                let mut failure = crate::completion::CompletionFailure::cancelled(
+                    PureError::LlmError("model invocation cancelled".to_string()),
+                    Box::new(accumulator.accounting()),
+                )
+                .with_optional_model_observation(accumulator.model_observation());
+                // take_completed_member removes only its notification cursor. The immutable
+                // item remains in the original presentation vector until this failure takes it.
+                failure.presentation_items = accumulator.take_presentation_items();
+                return Err(failure);
+            }
+            let error = match error {
+                StreamAdmissionError::Completion(error) => error,
+                StreamAdmissionError::Member(error) => PureError::LlmError(error.to_string()),
+            };
             accumulator.fail_attempt(&error, event_tx);
             return Err(crate::completion::CompletionFailure {
                 source: Box::new(error),

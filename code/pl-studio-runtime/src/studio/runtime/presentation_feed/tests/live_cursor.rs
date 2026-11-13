@@ -14,6 +14,8 @@ async fn live_cursor_survives_member_status_change_and_only_structure_makes_it_s
     let result = async {
         let mut h = Harness::new(&env).await?;
         h.effect(vec![start("earlier-body", false)], vec![]).await?;
+        h.content_available(vec![start("earlier-body", false)])
+            .await?;
         h.effect(vec![start("first", true), start("second", true)], vec![])
             .await?;
         let mut feed = env
@@ -52,6 +54,7 @@ async fn live_cursor_survives_member_status_change_and_only_structure_makes_it_s
         assert_eq!(terminal.entries[0].member_key, active.entries[0].member_key);
         assert!(terminal.entries[0].record.atom.completion_item_id.is_some());
         h.effect(vec![start("body", false)], vec![]).await?;
+        h.content_available(vec![start("body", false)]).await?;
         let stale = feed
             .reader()
             .load_live_older(&before, demand(1))

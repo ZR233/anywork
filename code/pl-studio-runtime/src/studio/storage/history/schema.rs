@@ -22,6 +22,7 @@ mod timeline_background_tail;
 mod timeline_items;
 mod timeline_thinking_summary;
 mod tool_work;
+pub(in crate::studio::storage::history) mod visible_tail_workgroups;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
     migrate_unconsumed_input_bindings,
@@ -139,6 +140,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(display_snapshots::DisplaySnapshots),
             Box::new(display_observations::DisplayObservations),
             Box::new(tool_work::ToolWork),
+            Box::new(visible_tail_workgroups::VisibleTailWorkgroups),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -193,6 +195,7 @@ const IMMUTABLE_COMPLETION_RUNS: &str = "m20261110_000001_history_immutable_comp
 const DISPLAY_SNAPSHOTS: &str = "m20261109_000001_display_snapshots";
 const DISPLAY_OBSERVATIONS: &str = "m20261111_000001_display_observations";
 const TOOL_WORK: &str = "m20261112_000001_history_tool_work";
+const VISIBLE_TAIL_WORKGROUPS: &str = "m20261112_000001_visible_tail_workgroups";
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 #[cfg(test)]
@@ -416,18 +419,22 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let observations_pending = pending
         .iter()
         .any(|step| step.name() == DISPLAY_OBSERVATIONS);
+    let tail_pending = pending
+        .iter()
+        .any(|step| step.name() == VISIBLE_TAIL_WORKGROUPS);
     // Format and migration bookkeeping must describe the same content boundary. Lifecycle
     // recovery being pending never excuses a completed content step with an older marker.
     ensure!(
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
-            && (source_classification_pending || matches!(version, 15..=20))
+            && (source_classification_pending || matches!(version, 15..=21))
             && thinking_summary_pending == (version < 16)
             && background_tail_pending == (version < 17)
             && runs_pending == (version < 18)
             && display_pending == (version < 19)
             && observations_pending == (version < 20)
+            && tail_pending == (version < 21)
             && match version {
                 1..=8 => retire_pending && atomic_pending && metering_pending && combined_pending,
                 9 => !retire_pending && atomic_pending && metering_pending && combined_pending,
@@ -439,7 +446,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12..=20 => {
+                12..=21 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -481,6 +488,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                             | DISPLAY_SNAPSHOTS
                             | DISPLAY_OBSERVATIONS
                             | TOOL_WORK
+                            | VISIBLE_TAIL_WORKGROUPS
                     ) || is_lifecycle_migration(step.name())
                 }),
                 "current history format has pending earlier content migrations; existing data preserved"
@@ -492,12 +500,22 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 demand_conversation::validate_tables(db).await?;
             }
             match version {
+                20 => {
+                    display_observations::validate(db).await?;
+                    ensure!(
+                        pending.iter().all(|step| matches!(
+                            step.name(),
+                            TOOL_WORK | VISIBLE_TAIL_WORKGROUPS
+                        ) || is_lifecycle_migration(step.name())),
+                        "schema 20 has pending earlier content migrations; existing data preserved"
+                    );
+                }
                 19 => {
                     display_snapshots::validate(db).await?;
                     ensure!(
                         pending.iter().all(|step| matches!(
                             step.name(),
-                            DISPLAY_OBSERVATIONS | TOOL_WORK
+                            DISPLAY_OBSERVATIONS | TOOL_WORK | VISIBLE_TAIL_WORKGROUPS
                         ) || is_lifecycle_migration(step.name())),
                         "schema 19 has pending earlier content migrations; existing data preserved"
                     );
@@ -507,7 +525,10 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                     ensure!(
                         pending.iter().all(|step| matches!(
                             step.name(),
-                            DISPLAY_SNAPSHOTS | DISPLAY_OBSERVATIONS | TOOL_WORK
+                            DISPLAY_SNAPSHOTS
+                                | DISPLAY_OBSERVATIONS
+                                | TOOL_WORK
+                                | VISIBLE_TAIL_WORKGROUPS
                         ) || is_lifecycle_migration(step.name())),
                         "schema 18 has pending earlier content migrations; existing data preserved"
                     );
@@ -527,6 +548,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
                                     | TOOL_WORK
+                                    | VISIBLE_TAIL_WORKGROUPS
                                     | ATOM_METADATA
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
@@ -553,6 +575,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
                                     | TOOL_WORK
+                                    | VISIBLE_TAIL_WORKGROUPS
                                     | BACKGROUND_RESULTS
                                     | TIMELINE_ITEMS
                                     | TIMELINE_THINKING_SUMMARY
@@ -580,6 +603,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
                                     | TOOL_WORK
+                                    | VISIBLE_TAIL_WORKGROUPS
                                     | TIMELINE_THINKING_SUMMARY
                                     | TIMELINE_BACKGROUND_TAIL
                             ) || is_lifecycle_migration(step.name())
@@ -609,6 +633,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
                                     | TOOL_WORK
+                                    | VISIBLE_TAIL_WORKGROUPS
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 15 has pending earlier content migrations; existing data preserved"
@@ -636,6 +661,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                     | DISPLAY_SNAPSHOTS
                                     | DISPLAY_OBSERVATIONS
                                     | TOOL_WORK
+                                    | VISIBLE_TAIL_WORKGROUPS
                             ) || is_lifecycle_migration(step.name())
                         }),
                         "schema 16 has pending earlier content migrations; existing data preserved"
@@ -663,6 +689,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                                 | DISPLAY_SNAPSHOTS
                                 | DISPLAY_OBSERVATIONS
                                 | TOOL_WORK
+                                | VISIBLE_TAIL_WORKGROUPS
                         ) || is_lifecycle_migration(step.name())),
                         "schema 17 has pending earlier content migrations; existing data preserved"
                     );
@@ -853,7 +880,7 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
-    display_observations::validate(db).await
+    visible_tail_workgroups::validate(db).await
 }
 
 async fn validate_schema16_structure(db: &impl ConnectionTrait) -> Result<()> {
@@ -1356,6 +1383,7 @@ impl MigrationTrait for CombinedContent {
                             | DISPLAY_SNAPSHOTS
                             | DISPLAY_OBSERVATIONS
                             | TOOL_WORK
+                            | VISIBLE_TAIL_WORKGROUPS
                             | TIMELINE_THINKING_SUMMARY
                             | TIMELINE_BACKGROUND_TAIL
                     ) && !is_lifecycle_migration(step.name())

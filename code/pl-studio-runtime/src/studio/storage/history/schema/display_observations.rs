@@ -1,11 +1,13 @@
 //! Schema 19 -> 20: explicit display cuts, without inventing a missing boundary observation.
 use super::*;
 use crate::studio::thread_projection::presentation::{
-    DisplayHeader, DisplayMemberWrite, display_member_key, member_key, record,
+    DisplayMemberWrite, display_member_key, member_key, record,
 };
+pub(super) mod legacy;
+use legacy::{DisplayBlockBody, DisplayHeader};
 use pl_protocol::{
-    ChatAtom, ChatAtomLifecycle, ChatFactPosition, DisplayBlockBody, DisplayContentSource,
-    DisplayMemberHead, WorkSummary,
+    ChatAtom, ChatAtomLifecycle, ChatFactPosition, DisplayContentSource, DisplayMemberHead,
+    WorkSummary,
 };
 
 pub(super) struct DisplayObservations;
@@ -756,11 +758,8 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
     ))
     .await?;
     let (published, effect) = conversation::display::watermarks(db).await?;
-    let last = conversation::display::history_heads(db, i64::MAX as u64, None, 1).await?;
-    ensure!(
-        last.first().map_or(0, |h| h.history_pos) == published,
-        "display published head is missing"
-    );
+    let last = legacy::latest_published(db).await?;
+    ensure!(last == published, "display published head is missing");
     let row = db
         .query_one_raw(statement(
             "SELECT applied_write_seq FROM history_meta WHERE id=1",
@@ -778,6 +777,57 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Through20;
+    impl MigratorTraitSelf for Through20 {
+        fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+            Migrator {
+                thread_id: "display-snapshot-migration".into(),
+                execution_identity: None,
+                bot_root: None,
+            }
+            .migrations()
+            .into_iter()
+            .take_while(|step| step.name() != VISIBLE_TAIL_WORKGROUPS)
+            .collect()
+        }
+    }
+    async fn migrate20(db: &DatabaseConnection) -> Result<()> {
+        Through20.up(db, None).await?;
+        Ok(())
+    }
+    struct LegacyCut {
+        open: Vec<DisplayHeader>,
+        unfinished: Vec<DisplayMemberWrite>,
+        published: u64,
+    }
+    async fn inspect20(db: &impl ConnectionTrait) -> Result<LegacyCut> {
+        let open = db.query_all_raw(statement(
+            "SELECT header FROM conversation_display_blocks WHERE history_pos IS NULL ORDER BY block_order", vec![],
+        )).await?.into_iter().map(|row| Ok(serde_json::from_slice::<DisplayHeader>(&row.try_get::<Vec<u8>>("", "header")?)?))
+            .collect::<Result<Vec<_>>>()?;
+        let mut unfinished = Vec::new();
+        for header in &open {
+            assert_eq!(header.version, 2);
+            if header.sealed {
+                continue;
+            }
+            let rows = db.query_all_raw(statement(
+                "SELECT metadata FROM conversation_display_members WHERE block_id=? AND terminal=0 ORDER BY member_order",
+                vec![header.id.clone().into()],
+            )).await?;
+            for row in rows {
+                unfinished.push(serde_json::from_slice(
+                    &row.try_get::<Vec<u8>>("", "metadata")?,
+                )?);
+            }
+        }
+        Ok(LegacyCut {
+            open,
+            unfinished,
+            published: conversation::display::watermarks(db).await?.0,
+        })
+    }
 
     fn at(effect_seq: u64, suborder: u32) -> ChatFactPosition {
         ChatFactPosition {
@@ -1007,7 +1057,7 @@ mod tests {
             "UPDATE history_meta SET applied_write_seq=8,display_applied_effect=8",
         )
         .await?;
-        prepare(&db, "display-snapshot-migration", Preparation::Schema, None).await?;
+        migrate20(&db).await?;
         let g1 = conversation::display::member_page(&db, "G1", None, 8).await?;
         let a_start = g1.iter().find(|m| m.head.record.atom.id == "A").unwrap();
         assert_eq!(a_start.head.member_key, "old-G1-A");
@@ -1028,7 +1078,7 @@ mod tests {
         assert_ne!(g2[1].head.member_key, a_start.head.member_key);
         assert_eq!(g2[1].head.record.start_fact, None);
         assert_eq!(g2[1].head.record.end_fact, Some(at(6, 1)));
-        let recovery = conversation::display::recovery(&db).await?;
+        let recovery = inspect20(&db).await?;
         let group = recovery.open.iter().find(|h| h.id == "G2").unwrap();
         assert!(group.sealed);
         assert_eq!(group.boundary, Some(at(7, 1)));
@@ -1222,11 +1272,7 @@ mod tests {
             .await?;
             // A failed conversion cannot change either source rows or the Applied ledger.
             db.execute_unprepared("CREATE TRIGGER reject_v20 BEFORE UPDATE ON history_meta WHEN NEW.schema_version=20 BEGIN SELECT RAISE(ABORT,'injected'); END").await?;
-            assert!(
-                prepare(&db, "display-snapshot-migration", Preparation::Schema, None)
-                    .await
-                    .is_err()
-            );
+            assert!(migrate20(&db).await.is_err());
             assert_eq!(version(&db).await?, 19);
             db.execute_unprepared("DROP TRIGGER reject_v20").await?;
             db.execute_unprepared(
@@ -1234,16 +1280,14 @@ mod tests {
             )
             .await?;
             assert!(
-                prepare(&db, "display-snapshot-migration", Preparation::Schema, None)
-                    .await
-                    .is_err(),
+                migrate20(&db).await.is_err(),
                 "an unproved target creation must not be guessed from block order"
             );
             assert_eq!(version(&db).await?, 19);
             fact(&db, &other, "start", other_start).await?;
-            prepare(&db, "display-snapshot-migration", Preparation::Schema, None).await?;
+            migrate20(&db).await?;
             assert_eq!(version(&db).await?, 20);
-            let recovery = conversation::display::recovery(&db).await?;
+            let recovery = inspect20(&db).await?;
             let closing = recovery.open.iter().find(|h| h.id == "closing").unwrap();
             assert!(closing.sealed);
             assert_eq!(closing.history_pos, None);
@@ -1301,7 +1345,7 @@ mod tests {
                     original.try_get::<Vec<u8>>("", column)?
                 );
             }
-            prepare(&db, "display-snapshot-migration", Preparation::Schema, None).await?;
+            migrate20(&db).await?;
             assert_eq!(
                 conversation::display::member_page(&db, "open", None, 8)
                     .await?

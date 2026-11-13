@@ -102,6 +102,7 @@ void main() {
           from: 1,
           through: 1,
           live: LiveDisplayWindow(
+            currentWorkId: null,
             revision: 2,
             historyThrough: 1,
             executionPresent: true,
