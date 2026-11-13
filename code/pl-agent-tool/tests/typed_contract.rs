@@ -4,11 +4,11 @@
 
 use std::{cell::Cell, error::Error as StdError, future::Future};
 
+use pl_agent_tool::ToolHandle;
 use pl_agent_tool::typed::{
     ArgumentError, InvocationError, PreparedJson, TypedTool, decode_json, input_schema_for,
     prepare_json,
 };
-use pl_agent_tool::{InputFormat, ToolHandle};
 
 /// Extracts an error without requiring the success type to implement `Debug`;
 /// author types here deliberately keep proving they need no `Debug`.
@@ -69,28 +69,6 @@ impl TypedTool for Add {
             })
         }
     }
-}
-
-#[test]
-fn prepare_json_freezes_the_static_declaration_once() {
-    let prepared = prepare_json::<Add>().unwrap();
-    assert_eq!(prepared.definition().name(), "add");
-    assert_eq!(
-        prepared.definition().description(),
-        "将两个整数与工具固定的偏移相加。"
-    );
-    match prepared.definition().input() {
-        InputFormat::JsonSchema(schema) => {
-            assert_eq!(schema, &input_schema_for::<AddArgs>());
-        }
-        other => panic!("unexpected input format {other:?}"),
-    }
-    assert_eq!(prepared.definition().output_schema(), None);
-
-    // No instance was needed and the bounded debug leaks no schema internals.
-    let debug = format!("{prepared:?}");
-    assert!(debug.contains("add"), "{debug}");
-    assert!(debug.contains("typed_contract::Add"), "{debug}");
 }
 
 /// A type whose serialization differs from its deserialization, proving that

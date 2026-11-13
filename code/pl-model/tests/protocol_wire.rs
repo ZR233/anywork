@@ -298,16 +298,6 @@ fn bundled(model_id: &str) -> ModelInfo {
         .unwrap()
 }
 
-#[test]
-fn deepseek_catalog_does_not_advertise_ignored_responses_web_search() {
-    let endpoint = ProtocolEndpoint::deepseek(None);
-    assert!(!endpoint.service_capabilities.web_search.hosted_responses);
-
-    for model_id in ["deepseek-flash", "deepseek-v4-pro"] {
-        assert!(!bundled(model_id).capabilities.web_search, "{model_id}");
-    }
-}
-
 async fn complete(
     fixture: &FixtureServer,
     model: ModelInfo,

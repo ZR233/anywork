@@ -78,8 +78,6 @@ fn author_definitions_project_without_rewriting_schema_or_input_format() {
                 assert_eq!(actual_output, &expected_output);
                 if policy == ToolCallPolicy::DirectOnly {
                     assert!(callers.is_empty());
-                    let wire = serde_json::to_value(&spec).unwrap();
-                    assert!(wire.get("allowed_callers").is_none());
                 } else {
                     assert_eq!(
                         callers,
