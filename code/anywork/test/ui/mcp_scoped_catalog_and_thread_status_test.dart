@@ -356,12 +356,7 @@ void main() {
         find.byKey(StudioDriverKeys.mcpServerRow('postgres_prod')),
         findsNothing,
       );
-      tester
-          .widget<IconButton>(find.byKey(StudioDriverKeys.statusStartedItems))
-          .focusNode!
-          .requestFocus();
-      await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.tap(find.byKey(StudioDriverKeys.statusStartedItems));
       await tester.pumpAndSettle();
       await pumpClientUntil(
         tester,

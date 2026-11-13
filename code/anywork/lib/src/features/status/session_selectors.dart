@@ -79,7 +79,6 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
 }
 
 class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
-  final MenuController _controller = MenuController();
   final FocusNode _triggerFocus = FocusNode(
     debugLabel: 'session-selector-trigger',
   );
@@ -95,17 +94,16 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
   @override
   Widget build(BuildContext context) {
     return MenuAnchor(
-      controller: _controller,
       // RawMenuAnchor transfers focus here on pointer-open. Without the same
       // node on the trigger, Escape still reaches the previously focused input.
       childFocusNode: _triggerFocus,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [for (final item in widget.items) _buildRow(context, item)],
-      child: _buildTrigger(),
+      builder: (context, controller, child) => _buildTrigger(controller),
     );
   }
 
-  Widget _buildTrigger() {
+  Widget _buildTrigger(MenuController controller) {
     return Tooltip(
       message: widget.tooltip,
       child: Semantics(
@@ -116,10 +114,10 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
           focusNode: _triggerFocus,
           onPressed: _canOpen
               ? () {
-                  if (_controller.isOpen) {
-                    _controller.close();
+                  if (controller.isOpen) {
+                    controller.close();
                   } else {
-                    _controller.open();
+                    controller.open();
                   }
                 }
               : widget.onBlockedTap,

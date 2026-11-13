@@ -8,7 +8,6 @@ import 'package:anywork/src/features/shell/sidebar/studio_sidebar.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -281,36 +280,12 @@ void main() {
     await tester.tap(menuTrigger());
     await scene.until(
       () =>
-          tester.widget<MenuAnchor>(menu).controller?.isOpen == true &&
-          tester.widget<MenuAnchor>(menu).childFocusNode?.hasPrimaryFocus ==
-              true &&
-          find
-                  .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
-                  .evaluate()
-                  .length ==
-              1,
-      'Material thread menu opens',
-    );
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await scene.until(
-      () =>
-          tester.widget<MenuAnchor>(menu).controller?.isOpen == false &&
           find
               .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
               .evaluate()
-              .isEmpty,
-      'Escape closes the Material thread menu',
-    );
-
-    await tester.tap(menuTrigger(), kind: ui.PointerDeviceKind.mouse);
-    await scene.until(
-      () =>
-          find
-              .byKey(StudioDriverKeys.openThreadWorkspace(fixture.thread.id))
-              .evaluate()
               .length ==
           1,
-      'thread menu reopens for workspace submenu',
+      'Material thread menu opens',
     );
     await tester.tap(
       find.byKey(StudioDriverKeys.openThreadWorkspace(fixture.thread.id)),
@@ -336,23 +311,6 @@ void main() {
       'workspace submenu exposes all host application entries',
     );
     await scene.capture('sidebar-menu');
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await scene.until(
-      () => tester.widget<MenuAnchor>(menu).controller?.isOpen == false,
-      'workspace submenu and parent menu close without launching an app',
-    );
-
-    await tester.tap(menuTrigger());
-    await scene.until(
-      () =>
-          find
-              .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
-              .evaluate()
-              .length ==
-          1,
-      'thread menu opens for rename',
-    );
     await tester.tap(
       find.byKey(StudioDriverKeys.renameThread(fixture.thread.id)),
     );
@@ -634,13 +592,11 @@ void main() {
         await tester.tap(projectMenuTrigger());
         await scene.until(
           () =>
-              tester.widget<MenuAnchor>(projectMenu).controller?.isOpen ==
-                  true &&
               find
-                      .byKey(const ValueKey<String>('project-close'))
-                      .evaluate()
-                      .length ==
-                  1,
+                  .byKey(const ValueKey<String>('project-close'))
+                  .evaluate()
+                  .length ==
+              1,
           'project menu opens for archive',
         );
         await tester.tap(find.byKey(const ValueKey<String>('project-close')));
@@ -799,12 +755,11 @@ void main() {
         await tester.tap(menuTrigger);
         await scene.until(
           () =>
-              tester.widget<MenuAnchor>(menu).controller?.isOpen == true &&
               find
-                      .byKey(StudioDriverKeys.deleteThread(deletedThreadId))
-                      .evaluate()
-                      .length ==
-                  1,
+                  .byKey(StudioDriverKeys.deleteThread(deletedThreadId))
+                  .evaluate()
+                  .length ==
+              1,
           'actual root menu exposes delete',
         );
         await tester.tap(

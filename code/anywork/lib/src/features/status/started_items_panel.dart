@@ -23,32 +23,17 @@ class StartedItemsEntry extends StatefulWidget {
 }
 
 class _StartedItemsEntryState extends State<StartedItemsEntry> {
-  final _controller = MenuController();
   final _focusNode = FocusNode();
-  final _scrollController = ScrollController();
-  bool _menuOpen = false;
-
-  void _onMenuOpen() {
-    if (mounted && !_menuOpen) setState(() => _menuOpen = true);
-  }
-
-  void _onMenuClose() {
-    if (mounted && _menuOpen) setState(() => _menuOpen = false);
-  }
 
   @override
   void dispose() {
     _focusNode.dispose();
-    _scrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => MenuAnchor(
-    controller: _controller,
     childFocusNode: _focusNode,
-    onOpen: _onMenuOpen,
-    onClose: _onMenuClose,
     menuChildren: [
       SizedBox(
         width: math.max(
@@ -60,12 +45,13 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
             maxHeight: math.max(0, MediaQuery.sizeOf(context).height - 96),
           ),
           child: SingleChildScrollView(
-            controller: _scrollController,
             primary: false,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: StartedItemsConnector(
-              threadId: widget.threadId,
-              observe: _menuOpen,
+            child: Builder(
+              builder: (context) => StartedItemsConnector(
+                threadId: widget.threadId,
+                observe: MenuController.maybeIsOpenOf(context)!,
+              ),
             ),
           ),
         ),

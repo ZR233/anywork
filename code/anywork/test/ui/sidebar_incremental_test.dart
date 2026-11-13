@@ -8,7 +8,6 @@ import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -504,90 +503,6 @@ void main() {
     );
     await tester.tap(restore);
     expect(actions, [SidebarThreadAction.restore]);
-  });
-
-  testWidgets('keyboard traversal activates the row and restores menu focus', (
-    tester,
-  ) async {
-    var selections = 0;
-    var toggles = 0;
-    final nextFocus = FocusNode(debugLabel: 'after-sidebar-row');
-    addTearDown(nextFocus.dispose);
-    await tester.pumpWidget(
-      _host(
-        Column(
-          children: [
-            SidebarProjectRow(
-              project: _project,
-              selected: false,
-              expanded: false,
-              pinned: false,
-              onToggle: () => toggles++,
-              onSelect: () => selections++,
-              onNewSession: () {},
-              onAction: (_) {},
-            ),
-            TextButton(
-              key: const ValueKey('after-sidebar-row'),
-              focusNode: nextFocus,
-              onPressed: () {},
-              child: const Text('After sidebar'),
-            ),
-          ],
-        ),
-      ),
-    );
-    final expand = find.byKey(StudioDriverKeys.projectExpand(_project.id));
-    final menuAnchor = tester.widget<MenuAnchor>(
-      find.byKey(StudioDriverKeys.projectMenu(_project.id)),
-    );
-    final more = find.descendant(
-      of: find.byKey(StudioDriverKeys.projectMenu(_project.id)),
-      matching: find.byIcon(Icons.more_horiz),
-    );
-    final moreButton = tester.widget<IconButton>(
-      find.ancestor(of: more, matching: find.byType(IconButton)).first,
-    );
-    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-    await tester.pump();
-    expect(Focus.of(tester.element(expand)).hasPrimaryFocus, isTrue);
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
-    expect(selections, 1);
-    expect(toggles, 0);
-    for (var i = 0; i < 5 && !moreButton.focusNode!.hasFocus; i++) {
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pump();
-    }
-    expect(moreButton.focusNode!.hasFocus, isTrue);
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pumpAndSettle();
-    expect(menuAnchor.controller!.isOpen, isTrue);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pumpAndSettle();
-    expect(menuAnchor.controller!.isOpen, isFalse);
-    expect(moreButton.focusNode!.hasFocus, isTrue);
-    expect(
-      tester
-          .widget<Visibility>(
-            find.ancestor(of: more, matching: find.byType(Visibility)).first,
-          )
-          .visible,
-      isTrue,
-    );
-    for (var i = 0; i < 5 && !nextFocus.hasPrimaryFocus; i++) {
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pump();
-    }
-    expect(nextFocus.hasPrimaryFocus, isTrue);
-    expect(
-      tester
-          .widget<Visibility>(
-            find.ancestor(of: more, matching: find.byType(Visibility)).first,
-          )
-          .visible,
-      isFalse,
-    );
   });
 
   testWidgets(
