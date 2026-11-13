@@ -177,6 +177,16 @@ mod future_sizes {
             runtime.store.ensure_agent_execution_allowed("size")
         });
         check(
+            "first input admission",
+            |(runtime, request, thread): (
+                &'static StudioRuntime,
+                crate::studio::runtime::StudioSubmitPromptRequest,
+                ThreadRecord,
+            )| {
+                runtime.submit_prompt_for_owned_thread_with_lifecycle_lock(request, thread)
+            },
+        );
+        check(
             "workspace failure",
             |(runtime, thread, error): (
                 &'static StudioRuntime,

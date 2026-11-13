@@ -121,283 +121,290 @@ impl StudioRuntime {
         .await
     }
 
-    async fn submit_owned_prompt_with_admission(
-        &self,
+    fn submit_owned_prompt_with_admission<'a>(
+        &'a self,
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
         mode: AdmissionMode,
-        cancel: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<StudioSubmitPromptResponse> {
-        let StudioSubmitPromptRequest {
-            thread_id,
-            input,
-            options,
-        } = request;
-        validate_prompt_content(&input)?;
-        ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
-        let started = std::time::Instant::now();
-        let thread = self.ensure_thread_owner(&thread_id).await?;
-        let operation_started = std::time::Instant::now();
-        let _agent_operation = self
-            .require_session(&thread_id)?
-            .agent_operation(&thread_id)
-            .await;
-        tracing::debug!(
-            target: "prompt_submission",
-            thread_id,
-            input_id = input.input_id,
-            owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
-            operation_wait_us = operation_started.elapsed().as_micros() as u64,
-            "prompt thread admission acquired"
-        );
-        self.require_session(&thread_id)?
-            .ensure_agent_admission_open(&thread_id)?;
-        // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
-        let snapshot = thread.snapshot();
-        if let Some(previous) = snapshot
-            .inputs
-            .iter()
-            .find(|record| record.input.id == input.input_id)
-        {
-            #[derive(serde::Deserialize)]
-            struct AcceptedPrompt {
-                request: pl_protocol::studio::StudioPromptInput,
-                presentation: pl_protocol::MessagePresentation,
-            }
-            let accepted: AcceptedPrompt = serde_json::from_str(previous.input.payload.content())?;
-            anyhow::ensure!(
-                accepted.request == input && accepted.presentation == options.presentation,
-                "input identity conflicts with an accepted prompt"
-            );
-            return Ok(StudioSubmitPromptResponse {
+        cancel: Option<&'a tokio_util::sync::CancellationToken>,
+    ) -> impl std::future::Future<Output = Result<StudioSubmitPromptResponse>> + Send + 'a {
+        // First input, ordinary submission and queued input share this admission state. Allocate
+        // it before returning the future so callers do not inline its activation and snapshot
+        // state through every startup layer. Polling, cancellation and the lifecycle lock remain
+        // owned by the original caller; this does not spawn another task.
+        Box::pin(async move {
+            let StudioSubmitPromptRequest {
                 thread_id,
-                input_id: previous.input.id.clone(),
-                cursor: previous.accepted_sequence,
-            });
-        }
-        let terminal_retry = snapshot
-            .terminal_inputs
-            .iter()
-            .any(|identity| identity.id == input.input_id);
-        drop(snapshot);
-        if terminal_retry {
-            // Core's bounded terminal identity proves admission but no longer carries
-            // the original admission watermark. Wait for its original writer before
-            // answering, rather than rebuilding that receipt at today's commit.
-            ensure_submission_not_cancelled(cancel)?;
-            self.thread_observations
-                .synchronize(Some(&thread_id))
-                .await?;
-            ensure_submission_not_cancelled(cancel)?;
-        }
-        // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
-        // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
-        // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
-        // 索引无法给出摘要都按身份冲突拒绝，不能只凭 ID 返回旧回执。
-        let durable_receipt = match self.read_timeline_history(&thread_id).await {
-            Ok(history) => history.input_identity(&input.input_id).await?,
-            // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
-            // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
-            Err(error) if terminal_retry => return Err(error),
-            Err(_) => None,
-        };
-        if let Some(previous) = durable_receipt {
-            let expected = crate::studio::thread_projection::prompt_request_digest(
-                &input,
-                options.presentation,
-            );
-            match previous.request_digest.as_deref() {
-                Some(stored) => anyhow::ensure!(
-                    stored == expected,
-                    "input identity conflicts with an accepted prompt"
-                ),
-                None => bail!(
-                    "input identity was already accepted with an unverifiable body; use a new inputId"
-                ),
-            }
-            return Ok(StudioSubmitPromptResponse {
+                input,
+                options,
+            } = request;
+            validate_prompt_content(&input)?;
+            ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
+            let started = std::time::Instant::now();
+            let thread = self.ensure_thread_owner(&thread_id).await?;
+            let operation_started = std::time::Instant::now();
+            let _agent_operation = self
+                .require_session(&thread_id)?
+                .agent_operation(&thread_id)
+                .await;
+            tracing::debug!(
+                target: "prompt_submission",
                 thread_id,
-                input_id: input.input_id,
-                cursor: previous.entry.accepted_sequence,
-            });
-        }
-        anyhow::ensure!(
-            !terminal_retry,
-            "accepted input identity is missing from synchronized history"
-        );
-        // The caller's frozen route is a CAS against its canonical extension,
-        // not a Thread revision or the current mode default. Both route writes
-        // and input admission hold lifecycle_lock, so it cannot change between
-        // this check and the core admission. An already accepted input above
-        // keeps its original receipt even after a later route update.
-        if let Some(expected) = options.expected_model_route_revision {
-            let state = thread.snapshot();
-            let (record, _) = crate::studio::model_route::route_record(
-                &state,
-                thread_record.parent_thread_id.is_some(),
-            )?
-            .context("Thread has no saved model route")?;
-            if record.revision != expected {
-                return Err(crate::ConfigRuntimeError::StaleRevision {
-                    expected,
-                    actual: record.revision,
+                input_id = input.input_id,
+                owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
+                operation_wait_us = operation_started.elapsed().as_micros() as u64,
+                "prompt thread admission acquired"
+            );
+            self.require_session(&thread_id)?
+                .ensure_agent_admission_open(&thread_id)?;
+            // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
+            let snapshot = thread.snapshot();
+            if let Some(previous) = snapshot
+                .inputs
+                .iter()
+                .find(|record| record.input.id == input.input_id)
+            {
+                #[derive(serde::Deserialize)]
+                struct AcceptedPrompt {
+                    request: pl_protocol::studio::StudioPromptInput,
+                    presentation: pl_protocol::MessagePresentation,
                 }
-                .into());
-            }
-        }
-        // Validate the caller's observed revision before applying the bot's next-input
-        // configuration; this admission's own update is not a stale desktop request.
-        self.reconcile_bot_model(&thread_id, &thread).await?;
-        if thread_record.parent_thread_id.is_none() {
-            self.thread_observations
-                .reconcile_children(&thread_id)
-                .await?;
-            // A main-session send is the other explicit user turn, so the same idempotent
-            // reconciliation repairs any child decision notice that was never delivered. A failure is
-            // reported instead of swallowed; nothing has been admitted yet, so retrying is safe.
-            self.reconcile_child_interaction_notices(&thread_id).await?;
-        }
-        let original_request = input.clone();
-        let pl_protocol::studio::StudioPromptInput {
-            input_id,
-            text: prompt,
-            attachment_draft_ids,
-        } = input;
-        anyhow::ensure!(
-            thread_record.id == thread_id,
-            "prompt Thread does not match its canonical owner"
-        );
-        self.ensure_prompt_runtime_ready().await?;
-        let drafts = self
-            .attachment_drafts
-            .resolve(&attachment_draft_ids)
-            .await?;
-        let (binding_precondition, binding) = self.model_binding(&thread_id, &thread).await;
-        let (route, config) = binding?;
-        self.attachment_drafts
-            .validate_for_model(&route.model, &drafts)?;
-        ensure_submission_not_cancelled(cancel)?;
-        let attachments = self
-            .store
-            .promote_attachment_drafts(&thread_id, &drafts)
-            .await?;
-        let mut context = Vec::new();
-        if !prompt.is_empty() {
-            context.push(pl_core::context::ContextContent::Text {
-                text: prompt.clone().into(),
-            });
-        }
-        for attachment in &attachments {
-            let reference = self.store.retain_attachment_resource(attachment).await?;
-            if let Some(filename) = &attachment.filename {
-                context.push(pl_core::context::ContextContent::Text {
-                    text: format!("Attachment: {filename}").into(),
+                let accepted: AcceptedPrompt =
+                    serde_json::from_str(previous.input.payload.content())?;
+                anyhow::ensure!(
+                    accepted.request == input && accepted.presentation == options.presentation,
+                    "input identity conflicts with an accepted prompt"
+                );
+                return Ok(StudioSubmitPromptResponse {
+                    thread_id,
+                    input_id: previous.input.id.clone(),
+                    cursor: previous.accepted_sequence,
                 });
             }
-            let modality = match attachment.modality {
-                pl_protocol::studio::StudioAttachmentModality::Image => {
-                    pl_protocol::AttachmentModality::Image
-                }
-                pl_protocol::studio::StudioAttachmentModality::Video => {
-                    pl_protocol::AttachmentModality::Video
-                }
-                pl_protocol::studio::StudioAttachmentModality::File => {
-                    pl_protocol::AttachmentModality::File
-                }
-            };
-            context.push(pl_model::runtime::attachment_content(reference, modality)?);
-        }
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct PromptPayload<'a> {
-            text: &'a str,
-            request: &'a pl_protocol::studio::StudioPromptInput,
-            presentation: pl_protocol::MessagePresentation,
-            attachments: &'a [crate::studio::AttachmentRecord],
-        }
-        let payload = pl_core::context::OpaquePayload::new(
-            "pl.studio.prompt",
-            1,
-            serde_json::to_string(&PromptPayload {
-                text: &prompt,
-                request: &original_request,
-                presentation: options.presentation,
-                attachments: &attachments,
-            })?,
-        )?;
-        Self::validate_model_media(&thread.snapshot(), &route.model, &context)?;
-        self.queue_thread_model(&thread, &route, &config, binding_precondition)
-            .await?;
-        if let Some(suggestions) =
-            self.thread_factory
-                .skill_suggestions(&thread_id, &prompt, &thread.snapshot())
-        {
-            context.push(pl_core::context::ContextContent::Text {
-                text: suggestions.into(),
-            });
-        }
-        // Resource bytes are retained before admission; failures never delete user drafts or replay effects.
-        self.agent_facility
-            .product_events
-            .record_attachments(attachments.clone())
-            .await?;
-        tracing::debug!(
-            target: "prompt_submission",
-            thread_id,
-            input_id,
-            preparation_elapsed_us = started.elapsed().as_micros() as u64,
-            "prompt resources prepared"
-        );
-        let admission_started = std::time::Instant::now();
-        let thread_input = pl_core::thread::input::ThreadInput {
-            purpose: pl_core::thread::input::InputPurpose::Message,
-            id: input_id,
-            payload,
-            context,
-        };
-        let driver = pl_core::thread::input::InputDriverOptions {
-            max_model_steps: submission_step_limit(
-                options.max_model_steps,
-                thread_record.parent_thread_id.is_none(),
-            ),
-        };
-        // The only semantic difference between the product admissions. `input_and_run` lets the
-        // actor own the queued input and consume it after the current Turn, while
-        // `input_and_continue` replaces the running Turn.
-        // Resource preparation has reached its real terminal result. A cancelled
-        // producer may stop here without abandoning I/O or starting a new input.
-        // Once the actor request below starts, its acceptance is always awaited.
-        ensure_submission_not_cancelled(cancel)?;
-        let accepted = match mode {
-            AdmissionMode::InterruptAndContinue => {
-                thread
-                    .submit_input_and_continue(thread_input, driver)
-                    .await?
+            let terminal_retry = snapshot
+                .terminal_inputs
+                .iter()
+                .any(|identity| identity.id == input.input_id);
+            drop(snapshot);
+            if terminal_retry {
+                // Core's bounded terminal identity proves admission but no longer carries
+                // the original admission watermark. Wait for its original writer before
+                // answering, rather than rebuilding that receipt at today's commit.
+                ensure_submission_not_cancelled(cancel)?;
+                self.thread_observations
+                    .synchronize(Some(&thread_id))
+                    .await?;
+                ensure_submission_not_cancelled(cancel)?;
             }
-            AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
-        };
-        tracing::debug!(
-            target: "prompt_submission",
-            thread_id,
-            input_id = accepted.input.id,
-            source_effect_seq = accepted.accepted_sequence,
-            core_admission_us = admission_started.elapsed().as_micros() as u64,
-            admission_elapsed_us = started.elapsed().as_micros() as u64,
-            "prompt accepted"
-        );
-        // 用户消息已成功受理（含排队输入）：目录立即记录最近用户消息时间；后续模型、
-        // 工具或保存失败都不回退该事实，拒绝的提交在上方 `?` 处直接返回、不记录。
-        self.agent_facility
-            .product_events
-            .record_user_message(&thread_id, crate::studio::unix_seconds());
-        // Session resources were retained before admission. Staging remains
-        // immutable and reusable while a newer Client draft still references
-        // these ids; only an explicit last-owner release removes staging.
-        self.residency.touch(&thread_id).await;
-        Ok(StudioSubmitPromptResponse {
-            thread_id,
-            input_id: accepted.input.id,
-            cursor: accepted.accepted_sequence,
+            // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
+            // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
+            // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
+            // 索引无法给出摘要都按身份冲突拒绝，不能只凭 ID 返回旧回执。
+            let durable_receipt = match self.read_timeline_history(&thread_id).await {
+                Ok(history) => history.input_identity(&input.input_id).await?,
+                // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
+                // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
+                Err(error) if terminal_retry => return Err(error),
+                Err(_) => None,
+            };
+            if let Some(previous) = durable_receipt {
+                let expected = crate::studio::thread_projection::prompt_request_digest(
+                    &input,
+                    options.presentation,
+                );
+                match previous.request_digest.as_deref() {
+                    Some(stored) => anyhow::ensure!(
+                        stored == expected,
+                        "input identity conflicts with an accepted prompt"
+                    ),
+                    None => bail!(
+                        "input identity was already accepted with an unverifiable body; use a new inputId"
+                    ),
+                }
+                return Ok(StudioSubmitPromptResponse {
+                    thread_id,
+                    input_id: input.input_id,
+                    cursor: previous.entry.accepted_sequence,
+                });
+            }
+            anyhow::ensure!(
+                !terminal_retry,
+                "accepted input identity is missing from synchronized history"
+            );
+            // The caller's frozen route is a CAS against its canonical extension,
+            // not a Thread revision or the current mode default. Both route writes
+            // and input admission hold lifecycle_lock, so it cannot change between
+            // this check and the core admission. An already accepted input above
+            // keeps its original receipt even after a later route update.
+            if let Some(expected) = options.expected_model_route_revision {
+                let state = thread.snapshot();
+                let (record, _) = crate::studio::model_route::route_record(
+                    &state,
+                    thread_record.parent_thread_id.is_some(),
+                )?
+                .context("Thread has no saved model route")?;
+                if record.revision != expected {
+                    return Err(crate::ConfigRuntimeError::StaleRevision {
+                        expected,
+                        actual: record.revision,
+                    }
+                    .into());
+                }
+            }
+            // Validate the caller's observed revision before applying the bot's next-input
+            // configuration; this admission's own update is not a stale desktop request.
+            self.reconcile_bot_model(&thread_id, &thread).await?;
+            if thread_record.parent_thread_id.is_none() {
+                self.thread_observations
+                    .reconcile_children(&thread_id)
+                    .await?;
+                // A main-session send is the other explicit user turn, so the same idempotent
+                // reconciliation repairs any child decision notice that was never delivered. A failure is
+                // reported instead of swallowed; nothing has been admitted yet, so retrying is safe.
+                self.reconcile_child_interaction_notices(&thread_id).await?;
+            }
+            let original_request = input.clone();
+            let pl_protocol::studio::StudioPromptInput {
+                input_id,
+                text: prompt,
+                attachment_draft_ids,
+            } = input;
+            anyhow::ensure!(
+                thread_record.id == thread_id,
+                "prompt Thread does not match its canonical owner"
+            );
+            self.ensure_prompt_runtime_ready().await?;
+            let drafts = self
+                .attachment_drafts
+                .resolve(&attachment_draft_ids)
+                .await?;
+            let (binding_precondition, binding) = self.model_binding(&thread_id, &thread).await;
+            let (route, config) = binding?;
+            self.attachment_drafts
+                .validate_for_model(&route.model, &drafts)?;
+            ensure_submission_not_cancelled(cancel)?;
+            let attachments = self
+                .store
+                .promote_attachment_drafts(&thread_id, &drafts)
+                .await?;
+            let mut context = Vec::new();
+            if !prompt.is_empty() {
+                context.push(pl_core::context::ContextContent::Text {
+                    text: prompt.clone().into(),
+                });
+            }
+            for attachment in &attachments {
+                let reference = self.store.retain_attachment_resource(attachment).await?;
+                if let Some(filename) = &attachment.filename {
+                    context.push(pl_core::context::ContextContent::Text {
+                        text: format!("Attachment: {filename}").into(),
+                    });
+                }
+                let modality = match attachment.modality {
+                    pl_protocol::studio::StudioAttachmentModality::Image => {
+                        pl_protocol::AttachmentModality::Image
+                    }
+                    pl_protocol::studio::StudioAttachmentModality::Video => {
+                        pl_protocol::AttachmentModality::Video
+                    }
+                    pl_protocol::studio::StudioAttachmentModality::File => {
+                        pl_protocol::AttachmentModality::File
+                    }
+                };
+                context.push(pl_model::runtime::attachment_content(reference, modality)?);
+            }
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct PromptPayload<'a> {
+                text: &'a str,
+                request: &'a pl_protocol::studio::StudioPromptInput,
+                presentation: pl_protocol::MessagePresentation,
+                attachments: &'a [crate::studio::AttachmentRecord],
+            }
+            let payload = pl_core::context::OpaquePayload::new(
+                "pl.studio.prompt",
+                1,
+                serde_json::to_string(&PromptPayload {
+                    text: &prompt,
+                    request: &original_request,
+                    presentation: options.presentation,
+                    attachments: &attachments,
+                })?,
+            )?;
+            Self::validate_model_media(&thread.snapshot(), &route.model, &context)?;
+            self.queue_thread_model(&thread, &route, &config, binding_precondition)
+                .await?;
+            if let Some(suggestions) =
+                self.thread_factory
+                    .skill_suggestions(&thread_id, &prompt, &thread.snapshot())
+            {
+                context.push(pl_core::context::ContextContent::Text {
+                    text: suggestions.into(),
+                });
+            }
+            // Resource bytes are retained before admission; failures never delete user drafts or replay effects.
+            self.agent_facility
+                .product_events
+                .record_attachments(attachments.clone())
+                .await?;
+            tracing::debug!(
+                target: "prompt_submission",
+                thread_id,
+                input_id,
+                preparation_elapsed_us = started.elapsed().as_micros() as u64,
+                "prompt resources prepared"
+            );
+            let admission_started = std::time::Instant::now();
+            let thread_input = pl_core::thread::input::ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
+                id: input_id,
+                payload,
+                context,
+            };
+            let driver = pl_core::thread::input::InputDriverOptions {
+                max_model_steps: submission_step_limit(
+                    options.max_model_steps,
+                    thread_record.parent_thread_id.is_none(),
+                ),
+            };
+            // The only semantic difference between the product admissions. `input_and_run` lets the
+            // actor own the queued input and consume it after the current Turn, while
+            // `input_and_continue` replaces the running Turn.
+            // Resource preparation has reached its real terminal result. A cancelled
+            // producer may stop here without abandoning I/O or starting a new input.
+            // Once the actor request below starts, its acceptance is always awaited.
+            ensure_submission_not_cancelled(cancel)?;
+            let accepted = match mode {
+                AdmissionMode::InterruptAndContinue => {
+                    thread
+                        .submit_input_and_continue(thread_input, driver)
+                        .await?
+                }
+                AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
+            };
+            tracing::debug!(
+                target: "prompt_submission",
+                thread_id,
+                input_id = accepted.input.id,
+                source_effect_seq = accepted.accepted_sequence,
+                core_admission_us = admission_started.elapsed().as_micros() as u64,
+                admission_elapsed_us = started.elapsed().as_micros() as u64,
+                "prompt accepted"
+            );
+            // 用户消息已成功受理（含排队输入）：目录立即记录最近用户消息时间；后续模型、
+            // 工具或保存失败都不回退该事实，拒绝的提交在上方 `?` 处直接返回、不记录。
+            self.agent_facility
+                .product_events
+                .record_user_message(&thread_id, crate::studio::unix_seconds());
+            // Session resources were retained before admission. Staging remains
+            // immutable and reusable while a newer Client draft still references
+            // these ids; only an explicit last-owner release removes staging.
+            self.residency.touch(&thread_id).await;
+            Ok(StudioSubmitPromptResponse {
+                thread_id,
+                input_id: accepted.input.id,
+                cursor: accepted.accepted_sequence,
+            })
         })
     }
 
