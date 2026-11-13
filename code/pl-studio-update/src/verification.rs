@@ -23,7 +23,7 @@ pub(super) fn verify(
             Ok(0) => break,
             Ok(count) => count,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(super::install::io_error(error)),
+            Err(error) => return Err(crate::error::io_error(error)),
         };
         // The manifest's bounded size is enforced during the scan, including for
         // cached files that another process may have replaced or extended.

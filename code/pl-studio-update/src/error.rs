@@ -56,3 +56,10 @@ impl StudioUpdateError {
         self.code
     }
 }
+
+pub(crate) fn io_error(error: std::io::Error) -> StudioUpdateError {
+    StudioUpdateError::new(
+        StudioUpdateErrorCode::Io,
+        format!("update file operation failed: {error}"),
+    )
+}

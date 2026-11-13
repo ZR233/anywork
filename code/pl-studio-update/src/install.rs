@@ -1,5 +1,5 @@
 use super::client::StudioUpdater;
-use super::error::{StudioUpdateError, StudioUpdateErrorCode};
+use super::error::{StudioUpdateError, StudioUpdateErrorCode, io_error};
 use super::manifest::validate_update;
 use super::types::{StudioUpdate, StudioUpdateEvent};
 use std::path::{Path, PathBuf};
@@ -409,13 +409,6 @@ async fn remove_if_exists(path: &Path) -> Result<(), StudioUpdateError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(error)),
     }
-}
-
-pub(super) fn io_error(error: std::io::Error) -> StudioUpdateError {
-    StudioUpdateError::new(
-        StudioUpdateErrorCode::Io,
-        format!("update file operation failed: {error}"),
-    )
 }
 
 #[cfg(test)]
