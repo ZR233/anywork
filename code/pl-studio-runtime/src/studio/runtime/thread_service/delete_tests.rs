@@ -1386,3 +1386,204 @@ async fn archive_owned_worktrees_wait_for_borrowers_and_git_locks_discard_conten
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn permanent_delete_releases_unregistered_worktree_without_touching_leftovers() -> Result<()>
+{
+    use crate::{
+        agent::worktree::{
+            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
+        },
+        studio::{
+            agent_host::worktree_lease::{
+                WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
+            },
+            store::thread_archive::ArchiveScope,
+        },
+    };
+    for root_owned in [true, false] {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let _endpoint = configure(&home)?;
+        let repository = temp.path().join("repository");
+        tokio::fs::create_dir(&repository).await?;
+        git_fixture(&repository, &["init", "--quiet"]).await?;
+        git_fixture(
+            &repository,
+            &[
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        )
+        .await?;
+        let repository = dunce::canonicalize(repository)?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        let project = runtime.open_project(&repository).await?;
+        let manager = WorktreeManager::new(
+            repository.clone(),
+            std::sync::Arc::new(ExecutorWorktreeBackend::new(
+                pl_remote_helper::Executor::local()?,
+            )),
+        );
+        let head = manager.resolve_head(&repository).await?;
+        let owner_id = if root_owned {
+            "owned-root"
+        } else {
+            "owned-private-child"
+        };
+        let ownership = if root_owned {
+            WorktreeOwnership::Session {
+                thread_id: "owned-root".into(),
+            }
+        } else {
+            WorktreeOwnership::Child {
+                child_id: owner_id.into(),
+            }
+        };
+        let handle = manager
+            .create(WorktreeCreateSpec {
+                repo_root: repository.clone(),
+                root_thread_id: "owned-root".into(),
+                ownership,
+                base_commit: head.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let identity = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            handle.path.to_string_lossy().into_owned(),
+        )?;
+        let mut lease = WorktreeLease {
+            revision: 1,
+            state: WorktreeLeaseState::Prepared,
+            owner_kind: if root_owned {
+                WorktreeLeaseOwnerKind::Session
+            } else {
+                WorktreeLeaseOwnerKind::Child
+            },
+            owner_thread_id: owner_id.into(),
+            root_thread_id: "owned-root".into(),
+            workspace_id: project.id.clone(),
+            ssh_alias: None,
+            repository_root: repository.to_string_lossy().into_owned(),
+            path: identity.root.clone(),
+            base_commit: head,
+        };
+        runtime
+            .store
+            .bind_workspace_identity(owner_id, &identity)
+            .await?;
+        runtime
+            .agent_facility
+            .worktrees
+            .record_durable(lease.clone())
+            .await?;
+        lease.transition(WorktreeLeaseState::Active);
+        runtime
+            .agent_facility
+            .worktrees
+            .record_durable(lease)
+            .await?;
+        let root = if root_owned {
+            let (delta, session, agent) = DirectoryDelta::register_session(
+                "owned-root".into(),
+                &project.id,
+                "owned",
+                pl_protocol::ThreadModeId::simple(),
+                pl_protocol::ThreadWorkspaceMode::Worktree,
+                identity.root.clone(),
+                crate::config::ROOT_AGENT_ROUTE_KEY,
+            );
+            runtime
+                .agent_facility
+                .product_events
+                .commit_directory(delta)
+                .await?;
+            let root = crate::studio::ThreadRecord::from_directory_thread(
+                crate::studio::records::thread_projection(&session, &agent, |id| {
+                    runtime
+                        .store
+                        .catalog()
+                        .get_agent(id)
+                        .map(|agent| agent.thread_id)
+                })?,
+            );
+            runtime.register_new_thread(root.clone()).await?;
+            root
+        } else {
+            let root = runtime
+                .create_thread_with_id("owned-root", &project.id, "local root")
+                .await?;
+            let preparation = PreparationIdentity {
+                thread_id: owner_id.into(),
+                workspace_id: project.id.clone(),
+                parent_id: Some(root.id.clone()),
+                root_id: root.id.clone(),
+            };
+            runtime.store.begin_thread_preparation(preparation).await?;
+            runtime
+                .store
+                .bind_thread_preparation(owner_id, &identity)
+                .await?;
+            runtime.store.confirm_preparation_stop(owner_id).await?;
+            runtime
+                .store
+                .confirm_preparation_retirement(owner_id)
+                .await?;
+            root
+        };
+
+        let neighbor = runtime
+            .create_thread_with_id("neighbor", &project.id, "neighbor")
+            .await?;
+        runtime.shutdown_runtime().await?;
+        git_fixture(
+            &repository,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                handle.path.to_str().unwrap(),
+            ],
+        )
+        .await?;
+        tokio::fs::create_dir_all(&handle.path).await?;
+        let leftover = handle.path.join("keep.txt");
+        tokio::fs::write(&leftover, b"unowned content").await?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        assert!(
+            runtime
+                .archive_thread("archive-orphan".into(), root.id.clone())
+                .await
+                .is_err()
+        );
+        runtime
+            .delete_thread("delete-orphan".into(), root.id.clone())
+            .await?
+            .context("delete must complete")?;
+        assert_eq!(tokio::fs::read(&leftover).await?, b"unowned content");
+        assert!(runtime.store.read_thread(&root.id).await?.is_none());
+        assert!(runtime.store.read_thread(&neighbor.id).await?.is_some());
+        assert!(
+            runtime
+                .store
+                .thread_archive(&ArchiveScope::Thread(root.id.clone()))
+                .await?
+                .is_none()
+        );
+        runtime.shutdown_runtime().await?;
+        let reopened = StudioRuntime::initialize(options(&home)).await?;
+        assert!(reopened.store.read_thread(&root.id).await?.is_none());
+        assert!(reopened.store.read_thread(&neighbor.id).await?.is_some());
+        assert_eq!(tokio::fs::read(&leftover).await?, b"unowned content");
+        reopened.shutdown_runtime().await?;
+    }
+    Ok(())
+}
