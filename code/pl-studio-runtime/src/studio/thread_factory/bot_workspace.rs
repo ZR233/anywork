@@ -257,7 +257,7 @@ mod migration_tests {
         }
 
         let temp = tempfile::tempdir()?;
-        let business = temp.path().join("business");
+        let business = dunce::canonicalize(temp.path())?.join("business");
         tokio::fs::create_dir_all(&business).await?;
         tokio::fs::write(business.join("business.txt"), b"not migration-owned").await?;
         let store =
@@ -395,6 +395,13 @@ mod migration_tests {
             tokio::fs::read(managed.join(files.scratch()).join("original")).await?,
             b"retained original"
         );
+        // Existing Windows completions may retain native separators and a safe verbatim prefix.
+        let completion = tokio::fs::canonicalize(business.join(files.root()))
+            .await?
+            .to_string_lossy()
+            .into_owned();
+        let marker = managed.join(files.root()).join(".migration-complete");
+        tokio::fs::write(&marker, completion.as_bytes()).await?;
         assert!(fixture.workspace_is_busy(&root.id));
         let frozen = store.workspace_identity(&root.id).await?.unwrap();
         assert_eq!(frozen, local_identity(&managed).await?);
@@ -575,6 +582,13 @@ mod migration_tests {
         assert!(!tokio::fs::try_exists(managed.join(SessionFiles::new(&old.id).root())).await?);
 
         tokio::fs::rename(&business, temp.path().join("old-source-unmounted")).await?;
+        factory
+            .verify_execution_workspace(
+                &root,
+                None,
+                super::super::execution_admission::ExecutionWorkspaceCheck::Audit,
+            )
+            .await?;
         let mut project = store.read_project(&root.workspace_id).await?.unwrap();
         let execution = factory
             .reserve_thread_workspace_use(&root.id, &root.id, &project)
@@ -592,6 +606,7 @@ mod migration_tests {
             Some(canonical)
         );
         assert!(!tokio::fs::try_exists(&business).await?);
+        assert_eq!(tokio::fs::read_to_string(&marker).await?, completion);
         assert_eq!(
             tokio::fs::read(managed.join(files.scratch()).join("original"))
                 .await

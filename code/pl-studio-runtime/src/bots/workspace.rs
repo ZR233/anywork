@@ -17,7 +17,8 @@ fn completion_matches(
     thread_id: &str,
     source: &std::path::Path,
 ) -> std::io::Result<bool> {
-    if text == source.to_string_lossy() {
+    // Compare recorded path components without accessing a source that may already be offline.
+    if dunce::simplified(std::path::Path::new(text)) == dunce::simplified(source) {
         return Ok(true);
     }
     let created: CreatedWorkspace = serde_json::from_str(text).map_err(std::io::Error::other)?;
@@ -355,14 +356,20 @@ mod migration_tests {
     #[test]
     fn interrupted_copy_resumes_without_overwriting_new_files_or_touching_business_data() {
         let temp = tempfile::tempdir().unwrap();
-        let business = temp.path().join("business");
-        let source = business.join(".anywork/sessions/owned");
+        let business = dunce::canonicalize(temp.path()).unwrap().join("business");
+        let files = pl_tool::workspace::SessionFiles::new("owned");
+        // Persist the native spelling produced before SessionFiles used portable separators.
+        let source = business
+            .join(".anywork")
+            .join("sessions")
+            .join(files.thread_key());
+        let resumed_source = business.join(files.root());
         let target = temp
             .path()
             .join("bot/workspace")
             .join("migration-path-component-".repeat(6))
             .join("migration-path-component-".repeat(6))
-            .join(".anywork/sessions/owned");
+            .join(files.root());
         #[cfg(windows)]
         {
             use std::os::windows::ffi::OsStrExt;
@@ -383,6 +390,16 @@ mod migration_tests {
         fs::create_dir_all(target.join("scratch")).unwrap();
         fs::write(target.join("scratch/new.txt"), "new work").unwrap();
         migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        let native_source = fs::canonicalize(&source).unwrap();
+        let marker = target.join(".migration-complete");
+        let completion = fs::read(&marker).unwrap();
+        for unrelated in [source.with_file_name("another-owner"), source.join("child")] {
+            assert!(
+                migrate_owned_directory(&business, &unrelated, temp.path(), &target, "owned")
+                    .is_err(),
+                "completion must not admit another source directory"
+            );
+        }
         assert_eq!(
             fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
             "new work"
@@ -398,7 +415,7 @@ mod migration_tests {
         assert!(!target.join(".venv").exists());
         assert!(source.join(".venv/python").exists());
         fs::remove_file(target.join("scratch/old.txt")).unwrap();
-        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        migrate_owned_directory(&business, &resumed_source, temp.path(), &target, "owned").unwrap();
         assert!(
             !target.join("scratch/old.txt").exists(),
             "completed migrations must not resurrect intentionally removed work files"
@@ -408,7 +425,10 @@ mod migration_tests {
             temp.path().join("old-business-no-longer-mounted"),
         )
         .unwrap();
-        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        for source in [&resumed_source, &native_source] {
+            migrate_owned_directory(&business, source, temp.path(), &target, "owned")
+                .unwrap_or_else(|error| panic!("resume {source:?}: {error}"));
+        }
         assert_eq!(
             fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
             "new work"
@@ -417,11 +437,10 @@ mod migration_tests {
             !source.exists(),
             "a completed migration must not recreate its old source"
         );
+        assert_eq!(fs::read(&marker).unwrap(), completion);
 
         // A refresh can pass admission before its completion marker disappears. The copy boundary
         // must still reject an unavailable source rather than publish a new completion for no copy.
-        let marker = target.join(".migration-complete");
-        let completion = fs::read(&marker).unwrap();
         fs::remove_file(&marker).unwrap();
         let error =
             migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap_err();
