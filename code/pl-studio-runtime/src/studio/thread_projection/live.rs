@@ -4443,6 +4443,8 @@ mod completion_boundary_tests {
             model_steps: 1,
         };
         let task = TaskRecord {
+            parent_call_id: None,
+            invocation: None,
             id: "task:approval-call".into(),
             call_id: "approval-call".into(),
             tool_id: "exec".into(),

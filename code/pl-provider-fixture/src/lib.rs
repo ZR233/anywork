@@ -3621,7 +3621,8 @@ pub fn gui_shutdown_script() -> Vec<Step> {
                     name: TOOL_EXEC_NAME,
                     arguments: json!({"command": shutdown_tool_command(), "timeoutSeconds": 600})
                         .to_string(),
-                }.program("exec_command")],
+                }
+                .program("exec_command")],
             )),
         )
     });

@@ -720,9 +720,12 @@ final class _RealtimeScene {
     final clock = Stopwatch()..start();
     Duration remaining() {
       final left = const Duration(seconds: 60) - clock.elapsed;
-      if (left <= Duration.zero) fail('Timed out observing nested result with foreground reasoning');
+      if (left <= Duration.zero) {
+        fail('Timed out observing nested result with foreground reasoning');
+      }
       return left;
     }
+
     final source = ForegroundTurnChatSource(turnId: prepared.turnId);
     await until(
       () =>
@@ -765,24 +768,46 @@ final class _RealtimeScene {
     expect(tool.exitCode, 0);
     expect(tool.output, contains('realtime-parallel-a-line-05'));
     final reasoning = _preparedToolDisplay(prepared).atoms.singleWhere(
-      (member) => member.source == source && member.kind == ChatAtomKind.reasoning
-        && member.lifecycle is ActiveChatAtom,
+      (member) =>
+          member.source == source &&
+          member.kind == ChatAtomKind.reasoning &&
+          member.lifecycle is ActiveChatAtom,
     );
-    final entry = (await collectDisplayRecords(observed, turnId: prepared.turnId))
-        .singleWhere((entry) => entry.record.atom.id == atom.id
-          && entry.record.contentSource is CompletedOriginal);
+    final entry =
+        (await collectDisplayRecords(
+          observed,
+          turnId: prepared.turnId,
+        )).singleWhere(
+          (entry) =>
+              entry.record.atom.id == atom.id &&
+              entry.record.contentSource is CompletedOriginal,
+        );
     final block = entry.unit;
-    await observed.revealMember(atom, reference: block.memberReference!, timeout: remaining());
+    await observed.revealMember(
+      atom,
+      reference: block.memberReference!,
+      timeout: remaining(),
+    );
     final backgroundRow = find.descendant(
       of: observed.groupRow(block.id),
-      matching: find.byWidgetPredicate((widget) => widget is ChatItemView
-        && widget.item.id == entry.member!.memberKey),
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is ChatItemView && widget.item.id == entry.member!.memberKey,
+      ),
     );
-    final rendered = await _awaitCanonicalRow(backgroundRow, atom, type: 'tool', timeout: remaining());
+    final rendered = await _awaitCanonicalRow(
+      backgroundRow,
+      atom,
+      type: 'tool',
+      timeout: remaining(),
+    );
     expect(completedOriginalId(rendered.displayRecord!), atom.completionItemId);
-    final evidence = <String,Object?>{
-      'gate': _backgroundResultObserverStage, 'gateReached': true,
-      'gateReleased': false, 'callId': tool.toolCallId, 'taskId': tool.taskId,
+    final evidence = <String, Object?>{
+      'gate': _backgroundResultObserverStage,
+      'gateReached': true,
+      'gateReleased': false,
+      'callId': tool.toolCallId,
+      'taskId': tool.taskId,
       'observer': _preparedToolObserverSnapshot(prepared),
     };
     report['backgroundResultObserver'] = evidence;
@@ -2009,12 +2034,17 @@ final class _RealtimeScene {
             (entry) =>
                 entry.record.atom.tool?.callId == parent &&
                 entry.record.contentSource is CompletedOriginal &&
-                entry.record.atom.delivery != ChatDeliveryKind.backgroundHandoff,
+                entry.record.atom.delivery !=
+                    ChatDeliveryKind.backgroundHandoff,
           )
           .toList();
       expect(parents, hasLength(1));
       final parentAtom = parents.single.record.atom;
-      expect(parentAtom.source == source || parentAtom.source is BackgroundResultChatSource, isTrue);
+      expect(
+        parentAtom.source == source ||
+            parentAtom.source is BackgroundResultChatSource,
+        isTrue,
+      );
       expect(parentAtom.delivery, isNot(ChatDeliveryKind.backgroundHandoff));
       final parentView = await _readCompletedPresentation(
         parentAtom,
@@ -2024,12 +2054,23 @@ final class _RealtimeScene {
       expect(parentTool.name, 'exec');
       expect(parentTool.statusString, 'succeeded');
       if (parentAtom.source is BackgroundResultChatSource) {
-        final handoffs = records.where((entry) => entry.record.atom.tool?.callId == parent
-          && entry.record.atom.delivery == ChatDeliveryKind.backgroundHandoff).toList();
+        final handoffs = records
+            .where(
+              (entry) =>
+                  entry.record.atom.tool?.callId == parent &&
+                  entry.record.atom.delivery ==
+                      ChatDeliveryKind.backgroundHandoff,
+            )
+            .toList();
         expect(handoffs, hasLength(1));
-        final handoff = await _readCompletedPresentation(handoffs.single.record.atom,
-          timeout: const Duration(seconds: 30));
-        expect((handoff.toolCard as DecodedToolCard).value.taskId, parentTool.taskId);
+        final handoff = await _readCompletedPresentation(
+          handoffs.single.record.atom,
+          timeout: const Duration(seconds: 30),
+        );
+        expect(
+          (handoff.toolCard as DecodedToolCard).value.taskId,
+          parentTool.taskId,
+        );
       }
       expect((jsonDecode(parentTool.arguments) as Map)['code'], isA<String>());
       expect(parentTool.output, contains(selected[parent]));
@@ -2083,7 +2124,14 @@ final class _RealtimeScene {
         'turnId': turnId,
         'parents': selected.keys.toList(),
         'nestedCommands': expected.keys.toList(),
-        'handoffCount': records.where((entry) => selected.containsKey(entry.record.atom.tool?.callId) && entry.record.atom.delivery == ChatDeliveryKind.backgroundHandoff).length,
+        'handoffCount': records
+            .where(
+              (entry) =>
+                  selected.containsKey(entry.record.atom.tool?.callId) &&
+                  entry.record.atom.delivery ==
+                      ChatDeliveryKind.backgroundHandoff,
+            )
+            .length,
       }),
     );
     final controller = lease.controller;
@@ -3129,6 +3177,7 @@ final class _RealtimeScene {
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> toolCallIds = const {},
+    Set<String> handedOffExecCallIds = const {},
     bool settleDisclosure = true,
     _PreparedToolObserver? preparedObserver,
     Future<({Future<void> completed})> Function(
@@ -3376,7 +3425,10 @@ final class _RealtimeScene {
                 .map((atom) => atom.tool?.callId)
                 .toSet()
                 .containsAll(expectedCallIds) &&
-            laidOut == required.length) {
+            laidOut == required.length &&
+            (handedOffExecCallIds.isEmpty ||
+                handedOff != null &&
+                    handedOff.containsAll(handedOffExecCallIds))) {
           if (!settled) {
             await pumpObservedFrame(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
