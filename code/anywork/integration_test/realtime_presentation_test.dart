@@ -277,12 +277,13 @@ void main() {
         await scene.submit('Realtime long command');
         await scene.untilLaidOutCurrentTools(
           minimum: 2,
-          toolCallIds: const {'realtime-long-call'},
+          toolCallIds: const {'realtime-long-wait-call'},
+          commandParentCallIds: const {'realtime-long-call'},
         );
         await scene.captureEvidence(
           'realtime-exec-wait.png',
           'Realtime long command; two exact current tool cards laid out',
-          'Real Lua program and nested command members from the original Work window.',
+          'The actual nested command and wait for its Lua program in the original Work window.',
         );
         await scene.completed(answer: 'realtime long command complete');
         await scene.closeLatestTurnGroups();
@@ -297,7 +298,7 @@ void main() {
       report['parallelObserver'] = parallelObserver.evidence;
       await scene.untilLaidOutCurrentTools(
         minimum: 2,
-        toolCallIds: const {
+        commandParentCallIds: const {
           'realtime-parallel-call-a',
           'realtime-parallel-call-b',
         },
@@ -313,7 +314,7 @@ void main() {
       expect(
         find.text('realtime parallel tools complete'),
         findsNothing,
-        reason: 'Both exact Lua calls must be visible before the final answer',
+        reason: 'Both exact nested commands must be visible before the final answer',
       );
       await scene.captureEvidence(
         'realtime-parallel-tools.png',
@@ -399,7 +400,7 @@ void main() {
         hostObserver.evidence['gateReleased'] = true;
         await scene.untilLaidOutCurrentTools(
           minimum: 1,
-          toolCallIds: const {'realtime-host-cwd-call'},
+          commandParentCallIds: const {'realtime-host-cwd-call'},
           settleDisclosure: false,
           preparedObserver: hostObserver,
         );
@@ -3177,7 +3178,7 @@ final class _RealtimeScene {
   Future<void> untilLaidOutCurrentTools({
     required int minimum,
     Set<String> toolCallIds = const {},
-    Set<String> handedOffExecCallIds = const {},
+    Set<String> commandParentCallIds = const {},
     bool settleDisclosure = true,
     _PreparedToolObserver? preparedObserver,
     Future<({Future<void> completed})> Function(
@@ -3202,6 +3203,11 @@ final class _RealtimeScene {
     ({Object error, StackTrace stack})? releaseFailure;
     String? observationFailure;
     final memberController = preparedObserver?.memberController;
+    bool isRequestedCall(String? callId) =>
+        toolCallIds.contains(callId) ||
+        commandParentCallIds.any(
+          (parent) => callId?.startsWith('$parent:nested:') ?? false,
+        );
     void recordAdmission() {
       if (admissions.length >= 128) {
         admissionsTruncated++;
@@ -3220,7 +3226,7 @@ final class _RealtimeScene {
         'error': memberController.error?.toString(),
         'members': [
           for (final head in page?.entries ?? const <DisplayMemberHead>[])
-            if (toolCallIds.contains(head.record.atom.tool?.callId))
+            if (isRequestedCall(head.record.atom.tool?.callId))
               {
                 'callId': head.record.atom.tool?.callId,
                 'memberKey': head.memberKey,
@@ -3290,8 +3296,7 @@ final class _RealtimeScene {
           expect(turn.turnId, _submittedTurnId);
         }
         // The gated observer already proved the source and opened its Work.
-        // Do not query every historical Work before sampling a one-second
-        // foreground-call window; borrow the same admitted reference instead.
+        // Borrow the same admitted reference while the actual commands run.
         final units = [
           if (preparedObserver != null)
             observed.unitForBlock(preparedObserver.reference)
@@ -3312,7 +3317,6 @@ final class _RealtimeScene {
             preparedObserver == null ||
             _expectPreparedToolObserver(preparedObserver);
         final groupIds = units.map((unit) => unit.id).toSet();
-        final expectedCallIds = {...toolCallIds, ...handedOffExecCallIds};
         if (preparedObserver != null) {
           expect(units.single.id, preparedObserver.display.unitId);
           expect(units.single.historyPos, isNull);
@@ -3327,7 +3331,7 @@ final class _RealtimeScene {
             for (final atom in display.atoms.where(
               (atom) =>
                   atom.delivery != ChatDeliveryKind.independent &&
-                  expectedCallIds.contains(atom.tool?.callId),
+                  isRequestedCall(atom.tool?.callId),
             )) {
               expect(
                 atom.source,
@@ -3350,17 +3354,24 @@ final class _RealtimeScene {
                         atom.delivery != ChatDeliveryKind.independent,
                   )
                   .toList();
-        final handedOff = tools
-            ?.where(
-              (atom) =>
-                  atom.tool?.name == 'exec' &&
-                  atom.delivery == ChatDeliveryKind.backgroundHandoff &&
-                  atom.lifecycle is TerminalChatAtom &&
-                  (atom.lifecycle as TerminalChatAtom).outcome ==
-                      ChatTerminalOutcome.transferred,
-            )
-            .map((atom) => atom.tool!.callId)
-            .toSet();
+        // The owner allocates the nested sequence across the whole Thread.
+        // These fixture programs each issue exactly one command; qualify it by
+        // its exact parent instead of depending on the parent's brief card.
+        final commandCalls = <String, String>{};
+        for (final parent in commandParentCallIds) {
+          final children = tools
+              ?.where(
+                (atom) =>
+                    atom.tool?.name == 'exec_command' &&
+                    atom.tool!.callId.startsWith('$parent:nested:'),
+              )
+              .toList();
+          expect(children?.length ?? 0, lessThanOrEqualTo(1));
+          if (children != null && children.isNotEmpty) {
+            commandCalls[parent] = children.single.tool!.callId;
+          }
+        }
+        final expectedCallIds = {...toolCallIds, ...commandCalls.values};
         final required = tools == null
             ? null
             : expectedCallIds.isEmpty
@@ -3376,7 +3387,7 @@ final class _RealtimeScene {
           'revision': memberController?.page?.revision,
           'membersAvailable': observerReady,
           'members': [
-            for (final callId in toolCallIds)
+            for (final callId in expectedCallIds)
               {
                 'callId': callId,
                 'laidOut':
@@ -3395,6 +3406,7 @@ final class _RealtimeScene {
           if (preparedObserver != null)
             'observer': _preparedToolObserverSnapshot(preparedObserver),
           'membersAvailable': observerReady,
+          'commandCalls': commandCalls,
           'members': tools
               ?.map(
                 (atom) => {
@@ -3419,16 +3431,13 @@ final class _RealtimeScene {
         if (observerReady &&
             tools != null &&
             required != null &&
-            tools.length >= minimum &&
-            required.isNotEmpty &&
+            commandCalls.length == commandParentCallIds.length &&
+            required.length >= minimum &&
             required
                 .map((atom) => atom.tool?.callId)
                 .toSet()
                 .containsAll(expectedCallIds) &&
-            laidOut == required.length &&
-            (handedOffExecCallIds.isEmpty ||
-                handedOff != null &&
-                    handedOff.containsAll(handedOffExecCallIds))) {
+            laidOut == required.length) {
           if (!settled) {
             await pumpObservedFrame(const Duration(milliseconds: 300));
             expect(tester.takeException(), isNull);
@@ -3484,6 +3493,7 @@ final class _RealtimeScene {
               '${const JsonEncoder.withIndent('  ').convert({
                 'turnId': _submittedTurnId,
                 'expectedCallIds': expectedCallIds.toList(),
+                'commandCalls': commandCalls,
                 'observations': observations,
                 'matched': required.map((atom) => {'id': atom.id, 'finder': _toolFinderObservation(atom)}).toList(),
               })}\n';
@@ -3527,6 +3537,7 @@ final class _RealtimeScene {
         '${const JsonEncoder.withIndent('  ').convert({
           'turnId': _submittedTurnId,
           'expectedCallIds': {...toolCallIds}.toList(),
+          'commandParentCallIds': commandParentCallIds.toList(),
           'observations': observations,
         })}\n',
       );
@@ -3564,7 +3575,7 @@ final class _RealtimeScene {
             Directory(output).uri
                 .resolve('realtime-parallel-release-frames.json'),
           ).writeAsString(
-            '${const JsonEncoder.withIndent('  ').convert({'turnId': _submittedTurnId, 'expectedCallIds': toolCallIds.toList(), 'phasesMillis': phases, 'admissions': admissions, 'admissionsTruncated': admissionsTruncated, 'frames': frames, 'framesTruncated': framesTruncated, 'observationFailure': observationFailure, 'releaseFailure': releaseFailure?.error.toString(), 'releaseFailureStack': releaseFailure?.stack.toString()})}\n',
+            '${const JsonEncoder.withIndent('  ').convert({'turnId': _submittedTurnId, 'expectedCallIds': toolCallIds.toList(), 'commandParentCallIds': commandParentCallIds.toList(), 'phasesMillis': phases, 'admissions': admissions, 'admissionsTruncated': admissionsTruncated, 'frames': frames, 'framesTruncated': framesTruncated, 'observationFailure': observationFailure, 'releaseFailure': releaseFailure?.error.toString(), 'releaseFailureStack': releaseFailure?.stack.toString()})}\n',
           );
         }
       }
