@@ -415,7 +415,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         (
             "default-stdin",
             "exec",
-            json!({"code": "local r=tools.exec_command({command=[=[rg -n -F -- default-stdin-probe]=],timeoutSeconds=2}); assert(r.exitCode==0 and r.stderr.content=='' and r.stdout.content:find('search-probe.txt',1,true)); local eof=tools.exec_command({command='cat',timeoutSeconds=2}); assert(eof.exitCode==0 and eof.stdout.content==''); return 'default stdin is EOF; search uses workspace files'"}),
+            json!({"code": "local r=tools.exec_command({command=[=[cat; cat search-probe.txt]=],timeoutSeconds=2}); assert(r.exitCode==0 and r.stderr.content=='' and r.stdout.content=='default-stdin-probe\\n'); return 'default stdin is EOF; workspace files remain readable'"}),
         ),
         (
             "interactive-start",

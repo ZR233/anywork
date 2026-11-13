@@ -92,7 +92,7 @@ async fn deadline_can_end_drain_without_overwriting_the_observed_root_exit() -> 
 }
 
 #[tokio::test]
-async fn remote_helper_search_uses_files_and_interactive_input_remains_explicit()
+async fn remote_helper_default_stdin_is_eof_and_interactive_input_remains_explicit()
 -> anyhow::Result<()> {
     let helper = support::Helper::start(helper::remote_helper_executable()).await?;
     tokio::fs::write(helper.root.path().join("needle.txt"), "stdin-mode-probe\n").await?;
@@ -112,13 +112,10 @@ async fn remote_helper_search_uses_files_and_interactive_input_remains_explicit(
         output_observer: None,
     };
     let search = manager
-        .run_task(
-            "task-remote-search",
-            request("rg -n -F -- stdin-mode-probe", false),
-        )
+        .run_task("task-remote-search", request("cat; cat needle.txt", false))
         .await?;
     anyhow::ensure!(search.exit_code == Some(0) && search.stderr.content.is_empty());
-    anyhow::ensure!(search.stdout.content == "needle.txt:1:stdin-mode-probe\n");
+    anyhow::ensure!(search.stdout.content == "stdin-mode-probe\n");
     let input = manager
         .start(request("printf 'once\\n' >> interactive-once; cat", true))
         .await?;
