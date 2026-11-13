@@ -202,18 +202,29 @@ wait
             !std::path::Path::new("/proc").join(&observed[5]).exists(),
             "the direct child was reaped"
         );
-        // The executor confirms its root. A killed descendant may await reaping
-        // by the system's parent; it must not remain a running fixture process.
-        if let Ok(stat) = std::fs::read_to_string(
-            std::path::Path::new("/proc")
-                .join(&observed[6])
-                .join("stat"),
-        ) {
+        // Root exit does not synchronize with the descendant's exit. Wait for its actual
+        // terminal state; an orphaned zombie may still await reaping by the system parent.
+        let descendant = std::path::Path::new("/proc")
+            .join(&observed[6])
+            .join("stat");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let stat = match std::fs::read_to_string(&descendant) {
+                Ok(stat) => stat,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => panic!("read descendant state: {error}"),
+            };
+            if stat
+                .rsplit_once(") ")
+                .is_some_and(|(_, tail)| tail.starts_with('Z'))
+            {
+                break;
+            }
             assert!(
-                stat.rsplit_once(") ")
-                    .is_some_and(|(_, tail)| tail.starts_with('Z')),
-                "the descendant is still running"
+                tokio::time::Instant::now() < deadline,
+                "the descendant is still running: {stat}"
             );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         let absent = temp.path().join("never-created");
