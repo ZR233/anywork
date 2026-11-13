@@ -526,9 +526,12 @@ impl StudioRuntime {
                     let host = match opened {
                         Ok(host) => host,
                         Err(error) if error.is_not_found() => {
-                            operation.members[index].execution_deleted = true;
-                            operation.changed()?;
-                            return self.store.save_thread_delete(operation).await;
+                            let mut completed = operation.clone();
+                            completed.members[index].execution_deleted = true;
+                            completed.changed()?;
+                            self.store.save_thread_delete(&completed).await?;
+                            *operation = completed;
+                            return Ok(());
                         }
                         Err(error) => return Err(error.into()),
                     };
@@ -552,9 +555,12 @@ impl StudioRuntime {
                 }
             }
         }
-        operation.members[index].execution_deleted = true;
-        operation.changed()?;
-        self.store.save_thread_delete(operation).await
+        let mut completed = operation.clone();
+        completed.members[index].execution_deleted = true;
+        completed.changed()?;
+        self.store.save_thread_delete(&completed).await?;
+        *operation = completed;
+        Ok(())
     }
 
     async fn remove_bound_execution_session(
@@ -637,9 +643,12 @@ impl StudioRuntime {
                 }
             }
         }
-        operation.members[index].host_deleted = true;
-        operation.changed()?;
-        self.store.save_thread_delete(operation).await
+        let mut completed = operation.clone();
+        completed.members[index].host_deleted = true;
+        completed.changed()?;
+        self.store.save_thread_delete(&completed).await?;
+        *operation = completed;
+        Ok(())
     }
 }
 

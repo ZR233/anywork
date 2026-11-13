@@ -29,8 +29,13 @@ async fn reject_intent(
 }
 
 #[tokio::test]
-async fn permanent_delete_intent_failure_keeps_session_targets_retryable() -> Result<()> {
-    for flag in ["executionRemovalStarted", "hostRemovalStarted"] {
+async fn permanent_delete_progress_failure_keeps_session_targets_retryable() -> Result<()> {
+    for flag in [
+        "executionRemovalStarted",
+        "hostRemovalStarted",
+        "executionDeleted",
+        "hostDeleted",
+    ] {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let _endpoint = configure(&home)?;
@@ -75,19 +80,27 @@ async fn permanent_delete_intent_failure_keeps_session_targets_retryable() -> Re
             .iter()
             .find(|member| member.identity.thread_id == root.id)
             .unwrap();
-        let failed_path = if flag == "executionRemovalStarted" {
-            assert!(!member.execution_removal_started);
+        let completion = flag.ends_with("Deleted");
+        let failed_path = if flag.starts_with("execution") {
+            assert_eq!(member.execution_removal_started, completion);
             assert!(!member.execution_deleted && member.host_deleted);
             workspace.join(SessionFiles::new(&root.id).root())
         } else {
-            assert!(!member.host_removal_started);
+            assert_eq!(member.host_removal_started, completion);
             assert!(!member.host_deleted && member.execution_deleted);
             member.host_session.clone()
         };
-        assert!(
-            failed_path.join("marker").is_file(),
-            "the failed intent never called physical removal"
-        );
+        if completion {
+            assert!(
+                !failed_path.exists(),
+                "physical removal precedes the failed completion ACK"
+            );
+        } else {
+            assert!(
+                failed_path.join("marker").is_file(),
+                "failed intent must not perform removal"
+            );
+        }
         let independent = operation
             .members
             .iter()
@@ -212,74 +225,104 @@ async fn repository_fixture(path: &Path) -> Result<()> {
 }
 
 #[tokio::test]
-async fn permanent_delete_intent_failure_keeps_multiple_worktrees_retryable() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let _endpoint = configure(&home)?;
-    let repository = temp.path().join("repository");
-    repository_fixture(&repository).await?;
-    let repository = dunce::canonicalize(repository)?;
-    let runtime = StudioRuntime::initialize(options(&home)).await?;
-    let project = runtime.open_project(&repository).await?;
-    let root = runtime
-        .create_thread_with_id("worktree-intent-root", &project.id, "root")
+async fn permanent_delete_progress_failure_keeps_multiple_worktrees_retryable() -> Result<()> {
+    for flag in ["removalStarted", "cleaned"] {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let _endpoint = configure(&home)?;
+        let repository = temp.path().join("repository");
+        repository_fixture(&repository).await?;
+        let repository = dunce::canonicalize(repository)?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        let project = runtime.open_project(&repository).await?;
+        let root = runtime
+            .create_thread_with_id("worktree-intent-root", &project.id, "root")
+            .await?;
+        let paths = private_worktrees(
+            &runtime,
+            &repository,
+            &project.id,
+            &root.id,
+            &["worktree-intent-a", "worktree-intent-b"],
+        )
         .await?;
-    let paths = private_worktrees(
-        &runtime,
-        &repository,
-        &project.id,
-        &root.id,
-        &["worktree-intent-a", "worktree-intent-b"],
-    )
-    .await?;
-    let scope = ArchiveScope::Thread(root.id.clone());
-    reject_intent(
-        &runtime,
-        &scope.key(),
-        "threadArchive",
-        "worktree-intent-a",
-        "worktrees",
-        "lease.ownerThreadId",
-        "removalStarted",
-    )
-    .await?;
-    let error = runtime
-        .delete_thread("reject-worktree-intent".into(), root.id.clone())
-        .await
-        .expect_err("first worktree intent fails, second worktree still completes");
-    assert!(
-        format!("{error:#}").contains("one intent persistence failure"),
-        "{error:#}"
-    );
-    let archive = runtime.store.thread_archive(&scope).await?.unwrap();
-    let first = archive
-        .worktrees
-        .iter()
-        .find(|entry| entry.lease.owner_thread_id == "worktree-intent-a")
-        .unwrap();
-    assert!(!first.removal_started && !first.cleaned && first.common_dir.is_none());
-    let second = archive
-        .worktrees
-        .iter()
-        .find(|entry| entry.lease.owner_thread_id == "worktree-intent-b")
-        .unwrap();
-    assert!(second.removal_started && second.cleaned);
-    assert!(paths[0].join("marker").is_file());
-    assert!(!paths[1].exists());
-    let operation = runtime.store.thread_delete(&root.id).await?.unwrap();
-    assert!(operation.members.iter().all(|member| member.host_deleted));
-    runtime
-        .store
-        .database()
-        .execute_unprepared("DROP TRIGGER reject_first_intent")
+        let scope = ArchiveScope::Thread(root.id.clone());
+        reject_intent(
+            &runtime,
+            &scope.key(),
+            "threadArchive",
+            "worktree-intent-a",
+            "worktrees",
+            "lease.ownerThreadId",
+            flag,
+        )
         .await?;
-    runtime
-        .delete_thread("retry-worktree-intent".into(), root.id)
-        .await?
-        .unwrap();
-    assert!(paths.iter().all(|path| !path.exists()));
-    assert!(repository.join(".git").is_dir());
-    runtime.shutdown_runtime().await?;
+        let error = runtime
+            .delete_thread("reject-worktree-intent".into(), root.id.clone())
+            .await
+            .expect_err("first worktree intent fails, second worktree still completes");
+        assert!(
+            format!("{error:#}").contains("one intent persistence failure"),
+            "{error:#}"
+        );
+        let archive = runtime.store.thread_archive(&scope).await?.unwrap();
+        let first = archive
+            .worktrees
+            .iter()
+            .find(|entry| entry.lease.owner_thread_id == "worktree-intent-a")
+            .unwrap();
+        assert!(!first.cleaned);
+        if flag == "removalStarted" {
+            assert!(!first.removal_started && first.common_dir.is_none());
+            assert!(paths[0].join("marker").is_file());
+        } else {
+            assert!(first.removal_started && first.common_dir.is_some());
+            assert!(
+                !paths[0].exists(),
+                "physical removal finished before its ACK failed"
+            );
+        }
+        let second = archive
+            .worktrees
+            .iter()
+            .find(|entry| entry.lease.owner_thread_id == "worktree-intent-b")
+            .unwrap();
+        assert!(second.removal_started && second.cleaned);
+        assert!(!paths[1].exists());
+        let operation = runtime.store.thread_delete(&root.id).await?.unwrap();
+        assert!(operation.members.iter().all(|member| member.host_deleted));
+        let member = operation
+            .members
+            .iter()
+            .find(|member| member.identity.thread_id == "worktree-intent-a")
+            .unwrap();
+        assert!(
+            !member.execution_deleted,
+            "uncommitted progress cannot acknowledge execution deletion"
+        );
+        let public = crate::error_mapping::studio_error_from_anyhow_ref(
+            &runtime
+                .store
+                .history(&root.id)
+                .await
+                .err()
+                .context("reads must be revoked")?,
+        );
+        assert_eq!(public.code, pl_protocol::studio::StudioErrorCode::Conflict);
+        assert!(public.message.contains("重试删除"));
+        runtime
+            .store
+            .database()
+            .execute_unprepared("DROP TRIGGER reject_first_intent")
+            .await?;
+        runtime
+            .delete_thread("retry-worktree-intent".into(), root.id)
+            .await?
+            .unwrap();
+        assert!(paths.iter().all(|path| !path.exists()));
+        assert!(repository.join(".git").is_dir());
+        runtime.shutdown_runtime().await?;
+    }
     Ok(())
 }
 
