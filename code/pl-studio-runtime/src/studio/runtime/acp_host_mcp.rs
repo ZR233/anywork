@@ -196,7 +196,7 @@ pub(crate) struct HostMcp {
 }
 
 impl HostMcp {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) async fn start(
         host: AgentHost,
         caller: pl_protocol::AgentId,
@@ -1075,15 +1075,15 @@ mod tests {
                 cleanup = cleanup.and(Err(error));
             }
         }
-        if let Some(tools) = workspace_tools {
-            if let Err(error) = tools.close().await {
-                cleanup = Err(error);
-            }
+        if let Some(tools) = workspace_tools
+            && let Err(error) = tools.close().await
+        {
+            cleanup = Err(error);
         }
-        if let Some(mut service) = service {
-            if let Err(error) = service.close().await {
-                cleanup = cleanup.and(Err(error));
-            }
+        if let Some(mut service) = service
+            && let Err(error) = service.close().await
+        {
+            cleanup = cleanup.and(Err(error));
         }
         if let Some(target) = target {
             match fixture.runtime.close_acp_session(target).await {
