@@ -586,6 +586,38 @@ void main() {
     expect(d.single['callerAgentId'], root);
     expect(d.single['hostCallId'], 'private-host');
   });
+  test('failed-call diagnostics retain only the fixed workspace cwd', () {
+    for (final cwd in [
+      '.',
+      '/private/$secret',
+      '../$secret',
+      'private-$secret',
+    ]) {
+      final data = rec(
+        'failed-cwd',
+        'anywork_exec_command',
+        {'command': 'synthetic command', 'cwd': cwd},
+        {
+          'diagnostic': {'cwd': cwd},
+        },
+        error: true,
+      );
+      final calls = AgyHostCalls([
+        AgyHostRecord.parse(data, gui, 'studio.log', 1),
+      ]);
+      final diagnostic = calls.diagnostics({}, {}).single;
+      final arguments = diagnostic['arguments'] as Map;
+      final value = diagnostic['value'] as Map;
+      final expected = cwd == '.'
+          ? '.'
+          : {'redacted': true, 'length': cwd.length};
+      expect(arguments['cwd'], expected);
+      expect((value['diagnostic'] as Map)['cwd'], expected);
+      expect(jsonEncode(diagnostic).contains(secret), isFalse);
+      expect(calls.records.single.arguments['cwd'], cwd);
+      expect(calls.verifyGeneratedResults, throwsA(isA<TestFailure>()));
+    }
+  });
   test(
     'unclaimed late calls and changed content after claim fail final drain',
     () async {

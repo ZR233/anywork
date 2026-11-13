@@ -330,6 +330,9 @@ dynamic _diagnosticJson(
 ]) {
   if (value == null || value is num || value is bool) return value;
   if (value is String) {
+    if (key == 'cwd') {
+      return value == '.' ? value : {'redacted': true, 'length': value.length};
+    }
     if (key == 'command') {
       return safeCommands.contains(value)
           ? value
@@ -372,7 +375,7 @@ dynamic _diagnosticJson(
         key == 'structuredContent') {
       return {'redacted': true, 'length': value.length};
     }
-    // Other admitted fields are typed IDs, cursors, enums or relative cwd.
+    // Other admitted fields are typed IDs, cursors or enums.
     return value;
   }
   if (value is List) {
