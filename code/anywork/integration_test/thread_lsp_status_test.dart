@@ -102,7 +102,7 @@ void main() {
       expect(
         remaining,
         isEmpty,
-        reason: 'Production shutdown must reclaim LSP descendants',
+        reason: 'Production shutdown must reclaim the owned LSP processes',
       );
     });
 
@@ -358,22 +358,18 @@ void _recordOwnedProcesses(
     'ownedLspProcesses',
     () => <Map<String, Object?>>[],
   ) as List<Map<String, Object?>>;
-  for (final role in ['lsp', 'grandchild']) {
-    final pid = coord['${role}Pid'];
-    final startTicks = coord['${role}StartTicks'];
-    if (pid is! int || startTicks is! int) {
-      throw StateError(
-        'The LSP fixture omitted PID/start-time identity for $role',
-      );
-    }
-    processes.add({
-      'threadId': threadId,
-      'generation': generation,
-      'role': role,
-      'pid': pid,
-      'startTicks': startTicks,
-    });
+  final pid = coord['lspPid'];
+  final startTicks = coord['lspStartTicks'];
+  if (pid is! int || startTicks is! int) {
+    throw StateError('The LSP fixture omitted its PID/start-time identity');
   }
+  processes.add({
+    'threadId': threadId,
+    'generation': generation,
+    'role': 'lsp',
+    'pid': pid,
+    'startTicks': startTicks,
+  });
 }
 
 Future<bool> _sameLinuxProcess(Map<String, Object?> process) async {

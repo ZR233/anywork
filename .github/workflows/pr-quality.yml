@@ -589,6 +589,7 @@ jobs:
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/realtime-tool-observation*.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-shutdown.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-mutations-before-shutdown.json
+            ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/thread-lsp-artifacts/*.json
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/sidebar-fixture-cleanup.jsonl
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/gui.log
             ${{ env.DESKTOP_TEST_OUTPUT }}/cases/**/*-integration.log
