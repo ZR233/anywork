@@ -45,7 +45,15 @@ impl StudioUpdater {
             .max_retries(Some(3))
             .build()
             .map_err(super::transfer::download_error)?;
-        let cache_root = dirs::cache_dir().map(|root| root.join("anywork").join("updates"));
+        // Preserve Windows' existing LOCALAPPDATA contract, including isolated
+        // launch environments. Other platforms use their standard cache base.
+        #[cfg(windows)]
+        let cache_base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(dirs::cache_dir);
+        #[cfg(not(windows))]
+        let cache_base = dirs::cache_dir();
+        let cache_root = cache_base.map(|root| root.join("anywork").join("updates"));
         Ok(Self {
             client,
             downloader,
