@@ -2,7 +2,7 @@
 
 use pl_protocol::StateError;
 
-use crate::StudioUpdate;
+use pl_studio_update::StudioUpdate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StudioUpdateCommand {

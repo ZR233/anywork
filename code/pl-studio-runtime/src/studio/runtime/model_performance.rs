@@ -19,13 +19,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pl_protocol::{InferenceBillingRecord, InferenceModelObservation, ModelMatchState};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-use crate::statistics::{
+use pl_studio_statistics::{
     StatisticsFeed, StatisticsPublisher, StudioModelPerformanceEffortSummary,
     StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
 use crate::studio::storage::calls::{
     CallRetention, CallStatus, CallsMaterialVersions, PerformanceSampleRow, PerformanceSummaryRow,
     PurposeCostRollup, SessionCostRollup, StatisticsReadRequest,

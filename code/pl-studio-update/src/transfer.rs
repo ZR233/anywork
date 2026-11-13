@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use super::error::{StudioUpdateError, StudioUpdateErrorCode};
+use super::error::{StudioUpdateError, StudioUpdateErrorCode, io_error};
 use super::types::{StudioUpdateAsset, StudioUpdateEvent};
 
 pub(super) async fn download(
@@ -135,12 +135,5 @@ pub(super) fn download_error(error: downlowd::Error) -> StudioUpdateError {
     StudioUpdateError::new(
         code,
         format!("installer download failed: {}", error.without_uri()),
-    )
-}
-
-fn io_error(error: std::io::Error) -> StudioUpdateError {
-    StudioUpdateError::new(
-        StudioUpdateErrorCode::Io,
-        format!("installer file operation failed: {error}"),
     )
 }

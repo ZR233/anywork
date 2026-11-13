@@ -212,7 +212,7 @@ pub(super) fn archive_client() -> Result<reqwest::Client, AcpInstallFailure> {
 
 /// 产品自身的正常 User-Agent；不冒充其它客户端。
 fn user_agent() -> String {
-    format!("anywork/{}", crate::updater::STUDIO_VERSION.trim())
+    format!("anywork/{}", pl_studio_update::STUDIO_VERSION.trim())
 }
 
 /// 分发包来源政策：仅官方 Google HTTPS ZIP 路径，拒绝用户信息、额外端口、fragment 与越界路径。

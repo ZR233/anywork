@@ -126,6 +126,8 @@ macOS 的 `release-gui stage` 显式消费 `dist/anywork-release` 格式的预�
 
 ## 23.4 更新状态机与安装交接
 
+更新传输、验证和安装包租约由独立的 `pl-studio-update` 提供；Studio 保留产品状态、事件发布和退出协调的唯一所有权，职责边界见 [02](./02-crates.md)。缓存验证区分内容损坏与存储失败：长度、摘要或签名不符才允许重新准备，读取或锁定失败保留原文件并向调用方报告，不以删除和重下载掩盖磁盘错误。
+
 Studio 运行时的更新器所有者（updater owner）在内存中维护权威状态枚举 `UpdaterState`：`Disabled`、`Idle`、`Checking`、`UpToDate`、`Available`、`Downloading`、`Verifying`、`Ready`、`InstallerLaunched`、`CheckFailed` 与 `InstallFailed`（每个状态由独立载荷承载，不设平行的可选字段）：
 
 - **只读查询与后台单次检查**：`readUpdateState()` 仅读取本进程内存所有者而不访问网络，更新状态与下载进度不写入 `config.toml`。桌面应用启动完成后，每个进程仅在后台执行一次 `checkStudioUpdate()`（使用编译进二进制的产品版本）；发现新版本后自动流式下载并校验，验证通过后进入 `Ready` 状态并持有安装包的只读文件租约。

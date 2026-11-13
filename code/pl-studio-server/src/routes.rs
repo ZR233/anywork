@@ -1804,7 +1804,7 @@ async fn check_update(State(state): State<AppState>) -> Result<impl IntoResponse
     Ok(Json(
         state
             .runtime
-            .check_studio_update(&pl_studio_runtime::StudioUpdateCancellation::new())
+            .check_studio_update(&pl_studio_update::StudioUpdateCancellation::new())
             .await
             .map_err(ApiError::from)?,
     ))

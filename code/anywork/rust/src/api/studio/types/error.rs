@@ -115,8 +115,8 @@ impl From<pl_protocol::PureError> for BridgeError {
     }
 }
 
-impl From<pl_studio_runtime::StudioUpdateError> for BridgeError {
-    fn from(error: pl_studio_runtime::StudioUpdateError) -> Self {
+impl From<pl_studio_update::StudioUpdateError> for BridgeError {
+    fn from(error: pl_studio_update::StudioUpdateError) -> Self {
         Self::from(anyhow::Error::new(error))
     }
 }

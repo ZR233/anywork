@@ -105,7 +105,7 @@ pub struct StatisticsEffortPage {
 
 /// An immutable runtime publication; only its status/revision header changes between updates.
 #[derive(Debug)]
-pub(crate) struct StatisticsPublication {
+struct StatisticsPublication {
     owner_epoch: String,
     publication_revision: u64,
     summaries_revision: u64,
@@ -117,15 +117,19 @@ pub(crate) struct StatisticsPublication {
     read_failed: bool,
 }
 
-/// Latest-value publisher owned by the existing model-performance owner.
+/// Latest-value publisher owned by the model-performance owner.
+///
+/// The owner serializes publications and supplies monotonic snapshot revisions.
+/// Reuse the same `Arc` for unchanged materials; identity changes advance each
+/// material revision independently of status-only updates.
 #[derive(Clone)]
-pub(crate) struct StatisticsPublisher {
+pub struct StatisticsPublisher {
     owner_epoch: String,
     latest: watch::Sender<Arc<StatisticsPublication>>,
 }
 
 impl StatisticsPublisher {
-    pub(crate) fn new(owner_epoch: String, snapshot: &StudioModelPerformanceSnapshot) -> Self {
+    pub fn new(owner_epoch: String, snapshot: &StudioModelPerformanceSnapshot) -> Self {
         let initial = Arc::new(StatisticsPublication {
             owner_epoch: owner_epoch.clone(),
             publication_revision: snapshot.revision,
@@ -149,7 +153,7 @@ impl StatisticsPublisher {
     /// The owner preserves equal material identities before calling this method. The feed only
     /// shares those frozen arrays; it neither compares their contents nor clones their rows.
     /// `send_replace` retains the latest publication even when no feed has a receiver.
-    pub(crate) fn publish(&self, snapshot: &StudioModelPerformanceSnapshot) {
+    pub fn publish(&self, snapshot: &StudioModelPerformanceSnapshot) {
         let previous = self.latest.borrow().clone();
         let summaries_changed = !Arc::ptr_eq(&previous.summaries, &snapshot.summaries);
         let history_changed = !Arc::ptr_eq(&previous.history, &snapshot.history);
@@ -179,8 +183,8 @@ impl StatisticsPublisher {
         }
     }
 
-    pub(crate) fn subscribe(&self) -> StatisticsFeed {
-        let id = crate::studio::new_id("statistics-feed");
+    pub fn subscribe(&self) -> StatisticsFeed {
+        let id = format!("statistics-feed-{}", uuid::Uuid::new_v4());
         StatisticsFeed::new(id, self.owner_epoch.clone(), self.latest.subscribe())
     }
 }
@@ -194,8 +198,6 @@ pub enum StatisticsError {
     InvalidReference,
     #[error("statistics feed already has an in-flight next operation")]
     NextInFlight,
-    #[error("statistics feed has no capacity for another unacknowledged publication")]
-    PublicationCapacity,
     #[error("statistics feed has no capacity for another read scope")]
     ScopeCapacity,
     #[error("statistics page read is already in flight for this scope")]
@@ -335,7 +337,7 @@ impl StatisticsFeed {
             .find(|(sequence, _)| *sequence == delivery_sequence)
             .map(|(_, publication)| Arc::clone(publication))
             .ok_or(StatisticsError::InvalidReference)?;
-        let scope_id = crate::studio::new_id("statistics-scope");
+        let scope_id = format!("statistics-scope-{}", uuid::Uuid::new_v4());
         let scope = ReadScopeInner::new(scope_id.clone(), &self.inner, publication);
         state.scopes.insert(scope_id, Arc::clone(&scope));
         Ok(StatisticsReadScope { inner: scope })

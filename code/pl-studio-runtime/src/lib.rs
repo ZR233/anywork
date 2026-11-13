@@ -42,7 +42,6 @@ mod first_run;
 mod instruction;
 mod protocol;
 pub mod resource_store;
-pub mod statistics;
 mod studio;
 pub use studio::accounts;
 #[cfg(feature = "benchmarks")]
@@ -52,7 +51,6 @@ mod executable_assets;
 mod host_mcp_assets;
 pub(crate) mod session;
 pub mod thread_assembler;
-mod updater;
 mod worker_assets;
 
 // Data types needed to call Studio's SSH API; transport consumers do not depend on tool runtimes.
@@ -118,11 +116,6 @@ pub use studio::{
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
     ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
-};
-pub use updater::{
-    PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,
-    StudioUpdateCheck, StudioUpdateError, StudioUpdateErrorCode, StudioUpdateEvent,
-    StudioUpdateLaunch, StudioUpdater,
 };
 pub use worker_assets::RemoteHelperSource;
 

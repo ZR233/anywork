@@ -249,9 +249,9 @@ pub async fn shutdown_runtime(
             );
             if report.outcome == BridgeShutdownOutcome::Clean {
                 let mode = match intent {
-                    BridgeExitIntent::Exit => pl_studio_runtime::StudioUpdateLaunch::OnExit,
+                    BridgeExitIntent::Exit => pl_studio_update::StudioUpdateLaunch::OnExit,
                     BridgeExitIntent::UpdateRestart => {
-                        pl_studio_runtime::StudioUpdateLaunch::Restart
+                        pl_studio_update::StudioUpdateLaunch::Restart
                     }
                 };
                 update_handoff = match tokio::time::timeout(

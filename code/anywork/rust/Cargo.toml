@@ -9,6 +9,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 doctest = false
 
 [dependencies]
+pl-studio-update = { workspace = true }
+pl-studio-statistics = { workspace = true }
 pl-studio-runtime = { workspace = true }
 pl-protocol = { workspace = true }
 anyhow = { workspace = true }

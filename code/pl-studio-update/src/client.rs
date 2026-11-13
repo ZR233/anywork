@@ -14,7 +14,7 @@ use url::Url;
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-pub(crate) const STUDIO_VERSION: &str = include_str!("../../../../studio-version.txt");
+pub const STUDIO_VERSION: &str = include_str!("../../../studio-version.txt");
 
 /// GitHub Release 稳定更新客户端。
 #[derive(Clone)]
@@ -23,7 +23,7 @@ pub struct StudioUpdater {
     pub(super) downloader: downlowd::Client,
     pub(super) cache_dir: PathBuf,
     pub(super) public_key: &'static str,
-    pub(super) install_active: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) install_active: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl StudioUpdater {
@@ -56,7 +56,7 @@ impl StudioUpdater {
             downloader,
             cache_dir: cache_root,
             public_key: include_str!("anywork.pub"),
-            install_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            install_active: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 

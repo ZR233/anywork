@@ -4,7 +4,6 @@
 
 use tokio::sync::watch;
 
-use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
@@ -13,6 +12,7 @@ use crate::{
     StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
     StudioUpdateStateSnapshot,
 };
+use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
 use super::ProductEventBus;
 

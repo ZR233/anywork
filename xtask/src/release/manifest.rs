@@ -119,9 +119,8 @@ pub(super) fn verify(workspace_root: &Path, release_dir: &Path, version: &Versio
         .unwrap_or_else(|| {
             workspace_root
                 .join("code")
-                .join("pl-studio-runtime")
+                .join("pl-studio-update")
                 .join("src")
-                .join("updater")
                 .join("anywork.pub")
         });
     for file in payload_names(version) {
