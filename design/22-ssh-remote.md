@@ -36,6 +36,8 @@ HTTP 在选择的执行侧由 reqwest 发起，使用该侧 DNS、代理、TLS �
 
 模型使用相同工具名称与结构。普通 exec、stdio MCP、LSP、ACP 及通过命令执行的 Git 使用受管 Child；server 不解析 MCP/LSP。文件工具与临时目录通过同一个 `ExecutorWorkspaceFileBackend` 操作两种执行位置，命令归档通过同一个执行器 reader 只保存已确认的原始前缀。Thread 配置、所有权、媒体与可靠存储仍由产品持有。
 
+Windows 本地 `TargetPath` 的相对路径投影按完整组件比较，并识别同一盘符或 UNC 卷的常规与 verbatim 前缀。长文件的 canonical 结果可能必须保留 `\\?\`，即使工作区根可以简化；比较不改变实际 I/O 路径、不折叠文件名大小写或 `..`，仍须先执行原有物理路径与链接边界校验。
+
 ### `~/.ssh/config` 管理块读写契约
 
 SSH 服务器列表直接读取并解析用户的 `~/.ssh/config` 文件；新增、修改与删除受管服务器时，以带标记的管理块原子写回该文件，未触及的内容（含原始注释与行尾换行符风格）逐字节原样保留。管理块采用以下定界符包裹 `Host`、`HostName`、`Port`、`User` 与 `IdentityFile` 指令：
