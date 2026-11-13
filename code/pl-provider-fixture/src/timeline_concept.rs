@@ -732,11 +732,15 @@ mod tests {
                 let client = reqwest::Client::new();
                 let url = format!("{}/responses", fixture.base_url());
                 let send = |text: String| {
-                    let mut input = vec![json!({"role":"user","content":[{"type":"input_text","text":text}]})];
+                    let mut input =
+                        vec![json!({"role":"user","content":[{"type":"input_text","text":text}]})];
                     if text.starts_with("realtime-") && text.contains("-call") {
                         input.push(json!({"type":"function_call_output","call_id":text,"output":"{\"exitCode\":0}"}));
                     }
-                    client.post(&url).json(&json!({"model":"fixture-model","stream":true,"input":input})).send()
+                    client
+                        .post(&url)
+                        .json(&json!({"model":"fixture-model","stream":true,"input":input}))
+                        .send()
                 };
                 let mut rejected = 0;
                 if scope == RealtimeScope::StopBackground {

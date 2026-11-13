@@ -874,3 +874,72 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
     );
     thread.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn unhandled_command_archive_failure_retains_stderr_and_its_original_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let diagnostic = "BEGIN_DIAGNOSTIC\n".to_owned() + &"诊断\n".repeat(4096) + "END_DIAGNOSTIC";
+    std::fs::write(root.path().join("diagnostic"), &diagnostic).unwrap();
+    let archive = root.path().join("archive");
+    std::fs::write(&archive, "occupied").unwrap();
+    let definition = pl_tool::exec::exec_definition();
+    let command = ThreadExecTool::new(
+        Arc::new(pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap()),
+        Arc::new(Archive(archive)),
+        CommandAccess::WorkspaceOnly,
+        definition.clone(),
+    )
+    .registration(
+        prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
+    )
+    .nested(false);
+    let tool = pl_tool::lua::LuaTool::new("");
+    let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(tool))
+        .with_nested_calls()
+        .foreground();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = host::Calls {
+        calls: [("exec".into(), serde_json::json!({"code":"return tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; printf 'UNSELECTED_STDOUT'; cat diagnostic >&2]=]})"}).to_string())].into(),
+        requests: requests.clone(),
+    };
+    let thread =
+        ThreadHandle::start("lua-archive-failure".into(), DynModelSession::new(model)).unwrap();
+    thread.register_tools(vec![command, lua]).await.unwrap();
+    thread
+        .run_turn(host::turn("archive-failure"))
+        .await
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    let parent = effects
+        .iter()
+        .flat_map(|e| e.deliveries.iter())
+        .find(|d| d.tool_id == "exec")
+        .unwrap();
+    let child = effects
+        .iter()
+        .flat_map(|e| e.tasks.iter())
+        .find(|t| t.tool_id == "exec_command")
+        .unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(parent.output.payload().content()).unwrap();
+    let error = payload["error"].as_str().unwrap();
+    assert!(
+        error.contains(&diagnostic),
+        "unhandled execution failure lost captured stderr: {error}"
+    );
+    assert!(
+        error.contains(&child.id),
+        "failure must identify its queryable original"
+    );
+    assert!(!error.contains("UNSELECTED_STDOUT"));
+    let context = serde_json::to_string(&requests.lock().unwrap().last().unwrap().context).unwrap();
+    assert!(context.contains("BEGIN_DIAGNOSTIC") && context.contains("END_DIAGNOSTIC"));
+    assert!(context.contains("Output truncated") && context.contains("get_tool_task"));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("invocation-count")).unwrap(),
+        "once\n"
+    );
+    thread.close().await.unwrap();
+}

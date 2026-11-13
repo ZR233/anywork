@@ -149,7 +149,29 @@ impl pl_tool_lua::ToolHost for Host {
                             message.push_str(&format!("; attachment: {error}"));
                         }
                         match decode_output(output) {
-                            Ok(value) => Some(value),
+                            Ok(value) => {
+                                if output.payload().format() == "pl.tool.exec" {
+                                    if let Some(id) = value.get("taskId").and_then(|id| id.as_str()) {
+                                        message.push_str(&format!(
+                                            "\nOriginal command result: tools.get_tool_task({{taskId={},resultCursor=0}})",
+                                            serde_json::to_string(id).expect("task identity encodes as JSON")
+                                        ));
+                                    }
+                                    if let Some(stderr) = value.get("stderr")
+                                        && let Some(text) = stderr.get("content").and_then(|text| text.as_str())
+                                        && !text.is_empty()
+                                    {
+                                        let heading = if stderr.get("wasTruncated") == Some(&serde_json::Value::Bool(true)) {
+                                            "\nstderr (truncated; original retained):\n"
+                                        } else {
+                                            "\nstderr:\n"
+                                        };
+                                        message.push_str(heading);
+                                        message.push_str(text);
+                                    }
+                                }
+                                Some(value)
+                            },
                             Err(error) => {
                                 message.push_str(&format!("; result encoding: {error}"));
                                 None

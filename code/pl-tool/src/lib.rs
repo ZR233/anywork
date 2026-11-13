@@ -70,7 +70,7 @@ pub mod bots;
 #[path = "../tests/support/helper.rs"]
 mod test_fixture_helper;
 
+pub mod lua;
 #[cfg(test)]
 #[path = "../tests/support/remote.rs"]
 mod test_fixture_remote;
-pub mod lua;

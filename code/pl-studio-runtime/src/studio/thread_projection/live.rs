@@ -5206,8 +5206,8 @@ mod completion_boundary_tests {
     }
 
     #[tokio::test]
-    async fn nested_task_invocation_survives_the_production_projection_and_cold_history() -> Result<()>
-    {
+    async fn nested_task_invocation_survives_the_production_projection_and_cold_history()
+    -> Result<()> {
         use pl_core::{
             model::ModelToolCall,
             thread::{
@@ -5280,7 +5280,8 @@ mod completion_boundary_tests {
                 ..Default::default()
             };
             // There is deliberately no fabricated model call in context: Task owns this invocation.
-            let prepared = publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
+            let prepared =
+                publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
             let id = super::super::order::tool_id(&call.call_id);
             let item = prepared
                 .items
@@ -5333,7 +5334,6 @@ mod completion_boundary_tests {
         .await;
         env.finish(result).await
     }
-
 }
 
 #[cfg(test)]
