@@ -363,8 +363,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     final workspace = _dependencies.project.value.projects?.values
         .where((item) => item.id == row.workspaceId)
         .firstOrNull;
-    if (workspace == null || workspace.sshAlias != null) {
-      throw StateError('ACP requires an available local workspace');
+    if (workspace == null) {
+      throw StateError('ACP requires an available workspace');
     }
     final recoveryIssue = recoveryIssueBlockingExecution(
       _dependencies.recovery.value.value?.values ?? const [],

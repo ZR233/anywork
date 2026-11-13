@@ -6143,16 +6143,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpStartDraftHint => '可选：输入初始草稿（创建后带入新会话输入框，不会自动发送）…';
 
   @override
-  String get acpStartHandshakeNote => '创建会话先完成服务握手并获取动态配置；上方草稿将原样带入新会话输入框。';
+  String get acpStartHandshakeNote =>
+      'ACP 服务在本机运行；远程项目操作通过 Host MCP 在 SSH 主机上执行。';
 
   @override
   String get acpStartCreateAction => '创建 ACP 会话';
 
   @override
   String get acpStartCreatingAction => '正在创建…';
-
-  @override
-  String get acpStartSshUnsupported => 'ACP 会话暂不支持 SSH 项目，请选择本地项目。';
 
   @override
   String get acpStartExistingAttachmentsHint =>

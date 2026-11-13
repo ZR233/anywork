@@ -438,9 +438,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       if (workspace == null || workspace.path.isEmpty) {
         throw StateError('Project is no longer available');
       }
-      if (workspace.sshAlias != null) {
-        throw StateError('ACP requires a local workspace');
-      }
       final project = state.forProject(workspaceId);
       final recoveryIssue = recoveryIssueBlockingExecution(
         _dependencies.recovery.value.value?.values ?? const [],
@@ -467,7 +464,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           !_dependencies.isClosed &&
           (_acpGenerations[workspaceId] ?? 0) == generation &&
           (_dependencies.project.value.projects?.values.any(
-                (value) => value.id == workspaceId && value.sshAlias == null,
+                (value) => value.id == workspaceId,
               ) ??
               false);
       state = state.copyWith(submitting: true);

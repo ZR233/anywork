@@ -56,6 +56,7 @@ final class _Transport extends RecordingDemoTransport {
 Future<({AppGraph graph, _Transport transport, String workspaceId})> _mount(
   WidgetTester tester, {
   ControlledAcpBusinessPort? port,
+  bool remoteSshProject = false,
 }) async {
   tester.view.physicalSize = const Size(1280, 960);
   tester.view.devicePixelRatio = 1;
@@ -78,9 +79,26 @@ Future<({AppGraph graph, _Transport transport, String workspaceId})> _mount(
     expect(report.complete, isTrue, reason: '${report.unresolved}');
   });
   await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
-  final project = graph.client.project.state.projects!.values.firstWhere(
+  final projects = graph.client.project.state.projects!.values.toList();
+  final localProject = projects.firstWhere(
     (project) => !project.isStandalone && project.sshAlias == null,
   );
+  final project = remoteSshProject
+      ? StudioProject(
+          id: 'remote-acp-project',
+          name: '远程 ACP 项目',
+          path: '/srv/workspace',
+          sshAlias: 'test-host',
+        )
+      : localProject;
+  if (remoteSshProject) {
+    graph.client.project.applyProjectDirectory(
+      ProjectDirectoryState(
+        revision: graph.client.project.state.projectRevision + 1,
+        values: [...projects, project],
+      ),
+    );
+  }
   graph.client.selection.selectProject(project.id);
   final accountDemand = graph.accounts.observeSummaries();
   await pumpClientFuture(
@@ -237,11 +255,15 @@ void main() {
   );
 
   testWidgets(
-    'ACP creation uses existing project despite retained Native worktree intent',
+    'ACP creation uses SSH project despite retained Native worktree intent',
     (tester) async {
       final port = ControlledAcpBusinessPort()
         ..admission = Completer<AcpSessionObservationPort>();
-      final fixture = await _mount(tester, port: port);
+      final fixture = await _mount(
+        tester,
+        port: port,
+        remoteSshProject: true,
+      );
       final draft = fixture.graph.client.drafts.startDraft;
       final workspaceId = fixture.workspaceId;
       draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
@@ -261,7 +283,10 @@ void main() {
       expect(request.accountId, 'test-acp');
       expect(request.expectedConnectionRevision, BigInt.from(29));
       expect(request.workspaceId, workspaceId);
+      expect(workspaceId, 'remote-acp-project');
       expect(request.intent, isA<AcpNewIntentView>());
+      expect(find.textContaining('ACP 服务在本机运行'), findsOneWidget);
+      expect(find.text('/srv/workspace'), findsNothing);
       expect(fixture.transport.submissions, isEmpty);
       expect(
         draft.state.forProject(workspaceId).workspaceMode,

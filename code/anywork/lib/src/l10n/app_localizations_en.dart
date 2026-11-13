@@ -6503,17 +6503,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpStartHandshakeNote =>
-      'Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.';
+      'ACP runs on this device; remote project operations use Host MCP on the SSH host.';
 
   @override
   String get acpStartCreateAction => 'Start ACP session';
 
   @override
   String get acpStartCreatingAction => 'Starting…';
-
-  @override
-  String get acpStartSshUnsupported =>
-      'ACP sessions do not support SSH remote projects yet. Select a local project.';
 
   @override
   String get acpStartExistingAttachmentsHint =>

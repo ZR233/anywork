@@ -125,14 +125,6 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
             ),
           ),
           const SizedBox(height: 10),
-          if (state.isRemoteSsh) ...[
-            StudioInlineMessage(
-              icon: Icons.lan_outlined,
-              message: l10n.acpStartSshUnsupported,
-              color: StudioTone.warning.foreground(context),
-            ),
-            const SizedBox(height: 8),
-          ],
           if (state.failureMessage case final failure?) ...[
             StudioInlineMessage(
               icon: Icons.error_outline_rounded,

@@ -64,7 +64,7 @@ void main() {
     expect(find.text('existing.txt'), findsOneWidget);
   });
 
-  testWidgets('ACP SSH 创建提前说明，项目源更新后独立恢复本地准入', (tester) async {
+  testWidgets('ACP SSH 项目可创建，项目源更新不丢失草稿', (tester) async {
     final harness = await AcpComponentHarness.create();
     addTearDown(() => harness.close(tester));
     harness.client.drafts.startDraft.setAcpService('workspace', 'account');
@@ -85,10 +85,14 @@ void main() {
       harness.scope(const AcpStartComposerConnector(workspaceId: 'workspace')),
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('暂不支持 SSH 项目'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '远程 ACP 草稿');
+    expect(
+      harness.client.drafts.startDraft.state.forProject('workspace').text,
+      '远程 ACP 草稿',
+    );
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNull,
+      isNotNull,
     );
     harness.client.project.applyProjectDirectory(
       ProjectDirectoryState(
@@ -99,7 +103,10 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('暂不支持 SSH 项目'), findsNothing);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '远程 ACP 草稿',
+    );
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
       isNotNull,

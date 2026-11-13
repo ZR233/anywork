@@ -653,24 +653,46 @@ void main() {
     },
   );
 
-  test('SSH creation is rejected before ACP open', () async {
-    final h = _Harness();
-    final start = h.repository.startDraft;
-    start.setAcpService('workspace', 'account');
-    h.project.applyProjectDirectory(
-      ProjectDirectoryState(
-        values: const [
-          StudioProject(
-            id: 'workspace',
-            name: 'Remote',
-            path: '/project',
-            sshAlias: 'ssh',
-          ),
-        ],
-        revision: 2,
-      ),
-    );
-    expect(await start.submit('workspace'), isFalse);
-    expect(h.calls('open'), isEmpty);
-  });
+  test(
+    'SSH creation and explicit prompt use ACP without Native state',
+    () async {
+      final h = _Harness();
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      start.updateDraft('workspace', 'remote draft');
+      h.project.applyProjectDirectory(
+        ProjectDirectoryState(
+          values: const [
+            StudioProject(
+              id: 'workspace',
+              name: 'Remote',
+              path: '/project',
+              sshAlias: 'ssh',
+            ),
+          ],
+          revision: 2,
+        ),
+      );
+      expect(await start.submit('workspace'), isTrue);
+      expect(h.calls('open'), hasLength(1));
+      expect(
+        (h.calls('open').single as OpenAcpSessionRequestView).workspaceId,
+        'workspace',
+      );
+      expect(h.calls('prompt'), isEmpty);
+      final composer = await h.composer();
+      expect(composer.state.draft, 'remote draft');
+      await composer.submit();
+      expect(h.calls('prompt'), hasLength(1));
+      expect(
+        (h.calls('prompt').single as AcpPromptRequestView).content.single,
+        isA<AcpTextContentView>().having(
+          (value) => value.text,
+          'text',
+          'remote draft',
+        ),
+      );
+      expect(h.native.calls, 0);
+    },
+  );
 }

@@ -2,7 +2,6 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/attachment_drafts.dart';
 import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/project_store.dart';
 import '../../../../presentation/providers/start_session_controller.dart';
 import '../state/acp_view_state.dart';
 import 'acp_session_view_model.dart';
@@ -18,13 +17,6 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
       project: sessionDraft.forProject(workspaceId),
       submitting: sessionDraft.submitting,
     );
-    final projectStore = ref.watch(projectStoreProvider);
-    final isRemoteSsh =
-        projectStore.projects?.values
-            .where((project) => project.id == workspaceId)
-            .firstOrNull
-            ?.sshAlias !=
-        null;
     final composer = ref.watch(attachmentDraftsProvider).newThread(workspaceId);
     final failure = composer.failure;
     final accountId = draft.project.acpAccountId;
@@ -33,7 +25,6 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
       text: draft.project.text,
       accountId: accountId,
       submitting: draft.submitting,
-      isRemoteSsh: isRemoteSsh,
       serviceEnabled: accountId != null,
       stagedAttachments: composer.attachments,
       failureMessage: failure == null ? null : formatAcpError(failure),

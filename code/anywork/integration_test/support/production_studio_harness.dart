@@ -144,12 +144,21 @@ final class ProductionStudioHarness {
 
   Future<StudioProject> openProject(
     ProductionStudioScene scene,
-    String path,
-  ) async {
-    if (!await Directory(path).exists()) {
-      throw StateError('Synthetic project directory does not exist: $path');
+    String path, {
+    String? sshAlias,
+  }) async {
+    if (sshAlias == null) {
+      if (!await Directory(path).exists()) {
+        throw StateError('Synthetic project directory does not exist: $path');
+      }
+      await graph.client.directoryCommands.openProject(path);
+    } else {
+      final opened = await graph.client.directoryCommands.openRemoteProject(
+        sshAlias,
+        path,
+      );
+      if (!opened) throw StateError('Remote project was not selected');
     }
-    await graph.client.directoryCommands.openProject(path);
     final projectId = graph.client.selection.state.selectedProjectId;
     late StudioProject project;
     await scene.until(() {
@@ -162,7 +171,10 @@ final class ProductionStudioHarness {
       project = matches.single;
       return true;
     }, 'canonical project directory contains the opened project');
-    if (!await FileSystemEntity.identical(project.path, path)) {
+    final samePath = sshAlias == null
+        ? await FileSystemEntity.identical(project.path, path)
+        : project.path == path;
+    if (!samePath || project.sshAlias != sshAlias) {
       throw StateError(
         'Opened project does not identify the requested directory',
       );
