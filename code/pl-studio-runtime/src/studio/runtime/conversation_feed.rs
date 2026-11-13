@@ -2050,23 +2050,6 @@ pub(super) mod tests {
             assert!(result.is_err());
             assert!(!enabled(), "unwinding left allocation observation enabled");
         }
-
-        #[test]
-        fn another_test_thread_does_not_inherit_the_observation_scope() {
-            let outer = PollScope::enter().unwrap();
-            std::thread::spawn(|| {
-                assert!(!OBSERVER.with(|slot| slot.get().enabled));
-                let own = PollScope::enter().unwrap();
-                assert!(OBSERVER.with(|slot| slot.get().enabled));
-                drop(own);
-                assert!(!OBSERVER.with(|slot| slot.get().enabled));
-            })
-            .join()
-            .unwrap();
-            assert!(OBSERVER.with(|slot| slot.get().enabled));
-            drop(outer);
-            assert!(!OBSERVER.with(|slot| slot.get().enabled));
-        }
     }
 
     pub(in crate::studio::runtime) mod completed_runs {

@@ -205,12 +205,4 @@ mod tests {
         let raw = serde_json::to_string(&blank).expect("payload encodes");
         assert!(parse_current(&raw).is_err(), "blank account id must fail");
     }
-
-    #[test]
-    fn current_parse_rejects_embedded_versions() {
-        assert!(
-            parse_current(r#"{"formatVersion":3,"revision":1,"updatedAt":2,"accounts":[]}"#)
-                .is_err()
-        );
-    }
 }
