@@ -10,30 +10,31 @@ final _update = StudioUpdateInfoView(
   notesUrl: 'https://example.test/releases/2',
 );
 
-UpdaterStateSnapshot _available(int revision) => AvailableUpdaterStateSnapshot(
-  revision: revision,
-  checkedAt: _now,
-  update: _update,
+UpdaterStateSnapshot _available(int revision) => UpdaterStateSnapshot(
+  activity: AvailableUpdaterActivity(
+    revision: revision,
+    checkedAt: _now,
+    update: _update,
+  ),
 );
 
 final class _UpdateApi implements StudioUpdateApi {
   Completer<StudioUpdateOperation> opened = Completer();
-  UpdaterStateSnapshot snapshot = _available(7);
+  late UpdaterStore store;
+  int currentCancels = 0;
   int automaticStarts = 0;
   int automaticCancels = 0;
   int checkCalls = 0;
-  Completer<UpdaterStateSnapshot>? checkReply;
+  Completer<void>? checkReply;
   Object? automaticCancelFailure;
   int installCalls = 0;
   int? expectedRevision;
   String? version;
 
   @override
-  Future<UpdaterStateSnapshot> read() async => snapshot;
-  @override
-  Future<UpdaterStateSnapshot> check() {
+  Future<void> check() {
     checkCalls++;
-    return checkReply?.future ?? Future.value(snapshot);
+    return checkReply?.future ?? Future.value();
   }
 
   @override
@@ -42,9 +43,14 @@ final class _UpdateApi implements StudioUpdateApi {
   }
 
   @override
-  Future<void> cancelAutomaticUpdate() async {
+  Future<void> stopAutomaticUpdate() async {
     automaticCancels++;
     if (automaticCancelFailure case final error?) throw error;
+  }
+
+  @override
+  Future<void> cancelCurrentPreparation() async {
+    currentCancels++;
   }
 
   @override
@@ -60,10 +66,11 @@ final class _UpdateApi implements StudioUpdateApi {
 }
 
 final class _UpdateOperation implements StudioUpdateOperation {
-  _UpdateOperation({this.cancelFailure}) {
-    frames = StreamController(onListen: () => listened.complete());
-  }
-  late final StreamController<UpdaterStateSnapshot> frames;
+  _UpdateOperation({
+    this.cancelFailure,
+    this.result = const ReadyStudioUpdatePreparation('2.0.0'),
+  });
+  final StudioUpdatePreparationResult result;
   final Completer<void> listened = Completer();
   final Completer<void> handoffRequested = Completer();
   final Completer<void> handoff = Completer();
@@ -71,28 +78,22 @@ final class _UpdateOperation implements StudioUpdateOperation {
   final Object? cancelFailure;
   int disposeCalls = 0;
   int cancelCalls = 0;
+  bool cancelled = false;
 
-  @override
-  Stream<UpdaterStateSnapshot> get events => frames.stream;
   @override
   Future<void> cancel() async {
     cancelCalls++;
     if (cancelFailure case final error?) throw error;
-    if (!frames.isClosed) {
-      if (frames.hasListener) {
-        await frames.close();
-      } else {
-        // No native progress observer was opened for a late install handle.
-        unawaited(frames.close());
-      }
-    }
+    cancelled = true;
     if (!handoff.isCompleted) handoff.complete();
   }
 
   @override
-  Future<void> finishPreparation() {
+  Future<StudioUpdatePreparationResult> finishPreparation() async {
+    if (!listened.isCompleted) listened.complete();
     if (!handoffRequested.isCompleted) handoffRequested.complete();
-    return handoff.future;
+    await handoff.future;
+    return cancelled ? const CancelledStudioUpdatePreparation() : result;
   }
 
   @override
@@ -103,9 +104,40 @@ final class _UpdateOperation implements StudioUpdateOperation {
 }
 
 StudioUpdateClient _client(_UpdateApi api, UpdaterStore store) =>
-    StudioUpdateClient(api: api, updater: store, enabled: true);
+    StudioUpdateClient(api: api..store = store, updater: store, enabled: true);
 
 void main() {
+  test('preparation receipt never backfills canonical state or waits for UI delivery', () async {
+    final api = _UpdateApi();
+    final store = UpdaterStore()..apply(_available(7));
+    final client = _client(api, store);
+    final install = client.install();
+    final operation = _UpdateOperation();
+    api.opened.complete(operation);
+    await operation.handoffRequested.future;
+    operation.handoff.complete();
+    expect((await install).readyVersion, '2.0.0');
+    expect(store.state.value?.activity, isA<AvailableUpdaterActivity>());
+    expect(store.state.value?.revision, 7);
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test(
+    'cancel current preparation never stops or restarts the scheduler',
+    () async {
+      final api = _UpdateApi();
+      final store = UpdaterStore()..apply(_available(7));
+      final client = _client(api, store)..attach();
+      await client.cancelInstall();
+      expect(api.currentCancels, 1);
+      expect(api.automaticCancels, 0);
+      store.apply(_available(8));
+      expect(api.automaticStarts, 1);
+      expect((await client.close()).complete, isTrue);
+      expect(api.automaticCancels, 1);
+    },
+  );
+
   test('a confirmed pre-admission rejection can be retried without leaking an owner', () async {
     final api = _UpdateApi();
     final client = _client(api, UpdaterStore()..apply(_available(7)));
@@ -125,10 +157,15 @@ void main() {
     final operation = _UpdateOperation();
     api.opened.complete(operation);
     await operation.listened.future;
-    operation.frames.add(
-      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+    api.store.apply(
+      UpdaterStateSnapshot(
+        activity: ReadyUpdaterActivity(
+          revision: 8,
+          readyAt: _now,
+          update: _update,
+        ),
+      ),
     );
-    await operation.frames.close();
     await operation.handoffRequested.future;
     operation.handoff.complete();
     expect((await retry).readyVersion, _update.version);
@@ -150,10 +187,15 @@ void main() {
       final operation = _UpdateOperation();
       api.opened.complete(operation);
       await operation.listened.future;
-      operation.frames.add(
-        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      api.store.apply(
+        UpdaterStateSnapshot(
+          activity: ReadyUpdaterActivity(
+            revision: 8,
+            readyAt: _now,
+            update: _update,
+          ),
+        ),
       );
-      await operation.frames.close();
       await operation.handoffRequested.future;
       expect(
         client.request.value.pending,
@@ -197,14 +239,19 @@ void main() {
       final operation = _UpdateOperation();
       api.opened.complete(operation);
       await operation.listened.future;
-      operation.frames.add(
-        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      api.store.apply(
+        UpdaterStateSnapshot(
+          activity: ReadyUpdaterActivity(
+            revision: 8,
+            readyAt: _now,
+            update: _update,
+          ),
+        ),
       );
-      await operation.frames.close();
       await operation.handoffRequested.future;
       await client.cancelInstall();
       expect((await install).readyVersion, isNull);
-      expect(client.state, isA<ReadyUpdaterStateSnapshot>());
+      expect(client.state.activity, isA<ReadyUpdaterActivity>());
       expect(client.request.value.phase, StudioUpdateRequestPhase.cancelled);
       expect((await client.close()).complete, isTrue);
     },
@@ -216,27 +263,37 @@ void main() {
       final api = _UpdateApi();
       final client = _client(api, UpdaterStore()..apply(_available(7)));
       final install = client.install();
-      final operation = _UpdateOperation();
-      api.opened.complete(operation);
-      await operation.listened.future;
-      operation.frames.add(
-        InstallFailedUpdaterStateSnapshot(
-          revision: 8,
-          failedAt: _now,
-          update: _update,
-          error: const UpdaterErrorView(
+      final operation = _UpdateOperation(
+        result: const FailedStudioUpdatePreparation(
+          UpdaterErrorView(
             code: 'network',
             message: 'offline',
             retryable: true,
           ),
         ),
       );
-      await operation.frames.close();
+      api.opened.complete(operation);
+      await operation.listened.future;
+      api.store.apply(
+        UpdaterStateSnapshot(
+          activity: InstallFailedUpdaterActivity(
+            revision: 8,
+            failedAt: _now,
+            update: _update,
+            error: const UpdaterErrorView(
+              code: 'network',
+              message: 'offline',
+              retryable: true,
+            ),
+          ),
+        ),
+      );
       await operation.handoffRequested.future;
       operation.handoff.complete();
       expect((await install).readyVersion, isNull);
       expect(client.request.value.phase, StudioUpdateRequestPhase.failed);
-      expect(client.state, isA<InstallFailedUpdaterStateSnapshot>());
+      expect(client.request.value.error, 'offline');
+      expect(client.state.activity, isA<InstallFailedUpdaterActivity>());
       expect((await client.close()).complete, isTrue);
     },
   );
@@ -245,12 +302,14 @@ void main() {
     final api = _UpdateApi();
     final store = UpdaterStore()
       ..apply(
-        DownloadingUpdaterStateSnapshot(
-          revision: 7,
-          updatedAt: _now,
-          update: _update,
-          downloaded: 1,
-          total: 100,
+        UpdaterStateSnapshot(
+          activity: DownloadingUpdaterActivity(
+            revision: 7,
+            updatedAt: _now,
+            update: _update,
+            downloaded: 1,
+            total: 100,
+          ),
         ),
       );
     final client = _client(api, store);
@@ -263,10 +322,15 @@ void main() {
     final operation = _UpdateOperation();
     api.opened.complete(operation);
     await operation.listened.future;
-    operation.frames.add(
-      ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+    api.store.apply(
+      UpdaterStateSnapshot(
+        activity: ReadyUpdaterActivity(
+          revision: 8,
+          readyAt: _now,
+          update: _update,
+        ),
+      ),
     );
-    await operation.frames.close();
     await operation.handoffRequested.future;
     operation.handoff.complete();
     expect((await pending).readyVersion, _update.version);
@@ -382,14 +446,19 @@ void main() {
       api.opened.complete(operation);
       await operation.listened.future;
       observer.cancel();
-      operation.frames.add(
-        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      api.store.apply(
+        UpdaterStateSnapshot(
+          activity: ReadyUpdaterActivity(
+            revision: 8,
+            readyAt: _now,
+            update: _update,
+          ),
+        ),
       );
-      await operation.frames.close();
       await operation.handoffRequested.future;
       expect(complete, isFalse);
       expect(operation.disposeCalls, 0);
-      expect(store.state.value, isA<ReadyUpdaterStateSnapshot>());
+      expect(store.state.value?.activity, isA<ReadyUpdaterActivity>());
       operation.handoff.complete();
       expect((await result).readyVersion, _update.version);
       expect(operation.disposeCalls, 1);
@@ -429,10 +498,15 @@ void main() {
       api.opened.complete(operation);
       await operation.listened.future;
       final failure = expectLater(install, throwsStateError);
-      operation.frames.add(
-        ReadyUpdaterStateSnapshot(revision: 8, readyAt: _now, update: _update),
+      api.store.apply(
+        UpdaterStateSnapshot(
+          activity: ReadyUpdaterActivity(
+            revision: 8,
+            readyAt: _now,
+            update: _update,
+          ),
+        ),
       );
-      await operation.frames.close();
       await operation.handoffRequested.future;
       operation.handoff.completeError(StateError('native handoff failed'));
       await failure;

@@ -56,6 +56,18 @@ class StudioUpdateSettingsView extends StatelessWidget {
                         color: context.colors.onSurfaceVariant,
                       ),
                     ),
+                    if (state.readyVersion != null &&
+                        state.statusKind != StudioUpdateStatusKind.ready &&
+                        state.statusKind !=
+                            StudioUpdateStatusKind.installerLaunched) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        context.l10n.settingsStudioUpdateReady(
+                          state.readyVersion!,
+                        ),
+                        style: context.text.bodySmall,
+                      ),
+                    ],
                     if (state.requestKind ==
                             StudioUpdateRequestKind.preparing ||
                         state.requestKind ==
@@ -172,6 +184,12 @@ class StudioUpdateSettingsView extends StatelessWidget {
                     : context.l10n.settingsStudioUpdateInstall,
               ),
             ),
+            if (state.showCancel)
+              TextButton(
+                key: const ValueKey('studio-update-cancel'),
+                onPressed: state.cancelEnabled ? onCancel : null,
+                child: Text(context.l10n.settingsCancel),
+              ),
           ],
         );
       case StudioUpdateSettingsActionLayout.check:
@@ -207,7 +225,7 @@ class StudioUpdateSettingsView extends StatelessWidget {
       StudioUpdateStatusKind.verifying =>
         context.l10n.settingsStudioUpdateVerifying(available),
       StudioUpdateStatusKind.ready => context.l10n.settingsStudioUpdateReady(
-        available,
+        state.readyVersion ?? available,
       ),
       StudioUpdateStatusKind.installerLaunched =>
         context.l10n.settingsStudioUpdateInstallerLaunched(available),

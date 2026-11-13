@@ -6,7 +6,7 @@ use super::runtime::BridgeStateError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeUpdaterStateSnapshot {
+pub enum BridgeUpdaterActivity {
     Disabled(BridgeDisabledUpdaterState),
     Idle(BridgeIdleUpdaterState),
     Checking(BridgeCheckingUpdaterState),
@@ -116,4 +116,26 @@ pub struct BridgeVerifiedUpdateSummary {
     pub version: String,
     pub published_at: i64,
     pub notes_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUpdaterStateSnapshot {
+    pub activity: BridgeUpdaterActivity,
+    pub ready_update: Option<BridgeReadyUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeReadyUpdate {
+    pub update: BridgeVerifiedUpdateSummary,
+    pub ready_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum BridgeUpdatePreparationResult {
+    Ready { version: String },
+    Cancelled,
+    Failed { error: BridgeStateError },
 }

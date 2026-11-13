@@ -28,7 +28,7 @@ pub enum StudioUpdateStateKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum StudioUpdateStateSnapshot {
+pub enum StudioUpdateActivity {
     Disabled(DisabledUpdateState),
     Idle(IdleUpdateState),
     Checking(CheckingUpdateState),
@@ -42,7 +42,7 @@ pub enum StudioUpdateStateSnapshot {
     InstallFailed(InstallFailedUpdateState),
 }
 
-impl StudioUpdateStateSnapshot {
+impl StudioUpdateActivity {
     pub fn idle(updated_at: i64) -> Self {
         Self::Idle(IdleUpdateState::new(updated_at))
     }
@@ -109,5 +109,42 @@ impl StudioUpdateStateSnapshot {
             | Self::UpToDate(_)
             | Self::CheckFailed(_) => None,
         }
+    }
+}
+
+/// Current activity and the independently retained, verified installer share one revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioUpdateStateSnapshot {
+    pub activity: StudioUpdateActivity,
+    pub ready_update: Option<StudioReadyUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioReadyUpdate {
+    pub update: StudioUpdate,
+    pub ready_at: i64,
+}
+
+impl StudioUpdateStateSnapshot {
+    pub fn idle(updated_at: i64) -> Self {
+        Self {
+            activity: StudioUpdateActivity::idle(updated_at),
+            ready_update: None,
+        }
+    }
+
+    pub const fn revision(&self) -> u64 {
+        self.activity.revision()
+    }
+    pub const fn updated_at(&self) -> i64 {
+        self.activity.updated_at()
+    }
+    pub fn update(&self) -> Option<&StudioUpdate> {
+        self.ready_update
+            .as_ref()
+            .map(|ready| &ready.update)
+            .or_else(|| self.activity.update())
     }
 }

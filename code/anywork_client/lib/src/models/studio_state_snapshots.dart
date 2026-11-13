@@ -541,73 +541,73 @@ class AccountUsageStateSnapshot
   List<AccountUsageView> get usages => _data.usages;
 }
 
-sealed class UpdaterStateSnapshot {
-  const UpdaterStateSnapshot();
+sealed class UpdaterActivity {
+  const UpdaterActivity();
 
-  const factory UpdaterStateSnapshot.idle({
+  const factory UpdaterActivity.idle({
     required int revision,
     required DateTime updatedAt,
-  }) = IdleUpdaterStateSnapshot;
+  }) = IdleUpdaterActivity;
 
   int get revision => switch (this) {
-    DisabledUpdaterStateSnapshot(:final revision) ||
-    IdleUpdaterStateSnapshot(:final revision) ||
-    CheckingUpdaterStateSnapshot(:final revision) ||
-    UpToDateUpdaterStateSnapshot(:final revision) ||
-    AvailableUpdaterStateSnapshot(:final revision) ||
-    DownloadingUpdaterStateSnapshot(:final revision) ||
-    VerifyingUpdaterStateSnapshot(:final revision) ||
-    ReadyUpdaterStateSnapshot(:final revision) ||
-    InstallerLaunchedUpdaterStateSnapshot(:final revision) ||
-    CheckFailedUpdaterStateSnapshot(:final revision) ||
-    InstallFailedUpdaterStateSnapshot(:final revision) => revision,
+    DisabledUpdaterActivity(:final revision) ||
+    IdleUpdaterActivity(:final revision) ||
+    CheckingUpdaterActivity(:final revision) ||
+    UpToDateUpdaterActivity(:final revision) ||
+    AvailableUpdaterActivity(:final revision) ||
+    DownloadingUpdaterActivity(:final revision) ||
+    VerifyingUpdaterActivity(:final revision) ||
+    ReadyUpdaterActivity(:final revision) ||
+    InstallerLaunchedUpdaterActivity(:final revision) ||
+    CheckFailedUpdaterActivity(:final revision) ||
+    InstallFailedUpdaterActivity(:final revision) => revision,
   };
 
   DateTime get updatedAt => switch (this) {
-    DisabledUpdaterStateSnapshot(:final updatedAt) ||
-    IdleUpdaterStateSnapshot(:final updatedAt) ||
-    DownloadingUpdaterStateSnapshot(:final updatedAt) ||
-    VerifyingUpdaterStateSnapshot(:final updatedAt) => updatedAt,
-    CheckingUpdaterStateSnapshot(:final startedAt) => startedAt,
-    UpToDateUpdaterStateSnapshot(:final checkedAt) ||
-    AvailableUpdaterStateSnapshot(:final checkedAt) => checkedAt,
-    InstallerLaunchedUpdaterStateSnapshot(:final launchedAt) => launchedAt,
-    ReadyUpdaterStateSnapshot(:final readyAt) => readyAt,
-    CheckFailedUpdaterStateSnapshot(:final failedAt) ||
-    InstallFailedUpdaterStateSnapshot(:final failedAt) => failedAt,
+    DisabledUpdaterActivity(:final updatedAt) ||
+    IdleUpdaterActivity(:final updatedAt) ||
+    DownloadingUpdaterActivity(:final updatedAt) ||
+    VerifyingUpdaterActivity(:final updatedAt) => updatedAt,
+    CheckingUpdaterActivity(:final startedAt) => startedAt,
+    UpToDateUpdaterActivity(:final checkedAt) ||
+    AvailableUpdaterActivity(:final checkedAt) => checkedAt,
+    InstallerLaunchedUpdaterActivity(:final launchedAt) => launchedAt,
+    ReadyUpdaterActivity(:final readyAt) => readyAt,
+    CheckFailedUpdaterActivity(:final failedAt) ||
+    InstallFailedUpdaterActivity(:final failedAt) => failedAt,
   };
 
   StudioUpdateInfoView? get update => switch (this) {
-    AvailableUpdaterStateSnapshot(:final update) ||
-    DownloadingUpdaterStateSnapshot(:final update) ||
-    VerifyingUpdaterStateSnapshot(:final update) ||
-    ReadyUpdaterStateSnapshot(:final update) ||
-    InstallerLaunchedUpdaterStateSnapshot(:final update) ||
-    InstallFailedUpdaterStateSnapshot(:final update) => update,
-    DisabledUpdaterStateSnapshot() ||
-    IdleUpdaterStateSnapshot() ||
-    CheckingUpdaterStateSnapshot() ||
-    UpToDateUpdaterStateSnapshot() ||
-    CheckFailedUpdaterStateSnapshot() => null,
+    AvailableUpdaterActivity(:final update) ||
+    DownloadingUpdaterActivity(:final update) ||
+    VerifyingUpdaterActivity(:final update) ||
+    ReadyUpdaterActivity(:final update) ||
+    InstallerLaunchedUpdaterActivity(:final update) ||
+    InstallFailedUpdaterActivity(:final update) => update,
+    DisabledUpdaterActivity() ||
+    IdleUpdaterActivity() ||
+    CheckingUpdaterActivity() ||
+    UpToDateUpdaterActivity() ||
+    CheckFailedUpdaterActivity() => null,
   };
 
   bool get hasUpdate => switch (this) {
-    AvailableUpdaterStateSnapshot() ||
-    DownloadingUpdaterStateSnapshot() ||
-    VerifyingUpdaterStateSnapshot() ||
-    ReadyUpdaterStateSnapshot() ||
-    InstallFailedUpdaterStateSnapshot() => true,
-    DisabledUpdaterStateSnapshot() ||
-    IdleUpdaterStateSnapshot() ||
-    CheckingUpdaterStateSnapshot() ||
-    UpToDateUpdaterStateSnapshot() ||
-    InstallerLaunchedUpdaterStateSnapshot() ||
-    CheckFailedUpdaterStateSnapshot() => false,
+    AvailableUpdaterActivity() ||
+    DownloadingUpdaterActivity() ||
+    VerifyingUpdaterActivity() ||
+    ReadyUpdaterActivity() ||
+    InstallFailedUpdaterActivity() => true,
+    DisabledUpdaterActivity() ||
+    IdleUpdaterActivity() ||
+    CheckingUpdaterActivity() ||
+    UpToDateUpdaterActivity() ||
+    InstallerLaunchedUpdaterActivity() ||
+    CheckFailedUpdaterActivity() => false,
   };
 }
 
-final class DisabledUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const DisabledUpdaterStateSnapshot({
+final class DisabledUpdaterActivity extends UpdaterActivity {
+  const DisabledUpdaterActivity({
     required this.revision,
     required this.updatedAt,
   });
@@ -618,11 +618,8 @@ final class DisabledUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final DateTime updatedAt;
 }
 
-final class IdleUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const IdleUpdaterStateSnapshot({
-    required this.revision,
-    required this.updatedAt,
-  });
+final class IdleUpdaterActivity extends UpdaterActivity {
+  const IdleUpdaterActivity({required this.revision, required this.updatedAt});
 
   @override
   final int revision;
@@ -630,8 +627,8 @@ final class IdleUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final DateTime updatedAt;
 }
 
-final class CheckingUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const CheckingUpdaterStateSnapshot({
+final class CheckingUpdaterActivity extends UpdaterActivity {
+  const CheckingUpdaterActivity({
     required this.revision,
     required this.operationId,
     required this.startedAt,
@@ -643,8 +640,8 @@ final class CheckingUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final DateTime startedAt;
 }
 
-final class UpToDateUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const UpToDateUpdaterStateSnapshot({
+final class UpToDateUpdaterActivity extends UpdaterActivity {
+  const UpToDateUpdaterActivity({
     required this.revision,
     required this.checkedAt,
   });
@@ -654,8 +651,8 @@ final class UpToDateUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final DateTime checkedAt;
 }
 
-final class AvailableUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const AvailableUpdaterStateSnapshot({
+final class AvailableUpdaterActivity extends UpdaterActivity {
+  const AvailableUpdaterActivity({
     required this.revision,
     required this.checkedAt,
     required this.update,
@@ -668,8 +665,8 @@ final class AvailableUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final StudioUpdateInfoView update;
 }
 
-final class DownloadingUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const DownloadingUpdaterStateSnapshot({
+final class DownloadingUpdaterActivity extends UpdaterActivity {
+  const DownloadingUpdaterActivity({
     required this.revision,
     required this.updatedAt,
     required this.update,
@@ -687,8 +684,8 @@ final class DownloadingUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final int total;
 }
 
-final class VerifyingUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const VerifyingUpdaterStateSnapshot({
+final class VerifyingUpdaterActivity extends UpdaterActivity {
+  const VerifyingUpdaterActivity({
     required this.revision,
     required this.updatedAt,
     required this.update,
@@ -706,8 +703,8 @@ final class VerifyingUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final int total;
 }
 
-final class InstallerLaunchedUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const InstallerLaunchedUpdaterStateSnapshot({
+final class InstallerLaunchedUpdaterActivity extends UpdaterActivity {
+  const InstallerLaunchedUpdaterActivity({
     required this.revision,
     required this.launchedAt,
     required this.update,
@@ -720,8 +717,8 @@ final class InstallerLaunchedUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final StudioUpdateInfoView update;
 }
 
-final class ReadyUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const ReadyUpdaterStateSnapshot({
+final class ReadyUpdaterActivity extends UpdaterActivity {
+  const ReadyUpdaterActivity({
     required this.revision,
     required this.readyAt,
     required this.update,
@@ -734,8 +731,8 @@ final class ReadyUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final StudioUpdateInfoView update;
 }
 
-final class CheckFailedUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const CheckFailedUpdaterStateSnapshot({
+final class CheckFailedUpdaterActivity extends UpdaterActivity {
+  const CheckFailedUpdaterActivity({
     required this.revision,
     required this.failedAt,
     required this.error,
@@ -747,8 +744,8 @@ final class CheckFailedUpdaterStateSnapshot extends UpdaterStateSnapshot {
   final UpdaterErrorView error;
 }
 
-final class InstallFailedUpdaterStateSnapshot extends UpdaterStateSnapshot {
-  const InstallFailedUpdaterStateSnapshot({
+final class InstallFailedUpdaterActivity extends UpdaterActivity {
+  const InstallFailedUpdaterActivity({
     required this.revision,
     required this.failedAt,
     required this.update,
@@ -806,3 +803,49 @@ class DirectoryStateSnapshot<T> extends ObservedStateSnapshot<List<T>> {
 typedef ProjectDirectoryState = DirectoryStateSnapshot<StudioProject>;
 typedef AgentDirectoryState = DirectoryStateSnapshot<StudioAgentView>;
 typedef RecoveryStateSnapshot = DirectoryStateSnapshot<StudioRecoveryIssue>;
+
+/// One canonical state: current activity and the retained installer are independent.
+final class UpdaterStateSnapshot {
+  const UpdaterStateSnapshot({required this.activity, this.readyUpdate});
+  UpdaterStateSnapshot.idle({
+    required int revision,
+    required DateTime updatedAt,
+  }) : activity = IdleUpdaterActivity(revision: revision, updatedAt: updatedAt),
+       readyUpdate = null;
+
+  final UpdaterActivity activity;
+  final ReadyStudioUpdate? readyUpdate;
+  int get revision => activity.revision;
+  DateTime get updatedAt => activity.updatedAt;
+  StudioUpdateInfoView? get update => readyUpdate?.update ?? activity.update;
+  bool get hasUpdate =>
+      activity is! DisabledUpdaterActivity &&
+      activity is! InstallerLaunchedUpdaterActivity &&
+      (readyUpdate != null || activity.hasUpdate);
+}
+
+final class ReadyStudioUpdate {
+  const ReadyStudioUpdate({required this.update, required this.readyAt});
+  final StudioUpdateInfoView update;
+  final DateTime readyAt;
+}
+
+sealed class StudioUpdatePreparationResult {
+  const StudioUpdatePreparationResult();
+}
+
+final class ReadyStudioUpdatePreparation extends StudioUpdatePreparationResult {
+  const ReadyStudioUpdatePreparation(this.version);
+  final String version;
+}
+
+final class CancelledStudioUpdatePreparation
+    extends StudioUpdatePreparationResult {
+  const CancelledStudioUpdatePreparation();
+}
+
+final class FailedStudioUpdatePreparation
+    extends StudioUpdatePreparationResult {
+  const FailedStudioUpdatePreparation(this.error);
+  final UpdaterErrorView error;
+}

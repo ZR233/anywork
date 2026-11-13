@@ -25,6 +25,8 @@ pub use idle::IdleUpdateState;
 pub use install_failed::InstallFailedUpdateState;
 pub use installer_launched::InstallerLaunchedUpdateState;
 pub use ready::ReadyUpdateState;
-pub use snapshot::{StudioUpdateStateKind, StudioUpdateStateSnapshot};
+pub use snapshot::{
+    StudioReadyUpdate, StudioUpdateActivity, StudioUpdateStateKind, StudioUpdateStateSnapshot,
+};
 pub use up_to_date::UpToDateUpdateState;
 pub use verifying::VerifyingUpdateState;

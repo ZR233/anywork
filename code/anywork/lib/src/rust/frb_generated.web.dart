@@ -389,10 +389,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_StreamSink_bridge_statistics_feed_event_Sse(dynamic raw);
 
   @protected
-  RustStreamSink<BridgeUpdaterStateSnapshot>
-  dco_decode_StreamSink_bridge_updater_state_snapshot_Sse(dynamic raw);
-
-  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -1164,6 +1160,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyResource dco_decode_box_autoadd_bridge_ready_resource(dynamic raw);
+
+  @protected
+  BridgeReadyUpdate dco_decode_box_autoadd_bridge_ready_update(dynamic raw);
 
   @protected
   BridgeReadyUpdaterState dco_decode_box_autoadd_bridge_ready_updater_state(
@@ -3083,6 +3082,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeReadyResource dco_decode_bridge_ready_resource(dynamic raw);
 
   @protected
+  BridgeReadyUpdate dco_decode_bridge_ready_update(dynamic raw);
+
+  @protected
   BridgeReadyUpdaterState dco_decode_bridge_ready_updater_state(dynamic raw);
 
   @protected
@@ -3667,6 +3669,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeUpdateMcpDocumentInput dco_decode_bridge_update_mcp_document_input(
     dynamic raw,
   );
+
+  @protected
+  BridgeUpdatePreparationResult dco_decode_bridge_update_preparation_result(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeUpdaterActivity dco_decode_bridge_updater_activity(dynamic raw);
 
   @protected
   BridgeUpdaterStateSnapshot dco_decode_bridge_updater_state_snapshot(
@@ -4642,6 +4652,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(dynamic raw);
 
   @protected
+  BridgeReadyUpdate? dco_decode_opt_box_autoadd_bridge_ready_update(
+    dynamic raw,
+  );
+
+  @protected
   BridgeResourceStamp? dco_decode_opt_box_autoadd_bridge_resource_stamp(
     dynamic raw,
   );
@@ -5173,12 +5188,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<BridgeStatisticsFeedEvent>
   sse_decode_StreamSink_bridge_statistics_feed_event_Sse(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  RustStreamSink<BridgeUpdaterStateSnapshot>
-  sse_decode_StreamSink_bridge_updater_state_snapshot_Sse(
     SseDeserializer deserializer,
   );
 
@@ -6136,6 +6145,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyResource sse_decode_box_autoadd_bridge_ready_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeReadyUpdate sse_decode_box_autoadd_bridge_ready_update(
     SseDeserializer deserializer,
   );
 
@@ -8649,6 +8663,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeReadyUpdate sse_decode_bridge_ready_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeReadyUpdaterState sse_decode_bridge_ready_updater_state(
     SseDeserializer deserializer,
   );
@@ -9349,6 +9368,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpdateMcpDocumentInput sse_decode_bridge_update_mcp_document_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUpdatePreparationResult sse_decode_bridge_update_preparation_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUpdaterActivity sse_decode_bridge_updater_activity(
     SseDeserializer deserializer,
   );
 
@@ -10548,6 +10577,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeReadyUpdate? sse_decode_opt_box_autoadd_bridge_ready_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeResourceStamp? sse_decode_opt_box_autoadd_bridge_resource_stamp(
     SseDeserializer deserializer,
   );
@@ -11192,12 +11226,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_StreamSink_bridge_statistics_feed_event_Sse(
     RustStreamSink<BridgeStatisticsFeedEvent> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_StreamSink_bridge_updater_state_snapshot_Sse(
-    RustStreamSink<BridgeUpdaterStateSnapshot> self,
     SseSerializer serializer,
   );
 
@@ -12284,6 +12312,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_ready_resource(
     BridgeReadyResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_ready_update(
+    BridgeReadyUpdate self,
     SseSerializer serializer,
   );
 
@@ -15288,6 +15322,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_ready_update(
+    BridgeReadyUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_ready_updater_state(
     BridgeReadyUpdaterState self,
     SseSerializer serializer,
@@ -16142,6 +16182,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_update_mcp_document_input(
     BridgeUpdateMcpDocumentInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_update_preparation_result(
+    BridgeUpdatePreparationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_updater_activity(
+    BridgeUpdaterActivity self,
     SseSerializer serializer,
   );
 
@@ -17528,6 +17580,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_prompt_prefix_changed_reason(
     BridgePromptPrefixChangedReason? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_ready_update(
+    BridgeReadyUpdate? self,
     SseSerializer serializer,
   );
 

@@ -107,15 +107,16 @@ pub use studio::{
     PersistenceState, PersistenceStateSnapshot, ProductEventBus, SkillSearchResult,
     SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
     StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
-    StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    StudioReadyUpdate, StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
     StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery, StudioStore,
-    StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioUpdateStateSnapshot,
-    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
-    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
+    StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioUpdateActivity,
+    StudioUpdatePreparationResult, StudioUpdateStateSnapshot, StudioWorktreeInspection,
+    StudioWorktreeRecoveryPreview, ThreadMetadataObservation, ThreadPreparationObserver,
+    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, ThreadsObservation,
+    TimelineEvent, TimelineFeed, WorkspaceRecord,
 };
 pub use worker_assets::RemoteHelperSource;
 
