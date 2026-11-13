@@ -157,6 +157,9 @@ impl pl_tool_lua::ToolHost for Host {
                                             serde_json::to_string(id).expect("task identity encodes as JSON")
                                         ));
                                     }
+                                    if let Some(signal) = value.get("signal").and_then(|signal| signal.as_i64()) {
+                                        message.push_str(&format!("\nProcess terminated by signal {signal}."));
+                                    }
                                     if let Some(stderr) = value.get("stderr")
                                         && let Some(text) = stderr.get("content").and_then(|text| text.as_str())
                                         && !text.is_empty()

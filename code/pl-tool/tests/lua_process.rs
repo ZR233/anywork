@@ -787,92 +787,128 @@ async fn deadline_cancellation_and_close_join_real_lua_child_processes() {
 
 #[tokio::test]
 async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed() {
-    let root = tempfile::tempdir().unwrap();
-    let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
-    let definition = pl_tool::exec::exec_definition();
-    let command = ThreadExecTool::new(
-        Arc::new(backend),
-        Arc::new(Archive(root.path().join("archive"))),
-        CommandAccess::WorkspaceOnly,
-        definition.clone(),
-    )
-    .registration(
-        prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
-    )
-    .nested(false);
-    let tool = pl_tool::lua::LuaTool::new("");
-    let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
-        .unwrap()
-        .attach(ToolHandle::new(tool))
-        .with_nested_calls()
-        .foreground();
-    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-    std::fs::write(root.path().join("unselected-output"), "UNSELECTED_STDOUT").unwrap();
-    let diagnostic = "诊断\n".repeat(4096) + "expected failing test\nFINAL_DIAGNOSTIC";
-    std::fs::write(root.path().join("failing-diagnostic"), &diagnostic).unwrap();
-    let model = host::Calls {
-        calls: [("exec".into(), serde_json::json!({"code": "local r=tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; cat unselected-output; cat failing-diagnostic >&2; exit 7]=]}); assert(r.exitCode==7 and r.stderr.content==string.rep('诊断\\n',4096)..'expected failing test\\nFINAL_DIAGNOSTIC'); return {exitCode=r.exitCode,stderr=r.stderr.content}"}).to_string())].into(),
-        requests: requests.clone(),
-    };
-    let thread = ThreadHandle::start("lua-nonzero".into(), DynModelSession::new(model)).unwrap();
-    thread.register_tools(vec![command, lua]).await.unwrap();
-    thread.run_turn(host::turn("nonzero")).await.unwrap();
-    let effects = thread.effects().await.unwrap();
-    let parent = effects
-        .iter()
-        .flat_map(|effect| effect.tasks.iter())
-        .rev()
-        .find(|t| t.tool_id == "exec")
-        .unwrap();
-    assert_eq!(parent.status, pl_core::thread::task::TaskStatus::Succeeded);
-    let child = effects
-        .iter()
-        .flat_map(|effect| effect.tasks.iter())
-        .rev()
-        .find(|t| t.tool_id == "exec_command")
-        .unwrap();
-    assert_eq!(child.status, pl_core::thread::task::TaskStatus::Failed);
-    assert_eq!(
-        child.parent_call_id.as_deref(),
-        Some(parent.call_id.as_str())
-    );
-    let original = effects
-        .iter()
-        .flat_map(|effect| effect.deliveries.iter())
-        .find(|d| d.call_id == child.call_id)
-        .unwrap();
-    assert!(
-        original
+    for signal in [None, Some(15)] {
+        let root = tempfile::tempdir().unwrap();
+        let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
+        let definition = pl_tool::exec::exec_definition();
+        let command = ThreadExecTool::new(
+            Arc::new(backend),
+            Arc::new(Archive(root.path().join("archive"))),
+            CommandAccess::WorkspaceOnly,
+            definition.clone(),
+        )
+        .registration(
+            prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
+        )
+        .nested(false);
+        let tool = pl_tool::lua::LuaTool::new("");
+        let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+            .unwrap()
+            .attach(ToolHandle::new(tool))
+            .with_nested_calls()
+            .foreground();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        std::fs::write(root.path().join("unselected-output"), "UNSELECTED_STDOUT").unwrap();
+        let diagnostic = "诊断\n".repeat(4096) + "expected failing test\nFINAL_DIAGNOSTIC";
+        std::fs::write(root.path().join("failing-diagnostic"), &diagnostic).unwrap();
+        let ending = if signal.is_some() {
+            "kill -TERM $$"
+        } else {
+            "exit 7"
+        };
+        let command_text = format!(
+            "printf 'once\\n' >> invocation-count; cat unselected-output; cat failing-diagnostic >&2; {ending}"
+        );
+        let checks = if signal.is_some() {
+            "assert(not ok and r.output.exitCode==json.null and r.output.signal==15); assert(r.message:find('signal 15',1,true),'signal missing from diagnostic'); r=r.output"
+        } else {
+            "assert(ok and r.exitCode==7 and r.signal==nil)"
+        };
+        let code = format!(
+            "local ok,r=pcall(function() return tools.exec_command({{command={}}}) end); {}; assert(r.stderr.content==string.rep('诊断'..string.char(10),4096)..'expected failing test'..string.char(10)..'FINAL_DIAGNOSTIC'); return {{exitCode=r.exitCode,signal=r.signal,stderr=r.stderr.content}}",
+            serde_json::to_string(&command_text).unwrap(),
+            checks,
+        );
+        let model = host::Calls {
+            calls: [("exec".into(), serde_json::json!({"code": code}).to_string())].into(),
+            requests: requests.clone(),
+        };
+        let thread =
+            ThreadHandle::start("lua-nonzero".into(), DynModelSession::new(model)).unwrap();
+        thread.register_tools(vec![command, lua]).await.unwrap();
+        thread.run_turn(host::turn("nonzero")).await.unwrap();
+        let effects = thread.effects().await.unwrap();
+        let parent = effects
+            .iter()
+            .flat_map(|effect| effect.tasks.iter())
+            .rev()
+            .find(|t| t.tool_id == "exec")
+            .unwrap();
+        let diagnostic_payload = effects
+            .iter()
+            .flat_map(|e| e.deliveries.iter())
+            .find(|d| d.call_id == parent.call_id)
+            .unwrap()
             .output
             .payload()
             .content()
-            .contains("UNSELECTED_STDOUT")
-    );
-    let raw: serde_json::Value = serde_json::from_str(original.output.payload().content()).unwrap();
-    assert_eq!(raw["stderr"]["content"], diagnostic);
-    assert_eq!(raw["stderr"]["wasTruncated"], false);
-    let parent_delivery = effects
-        .iter()
-        .flat_map(|effect| effect.deliveries.iter())
-        .find(|d| d.call_id == parent.call_id)
-        .unwrap();
-    let selected: serde_json::Value =
-        serde_json::from_str(parent_delivery.output.payload().content()).unwrap();
-    let selected: serde_json::Value =
-        serde_json::from_str(selected["output"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        selected["stderr"], diagnostic,
-        "Lua receives the complete diagnostic before model projection"
-    );
-    let model_context =
-        serde_json::to_string(&requests.lock().unwrap().last().unwrap().context).unwrap();
-    assert!(model_context.contains("expected failing test"));
-    assert!(!model_context.contains("UNSELECTED_STDOUT"));
-    assert_eq!(
-        std::fs::read_to_string(root.path().join("invocation-count")).unwrap(),
-        "once\n"
-    );
-    thread.close().await.unwrap();
+            .to_owned();
+        assert_eq!(
+            parent.status,
+            pl_core::thread::task::TaskStatus::Succeeded,
+            "signal case {signal:?}: {diagnostic_payload}"
+        );
+        let child = effects
+            .iter()
+            .flat_map(|effect| effect.tasks.iter())
+            .rev()
+            .find(|t| t.tool_id == "exec_command")
+            .unwrap();
+        assert_eq!(child.status, pl_core::thread::task::TaskStatus::Failed);
+        assert_eq!(
+            child.parent_call_id.as_deref(),
+            Some(parent.call_id.as_str())
+        );
+        let original = effects
+            .iter()
+            .flat_map(|effect| effect.deliveries.iter())
+            .find(|d| d.call_id == child.call_id)
+            .unwrap();
+        assert!(
+            original
+                .output
+                .payload()
+                .content()
+                .contains("UNSELECTED_STDOUT")
+        );
+        let raw: serde_json::Value =
+            serde_json::from_str(original.output.payload().content()).unwrap();
+        assert_eq!(raw["signal"], serde_json::json!(signal));
+        assert_eq!(raw["stderr"]["content"], diagnostic);
+        assert_eq!(raw["stderr"]["wasTruncated"], false);
+        let parent_delivery = effects
+            .iter()
+            .flat_map(|effect| effect.deliveries.iter())
+            .find(|d| d.call_id == parent.call_id)
+            .unwrap();
+        let selected: serde_json::Value =
+            serde_json::from_str(parent_delivery.output.payload().content()).unwrap();
+        let selected: serde_json::Value =
+            serde_json::from_str(selected["output"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            selected["stderr"], diagnostic,
+            "Lua receives the complete diagnostic before model projection"
+        );
+        let model_context =
+            serde_json::to_string(&requests.lock().unwrap().last().unwrap().context).unwrap();
+        assert!(model_context.contains("expected failing test"));
+        assert!(!model_context.contains("UNSELECTED_STDOUT"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("invocation-count")).unwrap(),
+            "once\n"
+        );
+        thread.close().await.unwrap();
+    }
 }
 
 #[tokio::test]
