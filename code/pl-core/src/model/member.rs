@@ -22,153 +22,6 @@ impl std::io::Write for EncodedBytes {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures::FutureExt;
-    use tokio_util::sync::CancellationToken;
-
-    async fn deliver(
-        sender: &ModelMemberSender,
-        kind: u8,
-        cancellation: Option<&CancellationToken>,
-    ) -> Result<(), ModelMemberError> {
-        let identity = ObservedPartIdentity::Aggregate {
-            channel: AggregateChannel::Text,
-        };
-        match kind {
-            0 => sender.start(0, identity, cancellation).await,
-            1 => sender.content_available(0, identity, cancellation).await,
-            _ => {
-                sender
-                    .submit(
-                        0,
-                        "item".into(),
-                        OpaquePayload::text("complete"),
-                        cancellation,
-                    )
-                    .await
-            }
-        }
-    }
-
-    fn budget() -> Arc<super::super::OutputBudget> {
-        Arc::new(
-            super::super::OutputBudget::reserve(None, "thread", "attempt", 1024 * 1024, None)
-                .unwrap(),
-        )
-    }
-
-    #[tokio::test]
-    async fn cancellation_while_reserving_sends_nothing_and_releases_capacity_for_all_facts() {
-        for kind in 0..3 {
-            let output = budget();
-            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
-            let sender = sender.with_output(output.clone());
-            let first = deliver(&sender, 2, None);
-            tokio::pin!(first);
-            assert!(first.as_mut().now_or_never().is_none());
-            let charged = output.charged.lock().unwrap().members;
-            assert!(charged > 0);
-            let cancellation = CancellationToken::new();
-            let waiting = deliver(&sender, kind, Some(&cancellation));
-            tokio::pin!(waiting);
-            assert!(waiting.as_mut().now_or_never().is_none());
-            cancellation.cancel();
-            assert!(matches!(waiting.await, Err(ModelMemberError::Cancelled)));
-            assert_eq!(output.charged.lock().unwrap().members, charged);
-            let first_admission = receiver.try_recv().unwrap();
-            assert!(
-                receiver.try_recv().is_err(),
-                "cancelled fact never entered the slot"
-            );
-            first_admission.reply.send(Ok(())).unwrap();
-            drop(first_admission.charge);
-            first.await.unwrap();
-            assert_eq!(sender.sender.capacity(), 1);
-            assert_eq!(output.charged.lock().unwrap().members, 0);
-        }
-    }
-
-    #[derive(Debug)]
-    struct CancelOnCharge(CancellationToken);
-
-    impl crate::thread::cold::ColdStore for CancelOnCharge {
-        fn admit(
-            &self,
-            _: &str,
-            _: crate::thread::cold::ThreadWrite,
-        ) -> Result<(), crate::thread::cold::ColdStoreError> {
-            unreachable!("sender does not persist");
-        }
-
-        fn charge_operation_output(
-            &self,
-            _: &str,
-            _: &str,
-            _: u64,
-        ) -> Result<(), crate::thread::cold::ColdStoreError> {
-            self.0.cancel();
-            Ok(())
-        }
-
-        async fn flush(&self, _: &str, _: u64) -> Result<(), crate::thread::cold::ColdStoreError> {
-            unreachable!("sender does not flush");
-        }
-    }
-
-    #[tokio::test]
-    async fn cancellation_after_permit_before_send_returns_this_charge_for_all_facts() {
-        for kind in 0..3 {
-            let cancellation = CancellationToken::new();
-            let output = Arc::new(
-                super::super::OutputBudget::reserve(
-                    Some(crate::thread::cold::ColdStoreHandle::new(CancelOnCharge(
-                        cancellation.clone(),
-                    ))),
-                    "thread",
-                    "attempt",
-                    1024 * 1024,
-                    None,
-                )
-                .unwrap(),
-            );
-            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
-            let sender = sender.with_output(output.clone());
-            assert!(matches!(
-                deliver(&sender, kind, Some(&cancellation)).await,
-                Err(ModelMemberError::Cancelled)
-            ));
-            assert_eq!(sender.sender.capacity(), 1);
-            assert!(receiver.try_recv().is_err());
-            assert_eq!(output.charged.lock().unwrap().members, 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn cancellation_after_send_waits_for_original_reply_without_resending_for_all_facts() {
-        for kind in 0..3 {
-            let output = budget();
-            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
-            let sender = sender.with_output(output.clone());
-            let cancellation = CancellationToken::new();
-            let delivery = deliver(&sender, kind, Some(&cancellation));
-            tokio::pin!(delivery);
-            assert!(delivery.as_mut().now_or_never().is_none());
-            let admission = receiver.try_recv().unwrap();
-            cancellation.cancel();
-            assert!(delivery.as_mut().now_or_never().is_none());
-            assert!(output.charged.lock().unwrap().members > 0);
-            assert!(receiver.try_recv().is_err());
-            admission.reply.send(Ok(())).unwrap();
-            delivery.await.unwrap();
-            drop(admission.charge);
-            assert_eq!(output.charged.lock().unwrap().members, 0);
-            assert!(receiver.try_recv().is_err());
-        }
-    }
-}
-
 pub(crate) fn encoded_member_bytes(value: &impl Serialize) -> Result<u64, serde_json::Error> {
     let mut encoded = EncodedBytes::default();
     serde_json::to_writer(&mut encoded, value)?;
@@ -640,5 +493,152 @@ impl ModelMemberSender {
             ))
             .await
             .map_err(|_| ModelMemberError::Closed)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use tokio_util::sync::CancellationToken;
+
+    async fn deliver(
+        sender: &ModelMemberSender,
+        kind: u8,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), ModelMemberError> {
+        let identity = ObservedPartIdentity::Aggregate {
+            channel: AggregateChannel::Text,
+        };
+        match kind {
+            0 => sender.start(0, identity, cancellation).await,
+            1 => sender.content_available(0, identity, cancellation).await,
+            _ => {
+                sender
+                    .submit(
+                        0,
+                        "item".into(),
+                        OpaquePayload::text("complete"),
+                        cancellation,
+                    )
+                    .await
+            }
+        }
+    }
+
+    fn budget() -> Arc<super::super::OutputBudget> {
+        Arc::new(
+            super::super::OutputBudget::reserve(None, "thread", "attempt", 1024 * 1024, None)
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_reserving_sends_nothing_and_releases_capacity_for_all_facts() {
+        for kind in 0..3 {
+            let output = budget();
+            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
+            let sender = sender.with_output(output.clone());
+            let first = deliver(&sender, 2, None);
+            tokio::pin!(first);
+            assert!(first.as_mut().now_or_never().is_none());
+            let charged = output.charged.lock().unwrap().members;
+            assert!(charged > 0);
+            let cancellation = CancellationToken::new();
+            let waiting = deliver(&sender, kind, Some(&cancellation));
+            tokio::pin!(waiting);
+            assert!(waiting.as_mut().now_or_never().is_none());
+            cancellation.cancel();
+            assert!(matches!(waiting.await, Err(ModelMemberError::Cancelled)));
+            assert_eq!(output.charged.lock().unwrap().members, charged);
+            let first_admission = receiver.try_recv().unwrap();
+            assert!(
+                receiver.try_recv().is_err(),
+                "cancelled fact never entered the slot"
+            );
+            first_admission.reply.send(Ok(())).unwrap();
+            drop(first_admission.charge);
+            first.await.unwrap();
+            assert_eq!(sender.sender.capacity(), 1);
+            assert_eq!(output.charged.lock().unwrap().members, 0);
+        }
+    }
+
+    #[derive(Debug)]
+    struct CancelOnCharge(CancellationToken);
+
+    impl crate::thread::cold::ColdStore for CancelOnCharge {
+        fn admit(
+            &self,
+            _: &str,
+            _: crate::thread::cold::ThreadWrite,
+        ) -> Result<(), crate::thread::cold::ColdStoreError> {
+            unreachable!("sender does not persist");
+        }
+
+        fn charge_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<(), crate::thread::cold::ColdStoreError> {
+            self.0.cancel();
+            Ok(())
+        }
+
+        async fn flush(&self, _: &str, _: u64) -> Result<(), crate::thread::cold::ColdStoreError> {
+            unreachable!("sender does not flush");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_permit_before_send_returns_this_charge_for_all_facts() {
+        for kind in 0..3 {
+            let cancellation = CancellationToken::new();
+            let output = Arc::new(
+                super::super::OutputBudget::reserve(
+                    Some(crate::thread::cold::ColdStoreHandle::new(CancelOnCharge(
+                        cancellation.clone(),
+                    ))),
+                    "thread",
+                    "attempt",
+                    1024 * 1024,
+                    None,
+                )
+                .unwrap(),
+            );
+            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
+            let sender = sender.with_output(output.clone());
+            assert!(matches!(
+                deliver(&sender, kind, Some(&cancellation)).await,
+                Err(ModelMemberError::Cancelled)
+            ));
+            assert_eq!(sender.sender.capacity(), 1);
+            assert!(receiver.try_recv().is_err());
+            assert_eq!(output.charged.lock().unwrap().members, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_send_waits_for_original_reply_without_resending_for_all_facts() {
+        for kind in 0..3 {
+            let output = budget();
+            let (sender, mut receiver) = ModelMemberSender::channel("turn", "attempt");
+            let sender = sender.with_output(output.clone());
+            let cancellation = CancellationToken::new();
+            let delivery = deliver(&sender, kind, Some(&cancellation));
+            tokio::pin!(delivery);
+            assert!(delivery.as_mut().now_or_never().is_none());
+            let admission = receiver.try_recv().unwrap();
+            cancellation.cancel();
+            assert!(delivery.as_mut().now_or_never().is_none());
+            assert!(output.charged.lock().unwrap().members > 0);
+            assert!(receiver.try_recv().is_err());
+            admission.reply.send(Ok(())).unwrap();
+            delivery.await.unwrap();
+            drop(admission.charge);
+            assert_eq!(output.charged.lock().unwrap().members, 0);
+            assert!(receiver.try_recv().is_err());
+        }
     }
 }

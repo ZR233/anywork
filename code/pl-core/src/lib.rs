@@ -14,3 +14,7 @@ pub mod thread;
 mod time;
 pub mod tool;
 pub mod usage;
+
+#[cfg(test)]
+#[path = "../tests/support/timeline.rs"]
+mod test_fixture_timeline;

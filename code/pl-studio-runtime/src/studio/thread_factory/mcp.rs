@@ -1187,8 +1187,943 @@ impl StudioThreadFactory {
 }
 
 #[cfg(test)]
-#[path = "mcp_refresh_tests.rs"]
-mod refresh_tests;
+mod refresh_tests {
+    //! Narrow owner/lifecycle proofs complement the real model/Thread integration test.
+    use super::*;
+    use crate::session::NativeResources;
+    use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+    use std::time::Duration;
+
+    fn owner(
+        factory: &StudioThreadFactory,
+        resources: &Arc<NativeResources>,
+        id: &str,
+        scope: McpScope,
+        root: &std::path::Path,
+    ) -> Result<Arc<ThreadMcpOwner>> {
+        factory.bind_resource_scope(id, resources)?;
+        let connector = factory.services.mcp_connector.clone();
+        let runtime = McpRuntime::new(connector);
+        let owner = ThreadMcpOwner::new(
+            id.into(),
+            Arc::new(ThreadToolLifetime::default()),
+            scope,
+            root.into(),
+            None,
+            runtime.handle(),
+            BTreeMap::new(),
+        );
+        *resources.mcp.lock().unwrap() = Some(owner.clone());
+        Ok(owner)
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_replaced_owner_and_cancellation_releases_command_lock() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let fixture = close_factory(&store)?;
+        let factory = &fixture.factory;
+        let resources = Arc::new(NativeResources::default());
+        let old = owner(factory, &resources, "same-id", McpScope::Host, temp.path())?;
+        let current = owner(factory, &resources, "same-id", McpScope::Host, temp.path())?;
+        assert!(
+            factory
+                .refresh_mcp_for_owner(&old, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(current.runtime.snapshots().await.is_empty());
+
+        let command = current.command_lock.lock().await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            factory.reconcile_open_threads_for_scopes(&[McpScope::Host]),
+        )
+        .await?;
+        let cancellation = CancellationToken::new();
+        let refresh = factory.refresh_mcp_for_owner(&current, cancellation.clone());
+        tokio::pin!(refresh);
+        assert!(futures::poll!(&mut refresh).is_pending());
+        cancellation.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut refresh)
+                .await?
+                .is_err()
+        );
+        drop(command);
+
+        fixture.config.create_mcp_document(&pl_protocol::CreateMcpDocumentRequest {
+        scope: McpScope::Host,
+        id: "slow".into(),
+        raw_toml: "schema_version = 1\nid = 'slow'\nkind = 'server'\nenabled = true\ntransport = 'stdio'\ncommand = 'python3'\nargs = ['-c', 'import time; time.sleep(60)']\nstartup_timeout_secs = 30\n".into(),
+    })?;
+        // Refresh now owns the lock while its accepted runtime command is pending.
+        // Closing must cancel it before trying to acquire that same lock.
+        let refresh = factory.refresh_mcp_for_owner(&current, CancellationToken::new());
+        tokio::pin!(refresh);
+        assert!(futures::poll!(&mut refresh).is_pending());
+        assert!(current.command_lock.try_lock().is_err());
+        let closing = current.close(&fixture.events);
+        tokio::pin!(closing);
+        assert!(futures::poll!(&mut closing).is_pending());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut refresh)
+                .await?
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(2), closing).await??;
+        assert!(
+            factory
+                .refresh_mcp_for_owner(&current, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        old.close(&fixture.events).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ssh_refresh_reloads_host_inheritance_without_commanding_unrelated_owners() -> Result<()>
+    {
+        use crate::config::ConfigPaths;
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let fixture = close_factory(&store)?;
+        let factory = &fixture.factory;
+        let ssh_scope = McpScope::Ssh {
+            ssh_alias: "selected".into(),
+        };
+        let other_scope = McpScope::Ssh {
+            ssh_alias: "other".into(),
+        };
+        let ssh_resources = Arc::new(NativeResources::default());
+        let host_resources = Arc::new(NativeResources::default());
+        let other_resources = Arc::new(NativeResources::default());
+        let ssh = owner(
+            factory,
+            &ssh_resources,
+            "ssh",
+            ssh_scope.clone(),
+            temp.path(),
+        )?;
+        let host = owner(
+            factory,
+            &host_resources,
+            "host",
+            McpScope::Host,
+            temp.path(),
+        )?;
+        let other = owner(
+            factory,
+            &other_resources,
+            "other",
+            other_scope.clone(),
+            temp.path(),
+        )?;
+        let before = fixture.config.mcp_catalog_snapshot(&ssh_scope)?;
+        let other_before = fixture.config.mcp_catalog_snapshot(&other_scope)?;
+        let host_state = host.read_snapshot();
+        let other_state = other.read_snapshot();
+        let paths = ConfigPaths::from_config_dir(store.paths().home().join("isolated-test-config"));
+        std::fs::create_dir_all(paths.mcp_host_dir())?;
+        let peer = temp.path().join("peer.py");
+        std::fs::write(&peer, mcp_stdio::STDIO_MCP_SCRIPT)?;
+        // Host-inherited servers execute on Host even for SSH owners. No invented SSH
+        // transport is necessary to prove actual connection/discovery and scope isolation.
+        std::fs::write(
+            paths.mcp_host_dir().join("shared.toml"),
+            format!(
+                "schema_version = 1\nid = 'shared'\nkind = 'server'\nenabled = true\ntransport = 'stdio'\ncommand = 'python3'\nargs = {}\nstartup_timeout_secs = 5\n[env]\nMCP_NO_RESOURCES = '1'\n",
+                serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?
+            ),
+        )?;
+        let receipt = factory
+            .refresh_mcp_for_owner(&ssh, CancellationToken::new())
+            .await?;
+        assert!(receipt.catalog_revision > before.revision);
+        assert!(
+            receipt
+                .state
+                .servers
+                .iter()
+                .any(|server| server.id == "shared"
+                    && server.lifecycle == ThreadMcpLifecycleKind::Available
+                    && server.tool_count == Some(1)),
+            "actual state: {:?}",
+            receipt.state
+        );
+        assert!(
+            receipt
+                .discovery
+                .servers
+                .iter()
+                .any(|server| server.server_id == "shared"
+                    && server.status == pl_tool::mcp::McpToolRefreshStatus::Unchanged)
+        );
+        let selected = fixture.config.mcp_catalog_snapshot(&ssh_scope)?;
+        assert!(
+            selected
+                .entries
+                .iter()
+                .any(|entry| entry.id == "shared" && entry.inherited_from_host)
+        );
+        assert!(
+            fixture
+                .config
+                .mcp_catalog_snapshot(&McpScope::Host)?
+                .entries
+                .iter()
+                .any(|entry| entry.id == "shared")
+        );
+        // No all-scope reload, no Host runtime notification, no activation of another owner.
+        assert_eq!(
+            fixture.config.mcp_catalog_snapshot(&other_scope)?,
+            other_before
+        );
+        assert_eq!(host.read_snapshot(), host_state);
+        assert_eq!(other.read_snapshot(), other_state);
+
+        let reconnected = factory.reconnect_thread_mcp("ssh", Some("shared")).await?;
+        assert!(
+            reconnected
+                .servers
+                .iter()
+                .any(|server| server.id == "shared"
+                    && server.lifecycle == ThreadMcpLifecycleKind::Available)
+        );
+
+        // Settings publications (including account/credential edits) are a different source:
+        // unlike the scope-only tool refresh above, they must still schedule reconciliation.
+        let settings = fixture.config.read()?;
+        host.mark_settings_revision(settings.revision);
+        let mut updates = host.runtime.subscribe();
+        host.start_watcher(factory.clone());
+        let settings = fixture
+            .config
+            .replace(settings.revision, settings.canonical_config().clone())?;
+        host.request_settings_reconcile(settings.revision);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            updates.recv().await?;
+            let _command = host.command_lock.lock().await;
+            anyhow::ensure!(
+                host.read_snapshot()
+                    .servers
+                    .iter()
+                    .any(|server| server.id == "shared"
+                        && server.lifecycle == ThreadMcpLifecycleKind::Available)
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        ssh.close(&fixture.events).await?;
+        host.close(&fixture.events).await?;
+        other.close(&fixture.events).await?;
+        Ok(())
+    }
+
+    mod barrier_tests {
+        //! Configuration-commit/discovery interleaving with an actual stdio peer and Thread.
+        use super::{binding_host, mcp_stdio, owner};
+        use crate::session::NativeResources;
+        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use pl_agent_tool::Tool;
+        use pl_core::{
+            model::DynModelSession,
+            thread::{ThreadError, ThreadHandle},
+            tool::opaque::ToolError,
+        };
+        use pl_protocol::{
+            CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, UpdateMcpDocumentRequest,
+        };
+        use pl_tool::{
+            binding::{ToolCallPolicy, prepare_registration},
+            mcp::thread::ThreadMcpTool,
+            media::{RetainedToolMedia, ToolMedia, ToolMediaHost},
+        };
+        use std::{sync::Arc, time::Duration};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_util::sync::CancellationToken;
+
+        #[derive(Debug)]
+        struct NoMedia;
+        impl ToolMediaHost for NoMedia {
+            async fn retain(&self, _: ToolMedia) -> Result<RetainedToolMedia, ToolError> {
+                Err(ToolError::new(std::io::Error::other(
+                    "the barrier peer returns text only",
+                )))
+            }
+        }
+
+        #[tokio::test]
+        async fn committed_delete_must_not_be_regranted_by_late_refresh() -> anyhow::Result<()> {
+            revoked_refresh(false, false).await
+        }
+
+        #[tokio::test]
+        async fn committed_disable_must_not_be_regranted_by_late_refresh() -> anyhow::Result<()> {
+            revoked_refresh(true, false).await
+        }
+
+        #[tokio::test]
+        async fn committed_delete_must_not_be_regranted_by_late_reconnect() -> anyhow::Result<()> {
+            revoked_refresh(false, true).await
+        }
+
+        #[tokio::test]
+        async fn committed_disable_must_not_be_regranted_by_late_reconnect() -> anyhow::Result<()> {
+            revoked_refresh(true, true).await
+        }
+
+        async fn revoked_refresh(disable: bool, reconnect: bool) -> anyhow::Result<()> {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            let fixture = close_factory(&store)?;
+            let factory = fixture.factory.clone();
+            let resources = Arc::new(NativeResources::default());
+            let owner = owner(&factory, &resources, "barrier", McpScope::Host, temp.path())?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let flag = temp.path().join("block-list");
+            let log = temp.path().join("requests.jsonl");
+            let peer = temp.path().join("peer.py");
+            // Extend the shared peer only with a transport barrier, not with refresh semantics.
+            let script = mcp_stdio::STDIO_MCP_SCRIPT
+        .replace("import json, os, signal, sys, time", "import json, os, signal, socket, sys, time")
+        .replace(
+            "    elif method == \"tools/list\":",
+            "    elif method == \"tools/list\":\n\
+             \x20       late_discovery = os.path.exists(os.environ['MCP_LIST_FLAG'])\n\
+             \x20       if late_discovery:\n\
+             \x20           with socket.create_connection(('127.0.0.1', int(os.environ['MCP_LIST_PORT']))) as barrier:\n\
+             \x20               barrier.sendall(b'1')\n\
+             \x20               barrier.recv(1)",
+        )
+        .replace(
+            "        schema = {\"type\": \"object\", \"properties\": {}}",
+            "        schema = {\"type\": \"object\", \"properties\": {}}\n\
+             \x20       schema['description'] = 'late candidate' if late_discovery else 'initial'",
+        );
+            std::fs::write(&peer, script)?;
+            let raw = format!(
+                "schema_version = 1\nid = 'barrier'\nkind = 'server'\nenabled = true\n\
+         transport = 'stdio'\ncommand = 'python3'\nargs = {}\n\
+         startup_timeout_secs = 10\n[env]\nMCP_NO_RESOURCES = '1'\n\
+         MCP_LIST_PORT = '{}'\nMCP_LIST_FLAG = {}\nMCP_REQUEST_LOG = {}\n",
+                serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?,
+                listener.local_addr()?.port(),
+                serde_json::to_string(&flag.display().to_string())?,
+                serde_json::to_string(&log.display().to_string())?,
+            );
+            let mut running_refresh = None;
+            let mut thread: Option<ThreadHandle> = None;
+            let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let (created, _) = fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
+            scope: McpScope::Host, id: "barrier".into(), raw_toml: raw.clone(),
+        })?;
+        {
+            let _command = owner.command_lock.lock().await;
+            factory.reconcile_mcp_owner(&owner).await?;
+        }
+        // Keep a legitimately captured original lease for the delayed-installation proof.
+        let initial = owner.runtime.acquire_turn_lease().await?;
+        anyhow::ensure!(initial.tools().len() == 1, "actual initial state: {:?}", owner.read_snapshot());
+        let original_authorization = initial.authorization();
+        anyhow::ensure!(original_authorization.is_active());
+        owner.start_watcher(factory.clone());
+        std::fs::write(&flag, "block explicit tools/list")?;
+        running_refresh = Some({
+            let factory = factory.clone();
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                if reconnect {
+                    factory.reconnect_mcp_for_owner(&owner, Some("barrier"), CancellationToken::new())
+                        .await.map(|(revision, _, _)| revision)
+                } else {
+                    factory.refresh_mcp_for_owner(&owner, CancellationToken::new())
+                        .await.map(|receipt| receipt.catalog_revision)
+                }
+            })
+        });
+        let (mut barrier, _) = listener.accept().await?;
+        let mut entered = [0];
+        barrier.read_exact(&mut entered).await?;
+        anyhow::ensure!(entered == [b'1']);
+        let before_discovery = owner.runtime.health_snapshot().await?.generation;
+
+        // Queue directory preparation before the configuration watcher, as in the original
+        // counterexample. A revoked runtime must reject this acquisition, not return empty success.
+        let preparation = async {
+            let command = owner.command_lock.lock().await;
+            let lease = owner.runtime.acquire_turn_lease().await;
+            (command, lease)
+        };
+        tokio::pin!(preparation);
+        anyhow::ensure!(futures::poll!(&mut preparation).is_pending(),
+            "directory preparation did not queue behind the refresh");
+        let document = created.document.clone().unwrap();
+        let (committed, scopes) = if disable {
+            fixture.config.update_mcp_document(&UpdateMcpDocumentRequest {
+                document: document.clone(), expected_revision: created.revision,
+                raw_toml: raw.replace("enabled = true", "enabled = false"),
+            })?
+        } else {
+            fixture.config.delete_mcp_document(&DeleteMcpDocumentRequest {
+                document: document.clone(), expected_revision: created.revision,
+            })?
+        };
+        // Revocation is synchronous with the actual configuration commit, before notification.
+        anyhow::ensure!(!original_authorization.is_active(), "commit did not revoke the captured lease");
+        factory.reconcile_open_threads_for_scopes(&scopes).await;
+        std::fs::remove_file(&flag)?;
+        barrier.write_all(b"1").await?;
+        drop(barrier);
+        let refresh_result = running_refresh.as_mut().unwrap().await?;
+        running_refresh.take();
+        let (command, late_acquisition) = preparation.await;
+        anyhow::ensure!(owner.runtime.health_snapshot().await?.generation == before_discovery,
+            "revoked discovery published a new runtime generation");
+        anyhow::ensure!(late_acquisition.is_err(), "a revoked current generation was exposed as a fresh lease");
+        drop(command);
+        let superseded = match refresh_result {
+            Ok(revision) => anyhow::bail!("stale MCP command succeeded with catalogRevision={}, current={}",
+                revision, committed.snapshot.revision),
+            Err(error) => error,
+        };
+        anyhow::ensure!(superseded.to_string().contains("superseded"), "unexpected refresh refusal: {superseded}");
+
+        // Observe corrective publication through runtime events; no sleep or timer-based polling.
+        let mut updates = owner.runtime.subscribe();
+        loop {
+            if let Ok(lease) = owner.runtime.acquire_turn_lease().await
+                && lease.authorization().is_active()
+                && lease.tools().is_empty()
+            {
+                break;
+            }
+            updates.recv().await?;
+        }
+        let current = factory.refresh_mcp_for_owner(&owner, CancellationToken::new()).await?;
+        anyhow::ensure!(current.catalog_revision == committed.snapshot.revision,
+            "stable refresh did not report the new configuration revision");
+        anyhow::ensure!(
+            current.state.servers.iter().all(|server| server.id != "barrier")
+                && current.discovery.servers.iter().all(|server| server.server_id != "barrier")
+        );
+
+        // Even after current empty publication, the original retained lease cannot be installed.
+        // Use the real Thread registration boundary, not a direct equality comparison alone.
+        let descriptor = initial.tools().first().unwrap().clone();
+        let tool = ThreadMcpTool::new(initial, &descriptor.exposed_name, Arc::new(NoMedia))?;
+        let prepared = prepare_registration(&descriptor.exposed_name, tool.definition(), ToolCallPolicy::DirectOnly)?;
+        thread = Some(ThreadHandle::start(owner.thread_id.clone(), DynModelSession::new(binding_host::Calls {
+            calls: [(descriptor.exposed_name.clone(), "{}".into())].into(), requests: Default::default(),
+        }))?);
+        let current_thread = thread.as_ref().unwrap();
+        let registration = current_thread.register_tools_if_extensions(
+            current_thread.snapshot().extension_sequence, vec![tool.registration(prepared)]).await;
+        if registration.is_ok() {
+            // If registration regresses, actually try the new invocation and retain the
+            // peer-call assertion below; an authorization comparison alone is insufficient.
+            current_thread.reveal_tools(vec![descriptor.exposed_name]).await?;
+            let _outcome = current_thread.run_turn(binding_host::turn("late-call")).await;
+        }
+        anyhow::ensure!(matches!(registration, Err(ThreadError::ToolPermissionRevoked)),
+            "late registration was not rejected for revoked authority: {registration:?}");
+
+        // Re-enabling/deleting-and-recreating issues a valid new authority and remains usable.
+        let (restored, scopes) = if disable {
+            fixture.config.update_mcp_document(&UpdateMcpDocumentRequest {
+                document, expected_revision: committed.revision, raw_toml: raw.clone(),
+            })?
+        } else {
+            fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
+                scope: McpScope::Host, id: "barrier".into(), raw_toml: raw.clone(),
+            })?
+        };
+        factory.reconcile_open_threads_for_scopes(&scopes).await;
+        let restored_receipt = factory.refresh_mcp_for_owner(&owner, CancellationToken::new()).await?;
+        anyhow::ensure!(restored_receipt.catalog_revision == restored.snapshot.revision);
+        let recovered = owner.runtime.acquire_turn_lease().await?;
+        anyhow::ensure!(recovered.authorization().is_active() && recovered.tools().len() == 1);
+        anyhow::ensure!(!original_authorization.is_active(), "restoration revived the old authority");
+        eprintln!("barrier evidence: reconnect={reconnect}, disable={disable}, superseded=true, committedRevision={}, stableReceiptRevision={}, revokedLeaseRejected=true, lateRegistrationRejected=true, restoredRevision={}",
+            committed.snapshot.revision, current.catalog_revision, restored_receipt.catalog_revision);
+        Ok::<_, anyhow::Error>(())
+    }).await.map_err(anyhow::Error::from).and_then(std::convert::identity);
+
+            // Always join the refresh and close the Thread/runtime, including early refusal, timeout,
+            // assertion failure and transport errors. Dropping the body also drops its barrier socket.
+            owner.cancel_producers();
+            let refresh_cleanup = if let Some(refresh) = running_refresh.take() {
+                refresh.await.map(|_| ()).map_err(anyhow::Error::from)
+            } else {
+                Ok(())
+            };
+            let thread_cleanup = if let Some(thread) = thread {
+                thread.close().await.map_err(anyhow::Error::from)
+            } else {
+                Ok(())
+            };
+            let owner_cleanup = owner
+                .close(&fixture.events)
+                .await
+                .map_err(anyhow::Error::from);
+            let calls = match std::fs::read_to_string(log) {
+                Ok(log) => log
+                    .lines()
+                    .map(serde_json::from_str::<serde_json::Value>)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .filter(|request| request["method"] == "tools/call")
+                    .count(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error.into()),
+            };
+            eprintln!("barrier external evidence: disable={disable}, newPeerCalls={calls}");
+            anyhow::ensure!(
+                calls == 0,
+                "revoked configuration accepted {calls} new external calls"
+            );
+            if let Err(error) = result {
+                return Err(error.context(format!("cleanup: refresh={refresh_cleanup:?}, thread={thread_cleanup:?}, owner={owner_cleanup:?}")));
+            }
+            refresh_cleanup?;
+            thread_cleanup?;
+            owner_cleanup?;
+            Ok(())
+        }
+    }
+
+    use crate::test_fixture_binding_host as binding_host;
+
+    use crate::test_fixture_mcp_stdio as mcp_stdio;
+
+    mod reconnect_tests {
+        //! Physical-owner, cancellation and sibling-isolation proofs for the Studio command.
+        use super::{binding_host, mcp_stdio, owner};
+        use crate::session::NativeResources;
+        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use anyhow::Context;
+        use pl_core::{
+            context::{ContextContent, ContextSource},
+            model::DynModelSession,
+            thread::ThreadHandle,
+            tool::opaque::Registration,
+        };
+        use pl_protocol::{CreateMcpDocumentRequest, McpScope};
+        use std::{sync::Arc, time::Duration};
+        use tokio_util::sync::CancellationToken;
+
+        fn gated_initialize(port: u16) -> String {
+            mcp_stdio::STDIO_MCP_SCRIPT
+        .replace(
+            "import json, os, signal, sys, time",
+            "import json, os, signal, socket, sys, time",
+        )
+        .replace(
+            "    elif method == \"initialize\":",
+            &format!("    elif method == \"initialize\":\n        with socket.create_connection(('127.0.0.1', {port})) as gate:\n            gate.sendall(b'1')\n            gate.recv(1)"),
+        )
+        }
+
+        async fn call_registration(
+            id: &str,
+            tool_id: &str,
+            registration: Registration,
+            raw: &str,
+        ) -> anyhow::Result<String> {
+            let thread = ThreadHandle::start(
+                id.into(),
+                DynModelSession::new(binding_host::Calls {
+                    calls: [(tool_id.into(), raw.into())].into(),
+                    requests: Default::default(),
+                }),
+            )?;
+            let result = async {
+                thread.register_tools(vec![registration]).await?;
+                thread.reveal_tools(vec![tool_id.into()]).await?;
+                thread
+                    .run_turn(binding_host::turn("reconnect-proof"))
+                    .await?;
+                let snapshot = thread.snapshot();
+                Ok(snapshot
+                    .context
+                    .records
+                    .iter()
+                    .filter(|record| matches!(record.source, ContextSource::ToolResult { .. }))
+                    .flat_map(|record| &record.content)
+                    .filter_map(|part| match part {
+                        ContextContent::Text { text } => Some(text.as_ref()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            .await;
+            thread.close().await?;
+            result
+        }
+
+        #[tokio::test]
+        async fn reconnect_binding_rejects_wrong_thread_replaced_and_expired_physical_owner()
+        -> anyhow::Result<()> {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            let fixture = close_factory(&store)?;
+            let factory = &fixture.factory;
+            let resources = Arc::new(NativeResources::default());
+            let old = owner(factory, &resources, "same-id", McpScope::Host, temp.path())?;
+            let registration =
+                super::super::super::mcp_reconnect_tool::registration(factory.clone(), &old)?;
+            let output = call_registration(
+                "wrong-id",
+                "reconnect_mcp",
+                registration,
+                r#"{"serverId":"fixture"}"#,
+            )
+            .await?;
+            anyhow::ensure!(output.contains("different Thread"), "{output}");
+            let frozen =
+                super::super::super::mcp_reconnect_tool::registration(factory.clone(), &old)?;
+            let current = owner(factory, &resources, "same-id", McpScope::Host, temp.path())?;
+            let output = call_registration(
+                "same-id",
+                "reconnect_mcp",
+                frozen,
+                r#"{"serverId":"fixture"}"#,
+            )
+            .await?;
+            anyhow::ensure!(output.contains("no longer active"), "{output}");
+            anyhow::ensure!(current.runtime.snapshots().await.is_empty());
+            let expired =
+                super::super::super::mcp_reconnect_tool::registration(factory.clone(), &old)?;
+            old.close(&fixture.events).await?;
+            drop(old);
+            let output = call_registration(
+                "same-id",
+                "reconnect_mcp",
+                expired,
+                r#"{"serverId":"fixture"}"#,
+            )
+            .await?;
+            anyhow::ensure!(output.contains("no longer active"), "{output}");
+            current.close(&fixture.events).await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn reconnect_cancellation_and_close_release_the_original_owner_command_boundary()
+        -> anyhow::Result<()> {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            let fixture = close_factory(&store)?;
+            let factory = &fixture.factory;
+            let resources = Arc::new(NativeResources::default());
+            let current = owner(factory, &resources, "cancel", McpScope::Host, temp.path())?;
+            let result = async {
+    let command = current.command_lock.lock().await;
+    let cancellation = CancellationToken::new();
+    let reconnect =
+        factory.reconnect_mcp_for_owner(&current, Some("fixture"), cancellation.clone());
+    tokio::pin!(reconnect);
+    assert!(futures::poll!(&mut reconnect).is_pending());
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(2), &mut reconnect)
+        .await?
+        .unwrap_err();
+    anyhow::ensure!(error.to_string().contains("cancelled"));
+    drop(command);
+    anyhow::ensure!(current.command_lock.try_lock().is_ok());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let peer = temp.path().join("slow.py");
+    // Signal actual initialize admission, then block; no sleeps infer runtime acceptance.
+    std::fs::write(&peer, gated_initialize(listener.local_addr()?.port()))?;
+    fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
+        scope: McpScope::Host,
+        id: "slow".into(),
+        raw_toml: format!("schema_version = 1\nid = 'slow'\nkind = 'server'\nenabled = true\ntransport = 'stdio'\ncommand = 'python3'\nargs = {}\nstartup_timeout_secs = 30\n",
+            serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?),
+    })?;
+    let reconnect =
+        factory.reconnect_mcp_for_owner(&current, Some("slow"), CancellationToken::new());
+    tokio::pin!(reconnect);
+    let accepted = tokio::select! {
+        result = &mut reconnect => anyhow::bail!("reconnect ended before initialize: {result:?}"),
+        accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) =>
+            accepted.context("close proof: initialize gate never entered")??,
+    };
+    let closing = current.close(&fixture.events);
+    tokio::pin!(closing);
+    assert!(futures::poll!(&mut closing).is_pending());
+    let error = tokio::time::timeout(Duration::from_secs(2), &mut reconnect)
+        .await.context("close proof: reconnect did not observe owner close")?
+        .unwrap_err();
+    anyhow::ensure!(error.to_string().contains("closing"));
+    tokio::time::timeout(Duration::from_secs(5), closing).await.context("close proof: owner did not join reset")??;
+    drop(accepted);
+    anyhow::ensure!(current.command_lock.try_lock().is_ok());
+    anyhow::ensure!(
+        factory
+            .reconnect_mcp_for_owner(&current, Some("slow"), CancellationToken::new())
+            .await
+            .is_err()
+    );
+    Ok::<_, anyhow::Error>(())
+    }.await;
+            let closed = current.close(&fixture.events).await;
+            result?;
+            closed?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn failed_reconnect_preserves_current_lease_during_same_configuration_preparation()
+        -> anyhow::Result<()> {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            let fixture = close_factory(&store)?;
+            let factory = &fixture.factory;
+            let peer = temp.path().join("peer.py");
+            std::fs::write(&peer, mcp_stdio::STDIO_MCP_SCRIPT)?;
+            for id in ["fixture", "unrelated"] {
+                fixture
+                    .config
+                    .create_mcp_document(&CreateMcpDocumentRequest {
+                        scope: McpScope::Host,
+                        id: id.into(),
+                        raw_toml: format!(
+                            "schema_version = 1\nid = '{id}'\nkind = 'server'\nenabled = true\n\
+                 transport = 'stdio'\ncommand = 'python3'\nargs = {}\n\
+                 startup_timeout_secs = 5\n[env]\nSPECIAL_ENV = '{id}'\nMCP_NO_RESOURCES = '1'\n",
+                            serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?,
+                        ),
+                    })?;
+            }
+            let resources = Arc::new(NativeResources::default());
+            let current = owner(
+                factory,
+                &resources,
+                "failed-reset",
+                McpScope::Host,
+                temp.path(),
+            )?;
+            let result = async {
+                factory
+                    .refresh_mcp_for_owner(&current, CancellationToken::new())
+                    .await?;
+                let before = current.runtime.acquire_turn_lease().await?;
+                let sibling_tools: Vec<_> = before
+                    .tools()
+                    .iter()
+                    .filter(|tool| tool.server_id == "unrelated")
+                    .cloned()
+                    .collect();
+                anyhow::ensure!(!sibling_tools.is_empty());
+                // Only a new process sees this failure; the sibling's established session stays live.
+                std::fs::write(&peer, "import sys\nsys.exit(1)\n")?;
+                let error = factory
+                    .reconnect_mcp_for_owner(&current, Some("fixture"), CancellationToken::new())
+                    .await
+                    .expect_err("replacement handshake must fail");
+                anyhow::ensure!(error.to_string().contains("remains unavailable"));
+                let resolved = factory.resolve_mcp_owner_snapshot(&current)?;
+                // This is the preparation performed for the next actual model step. Unchanged
+                // configuration must reuse the current lease without starting optional peers again.
+                let next = current
+                    .prepare_required(
+                        resolved.servers,
+                        Some(resolved.authorization),
+                        None,
+                        &fixture.events,
+                        &CancellationToken::new(),
+                    )
+                    .await?;
+                anyhow::ensure!(
+                    next.generation() == before.generation(),
+                    "same-configuration preparation started a new generation after failed reconnect"
+                );
+                anyhow::ensure!(
+                    next.tools() == sibling_tools,
+                    "failed target was re-exposed or an unrelated session was removed"
+                );
+                let snapshot = current.read_snapshot();
+                anyhow::ensure!(
+                    snapshot.servers.iter().any(|server| server.id == "fixture"
+                        && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Unavailable),
+                    "next model preparation changed the failed target state: {snapshot:?}"
+                );
+                anyhow::ensure!(
+                    snapshot
+                        .servers
+                        .iter()
+                        .any(|server| server.id == "unrelated"
+                            && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Available)
+                );
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            let closed = current.close(&fixture.events).await;
+            result?;
+            closed?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn cancelled_accepted_reconnect_recovers_projection_and_preserves_sibling_sessions()
+        -> anyhow::Result<()> {
+            use pl_agent_tool::Tool;
+            use pl_tool::{
+                binding::{ToolCallPolicy, prepare_registration},
+                mcp::thread::ThreadMcpTool,
+                media::{RetainedToolMedia, ToolMedia, ToolMediaHost},
+            };
+            #[derive(Debug)]
+            struct NoMedia;
+            impl ToolMediaHost for NoMedia {
+                async fn retain(
+                    &self,
+                    _: ToolMedia,
+                ) -> Result<RetainedToolMedia, pl_core::tool::opaque::ToolError> {
+                    unreachable!("the peer only returns text")
+                }
+            }
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            let fixture = close_factory(&store)?;
+            let factory = &fixture.factory;
+            let peer = temp.path().join("peer.py");
+            let log = temp.path().join("requests.jsonl");
+            std::fs::write(&peer, mcp_stdio::STDIO_MCP_SCRIPT)?;
+            for id in ["fixture", "unrelated"] {
+                fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
+            scope: McpScope::Host, id: id.into(),
+            raw_toml: format!("schema_version = 1\nid = '{id}'\nkind = 'server'\nenabled = true\ntransport = 'stdio'\ncommand = 'python3'\nargs = {}\nstartup_timeout_secs = 5\n[env]\nSPECIAL_ENV = '{id}'\nMCP_SCHEMA_TAG = '{id}'\nMCP_NO_RESOURCES = '1'\nMCP_REQUEST_LOG = {}\n",
+                serde_json::to_string(&["-u".to_owned(), peer.display().to_string()])?,
+                serde_json::to_string(&log.display().to_string())?),
+        })?;
+            }
+            let a_resources = Arc::new(NativeResources::default());
+            let b_resources = Arc::new(NativeResources::default());
+            let a = owner(factory, &a_resources, "a", McpScope::Host, temp.path())?;
+            let b = owner(factory, &b_resources, "b", McpScope::Host, temp.path())?;
+            let result =
+        async {
+            factory
+                .refresh_mcp_for_owner(&a, CancellationToken::new())
+                .await?;
+            factory
+                .refresh_mcp_for_owner(&b, CancellationToken::new())
+                .await?;
+            let b_before = b.runtime.acquire_turn_lease().await?.generation();
+            let b_state = b.read_snapshot();
+            let a_before = a.runtime.acquire_turn_lease().await?.generation();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            std::fs::write(&peer, gated_initialize(listener.local_addr()?.port()))?;
+            a.start_watcher(factory.clone());
+            let mut projection = fixture.events.subscribe_topic_signal(
+                &crate::StudioProductTopic::ThreadMcp { thread_id: "a".into() });
+            let cancellation = CancellationToken::new();
+            let reconnect = factory.reconnect_mcp_for_owner(&a, Some("fixture"), cancellation.clone());
+            tokio::pin!(reconnect);
+            let (mut gate, _) = tokio::select! {
+                result = &mut reconnect => anyhow::bail!("reset ended before initialize: {result:?}"),
+                accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) =>
+                    accepted.context("cancel proof: initialize gate never entered")??,
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut entered = [0];
+            gate.read_exact(&mut entered).await?;
+            anyhow::ensure!(entered == *b"1", "initialize gate was not entered");
+            cancellation.cancel();
+            let error = tokio::time::timeout(Duration::from_secs(2), &mut reconnect).await
+                .context("cancel proof: caller cancellation did not return")?.unwrap_err();
+            anyhow::ensure!(error.to_string().contains("cancelled"), "{error}");
+            // Only the existing watcher may finish the reset and restore projection. No
+            // explicit refresh, manual resume_projection or replacement reconnect is allowed.
+            gate.write_all(b"1").await?;
+            drop(gate);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let snapshot = a.read_snapshot();
+                    if a.projection_ready.load(std::sync::atomic::Ordering::Acquire)
+                        && ["fixture", "unrelated"].iter().all(|id| snapshot.servers.iter()
+                            .any(|server| server.id == *id
+                                && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Available))
+                        && a.runtime.acquire_turn_lease().await?.generation() > a_before
+                    {
+                        break;
+                    }
+                    projection.changed().await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            }).await.with_context(|| format!("cancel proof: original watcher did not restore projection; ready={}, state={:?}, requests={}",
+                a.projection_ready.load(std::sync::atomic::Ordering::Acquire), a.read_snapshot(),
+                std::fs::read_to_string(&log).unwrap_or_default()))??;
+            anyhow::ensure!(a.command_lock.try_lock().is_ok(), "background reconcile retained command lock");
+            anyhow::ensure!(b.runtime.acquire_turn_lease().await?.generation() == b_before);
+            anyhow::ensure!(b.read_snapshot() == b_state);
+            for calling in [&a, &b] {
+            let lease = calling.runtime.acquire_turn_lease().await?;
+            let descriptor = lease
+                .tools()
+                .iter()
+                .find(|tool| tool.server_id == "fixture")
+                .ok_or_else(|| anyhow::anyhow!("sibling lost fixture tool"))?
+                .clone();
+            let tool = ThreadMcpTool::new(lease, &descriptor.exposed_name, Arc::new(NoMedia))?;
+            let prepared = prepare_registration(
+                &descriptor.exposed_name,
+                tool.definition(),
+                ToolCallPolicy::DirectOnly,
+            )?;
+            let output = call_registration(
+                &calling.thread_id,
+                &descriptor.exposed_name,
+                tool.registration(prepared),
+                "{}",
+            )
+            .await?;
+            anyhow::ensure!(output.contains("fixture"), "{output}");
+            if Arc::ptr_eq(calling, &a) {
+                a.close(&fixture.events).await?;
+            }
+            }
+            let requests = std::fs::read_to_string(&log)?
+                .lines()
+                .map(serde_json::from_str::<serde_json::Value>)
+                .collect::<Result<Vec<_>, _>>()?;
+            anyhow::ensure!(
+                requests
+                    .iter()
+                    .filter(
+                        |request| request["method"] == "initialize" && request["tag"] == "fixture"
+                    )
+                    .count()
+                    == 3
+            );
+            anyhow::ensure!(
+                requests
+                    .iter()
+                    .filter(|request| request["method"] == "initialize"
+                        && request["tag"] == "unrelated")
+                    .count()
+                    == 2,
+                "targeted reconnect restarted an unrelated server"
+            );
+            anyhow::ensure!(requests.iter().filter(|request| request["method"] == "tools/call").count() == 2,
+                "cancellation replayed a business call");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+            let a_close = a.close(&fixture.events).await;
+            let b_close = b.close(&fixture.events).await;
+            result?;
+            a_close?;
+            b_close?;
+            Ok(())
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod tests {

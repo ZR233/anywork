@@ -65,3 +65,11 @@ pub mod thread_catalog;
 pub mod collaboration;
 
 pub mod bots;
+
+#[cfg(test)]
+#[path = "../tests/support/helper.rs"]
+mod test_fixture_helper;
+
+#[cfg(test)]
+#[path = "../tests/support/remote.rs"]
+mod test_fixture_remote;

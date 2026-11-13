@@ -784,6 +784,16 @@ impl CurrentState {
     }
 }
 
+/// The same lightweight domain-head projection serves State and ordinary readers.
+pub(in crate::studio) fn project_business_refs(
+    projection: &CurrentProjection,
+) -> ThreadBusinessRefs {
+    ThreadBusinessRefs {
+        plan: projection.plan.clone(),
+        interactions: projection.interactions.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,16 +957,6 @@ mod tests {
             "an explicit replacement reused the append lineage"
         );
         Ok(())
-    }
-}
-
-/// The same lightweight domain-head projection serves State and ordinary readers.
-pub(in crate::studio) fn project_business_refs(
-    projection: &CurrentProjection,
-) -> ThreadBusinessRefs {
-    ThreadBusinessRefs {
-        plan: projection.plan.clone(),
-        interactions: projection.interactions.clone(),
     }
 }
 

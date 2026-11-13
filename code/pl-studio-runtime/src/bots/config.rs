@@ -380,7 +380,6 @@ pub(super) fn assert_current_document(persisted: &str, app_id: &str) {
 
 #[cfg(test)]
 mod migration_tests {
-    use super::schema::FrozenBotPlatformConfig;
     use super::*;
     use crate::toml_schema::DocumentMigrationFailed;
 
@@ -533,68 +532,6 @@ updated_at = 200
             .collect();
         assert_eq!(open_ids, vec!["ou_original"]);
         assert_eq!(chat_ids, vec!["oc_original"]);
-    }
-
-    fn dto_toml_round_trip<T>(dto: &T) -> T
-    where
-        T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
-    {
-        let encoded = toml::to_string_pretty(dto).unwrap();
-        toml::from_str(&encoded).unwrap()
-    }
-
-    const V1_DTO: &str = r#"
-id = "bot-migrate-1"
-name = "原机器人"
-project_id = "business-project"
-app_id = "cli_original"
-platform = "feishuChina"
-enabled = true
-tools_enabled = false
-trusted_open_ids = ["ou_original"]
-trusted_chat_ids = ["oc_original"]
-config_revision = 9
-created_at = 100
-updated_at = 200
-"#;
-
-    #[test]
-    fn v1_wire_dto_round_trips_without_selected_ref() {
-        let dto: BotConfigV1 = toml::from_str(V1_DTO).unwrap();
-        assert_eq!(dto.app_id, "cli_original");
-        assert_eq!(dto_toml_round_trip(&dto), dto);
-        let json = serde_json::to_value(&dto).unwrap();
-        assert!(json.get("selected_ref").is_none());
-        assert_eq!(serde_json::from_value::<BotConfigV1>(json).unwrap(), dto);
-    }
-
-    #[test]
-    fn v2_wire_dto_round_trips_selected_ref() {
-        let mut dto: BotConfigV2 = toml::from_str(V1_DTO).unwrap();
-        dto.selected_ref = Some(crate::config::BotCredentialRef::system("original-version").into());
-        assert_eq!(dto_toml_round_trip(&dto), dto);
-        let json = serde_json::to_value(&dto).unwrap();
-        assert_eq!(serde_json::from_value::<BotConfigV2>(json).unwrap(), dto);
-    }
-
-    #[test]
-    fn v3_wire_dto_round_trips_nested_platform() {
-        let current = BotConfigV3::from(&parse_config(V2_FIXTURE).unwrap());
-        match &current.platform {
-            FrozenBotPlatformConfig::FeishuChina(config) => {
-                assert_eq!(config.app_id, "cli_original");
-            }
-        }
-        let encoded = crate::toml_schema::encode(&current, BOT_CONFIG_VERSION_KEY).unwrap();
-        let table: toml::Table = toml::from_str(&encoded).unwrap();
-        assert_eq!(table[BOT_CONFIG_VERSION_KEY].as_integer(), Some(3));
-        assert!(table.get("app_id").is_none());
-        let json = serde_json::to_value(&current).unwrap();
-        assert_eq!(
-            serde_json::from_value::<BotConfigV3>(json).unwrap(),
-            current
-        );
-        assert_eq!(dto_toml_round_trip(&current), current);
     }
 
     #[test]

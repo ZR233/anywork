@@ -3,12 +3,7 @@ mod bots_fixture;
 mod context_replay_recovery;
 mod conversation_read_work;
 mod delegation;
-#[cfg(test)]
-mod history_fault_tests;
-#[cfg(test)]
-mod manual_cleanup_tests;
-#[cfg(test)]
-mod manual_startup_tests;
+
 mod message_submission;
 mod mode_editor;
 mod model_catalog;
@@ -23,8 +18,6 @@ mod timeline_history_20k;
 mod wait_events;
 mod web_search;
 mod websocket_recovery;
-#[cfg(all(test, windows))]
-mod windows_cleanup_tests;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
@@ -6592,6 +6585,788 @@ fn failure_reason(line: &str) -> Option<String> {
     }
     let sanitized = redact_loopback_ports(&redact_loopback_urls(reason));
     Some(sanitized.chars().take(480).collect())
+}
+
+#[cfg(test)]
+mod history_fault_tests {
+    use super::*;
+    use pl_protocol::{
+        SucceededThreadTool, ThreadContentLifecycle, ThreadItem, ThreadItemState,
+        ThreadTextChannel, ThreadTextItem, ThreadToolInvocation, ThreadToolItem, ThreadToolOutput,
+        ThreadToolState,
+    };
+
+    fn item(id: &str, turn: &str, state: ThreadItemState) -> ThreadItem {
+        ThreadItem::new(id.into(), "thread".into(), turn.into(), 1, 1, 1, 1, state)
+    }
+
+    fn answer(id: &str, channel: ThreadTextChannel) -> ThreadItem {
+        item(
+            id,
+            "fault-turn",
+            ThreadItemState::Text(ThreadTextItem::new(
+                channel,
+                pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER.into(),
+                Vec::new(),
+                ThreadContentLifecycle::completed(1),
+            )),
+        )
+    }
+
+    fn tool(id: &str, turn: &str, result: &str) -> ThreadItem {
+        item(
+            id,
+            turn,
+            ThreadItemState::Tool(ThreadToolItem::new(
+                ThreadToolInvocation::new(
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID.into(),
+                    "exec".into(),
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER.into(),
+                ),
+                ThreadToolState::Succeeded(SucceededThreadTool::new(
+                    1,
+                    ThreadToolOutput::new(result.into(), Vec::new(), Vec::new(), Some(0)),
+                )),
+            )),
+        )
+    }
+
+    fn write_items(path: &Path, items: &[ThreadItem]) -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+        let mut connection = SqliteConnection::connect_with(&options).await?;
+        sea_orm::sqlx::query(
+            "CREATE TABLE IF NOT EXISTS history_items(item_id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
+        ).execute(&mut connection).await?;
+        sea_orm::sqlx::query("DELETE FROM history_items").execute(&mut connection).await?;
+        for item in items {
+            sea_orm::sqlx::query("INSERT INTO history_items(item_id,payload) VALUES(?1,?2)")
+                .bind(&item.id).bind(serde_json::to_string(item)?)
+                .execute(&mut connection).await?;
+        }
+        connection.close().await?;
+        Ok(())
+    })
+    }
+
+    #[test]
+    fn history_fault_counts_real_final_and_tool_output_not_user_or_arguments() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let database = temp.path().join("history.sqlite");
+        write_items(
+            &database,
+            &[
+                answer("input", ThreadTextChannel::User),
+                answer("commentary", ThreadTextChannel::Commentary),
+                answer("answer", ThreadTextChannel::Final),
+                tool("argument-only", "fault-turn", "ordinary output"),
+                tool(
+                    "result",
+                    "fault-turn",
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                ),
+            ],
+        )?;
+        let originals = history_fault_originals(&database)?;
+        originals.validate()?;
+        assert_eq!(originals.answers[0].item_id, "answer");
+        assert_eq!(originals.tools[0].item_id, "result");
+        assert_eq!(
+            originals.tools[0].tool_call_id.as_deref(),
+            Some(pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn history_fault_rejects_duplicate_originals_and_cross_turn_results() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let database = temp.path().join("history.sqlite");
+        write_items(
+            &database,
+            &[
+                answer("answer", ThreadTextChannel::Final),
+                answer("duplicate", ThreadTextChannel::Final),
+                tool(
+                    "result",
+                    "fault-turn",
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                ),
+            ],
+        )?;
+        assert!(history_fault_originals(&database)?.validate().is_err());
+        write_items(
+            &database,
+            &[
+                answer("answer", ThreadTextChannel::Final),
+                tool(
+                    "result",
+                    "different-turn",
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                ),
+            ],
+        )?;
+        assert!(history_fault_originals(&database)?.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn history_fault_execution_receipts_preserve_real_counts_and_reject_garbage() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp
+            .path()
+            .join(pl_provider_fixture::GUI_HISTORY_FAULT_EXECUTIONS_FILE);
+        assert_eq!(history_fault_execution_count(temp.path())?, 0);
+        let marker = pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER;
+        fs::write(&path, format!("{marker}\r\n"))?;
+        assert_eq!(history_fault_execution_count(temp.path())?, 1);
+        fs::write(&path, format!("{marker}\n{marker}\n"))?;
+        assert_eq!(history_fault_execution_count(temp.path())?, 2);
+        fs::write(&path, "not the tool receipt\n")?;
+        assert!(history_fault_execution_count(temp.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn history_fault_fixture_stage_ignores_optional_titles_and_rejects_missing_evidence()
+    -> Result<()> {
+        let script = pl_provider_fixture::gui_history_fault_script();
+        let mut status = pl_provider_fixture::FixtureLiveStatus {
+            accepted: 0,
+            rejected: 0,
+            total: 0,
+            consumed_steps: 0,
+            expected_steps: script.len(),
+            remaining_optional: false,
+        };
+        assert_eq!(history_fault_required_consumed(status)?, 0);
+        let mut required = 0;
+        for step in &script {
+            status.consumed_steps += 1;
+            status.accepted += 1;
+            status.total += 1;
+            if !step.optional {
+                required += 1;
+            }
+            assert_eq!(history_fault_required_consumed(status)?, required);
+        }
+        assert_eq!(required, pl_provider_fixture::HISTORY_FAULT_REQUIRED_STEPS);
+        status.rejected = 1;
+        assert!(history_fault_required_consumed(status).is_err());
+        status.rejected = 0;
+        status.consumed_steps += 1;
+        assert!(history_fault_required_consumed(status).is_err());
+        status.consumed_steps = 0;
+        status.expected_steps = 0;
+        assert!(history_fault_required_consumed(status).is_err());
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod manual_cleanup_tests {
+    //! Exercise the real supervisor in a separate test process: its exclusive
+    //! child ownership and signal handler cannot be shared with the test runner.
+
+    use super::{OwnedProcess, finish_manual_gui_session};
+    use anyhow::{Context, Result, ensure};
+    use pl_dev_support::process;
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const READY: &str = "ANYWORK_ACCEPTANCE_CLEANUP_TEST_READY";
+    const REPORT: &str = "ANYWORK_ACCEPTANCE_CLEANUP_TEST_REPORT";
+    const PREPARATION: &str = "ANYWORK_ACCEPTANCE_CLEANUP_TEST_PREPARATION";
+
+    /// Invoked only by the test below, with the actual production tree supervisor.
+    #[test]
+    fn native_launcher_fixture() -> Result<()> {
+        let Some(ready) = std::env::var_os(READY) else {
+            return Ok(());
+        };
+        let report = std::env::var_os(REPORT).context("fixture report path")?;
+        if let Ok(mode) = std::env::var(PREPARATION) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            return runtime.block_on(async {
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                let script = if mode == "fail" {
+                    "printf '%s' \"$$\" > \"$ANYWORK_ACCEPTANCE_CLEANUP_TEST_READY\"; exit 7"
+                } else {
+                    "printf '%s' \"$$\" > \"$ANYWORK_ACCEPTANCE_CLEANUP_TEST_READY\"; exec sleep 60"
+                };
+                let mut build = tokio::process::Command::new("sh")
+                    .args(["-c", script])
+                    .env(READY, &ready)
+                    .kill_on_drop(true)
+                    .spawn()?;
+                if mode == "fail" {
+                    let status = build.wait().await?;
+                    ensure!(status.success(), "preparation worker failed: {status}");
+                } else {
+                    // This fixture publishes its late boundary on cancellation.
+                    // The group signal also ends the worker: racing those two
+                    // observations with select would randomly skip publication.
+                    term.recv().await.context("termination stream ended")?;
+                    build.wait().await?;
+                    if mode == "boundary-on-cancel" {
+                        print!("{}", super::NATIVE_LAUNCH_BOUNDARY);
+                        std::io::stdout().flush()?;
+                    }
+                }
+                Ok(())
+            });
+        }
+        print!("{}", super::NATIVE_LAUNCH_BOUNDARY);
+        std::io::stdout().flush()?;
+        let mut app = Command::new("sh");
+        app.args(["-c", "trap '' TERM; printf '%s' \"$$\" > \"$ANYWORK_ACCEPTANCE_CLEANUP_TEST_READY\"; exec sleep 60"]);
+        app.env(READY, ready);
+        let exit = process::run_resident_reporting(&mut app, "acceptance independent app group")?;
+        // Evidence flushing may outlive OwnedProcess::Drop's old 200 ms window.
+        // The owner must remain alive until reporting is complete, not be killed
+        // as soon as its app has gone.
+        thread::sleep(Duration::from_millis(400));
+        fs::write(
+            report,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "anywork-native-exit/1",
+                "pid": exit.pid,
+                "exitCode": exit.status.code(),
+                "signal": exit.status.signal(),
+                "cancelled": exit.cancelled,
+                "descendantsAtRootExit": exit.descendants_at_root_exit,
+                "reclaimedDescendants": exit.reclaimed_descendants,
+            }))?,
+        )?;
+        Ok(())
+    }
+
+    fn launcher_command(ready: &Path, report: &Path, outer_wrapper: bool) -> Result<Command> {
+        let executable = std::env::current_exe()?;
+        let mut command = if outer_wrapper {
+            let mut command = Command::new("sh");
+            // Like cargo run, the outer process is not the native supervisor.
+            // Its TERM exit must not end the acceptance owner's cleanup wait.
+            command
+                .args([
+                    "-c",
+                    "trap 'exit 143' TERM; \"$@\" & wait",
+                    "outer-launcher",
+                ])
+                .arg(&executable);
+            command
+        } else {
+            Command::new(&executable)
+        };
+        command
+            .args([
+                "--exact",
+                "manual_gui::manual_cleanup_tests::native_launcher_fixture",
+                "--nocapture",
+            ])
+            .env(READY, ready)
+            .env(REPORT, report)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Ok(command)
+    }
+
+    fn start_launcher(ready: &Path, report: &Path, outer_wrapper: bool) -> Result<OwnedProcess> {
+        OwnedProcess::start(&mut launcher_command(ready, report, outer_wrapper)?, false)
+    }
+
+    #[test]
+    fn preparation_cleanup_uses_the_final_phase_and_joins_build_children() -> Result<()> {
+        for mode in ["fail", "hold", "boundary-on-cancel", "native"] {
+            let directory = tempfile::tempdir()?;
+            let ready = directory.path().join("worker-pid");
+            let report = directory.path().join("native-exit.json");
+            let log = directory.path().join("gui.log");
+            let mut command = launcher_command(&ready, &report, false)?;
+            let log_file = fs::File::create(&log)?;
+            command.stdout(log_file.try_clone()?).stderr(log_file);
+            if mode != "native" {
+                command.env(PREPARATION, mode);
+            }
+            let mut launcher = OwnedProcess::start(&mut command, false)?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = if mode == "fail" {
+                // This coordinator fixture has no production account/GUI services.
+                // Preserve the original failed preparation process status.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while launcher.exit_status()?.is_none() {
+                    ensure!(
+                        Instant::now() < deadline,
+                        "preparation failure did not exit"
+                    );
+                    thread::sleep(Duration::from_millis(20));
+                }
+                fs::read_to_string(&ready)?.parse::<u32>()?
+            } else {
+                wait_app(&ready, &mut launcher)?
+            };
+            let mut account =
+                OwnedProcess::start(Command::new("sh").args(["-c", "exec sleep 60"]), true)?;
+            tx.send(())?;
+            let session = super::wait_for_vm_in_phase(
+                &log,
+                &mut launcher,
+                &mut account,
+                &rx,
+                super::VmStartupPhase::NativePreparation,
+                Duration::from_millis(20),
+            );
+            assert!(session.is_err());
+            let result = finish_manual_gui_session(
+                session.map(|_| ()),
+                &mut launcher,
+                Some(&report),
+                if mode == "boundary-on-cancel" {
+                    Duration::from_millis(250)
+                } else {
+                    Duration::from_secs(10)
+                },
+                Some(&log),
+            );
+            let error = format!("{:#}", result.unwrap_err());
+            let started = super::native_launch_started(&fs::read_to_string(&log)?);
+            println!(
+                "phase_case={mode} crossed_boundary={started} stopped={} report_present={}",
+                launcher.stopped,
+                report.is_file()
+            );
+            assert!(
+                !Path::new(&format!("/proc/{worker}")).exists(),
+                "worker was not reaped"
+            );
+            if mode == "boundary-on-cancel" {
+                assert!(started);
+                assert!(
+                    !launcher.stopped,
+                    "missing post-boundary report must keep fallback armed"
+                );
+                assert!(error.contains("cleanup timed out"), "{error}");
+                assert!(error.contains("manual GUI cancelled"), "{error}");
+            } else {
+                assert!(launcher.stopped);
+                assert!(!error.contains("cleanup also failed"), "{error}");
+                assert_eq!(started, mode == "native");
+                assert_eq!(report.is_file(), mode == "native");
+                assert!(
+                    error.contains(if mode == "fail" {
+                        "GUI exited"
+                    } else {
+                        "manual GUI cancelled"
+                    }),
+                    "{error}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_app(ready: &Path, launcher: &mut OwnedProcess) -> Result<u32> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(pid) = fs::read_to_string(ready)
+                && let Ok(pid) = pid.parse::<u32>()
+            {
+                return Ok(pid);
+            }
+            ensure!(
+                !launcher.exited()?,
+                "fixture launcher exited before app started"
+            );
+            ensure!(Instant::now() < deadline, "fixture app did not start");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn exit_outer_wrapper(launcher: &mut OwnedProcess) -> Result<()> {
+        ensure!(
+            Command::new("kill")
+                .args(["-TERM", &launcher.child.id().to_string()])
+                .status()?
+                .success(),
+            "could not exit only the outer wrapper"
+        );
+        launcher.child.wait()?;
+        ensure!(
+            launcher.exit_status()?.is_some(),
+            "outer wrapper was not reaped"
+        );
+        Ok(())
+    }
+
+    /// Safety cleanup runs after recording the tested outcome. Even a regression
+    /// must not leave this real independent app group running.
+    fn finish_fixture(launcher: &mut OwnedProcess, report: &Path) -> Result<()> {
+        if !report.is_file() {
+            launcher.request_stop();
+        }
+        launcher.wait_exit(Duration::from_secs(10))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !report.is_file() {
+            ensure!(Instant::now() < deadline, "fixture cleanup report missing");
+            thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preexited_wrapper_still_stops_and_joins_the_live_native_owner() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let ready = directory.path().join("app-pid");
+        let report = directory.path().join("native-exit.json");
+        let mut launcher = start_launcher(&ready, &report, true)?;
+        let app_pid = wait_app(&ready, &mut launcher)?;
+        exit_outer_wrapper(&mut launcher)?;
+        let app_path = format!("/proc/{app_pid}");
+        let app_alive_before = Path::new(&app_path).exists();
+        let report_before = report.is_file();
+        let result = finish_manual_gui_session(
+            Err(anyhow::anyhow!("GUI exited before manual review completed")),
+            &mut launcher,
+            Some(&report),
+            Duration::from_secs(10),
+            None,
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        let stopped_after = launcher.stopped;
+        let app_alive_after = Path::new(&app_path).exists();
+        let report_after = report.is_file();
+        println!(
+            "wrapper_preexited=true app_alive_before={app_alive_before} report_before={report_before} stopped_after={stopped_after} app_alive_after={app_alive_after} report_after={report_after}"
+        );
+        finish_fixture(&mut launcher, &report)?;
+        assert!(app_alive_before && !report_before);
+        assert!(
+            error.contains("GUI exited before manual review completed"),
+            "{error}"
+        );
+        assert!(!error.contains("cleanup also failed"), "{error}");
+        assert!(stopped_after && report_after && !app_alive_after);
+        let evidence: serde_json::Value = serde_json::from_slice(&fs::read(&report)?)?;
+        assert_eq!(evidence["cancelled"], true);
+        assert!(!Path::new(&app_path).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_sessions_wait_for_independent_app_group_and_launcher_report() -> Result<()> {
+        for (reason, outer_wrapper) in [
+            ("manual GUI input closed before done", false),
+            ("manual GUI cancelled", false),
+            ("account fixture exited during manual review", false),
+            ("manual GUI input closed before done", true),
+        ] {
+            let directory = tempfile::tempdir()?;
+            let ready = directory.path().join("app-pid");
+            let report = directory.path().join("native-exit.json");
+            let mut launcher = start_launcher(&ready, &report, outer_wrapper)?;
+            let app_pid = match wait_app(&ready, &mut launcher) {
+                Ok(pid) => pid,
+                Err(error) => {
+                    return finish_manual_gui_session(
+                        Err(error),
+                        &mut launcher,
+                        Some(&report),
+                        Duration::from_secs(10),
+                        None,
+                    );
+                }
+            };
+            // ProcessTree::start makes the native app a distinct process-group
+            // leader, outside OwnedProcess's launcher group.
+            let group_observation = (|| -> Result<u32> {
+                let stat = fs::read_to_string(format!("/proc/{app_pid}/stat"))?;
+                let (_, fields) = stat.rsplit_once(')').context("app process stat")?;
+                Ok(fields
+                    .split_whitespace()
+                    .nth(2)
+                    .context("app process group")?
+                    .parse()?)
+            })();
+
+            let result = finish_manual_gui_session(
+                Err(anyhow::anyhow!("{reason}")),
+                &mut launcher,
+                Some(&report),
+                Duration::from_secs(10),
+                None,
+            );
+            let error = format!("{:#}", result.unwrap_err());
+            assert_eq!(group_observation?, app_pid);
+            assert_ne!(app_pid, launcher.child.id());
+            assert!(error.contains(reason), "{error}");
+            assert!(!error.contains("cleanup also failed"), "{error}");
+            assert!(
+                launcher.stopped,
+                "launcher must be reaped before owner release"
+            );
+            let evidence: serde_json::Value = serde_json::from_slice(&fs::read(&report)?)?;
+            assert_eq!(evidence["pid"], app_pid);
+            assert_eq!(evidence["cancelled"], true);
+            assert_eq!(evidence["signal"], 9);
+            assert!(
+                !Path::new(&format!("/proc/{app_pid}")).exists(),
+                "app was not reaped"
+            );
+            assert!(!directory.path().join("shutdown-stage.txt").exists());
+            if outer_wrapper {
+                println!(
+                    "wrapper_exits_on_group_stop=true stopped_after={} report_after={} app_alive_after={}",
+                    launcher.stopped,
+                    report.is_file(),
+                    Path::new(&format!("/proc/{app_pid}")).exists()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_timeout_preserves_original_failure_and_does_not_claim_reclamation() -> Result<()> {
+        for preexited in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let ready = directory.path().join("app-pid");
+            let report = directory.path().join("native-exit.json");
+            let mut launcher = start_launcher(&ready, &report, preexited)?;
+            let ready_result = wait_app(&ready, &mut launcher);
+            if preexited {
+                exit_outer_wrapper(&mut launcher)?;
+            }
+            let result = finish_manual_gui_session(
+                Err(anyhow::anyhow!("original input failure")),
+                &mut launcher,
+                Some(&report),
+                Duration::ZERO,
+                None,
+            );
+            let fallback_armed = !launcher.stopped;
+            let app_alive = ready_result
+                .as_ref()
+                .is_ok_and(|pid| Path::new(&format!("/proc/{pid}")).exists());
+            println!(
+                "timeout=true wrapper_preexited={preexited} fallback_armed={fallback_armed} report_after={} app_alive_after={app_alive}",
+                report.is_file()
+            );
+            // Record state before safety cleanup, which must not hide premature disarming.
+            finish_fixture(&mut launcher, &report)?;
+            let app_pid = ready_result?;
+            assert!(!Path::new(&format!("/proc/{app_pid}")).exists());
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(error.contains("original input failure"), "{error}");
+            assert!(error.contains("cleanup timed out"), "{error}");
+            assert!(
+                error.contains("subtree reclamation is unconfirmed"),
+                "{error}"
+            );
+            assert!(report.is_file());
+            assert!(
+                fallback_armed,
+                "outer reap must not disarm whole-owner fallback"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod manual_startup_tests {
+    use super::{NATIVE_LAUNCH_BOUNDARY, VmStartupBudget, VmStartupPhase, native_launch_started};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn preparation_does_not_spend_or_reset_the_vm_budget() {
+        let start = Instant::now();
+        let timeout = Duration::from_millis(20);
+        let prepared = start + Duration::from_secs(6000);
+        let mut budget = VmStartupBudget::new(VmStartupPhase::NativePreparation, timeout, start);
+        budget.observe("startup_stage=build_bridge elapsed_ms=6000000\n", prepared);
+        assert_eq!(budget.deadline, None);
+        assert!(!native_launch_started(NATIVE_LAUNCH_BOUNDARY.trim_end()));
+        assert!(!native_launch_started(&format!(
+            "compiler: {NATIVE_LAUNCH_BOUNDARY}"
+        )));
+        budget.observe(NATIVE_LAUNCH_BOUNDARY, prepared);
+        assert_eq!(budget.deadline, Some(prepared + timeout));
+        let expired = prepared + timeout + Duration::from_millis(1);
+        budget.observe(NATIVE_LAUNCH_BOUNDARY, expired);
+        budget.observe("additional startup output\n", expired);
+        assert!(budget.deadline.unwrap() < expired);
+        // Existing resident/specialized callers keep their spawn-relative budget.
+        let immediate = VmStartupBudget::new(VmStartupPhase::Immediate, timeout, start);
+        assert_eq!(immediate.deadline, Some(start + timeout));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiter_allows_preparation_longer_than_its_short_vm_window() -> anyhow::Result<()> {
+        use super::{OwnedProcess, wait_for_vm_in_phase};
+        use std::{fs, process::Command, sync::mpsc, thread};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("gui.log");
+        fs::write(&path, "building native inputs\n")?;
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || -> std::io::Result<()> {
+            thread::sleep(Duration::from_millis(650));
+            fs::write(
+                writer_path,
+                format!(
+                    "{NATIVE_LAUNCH_BOUNDARY}The Dart VM service is listening on http://127.0.0.1:1234/synthetic/\n"
+                ),
+            )
+        });
+        let mut gui = OwnedProcess::start(Command::new("sh").args(["-c", "exec sleep 60"]), false)?;
+        let mut fixture =
+            OwnedProcess::start(Command::new("sh").args(["-c", "exec sleep 60"]), true)?;
+        let (tx, rx) = mpsc::channel();
+        let result = wait_for_vm_in_phase(
+            &path,
+            &mut gui,
+            &mut fixture,
+            &rx,
+            VmStartupPhase::NativePreparation,
+            Duration::from_millis(100),
+        );
+        writer.join().unwrap()?;
+        assert_eq!(result?, "http://127.0.0.1:1234/synthetic/");
+        fs::write(
+            &path,
+            format!("{NATIVE_LAUNCH_BOUNDARY}{NATIVE_LAUNCH_BOUNDARY}ordinary startup output\n"),
+        )?;
+        let error = wait_for_vm_in_phase(
+            &path,
+            &mut gui,
+            &mut fixture,
+            &rx,
+            VmStartupPhase::NativePreparation,
+            Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("VM service startup timed out"),
+            "{error:#}"
+        );
+        tx.send(())?;
+        let cancelled = wait_for_vm_in_phase(
+            &path,
+            &mut gui,
+            &mut fixture,
+            &rx,
+            VmStartupPhase::NativePreparation,
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            cancelled.to_string().contains("manual GUI cancelled"),
+            "{cancelled:#}"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_cleanup_tests {
+    //! Windows kernel scopes with the actual manual-session cleanup coordinator.
+    use super::*;
+
+    const FIXTURE: &str = "manual_gui::windows_cleanup_tests::preparation_fixture";
+
+    #[test]
+    fn preparation_fixture() -> Result<()> {
+        let Some(directory) = env::var_os("PL_PREPARATION_FIXTURE") else {
+            return Ok(());
+        };
+        let directory = PathBuf::from(directory);
+        let mode = env::var("PL_PREPARATION_MODE")?;
+        if mode == "worker" || mode == "cancel" {
+            fs::write(directory.join("ready"), "ready")?;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            bail!("fixture was not reclaimed");
+        }
+        if mode == "orphan" {
+            let _child = Command::new(env::current_exe()?)
+                .args(["--exact", FIXTURE, "--nocapture"])
+                .env("PL_PREPARATION_MODE", "worker")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+        } else {
+            // Model a launcher which crosses the boundary just before exiting.
+            fs::write(directory.join("gui.log"), NATIVE_LAUNCH_BOUNDARY)?;
+            fs::write(directory.join("ready"), "ready")?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preparation_cleanup_retains_first_error_and_native_report_barrier() -> Result<()> {
+        for mode in ["orphan", "cancel", "native-missing"] {
+            let directory = tempfile::tempdir()?;
+            let log = directory.path().join("gui.log");
+            let report = directory.path().join("native-exit.json");
+            fs::write(&log, "preparing\n")?;
+            let mut command = Command::new(env::current_exe()?);
+            command
+                .args(["--exact", FIXTURE, "--nocapture"])
+                .env("PL_PREPARATION_FIXTURE", directory.path())
+                .env("PL_PREPARATION_MODE", mode)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let mut gui = OwnedProcess::start(&mut command, false)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !directory.path().join("ready").exists()
+                || (mode != "cancel" && gui.exit_status()?.is_none())
+            {
+                ensure!(
+                    Instant::now() < deadline,
+                    "fixture readiness timed out: {mode}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            if mode == "orphan" {
+                assert!(!gui.tree_exited()?);
+            }
+            let result = finish_manual_gui_session(
+                Err(anyhow::anyhow!("original startup failure")),
+                &mut gui,
+                Some(&report),
+                Duration::from_secs(1),
+                Some(&log),
+            );
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(error.contains("original startup failure"), "{error}");
+            if mode == "native-missing" {
+                assert!(!gui.stopped);
+                assert!(error.contains("cleanup timed out"), "{error}");
+            } else {
+                assert!(gui.stopped, "{mode}: {error}");
+                assert!(gui.tree_exited()?);
+                assert!(!error.contains("cleanup timed out"), "{error}");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

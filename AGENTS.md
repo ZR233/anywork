@@ -183,6 +183,8 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 质量技能入口
 
+Rust 单元测试放在所属源码文件尾部的 `#[cfg(test)]` 模块中；集成测试放在 crate 的 `tests/`，只通过公开接口验证行为，不为测试扩大生产接口的可见性，也不通过 `#[path]` 或 `include!` 重新编译生产实现。共享环境夹具可以放在 `tests/support/` 或仅在 `cfg(test)` 下编译的模块中。
+
 通用设计、实现与测试规则由以下技能维护，本文件只规定项目约束。按任务语义选择，不以文件名或改动规模代替判断；多个边界同时涉及时组合使用，不把普通改动扩展为无关专项审计。
 
 新增或修改内容涉及 Flutter／FRB／Rust 的跨层分工、状态与资源所有权、数据交付或页面路由时，必须先加载并使用 `flutter-frb-rust-design` 技能。

@@ -7,18 +7,6 @@
 #[cfg(test)]
 extern crate self as pl_studio_runtime;
 
-#[cfg(all(test, target_os = "linux"))]
-#[path = "../tests/support/acp_transport_fixture.rs"]
-mod acp_transport_fixture;
-
-#[cfg(test)]
-#[expect(
-    dead_code,
-    reason = "the shared fixture also serves standalone integration test binaries"
-)]
-#[path = "../tests/support/mod.rs"]
-pub(crate) mod runtime_test_support;
-
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
 pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
@@ -143,3 +131,24 @@ pub mod mode;
 mod tool_review;
 
 mod startup_timing;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/acp_transport_fixture.rs"]
+mod acp_transport_fixture;
+
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the shared fixture also serves standalone integration test binaries"
+)]
+#[path = "../tests/support/mod.rs"]
+pub(crate) mod runtime_test_support;
+
+#[cfg(test)]
+#[path = "../../pl-tool/tests/support/binding_host.rs"]
+mod test_fixture_binding_host;
+
+#[cfg(test)]
+#[expect(dead_code, reason = "shared real stdio protocol fixture")]
+#[path = "../../pl-tool/tests/support/mcp_stdio.rs"]
+mod test_fixture_mcp_stdio;

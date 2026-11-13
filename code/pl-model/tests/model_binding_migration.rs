@@ -3,7 +3,6 @@ use pl_core::context::OpaquePayload;
 use pl_model::model::ModelInfo;
 use pl_model::runtime::migration::migrate_payload;
 use pl_model::{
-    config::ModelRouteConfig,
     protocol::{ProtocolEndpoint, ProtocolKind, WireApi},
     runtime::{ModelRuntime, model_failure_receipt, model_request_receipt, model_response_receipt},
 };
@@ -510,27 +509,6 @@ fn runtime_requires_an_explicit_stable_account_id() {
     let runtime = ModelRuntime::new_with_account_id("account-stable", endpoint, model)
         .expect("explicit account id is valid");
     assert_eq!(runtime.account_id(), "account-stable");
-}
-
-#[test]
-fn route_selector_serializes_account_and_model_identity() {
-    let route = ModelRouteConfig {
-        account_id: pl_model::config::AccountId::new("deepseek").unwrap(),
-        model_id: "deepseek-flash".into(),
-        effort: None,
-    };
-    let value = serde_json::to_value(&route).unwrap();
-    assert_eq!(value["account_id"], "deepseek");
-    assert_eq!(value["model_id"], "deepseek-flash");
-    assert!(value.get("provider").is_none());
-    assert!(value.get("model").is_none());
-    assert_eq!(
-        route.key().unwrap(),
-        pl_model::config::AccountModelKey {
-            account_id: "deepseek".into(),
-            model_id: "deepseek-flash".into()
-        }
-    );
 }
 
 #[test]

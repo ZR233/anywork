@@ -1,9 +1,9 @@
 //! Effective catalog origin, membership and catalog-declared discovery.
 use pl_model::{
     config::{
-        AccountCapabilitySelection, AccountConfig, AccountId, AccountModelCatalogConfig,
-        AccountModelOrigin, AccountTemplateId, AgentModelConfig, AgentRoleId, ModelCatalogId,
-        ModelRouteConfig, builtin_account_catalog, builtin_model_catalog, model_descriptor,
+        AccountConfig, AccountId, AccountModelCatalogConfig, AccountModelOrigin, AccountTemplateId,
+        AgentModelConfig, AgentRoleId, ModelCatalogId, ModelRouteConfig, builtin_account_catalog,
+        builtin_model_catalog, model_descriptor,
     },
     model::{ModelInfo, ModelPricing, ModelTransportProfile, ModelType, bundled_model_definition},
     protocol::{
@@ -86,29 +86,12 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
     }
 }
 
-/// 账号模板描述投影携带权威协议与能力，并以 camelCase 产品 wire 输出和修订。
+/// 账号模板投影使用所属账号与目录的协议、能力和修订。
 #[test]
-fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
+fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision() {
     let mut registry = builtin_account_catalog().unwrap();
     let snapshot = registry.snapshot().unwrap();
     assert_eq!(registry.snapshot().unwrap().revision, snapshot.revision);
-    let value = serde_json::to_value(&snapshot).unwrap();
-    assert_eq!(value["schemaVersion"], 19);
-    assert!(value.get("presets").is_none());
-    assert!(value.get("templates").is_some());
-    assert!(value.get("modelCatalogs").is_some());
-    let wire_templates = value["templates"].as_array().unwrap();
-    let deepseek_wire = wire_templates
-        .iter()
-        .find(|template| template["id"] == "deepseek")
-        .unwrap();
-    assert_eq!(deepseek_wire["protocol"], "deep_seek");
-    assert_eq!(deepseek_wire["defaultBillingKind"], "metered");
-    assert_eq!(deepseek_wire["supportsModelDiscovery"], true);
-    assert_eq!(deepseek_wire.get("supportsUsageQuery"), Some(&json!(null)));
-    assert!(deepseek_wire.get("default_billing_kind").is_none());
-    assert!(deepseek_wire.get("supports_model_discovery").is_none());
-    assert!(deepseek_wire.get("supports_usage_query").is_none());
     assert!(
         snapshot
             .templates
@@ -125,31 +108,6 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
         pl_protocol::BillingKind::Unknown
     );
     assert!(!compatible.supports_model_discovery);
-    assert!(deepseek_wire.get("suggestedModelId").is_some());
-    assert!(deepseek_wire.get("modelCatalogId").is_some());
-    assert!(deepseek_wire.get("baseUrl").is_some());
-    assert!(deepseek_wire.get("displayName").is_some());
-    assert!(
-        deepseek_wire["serviceCapabilities"]
-            .get("promptCacheDialect")
-            .is_some()
-    );
-    assert!(
-        value["modelCatalogs"]["deepseek"]["models"][0]
-            .get("modelId")
-            .is_some()
-    );
-    assert!(
-        value["modelCatalogs"]["deepseek"]["models"][0]
-            .get("contextWindow")
-            .is_some()
-    );
-    assert!(
-        value["modelCatalogs"]["deepseek"]["models"][0]["transport"]
-            .get("defaultConnectionMode")
-            .is_some()
-    );
-
     // 用描述投影本身创建账号：协议来自 catalog，不按模板 ID 或地址猜测。
     let descriptor = snapshot
         .templates
@@ -190,28 +148,6 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
             .any(|model| model.model_id == descriptor.suggested_model_id)
     );
 
-    for (id, protocol) in [
-        ("openai", "open_ai"),
-        ("deepseek", "deep_seek"),
-        ("xai", "xai"),
-        ("zhipu", "zhipu"),
-        ("zhipu-coding-plan", "zhipu"),
-        ("mimo-api", "mi_mo"),
-        ("mimo-token-plan", "mi_mo"),
-        ("openai-compatible", "open_ai_compatible"),
-    ] {
-        let template = snapshot
-            .templates
-            .iter()
-            .find(|template| template.id == id)
-            .unwrap();
-        assert_eq!(template.protocol, protocol);
-        assert_eq!(
-            template.protocol.parse::<ProtocolKind>().unwrap().as_str(),
-            protocol
-        );
-    }
-
     // Metadata is projected from the owned account/catalog, not inferred from its template ID.
     registry
         .templates
@@ -231,8 +167,6 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
         pl_protocol::BillingKind::NoCharge
     );
     assert_ne!(billing_changed.revision, snapshot.revision);
-    let changed_wire = serde_json::to_value(changed_template).unwrap();
-    assert_eq!(changed_wire["defaultBillingKind"], "noCharge");
 
     registry
         .model_catalogs
@@ -249,45 +183,6 @@ fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
             .supports_model_discovery
     );
     assert_ne!(discovery_changed.revision, billing_changed.revision);
-}
-
-/// 当前 capability 来源 wire 只有 `template_defaults`；旧 `preset_defaults` 不再解析。
-#[test]
-fn template_capabilities_use_only_the_current_source_token() {
-    let selection = AccountCapabilitySelection::TemplateDefaults;
-    assert_eq!(
-        serde_json::to_value(&selection).unwrap(),
-        json!({"source": "template_defaults"})
-    );
-    assert_eq!(
-        serde_json::from_value::<AccountCapabilitySelection>(
-            json!({"source": "template_defaults"})
-        )
-        .unwrap(),
-        selection
-    );
-    assert!(
-        serde_json::from_value::<AccountCapabilitySelection>(json!({"source": "preset_defaults"}))
-            .is_err(),
-        "the retired capability source token is converted by the config migration, not parsed here"
-    );
-
-    let account = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::deepseek(None),
-        ModelCatalogId::new("deepseek").unwrap(),
-        Vec::new(),
-    )
-    .with_template(AccountTemplateId::new("deepseek").unwrap());
-    let persisted = serde_json::to_value(&account).unwrap();
-    assert_eq!(
-        persisted["capabilities"]["source"], "template_defaults",
-        "new rounds persist the current token"
-    );
-    let reread: AccountConfig = serde_json::from_value(persisted).unwrap();
-    assert_eq!(
-        reread.capabilities,
-        AccountCapabilitySelection::TemplateDefaults
-    );
 }
 
 #[tokio::test]

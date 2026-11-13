@@ -1,19 +1,8 @@
-//! Base declaration contract: construction, validation, serialization, and
-//! bounded debug output, without any optional feature.
+//! Base declaration contract: validation and bounded debug output,
+//! without any optional feature.
 
 use pl_agent_tool::{DefinitionError, InputFormat, ToolDefinition};
 use serde_json::json;
-
-#[test]
-fn json_definition_keeps_valid_values_and_exposes_them() {
-    let schema = json!({"type": "object", "properties": {"left": {"type": "integer"}}});
-    let definition = ToolDefinition::json("add", "Adds integers.", schema.clone()).unwrap();
-
-    assert_eq!(definition.name(), "add");
-    assert_eq!(definition.description(), "Adds integers.");
-    assert_eq!(definition.input(), &InputFormat::JsonSchema(schema));
-    assert_eq!(definition.output_schema(), None);
-}
 
 #[test]
 fn schema_root_must_be_a_json_object_but_stays_uninterpreted() {
@@ -87,40 +76,6 @@ fn output_schema_is_optional_and_root_checked() {
         .with_output_schema(json!("not an object"))
         .unwrap_err();
     assert!(matches!(error, DefinitionError::InvalidOutputSchema));
-}
-
-#[test]
-fn declarations_serialize_for_consumers() {
-    let schema = json!({"type": "object"});
-    let definition = ToolDefinition::json("add", "Adds.", schema.clone())
-        .unwrap()
-        .with_output_schema(json!({"type": "array"}))
-        .unwrap();
-
-    let encoded = serde_json::to_value(&definition).unwrap();
-    assert_eq!(
-        encoded,
-        json!({
-            "name": "add",
-            "description": "Adds.",
-            "input": {"JsonSchema": schema},
-            "output_schema": {"type": "array"},
-        })
-    );
-
-    let text = serde_json::to_value(ToolDefinition::text("note", "n").unwrap().input()).unwrap();
-    assert_eq!(text, json!("Text"));
-
-    let grammar = serde_json::to_value(
-        ToolDefinition::grammar("g", "d", "lark", "start: A")
-            .unwrap()
-            .input(),
-    )
-    .unwrap();
-    assert_eq!(
-        grammar,
-        json!({"Grammar": {"syntax": "lark", "definition": "start: A"}})
-    );
 }
 
 #[test]

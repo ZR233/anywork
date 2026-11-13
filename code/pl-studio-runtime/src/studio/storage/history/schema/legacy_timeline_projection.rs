@@ -16,62 +16,6 @@ struct FactKey {
     tie: u64,
 }
 
-#[cfg(test)]
-mod published_tests {
-    use super::*;
-
-    #[test]
-    fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
-        let source = ChatSourceId::ForegroundTurn {
-            turn_id: "turn".into(),
-        };
-        let mut projection = TimelineProjection::new("db".into(), "published".into(), 0);
-        projection.published_classification();
-        for (order, id, kind) in [
-            (1, "old-unknown", ChatAtomKind::Unknown),
-            (2, "work", ChatAtomKind::Reasoning),
-        ] {
-            let atom = ChatAtom {
-                id: id.into(),
-                completion_item_id: Some(id.into()),
-                completion_seq: Some(order),
-                source: source.clone(),
-                source_state: None,
-                source_order: Some(order),
-                kind,
-                delivery: ChatDeliveryKind::Foreground,
-                lifecycle: ChatAtomLifecycle::Terminal {
-                    started: Some(ChatFactPosition {
-                        effect_seq: order,
-                        suborder: 0,
-                    }),
-                    ended: Some(ChatFactPosition {
-                        effect_seq: order,
-                        suborder: 1,
-                    }),
-                    outcome: ChatTerminalOutcome::Completed,
-                },
-                turn_id: Some("turn".into()),
-                attempt_id: None,
-                tool: None,
-                wait: None,
-                text_channel: None,
-                started_at: Some(order as i64),
-                finished_at: Some(order as i64),
-                content_present: Some(true),
-                contents: vec![],
-                payload: None,
-            };
-            projection.complete(atom, order, None).unwrap();
-        }
-        projection.end_source(&source);
-        projection.commit_ready().unwrap();
-        let items = projection.take_committed();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
-        assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
-    }
-}
 fn position(atom: &ChatAtom, terminal: bool) -> Option<ChatFactPosition> {
     match atom.lifecycle {
         ChatAtomLifecycle::Active { started, .. } => started,
@@ -1111,5 +1055,62 @@ impl TimelineProjection {
             next_position: self.next_position,
             generation: self.generation.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod published_tests {
+    use super::*;
+
+    #[test]
+    fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
+        let source = ChatSourceId::ForegroundTurn {
+            turn_id: "turn".into(),
+        };
+        let mut projection = TimelineProjection::new("db".into(), "published".into(), 0);
+        projection.published_classification();
+        for (order, id, kind) in [
+            (1, "old-unknown", ChatAtomKind::Unknown),
+            (2, "work", ChatAtomKind::Reasoning),
+        ] {
+            let atom = ChatAtom {
+                id: id.into(),
+                completion_item_id: Some(id.into()),
+                completion_seq: Some(order),
+                source: source.clone(),
+                source_state: None,
+                source_order: Some(order),
+                kind,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Terminal {
+                    started: Some(ChatFactPosition {
+                        effect_seq: order,
+                        suborder: 0,
+                    }),
+                    ended: Some(ChatFactPosition {
+                        effect_seq: order,
+                        suborder: 1,
+                    }),
+                    outcome: ChatTerminalOutcome::Completed,
+                },
+                turn_id: Some("turn".into()),
+                attempt_id: None,
+                tool: None,
+                wait: None,
+                text_channel: None,
+                started_at: Some(order as i64),
+                finished_at: Some(order as i64),
+                content_present: Some(true),
+                contents: vec![],
+                payload: None,
+            };
+            projection.complete(atom, order, None).unwrap();
+        }
+        projection.end_source(&source);
+        projection.commit_ready().unwrap();
+        let items = projection.take_committed();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
+        assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
     }
 }

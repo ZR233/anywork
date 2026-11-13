@@ -15,9 +15,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
-#[cfg(test)]
-pub(super) mod tests;
-
 use crate::studio::records::{
     AgentDirectoryRecord, SessionDirectoryRecord, row_projection, thread_projection,
 };
@@ -1507,5 +1504,1266 @@ impl ThreadDirectoryIndex {
             .get(session_id)
             .map(|entry| entry.agents.values().cloned().collect())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+    use crate::studio::StudioStore;
+    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord, row_projection};
+    use crate::studio::store::directory::ProjectDirectoryRecord;
+    use std::sync::Mutex;
+    use tokio::sync::oneshot;
+
+    type PauseSlot = Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>;
+
+    #[derive(Default)]
+    pub(in crate::studio::product_event_bus) struct DirectoryTestPauses {
+        pub(super) commit_before_persist: PauseSlot,
+        pub(super) commit_persisted: PauseSlot,
+        pub(super) page_captured: PauseSlot,
+    }
+
+    pub(super) async fn pause(slot: &PauseSlot) {
+        let checkpoint = slot.lock().unwrap().take();
+        if let Some((entered, release)) = checkpoint {
+            entered.send(()).unwrap();
+            release.await.unwrap();
+        }
+    }
+
+    pub(super) fn install_pause(slot: &PauseSlot) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, reached) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        assert!(slot.lock().unwrap().replace((entered, released)).is_none());
+        (reached, release)
+    }
+
+    /// root 目录行：`session_id == agent_id == thread_id`，排序键取 `sort_time`。
+    pub(super) fn row(id: &str, workspace_id: &str, sort_time: i64) -> SessionDirectoryRow {
+        SessionDirectoryRow {
+            session_id: id.into(),
+            agent_id: id.into(),
+            parent_agent_id: None,
+            thread_id: id.into(),
+            workspace_id: workspace_id.into(),
+            title: format!("Thread {id}"),
+            mode: Some(pl_protocol::ThreadModeId::simple()),
+            workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+            delegation_mode: Default::default(),
+            delegation_preference: Default::default(),
+            workspace_path: format!("/tmp/{id}"),
+            role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
+            backend: pl_protocol::session::AgentBackend::Native {
+                config: pl_protocol::NativeAgentConfig {
+                    route: None,
+                    system_instructions: None,
+                },
+                status: pl_protocol::ThreadStatus::Idle,
+            },
+            created_at: sort_time,
+            updated_at: sort_time,
+            last_user_message_at: Some(sort_time),
+            archived: false,
+        }
+    }
+
+    /// 从 root/child 目录行拆出持久化的会话与成员事实（与 owner 的 `index_insert_row`
+    /// 拆分方向一致：会话级事实只随 root 行建立）。
+    pub(super) fn session_from_row(row: &SessionDirectoryRow) -> SessionDirectoryRecord {
+        SessionDirectoryRecord {
+            session_id: row.session_id.clone(),
+            root_agent_id: row.agent_id.clone(),
+            workspace_id: row.workspace_id.clone(),
+            title: row.title.clone(),
+            native_mode: row.mode.clone(),
+            workspace_mode: row.workspace_mode,
+            delegation_mode: row.delegation_mode,
+            delegation_preference: row.delegation_preference,
+            workspace_path: row.workspace_path.clone(),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            last_user_message_at: row.last_user_message_at,
+            archived: row.archived,
+        }
+    }
+
+    pub(super) fn agent_from_row(row: &SessionDirectoryRow) -> AgentDirectoryRecord {
+        AgentDirectoryRecord {
+            agent_id: row.agent_id.clone(),
+            session_id: row.session_id.clone(),
+            parent_agent_id: row.parent_agent_id.clone(),
+            thread_id: row.thread_id.clone(),
+            role: row.role.clone(),
+            title: (!row.is_root_row()).then(|| row.title.clone()),
+            backend: row.backend.clone(),
+            explicitly_closed: false,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+
+    pub(super) fn set_status(row: &mut SessionDirectoryRow, next: pl_protocol::ThreadStatus) {
+        let pl_protocol::session::AgentBackend::Native { status, .. } = &mut row.backend else {
+            panic!("Native fixture required");
+        };
+        *status = next;
+    }
+
+    pub(super) async fn fixture(
+        rows: Vec<SessionDirectoryRow>,
+        projects: Vec<ProjectDirectoryRecord>,
+    ) -> Result<(tempfile::TempDir, ProductEventBus)> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        if !rows.is_empty() || !projects.is_empty() {
+            let mut sessions = Vec::new();
+            let mut agents = Vec::new();
+            for row in rows {
+                if row.is_root_row() {
+                    sessions.push(session_from_row(&row));
+                }
+                agents.push(agent_from_row(&row));
+            }
+            store
+                .persist_directory_summaries(&DirectoryDelta {
+                    project_upserts: projects,
+                    session_upserts: sessions,
+                    agent_upserts: agents,
+                    ..Default::default()
+                })
+                .await?;
+        }
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store, writer);
+        events.initialize_directories().await?;
+        Ok((temp, events))
+    }
+
+    pub(super) fn project(id: &str, name: &str, path: &str) -> ProjectDirectoryRecord {
+        ProjectDirectoryRecord {
+            id: id.into(),
+            kind: pl_protocol::studio::WorkspaceKind::Project,
+            name: name.into(),
+            path: path.into(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        }
+    }
+
+    pub(super) fn workspace(project: &ProjectDirectoryRecord) -> crate::WorkspaceRecord {
+        crate::WorkspaceRecord {
+            id: project.id.clone(),
+            kind: project.kind,
+            name: project.name.clone(),
+            path: project.path.clone(),
+            ssh_alias: project.ssh_alias.clone(),
+            updated_at: project.updated_at,
+        }
+    }
+
+    pub(super) fn query(
+        events: &ProductEventBus,
+        query: &ThreadDirectoryQuery,
+        before: Option<String>,
+        limit: u32,
+    ) -> Result<DirectoryRead> {
+        events.read_threads_window_inner(
+            query,
+            &ThreadDirectoryWindow { before, limit },
+            "owner-test",
+        )
+    }
+
+    pub(super) fn event_delta(event: StudioProductEventEnvelope) -> StudioThreadDirectoryDelta {
+        let StudioProductEventKind::ThreadDirectoryChanged(delta) = event.kind else {
+            panic!("expected a thread directory event");
+        };
+        delta
+    }
+
+    mod commit {
+        use super::*;
+        use futures::poll;
+
+        #[tokio::test]
+        async fn typed_session_archive_and_delete_use_thread_references_without_resurrection()
+        -> Result<()> {
+            let mut root = row("root-thread", "p1", 10);
+            // Native physical history retains its original root Thread bytes in S1.
+            root.session_id = root.thread_id.clone();
+            root.agent_id = "root-agent".into();
+            let mut child = row("child-thread", "p1", 11);
+            child.session_id = root.session_id.clone();
+            child.agent_id = "child-agent".into();
+            child.parent_agent_id = Some(root.agent_id.clone());
+            let (_temp, events) = fixture(
+                vec![root.clone(), child.clone()],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let archived = event_delta(
+                events
+                    .commit_directory(DirectoryDelta::archive_sessions(vec![
+                        root.session_id.clone(),
+                    ]))
+                    .await?,
+            );
+            assert_eq!(
+                archived.removed.into_iter().collect::<BTreeSet<_>>(),
+                BTreeSet::from([root.thread_id.clone(), child.thread_id.clone()])
+            );
+            assert!(
+                query(&events, &ThreadDirectoryQuery::default(), None, 10)?
+                    .rows
+                    .is_empty()
+            );
+            // This unit isolates directory publication, not the lifecycle deletion journal. Settle the
+            // preceding archive first; real delete_thread installs its durable replay fence before removal.
+            events.writer.flush().await?;
+            events
+                .commit_directory(DirectoryDelta::delete_threads(vec![
+                    child.thread_id.clone(),
+                    root.thread_id.clone(),
+                ]))
+                .await?;
+            // A late observation cannot recreate either member or its now-absent session.
+            events.publish_thread_delta(vec![root.clone(), child], vec![], vec![root]);
+            assert!(events.store.catalog().sessions().is_empty());
+            assert!(events.store.catalog().agents().is_empty());
+            assert!(events.thread_index.lock().unwrap().sessions.is_empty());
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn durable_first_commit_keeps_old_slice_readable_then_publishes_one_new_slice()
+        -> Result<()> {
+            let original_project = project("p1", "Before Project", "/workspace/project");
+            let original = row("existing", "p1", 10);
+            let (_temp, events) =
+                fixture(vec![original.clone()], vec![original_project.clone()]).await?;
+            let before = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            let (baseline_session, baseline_agent) =
+                events.directory_facts(&original.thread_id).expect("facts");
+            let (before_persist, release_persist) =
+                install_pause(&events.directory_test_pauses.commit_before_persist);
+            let (persisted, release_publish) =
+                install_pause(&events.directory_test_pauses.commit_persisted);
+
+            let mut stale_session = baseline_session.clone();
+            stale_session.title = "Durable command title".into();
+            let new_row = row("new", "p1", 20);
+            let new_session = session_from_row(&new_row);
+            let new_agent = agent_from_row(&new_row);
+            let mut renamed_project = original_project;
+            renamed_project.name = "After Project".into();
+            renamed_project.updated_at = 2;
+            let commit = events.commit_directory_with_bases(
+                DirectoryDelta {
+                    project_upserts: vec![renamed_project],
+                    session_upserts: vec![stale_session, new_session],
+                    agent_upserts: vec![baseline_agent.clone(), new_agent],
+                    ..Default::default()
+                },
+                {
+                    let mut bases = DirectoryBaselines::default();
+                    bases
+                        .sessions
+                        .insert(baseline_session.session_id.clone(), baseline_session);
+                    bases
+                        .agents
+                        .insert(baseline_agent.agent_id.clone(), baseline_agent);
+                    bases
+                },
+            );
+            tokio::pin!(commit);
+            assert!(poll!(commit.as_mut()).is_pending());
+            before_persist.await?;
+
+            // No metadata lock is held across persistence: synchronous readers return the old slice.
+            assert!(events.thread_index.try_lock().is_ok());
+            let during_before_persist = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            assert_eq!(during_before_persist.rows, before.rows);
+            assert_eq!(during_before_persist.stamp, before.stamp);
+            assert!(
+                query(
+                    &events,
+                    &ThreadDirectoryQuery {
+                        search: Some("after project".into()),
+                        ..Default::default()
+                    },
+                    None,
+                    10,
+                )?
+                .rows
+                .is_empty()
+            );
+            let query_filter = ThreadDirectoryQuery::default();
+            let readable = events.query_threads(&query_filter, None, 10).await?;
+            assert_eq!(readable.state.value().unwrap().rows, before.rows);
+
+            release_persist.send(()).unwrap();
+            tokio::select! {
+                result = &mut commit => panic!("commit published before persisted checkpoint: {result:?}"),
+                result = persisted => result?,
+            }
+            let readable = events.query_threads(&query_filter, None, 10).await?;
+            assert_eq!(readable.state.value().unwrap().rows, before.rows);
+            // The catalog write has completed, but the only query owner still exposes the previous slice.
+            assert!(
+                events
+                    .store
+                    .catalog()
+                    .get_agent(&new_row.agent_id)
+                    .is_some()
+            );
+            assert_eq!(
+                query(&events, &ThreadDirectoryQuery::default(), None, 10)?.rows,
+                before.rows
+            );
+
+            // A later hot mutation may publish while the durable command is paused. Completion must not
+            // write the command's stale copy back over this newer visible metadata.
+            events
+                .patch_thread_runtime(
+                    &original.thread_id,
+                    pl_protocol::ThreadStatus::Running,
+                    30,
+                    &pl_core::thread::ThreadSnapshot::default(),
+                )?
+                .unwrap();
+            let hot = events.read_thread_metadata(&original.thread_id, "owner-test")?;
+            assert_eq!(
+                hot.row.as_ref().unwrap().native_status().unwrap(),
+                pl_protocol::ThreadStatus::Running
+            );
+            assert!(
+                events
+                    .read_thread_metadata(&new_row.thread_id, "owner-test")?
+                    .row
+                    .is_none()
+            );
+
+            release_publish.send(()).unwrap();
+            commit.await?;
+            let after = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            let unblocked = events.query_threads(&query_filter, None, 10).await?;
+            assert_eq!(unblocked.state.revision(), after.stamp.revision);
+            assert_eq!(
+                unblocked
+                    .state
+                    .value()
+                    .unwrap()
+                    .rows
+                    .iter()
+                    .map(|row| row.thread_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["new", "existing"]
+            );
+            assert_eq!(
+                after
+                    .rows
+                    .iter()
+                    .map(|row| row.thread_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["new", "existing"]
+            );
+            assert_eq!(
+                after.stamp,
+                events
+                    .read_thread_metadata(&original.thread_id, "owner-test")?
+                    .stamp
+            );
+            let rebased = events
+                .read_thread_metadata(&original.thread_id, "owner-test")?
+                .row
+                .unwrap();
+            assert_eq!(rebased.title, "Durable command title");
+            assert_eq!(
+                rebased.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Running
+            );
+            assert!(after.stamp.revision > hot.stamp.revision);
+            assert_eq!(
+                query(
+                    &events,
+                    &ThreadDirectoryQuery {
+                        search: Some("after project".into()),
+                        ..Default::default()
+                    },
+                    None,
+                    10,
+                )?
+                .rows
+                .len(),
+                2
+            );
+            events.writer.flush().await?;
+            let durable_session = events
+                .store
+                .catalog()
+                .get_session(&original.session_id)
+                .expect("rebased session is durable");
+            assert_eq!(durable_session.title, "Durable command title");
+            let durable_agent = events
+                .store
+                .catalog()
+                .get_agent(&original.agent_id)
+                .expect("rebased agent is durable");
+            assert_eq!(
+                durable_agent.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Running
+            );
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn failed_durable_commit_never_changes_the_ram_owner() -> Result<()> {
+            let original = row("existing", "p1", 10);
+            let (_temp, events) = fixture(
+                vec![original.clone()],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let before = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            let (baseline_session, _) = events.directory_facts(&original.thread_id).expect("facts");
+            let mut conflicting = baseline_session;
+            conflicting.workspace_path = "/conflicting/session/identity".into();
+            let result = events
+                .commit_directory(DirectoryDelta {
+                    session_upserts: vec![conflicting],
+                    ..Default::default()
+                })
+                .await;
+            assert!(result.is_err());
+            let after = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            assert_eq!(after.rows, before.rows);
+            assert_eq!(after.stamp, before.stamp);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+    }
+
+    mod consistency {
+        use super::*;
+        use futures::poll;
+
+        #[tokio::test]
+        async fn one_shot_page_returns_its_consistent_slice_without_waiting_for_quiet() -> Result<()>
+        {
+            let existing = row("existing", "p1", 10);
+            let (_temp, events) = fixture(
+                vec![existing],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let (captured, release) = install_pause(&events.directory_test_pauses.page_captured);
+            let page = events.read_thread_directory_page(None, 10);
+            tokio::pin!(page);
+            assert!(poll!(page.as_mut()).is_pending());
+            captured.await?;
+
+            events.record_user_message("existing", 20);
+            release.send(()).unwrap();
+            let captured = page.await?;
+            let current = events.read_thread_directory_page(None, 10).await?;
+            assert!(current.state.revision() > captured.state.revision());
+            assert_eq!(
+                captured.state.value().unwrap().rows[0].last_user_message_at,
+                Some(10)
+            );
+            assert_eq!(
+                current.state.value().unwrap().rows[0].last_user_message_at,
+                Some(20)
+            );
+
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn legacy_page_matches_the_owner_snapshot_without_concurrency() -> Result<()> {
+            let rows = vec![row("newer", "p1", 20), row("older", "p1", 10)];
+            let (_temp, events) =
+                fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
+
+            let owner = events.read_thread_directory().await?;
+            let page = events.read_thread_directory_page(None, 10).await?;
+            assert_eq!(page.state.revision(), owner.state.revision());
+            assert_eq!(page.state.updated_at(), owner.state.updated_at());
+            assert_eq!(
+                page.state.value().unwrap().rows,
+                owner.state.value().unwrap().rows
+            );
+
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+    }
+
+    mod contention {
+        use super::*;
+        use crate::studio::store::agent_close::AgentCloseRecord;
+        use futures::poll;
+        use pl_tool::collaboration::control::AgentWorktreeCleanup;
+
+        #[tokio::test]
+        async fn hot_patch_and_query_do_not_wait_for_the_catalog_write_lock() -> Result<()> {
+            let (_temp, events) = fixture(
+                vec![row("root", "p1", 1)],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let catalog = events.store.catalog().clone();
+            let (entered, acquired) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || {
+                let _document = catalog.test_hold_document();
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+            });
+            acquired.recv()?;
+            let worker_events = events.clone();
+            let runtime = tokio::runtime::Handle::current();
+            let (completed, result) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _runtime = runtime.enter();
+                let value = (|| -> Result<ThreadMetadataFrame> {
+                    worker_events.patch_thread_runtime(
+                        "root",
+                        pl_protocol::ThreadStatus::Running,
+                        2,
+                        &pl_core::thread::ThreadSnapshot::default(),
+                    )?;
+                    worker_events.read_thread_metadata("root", "contention-test")
+                })();
+                completed.send(value).unwrap();
+            });
+            // Release and join even on a regression, rather than leaking blocked workers.
+            let result = result.recv_timeout(std::time::Duration::from_secs(2));
+            release.send(())?;
+            holder.join().unwrap();
+            worker.join().unwrap();
+            let frame = result.expect("metadata must not wait for the Catalog I/O lock")?;
+            assert_eq!(
+                frame.row.unwrap().native_status().unwrap(),
+                pl_protocol::ThreadStatus::Running
+            );
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn update_uses_the_request_baseline_not_a_later_runtime_row() -> Result<()> {
+            let baseline_row = row("root", "p1", 1);
+            let (_temp, events) = fixture(
+                vec![baseline_row.clone()],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            // The frozen baseline is read before the commit call, as can happen while canceling an
+            // auto-title task.
+            let (baseline_session, _) = events
+                .directory_facts(&baseline_row.thread_id)
+                .expect("facts");
+            let mut requested = baseline_session.clone();
+            requested.title = "Manual title".into();
+            events.patch_thread_runtime(
+                "root",
+                pl_protocol::ThreadStatus::Running,
+                2,
+                &pl_core::thread::ThreadSnapshot::default(),
+            )?;
+            events
+                .commit_session_update(baseline_session, requested)
+                .await?;
+            events
+                .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 3)
+                .await?;
+            let row = events
+                .read_thread_metadata("root", "request-base")?
+                .row
+                .unwrap();
+            assert_eq!(row.title, "Manual title");
+            assert_eq!(
+                row.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Running
+            );
+            assert_eq!(row.mode, Some(pl_protocol::ThreadModeId::task()));
+            events.writer.flush().await?;
+            let session = events.store.catalog().get_session("root").unwrap();
+            let agent = events.store.catalog().get_agent("root").unwrap();
+            assert_eq!(session.title, row.title);
+            assert_eq!(agent.native_status(), row.native_status());
+            assert_eq!(session.native_mode, row.mode);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn explicit_close_is_a_current_owner_fact_not_a_catalog_read_dependency() -> Result<()>
+        {
+            let root = row("root", "p1", 1);
+            let mut child = row("child", "p1", 2);
+            child.agent_id = "child-agent".into();
+            child.session_id = root.session_id.clone();
+            child.parent_agent_id = Some(root.agent_id.clone());
+            child.last_user_message_at = None;
+            let (_temp, events) = fixture(
+                vec![root, child],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let missing = events.commit_explicit_close("child").await.unwrap_err();
+            assert!(format!("{missing:#}").contains("close progress requires its durable intent"));
+            let mut close = AgentCloseRecord {
+                agent_id: "child".into(),
+                parent_id: "root".into(),
+                root_id: "root".into(),
+                workspace_id: "p1".into(),
+                revision: 1,
+                force: false,
+                worktree: None,
+                git: None,
+                execution_closed: false,
+                worktree_cleanup: AgentWorktreeCleanup::Pending,
+                error: None,
+            };
+            // save_agent_close validates the real persisted domain fact and its owner.
+            events.store.save_agent_close(&close).await?;
+            events.commit_explicit_close("child").await?;
+            events.patch_thread_runtime(
+                "child",
+                pl_protocol::ThreadStatus::Running,
+                3,
+                &pl_core::thread::ThreadSnapshot::default(),
+            )?;
+            let (_, baseline_agent) = events.directory_facts("child").expect("facts");
+            assert_eq!(
+                baseline_agent.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Closing
+            );
+            let mut closed_agent = baseline_agent.clone();
+            closed_agent.set_native_status(pl_protocol::ThreadStatus::Closed);
+            let (saving, release_save) =
+                install_pause(&events.directory_test_pauses.commit_before_persist);
+            let mut bases = DirectoryBaselines::default();
+            bases
+                .agents
+                .insert(baseline_agent.agent_id.clone(), baseline_agent);
+            let commit = events.commit_directory_with_bases(
+                DirectoryDelta {
+                    agent_upserts: vec![closed_agent],
+                    ..Default::default()
+                },
+                bases,
+            );
+            tokio::pin!(commit);
+            assert!(poll!(commit.as_mut()).is_pending());
+            saving.await?;
+            events.record_user_message("child", 4);
+            assert!(
+                events
+                    .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+                    .await
+                    .is_err()
+            );
+            events
+                .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 5)
+                .await?;
+            release_save.send(()).unwrap();
+            commit.await?;
+            let projected = events
+                .read_thread_metadata("child", "close-projection")?
+                .row
+                .unwrap();
+            assert_eq!(
+                projected.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Closing,
+                "a generic raw Closed candidate cannot acknowledge permanent execution closure"
+            );
+            assert_eq!(projected.updated_at, 3);
+            assert_eq!(projected.mode, None);
+            // 已受理用户消息的水位是会话级事实：成员行不携带，主成员行保留并发提交期间的值。
+            let root_row = events
+                .read_thread_metadata("root", "close-projection")?
+                .row
+                .unwrap();
+            assert_eq!(root_row.last_user_message_at, Some(4));
+            // Keep the ACK outside the original paused generic save above, preserving
+            // its concurrent mode/message interleaving. A restore read before this lock
+            // would still carry false, as the old bool-across-lock implementation did.
+            let stale = events.store.agent_close("child").await?.unwrap();
+            assert!(!stale.execution_closed);
+            let directory_command = events.directory_commands.lock().await;
+            let queued = events.commit_explicit_close("child");
+            tokio::pin!(queued);
+            assert!(
+                poll!(queued.as_mut()).is_pending(),
+                "the progress publication must wait for the original directory command lock"
+            );
+            close.execution_closed = true;
+            close.changed()?;
+            events.store.save_agent_close(&close).await?;
+            assert_eq!(
+                events.store.agent_close("child").await?,
+                Some(close.clone())
+            );
+            drop(directory_command);
+            queued.await?;
+            let acknowledged = events
+                .read_thread_metadata("child", "close-ack")?
+                .row
+                .unwrap();
+            assert_eq!(
+                acknowledged.native_status(),
+                Some(pl_protocol::ThreadStatus::Closed)
+            );
+            assert_eq!(acknowledged.updated_at, 3);
+            assert_eq!(acknowledged.mode, None);
+            assert_eq!(
+                events
+                    .store
+                    .catalog()
+                    .get_agent("child-agent")
+                    .unwrap()
+                    .native_status(),
+                Some(pl_protocol::ThreadStatus::Closed),
+                "the queued publication must read the new true ACK, not its old false observation"
+            );
+            events.commit_explicit_close("child").await?;
+            assert_eq!(
+                events
+                    .read_thread_metadata("child", "repeat-close-restore")?
+                    .row
+                    .unwrap()
+                    .native_status(),
+                Some(pl_protocol::ThreadStatus::Closed),
+                "repeated close restoration must not regress the acknowledged stage"
+            );
+            events.patch_thread_runtime(
+                "child",
+                pl_protocol::ThreadStatus::Idle,
+                6,
+                &pl_core::thread::ThreadSnapshot::default(),
+            )?;
+            assert_eq!(
+                events
+                    .read_thread_metadata("child", "close-test")?
+                    .row
+                    .unwrap()
+                    .native_status()
+                    .unwrap(),
+                pl_protocol::ThreadStatus::Closed
+            );
+            events.writer.shutdown().await?;
+            let saved_agent = events.store.catalog().get_agent("child-agent").unwrap();
+            assert!(saved_agent.explicitly_closed);
+            assert_eq!(
+                saved_agent.native_status().unwrap(),
+                pl_protocol::ThreadStatus::Closed
+            );
+            assert_eq!(saved_agent.updated_at, 6);
+            let saved_session = events.store.catalog().get_session("root").unwrap();
+            assert_eq!(saved_session.last_user_message_at, Some(4));
+            assert_eq!(
+                saved_session.native_mode,
+                Some(pl_protocol::ThreadModeId::task())
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn acp_explicit_close_preserves_external_backend_and_distinct_member_identity()
+        -> Result<()> {
+            let root = row("root-thread", "p1", 1);
+            let mut child = row("acp-thread", "p1", 2);
+            child.session_id = root.session_id.clone();
+            child.agent_id = "acp-agent".into();
+            child.parent_agent_id = Some(root.agent_id.clone());
+            child.mode = None;
+            child.last_user_message_at = None;
+            child.backend = pl_protocol::session::AgentBackend::Acp {
+                reference: pl_protocol::session::AcpSessionReference {
+                    account_id: "account".into(),
+                    acp_session_id: "external-session".into(),
+                    cwd: "/workspace/project".into(),
+                },
+            };
+            let (_temp, events) = fixture(
+                vec![root, child.clone()],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let (_, stale_agent) = events.directory_facts("acp-thread").unwrap();
+            let mut close = AgentCloseRecord {
+                agent_id: child.thread_id.clone(),
+                parent_id: "root-thread".into(),
+                root_id: child.session_id.clone(),
+                workspace_id: child.workspace_id.clone(),
+                revision: 1,
+                force: false,
+                worktree: None,
+                git: None,
+                execution_closed: false,
+                worktree_cleanup: AgentWorktreeCleanup::Pending,
+                error: None,
+            };
+            for execution_closed in [false, true] {
+                close.execution_closed = execution_closed;
+                close.changed()?;
+                events.store.save_agent_close(&close).await?;
+                events.commit_explicit_close(&child.thread_id).await?;
+                let mut updated = stale_agent.clone();
+                updated.title = Some(format!(
+                    "late title after execution_closed={execution_closed}"
+                ));
+                events
+                    .commit_agent_update(stale_agent.clone(), updated)
+                    .await?;
+                let (_, agent) = events.directory_facts(&child.thread_id).unwrap();
+                assert!(agent.explicitly_closed);
+                assert_eq!(agent.backend, child.backend);
+                let row = events
+                    .read_thread_metadata(&child.thread_id, "acp-close")?
+                    .row
+                    .unwrap();
+                assert_eq!(row.native_status(), None);
+                assert_eq!(row.mode, None);
+                assert_eq!(row.backend, child.backend);
+                let error = events.thread_snapshot(&child.thread_id).unwrap_err();
+                assert!(matches!(
+                    error.downcast_ref::<crate::thread_assembler::ThreadAssemblyError>(),
+                    Some(
+                        crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
+                            backend: pl_protocol::AgentBackendKind::Acp
+                        }
+                    )
+                ));
+            }
+            events.writer.shutdown().await?;
+            let saved = events.store.catalog().get_agent("acp-agent").unwrap();
+            assert!(saved.explicitly_closed);
+            assert_eq!(saved.backend, child.backend);
+            Ok(())
+        }
+    }
+
+    mod hot {
+        use super::*;
+
+        #[derive(Clone, Copy, Debug)]
+        enum HotMutation {
+            Runtime,
+            UserMessage,
+            Delta,
+            Observed,
+        }
+
+        async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
+            let first = row("first", "p1", 1);
+            let second = row("second", "p1", 2);
+            let (_temp, events) = fixture(
+                vec![first.clone(), second],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            let baseline_revision = query(&events, &ThreadDirectoryQuery::default(), None, 10)?
+                .stamp
+                .revision;
+            let mut topic = events.subscribe_topic(&crate::StudioProductTopic::ThreadDirectory);
+            let mut internal = events.subscribe_internal();
+            let worker_events = events.clone();
+            let runtime = tokio::runtime::Handle::current();
+            let (first_event, second_event, held_index) = tokio::task::spawn_blocking(move || {
+                // Stop the real final dispatch after internal.send. A second identity must not pass the
+                // first mutation until its row, revision and topic dispatch all leave the index scope.
+                let topics = worker_events.topics.lock().unwrap();
+                std::thread::scope(|scope| {
+                    let first_writer = scope.spawn(|| -> Result<()> {
+                        let _runtime = runtime.enter();
+                        match mutation {
+                            HotMutation::Runtime => {
+                                worker_events.patch_thread_runtime(
+                                    "first",
+                                    pl_protocol::ThreadStatus::Running,
+                                    10,
+                                    &pl_core::thread::ThreadSnapshot::default(),
+                                )?;
+                            }
+                            HotMutation::UserMessage => {
+                                worker_events.record_user_message("first", 10);
+                            }
+                            HotMutation::Delta => {
+                                let mut first = first;
+                                first.title = "New first title".into();
+                                worker_events.publish_thread_delta(
+                                    vec![first],
+                                    Vec::new(),
+                                    Vec::new(),
+                                );
+                            }
+                            HotMutation::Observed => {
+                                runtime.block_on(worker_events.commit_observed_thread_mode(
+                                    &first.thread_id,
+                                    pl_protocol::ThreadModeId::task(),
+                                    10,
+                                ))?;
+                            }
+                        }
+                        Ok(())
+                    });
+                    let first_event = runtime.block_on(internal.recv()).unwrap();
+                    let held_index = worker_events.thread_index.try_lock().is_err();
+                    let (attempted, started) = std::sync::mpsc::sync_channel(0);
+                    let runtime = &runtime;
+                    let worker_events = &worker_events;
+                    let second_writer = scope.spawn(move || {
+                        let _runtime = runtime.enter();
+                        attempted.send(()).unwrap();
+                        worker_events.record_user_message("second", 20);
+                    });
+                    started.recv().unwrap();
+                    drop(topics);
+                    first_writer.join().unwrap().unwrap();
+                    second_writer.join().unwrap();
+                    let second_event = runtime.block_on(internal.recv()).unwrap();
+                    (first_event, second_event, held_index)
+                })
+            })
+            .await?;
+            assert!(held_index, "{mutation:?} released index before dispatch");
+            assert_eq!(topic.try_recv()?, first_event);
+            assert_eq!(topic.try_recv()?, second_event);
+            assert!(first_event.sequence < second_event.sequence);
+            let first_delta = event_delta(first_event);
+            let second_delta = event_delta(second_event);
+            assert_eq!(first_delta.revision, baseline_revision + 1);
+            assert_eq!(second_delta.revision, first_delta.revision + 1);
+            assert_eq!(first_delta.upserted[0].thread_id, "first");
+            assert_eq!(second_delta.upserted[0].thread_id, "second");
+            assert_eq!(second_delta.upserted[0].last_user_message_at, Some(20));
+            let frame = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            assert_eq!(frame.stamp.revision, second_delta.revision);
+            for row in frame.rows {
+                let expected = if row.thread_id == "first" {
+                    &first_delta.upserted[0]
+                } else {
+                    &second_delta.upserted[0]
+                };
+                assert_eq!(&row, expected);
+            }
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn runtime_patch_is_one_hot_watermark_and_dispatch_scope() -> Result<()> {
+            assert_serial_publication(HotMutation::Runtime).await
+        }
+
+        #[tokio::test]
+        async fn user_message_is_one_hot_watermark_and_dispatch_scope() -> Result<()> {
+            assert_serial_publication(HotMutation::UserMessage).await
+        }
+
+        #[tokio::test]
+        async fn directory_delta_is_one_hot_watermark_and_dispatch_scope() -> Result<()> {
+            assert_serial_publication(HotMutation::Delta).await
+        }
+
+        #[tokio::test]
+        async fn observed_commit_is_one_hot_watermark_and_dispatch_scope() -> Result<()> {
+            assert_serial_publication(HotMutation::Observed).await
+        }
+    }
+
+    mod window {
+        use super::*;
+
+        #[tokio::test]
+        async fn fixed_pin_group_keeps_old_members_outside_the_ordinary_window() -> Result<()> {
+            let rows = (0..30)
+                .map(|n| row(&format!("row-{n:03}"), "p1", n))
+                .collect();
+            let (_temp, events) =
+                fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
+            let ids = vec!["row-001".into(), "row-000".into()];
+            let pinned = ThreadDirectoryQuery {
+                workspace_id: Some("p1".into()),
+                thread_ids: Some(ids.clone()),
+                ..Default::default()
+            };
+            let ordinary = ThreadDirectoryQuery {
+                workspace_id: Some("p1".into()),
+                excluded_thread_ids: ids,
+                ..Default::default()
+            };
+            let pins = query(&events, &pinned, None, 64)?;
+            assert_eq!(
+                pins.rows
+                    .iter()
+                    .map(|row| row.thread_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["row-001", "row-000"]
+            );
+            assert!(pins.next_cursor.is_none());
+            let first = query(&events, &ordinary, None, 20)?;
+            assert_eq!(first.rows.len(), 20);
+            assert_eq!(first.rows.last().unwrap().thread_id, "row-010");
+            let next = query(&events, &ordinary, first.next_cursor.clone(), 20)?;
+            assert_eq!(next.rows.len(), 8);
+            assert_eq!(next.rows.last().unwrap().thread_id, "row-002");
+            assert!(next.next_cursor.is_none());
+            assert!(
+                query(
+                    &events,
+                    &ThreadDirectoryQuery {
+                        thread_ids: Some(vec![]),
+                        ..Default::default()
+                    },
+                    None,
+                    20
+                )?
+                .rows
+                .is_empty()
+            );
+
+            let running_pins = ThreadDirectoryQuery {
+                filter: pl_protocol::studio::ThreadDirectoryFilter::Running,
+                ..pinned
+            };
+            assert!(query(&events, &running_pins, None, 64)?.rows.is_empty());
+            let mut updated = {
+                let (session, agent) = events.directory_facts("row-000").unwrap();
+                row_projection(&session, &agent)
+            };
+            updated.title = "Changed outside the ordinary window".into();
+            set_status(&mut updated, pl_protocol::ThreadStatus::Running);
+            events.apply_thread_delta(vec![updated], vec![]).await?;
+            let changed = query(&events, &running_pins, None, 64)?;
+            assert_eq!(changed.rows.len(), 1);
+            assert_eq!(changed.rows[0].thread_id, "row-000");
+            assert_eq!(changed.rows[0].title, "Changed outside the ordinary window");
+            assert!(changed.stamp.revision > pins.stamp.revision);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+        use pl_protocol::studio::{StudioError, StudioErrorCode, ThreadDirectoryFilter};
+
+        #[tokio::test]
+        async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
+            let root = row("root", "p1", 3);
+            let mut archived = row("archived", "p1", 2);
+            archived.archived = true;
+            let mut child = row("child", "p1", 1);
+            child.session_id = root.session_id.clone();
+            child.parent_agent_id = Some(root.agent_id.clone());
+            child.mode = None;
+            // 会话级事实（工作区路径、最近用户消息时间）只随主成员行携带。
+            child.workspace_path = root.workspace_path.clone();
+            child.last_user_message_at = None;
+            let (_temp, events) = fixture(
+                vec![root.clone(), archived.clone(), child.clone()],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+
+            for expected in [&root, &archived, &child] {
+                let frame = events.read_thread_metadata(&expected.thread_id, "owner-a")?;
+                assert_eq!(frame.stamp.resource_key, THREAD_DIRECTORY_RESOURCE_KEY);
+                assert_eq!(frame.stamp.owner_epoch, "owner-a");
+                assert_eq!(frame.row.as_ref(), Some(expected));
+            }
+            assert!(
+                events
+                    .read_thread_metadata("missing", "owner-a")?
+                    .row
+                    .is_none()
+            );
+            assert_eq!(
+                query(&events, &ThreadDirectoryQuery::default(), None, 10)?.rows,
+                vec![root]
+            );
+            let archived_query = ThreadDirectoryQuery {
+                archived: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                query(&events, &archived_query, None, 10)?.rows,
+                vec![archived]
+            );
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn limit_and_seek_return_complete_windows_with_bounded_materialization() -> Result<()>
+        {
+            let rows = (1..=6)
+                .map(|value| row(&format!("t{value}"), "p1", value))
+                .collect::<Vec<_>>();
+            let (_temp, events) =
+                fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
+            let window = ThreadDirectoryWindow {
+                before: None,
+                limit: 2,
+            };
+            let first = events.read_threads_window_inner(
+                &ThreadDirectoryQuery::default(),
+                &window,
+                "owner-a",
+            )?;
+            assert_eq!(
+                first
+                    .rows
+                    .iter()
+                    .map(|row| row.thread_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["t6", "t5"]
+            );
+            assert_eq!(first.metrics.scanned, 3);
+            assert_eq!(first.metrics.materialized, 3);
+            let second = query(
+                &events,
+                &ThreadDirectoryQuery::default(),
+                first.next_cursor,
+                2,
+            )?;
+            assert_eq!(
+                second
+                    .rows
+                    .iter()
+                    .map(|row| row.thread_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["t4", "t3"]
+            );
+            assert!(second.next_cursor.is_some());
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn off_window_metadata_and_project_changes_recompute_membership_order_and_stamp()
+        -> Result<()> {
+            let p1 = project("p1", "Alpha", "/workspace/alpha");
+            let p2 = project("p2", "Beta", "/workspace/beta");
+            let a = row("a", "p1", 30);
+            let b = row("b", "p1", 20);
+            let c = row("c", "p1", 10);
+            let (_temp, events) =
+                fixture(vec![a.clone(), b.clone(), c.clone()], vec![p1, p2.clone()]).await?;
+            let initial = query(&events, &ThreadDirectoryQuery::default(), None, 1)?;
+            assert_eq!(initial.rows, vec![a]);
+
+            let mut changed = c;
+            changed.title = "Needle renamed".into();
+            set_status(&mut changed, pl_protocol::ThreadStatus::Running);
+            changed.workspace_id = "p2".into();
+            changed.last_user_message_at = Some(40);
+            changed.updated_at = 40;
+            events
+                .apply_thread_delta(vec![changed.clone()], Vec::new())
+                .await?;
+            let filtered = ThreadDirectoryQuery {
+                workspace_id: Some("p2".into()),
+                search: Some("needle".into()),
+                filter: ThreadDirectoryFilter::Running,
+                ..Default::default()
+            };
+            let after = query(&events, &filtered, None, 1)?;
+            assert_eq!(after.rows, vec![changed.clone()]);
+            assert!(after.stamp.revision > initial.stamp.revision);
+
+            events
+                .commit_directory(DirectoryDelta::archive_sessions(vec![
+                    changed.session_id.clone(),
+                ]))
+                .await?;
+            assert!(query(&events, &filtered, None, 1)?.rows.is_empty());
+            let archived = ThreadDirectoryQuery {
+                archived: true,
+                workspace_id: Some("p2".into()),
+                search: Some("needle".into()),
+                filter: ThreadDirectoryFilter::Running,
+                ..Default::default()
+            };
+            assert_eq!(query(&events, &archived, None, 1)?.rows[0].thread_id, "c");
+
+            let mut renamed_project = p2;
+            renamed_project.name = "Find Me Project".into();
+            renamed_project.path = "/workspace/find-me".into();
+            renamed_project.updated_at = 2;
+            let before_project = query(&events, &ThreadDirectoryQuery::default(), None, 1)?.stamp;
+            events
+                .apply_project_delta(&[workspace(&renamed_project)], &[])
+                .await?;
+            let project_query = ThreadDirectoryQuery {
+                search: Some("find me".into()),
+                archived: true,
+                ..Default::default()
+            };
+            let project_result = query(&events, &project_query, None, 10)?;
+            assert_eq!(project_result.rows[0].thread_id, "c");
+            assert!(project_result.stamp.revision > before_project.revision);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn invalid_window_cursor_and_oversized_frame_are_typed_failures() -> Result<()> {
+            let mut oversized = row("large", "p1", 1);
+            oversized.title = "x".repeat(ThreadDirectoryWindow::MAX_FRAME_BYTES);
+            let (_temp, events) = fixture(
+                vec![oversized],
+                vec![project("p1", "Project", "/workspace/project")],
+            )
+            .await?;
+            // Titles are not part of the structural delivery budget.
+            let structure = events.read_threads_window(
+                &ThreadDirectoryQuery::default(),
+                &ThreadDirectoryWindow {
+                    before: None,
+                    limit: 1,
+                },
+                "owner-test",
+            )?;
+            assert_eq!(structure.thread_ids, ["large"]);
+            let error = events
+                .query_threads(&ThreadDirectoryQuery::default(), None, 1)
+                .await
+                .expect_err("oversized one-shot row page must fail");
+            assert_eq!(
+                error.downcast_ref::<StudioError>().unwrap().code,
+                StudioErrorCode::Overloaded
+            );
+            let error = events
+                .read_thread_metadata("large", "owner-test")
+                .expect_err("oversized metadata frame must fail");
+            assert_eq!(
+                error.downcast_ref::<StudioError>().unwrap().code,
+                StudioErrorCode::Overloaded
+            );
+            let error = query(
+                &events,
+                &ThreadDirectoryQuery::default(),
+                Some("not-a-cursor".into()),
+                1,
+            )
+            .expect_err("invalid cursor must fail");
+            assert_eq!(
+                error.downcast_ref::<StudioError>().unwrap().code,
+                StudioErrorCode::InvalidArgument
+            );
+            events.writer.shutdown().await?;
+            Ok(())
+        }
     }
 }

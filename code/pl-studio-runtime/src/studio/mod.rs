@@ -24,14 +24,6 @@ mod runtime_state;
 pub(crate) mod startup;
 mod storage;
 
-#[cfg(test)]
-pub(crate) mod storage_fault_test_support {
-    pub(crate) use super::storage::thread_writer::storage_fault_tests::{
-        close_factory, register_test_thread, save_terminal_report, spawn_live_projection,
-        spawn_live_projection_for_thread, ticket,
-    };
-    pub(crate) use super::storage::thread_writer::{HistoryChannel, ThreadStorageSink};
-}
 pub(crate) mod store;
 mod store_support;
 pub(crate) mod thread;
@@ -57,3 +49,12 @@ pub(crate) use storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
 pub use store::{StudioDatabaseError, StudioStore};
 
 pub(crate) use thread_factory::StudioThreadFactory;
+
+#[cfg(test)]
+pub(crate) mod storage_fault_test_support {
+    pub(crate) use super::storage::thread_writer::storage_fault_tests::{
+        close_factory, register_test_thread, save_terminal_report, spawn_live_projection,
+        spawn_live_projection_for_thread, ticket,
+    };
+    pub(crate) use super::storage::thread_writer::{HistoryChannel, ThreadStorageSink};
+}

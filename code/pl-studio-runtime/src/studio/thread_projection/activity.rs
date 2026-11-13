@@ -116,31 +116,6 @@ fn activity_parts<'a>(
         })
 }
 
-#[cfg(test)]
-pub(super) mod part_cost {
-    use std::cell::Cell;
-
-    thread_local! {
-        static VISITS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    }
-
-    pub fn begin() {
-        VISITS.set(Some((0, 0)));
-    }
-
-    pub fn model() {
-        VISITS.update(|value| value.map(|(model, activity)| (model + 1, activity)));
-    }
-
-    pub fn activity() {
-        VISITS.update(|value| value.map(|(model, activity)| (model, activity + 1)));
-    }
-
-    pub fn finish() -> (usize, usize) {
-        VISITS.take().expect("part observation was started")
-    }
-}
-
 /// 当前执行活动的权威小摘要；`None` 表示该 Thread 当前没有活动。
 ///
 /// 这是**纯内存投影**：给定同一 `state` 与同一 `previous` 必定得到同一结果。`previous` 是同一
@@ -1371,6 +1346,31 @@ fn activity_bytes(activity: &ThreadActivity) -> u64 {
             .saturating_add(tool.name.len() as u64);
     }
     bytes
+}
+
+#[cfg(test)]
+pub(super) mod part_cost {
+    use std::cell::Cell;
+
+    thread_local! {
+        static VISITS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    }
+
+    pub fn begin() {
+        VISITS.set(Some((0, 0)));
+    }
+
+    pub fn model() {
+        VISITS.update(|value| value.map(|(model, activity)| (model + 1, activity)));
+    }
+
+    pub fn activity() {
+        VISITS.update(|value| value.map(|(model, activity)| (model, activity + 1)));
+    }
+
+    pub fn finish() -> (usize, usize) {
+        VISITS.take().expect("part observation was started")
+    }
 }
 
 #[cfg(test)]

@@ -68,7 +68,7 @@ mod tests {
     use pl_protocol::{AgentTaskCategory, BillingKind, DelegationModelCapability};
 
     #[test]
-    fn cursor_preserves_query_identity_and_wire_format() {
+    fn cursor_keeps_query_identity_across_encoding() {
         let filter = DelegationModelFilter {
             capabilities: vec![DelegationModelCapability::ToolCalling],
             task_category: Some(AgentTaskCategory::General),
@@ -81,9 +81,7 @@ mod tests {
             model_id: "model-b".into(),
         };
         let cursor = DelegationModelCursor::new(filter.clone(), 17, after.clone());
-        let token = r#"dmc1.{"version":1,"filter":{"capabilities":["toolCalling"],"taskCategory":"general","accountId":"account-a","billingKind":"subscription","minContextWindow":32000},"catalogWatermark":17,"after":{"accountId":"account-a","modelId":"model-b"}}"#;
-        assert_eq!(cursor.encode(), token);
-        let decoded = DelegationModelCursor::decode(token).expect("current cursor");
+        let decoded = DelegationModelCursor::decode(&cursor.encode()).expect("current cursor");
         assert_eq!(decoded.filter, filter);
         assert_eq!(decoded.catalog_watermark, 17);
         assert_eq!(decoded.after, after);

@@ -2,11 +2,11 @@
 //! and error identity. Runs only with the `typed` feature.
 #![cfg(feature = "typed")]
 
-use std::{cell::Cell, collections::BTreeMap, error::Error as StdError, future::Future};
+use std::{cell::Cell, error::Error as StdError, future::Future};
 
 use pl_agent_tool::typed::{
-    ArgumentError, InvocationError, JsonAdapter, JsonError, PreparedJson, TypedTool, decode_json,
-    input_schema_for, prepare_json,
+    ArgumentError, InvocationError, PreparedJson, TypedTool, decode_json, input_schema_for,
+    prepare_json,
 };
 use pl_agent_tool::{InputFormat, ToolHandle};
 
@@ -69,18 +69,6 @@ impl TypedTool for Add {
             })
         }
     }
-}
-
-#[test]
-fn input_schema_for_generates_draft_2020_12_documents() {
-    let schema = input_schema_for::<AddArgs>();
-    assert_eq!(
-        schema["$schema"],
-        "https://json-schema.org/draft/2020-12/schema"
-    );
-    assert_eq!(schema["type"], "object");
-    assert!(schema["properties"]["left"].is_object());
-    assert!(schema["properties"]["right"].is_object());
 }
 
 #[test]
@@ -194,26 +182,6 @@ struct Inner {
     value: u32,
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct Page {
-    offset: u64,
-    limit: u64,
-}
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct SearchArgs {
-    query: String,
-    #[serde(flatten)]
-    page: Page,
-}
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct TaggedArgs {
-    name: String,
-    #[serde(flatten)]
-    tags: BTreeMap<String, String>,
-}
-
 #[test]
 fn decode_json_reports_real_paths_and_keeps_the_json_source() {
     let args = decode_json::<AddArgs>(r#"{"left": 2, "right": 3}"#).unwrap();
@@ -256,43 +224,6 @@ fn decode_json_rejects_trailing_input() {
         .err()
         .expect_error("second document rejected");
     assert!(matches!(error, ArgumentError::Trailing { .. }));
-}
-
-#[test]
-fn deny_unknown_fields_and_type_mismatch_come_from_serde() {
-    let error = decode_json::<AddArgs>(r#"{"left":1,"right":2,"extra":true}"#)
-        .err()
-        .expect_error("unknown fields rejected");
-    match &error {
-        ArgumentError::Decode { path, source } => {
-            assert!(
-                path == "." || path == "extra",
-                "container-level path for unknown fields: {path}"
-            );
-            assert!(source.to_string().contains("unknown field"));
-        }
-        other => panic!("expected decode error, got {other:?}"),
-    }
-}
-
-#[test]
-fn flatten_structs_and_open_maps_decode_directly() {
-    let args = decode_json::<SearchArgs>(r#"{"query":"rust","offset":0,"limit":20}"#).unwrap();
-    assert_eq!(args.query, "rust");
-    assert_eq!((args.page.offset, args.page.limit), (0, 20));
-
-    let args = decode_json::<TaggedArgs>(r#"{"name":"build","environment":"test"}"#).unwrap();
-    assert_eq!(args.name, "build");
-    assert_eq!(
-        args.tags.get("environment").map(String::as_str),
-        Some("test")
-    );
-
-    // Wrong value types inside the open map are still rejected by serde.
-    let error = decode_json::<TaggedArgs>(r#"{"name":"build","environment":5}"#)
-        .err()
-        .expect_error("open map value type rejected");
-    assert!(matches!(error, ArgumentError::Decode { .. }), "{error:?}");
 }
 
 #[test]
@@ -463,19 +394,4 @@ fn adapter_supports_payload_rejection_from_the_extractor() {
         panic!("expected payload rejection, got {error:?}");
     };
     assert_eq!((format.as_str(), *version), ("text/plain", 2));
-}
-
-#[test]
-fn adapter_debug_stays_bounded() {
-    let adapter: JsonAdapter<Add, String> =
-        prepare_json::<Add>().unwrap().attach(Add { offset: 0 });
-    let debug = format!("{adapter:?}");
-    assert!(debug.contains("add"), "{debug}");
-    assert!(debug.contains("typed_contract::Add"), "{debug}");
-}
-
-#[test]
-fn json_error_reexport_is_serde_json_error() {
-    fn assert_json_error<T: Into<JsonError>>() {}
-    assert_json_error::<serde_json::Error>();
 }

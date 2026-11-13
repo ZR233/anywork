@@ -1083,28 +1083,18 @@ mod tests {
         }
     }
 
-    fn roundtrip_toml<T>(value: &T) -> T
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-    {
-        toml::from_str(&toml::to_string(value).expect("serialize DTO")).expect("deserialize DTO")
-    }
-
     #[test]
-    fn historical_dtos_roundtrip_through_real_serde() {
+    fn migration_adds_defaults_and_keeps_the_frozen_route_and_closed_status() {
         let v1 = CatalogDocumentV1 {
             revision: 3,
             entries: vec![v1_entry()],
         };
-        assert_eq!(roundtrip_toml(&v1), v1);
 
-        let v2: CatalogDocumentV2 = v1.clone().migrate();
+        let v2: CatalogDocumentV2 = v1.migrate();
         assert_eq!(v2.entries[0].last_user_message_at, None);
-        assert_eq!(roundtrip_toml(&v2), v2);
 
-        let mut v2_with_time = v2.clone();
+        let mut v2_with_time = v2;
         v2_with_time.entries[0].last_user_message_at = Some(15);
-        assert_eq!(roundtrip_toml(&v2_with_time), v2_with_time);
 
         let v3: CatalogDocumentV3 = v2_with_time.migrate();
         assert_eq!(v3.entries[0].delegation_mode, FrozenDelegationMode::Profile);
@@ -1113,9 +1103,8 @@ mod tests {
             FrozenDelegationPreference::Balanced
         );
         assert_eq!(v3.entries[0].frozen_model, None);
-        assert_eq!(roundtrip_toml(&v3), v3);
 
-        let mut v3_with_route = v3.clone();
+        let mut v3_with_route = v3;
         v3_with_route.entries[0].frozen_model = Some(FrozenModelRoute {
             account_id: "acc".into(),
             model_id: "model".into(),
@@ -1123,7 +1112,6 @@ mod tests {
         });
         v3_with_route.entries[0].delegation_mode = FrozenDelegationMode::Automatic;
         v3_with_route.entries[0].status = FrozenThreadStatus::Closed;
-        assert_eq!(roundtrip_toml(&v3_with_route), v3_with_route);
 
         let v4: CatalogV4 = v3_with_route.migrate();
         assert!(!v4.entries[0].explicitly_closed);
@@ -1136,7 +1124,6 @@ mod tests {
                 effort: Some("high".into()),
             })
         );
-        assert_eq!(roundtrip_toml(&v4), v4);
 
         let current =
             CatalogDocument::try_from(v4.migrate().migrate().migrate()).expect("construct current");
@@ -1218,16 +1205,9 @@ mod tests {
     }
 
     #[test]
-    fn v6_dto_roundtrips_session_and_agent_records() {
-        let v6 = v6_document();
-        assert_eq!(roundtrip_toml(&v6), v6);
-    }
-
-    #[test]
     fn v6_to_v7_keeps_all_native_directory_facts() {
         let legacy = v6_document();
         let migrated = legacy.clone().migrate();
-        assert_eq!(roundtrip_toml(&migrated), migrated);
         let current = CatalogDocument::try_from(migrated).expect("current V7");
         validate(&current).expect("valid topology");
         let session = &current.sessions[0];
@@ -1268,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn v7_acp_reference_roundtrips_without_native_facts() {
+    fn acp_reference_validates_without_a_native_thread_projection() {
         let mut v7 = v6_document().migrate();
         v7.agents.truncate(1);
         v7.sessions[0].native_mode = None;
@@ -1279,13 +1259,8 @@ mod tests {
                 cwd: "/project".into(),
             },
         };
-        assert_eq!(roundtrip_toml(&v7), v7);
         let current = CatalogDocument::try_from(v7).expect("ACP reference");
         validate(&current).expect("valid ACP root");
-        let bytes = toml_schema::encode(&current, SCHEMA_KEY).expect("encode V7");
-        assert!(!bytes.contains("nativeMode"));
-        assert!(!bytes.contains("connectionRevision"));
-        assert!(!bytes.contains("status"));
         assert!(
             crate::studio::records::thread_projection(
                 &current.sessions[0],

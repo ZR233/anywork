@@ -156,3 +156,12 @@ async fn wait_for_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 }
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+#[expect(
+    dead_code,
+    reason = "Shared fixture also serves direct runtime consumers"
+)]
+#[path = "../../pl-studio-runtime/tests/support/acp_transport_fixture.rs"]
+mod test_fixture_acp_transport_fixture;
