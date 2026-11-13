@@ -1083,7 +1083,7 @@ void main() {
     expect(standaloneId, isNot(firstId));
     expect(tester.widget<TextField>(input).controller!.text, isEmpty);
     expect(find.text('project-context.txt'), findsNothing);
-    expect(find.text('固定本地目录'), findsOneWidget);
+    expect(find.text('固定项目目录'), findsOneWidget);
     await tester.enterText(input, '无项目自己的草稿');
 
     await tester.tap(find.byKey(const ValueKey('start-project-selector')));

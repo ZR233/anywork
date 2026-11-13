@@ -2816,7 +2816,7 @@ abstract class AppLocalizations {
   /// No description provided for @composerWorkspaceModeLocal.
   ///
   /// In en, this message translates to:
-  /// **'Local directory'**
+  /// **'Project directory'**
   String get composerWorkspaceModeLocal;
 
   /// No description provided for @composerWorkspaceModeWorktree.
@@ -11352,7 +11352,7 @@ abstract class AppLocalizations {
   /// No description provided for @composerFixedLocalDirectory.
   ///
   /// In en, this message translates to:
-  /// **'Fixed local directory'**
+  /// **'Fixed project directory'**
   String get composerFixedLocalDirectory;
 
   /// No description provided for @composerWorktreeHint.
@@ -11568,7 +11568,7 @@ abstract class AppLocalizations {
   /// No description provided for @acpStartHandshakeNote.
   ///
   /// In en, this message translates to:
-  /// **'ACP runs on this device; remote project operations use Host MCP on the SSH host.'**
+  /// **'ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.'**
   String get acpStartHandshakeNote;
 
   /// No description provided for @acpStartCreateAction.

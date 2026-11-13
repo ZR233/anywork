@@ -1445,7 +1445,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerWorkspaceModeLabel => '会话工作区';
 
   @override
-  String get composerWorkspaceModeLocal => '本地目录';
+  String get composerWorkspaceModeLocal => '项目目录';
 
   @override
   String get composerWorkspaceModeWorktree => '新建工作树';
@@ -6035,7 +6035,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerNewProject => '新建项目…';
 
   @override
-  String get composerFixedLocalDirectory => '固定本地目录';
+  String get composerFixedLocalDirectory => '固定项目目录';
 
   @override
   String get composerWorktreeHint => '从 Git HEAD 创建隔离工作树';

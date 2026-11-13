@@ -259,11 +259,7 @@ void main() {
     (tester) async {
       final port = ControlledAcpBusinessPort()
         ..admission = Completer<AcpSessionObservationPort>();
-      final fixture = await _mount(
-        tester,
-        port: port,
-        remoteSshProject: true,
-      );
+      final fixture = await _mount(tester, port: port, remoteSshProject: true);
       final draft = fixture.graph.client.drafts.startDraft;
       final workspaceId = fixture.workspaceId;
       draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);

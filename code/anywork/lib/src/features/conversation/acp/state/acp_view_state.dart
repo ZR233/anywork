@@ -69,8 +69,7 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
 
   bool get canEditDraft => !submitting;
 
-  bool get canCreate =>
-      accountId != null && serviceEnabled && !submitting;
+  bool get canCreate => accountId != null && serviceEnabled && !submitting;
 }
 
 enum AcpCapabilityKind {
