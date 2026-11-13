@@ -424,7 +424,7 @@ impl ColdStore for CancelMemberStorage {
 
     fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
         // The owner already acknowledged first content. Cancel the outer invocation during the
-        // next retention charge; the runtime cooperatively propagates that signal to its collector.
+        // completed member's retention charge, synchronously before its send-time cancellation check.
         if self.0.after_content.swap(false, Ordering::SeqCst) {
             self.0.cancelled_charges.fetch_add(1, Ordering::SeqCst);
             self.0.cancellation.cancel();
@@ -487,8 +487,8 @@ async fn cancellation_during_completed_member_handoff_preserves_full_item_in_ori
                 .iter()
                 .map(|write| write.effect.model_members.len())
                 .sum::<usize>(),
-            1,
-            "the original sent fact must receive one real reply"
+            0,
+            "cancellation during the retention charge must prevent sending the completed member"
         );
         let terminal = writes
             .iter()
@@ -496,8 +496,9 @@ async fn cancellation_during_completed_member_handoff_preserves_full_item_in_ori
             .next_back()
             .unwrap();
         let AttemptOutcome::Cancelled { result: Err(error) } = &terminal.outcome else {
-            panic!("pre-send cancellation must preserve its original typed outcome");
+            panic!("pre-send cancellation must preserve its original typed outcome: {terminal:?}");
         };
+        assert_eq!(error.kind, pl_core::model::ModelFailureKind::Cancelled);
         let failure = model_failure_receipt(error).unwrap().unwrap();
         assert_eq!(failure.presentation_items.len(), 1);
         assert_eq!(failure.presentation_items[0].provider_item_id, "part");
