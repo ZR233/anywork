@@ -212,7 +212,7 @@
   "sidebarSessionWorktree": "Session worktree",
   "sidebarOpenProject": "Open project",
   "sidebarSettings": "Settings",
-  "sidebarUpdateNow": "Update now",
+  "sidebarUpdateNow": "Update",
   "runtimeFatalTitle": "anywork could not start",
   "runtimeFatalRetry": "Retry",
   "persistenceDegraded": "Saving is temporarily unavailable. {count} in-memory update(s) are waiting; you can continue the conversation.",
