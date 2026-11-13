@@ -196,9 +196,7 @@ class _StudioLifecycleCoordinatorState
         if (mounted) _shutdownProgress.fail(error);
       },
       readyUpdateVersion: () =>
-          graph.client.updates.state is ReadyUpdaterStateSnapshot
-          ? graph.client.updates.state.update?.version
-          : null,
+          graph.client.updates.state.readyUpdate?.update.version,
       onBeginExit: (version, restart) {
         if (mounted) _shutdownProgress.beginExit(version, restart);
       },

@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use super::{
     AvailableUpdateState, CheckFailedUpdateState, CheckingUpdateState, DownloadingUpdateState,
-    InstallFailedUpdateState, InstallerLaunchedUpdateState, ReadyUpdateState, StudioUpdateCommand,
-    StudioUpdateStateKind, StudioUpdateStateSnapshot, UpToDateUpdateState, VerifyingUpdateState,
+    InstallFailedUpdateState, InstallerLaunchedUpdateState, ReadyUpdateState, StudioUpdateActivity,
+    StudioUpdateCommand, StudioUpdateStateKind, UpToDateUpdateState, VerifyingUpdateState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -36,11 +36,11 @@ pub enum StudioUpdateTransitionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StudioUpdateTransitionDecision {
-    pub next_state: StudioUpdateStateSnapshot,
+    pub next_state: StudioUpdateActivity,
     pub changed: bool,
 }
 
-impl StudioUpdateStateSnapshot {
+impl StudioUpdateActivity {
     pub fn decide(
         &self,
         command: StudioUpdateCommand,
@@ -59,7 +59,8 @@ impl StudioUpdateStateSnapshot {
                 | Self::UpToDate(_)
                 | Self::Available(_)
                 | Self::CheckFailed(_)
-                | Self::InstallFailed(_),
+                | Self::InstallFailed(_)
+                | Self::Ready(_),
                 StudioUpdateCommand::BeginCheck {
                     operation_id,
                     started_at,
@@ -219,6 +220,52 @@ impl StudioUpdateStateSnapshot {
         Ok(StudioUpdateTransitionDecision {
             changed: next != *self,
             next_state: next,
+        })
+    }
+}
+
+impl super::StudioUpdateStateSnapshot {
+    pub fn decide(
+        &self,
+        command: StudioUpdateCommand,
+    ) -> Result<Self, StudioUpdateTransitionError> {
+        // A verified installer remains installable while another check/download is active.
+        if let StudioUpdateCommand::MarkInstallerLaunched {
+            expected_revision,
+            launched_at,
+        } = command
+        {
+            if expected_revision != self.revision() {
+                return Err(StudioUpdateTransitionError::StaleRevision {
+                    expected: expected_revision,
+                    actual: self.revision(),
+                    command: Box::new(command),
+                });
+            }
+            if let Some(ready) = &self.ready_update {
+                return Ok(Self {
+                    activity: StudioUpdateActivity::InstallerLaunched(
+                        InstallerLaunchedUpdateState {
+                            revision: self.revision() + 1,
+                            launched_at,
+                            update: ready.update.clone(),
+                        },
+                    ),
+                    ready_update: self.ready_update.clone(),
+                });
+            }
+        }
+        let next = self.activity.decide(command)?.next_state;
+        let ready_update = match &next {
+            StudioUpdateActivity::Ready(value) => Some(super::StudioReadyUpdate {
+                update: value.update().clone(),
+                ready_at: value.ready_at(),
+            }),
+            _ => self.ready_update.clone(),
+        };
+        Ok(Self {
+            activity: next,
+            ready_update,
         })
     }
 }

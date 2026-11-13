@@ -11,7 +11,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'runtime.dart';
 part 'updater.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAvailableUpdaterState {
   final BigInt revision;
@@ -215,6 +215,24 @@ class BridgeInstallerLaunchedUpdaterState {
           update == other.update;
 }
 
+class BridgeReadyUpdate {
+  final BridgeVerifiedUpdateSummary update;
+  final PlatformInt64 readyAt;
+
+  const BridgeReadyUpdate({required this.update, required this.readyAt});
+
+  @override
+  int get hashCode => update.hashCode ^ readyAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeReadyUpdate &&
+          runtimeType == other.runtimeType &&
+          update == other.update &&
+          readyAt == other.readyAt;
+}
+
 class BridgeReadyUpdaterState {
   final BigInt revision;
   final PlatformInt64 readyAt;
@@ -261,41 +279,72 @@ class BridgeUpToDateUpdaterState {
 }
 
 @freezed
-sealed class BridgeUpdaterStateSnapshot with _$BridgeUpdaterStateSnapshot {
-  const BridgeUpdaterStateSnapshot._();
+sealed class BridgeUpdatePreparationResult
+    with _$BridgeUpdatePreparationResult {
+  const BridgeUpdatePreparationResult._();
 
-  const factory BridgeUpdaterStateSnapshot.disabled(
+  const factory BridgeUpdatePreparationResult.ready({required String version}) =
+      BridgeUpdatePreparationResult_Ready;
+  const factory BridgeUpdatePreparationResult.cancelled() =
+      BridgeUpdatePreparationResult_Cancelled;
+  const factory BridgeUpdatePreparationResult.failed({
+    required BridgeStateError error,
+  }) = BridgeUpdatePreparationResult_Failed;
+}
+
+@freezed
+sealed class BridgeUpdaterActivity with _$BridgeUpdaterActivity {
+  const BridgeUpdaterActivity._();
+
+  const factory BridgeUpdaterActivity.disabled(
     BridgeDisabledUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Disabled;
-  const factory BridgeUpdaterStateSnapshot.idle(BridgeIdleUpdaterState field0) =
-      BridgeUpdaterStateSnapshot_Idle;
-  const factory BridgeUpdaterStateSnapshot.checking(
+  ) = BridgeUpdaterActivity_Disabled;
+  const factory BridgeUpdaterActivity.idle(BridgeIdleUpdaterState field0) =
+      BridgeUpdaterActivity_Idle;
+  const factory BridgeUpdaterActivity.checking(
     BridgeCheckingUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Checking;
-  const factory BridgeUpdaterStateSnapshot.upToDate(
+  ) = BridgeUpdaterActivity_Checking;
+  const factory BridgeUpdaterActivity.upToDate(
     BridgeUpToDateUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_UpToDate;
-  const factory BridgeUpdaterStateSnapshot.available(
+  ) = BridgeUpdaterActivity_UpToDate;
+  const factory BridgeUpdaterActivity.available(
     BridgeAvailableUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Available;
-  const factory BridgeUpdaterStateSnapshot.downloading(
+  ) = BridgeUpdaterActivity_Available;
+  const factory BridgeUpdaterActivity.downloading(
     BridgeDownloadingUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Downloading;
-  const factory BridgeUpdaterStateSnapshot.verifying(
+  ) = BridgeUpdaterActivity_Downloading;
+  const factory BridgeUpdaterActivity.verifying(
     BridgeVerifyingUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Verifying;
-  const factory BridgeUpdaterStateSnapshot.ready(
-    BridgeReadyUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_Ready;
-  const factory BridgeUpdaterStateSnapshot.installerLaunched(
+  ) = BridgeUpdaterActivity_Verifying;
+  const factory BridgeUpdaterActivity.ready(BridgeReadyUpdaterState field0) =
+      BridgeUpdaterActivity_Ready;
+  const factory BridgeUpdaterActivity.installerLaunched(
     BridgeInstallerLaunchedUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_InstallerLaunched;
-  const factory BridgeUpdaterStateSnapshot.checkFailed(
+  ) = BridgeUpdaterActivity_InstallerLaunched;
+  const factory BridgeUpdaterActivity.checkFailed(
     BridgeCheckFailedUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_CheckFailed;
-  const factory BridgeUpdaterStateSnapshot.installFailed(
+  ) = BridgeUpdaterActivity_CheckFailed;
+  const factory BridgeUpdaterActivity.installFailed(
     BridgeInstallFailedUpdaterState field0,
-  ) = BridgeUpdaterStateSnapshot_InstallFailed;
+  ) = BridgeUpdaterActivity_InstallFailed;
+}
+
+class BridgeUpdaterStateSnapshot {
+  final BridgeUpdaterActivity activity;
+  final BridgeReadyUpdate? readyUpdate;
+
+  const BridgeUpdaterStateSnapshot({required this.activity, this.readyUpdate});
+
+  @override
+  int get hashCode => activity.hashCode ^ readyUpdate.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeUpdaterStateSnapshot &&
+          runtimeType == other.runtimeType &&
+          activity == other.activity &&
+          readyUpdate == other.readyUpdate;
 }
 
 class BridgeVerifiedUpdateSummary {

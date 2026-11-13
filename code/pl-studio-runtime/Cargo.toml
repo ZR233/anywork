@@ -13,6 +13,7 @@ live-tests = []
 benchmarks = ["dep:criterion"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 pl-provider-fixture = { workspace = true }
 
 [dependencies]

@@ -10,24 +10,24 @@ import '../types/updater.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel_update_operations`, `collect_cancel_update_operations`, `into_issues`, `is_quiescent`, `is_quiescent`, `is_settled`, `is_settled`, `observe_update_operations`, `owned_completion`, `prune_settled`, `register_update_operation`, `sink_ended`, `task_ended`, `update_issue_with_correlation`, `update_issue`, `update_operations`, `wait`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStudioUpdateOperationInner`, `OperationCompletionFacts`, `OwnerTask`, `PendingUpdateOperations`, `UpdateObservation`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `drop`
-// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
+// These functions are ignored because they are not marked as `pub`: `broadcast_cancel_update_operations`, `collect_cancel_update_operations`, `into_issues`, `is_quiescent`, `is_settled`, `observe_update_operations`, `register_update_operation`, `update_issue`, `update_operations`, `wait`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStudioUpdateOperationInner`, `PendingUpdateOperations`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
-Future<BridgeUpdaterStateSnapshot> checkStudioUpdate() =>
+Future<void> checkStudioUpdate() =>
     RustLib.instance.api.crateApiStudioHandlersUpdaterCheckStudioUpdate();
 
-Future<BridgeUpdaterStateSnapshot> readStudioUpdateState() =>
-    RustLib.instance.api.crateApiStudioHandlersUpdaterReadStudioUpdateState();
-
-/// 首次桌面就绪后启动一次后台检查和下载；操作由桥端拥有，页面或 Dart 句柄不控制其存活。
+/// Idempotent process scheduler startup. It survives every individual round failure.
 Future<void> startStudioBackgroundUpdate() => RustLib.instance.api
     .crateApiStudioHandlersUpdaterStartStudioBackgroundUpdate();
 
-/// 请求后台下载取消并等待真实完成；完成的准备不再作为活动操作取消。
-Future<void> cancelStudioBackgroundUpdate() => RustLib.instance.api
-    .crateApiStudioHandlersUpdaterCancelStudioBackgroundUpdate();
+/// Cancels only the current round; the process scheduler remains alive.
+Future<void> cancelCurrentUpdatePreparation() => RustLib.instance.api
+    .crateApiStudioHandlersUpdaterCancelCurrentUpdatePreparation();
+
+/// Process shutdown only: stop scheduling, cancel its round and await real completion.
+Future<void> stopStudioBackgroundUpdate() => RustLib.instance.api
+    .crateApiStudioHandlersUpdaterStopStudioBackgroundUpdate();
 
 Future<BridgeStudioUpdateOperation> prepareStudioUpdate({
   required BigInt expectedRevision,
@@ -39,14 +39,8 @@ Future<BridgeStudioUpdateOperation> prepareStudioUpdate({
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeStudioUpdateOperation>>
 abstract class BridgeStudioUpdateOperation implements RustOpaqueInterface {
-  /// Cancels this operation and reports the *real* stop result.
-  ///
-  /// Cancellation signals preparation only; its task and progress owner must both confirm
-  /// completion before a caller receives the acknowledgement.
+  /// Acknowledges only after the real preparation task has ended.
   Future<void> cancel();
 
-  /// 等待准备任务和进度流真实完成；调用方随后才可进入统一退出。
-  Future<void> finishPreparation();
-
-  Stream<BridgeUpdaterStateSnapshot> progressStream();
+  Future<BridgeUpdatePreparationResult> finishPreparation();
 }

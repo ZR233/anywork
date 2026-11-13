@@ -378,10 +378,10 @@ abstract class StudioTransport
 /// Update commands return Rust-owned canonical snapshots; application routing
 /// and opening external URLs remain host actions.
 abstract interface class StudioUpdateApi {
-  Future<UpdaterStateSnapshot> read();
-  Future<UpdaterStateSnapshot> check();
+  Future<void> check();
   Future<void> startAutomaticUpdate();
-  Future<void> cancelAutomaticUpdate();
+  Future<void> cancelCurrentPreparation();
+  Future<void> stopAutomaticUpdate();
   Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,
     required String version,
@@ -397,11 +397,10 @@ final class StudioUpdatePreparationRejected implements Exception {
   String toString() => message;
 }
 
-/// A strong owner of one preparation and its ordered progress observer.
+/// A strong owner of a preparation completion; progress uses the canonical topic.
 abstract interface class StudioUpdateOperation {
-  Stream<UpdaterStateSnapshot> get events;
   Future<void> cancel();
-  Future<void> finishPreparation();
+  Future<StudioUpdatePreparationResult> finishPreparation();
 
   /// Releases the already joined transport handle; it does not join tasks.
   void dispose();

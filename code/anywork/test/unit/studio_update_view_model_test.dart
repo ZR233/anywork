@@ -32,9 +32,101 @@ class _RecordingCommands implements StudioUpdateCommands {
 }
 
 void main() {
+  test('matching receipt and canonical errors render once while selection rejection stays visible', () {
+    final snapshot = UpdaterStateSnapshot(
+      activity: InstallFailedUpdaterActivity(
+        revision: 2,
+        failedAt: _now,
+        update: _update,
+        error: const UpdaterErrorView(
+          code: 'network',
+          message: 'offline',
+          retryable: true,
+        ),
+      ),
+    );
+    final matching = projectStudioUpdateViewState(
+      snapshot: snapshot,
+      request: const StudioUpdateRequest(
+        StudioUpdateRequestPhase.failed,
+        error: 'offline',
+      ),
+      currentVersion: '1.0.0',
+    );
+    expect(matching.errorMessage, 'offline');
+    expect(matching.requestErrorMessage, isNull);
+    final rejected = projectStudioUpdateViewState(
+      snapshot: snapshot,
+      request: const StudioUpdateRequest(
+        StudioUpdateRequestPhase.failed,
+        error: 'update no longer available',
+      ),
+      currentVersion: '1.0.0',
+    );
+    expect(rejected.requestErrorMessage, 'update no longer available');
+  });
+
+  test(
+    'retained installer remains actionable through later checks and failures',
+    () {
+      final activities = <UpdaterActivity>[
+        CheckingUpdaterActivity(
+          revision: 3,
+          operationId: 'check',
+          startedAt: _now,
+        ),
+        CheckFailedUpdaterActivity(
+          revision: 4,
+          failedAt: _now,
+          error: const UpdaterErrorView(
+            code: 'network',
+            message: 'offline',
+            retryable: true,
+          ),
+        ),
+        InstallFailedUpdaterActivity(
+          revision: 5,
+          failedAt: _now,
+          update: StudioUpdateInfoView(
+            version: '2.0.0',
+            publishedAt: _now,
+            notesUrl: 'https://example.test/new',
+          ),
+          error: const UpdaterErrorView(
+            code: 'signatureInvalid',
+            message: 'invalid signature',
+            retryable: false,
+          ),
+        ),
+      ];
+      for (final activity in activities) {
+        final view = projectStudioUpdateViewState(
+          snapshot: UpdaterStateSnapshot(
+            activity: activity,
+            readyUpdate: ReadyStudioUpdate(update: _update, readyAt: _now),
+          ),
+          request: const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
+          currentVersion: '1.0.0',
+        );
+        expect(view.hasUpdate, isTrue);
+        expect(
+          view.statusKind,
+          activity is CheckingUpdaterActivity
+              ? StudioUpdateStatusKind.checking
+              : StudioUpdateStatusKind.ready,
+        );
+        expect(view.readyVersion, '1.2.3');
+        expect(view.primaryAction, StudioUpdatePrimaryAction.installAndRestart);
+        expect(view.primaryEnabled, isTrue);
+      }
+    },
+  );
+
   test('projects idle as no update', () {
     final state = projectStudioUpdateViewState(
-      snapshot: IdleUpdaterStateSnapshot(revision: 1, updatedAt: _now),
+      snapshot: UpdaterStateSnapshot(
+        activity: IdleUpdaterActivity(revision: 1, updatedAt: _now),
+      ),
       request: const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
       currentVersion: '1.0.0',
     );
@@ -46,10 +138,12 @@ void main() {
 
   test('projects available update without forging ready', () {
     final state = projectStudioUpdateViewState(
-      snapshot: AvailableUpdaterStateSnapshot(
-        revision: 2,
-        checkedAt: _now,
-        update: _update,
+      snapshot: UpdaterStateSnapshot(
+        activity: AvailableUpdaterActivity(
+          revision: 2,
+          checkedAt: _now,
+          update: _update,
+        ),
       ),
       request: const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
       currentVersion: '1.0.0',
@@ -67,10 +161,12 @@ void main() {
 
   test('projects pending request as busy', () {
     final state = projectStudioUpdateViewState(
-      snapshot: AvailableUpdaterStateSnapshot(
-        revision: 2,
-        checkedAt: _now,
-        update: _update,
+      snapshot: UpdaterStateSnapshot(
+        activity: AvailableUpdaterActivity(
+          revision: 2,
+          checkedAt: _now,
+          update: _update,
+        ),
       ),
       request: const StudioUpdateRequest(StudioUpdateRequestPhase.preparing),
       currentVersion: '1.0.0',
@@ -86,10 +182,12 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         studioUpdateControllerProvider.overrideWithValue(
-          AvailableUpdaterStateSnapshot(
-            revision: 2,
-            checkedAt: _now,
-            update: _update,
+          UpdaterStateSnapshot(
+            activity: AvailableUpdaterActivity(
+              revision: 2,
+              checkedAt: _now,
+              update: _update,
+            ),
           ),
         ),
         studioUpdateRequestProvider.overrideWithValue(

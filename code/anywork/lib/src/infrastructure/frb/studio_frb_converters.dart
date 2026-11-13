@@ -1612,70 +1612,77 @@ AccountUsageStateSnapshot _accountUsageStateFromFrb(
 
 UpdaterStateSnapshot updaterStateFromFrb(
   frb.BridgeUpdaterStateSnapshot snapshot,
+) => UpdaterStateSnapshot(
+  activity: _updaterActivityFromFrb(snapshot.activity),
+  readyUpdate: snapshot.readyUpdate == null
+      ? null
+      : ReadyStudioUpdate(
+          update: _updateInfoFromFrb(snapshot.readyUpdate!.update),
+          readyAt: _dateFromUnix(snapshot.readyUpdate!.readyAt),
+        ),
+);
+
+UpdaterActivity _updaterActivityFromFrb(
+  frb.BridgeUpdaterActivity snapshot,
 ) => switch (snapshot) {
-  frb.BridgeUpdaterStateSnapshot_Disabled(:final field0) =>
-    DisabledUpdaterStateSnapshot(
-      revision: field0.revision.toInt(),
-      updatedAt: _dateFromUnix(field0.updatedAt),
-    ),
-  frb.BridgeUpdaterStateSnapshot_Idle(:final field0) =>
-    IdleUpdaterStateSnapshot(
-      revision: field0.revision.toInt(),
-      updatedAt: _dateFromUnix(field0.updatedAt),
-    ),
-  frb.BridgeUpdaterStateSnapshot_Checking(:final field0) =>
-    CheckingUpdaterStateSnapshot(
-      revision: field0.revision.toInt(),
-      operationId: field0.operationId,
-      startedAt: _dateFromUnix(field0.startedAt),
-    ),
-  frb.BridgeUpdaterStateSnapshot_UpToDate(:final field0) =>
-    UpToDateUpdaterStateSnapshot(
-      revision: field0.revision.toInt(),
-      checkedAt: _dateFromUnix(field0.checkedAt),
-    ),
-  frb.BridgeUpdaterStateSnapshot_Available(:final field0) =>
-    AvailableUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_Disabled(:final field0) => DisabledUpdaterActivity(
+    revision: field0.revision.toInt(),
+    updatedAt: _dateFromUnix(field0.updatedAt),
+  ),
+  frb.BridgeUpdaterActivity_Idle(:final field0) => IdleUpdaterActivity(
+    revision: field0.revision.toInt(),
+    updatedAt: _dateFromUnix(field0.updatedAt),
+  ),
+  frb.BridgeUpdaterActivity_Checking(:final field0) => CheckingUpdaterActivity(
+    revision: field0.revision.toInt(),
+    operationId: field0.operationId,
+    startedAt: _dateFromUnix(field0.startedAt),
+  ),
+  frb.BridgeUpdaterActivity_UpToDate(:final field0) => UpToDateUpdaterActivity(
+    revision: field0.revision.toInt(),
+    checkedAt: _dateFromUnix(field0.checkedAt),
+  ),
+  frb.BridgeUpdaterActivity_Available(:final field0) =>
+    AvailableUpdaterActivity(
       revision: field0.revision.toInt(),
       checkedAt: _dateFromUnix(field0.checkedAt),
       update: _updateInfoFromFrb(field0.update),
     ),
-  frb.BridgeUpdaterStateSnapshot_Downloading(:final field0) =>
-    DownloadingUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_Downloading(:final field0) =>
+    DownloadingUpdaterActivity(
       revision: field0.revision.toInt(),
       updatedAt: _dateFromUnix(field0.updatedAt),
       update: _updateInfoFromFrb(field0.update),
       downloaded: field0.downloaded.toInt(),
       total: field0.total.toInt(),
     ),
-  frb.BridgeUpdaterStateSnapshot_Verifying(:final field0) =>
-    VerifyingUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_Verifying(:final field0) =>
+    VerifyingUpdaterActivity(
       revision: field0.revision.toInt(),
       updatedAt: _dateFromUnix(field0.updatedAt),
       update: _updateInfoFromFrb(field0.update),
       downloaded: field0.downloaded.toInt(),
       total: field0.total.toInt(),
     ),
-  frb.BridgeUpdaterStateSnapshot_Ready(:final field0) =>
-    ReadyUpdaterStateSnapshot(
-      revision: field0.revision.toInt(),
-      readyAt: _dateFromUnix(field0.readyAt),
-      update: _updateInfoFromFrb(field0.update),
-    ),
-  frb.BridgeUpdaterStateSnapshot_InstallerLaunched(:final field0) =>
-    InstallerLaunchedUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_Ready(:final field0) => ReadyUpdaterActivity(
+    revision: field0.revision.toInt(),
+    readyAt: _dateFromUnix(field0.readyAt),
+    update: _updateInfoFromFrb(field0.update),
+  ),
+  frb.BridgeUpdaterActivity_InstallerLaunched(:final field0) =>
+    InstallerLaunchedUpdaterActivity(
       revision: field0.revision.toInt(),
       launchedAt: _dateFromUnix(field0.launchedAt),
       update: _updateInfoFromFrb(field0.update),
     ),
-  frb.BridgeUpdaterStateSnapshot_CheckFailed(:final field0) =>
-    CheckFailedUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_CheckFailed(:final field0) =>
+    CheckFailedUpdaterActivity(
       revision: field0.revision.toInt(),
       failedAt: _dateFromUnix(field0.failedAt),
       error: _updaterErrorFromFrb(field0.error),
     ),
-  frb.BridgeUpdaterStateSnapshot_InstallFailed(:final field0) =>
-    InstallFailedUpdaterStateSnapshot(
+  frb.BridgeUpdaterActivity_InstallFailed(:final field0) =>
+    InstallFailedUpdaterActivity(
       revision: field0.revision.toInt(),
       failedAt: _dateFromUnix(field0.failedAt),
       update: _updateInfoFromFrb(field0.update),

@@ -111,9 +111,11 @@ final class _BootstrapTopicTransport extends _TopicTransport {
     lspState: LspStateSnapshot(revision: 1),
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),
-    updaterState: DisabledUpdaterStateSnapshot(
-      revision: 1,
-      updatedAt: DateTime.utc(2026),
+    updaterState: UpdaterStateSnapshot(
+      activity: DisabledUpdaterActivity(
+        revision: 1,
+        updatedAt: DateTime.utc(2026),
+      ),
     ),
     persistenceState: const PersistenceStateSnapshot.ready(),
   );

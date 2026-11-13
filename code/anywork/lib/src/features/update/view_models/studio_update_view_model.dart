@@ -44,38 +44,47 @@ StudioUpdateViewState projectStudioUpdateViewState({
     StudioUpdateRequestPhase.ready => StudioUpdateRequestKind.ready,
     StudioUpdateRequestPhase.failed => StudioUpdateRequestKind.failed,
   };
-  final statusKind = switch (snapshot) {
-    DisabledUpdaterStateSnapshot() => StudioUpdateStatusKind.disabled,
-    IdleUpdaterStateSnapshot() => StudioUpdateStatusKind.idle,
-    CheckingUpdaterStateSnapshot() => StudioUpdateStatusKind.checking,
-    UpToDateUpdaterStateSnapshot() => StudioUpdateStatusKind.upToDate,
-    AvailableUpdaterStateSnapshot() => StudioUpdateStatusKind.available,
-    DownloadingUpdaterStateSnapshot() => StudioUpdateStatusKind.downloading,
-    VerifyingUpdaterStateSnapshot() => StudioUpdateStatusKind.verifying,
-    ReadyUpdaterStateSnapshot() => StudioUpdateStatusKind.ready,
-    InstallerLaunchedUpdaterStateSnapshot() =>
-      StudioUpdateStatusKind.installerLaunched,
-    InstallFailedUpdaterStateSnapshot() => StudioUpdateStatusKind.installFailed,
-    CheckFailedUpdaterStateSnapshot() => StudioUpdateStatusKind.checkFailed,
-  };
-  final downloading = snapshot is DownloadingUpdaterStateSnapshot
-      ? snapshot
-      : null;
+  final activity = snapshot.activity;
+  final hasReady = snapshot.hasUpdate && snapshot.readyUpdate != null;
+  final statusKind =
+      hasReady &&
+          (activity is IdleUpdaterActivity ||
+              activity is UpToDateUpdaterActivity ||
+              activity is CheckFailedUpdaterActivity ||
+              activity is InstallFailedUpdaterActivity ||
+              activity is ReadyUpdaterActivity)
+      ? StudioUpdateStatusKind.ready
+      : switch (activity) {
+          DisabledUpdaterActivity() => StudioUpdateStatusKind.disabled,
+          IdleUpdaterActivity() => StudioUpdateStatusKind.idle,
+          CheckingUpdaterActivity() => StudioUpdateStatusKind.checking,
+          UpToDateUpdaterActivity() => StudioUpdateStatusKind.upToDate,
+          AvailableUpdaterActivity() => StudioUpdateStatusKind.available,
+          DownloadingUpdaterActivity() => StudioUpdateStatusKind.downloading,
+          VerifyingUpdaterActivity() => StudioUpdateStatusKind.verifying,
+          ReadyUpdaterActivity() => StudioUpdateStatusKind.ready,
+          InstallerLaunchedUpdaterActivity() =>
+            StudioUpdateStatusKind.installerLaunched,
+          InstallFailedUpdaterActivity() =>
+            StudioUpdateStatusKind.installFailed,
+          CheckFailedUpdaterActivity() => StudioUpdateStatusKind.checkFailed,
+        };
+  final downloading = activity is DownloadingUpdaterActivity ? activity : null;
   final progress = downloading == null || downloading.total <= 0
       ? null
       : (downloading.downloaded / downloading.total).clamp(0.0, 1.0);
-  final error = switch (snapshot) {
-    CheckFailedUpdaterStateSnapshot(:final error) ||
-    InstallFailedUpdaterStateSnapshot(:final error) => error,
-    DisabledUpdaterStateSnapshot() ||
-    IdleUpdaterStateSnapshot() ||
-    CheckingUpdaterStateSnapshot() ||
-    UpToDateUpdaterStateSnapshot() ||
-    AvailableUpdaterStateSnapshot() ||
-    DownloadingUpdaterStateSnapshot() ||
-    VerifyingUpdaterStateSnapshot() ||
-    ReadyUpdaterStateSnapshot() ||
-    InstallerLaunchedUpdaterStateSnapshot() => null,
+  final error = switch (activity) {
+    CheckFailedUpdaterActivity(:final error) ||
+    InstallFailedUpdaterActivity(:final error) => error,
+    DisabledUpdaterActivity() ||
+    IdleUpdaterActivity() ||
+    CheckingUpdaterActivity() ||
+    UpToDateUpdaterActivity() ||
+    AvailableUpdaterActivity() ||
+    DownloadingUpdaterActivity() ||
+    VerifyingUpdaterActivity() ||
+    ReadyUpdaterActivity() ||
+    InstallerLaunchedUpdaterActivity() => null,
   };
 
   late final StudioUpdateSettingsActionLayout actionLayout;
@@ -83,25 +92,32 @@ StudioUpdateViewState projectStudioUpdateViewState({
   var showReleaseNotes = false;
   var showCancel = false;
   var cancelEnabled = true;
-  if (snapshot is CheckingUpdaterStateSnapshot ||
+  if (hasReady) {
+    actionLayout = StudioUpdateSettingsActionLayout.updateAvailable;
+    primaryAction = StudioUpdatePrimaryAction.installAndRestart;
+    showReleaseNotes = true;
+    showCancel =
+        activity is DownloadingUpdaterActivity ||
+        activity is VerifyingUpdaterActivity;
+  } else if (activity is CheckingUpdaterActivity ||
       request.phase == StudioUpdateRequestPhase.checking) {
     actionLayout = StudioUpdateSettingsActionLayout.checking;
     primaryAction = StudioUpdatePrimaryAction.none;
   } else if (request.phase == StudioUpdateRequestPhase.preparing ||
       request.phase == StudioUpdateRequestPhase.cancelling ||
-      snapshot is DownloadingUpdaterStateSnapshot ||
-      snapshot is VerifyingUpdaterStateSnapshot) {
+      activity is DownloadingUpdaterActivity ||
+      activity is VerifyingUpdaterActivity) {
     actionLayout = StudioUpdateSettingsActionLayout.progress;
     primaryAction = StudioUpdatePrimaryAction.downloadAndRestart;
     showCancel = true;
     cancelEnabled = request.phase != StudioUpdateRequestPhase.cancelling;
-  } else if (snapshot is InstallerLaunchedUpdaterStateSnapshot ||
-      snapshot is DisabledUpdaterStateSnapshot) {
+  } else if (activity is InstallerLaunchedUpdaterActivity ||
+      activity is DisabledUpdaterActivity) {
     actionLayout = StudioUpdateSettingsActionLayout.none;
     primaryAction = StudioUpdatePrimaryAction.none;
   } else if (snapshot.hasUpdate) {
     actionLayout = StudioUpdateSettingsActionLayout.updateAvailable;
-    primaryAction = snapshot is ReadyUpdaterStateSnapshot
+    primaryAction = activity is ReadyUpdaterActivity
         ? StudioUpdatePrimaryAction.installAndRestart
         : StudioUpdatePrimaryAction.downloadAndRestart;
     showReleaseNotes = true;
@@ -114,7 +130,9 @@ StudioUpdateViewState projectStudioUpdateViewState({
     hasUpdate: snapshot.hasUpdate,
     updateBusy: request.pending,
     currentVersion: currentVersion,
-    availableVersion: snapshot.update?.version,
+    availableVersion:
+        activity.update?.version ?? snapshot.readyUpdate?.update.version,
+    readyVersion: snapshot.readyUpdate?.update.version,
     statusKind: statusKind,
     requestKind: requestKind,
     showProgress: downloading != null,
@@ -132,6 +150,8 @@ StudioUpdateViewState projectStudioUpdateViewState({
         ? StudioUpdateErrorKind.cancelled
         : StudioUpdateErrorKind.failed,
     errorMessage: error?.message ?? '',
-    requestErrorMessage: request.error?.toString(),
+    requestErrorMessage: request.error?.toString() == error?.message
+        ? null
+        : request.error?.toString(),
   );
 }

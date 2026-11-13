@@ -1083,13 +1083,13 @@ final class _DisabledUpdateApi implements StudioUpdateApi {
   const _DisabledUpdateApi();
   Never _disabled() => throw StateError('Updates are disabled');
   @override
-  Future<UpdaterStateSnapshot> read() async => _disabled();
-  @override
-  Future<UpdaterStateSnapshot> check() async => _disabled();
+  Future<void> check() async => _disabled();
   @override
   Future<void> startAutomaticUpdate() async => _disabled();
   @override
-  Future<void> cancelAutomaticUpdate() async {}
+  Future<void> cancelCurrentPreparation() async {}
+  @override
+  Future<void> stopAutomaticUpdate() async {}
   @override
   Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,

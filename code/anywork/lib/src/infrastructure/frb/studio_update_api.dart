@@ -1,21 +1,15 @@
 import 'package:anywork_client/studio_client.dart';
 
 import 'studio_bridge_api.dart' as frb;
-import 'studio_api.dart' show FrbStudioTransport, updaterStateFromFrb;
+import 'studio_api.dart' show FrbStudioTransport;
 
 final class FrbStudioUpdateApi implements StudioUpdateApi {
   const FrbStudioUpdateApi();
 
   @override
-  Future<UpdaterStateSnapshot> read() async {
+  Future<void> check() async {
     await FrbStudioTransport.ensureReady();
-    return updaterStateFromFrb(await frb.readStudioUpdateState());
-  }
-
-  @override
-  Future<UpdaterStateSnapshot> check() async {
-    await FrbStudioTransport.ensureReady();
-    return updaterStateFromFrb(await frb.checkStudioUpdate());
+    await frb.checkStudioUpdate();
   }
 
   @override
@@ -25,7 +19,11 @@ final class FrbStudioUpdateApi implements StudioUpdateApi {
   }
 
   @override
-  Future<void> cancelAutomaticUpdate() => frb.cancelStudioBackgroundUpdate();
+  Future<void> cancelCurrentPreparation() =>
+      frb.cancelCurrentUpdatePreparation();
+
+  @override
+  Future<void> stopAutomaticUpdate() => frb.stopStudioBackgroundUpdate();
 
   @override
   Future<StudioUpdateOperation> startPreparation({
@@ -41,7 +39,6 @@ final class FrbStudioUpdateApi implements StudioUpdateApi {
         ),
       );
     } on frb.BridgeError catch (error) {
-      // This typed response is only returned before native operation admission.
       throw StudioUpdatePreparationRejected(error.message);
     }
   }
@@ -53,12 +50,24 @@ final class _FrbStudioUpdateOperation implements StudioUpdateOperation {
   bool _disposed = false;
 
   @override
-  Stream<UpdaterStateSnapshot> get events =>
-      _handle.progressStream().map(updaterStateFromFrb);
-  @override
   Future<void> cancel() => _handle.cancel();
+
   @override
-  Future<void> finishPreparation() => _handle.finishPreparation();
+  Future<StudioUpdatePreparationResult> finishPreparation() async =>
+      switch (await _handle.finishPreparation()) {
+        frb.BridgeUpdatePreparationResult_Ready(:final version) =>
+          ReadyStudioUpdatePreparation(version),
+        frb.BridgeUpdatePreparationResult_Cancelled() =>
+          const CancelledStudioUpdatePreparation(),
+        frb.BridgeUpdatePreparationResult_Failed(:final error) =>
+          FailedStudioUpdatePreparation(
+            UpdaterErrorView(
+              code: error.code,
+              message: error.message,
+              retryable: error.retryable,
+            ),
+          ),
+      };
 
   @override
   void dispose() {

@@ -5,6 +5,7 @@ final class StudioUpdateViewState {
     required this.updateBusy,
     required this.currentVersion,
     this.availableVersion,
+    this.readyVersion,
     required this.statusKind,
     required this.requestKind,
     required this.showProgress,
@@ -25,6 +26,7 @@ final class StudioUpdateViewState {
   final bool updateBusy;
   final String currentVersion;
   final String? availableVersion;
+  final String? readyVersion;
   final StudioUpdateStatusKind statusKind;
   final StudioUpdateRequestKind requestKind;
   final bool showProgress;
@@ -48,6 +50,7 @@ final class StudioUpdateViewState {
           updateBusy == other.updateBusy &&
           currentVersion == other.currentVersion &&
           availableVersion == other.availableVersion &&
+          readyVersion == other.readyVersion &&
           statusKind == other.statusKind &&
           requestKind == other.requestKind &&
           showProgress == other.showProgress &&
@@ -64,11 +67,12 @@ final class StudioUpdateViewState {
           requestErrorMessage == other.requestErrorMessage;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     hasUpdate,
     updateBusy,
     currentVersion,
     availableVersion,
+    readyVersion,
     statusKind,
     requestKind,
     showProgress,
@@ -83,7 +87,7 @@ final class StudioUpdateViewState {
     errorKind,
     errorMessage,
     requestErrorMessage,
-  );
+  ]);
 }
 
 enum StudioUpdateStatusKind {

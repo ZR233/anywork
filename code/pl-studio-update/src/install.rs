@@ -68,6 +68,11 @@ impl StudioUpdateCancellation {
         self.token.cancelled().await;
     }
 
+    /// Whether this operation has received a cancellation request.
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+
     fn check(&self) -> Result<(), StudioUpdateError> {
         if self.token.is_cancelled() {
             return Err(cancelled_error());

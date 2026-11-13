@@ -76,10 +76,12 @@ final class StudioUpdateClient {
   UpdaterStateSnapshot get state {
     final observed = updater.state.value;
     if (!enabled) {
-      return DisabledUpdaterStateSnapshot(
-        revision: observed?.revision ?? 0,
-        updatedAt:
-            observed?.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0),
+      return UpdaterStateSnapshot(
+        activity: DisabledUpdaterActivity(
+          revision: observed?.revision ?? 0,
+          updatedAt:
+              observed?.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0),
+        ),
       );
     }
     return observed ??
@@ -174,9 +176,8 @@ final class StudioUpdateClient {
     );
     unawaited(() async {
       try {
-        final snapshot = await _rpc('check', api.check);
+        await _rpc('check', api.check);
         if (!_closed) {
-          updater.apply(snapshot);
           request.publish(
             const StudioUpdateRequest(StudioUpdateRequestPhase.idle),
           );
@@ -202,7 +203,7 @@ final class StudioUpdateClient {
     if (_closed ||
         !enabled ||
         update == null ||
-        snapshot is InstallerLaunchedUpdaterStateSnapshot) {
+        snapshot.activity is InstallerLaunchedUpdaterActivity) {
       return Future.value(const StudioUpdateInstallResult());
     }
     if (_attempts.isNotEmpty) {
@@ -257,29 +258,28 @@ final class StudioUpdateClient {
         await _cancelAttempt(attempt);
         return const StudioUpdateInstallResult();
       }
-      await for (final snapshot in operation.events) {
-        if (!_closed) updater.apply(snapshot);
-      }
-      await operation.finishPreparation();
+      final result = await operation.finishPreparation();
       attempt.joined = true;
       if (_closed || attempt.cancelRequested)
         return const StudioUpdateInstallResult();
-      if (state is ReadyUpdaterStateSnapshot &&
-          state.update?.version == version) {
-        request.publish(
-          const StudioUpdateRequest(StudioUpdateRequestPhase.ready),
-        );
-        return StudioUpdateInstallResult(readyVersion: version);
+      switch (result) {
+        case ReadyStudioUpdatePreparation(:final version):
+          request.publish(
+            const StudioUpdateRequest(StudioUpdateRequestPhase.ready),
+          );
+          return StudioUpdateInstallResult(readyVersion: version);
+        case CancelledStudioUpdatePreparation():
+          request.publish(
+            const StudioUpdateRequest(StudioUpdateRequestPhase.cancelled),
+          );
+        case FailedStudioUpdatePreparation(:final error):
+          request.publish(
+            StudioUpdateRequest(
+              StudioUpdateRequestPhase.failed,
+              error: error.message,
+            ),
+          );
       }
-      final failure = state;
-      request.publish(
-        StudioUpdateRequest(
-          failure is InstallFailedUpdaterStateSnapshot &&
-                  failure.error.code == 'cancelled'
-              ? StudioUpdateRequestPhase.cancelled
-              : StudioUpdateRequestPhase.failed,
-        ),
-      );
       return const StudioUpdateInstallResult();
     } catch (error, stack) {
       if (attempt.operation == null &&
@@ -291,14 +291,6 @@ final class StudioUpdateClient {
           await _cancelAttempt(attempt);
         } catch (cleanupError) {
           attempt.cleanupFailure = cleanupError;
-        }
-      }
-      if (!_closed) {
-        // Failed command/observation only: canonical resync never invents Ready.
-        try {
-          updater.apply(await api.read());
-        } catch (_) {
-          /* Preserve the original failure. */
         }
       }
       Error.throwWithStackTrace(error, stack);
@@ -360,7 +352,7 @@ final class StudioUpdateClient {
         const StudioUpdateRequest(StudioUpdateRequestPhase.cancelling),
       );
       try {
-        await _rpc('automatic-cancel', api.cancelAutomaticUpdate);
+        await _rpc('automatic-cancel', api.cancelCurrentPreparation);
         if (!_closed)
           request.publish(
             const StudioUpdateRequest(StudioUpdateRequestPhase.cancelled),
@@ -437,7 +429,7 @@ final class StudioUpdateClient {
   Future<void> _joinAutomaticStop() async {
     try {
       await _automaticTask;
-      await _rpc('automatic-close', api.cancelAutomaticUpdate);
+      await _rpc('automatic-close', api.stopAutomaticUpdate);
       _automaticJoined = true;
       _cleanupFailures.remove('automatic-update');
     } catch (error) {
@@ -523,6 +515,6 @@ final class _UpdateAttempt {
 }
 
 bool _isInstalling(UpdaterStateSnapshot state) =>
-    state is DownloadingUpdaterStateSnapshot ||
-    state is VerifyingUpdaterStateSnapshot ||
-    state is InstallerLaunchedUpdaterStateSnapshot;
+    state.activity is DownloadingUpdaterActivity ||
+    state.activity is VerifyingUpdaterActivity ||
+    state.activity is InstallerLaunchedUpdaterActivity;

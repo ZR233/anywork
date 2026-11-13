@@ -2392,7 +2392,7 @@ $Res call({
 });
 
 
-$BridgeUpdaterStateSnapshotCopyWith<$Res> get field0;
+
 
 }
 /// @nodoc
@@ -2412,16 +2412,7 @@ as BridgeUpdaterStateSnapshot,
   ));
 }
 
-/// Create a copy of BridgeProductBaseline
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$BridgeUpdaterStateSnapshotCopyWith<$Res> get field0 {
 
-  return $BridgeUpdaterStateSnapshotCopyWith<$Res>(_self.field0, (value) {
-    return _then(_self.copyWith(field0: value));
-  });
-}
 }
 
 /// @nodoc
