@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::StudioUpdate;
+use pl_studio_update::StudioUpdate;
 
 use super::{
     AvailableUpdateState, CheckFailedUpdateState, CheckingUpdateState, DisabledUpdateState,

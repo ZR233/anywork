@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::StudioUpdate;
+use pl_studio_update::StudioUpdate;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

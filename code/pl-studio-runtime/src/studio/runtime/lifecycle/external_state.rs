@@ -18,7 +18,7 @@ impl StudioRuntime {
 
     pub async fn check_studio_update(
         &self,
-        cancellation: &crate::StudioUpdateCancellation,
+        cancellation: &pl_studio_update::StudioUpdateCancellation,
     ) -> Result<StudioUpdateStateSnapshot> {
         self.updater.check_cancellable(cancellation).await
     }
@@ -26,15 +26,15 @@ impl StudioRuntime {
     /// 桌面后台更新：一次检测和可信准备，不关闭运行时。调用方拥有取消与完成观察。
     pub async fn prepare_studio_update_on_start(
         &self,
-        cancellation: crate::StudioUpdateCancellation,
+        cancellation: pl_studio_update::StudioUpdateCancellation,
     ) -> Result<()> {
         let state = match self.updater.check_cancellable(&cancellation).await {
             Ok(state) => state,
             Err(error)
                 if error
-                    .downcast_ref::<crate::StudioUpdateError>()
+                    .downcast_ref::<pl_studio_update::StudioUpdateError>()
                     .is_some_and(|error| {
-                        error.code() == crate::StudioUpdateErrorCode::InstallInProgress
+                        error.code() == pl_studio_update::StudioUpdateErrorCode::InstallInProgress
                     }) =>
             {
                 // 手动命令已占有更新流程，后台入口没有创建任何待回收资源。
@@ -50,9 +50,9 @@ impl StudioRuntime {
             if let Err(error) = result {
                 // The manual owner may claim the available package after the check completed.
                 if !error
-                    .downcast_ref::<crate::StudioUpdateError>()
+                    .downcast_ref::<pl_studio_update::StudioUpdateError>()
                     .is_some_and(|error| {
-                        error.code() == crate::StudioUpdateErrorCode::InstallInProgress
+                        error.code() == pl_studio_update::StudioUpdateErrorCode::InstallInProgress
                     })
                 {
                     return Err(error);
@@ -65,7 +65,7 @@ impl StudioRuntime {
     /// 仅在统一退出已确认全部资源安全停止后交接本进程持有的安装包。
     pub async fn launch_studio_update_on_exit(
         &self,
-        mode: crate::StudioUpdateLaunch,
+        mode: pl_studio_update::StudioUpdateLaunch,
     ) -> Result<Option<String>> {
         anyhow::ensure!(
             self.runtime_snapshot().await?.state.is_stopped(),
@@ -79,7 +79,7 @@ impl StudioRuntime {
         &self,
         expected_revision: u64,
         version: &str,
-    ) -> Result<crate::StudioUpdate> {
+    ) -> Result<pl_studio_update::StudioUpdate> {
         self.updater
             .verified_update(expected_revision, version)
             .await
@@ -88,9 +88,9 @@ impl StudioRuntime {
     /// 准备可信安装包并等待下载及投影结束，不停止运行时或启动安装器。
     pub async fn prepare_studio_update(
         &self,
-        update: crate::StudioUpdate,
+        update: pl_studio_update::StudioUpdate,
         progress: tokio::sync::mpsc::UnboundedSender<StudioUpdateStateSnapshot>,
-        cancellation: crate::StudioUpdateCancellation,
+        cancellation: pl_studio_update::StudioUpdateCancellation,
     ) -> Result<()> {
         self.updater
             .prepare(update, cancellation, Some(progress))

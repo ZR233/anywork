@@ -175,3 +175,6 @@ fn stable_version(raw: &str, label: &str) -> Result<Version, StudioUpdateError> 
 fn invalid_manifest(message: impl Into<String>) -> StudioUpdateError {
     StudioUpdateError::new(StudioUpdateErrorCode::InvalidManifest, message)
 }
+
+#[cfg(test)]
+mod tests;

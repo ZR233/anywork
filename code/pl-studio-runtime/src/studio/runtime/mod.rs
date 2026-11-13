@@ -296,7 +296,7 @@ struct ProjectActivation {
 
 impl StudioRuntime {
     /// Opens a native latest-value statistics feed from this runtime's existing statistics owner.
-    pub fn open_statistics_feed(&self) -> crate::statistics::StatisticsFeed {
+    pub fn open_statistics_feed(&self) -> pl_studio_statistics::StatisticsFeed {
         self.model_performance.subscribe_statistics()
     }
 

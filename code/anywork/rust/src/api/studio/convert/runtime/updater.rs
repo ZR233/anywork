@@ -1,7 +1,8 @@
 //! Canonical updater state projection.
 
 use crate::api::studio::types::*;
-use pl_studio_runtime::{StudioUpdate, StudioUpdateStateSnapshot};
+use pl_studio_runtime::StudioUpdateStateSnapshot;
+use pl_studio_update::StudioUpdate;
 
 pub(crate) fn bridge_update_state(state: StudioUpdateStateSnapshot) -> BridgeUpdaterStateSnapshot {
     let revision = state.revision();

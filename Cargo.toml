@@ -26,6 +26,8 @@ members = [
     "code/tools/support/media",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
+    "code/pl-studio-update",
+    "code/pl-studio-statistics",
     "code/pl-studio-mcp",
     "code/pl-studio-acceptance",
     "code/pl-studio-server",
@@ -180,6 +182,8 @@ pl-tool-bots = { path = "code/tools/bots" }
 pl-tool-media-support = { path = "code/tools/support/media" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }
+pl-studio-update = { path = "code/pl-studio-update" }
+pl-studio-statistics = { path = "code/pl-studio-statistics" }
 pl-studio-mcp = { path = "code/pl-studio-mcp" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
 pl-studio-server = { path = "code/pl-studio-server" }

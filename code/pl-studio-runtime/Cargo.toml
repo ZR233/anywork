@@ -16,6 +16,8 @@ benchmarks = ["dep:criterion"]
 pl-provider-fixture = { workspace = true }
 
 [dependencies]
+pl-studio-update = { workspace = true }
+pl-studio-statistics = { workspace = true }
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
 criterion = { workspace = true, optional = true }
 pl-remote-helper = { workspace = true }
@@ -61,7 +63,6 @@ url = { workspace = true }
 uuid = { workspace = true }
 keyring = { workspace = true }
 tempfile = { workspace = true }
-minisign-verify = { workspace = true }
 fs4 = { workspace = true }
 rust-embed = { workspace = true }
 dunce = { workspace = true }

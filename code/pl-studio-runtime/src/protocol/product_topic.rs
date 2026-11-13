@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioChildInteractionsState, StudioLspStateSnapshot,
@@ -15,6 +14,7 @@ use crate::{
     StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
     StudioUpdateStateSnapshot,
 };
+use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
 /// 一个产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

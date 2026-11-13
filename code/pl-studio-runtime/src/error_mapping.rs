@@ -1,9 +1,10 @@
 use pl_protocol::PureError;
 use pl_protocol::studio::{StudioError, StudioErrorCode};
+use pl_studio_update::{StudioUpdateError, StudioUpdateErrorCode};
 use std::sync::Arc;
 
 use crate::ConfigRuntimeError;
-use crate::{StudioDatabaseError, StudioUpdateError, StudioUpdateErrorCode};
+use crate::StudioDatabaseError;
 
 /// Maps an internal runtime failure to the shared, redacted Studio API error.
 ///

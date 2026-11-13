@@ -4110,6 +4110,8 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "pl-studio-statistics",
+ "pl-studio-update",
  "rolling-file",
  "serde",
  "serde_json",
@@ -4162,7 +4164,6 @@ dependencies = [
  "image",
  "keyring",
  "libsqlite3-sys",
- "minisign-verify",
  "pl-acp",
  "pl-agent-tool",
  "pl-core",
@@ -4172,6 +4173,8 @@ dependencies = [
  "pl-provider-fixture",
  "pl-remote-helper",
  "pl-studio-mcp",
+ "pl-studio-statistics",
+ "pl-studio-update",
  "pl-tool",
  "pl-trace",
  "process-wrap 10.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4216,6 +4219,7 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "pl-studio-update",
  "reqwest",
  "serde",
  "serde_json",
@@ -4229,6 +4233,41 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "utoipa-swagger-ui",
+]
+
+[[package]]
+name = "pl-studio-statistics"
+version = "0.1.0"
+dependencies = [
+ "pl-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "pl-studio-update"
+version = "0.1.0"
+dependencies = [
+ "downlowd",
+ "fs4",
+ "futures",
+ "hex",
+ "minisign-verify",
+ "pl-remote-helper",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]

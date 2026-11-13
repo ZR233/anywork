@@ -50,12 +50,11 @@ impl StatisticsReadScope {
         limit: u32,
     ) -> Result<StatisticsSummaryPage, StatisticsError> {
         let _page = self.inner.begin_page()?;
-        validate_page_limit(limit)?;
-        let total = self.inner.publication.summaries.len();
-        let (start, end) = page_bounds(offset, limit, total)?;
-        let items = self.inner.publication.summaries[start..end]
-            .iter()
-            .map(|summary| StatisticsSummary {
+        let page = read_page(
+            &self.inner.publication.summaries,
+            offset,
+            limit,
+            |summary: &super::StudioModelPerformanceSummary| StatisticsSummary {
                 account_id: summary.account_id.clone(),
                 account_display_name: summary.account_display_name.clone(),
                 model_id: summary.model_id.clone(),
@@ -68,9 +67,8 @@ impl StatisticsReadScope {
                 average_ttft_millis: summary.average_ttft_millis,
                 average_response_millis: summary.average_response_millis,
                 effort_count: summary.effort_breakdowns.len() as u64,
-            })
-            .collect::<Vec<_>>();
-        let source_bytes = source_bytes(&items)?;
+            },
+        )?;
         self.inner.ensure_open()?;
         Ok(StatisticsSummaryPage {
             owner_epoch: self.inner.publication.owner_epoch.clone(),
@@ -79,10 +77,10 @@ impl StatisticsReadScope {
             publication_revision: self.inner.publication.publication_revision,
             material_revision: self.inner.publication.summaries_revision,
             offset,
-            total_count: total as u64,
-            next_offset: page_next_offset(end, total),
-            source_bytes: source_bytes as u64,
-            items,
+            total_count: page.total_count,
+            next_offset: page.next_offset,
+            source_bytes: page.source_bytes,
+            items: page.items,
         })
     }
 
@@ -92,11 +90,7 @@ impl StatisticsReadScope {
         limit: u32,
     ) -> Result<StatisticsHistoryPage, StatisticsError> {
         let _page = self.inner.begin_page()?;
-        validate_page_limit(limit)?;
-        let total = self.inner.publication.history.len();
-        let (start, end) = page_bounds(offset, limit, total)?;
-        let items = self.inner.publication.history[start..end].to_vec();
-        let source_bytes = source_bytes(&items)?;
+        let page = read_page(&self.inner.publication.history, offset, limit, Clone::clone)?;
         self.inner.ensure_open()?;
         Ok(StatisticsHistoryPage {
             owner_epoch: self.inner.publication.owner_epoch.clone(),
@@ -105,10 +99,10 @@ impl StatisticsReadScope {
             publication_revision: self.inner.publication.publication_revision,
             material_revision: self.inner.publication.history_revision,
             offset,
-            total_count: total as u64,
-            next_offset: page_next_offset(end, total),
-            source_bytes: source_bytes as u64,
-            items,
+            total_count: page.total_count,
+            next_offset: page.next_offset,
+            source_bytes: page.source_bytes,
+            items: page.items,
         })
     }
 
@@ -126,10 +120,7 @@ impl StatisticsReadScope {
             .summaries
             .get(usize::try_from(summary_index).map_err(|_| StatisticsError::InvalidReference)?)
             .ok_or(StatisticsError::InvalidReference)?;
-        let total = summary.effort_breakdowns.len();
-        let (start, end) = page_bounds(offset, limit, total)?;
-        let items = summary.effort_breakdowns[start..end].to_vec();
-        let source_bytes = source_bytes(&items)?;
+        let page = read_page(&summary.effort_breakdowns, offset, limit, Clone::clone)?;
         self.inner.ensure_open()?;
         Ok(StatisticsEffortPage {
             owner_epoch: self.inner.publication.owner_epoch.clone(),
@@ -139,10 +130,10 @@ impl StatisticsReadScope {
             material_revision: self.inner.publication.summaries_revision,
             summary_index,
             offset,
-            total_count: total as u64,
-            next_offset: page_next_offset(end, total),
-            source_bytes: source_bytes as u64,
-            items,
+            total_count: page.total_count,
+            next_offset: page.next_offset,
+            source_bytes: page.source_bytes,
+            items: page.items,
         })
     }
 
@@ -261,23 +252,36 @@ fn validate_page_limit(limit: u32) -> Result<(), StatisticsError> {
     }
 }
 
-fn page_bounds(offset: u64, limit: u32, total: usize) -> Result<(usize, usize), StatisticsError> {
+/// Shared page admission for summaries, history and effort breakdowns.
+/// The caller holds the scope's page guard until its typed response has been built.
+struct MaterialPage<T> {
+    items: Vec<T>,
+    total_count: u64,
+    next_offset: Option<u64>,
+    source_bytes: u64,
+}
+
+fn read_page<S, T: Serialize>(
+    source: &[S],
+    offset: u64,
+    limit: u32,
+    project: impl FnMut(&S) -> T,
+) -> Result<MaterialPage<T>, StatisticsError> {
+    validate_page_limit(limit)?;
     let start = usize::try_from(offset).map_err(|_| StatisticsError::InvalidReference)?;
-    if start > total {
+    if start > source.len() {
         return Err(StatisticsError::InvalidReference);
     }
-    Ok((start, start.saturating_add(limit as usize).min(total)))
-}
-
-fn page_next_offset(end: usize, total: usize) -> Option<u64> {
-    (end < total).then_some(end as u64)
-}
-
-fn source_bytes<T: Serialize>(items: &[T]) -> Result<usize, StatisticsError> {
-    let bytes = serde_json::to_vec(items).map_err(|_| StatisticsError::PageCapacity)?;
+    let end = start.saturating_add(limit as usize).min(source.len());
+    let items: Vec<_> = source[start..end].iter().map(project).collect();
+    let bytes = serde_json::to_vec(&items).map_err(|_| StatisticsError::PageCapacity)?;
     if bytes.len() > MAX_SOURCE_PAGE_BYTES {
-        Err(StatisticsError::PageCapacity)
-    } else {
-        Ok(bytes.len())
+        return Err(StatisticsError::PageCapacity);
     }
+    Ok(MaterialPage {
+        items,
+        total_count: source.len() as u64,
+        next_offset: (end < source.len()).then_some(end as u64),
+        source_bytes: bytes.len() as u64,
+    })
 }

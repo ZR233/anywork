@@ -15,4 +15,4 @@ pub use models::{
     StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
 
-pub(crate) use feed::StatisticsPublisher;
+pub use feed::StatisticsPublisher;

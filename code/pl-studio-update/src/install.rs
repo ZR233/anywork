@@ -2,12 +2,8 @@ use super::client::StudioUpdater;
 use super::error::{StudioUpdateError, StudioUpdateErrorCode};
 use super::manifest::validate_update;
 use super::types::{StudioUpdate, StudioUpdateEvent};
-use minisign_verify::{PublicKey, Signature};
-use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::Ordering;
 
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedSender;
@@ -86,7 +82,12 @@ pub(super) async fn download(
     progress: UnboundedSender<StudioUpdateEvent>,
     cancellation: StudioUpdateCancellation,
 ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
-    let _guard = InstallGuard::acquire(updater)?;
+    let _guard = updater.install_active.try_lock().map_err(|_| {
+        StudioUpdateError::new(
+            StudioUpdateErrorCode::InstallInProgress,
+            "another Studio update installation is already running",
+        )
+    })?;
     let result: Result<PreparedStudioUpdate, StudioUpdateError> = async {
         validate_update(&update)?;
         cancellation.check()?;
@@ -128,34 +129,8 @@ async fn lease_verified_installer(
             options.share_mode(1); // FILE_SHARE_READ：校验与派生之间不能修改安装包。
         }
         let mut lease = options.open(&path).map_err(io_error)?;
-        if lease.metadata().map_err(io_error)?.len() != asset.size {
-            return Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::DownloadIncomplete,
-                "cached installer size changed",
-            ));
-        }
-        let signature_text =
-            std::fs::read_to_string(format!("{}.minisig", path.display())).map_err(io_error)?;
-        let signature = Signature::decode(&signature_text).map_err(signature_error)?;
-        let key = PublicKey::decode(public_key).map_err(signature_error)?;
-        let mut verifier = key.verify_stream(&signature).map_err(signature_error)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let count = lease.read(&mut buffer).map_err(io_error)?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buffer[..count]);
-            verifier.update(&buffer[..count]);
-        }
-        if hex::encode(hasher.finalize()) != asset.sha256 {
-            return Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::HashMismatch,
-                "leased installer SHA-256 does not match the manifest",
-            ));
-        }
-        verifier.finalize().map_err(signature_error)?;
+        let signature_text = std::fs::read_to_string(signature_path(&path)).map_err(io_error)?;
+        super::verification::verify(&mut lease, &asset, public_key, &signature_text)?;
         Ok(PreparedStudioUpdate {
             path,
             lease: Some(lease),
@@ -186,8 +161,8 @@ async fn prepare_installer(
     let installer = version_dir.join(&filename);
     let signature = version_dir.join(format!("{filename}.minisig"));
 
-    if installer.is_file()
-        && signature.is_file()
+    if tokio::fs::try_exists(&installer).await.map_err(io_error)?
+        && tokio::fs::try_exists(&signature).await.map_err(io_error)?
         && verify_cached(
             updater,
             update,
@@ -243,14 +218,8 @@ async fn prepare_installer(
         .await?;
         cancellation.check()?;
         let _ = progress.send(StudioUpdateEvent::Verifying);
-        if hash_file(&partial).await? != update.installer.sha256 {
-            return Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::HashMismatch,
-                "installer SHA-256 does not match the manifest",
-            ));
-        }
-        cancellation.check()?;
-        verify_file(updater.public_key, &signature, &partial).await
+        verify_file(updater.public_key, &update.installer, &signature, &partial).await?;
+        cancellation.check()
     }
     .await;
     if let Err(error) = prepare_result {
@@ -317,20 +286,9 @@ async fn verify_cached(
     cancellation: &StudioUpdateCancellation,
 ) -> Result<bool, StudioUpdateError> {
     cancellation.check()?;
-    if tokio::fs::metadata(installer)
-        .await
-        .map_err(io_error)?
-        .len()
-        != update.installer.size
-    {
-        return Ok(false);
-    }
-    let actual_hash = hash_file(installer).await?;
+    let result = verify_file(updater.public_key, &update.installer, signature, installer).await;
     cancellation.check()?;
-    if actual_hash != update.installer.sha256 {
-        return Ok(false);
-    }
-    match verify_file(updater.public_key, signature, installer).await {
+    match result {
         Ok(()) => {
             let _ = progress.send(StudioUpdateEvent::Progress {
                 downloaded: update.installer.size,
@@ -339,7 +297,17 @@ async fn verify_cached(
             let _ = progress.send(StudioUpdateEvent::Verifying);
             Ok(true)
         }
-        Err(_) => Ok(false),
+        Err(error)
+            if matches!(
+                error.code(),
+                StudioUpdateErrorCode::DownloadIncomplete
+                    | StudioUpdateErrorCode::HashMismatch
+                    | StudioUpdateErrorCode::SignatureInvalid
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -352,60 +320,31 @@ fn cancelled_error() -> StudioUpdateError {
 
 async fn verify_file(
     public_key: &'static str,
+    asset: &super::StudioUpdateAsset,
     signature_path: &Path,
     message_path: &Path,
 ) -> Result<(), StudioUpdateError> {
+    let asset = asset.clone();
     let signature_path = signature_path.to_path_buf();
     let message_path = message_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let public_key = PublicKey::decode(public_key).map_err(signature_error)?;
-        let signature_text = std::fs::read_to_string(&signature_path).map_err(io_error)?;
-        let signature = Signature::decode(&signature_text).map_err(signature_error)?;
-        let mut verifier = public_key
-            .verify_stream(&signature)
-            .map_err(signature_error)?;
-        let mut file = std::fs::File::open(&message_path).map_err(io_error)?;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut buffer).map_err(io_error)?;
-            if count == 0 {
-                break;
-            }
-            verifier.update(&buffer[..count]);
-        }
-        verifier.finalize().map_err(signature_error)
-    })
-    .await
-    .map_err(|error| {
-        StudioUpdateError::new(
-            StudioUpdateErrorCode::SignatureInvalid,
-            format!("signature verification task failed: {error}"),
-        )
-    })?
-}
-
-async fn hash_file(path: &Path) -> Result<String, StudioUpdateError> {
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut file = std::fs::File::open(path).map_err(io_error)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut buffer).map_err(io_error)?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buffer[..count]);
-        }
-        Ok(hex::encode(hasher.finalize()))
+        let signature_text = std::fs::read_to_string(signature_path).map_err(io_error)?;
+        let file = std::fs::File::open(message_path).map_err(io_error)?;
+        super::verification::verify(file, &asset, public_key, &signature_text)
     })
     .await
     .map_err(|error| {
         StudioUpdateError::new(
             StudioUpdateErrorCode::Io,
-            format!("hash task failed: {error}"),
+            format!("installer verification task failed: {error}"),
         )
     })?
+}
+
+fn signature_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".minisig");
+    PathBuf::from(name)
 }
 
 fn launch_installer(path: &Path, mode: StudioUpdateLaunch) -> Result<(), StudioUpdateError> {
@@ -472,41 +411,126 @@ async fn remove_if_exists(path: &Path) -> Result<(), StudioUpdateError> {
     }
 }
 
-fn io_error(error: std::io::Error) -> StudioUpdateError {
+pub(super) fn io_error(error: std::io::Error) -> StudioUpdateError {
     StudioUpdateError::new(
         StudioUpdateErrorCode::Io,
         format!("update file operation failed: {error}"),
     )
 }
 
-fn signature_error(error: minisign_verify::Error) -> StudioUpdateError {
-    StudioUpdateError::new(
-        StudioUpdateErrorCode::SignatureInvalid,
-        format!("Minisign verification failed: {error}"),
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{PUBLIC_KEY, SIGNATURE, update};
 
-struct InstallGuard<'a> {
-    updater: &'a StudioUpdater,
-}
-
-impl<'a> InstallGuard<'a> {
-    fn acquire(updater: &'a StudioUpdater) -> Result<Self, StudioUpdateError> {
-        updater
-            .install_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                StudioUpdateError::new(
-                    StudioUpdateErrorCode::InstallInProgress,
-                    "another Studio update installation is already running",
-                )
-            })?;
-        Ok(Self { updater })
+    #[tokio::test]
+    async fn cached_signature_io_failure_is_not_treated_as_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let update = update(b"abc");
+        let version_dir = directory.path().join(&update.version);
+        std::fs::create_dir(&version_dir).unwrap();
+        let installer = version_dir.join(asset_filename(&update.installer.url).unwrap());
+        std::fs::write(&installer, b"abc").unwrap();
+        // A non-readable signature must fail before any existing installer is removed.
+        std::fs::create_dir(signature_path(&installer)).unwrap();
+        let mut updater = StudioUpdater::new_default().unwrap();
+        updater.cache_dir = directory.path().to_path_buf();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let result = prepare_installer(
+            &updater,
+            &update,
+            &progress,
+            &StudioUpdateCancellation::new(),
+        )
+        .await;
+        assert_eq!(result.err().unwrap().code(), StudioUpdateErrorCode::Io);
+        assert_eq!(std::fs::read(&installer).unwrap(), b"abc");
     }
-}
 
-impl Drop for InstallGuard<'_> {
-    fn drop(&mut self) {
-        self.updater.install_active.store(false, Ordering::Release);
+    #[tokio::test]
+    async fn valid_cache_is_reverified_on_the_final_lease_and_corruption_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let installer = directory.path().join("installer.exe");
+        let signature = signature_path(&installer);
+        std::fs::write(&installer, b"test").unwrap();
+        std::fs::write(&signature, SIGNATURE).unwrap();
+        let mut updater = StudioUpdater::new_default().unwrap();
+        updater.public_key = PUBLIC_KEY;
+        let update = update(b"test");
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let cancellation = StudioUpdateCancellation::new();
+        assert!(
+            verify_cached(
+                &updater,
+                &update,
+                &installer,
+                &signature,
+                &progress,
+                &cancellation
+            )
+            .await
+            .unwrap()
+        );
+
+        std::fs::write(&installer, b"Test").unwrap();
+        assert!(
+            !verify_cached(
+                &updater,
+                &update,
+                &installer,
+                &signature,
+                &progress,
+                &cancellation
+            )
+            .await
+            .unwrap()
+        );
+        let cached = CachedInstaller {
+            path: installer.clone(),
+            lock: lock_cache(directory.path().join("download.lock"))
+                .await
+                .unwrap(),
+        };
+        let Err(error) = lease_verified_installer(&updater, &update, cached).await else {
+            panic!("a mutation after cache verification must reject the final lease");
+        };
+        assert_eq!(error.code(), StudioUpdateErrorCode::HashMismatch);
+        std::fs::write(&installer, b"test").unwrap();
+        let cached = CachedInstaller {
+            path: installer,
+            lock: lock_cache(directory.path().join("download.lock"))
+                .await
+                .unwrap(),
+        };
+        let prepared = lease_verified_installer(&updater, &update, cached)
+            .await
+            .unwrap();
+        assert_eq!(prepared.lease.unwrap().metadata().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn clones_share_install_admission_and_cancelled_download_releases_the_guard() {
+        let updater = StudioUpdater::new_default().unwrap();
+        let other = updater.clone();
+        let guard = updater.install_active.try_lock().unwrap();
+        let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+        let cancellation = StudioUpdateCancellation::new();
+        let result = other
+            .download(update(b"test"), progress.clone(), cancellation.clone())
+            .await;
+        assert_eq!(
+            result.err().unwrap().code(),
+            StudioUpdateErrorCode::InstallInProgress
+        );
+        drop(guard);
+        cancellation.clone().cancel();
+        let result = other
+            .download(update(b"test"), progress, cancellation)
+            .await;
+        assert_eq!(
+            result.err().unwrap().code(),
+            StudioUpdateErrorCode::Cancelled
+        );
+        assert!(updater.install_active.try_lock().is_ok());
     }
 }

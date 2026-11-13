@@ -1,12 +1,12 @@
 use pl_protocol::{ObservedResource, SessionDirectoryRow, ThreadModeCatalogSnapshot};
 use serde::{Deserialize, Serialize};
 
-use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryEntry, StudioLspHealth, StudioRecoveryIssue, StudioUpdateStateSnapshot,
     WorkspaceRecord,
 };
+use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
 /// Studio 产品级事件信封。
 ///

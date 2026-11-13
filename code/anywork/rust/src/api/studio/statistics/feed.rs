@@ -18,7 +18,7 @@ use super::types::{
 use crate::api::studio::bridge_runtime::{active_bridge, current_bridge};
 use crate::api::studio::types::BridgeError;
 use crate::frb_generated::StreamSink;
-use pl_studio_runtime::statistics::{StatisticsError, StatisticsFeed, StatisticsReadScope};
+use pl_studio_statistics::{StatisticsError, StatisticsFeed, StatisticsReadScope};
 
 /// Opens one independent latest-value statistics feed from the canonical runtime owner.
 pub async fn open_statistics_feed() -> Result<BridgeStatisticsFeed, BridgeError> {

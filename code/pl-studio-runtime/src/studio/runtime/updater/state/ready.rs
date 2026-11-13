@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::StudioUpdate;
+use pl_studio_update::StudioUpdate;
 
 /// 已验证并持有文件租约，等待退出或用户主动重启安装。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

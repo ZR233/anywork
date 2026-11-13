@@ -7,7 +7,7 @@ use super::types::{
     BridgeStatisticsSummary, BridgeStatisticsSummaryPage,
 };
 use crate::api::studio::types::BridgeError;
-use pl_studio_runtime::statistics::{
+use pl_studio_statistics::{
     StatisticsEffortPage, StatisticsError, StatisticsFeedHeader, StatisticsHistoryPage,
     StatisticsSummary, StatisticsSummaryPage,
 };
@@ -76,7 +76,7 @@ pub(super) fn bridge_history_page(value: StatisticsHistoryPage) -> BridgeStatist
 }
 
 fn bridge_sample(
-    value: pl_studio_runtime::statistics::StudioModelPerformanceSample,
+    value: pl_studio_statistics::StudioModelPerformanceSample,
 ) -> BridgeStatisticsSample {
     BridgeStatisticsSample {
         thread_id: value.thread_id,
@@ -149,15 +149,14 @@ pub(super) fn statistics_error(error: StatisticsError) -> BridgeError {
         StatisticsError::NextInFlight | StatisticsError::PageInFlight => {
             (StudioErrorCode::Busy, true)
         }
-        StatisticsError::PublicationCapacity
-        | StatisticsError::ScopeCapacity
-        | StatisticsError::PageCapacity => (StudioErrorCode::Overloaded, true),
+        StatisticsError::ScopeCapacity | StatisticsError::PageCapacity => {
+            (StudioErrorCode::Overloaded, true)
+        }
     };
     let category = match error {
         StatisticsError::Closed => "closed",
         StatisticsError::InvalidReference => "invalidReference",
         StatisticsError::NextInFlight => "nextInFlight",
-        StatisticsError::PublicationCapacity => "publicationCapacity",
         StatisticsError::ScopeCapacity => "scopeCapacity",
         StatisticsError::PageInFlight => "pageInFlight",
         StatisticsError::InvalidPageLimit => "invalidPageLimit",

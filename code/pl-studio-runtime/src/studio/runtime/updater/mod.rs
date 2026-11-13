@@ -8,17 +8,17 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pl_protocol::StateError;
+use pl_studio_update::{
+    STUDIO_VERSION, StudioUpdate, StudioUpdateCheck, StudioUpdateErrorCode, StudioUpdateEvent,
+    StudioUpdater,
+};
 use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use crate::studio::ids::unix_seconds;
-use crate::updater::STUDIO_VERSION;
-use crate::{
-    StudioUpdate, StudioUpdateCheck, StudioUpdateErrorCode, StudioUpdateEvent, StudioUpdater,
-};
 
 enum PreparedUpdate {
     None,
-    Ready(crate::PreparedStudioUpdate),
+    Ready(pl_studio_update::PreparedStudioUpdate),
     Launched,
 }
 
@@ -48,10 +48,10 @@ impl StudioUpdateRuntime {
 
     pub(crate) async fn check_cancellable(
         &self,
-        cancellation: &crate::StudioUpdateCancellation,
+        cancellation: &pl_studio_update::StudioUpdateCancellation,
     ) -> Result<StudioUpdateStateSnapshot> {
         let _command = self.command_lock.try_lock().map_err(|_| {
-            crate::StudioUpdateError::new(
+            pl_studio_update::StudioUpdateError::new(
                 StudioUpdateErrorCode::InstallInProgress,
                 "another update command is already running",
             )
@@ -68,7 +68,7 @@ impl StudioUpdateRuntime {
             })
             .await?;
         let result = tokio::select! {
-            _ = cancellation.cancelled() => Err(crate::StudioUpdateError::new(
+            _ = cancellation.cancelled() => Err(pl_studio_update::StudioUpdateError::new(
                 StudioUpdateErrorCode::Cancelled, "Studio background update check was cancelled",
             )),
             result = self.updater.check(STUDIO_VERSION.trim()) => result,
@@ -165,9 +165,9 @@ impl StudioUpdateRuntime {
     pub(crate) async fn lock_install(
         &self,
         update: &StudioUpdate,
-    ) -> Result<MutexGuard<'_, ()>, crate::StudioUpdateError> {
+    ) -> Result<MutexGuard<'_, ()>, pl_studio_update::StudioUpdateError> {
         let command = self.command_lock.try_lock().map_err(|_| {
-            crate::StudioUpdateError::new(
+            pl_studio_update::StudioUpdateError::new(
                 StudioUpdateErrorCode::InstallInProgress,
                 "another update command is already running",
             )
@@ -180,7 +180,7 @@ impl StudioUpdateRuntime {
                 | StudioUpdateStateSnapshot::InstallFailed(_)
         ) || state.update() != Some(update)
         {
-            return Err(crate::StudioUpdateError::new(
+            return Err(pl_studio_update::StudioUpdateError::new(
                 StudioUpdateErrorCode::InvalidManifest,
                 "selected update is no longer available for installation",
             ));
@@ -192,7 +192,7 @@ impl StudioUpdateRuntime {
     pub(crate) async fn prepare(
         &self,
         update: StudioUpdate,
-        cancellation: crate::StudioUpdateCancellation,
+        cancellation: pl_studio_update::StudioUpdateCancellation,
         progress: Option<tokio::sync::mpsc::UnboundedSender<StudioUpdateStateSnapshot>>,
     ) -> Result<()> {
         let _command = self.lock_install(&update).await?;
@@ -265,7 +265,7 @@ impl StudioUpdateRuntime {
 
     pub(crate) async fn launch_ready_on_exit(
         &self,
-        mode: crate::StudioUpdateLaunch,
+        mode: pl_studio_update::StudioUpdateLaunch,
     ) -> Result<Option<String>> {
         let _command = self
             .command_lock
@@ -349,7 +349,7 @@ impl StudioUpdateRuntime {
     }
 }
 
-fn state_error(error: &crate::StudioUpdateError) -> StateError {
+fn state_error(error: &pl_studio_update::StudioUpdateError) -> StateError {
     StateError {
         code: error.code().as_str().to_string(),
         message: error.to_string(),

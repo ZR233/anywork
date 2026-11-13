@@ -8,7 +8,8 @@ use anyhow::Result;
 use flutter_rust_bridge::frb;
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
-use pl_studio_runtime::{StudioUpdateCancellation, StudioUpdateError, StudioUpdateErrorCode};
+use pl_studio_update::{StudioUpdateCancellation, StudioUpdateError, StudioUpdateErrorCode};
+
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
