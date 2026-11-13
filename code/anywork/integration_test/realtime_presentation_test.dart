@@ -3625,7 +3625,11 @@ final class _RealtimeScene {
                   .where(
                     (atom) =>
                         atom.turnId == _submittedTurnId &&
-                        atom.kind == ChatAtomKind.toolCall,
+                        atom.kind == ChatAtomKind.toolCall &&
+                        // A completed background receipt can join this same
+                        // Work and retain its original call ID. Observe the
+                        // foreground calls here; receipts have their own check.
+                        atom.delivery != ChatDeliveryKind.independent,
                   )
                   .toList();
         final handedOff = tools
