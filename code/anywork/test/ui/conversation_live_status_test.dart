@@ -16,8 +16,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_section.dart';
 
-import '../support/display_fixtures.dart';
-
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
