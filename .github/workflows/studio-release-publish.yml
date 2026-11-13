@@ -956,14 +956,19 @@ jobs:
 
       # Platform archive identities were checked above. Sign the Linux payload
       # and build the current feed only after all same-version inputs are present.
+      # GITHUB_PATH additions become available only to subsequent steps.
+      - name: Install pinned signing tool
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Install-StudioMinisign
+
       - name: Sign combined platform assets and finalize update feeds
         shell: pwsh
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
-          . .github/scripts/studio-package-tools.ps1
-          Install-StudioMinisign
           if ([string]::IsNullOrWhiteSpace($env:MINISIGN_SECRET_KEY)) { throw 'Missing Minisign key' }
           $key = Join-Path $env:RUNNER_TEMP 'anywork-combined.key'
           try {
