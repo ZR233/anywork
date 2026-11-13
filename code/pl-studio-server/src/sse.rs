@@ -1227,7 +1227,6 @@ mod tests {
             ),
             ("DisplayBlockRef", &["databaseId", "blockId"][..]),
             ("DisplayRecord", &["atom", "contentSource"][..]),
-            ("WorkTiming", &["startedAt"][..]),
         ] {
             let required = schemas[schema]["required"]
                 .as_array()
@@ -1238,6 +1237,23 @@ mod tests {
                     "{schema}.{field}"
                 );
             }
+        }
+        // Imported Work blocks may have no reliable group-level clock evidence.
+        let timing = &schemas["WorkTiming"];
+        for field in ["startedAt", "finishedAt"] {
+            assert!(
+                !timing["required"]
+                    .as_array()
+                    .is_some_and(|required| required.iter().any(|name| name == field)),
+                "WorkTiming.{field} must remain optional"
+            );
+            let property = &timing["properties"][field];
+            assert_eq!(
+                property["type"],
+                serde_json::json!(["integer", "null"]),
+                "WorkTiming.{field} must accept Unix seconds or null"
+            );
+            assert_eq!(property["format"], "int64", "WorkTiming.{field}");
         }
         for (schema, property, target) in [
             ("OpenRequest", "demand", "ReadDemand"),
