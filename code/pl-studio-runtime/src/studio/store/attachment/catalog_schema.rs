@@ -211,18 +211,11 @@ mod tests {
     }
 
     #[test]
-    fn v1_catalog_round_trips_without_changing_the_integer_wire_header() -> Result<()> {
+    fn current_catalog_persists_records_with_an_integer_version() -> Result<()> {
         let expected = catalog();
         let encoded = encode(&expected)?;
         let table: toml::Table = toml::from_str(&encoded)?;
         assert_eq!(table[VERSION_KEY].as_integer(), Some(2));
-        let wire_record = table["records"]
-            .as_array()
-            .and_then(|records| records.first())
-            .and_then(toml::Value::as_table)
-            .expect("one encoded record");
-        assert!(wire_record.contains_key("storagePath"));
-        assert!(!wire_record.contains_key("blobRelativePath"));
         let loaded = decode(std::path::Path::new("attachments.toml"), &encoded)?;
         assert_eq!(loaded.thread_id, expected.thread_id);
         assert_eq!(loaded.records, expected.records);

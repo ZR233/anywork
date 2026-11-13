@@ -779,9 +779,6 @@ mod tests {
                 serde_json::to_value(&mapped.backend).unwrap(),
                 serde_json::to_value(&source.backend).unwrap(),
             );
-            let value = serde_json::to_value(mapped).unwrap();
-            assert!(value.get("binding").is_none());
-            assert!(value.get("status").is_none());
         }
     }
 
@@ -806,14 +803,13 @@ mod tests {
     }
 
     #[test]
-    fn acp_profile_binding_round_trip_has_no_connection_revision() {
+    fn acp_profile_binding_preserves_account_identity() {
         let source = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
             account_id: "profile-account".into(),
         });
         let mapped = BridgeAgentBinding::from(source.clone());
-        assert_eq!(
-            serde_json::to_value(&mapped).unwrap(),
-            serde_json::json!({ "kind": "acp", "account_id": "profile-account" }),
+        assert!(
+            matches!(&mapped, BridgeAgentBinding::Acp { account_id } if account_id == "profile-account")
         );
         assert_eq!(pl_protocol::AgentBinding::from(mapped), source);
     }

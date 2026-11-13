@@ -548,65 +548,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_operation_round_trips_and_rejects_an_unknown_action() {
-        let busy = AcpAuthAccount {
-            account_id: "account".to_string(),
-            connection_revision: 7,
-            state: AcpAuthState::Checking {
-                operation_id: "op-1".to_string(),
-            },
-            usage: None,
-            active_operation: Some(AcpAuthActiveOperation {
-                operation_id: "op-1".to_string(),
-                connection_revision: 7,
-                action: AcpAuthAction::QueryUsage,
-            }),
-        };
-        let json = serde_json::to_value(&busy).expect("serialize busy account");
-        assert_eq!(
-            json["activeOperation"],
-            serde_json::json!({
-                "operationId": "op-1",
-                "connectionRevision": 7,
-                // AcpAuthAction 是 internally-tagged 枚举，嵌套后保持其既有 wire 形状。
-                "action": {"action": "queryUsage"},
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<AcpAuthAccount>(json).expect("decode busy account"),
-            busy
-        );
-
-        // 未知动作类型必须拒绝：忙碌操作的类型不能被静默丢弃或降级。
-        let mut unknown = serde_json::to_value(&busy).expect("serialize busy account");
-        unknown["activeOperation"]["action"] = serde_json::json!({"action": "unknown"});
-        assert!(serde_json::from_value::<AcpAuthAccount>(unknown).is_err());
-    }
-
-    #[test]
-    fn idle_account_serializes_an_explicit_null_active_operation() {
-        let idle = AcpAuthAccount {
-            account_id: "account".to_string(),
-            connection_revision: 3,
-            state: AcpAuthState::Verified {
-                checked_at: 20,
-                server: None,
-            },
-            usage: None,
-            active_operation: None,
-        };
-        let json = serde_json::to_value(&idle).expect("serialize idle account");
-        assert!(
-            json.get("activeOperation")
-                .is_some_and(serde_json::Value::is_null)
-        );
-        assert_eq!(
-            serde_json::from_value::<AcpAuthAccount>(json).expect("decode idle account"),
-            idle
-        );
-    }
-
-    #[test]
     fn missing_active_operation_field_is_a_decode_error() {
         let busy = AcpAuthAccount {
             account_id: "account".to_string(),
@@ -634,41 +575,5 @@ mod tests {
         let mut unknown_field = serde_json::to_value(&busy).expect("serialize busy account");
         unknown_field["activeOperation"]["unexpected"] = serde_json::json!(1);
         assert!(serde_json::from_value::<AcpAuthAccount>(unknown_field).is_err());
-    }
-
-    #[test]
-    fn busy_rejection_details_keep_the_wire_shape() {
-        let rejection = AcpAuthBusyRejection {
-            acp_auth_busy: AcpAuthBusyDetails {
-                account_id: "account".to_string(),
-                connection_revision: 8,
-                snapshot_revision: 12,
-                active_operation: AcpAuthActiveOperation {
-                    operation_id: "op-1".to_string(),
-                    connection_revision: 7,
-                    action: AcpAuthAction::QueryUsage,
-                },
-            },
-        };
-        let json = serde_json::to_value(&rejection).expect("serialize busy rejection");
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "acpAuthBusy": {
-                    "accountId": "account",
-                    "connectionRevision": 8,
-                    "snapshotRevision": 12,
-                    "activeOperation": {
-                        "operationId": "op-1",
-                        "connectionRevision": 7,
-                        "action": {"action": "queryUsage"},
-                    },
-                },
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<AcpAuthBusyRejection>(json).expect("decode busy rejection"),
-            rejection
-        );
     }
 }

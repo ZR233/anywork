@@ -16,42 +16,6 @@ const CONSUMED_MESSAGE_LEDGER_CAPACITY: usize = 64;
 /// inspection with the durable task identity, so it is a fixed window and never grows with history.
 const TERMINAL_TASK_LEDGER_CAPACITY: usize = 64;
 
-#[cfg(test)]
-mod collection_tests {
-    use super::*;
-
-    #[test]
-    fn exhausted_collection_pruning_keeps_export_buffers_and_original_members() {
-        let record = interactions::InteractionRecord {
-            created_at: 1,
-            updated_at: 2,
-            continuation_id: None,
-            request: interactions::InteractionRequest {
-                id: "a".into(),
-                turn_id: "turn".into(),
-                payload: crate::context::OpaquePayload::text("original question"),
-            },
-            revision: 2,
-            state: interactions::InteractionState::Cancelled,
-            extension_mutations: vec![],
-        };
-        let mut state = ThreadSnapshot {
-            interaction_collection_revision: u64::MAX,
-            interactions: [(record.request.id.clone(), record.clone())].into(),
-            interaction_changes: vec![record].into(),
-            ..Default::default()
-        };
-        let exported = state.interaction_changes.clone();
-        let original = serde_json::to_value(&state).unwrap();
-        assert!(matches!(
-            state.retain_live_facts(),
-            Err(ThreadError::RevisionExhausted)
-        ));
-        assert!(Arc::ptr_eq(&exported, &state.interaction_changes));
-        assert_eq!(serde_json::to_value(state).unwrap(), original);
-    }
-}
-
 /// One committed effect batch as retained by the live window.
 #[derive(Default)]
 struct EffectWindowState {
@@ -1504,4 +1468,40 @@ pub enum ThreadError {
     Registry(#[from] crate::tool::opaque::RegistryError),
     #[error("model operation failed: {0}")]
     Model(#[source] Arc<ModelError>),
+}
+
+#[cfg(test)]
+mod collection_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_collection_pruning_keeps_export_buffers_and_original_members() {
+        let record = interactions::InteractionRecord {
+            created_at: 1,
+            updated_at: 2,
+            continuation_id: None,
+            request: interactions::InteractionRequest {
+                id: "a".into(),
+                turn_id: "turn".into(),
+                payload: crate::context::OpaquePayload::text("original question"),
+            },
+            revision: 2,
+            state: interactions::InteractionState::Cancelled,
+            extension_mutations: vec![],
+        };
+        let mut state = ThreadSnapshot {
+            interaction_collection_revision: u64::MAX,
+            interactions: [(record.request.id.clone(), record.clone())].into(),
+            interaction_changes: vec![record].into(),
+            ..Default::default()
+        };
+        let exported = state.interaction_changes.clone();
+        let original = serde_json::to_value(&state).unwrap();
+        assert!(matches!(
+            state.retain_live_facts(),
+            Err(ThreadError::RevisionExhausted)
+        ));
+        assert!(Arc::ptr_eq(&exported, &state.interaction_changes));
+        assert_eq!(serde_json::to_value(state).unwrap(), original);
+    }
 }

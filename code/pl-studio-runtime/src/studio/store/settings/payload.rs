@@ -113,11 +113,25 @@ mod tests {
 
     #[test]
     fn legacy_v2_snapshot_keeps_bytes_and_business_revision() {
-        let payload = migrate_legacy(LEGACY_V2).expect("frozen v2 snapshot validates");
-        assert_eq!(payload.revision, 19);
-        assert_eq!(payload.updated_at, 22);
-        assert!(payload.accounts.is_empty());
-        assert_eq!(payload.legacy_unbound.as_deref(), Some(LEGACY_V2));
+        for (raw, revision, updated_at) in [
+            (LEGACY_V2, 19, 22),
+            (
+                r#"{"state":{"kind":"loading","data":{"revision":4,"operation":"check","operationId":"op-9","startedAt":33}}}"#,
+                4,
+                33,
+            ),
+            (
+                r#"{"state":{"kind":"stopped","data":{"revision":6,"stoppedAt":88}}}"#,
+                6,
+                88,
+            ),
+        ] {
+            let payload = migrate_legacy(raw).expect("frozen v2 snapshot migrates");
+            assert_eq!(payload.revision, revision);
+            assert_eq!(payload.updated_at, updated_at);
+            assert!(payload.accounts.is_empty());
+            assert_eq!(payload.legacy_unbound.as_deref(), Some(raw));
+        }
     }
 
     #[test]

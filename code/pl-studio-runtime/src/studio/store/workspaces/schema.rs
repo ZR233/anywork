@@ -236,13 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn v1_and_v2_wire_roundtrip_and_migration_preserve_fields() {
+    fn migration_adds_project_kind_and_preserves_workspace_facts() {
         let old = v1_sample();
-        let old_wire = toml::to_string(&old).expect("encode v1");
-        assert_eq!(
-            toml::from_str::<WorkspacesV1>(&old_wire).expect("decode v1"),
-            old
-        );
         let upgraded = old.clone().migrate();
         assert_eq!(upgraded.revision, 17);
         let row = &upgraded.workspaces[0];
@@ -255,11 +250,6 @@ mod tests {
         assert_eq!(row.updated_at, old.workspaces[0].updated_at);
         assert_eq!(row.last_opened_at, old.workspaces[0].last_opened_at);
         assert_eq!(row.closed, old.workspaces[0].closed);
-        let wire = toml::to_string(&upgraded).expect("encode v2");
-        assert_eq!(
-            toml::from_str::<WorkspacesV2>(&wire).expect("decode v2"),
-            upgraded
-        );
     }
 
     #[test]

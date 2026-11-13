@@ -554,72 +554,6 @@ fn publish_native_launch_boundary(output: &mut impl Write) -> Result<()> {
         .context("failed to flush native launch boundary")
 }
 
-#[cfg(test)]
-mod native_startup_stage_tests {
-    use super::publish_native_launch_boundary;
-    use std::io::{self, Write};
-
-    #[derive(Default)]
-    struct BoundaryOutput {
-        bytes: Vec<u8>,
-        flushed: bool,
-        fail_write: bool,
-        fail_flush: bool,
-    }
-
-    impl Write for BoundaryOutput {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if self.fail_write {
-                return Err(io::Error::other("stage write failed"));
-            }
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            if self.fail_flush {
-                return Err(io::Error::other("stage flush failed"));
-            }
-            self.flushed = true;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn launch_boundary_is_a_complete_flushed_line() -> anyhow::Result<()> {
-        let mut output = BoundaryOutput::default();
-        publish_native_launch_boundary(&mut output)?;
-        assert_eq!(output.bytes, b"startup_stage=native_launch_ready\n");
-        assert!(output.flushed);
-        Ok(())
-    }
-
-    #[test]
-    fn publication_errors_are_preserved() {
-        for mut output in [
-            BoundaryOutput {
-                fail_write: true,
-                ..Default::default()
-            },
-            BoundaryOutput {
-                fail_flush: true,
-                ..Default::default()
-            },
-        ] {
-            let error = publish_native_launch_boundary(&mut output).unwrap_err();
-            let diagnostic = format!("{error:#}");
-            assert!(
-                diagnostic.contains(if output.fail_write {
-                    "stage write failed"
-                } else {
-                    "stage flush failed"
-                }),
-                "{diagnostic}"
-            );
-        }
-    }
-}
-
 /// Structured, machine-readable record of a native artifact's real exit.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1079,4 +1013,70 @@ fn clean_directory_contents(directory: &Path) -> Result<()> {
         result.with_context(|| format!("failed to remove stale artifact {}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod native_startup_stage_tests {
+    use super::publish_native_launch_boundary;
+    use std::io::{self, Write};
+
+    #[derive(Default)]
+    struct BoundaryOutput {
+        bytes: Vec<u8>,
+        flushed: bool,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    impl Write for BoundaryOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("stage write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                return Err(io::Error::other("stage flush failed"));
+            }
+            self.flushed = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn launch_boundary_is_a_complete_flushed_line() -> anyhow::Result<()> {
+        let mut output = BoundaryOutput::default();
+        publish_native_launch_boundary(&mut output)?;
+        assert_eq!(output.bytes, b"startup_stage=native_launch_ready\n");
+        assert!(output.flushed);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_errors_are_preserved() {
+        for mut output in [
+            BoundaryOutput {
+                fail_write: true,
+                ..Default::default()
+            },
+            BoundaryOutput {
+                fail_flush: true,
+                ..Default::default()
+            },
+        ] {
+            let error = publish_native_launch_boundary(&mut output).unwrap_err();
+            let diagnostic = format!("{error:#}");
+            assert!(
+                diagnostic.contains(if output.fail_write {
+                    "stage write failed"
+                } else {
+                    "stage flush failed"
+                }),
+                "{diagnostic}"
+            );
+        }
+    }
 }

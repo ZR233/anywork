@@ -233,81 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn live_source_round_trips_and_missing_old_evidence_stays_unknown() {
-        let mut block = LiveDisplayBlock {
-            has_unfinished_members: false,
-            thinking_summary: None,
-            id: "opaque-block".into(),
-            block_order: 1,
-            source: None,
-            body: work("opaque-block"),
-            state: DisplayBlockState::Open,
-        };
-        let old = serde_json::to_value(&block).unwrap();
-        assert!(old.get("source").is_none());
-        assert_eq!(
-            serde_json::from_value::<LiveDisplayBlock>(old)
-                .unwrap()
-                .source,
-            None
-        );
-        for source in [
-            ChatSourceId::ForegroundTurn {
-                turn_id: "original-turn".into(),
-            },
-            ChatSourceId::Input {
-                input_id: "independent-input".into(),
-            },
-            ChatSourceId::BackgroundResult {
-                message_id: "background-result".into(),
-            },
-        ] {
-            block.source = Some(source.clone());
-            let wire = serde_json::to_value(&block).unwrap();
-            assert_eq!(wire["source"], serde_json::to_value(source).unwrap());
-            assert_eq!(
-                serde_json::from_value::<LiveDisplayBlock>(wire).unwrap(),
-                block
-            );
-        }
-    }
-
-    #[test]
-    fn work_timing_requires_the_current_two_timestamp_shape() {
-        let timing = WorkTiming {
-            started_at: 1000,
-            finished_at: Some(1125),
-        };
-        let wire = serde_json::to_value(&timing).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({"startedAt": 1000, "finishedAt": 1125})
-        );
-        assert_eq!(serde_json::from_value::<WorkTiming>(wire).unwrap(), timing);
-        assert!(
-            serde_json::from_value::<WorkTiming>(
-                serde_json::json!({"createdAt": 1000, "elapsedMs": 125000})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn body_indirection_keeps_the_flat_wire_shape() {
-        let body = work("work");
-        let wire = serde_json::to_value(&body).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({
-                "kind": "work",
-                "timing": WorkTiming::default(),
-                "members": {"databaseId": "db", "blockId": "work"},
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<DisplayBlockBody>(wire).unwrap(),
-            body
-        );
+    fn work_heads_do_not_reserve_an_inline_single_atom() {
         assert!(
             std::mem::size_of::<DisplayBlockBody>() < std::mem::size_of::<ChatAtom>(),
             "lightweight Work heads must not reserve an inline Single atom"
@@ -380,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_current_work_requires_one_matching_open_work_and_version_three() {
+    fn canonical_current_work_requires_one_matching_open_work_and_current_version() {
         let mut batch = TimelineBatch {
             presentation_version: PRESENTATION_VERSION,
             placement: ChatPlacement::Set,

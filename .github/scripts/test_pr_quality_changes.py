@@ -107,8 +107,8 @@ class PlanFromPathsTest(unittest.TestCase):
             "code/pl-core/Cargo.toml",
             "code/pl-core/src/chat/tests.rs",
             "code/pl-core/src/chat/tests/mod.rs",
-            "code/pl-studio-runtime/src/session/session_close_tests.rs",
-            "code/anywork/rust/src/api/studio/handlers/chat/tests.rs",
+            "code/pl-studio-runtime/src/session/mod.rs",
+            "code/anywork/rust/src/api/studio/handlers/chat.rs",
         ):
             self.assertTrue(self.plan(path)["windows_gui_build"])
 

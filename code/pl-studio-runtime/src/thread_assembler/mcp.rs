@@ -58,12 +58,6 @@ mod tests {
     use pl_tool::mcp::{McpConnector, McpRuntime};
     use std::{collections::BTreeMap, time::Duration};
 
-    mod peer {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../pl-tool/tests/support/mcp_stdio.rs"
-        ));
-    }
     struct UnusedModel;
     impl ModelSession for UnusedModel {
         async fn prepare(&mut self, _: ModelRequest) -> Result<PreparedModelCall, ModelError> {
@@ -144,5 +138,12 @@ mod tests {
         }
         runtime.shutdown().await?;
         Ok(())
+    }
+
+    mod peer {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../pl-tool/tests/support/mcp_stdio.rs"
+        ));
     }
 }

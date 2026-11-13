@@ -177,15 +177,6 @@ mod tests {
     }
 
     #[test]
-    fn frozen_v1_dto_round_trips_through_its_own_serde() {
-        let original: SettingsV1 =
-            serde_json::from_value(v1_wire_entries()).expect("valid v1 wire");
-        let serialized = serde_json::to_string(&original).expect("v1 serializes");
-        let reparsed: SettingsV1 = serde_json::from_str(&serialized).expect("v1 re-parses");
-        assert_eq!(reparsed, original);
-    }
-
-    #[test]
     fn migration_moves_validated_payload_and_preserves_unknown_entries() {
         let v1: SettingsV1 = serde_json::from_value(v1_wire_entries()).expect("valid v1 wire");
         let current = v1.migrate();

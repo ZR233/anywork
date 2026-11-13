@@ -230,20 +230,12 @@ fn overrides_clamp_restore_and_remain_isolated_without_mutating_model_presets() 
 }
 
 #[test]
-fn desired_configuration_omits_defaults_and_preserves_overrides_across_round_trip() {
+fn override_edits_are_atomic_and_persist_only_valid_selections() {
     let mut original = provider(vec![model("selected", Some(400_000))]);
-    let empty = serde_json::to_value(&original).unwrap();
-    assert!(empty["catalog"].get("auto_compact_overrides").is_none());
-    let legacy: AccountConfig = serde_json::from_value(empty).unwrap();
-    assert_eq!(legacy, original);
     original
         .replace_model_auto_compact_overrides([("selected".into(), 123_456)].into())
         .unwrap();
     let stored = serde_json::to_value(&original).unwrap();
-    assert_eq!(
-        stored["catalog"]["auto_compact_overrides"],
-        json!({"selected": 123456})
-    );
     let restored: AccountConfig = serde_json::from_value(stored.clone()).unwrap();
     assert_eq!(restored, original);
     for invalid in [

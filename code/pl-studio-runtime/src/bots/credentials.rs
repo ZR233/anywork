@@ -1541,6 +1541,26 @@ fn io_error(error: std::io::Error) -> FeishuError {
 }
 
 #[cfg(test)]
+fn take_write_fault() -> bool {
+    fault::take_write()
+}
+
+#[cfg(test)]
+fn take_skip_write_fault() -> bool {
+    fault::take_skip_write()
+}
+
+#[cfg(test)]
+fn take_confirm_fault() -> bool {
+    fault::take_confirm()
+}
+
+#[cfg(test)]
+fn take_journal_fault() -> bool {
+    fault::take_journal()
+}
+
+#[cfg(test)]
 mod fault {
     use std::cell::Cell;
     thread_local! {
@@ -1590,26 +1610,6 @@ mod fault {
             }
         })
     }
-}
-
-#[cfg(test)]
-fn take_write_fault() -> bool {
-    fault::take_write()
-}
-
-#[cfg(test)]
-fn take_skip_write_fault() -> bool {
-    fault::take_skip_write()
-}
-
-#[cfg(test)]
-fn take_confirm_fault() -> bool {
-    fault::take_confirm()
-}
-
-#[cfg(test)]
-fn take_journal_fault() -> bool {
-    fault::take_journal()
 }
 
 #[cfg(test)]
