@@ -13,6 +13,20 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.40.0](https://github.com/ZR233/anywork/compare/v6.39.0...v6.40.0) (2026-11-13)
+
+
+### Features
+
+* **studio:** 使用 clap 实现 anywk 生产命令行宿主 ([#427](https://github.com/ZR233/anywork/issues/427)) ([979bdf1](https://github.com/ZR233/anywork/commit/979bdf12698836423d02863368bb164076b8b799))
+
+
+### Bug Fixes
+
+* **studio:** 修复 Windows 创建 SSH 工作树失败 ([79d1472](https://github.com/ZR233/anywork/commit/79d1472a7f4731ae34b75fa20720cd79de99d318))
+* **studio:** 修复机器人工作区恢复时的路径比较 ([36776ba](https://github.com/ZR233/anywork/commit/36776badbf93a3f000a0c894c345fea4b9760b54))
+* **studio:** 统一 Windows 与 Linux 更新能力 ([#415](https://github.com/ZR233/anywork/issues/415)) ([40bd761](https://github.com/ZR233/anywork/commit/40bd761b442e6f39aa4c599c0c122262b08c50d2))
+
 ## [6.39.0](https://github.com/ZR233/anywork/compare/v6.38.0...v6.39.0) (2026-11-13)
 
 
