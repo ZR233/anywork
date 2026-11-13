@@ -84,6 +84,8 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 ### 空正文与附件
 
+任务查询的版本化机器载荷属于既有工具成员的 `output_artifacts`，来源是同一原始结果而非展示标题。它不形成新的 Single／Work，不改变分组、历史顺序、完成事实或模型上下文；机器读取边界见 [09.1](./09-tool-runtime.md#91-工具身份所有权与历史落盘栅栏)。旧投影缺少此附件不授权从展示字符串猜测或补造原件。
+
 零字节 Text Started 不建可见块、不封 Work，领域资格留在原调用 owner，不在展示层镜像空 part。原适配以一次 TextVisible 携 ContentAvailable 位置建块；DisplayHeader version3 增 first_content_at，首次填入后不改，DisplayRecord.start_fact 仍是真实开始。后续 token/progress/Terminal 只更新自己的 Text，不重复封闭后来创建的 Work。始终为空且无附件时保全原件但不建 Single；不 trim、不解析 Markdown，空白与未闭合 Markdown 保真。曾可见而权威终值为空且无附件时，保全真实空原件并以 SingleVisibility::FinalEmptyAfterContent 显示“该输出的最终内容为空”，不删除已发生边界。普通内容用 Content。RemoveEmpty 只限正式迁移中可证明从未可见的旧空壳，不用于新数据终值撤回。
 
 仅附件消息有效。图片读取仍属原工具成员；媒体失败不拆组、不制造顶层工具失败、不改变业务终态。Hidden 分类不能通过文本外观猜测边界。

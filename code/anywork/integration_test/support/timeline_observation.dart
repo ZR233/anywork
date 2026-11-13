@@ -645,8 +645,12 @@ final class TimelineObservation {
     );
   }
 
-  Finder _groupTitle(String id, {bool skipOffstage = true}) {
-    final header = groupHeader(id, skipOffstage: skipOffstage);
+  Finder _groupTitle(
+    String id, {
+    bool skipOffstage = true,
+    Finder? headerFinder,
+  }) {
+    final header = headerFinder ?? groupHeader(id, skipOffstage: skipOffstage);
     expect(header, findsOneWidget);
     final originalLease = lease;
     final originalController = originalLease.controller;
@@ -735,7 +739,7 @@ final class TimelineObservation {
   }
 
   Future<void> reveal(
-    Finder target,
+    Finder fragment,
     String unitId, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
@@ -753,6 +757,13 @@ final class TimelineObservation {
       (widget) =>
           widget is Scrollable &&
           identical(widget.controller, originalScrollController),
+    );
+    // A committed Main item can precede the frame that removes its live
+    // rendering. Resolve the fragment only inside this original Main domain.
+    final target = find.descendant(
+      of: scrollable,
+      matching: fragment,
+      skipOffstage: fragment.skipOffstage,
     );
     ScrollableState? originalScrollable;
     final clock = Stopwatch()..start();
@@ -1080,14 +1091,18 @@ final class TimelineObservation {
       interaction = target;
       interactionIsHeader = false;
       if (originalUnit!.body is SingleDisplayBlock) return true;
-      final headers = groupHeader(unitId).evaluate().toList();
+      final headerFinder = find.descendant(
+        of: scrollable,
+        matching: groupHeader(unitId),
+      );
+      final headers = headerFinder.evaluate().toList();
       if (headers.length > 1) {
         stop('Main reveal group header is not unique');
       }
       if (headers.isEmpty || !identical(fragment, headers.single)) return true;
       final header = headers.single;
       interactionIsHeader = true;
-      interaction = _groupTitle(unitId);
+      interaction = _groupTitle(unitId, headerFinder: headerFinder);
       final titles = interaction.evaluate().toList();
       if (titles.length > 1) {
         stop('Main reveal group header title is not unique');

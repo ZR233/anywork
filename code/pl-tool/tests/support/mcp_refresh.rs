@@ -59,6 +59,7 @@ impl RefreshPeer {
             execution_context: McpExecutionContext::Host,
             config: McpServerConfig {
                 transport: McpServerTransport::StreamableHttp,
+                startup_mode: Default::default(),
                 command: None,
                 args: Vec::new(),
                 env: BTreeMap::new(),
@@ -123,6 +124,453 @@ fn tool(name: &str) -> Value {
 
 async fn refresh(handle: &McpRuntimeHandle) -> anyhow::Result<pl_tool::mcp::McpToolRefreshReport> {
     Ok(tokio::time::timeout(Duration::from_secs(10), handle.refresh_tools()).await??)
+}
+
+#[tokio::test]
+async fn request_errors_and_sdk_timeout_preserve_the_session_without_replay() -> anyhow::Result<()>
+{
+    let mut peer = RefreshPeer::start().await?;
+    peer.config.config.tool_timeout_secs = Some(1);
+    let runtime = McpRuntime::new(McpConnector::default());
+    let handle = runtime.handle();
+    handle.reconcile(peer.servers()).await?;
+    let lease = handle.acquire_turn_lease().await?;
+    let call = || FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({}));
+
+    *peer.state.call_reply.lock().unwrap() = Some(json!({
+        "error": {"code": -32602, "message": "invalid refresh-secret-token"}
+    }));
+    let error = call().await.unwrap_err().to_string();
+    assert!(!error.contains("refresh-secret-token"));
+    assert!(error.contains("invalid"));
+    *peer.state.call_reply.lock().unwrap() = None;
+    call().await?;
+
+    *peer.state.call_reply.lock().unwrap() = Some(json!({
+        "result": {"content": [{"type": "text", "text": "business error"}], "isError": true}
+    }));
+    assert_eq!(call().await?.is_error, Some(true));
+    *peer.state.call_reply.lock().unwrap() = None;
+    call().await?;
+
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *peer.state.call_gate.lock().unwrap() = Some(gate.clone());
+    let error = call().await.unwrap_err().to_string();
+    assert!(error.contains("timeout"), "{error}");
+    gate.add_permits(1);
+    *peer.state.call_gate.lock().unwrap() = None;
+    tokio::time::timeout(Duration::from_secs(5), peer.state.cancelled.notified()).await?;
+    call().await?;
+
+    assert_eq!(peer.state.call_requests.load(Ordering::SeqCst), 6);
+    assert_eq!(peer.state.cancel_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        handle.acquire_turn_lease().await?.generation(),
+        lease.generation()
+    );
+    assert_eq!(handle.available_server_names().await, vec!["peer"]);
+    handle.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn retiring_one_session_does_not_stall_sibling_deadlines_or_admission() -> anyhow::Result<()>
+{
+    let mut first = RefreshPeer::start().await?;
+    first.config.id = "a".into();
+    let mut sibling = RefreshPeer::start().await?;
+    sibling.config.id = "b".into();
+    sibling.config.config.tool_timeout_secs = Some(1);
+    let servers = BTreeMap::from([
+        ("a".into(), first.config.clone()),
+        ("b".into(), sibling.config.clone()),
+    ]);
+    let handle = McpRuntime::new(McpConnector::default()).handle();
+    handle.reconcile(servers.clone()).await?;
+    let old = handle.acquire_turn_lease().await?;
+    handle
+        .reset(
+            McpResetScope::Server {
+                server_id: "a".into(),
+            },
+            servers,
+        )
+        .await?;
+    let current = handle.acquire_turn_lease().await?;
+    let close_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *first.state.delete_gate.lock().unwrap() = Some(close_gate.clone());
+    let call_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *sibling.state.call_gate.lock().unwrap() = Some(call_gate.clone());
+    let mut call = Box::pin(FrozenMcpLease::call_tool(
+        &current,
+        "b".into(),
+        "echo".into(),
+        json!({}),
+    ));
+    let started = Instant::now();
+    assert!(futures::poll!(call.as_mut()).is_pending());
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        sibling.state.call_entered.notified(),
+    )
+    .await?;
+    *sibling.state.call_gate.lock().unwrap() = None;
+    drop(old);
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        first.state.delete_entered.notified(),
+    )
+    .await?;
+    let timed_out = tokio::time::timeout(Duration::from_millis(1500), call).await;
+    let elapsed = started.elapsed();
+    // Admission and the next response must also progress while A's close is still pending.
+    let next = tokio::time::timeout(
+        Duration::from_millis(500),
+        FrozenMcpLease::call_tool(&current, "b".into(), "echo".into(), json!({})),
+    )
+    .await;
+    let completed_while_blocked = first.state.delete_completed.load(Ordering::SeqCst);
+    *first.state.delete_gate.lock().unwrap() = None;
+    close_gate.add_permits(1);
+    call_gate.add_permits(1);
+    handle.shutdown().await?;
+
+    let error = timed_out
+        .expect("retirement must continue polling sibling requests")
+        .expect_err("the original B request must time out")
+        .to_string();
+    assert!(error.contains("timeout"), "{error}");
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    next.expect("retirement must not block sibling admission")?;
+    assert_eq!(completed_while_blocked, 0);
+    assert_eq!(first.state.delete_completed.load(Ordering::SeqCst), 2);
+    assert_eq!(sibling.state.call_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(sibling.state.session_generation.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocked_cancel_confirmation_cannot_extend_request_deadline_or_kill_the_session()
+-> anyhow::Result<()> {
+    let mut peer = RefreshPeer::start().await?;
+    peer.config.config.tool_timeout_secs = Some(1);
+    let mut servers = peer.servers();
+    let mut sibling = peer.config.clone();
+    sibling.id = "sibling".into();
+    servers.insert("sibling".into(), sibling);
+    let handle = McpRuntime::new(McpConnector::default()).handle();
+    handle.reconcile(servers).await?;
+    let lease = handle.acquire_turn_lease().await?;
+    let call_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let cancel_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *peer.state.call_gate.lock().unwrap() = Some(call_gate.clone());
+    *peer.state.cancel_gate.lock().unwrap() = Some(cancel_gate.clone());
+    let started = Instant::now();
+    let mut call = Box::pin(FrozenMcpLease::call_tool(
+        &lease,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+    ));
+    assert!(futures::poll!(call.as_mut()).is_pending());
+    tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
+    // Only the already accepted original call keeps this gate.
+    *peer.state.call_gate.lock().unwrap() = None;
+    let result = tokio::time::timeout(Duration::from_secs(2), call).await;
+    let elapsed = started.elapsed();
+    let cancellation =
+        tokio::time::timeout(Duration::from_secs(2), peer.state.cancelled.notified()).await;
+    let completed_while_blocked = peer.state.cancel_completed.load(Ordering::SeqCst);
+    let available = handle.available_server_names().await;
+    let sibling_result =
+        FrozenMcpLease::call_tool(&lease, "sibling".into(), "echo".into(), json!({})).await;
+
+    // Release both SDK-owned exchanges even when the assertions below expose a regression.
+    *peer.state.cancel_gate.lock().unwrap() = None;
+    call_gate.add_permits(1);
+    cancel_gate.add_permits(1);
+    let next_result =
+        FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({})).await;
+    handle.shutdown().await?;
+
+    let error = result
+        .expect("SDK cancellation confirmation must not extend the request deadline")
+        .expect_err("the blocked original request must time out")
+        .to_string();
+    assert!(error.contains("timeout"), "{error}");
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    cancellation?;
+    assert_eq!(
+        completed_while_blocked, 0,
+        "cancellation was attempted, not acknowledged"
+    );
+    assert_eq!(available, vec!["peer", "sibling"]);
+    sibling_result?;
+    next_result?;
+    assert_eq!(peer.state.call_requests.load(Ordering::SeqCst), 3);
+    assert_eq!(peer.state.cancel_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovery_transport_failure_withdraws_tools_until_explicit_reset() -> anyhow::Result<()> {
+    let peer = RefreshPeer::start().await?;
+    let handle = McpRuntime::new(McpConnector::default()).handle();
+    handle.reconcile(peer.servers()).await?;
+    let old = handle.acquire_turn_lease().await?;
+    peer.state.expire_next_list.store(true, Ordering::SeqCst);
+    assert_eq!(
+        refresh(&handle).await?.servers[0].status,
+        McpToolRefreshStatus::Failed
+    );
+    assert!(handle.available_server_names().await.is_empty());
+    assert!(
+        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({}))
+            .await
+            .is_err()
+    );
+    handle.reconcile(peer.servers()).await?;
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 1);
+    handle.reset(McpResetScope::All, peer.servers()).await?;
+    let next = handle.acquire_turn_lease().await?;
+    FrozenMcpLease::call_tool(&next, "peer".into(), "echo".into(), json!({})).await?;
+    assert_eq!(peer.state.call_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.state.list_requests.load(Ordering::SeqCst), 3);
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
+    handle.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_reset_seals_old_target_leases_but_preserves_accepted_calls_and_siblings()
+-> anyhow::Result<()> {
+    let peer = RefreshPeer::start().await?;
+    let mut servers = peer.servers();
+    let mut sibling = peer.config.clone();
+    sibling.id = "sibling".into();
+    servers.insert("sibling".into(), sibling);
+    let handle = McpRuntime::new(McpConnector::default()).handle();
+    handle.reconcile(servers.clone()).await?;
+    let old = handle.acquire_turn_lease().await?;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *peer.state.call_gate.lock().unwrap() = Some(gate.clone());
+    let mut accepted = Box::pin(FrozenMcpLease::call_tool(
+        &old,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+    ));
+    assert!(futures::poll!(accepted.as_mut()).is_pending());
+    tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
+    *peer.state.call_gate.lock().unwrap() = None;
+    *peer.state.list_reply.lock().unwrap() = Some(json!({
+        "error": {"code": -32603, "message": "reset discovery failed"}
+    }));
+    assert!(
+        handle
+            .reset(
+                McpResetScope::Server {
+                    server_id: "peer".into()
+                },
+                servers
+            )
+            .await
+            .is_err()
+    );
+    let next = handle.acquire_turn_lease().await?;
+    assert_eq!(handle.available_server_names().await, vec!["sibling"]);
+    for lease in [&old, &next] {
+        assert!(
+            FrozenMcpLease::call_tool(lease, "peer".into(), "echo".into(), json!({}))
+                .await
+                .is_err()
+        );
+        FrozenMcpLease::call_tool(lease, "sibling".into(), "echo".into(), json!({})).await?;
+    }
+    gate.add_permits(1);
+    let result = accepted.await?;
+    assert!(
+        result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("session-")
+    );
+    assert_eq!(
+        peer.state.call_requests.load(Ordering::SeqCst),
+        3,
+        "the accepted call runs once; rejected old-target calls never reach the server"
+    );
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 3);
+    handle.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_stdio_exit_is_published_and_explicit_reset_recovers() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let script = write_python_mcp_server(temp.path(), "server.py", STDIO_MCP_SCRIPT);
+    let pid_file = temp.path().join("server.pid");
+    let config = stdio_effective_config(
+        "stdio",
+        &script,
+        Vec::new(),
+        BTreeMap::from([(
+            "MCP_PID_FILE".into(),
+            pid_file.to_string_lossy().into_owned(),
+        )]),
+        Some(temp.path().to_string_lossy().into_owned()),
+        McpExecutionContext::Host,
+    );
+    let runtime = McpRuntime::new(McpConnector::default());
+    let handle = runtime.handle();
+    let servers = BTreeMap::from([("stdio".into(), config)]);
+    handle.reconcile(servers.clone()).await?;
+    let old = handle.acquire_turn_lease().await?;
+    let pid: i32 = std::fs::read_to_string(&pid_file)?.parse()?;
+    let mut updates = handle.subscribe();
+    // This test owns the process and terminates it while no request is active.
+    // SAFETY: kill takes only integer arguments; pid is the positive PID written by
+    // this test's still-owned child, and SIGTERM is a valid signal.
+    assert!(pid > 0);
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    tokio::time::timeout(Duration::from_secs(5), updates.recv()).await??;
+    assert!(handle.available_server_names().await.is_empty());
+    assert!(handle.acquire_turn_lease().await?.tools().is_empty());
+    assert!(
+        FrozenMcpLease::call_tool(&old, "stdio".into(), "inspect_env".into(), json!({}))
+            .await
+            .is_err()
+    );
+    // An unchanged configuration is not an implicit retry path.
+    handle.reconcile(servers.clone()).await?;
+    assert!(handle.available_server_names().await.is_empty());
+    handle
+        .reset(
+            McpResetScope::Server {
+                server_id: "stdio".into(),
+            },
+            servers,
+        )
+        .await?;
+    let next = handle.acquire_turn_lease().await?;
+    assert_ne!(std::fs::read_to_string(&pid_file)?.parse::<i32>()?, pid);
+    FrozenMcpLease::call_tool(&next, "stdio".into(), "inspect_env".into(), json!({})).await?;
+    handle.shutdown().await?;
+    handle.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn old_stdio_notifications_and_failure_cannot_invalidate_a_reset_session()
+-> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let script = write_python_mcp_server(temp.path(), "server.py", STDIO_MCP_SCRIPT);
+    let release = temp.path().join("release");
+    let log = temp.path().join("requests.jsonl");
+    let config = stdio_effective_config(
+        "stdio",
+        &script,
+        Vec::new(),
+        BTreeMap::from([
+            ("MCP_REQUEST_LOG".into(), log.to_string_lossy().into_owned()),
+            (
+                "MCP_LATE_DISCONNECT_RELEASE".into(),
+                release.to_string_lossy().into_owned(),
+            ),
+        ]),
+        Some(temp.path().to_string_lossy().into_owned()),
+        McpExecutionContext::Host,
+    );
+    let runtime = McpRuntime::new(McpConnector::default());
+    let handle = runtime.handle();
+    let servers = BTreeMap::from([("stdio".into(), config)]);
+    handle.reconcile(servers.clone()).await?;
+    let old = handle.acquire_turn_lease().await?;
+    // Admit the old request before reset, then keep its result pending across replacement.
+    let mut accepted = Box::pin(FrozenMcpLease::call_tool(
+        &old,
+        "stdio".into(),
+        "inspect_env".into(),
+        json!({"mode": "late_disconnect"}),
+    ));
+    assert!(futures::poll!(accepted.as_mut()).is_pending());
+    assert_eq!(handle.available_server_names().await, vec!["stdio"]);
+    handle.reset(McpResetScope::All, servers).await?;
+    let next = handle.acquire_turn_lease().await?;
+    assert_ne!(old.generation(), next.generation());
+    std::fs::write(&release, b"ready")?;
+    assert!(accepted.await.is_err());
+    FrozenMcpLease::call_tool(&next, "stdio".into(), "inspect_env".into(), json!({})).await?;
+    // An explicit discovery is a serial barrier after the old failure; the late notification
+    // must not add a redundant tools/list on the newly installed session.
+    refresh(&handle).await?;
+    let records = std::fs::read_to_string(&log)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r["method"] == "tools/call")
+            .count(),
+        2
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r["method"] == "tools/list")
+            .count(),
+        3
+    );
+    assert_eq!(handle.available_server_names().await, vec!["stdio"]);
+    assert_eq!(
+        handle.acquire_turn_lease().await?.generation(),
+        next.generation()
+    );
+    handle.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropped_call_keeps_its_generation_and_shutdown_joins_the_original_request()
+-> anyhow::Result<()> {
+    let peer = RefreshPeer::start().await?;
+    let runtime = McpRuntime::new(McpConnector::default());
+    let handle = runtime.handle();
+    handle.reconcile(peer.servers()).await?;
+    let lease = handle.acquire_turn_lease().await?;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *peer.state.call_gate.lock().unwrap() = Some(gate.clone());
+    let caller = tokio::spawn(async move {
+        FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({})).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    handle.reset(McpResetScope::All, peer.servers()).await?;
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
+    assert!(
+        peer.state.deleted_sessions.lock().unwrap().is_empty(),
+        "the original request, not its dropped caller, must retain the old generation"
+    );
+
+    let mut shutdown = Box::pin(handle.shutdown());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), shutdown.as_mut())
+            .await
+            .is_err(),
+        "shutdown must wait for the accepted request"
+    );
+    // Shutdown was admitted and must reject new calls rather than replaying the old one.
+    gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), shutdown).await??;
+    handle.shutdown().await?;
+    assert_eq!(peer.state.call_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.state.deleted_sessions.lock().unwrap().len(), 2);
+    Ok(())
 }
 
 #[tokio::test]
@@ -415,6 +863,27 @@ async fn refresh_tools_updates_complete_definitions_and_reuses_connection() -> a
         updates.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
+    // Server enumeration order is not a definition change or a reason to invalidate
+    // the model's stable tool prefix/cache. Filtering and publication use name order.
+    peer.tools(json!([tool("removed"), tool("hidden"), tool("echo")]));
+    let reordered = refresh(&handle).await?;
+    assert_eq!(reordered.servers[0].status, McpToolRefreshStatus::Unchanged);
+    assert_eq!(reordered.generation, old.generation().0);
+    assert_eq!(
+        handle
+            .acquire_turn_lease()
+            .await?
+            .tools()
+            .iter()
+            .map(|tool| tool.raw_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["echo", "removed"],
+    );
+    assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        updates.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     // Changes excluded by configuration are not model-visible changes.
     peer.tools(json!([tool("echo"), tool("removed")]));
     assert_eq!(refresh(&handle).await?.generation, old.generation().0);
@@ -538,15 +1007,13 @@ async fn refresh_tools_serializes_reset_and_does_not_block_calls_or_leases() -> 
     let replacement = handle.acquire_turn_lease().await?;
     assert_ne!(replacement.generation(), old.generation());
     assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
-    // Old leases retain the original session rather than dispatching through its replacement.
-    let result = FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({})).await?;
+    // Reset stops admission through the old lease; it must not silently use the replacement.
     assert!(
-        result.content[0]
-            .as_text()
-            .unwrap()
-            .text
-            .contains("session-1")
+        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({}))
+            .await
+            .is_err()
     );
+    FrozenMcpLease::call_tool(&replacement, "peer".into(), "echo".into(), json!({})).await?;
     assert_eq!(
         refresh(&handle).await?.generation,
         replacement.generation().0

@@ -3198,6 +3198,7 @@ fn write_config_with_mcp_server(
             // This scenario must start the fixture process tree before testing shutdown.
             required: true,
             transport: McpServerTransport::Stdio,
+            startup_mode: Default::default(),
             command: Some(command.to_string_lossy().into_owned()),
             args: args.to_vec(),
             env: BTreeMap::new(),

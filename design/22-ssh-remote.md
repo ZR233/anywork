@@ -4,6 +4,10 @@
 
 SSH 是本地产品运行时选择的执行位置。Flutter 仅展示类型化产品快照；`pl-tool::remote::SshManager` 管理系统 OpenSSH、认证、资产引导及连接；`pl-remote-helper` library 提供统一 `Executor / Command / Child`、目标路径、流式文件与 HTTP。同 package 的 binary 在远端以前台 `--stdio` 运行，不保存 Thread、模型、工具注册、Git 工作树租约或授权策略。
 
+原生宿主或受控观察可通过 `StudioRuntimeOptions.ssh_config` 传入既有 `SshConfigFile::at` 句柄；同一文件同时用于服务器目录解析和 OpenSSH 的显式 `-F` 参数，不依赖改变 `HOME` 推断 OpenSSH 会读取哪个文件。省略时保留用户默认配置及 OpenSSH 默认选项行为。该句柄是进程启动依赖，不是新的用户配置文件格式，也不能由模型工具覆盖；目录、认证、辅助进程上传及重连继续由原 `SshManager` 持有。
+
+多个 Thread 可以共享同一 SSH 物理通道与 server，但各自持有独立的 MCP client、协议会话及 stdio 进程，不能因共用服务器而合并 Dart 项目根或调试状态。连接关闭后，旧 MCP 会话明确失效；用户显式重新连接后，新操作绑定新的执行器，不重发结果未知的进程启动或工具调用，不静默转到 Host。关闭一个成员不关闭其他成员的 MCP 或共享通道。MCP 层的错误分类、重连接口及会话状态重置见 [09](./09-tool-runtime.md#96-mcp-能力声明thread-独占运行时与轮次租约)。
+
 每个运行时内的服务器别名至多有一条活动 SSH 连接和一个前台 server。并发 Connect 共享同一个初始化结果，单个观察者取消不取消其他观察者。稳定执行阶段的一条 SSH stdio 承载一条 h2 连接，多个 Thread、工作区、MCP、LSP、Git 与 CLI 共享它；首次平台探测和资产上传仍使用短期引导进程。引导 shell 可以 exec 进入 server，server 不被业务程序替换。
 
 执行器不持有默认工作区。工作区只绑定具体 `{ executor, root }`，Thread 拥有自己创建的 Child、协议运行态和临时目录。关闭一个 Thread 或 MCP 不关闭其他 Thread 共享的 SSH。旧句柄固定绑定创建它的具体连接，连接关闭后永久失效；显式新建连接不能恢复或替换旧句柄。

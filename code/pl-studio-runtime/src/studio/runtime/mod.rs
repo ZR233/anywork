@@ -120,6 +120,9 @@ pub struct StudioSubmitPromptOptions {
     /// their caller. Initial submission of an explicitly routed new Thread has
     /// no prior Client mirror and remains in the same lifecycle transaction.
     pub expected_model_route_revision: Option<u64>,
+    /// Tightens this input's model-step budget without changing the Thread default.
+    /// Child submissions remain bounded by the existing child policy.
+    pub max_model_steps: Option<std::num::NonZeroU32>,
 }
 
 /// Studio 输入受理回执；实际 Turn 关联由 Thread 事实流提供。

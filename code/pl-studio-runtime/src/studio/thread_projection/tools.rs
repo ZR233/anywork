@@ -1,4 +1,4 @@
-//! Tool timeline facts use original call bytes and the context actually delivered by core.
+//! Tool timeline facts keep delivered text and producer-owned machine metadata separate.
 use super::{ProjectionError, content::text_content};
 use pl_core::context::ResourceReference;
 use pl_core::thread::{
@@ -235,6 +235,9 @@ fn project_invocation(
 
 fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, ProjectionError> {
     let mut resources = Vec::new();
+    let task_query_payload = (delivery.tool_id == "get_tool_task"
+        && delivery.output.payload().format() == "pl.tool.task")
+        .then_some(delivery.output.payload());
     for content in &delivery.delivered_context {
         match content {
             pl_core::context::ContextContent::Text { .. } => {}
@@ -242,7 +245,11 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
                 resources.push(serde_json::to_value(reference)?)
             }
             pl_core::context::ContextContent::Opaque { payload } => {
-                resources.push(serde_json::to_value(payload)?)
+                // The same query payload receives its explicit machine envelope
+                // below. Retain every other opaque context without duplicating it.
+                if task_query_payload != Some(payload) {
+                    resources.push(serde_json::to_value(payload)?);
+                }
             }
         }
     }
@@ -257,6 +264,17 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
                 payload: delivery.output.payload().clone(),
             },
         )?);
+    }
+    if let Some(payload) = task_query_payload {
+        // A query may itself finish in the background. Its delivered text then
+        // includes a task notice, but the original versioned page is unchanged.
+        // Preserve that producer value as metadata without altering model input.
+        let artifact = serde_json::to_value(pl_core::context::ContextContent::Opaque {
+            payload: payload.clone(),
+        })?;
+        if !resources.contains(&artifact) {
+            resources.push(artifact);
+        }
     }
     let output = ThreadToolOutput::new(
         text_content(&delivery.delivered_context),
@@ -319,4 +337,109 @@ fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
         .ok()?
         .state
         .exit_code()
+}
+
+#[cfg(test)]
+mod task_query_payload_tests {
+    use super::*;
+    use pl_core::context::{ContextContent, OpaquePayload};
+    use pl_core::tool::ToolOutput;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn text(value: &str) -> ContextContent {
+        ContextContent::Text {
+            text: Arc::from(value),
+        }
+    }
+
+    fn query_payload(version: u32) -> OpaquePayload {
+        OpaquePayload::new(
+            "pl.tool.task",
+            version,
+            json!({
+                "task": {
+                    "id": "task:original", "callId": "call:original", "toolId": "exec",
+                    "turnId": "turn:control", "revision": 2, "status": "succeeded"
+                },
+                "result": {
+                    "format": "pl.tool.exec", "version": 2, "content": "{\"exitCode\":0}",
+                    "nextCursor": null, "totalBytes": 14
+                }
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn delivery(tool: &str, payload: OpaquePayload, context: Vec<ContextContent>) -> ToolDelivery {
+        ToolDelivery {
+            target: Default::default(),
+            call_id: "call:query".into(),
+            tool_id: tool.into(),
+            output: ToolOutput::new(payload, context.clone()),
+            delivered_context: context,
+            outcome: ToolOutcome::Succeeded,
+        }
+    }
+
+    #[test]
+    fn query_payload_survives_inline_background_and_existing_opaque_context() {
+        let payload = query_payload(1);
+        let opaque = ContextContent::Opaque {
+            payload: payload.clone(),
+        };
+        for context in [
+            vec![text("a JSON-looking display is not the payload")],
+            vec![
+                text("Task task:query for tool get_tool_task finished: Succeeded."),
+                text("arbitrary delivered presentation"),
+            ],
+            vec![opaque.clone(), text("same producer value")],
+        ] {
+            let original = context.clone();
+            let delivery = delivery("get_tool_task", payload.clone(), context);
+            let state = terminal(&delivery, 42).unwrap();
+            let ThreadToolState::Succeeded(done) = state else {
+                panic!("query projection did not retain its successful outcome");
+            };
+            let output = done.output();
+            assert_eq!(output.result(), text_content(&original));
+            assert_eq!(
+                output.output_artifacts(),
+                &[serde_json::to_value(&opaque).unwrap()]
+            );
+            assert_eq!(delivery.delivered_context, original);
+            assert_eq!(delivery.output.payload(), &payload);
+        }
+    }
+
+    #[test]
+    fn task_payload_requires_its_original_query_tool_identity() {
+        for (tool, payload) in [
+            ("exec", query_payload(1)),
+            (
+                "get_tool_task",
+                OpaquePayload::text("not a task query payload"),
+            ),
+        ] {
+            let state = terminal(&delivery(tool, payload, Vec::new()), 42).unwrap();
+            let ThreadToolState::Succeeded(done) = state else {
+                panic!("projection changed the execution outcome");
+            };
+            assert!(done.output().output_artifacts().is_empty());
+        }
+    }
+
+    #[test]
+    fn opaque_query_metadata_preserves_unknown_versions_without_decoding() {
+        let payload = query_payload(99);
+        let state = terminal(&delivery("get_tool_task", payload.clone(), Vec::new()), 42).unwrap();
+        let ThreadToolState::Succeeded(done) = state else {
+            panic!("projection changed the execution outcome");
+        };
+        let artifact: ContextContent =
+            serde_json::from_value(done.output().output_artifacts()[0].clone()).unwrap();
+        assert_eq!(artifact, ContextContent::Opaque { payload });
+    }
 }
