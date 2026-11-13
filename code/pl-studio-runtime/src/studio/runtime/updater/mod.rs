@@ -862,6 +862,9 @@ mod tests {
     ) -> Result<(tempfile::TempDir, StudioUpdateRuntime, Arc<TestIo>)> {
         let temp = tempfile::tempdir()?;
         let mut owner = StudioUpdateRuntime::with_publisher(Arc::new(|_| {}))?;
+        // Injected IO exercises the scheduler independently of this test host's
+        // production update capability (including unsupported macOS builds).
+        *owner.state.write().await = StudioUpdateStateSnapshot::idle(unix_seconds());
         let path = temp.path().join("verified-installer");
         std::fs::write(&path, "test installer lease")?;
         let io = Arc::new(TestIo {

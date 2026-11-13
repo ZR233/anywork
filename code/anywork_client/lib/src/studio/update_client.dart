@@ -168,7 +168,12 @@ final class StudioUpdateClient {
   }
 
   Future<void> check() {
-    if (_closed || !enabled || _isInstalling(state)) return Future.value();
+    if (_closed ||
+        !enabled ||
+        state.activity is DisabledUpdaterActivity ||
+        _isInstalling(state)) {
+      return Future.value();
+    }
     if (_checkTask case final pending?) return pending;
     final completed = Completer<void>();
     _checkTask = completed.future;

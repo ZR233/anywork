@@ -276,6 +276,10 @@ fn launch_error(message: impl Into<String>) -> StudioUpdateError {
 
 /// Consume only installer outcomes, never reconstruct a verified installer lease.
 pub fn take_installation_failure() -> Result<Option<(StudioUpdate, String)>, StudioUpdateError> {
+    // Development/test processes do not own the installed application's receipt.
+    if std::env::current_exe().map_err(io_error)? != std::path::Path::new(APP) {
+        return Ok(None);
+    }
     let path = dirs::state_dir()
         .ok_or_else(|| launch_error("user state directory unavailable"))?
         .join("anywork/update-result.json");
