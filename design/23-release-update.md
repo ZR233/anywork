@@ -8,7 +8,7 @@ macOS 当前提供从源码构建当前宿主架构的 `.app`：bridge 动态库
 
 ### Release Please 版本计算与人工审批
 
-Studio 使用 Release Please 的单一根组件管理版本：根版本文件、发布清单（release manifest）与带版本注解的 Flutter `pubspec.yaml` 由同一个 Release PR 同步更新；Flutter 版本仅允许规范的稳定语义化版本 `x.y.z`，不使用 `+build` 后缀。版本变更从整个仓库的约定式提交（Conventional Commits）收集，自动版本计算采用 `always-bump-minor` 策略：
+Studio 使用 Release Please 的单一根组件管理版本：根版本文件、发布清单（release manifest）与带版本注解的 Flutter `pubspec.yaml` 由同一个 Release PR 同步更新；组件预览包依赖锁中的本地应用版本也由官方 YAML 定点更新能力同步，保持严格依赖解析有效，不重新选择其他依赖版本。Flutter 版本仅允许规范的稳定语义化版本 `x.y.z`，不使用 `+build` 后缀。版本变更从整个仓库的约定式提交（Conventional Commits）收集，自动版本计算采用 `always-bump-minor` 策略：
 - **次版本统一递增**：可发布的产品修改统一递增次版本号（minor）并将修订号（patch）归零，`fix:` 提交也不自动递增 patch；携带 `!` 或 `BREAKING CHANGE:` 的提交不自动递增主版本号（major），但必须保留真实的破坏性变更标记与发行说明。
 - **非产品提交隐藏**：普通 `docs:`、`chore:` 与 `ci:` 提交隐藏，不进入发行说明，仅包含此类提交的批次不生成 Release PR；但包含真实破坏性变更说明或显式 `Release-As` 人工版本指定的提交不受此过滤影响。
 - **主版本人工决策**：主版本号（major）升级必须由维护者明确决定，在合入主分支的提交正文中使用 `Release-As: x.y.z` 指定目标稳定版本，再人工审查并合并生成的 Release PR；显式指定仅作用于当次发布，后续恢复自动递增次版本策略，不在配置文件中长期保留 `release-as` 覆盖。所有版本均以人工审查并合并 Release PR 作为发版批准。

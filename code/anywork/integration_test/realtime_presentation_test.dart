@@ -302,7 +302,6 @@ void main() {
           'realtime-parallel-call-a',
           'realtime-parallel-call-b',
         },
-        settleDisclosure: false,
         preparedObserver: parallelObserver,
         beginRelease: (onProgress) => beginFixtureGateRelease(
           tester,
@@ -401,7 +400,6 @@ void main() {
         await scene.untilLaidOutCurrentTools(
           minimum: 1,
           commandParentCallIds: const {'realtime-host-cwd-call'},
-          settleDisclosure: false,
           preparedObserver: hostObserver,
         );
         final hostCwdTurnId = hostObserver.turnId;
@@ -3179,7 +3177,6 @@ final class _RealtimeScene {
     required int minimum,
     Set<String> toolCallIds = const {},
     Set<String> commandParentCallIds = const {},
-    bool settleDisclosure = true,
     _PreparedToolObserver? preparedObserver,
     Future<({Future<void> completed})> Function(
       void Function(String phase) onProgress,
@@ -3187,7 +3184,6 @@ final class _RealtimeScene {
     beginRelease,
   }) async {
     final clock = Stopwatch()..start();
-    var settled = !settleDisclosure;
     final observations = <Map<String, Object?>>[];
     if (preparedObserver != null) {
       preparedObserver.evidence['observations'] = observations;
@@ -3382,10 +3378,27 @@ final class _RealtimeScene {
         final laidOut = required
             ?.where((atom) => isTimelineContentLaidOut(currentToolCard(atom)))
             .length;
+        final titlesHitTestable =
+            required?.every((atom) {
+              final title = find.descendant(
+                of: currentToolCard(atom),
+                matching: find.byType(TimelineActivityRow),
+              );
+              if (title.evaluate().length != 1) return false;
+              final row = tester.widget<TimelineActivityRow>(title);
+              final label = find.descendant(
+                of: title,
+                matching: find.text(row.label),
+              );
+              return isTimelineContentLaidOut(label) &&
+                  label.hitTestable().evaluate().length == 1;
+            }) ??
+            false;
         frame?.addAll({
           'sampleMillis': clock.elapsedMilliseconds,
           'revision': memberController?.page?.revision,
           'membersAvailable': observerReady,
+          'titlesHitTestable': titlesHitTestable,
           'members': [
             for (final callId in expectedCallIds)
               {
@@ -3406,6 +3419,7 @@ final class _RealtimeScene {
           if (preparedObserver != null)
             'observer': _preparedToolObserverSnapshot(preparedObserver),
           'membersAvailable': observerReady,
+          'titlesHitTestable': titlesHitTestable,
           'commandCalls': commandCalls,
           'members': tools
               ?.map(
@@ -3437,13 +3451,11 @@ final class _RealtimeScene {
                 .map((atom) => atom.tool?.callId)
                 .toSet()
                 .containsAll(expectedCallIds) &&
-            laidOut == required.length) {
-          if (!settled) {
-            await pumpObservedFrame(const Duration(milliseconds: 300));
-            expect(tester.takeException(), isNull);
-            settled = true;
-            continue;
-          }
+            laidOut == required.length &&
+            titlesHitTestable) {
+          // Validate the admitted frame immediately. Pumping after layout can
+          // let the real command finish and retire this current Work window.
+          expect(tester.takeException(), isNull);
           expect(
             required.map((atom) => atom.tool?.callId).toSet(),
             hasLength(required.length),
