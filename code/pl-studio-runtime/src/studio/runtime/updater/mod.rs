@@ -85,15 +85,9 @@ struct PreparedUpdate {
 }
 
 impl PreparedUpdate {
-    fn selection(&mut self) -> Option<&str> {
-        if self
-            .selection_cancellation
-            .as_ref()
-            .is_some_and(StudioUpdateCancellation::is_cancelled)
-        {
-            self.selected_version = None;
-            self.selection_cancellation = None;
-        }
+    fn selection(&self) -> Option<&str> {
+        // Cancellation is only a signal. Keep the reservation until the owner
+        // has joined the platform handoff and released it explicitly.
         self.selected_version.as_deref()
     }
 }
@@ -202,6 +196,7 @@ impl StudioUpdateRuntime {
         &self,
         cancellation: &StudioUpdateCancellation,
     ) -> Result<()> {
+        self.abort_cancelled_installation().await?;
         let round = {
             let mut active = self.active.lock().await;
             if active.is_some() || self.prepared.lock().await.selection().is_some() {
@@ -261,6 +256,7 @@ impl StudioUpdateRuntime {
         if cancellation.is_cancelled() {
             return Ok(StudioUpdatePreparationResult::Cancelled);
         }
+        self.abort_cancelled_installation().await?;
         let round = {
             let mut active = self.active.lock().await;
             let mut prepared = self.prepared.lock().await;

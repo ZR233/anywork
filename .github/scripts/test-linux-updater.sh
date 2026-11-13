@@ -10,7 +10,8 @@ test -x "$executable"
 result=0
 for runtime in ubuntu:22.04 ubuntu:24.04 debian:12-slim debian:13-slim; do
   image="anywork-updater-test:${runtime//[:.]/-}"
-  docker build --platform linux/amd64 --build-arg "BASE_IMAGE=$runtime" --file docker/linux/tests-updater.Dockerfile --tag "$image" .
+  printf 'PackageKit verification: %s\n' "$runtime"
+  docker build --quiet --platform linux/amd64 --build-arg "BASE_IMAGE=$runtime" --file docker/linux/tests-updater.Dockerfile --tag "$image" .
   if ! docker run --rm --init --platform linux/amd64 --mount "type=bind,src=$executable,dst=/update-tests,readonly" "$image" \
       bash -euo pipefail -c '
         dbus-daemon --system --fork --nopidfile

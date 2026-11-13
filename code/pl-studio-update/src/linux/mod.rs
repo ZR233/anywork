@@ -47,11 +47,18 @@ struct Receipt {
     error: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitState {
+    Pending,
+    Sent,
+    Acknowledged,
+}
+
 pub(crate) struct LinuxHandoff {
     child: Child,
     input: Option<ChildStdin>,
     output: BufReader<tokio::process::ChildStdout>,
-    committed: bool,
+    commit_state: CommitState,
     // The original process retains this until the supervisor acknowledges the
     // sealed file. The supervisor/root installer then own independent handles.
     _sealed: File,
@@ -59,7 +66,7 @@ pub(crate) struct LinuxHandoff {
 
 impl LinuxHandoff {
     pub(crate) async fn abort(&mut self) -> Result<(), StudioUpdateError> {
-        if self.committed {
+        if self.commit_state != CommitState::Pending {
             return Err(StudioUpdateError::new(
                 StudioUpdateErrorCode::CancellationTooLate,
                 "installation ownership has already transferred",
@@ -71,8 +78,15 @@ impl LinuxHandoff {
     }
 
     pub(crate) async fn commit(&mut self) -> Result<(), StudioUpdateError> {
-        if self.committed {
-            return Ok(());
+        match self.commit_state {
+            CommitState::Acknowledged => return Ok(()),
+            CommitState::Sent => {
+                return Err(StudioUpdateError::new(
+                    StudioUpdateErrorCode::InstallerOutcomeUnknown,
+                    "installer commit acknowledgement was lost",
+                ));
+            }
+            CommitState::Pending => {}
         }
         let input = self
             .input
@@ -81,10 +95,11 @@ impl LinuxHandoff {
         input.write_all(b"commit\n").await.map_err(io_error)?;
         // From a complete commit write, a lost ACK is an unknown handoff
         // outcome. Never kill the supervisor: it may already own installation.
-        self.committed = true;
+        self.commit_state = CommitState::Sent;
         input.flush().await.map_err(io_error)?;
         match read_reply(&mut self.output).await? {
             Reply::Committed => {
+                self.commit_state = CommitState::Acknowledged;
                 self.input.take();
                 Ok(())
             }
@@ -98,7 +113,7 @@ impl Drop for LinuxHandoff {
         // Before commit, EOF aborts authorization/installation. After commit the
         // independent supervisor intentionally outlives the application.
         self.input.take();
-        if !self.committed {
+        if self.commit_state == CommitState::Pending {
             let _ = self.child.start_kill();
         }
     }
@@ -184,7 +199,7 @@ pub(crate) async fn prepare(
         child,
         input: Some(input),
         output: BufReader::new(output),
-        committed: false,
+        commit_state: CommitState::Pending,
         _sealed: sealed,
     };
     let ready = tokio::select! {

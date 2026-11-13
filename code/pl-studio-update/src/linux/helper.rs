@@ -515,8 +515,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_clean_handoff_still_waits_for_the_actual_process_exit() {
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read command"])
+            .stdin(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .unwrap();
@@ -533,6 +534,34 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_lost_commit_ack_is_never_reported_as_success_by_a_retry() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read command; exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut handoff = LinuxHandoff {
+            input: child.stdin.take(),
+            output: BufReader::new(child.stdout.take().unwrap()),
+            child,
+            commit_state: CommitState::Pending,
+            _sealed: tempfile::tempfile().unwrap(),
+        };
+        assert!(handoff.commit().await.is_err());
+        assert_eq!(
+            handoff.commit().await.unwrap_err().code(),
+            StudioUpdateErrorCode::InstallerOutcomeUnknown
+        );
+        assert_eq!(
+            handoff.abort().await.unwrap_err().code(),
+            StudioUpdateErrorCode::CancellationTooLate
+        );
+        handoff.child.wait().await.unwrap();
     }
 
     struct Control;
