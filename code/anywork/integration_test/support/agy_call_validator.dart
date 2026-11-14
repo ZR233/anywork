@@ -221,8 +221,17 @@ abstract class AgyCallValidator<C> {
     final close = named('anywork_close_agent')
         .singleWhere((call) => input(call)['target'] == id);
     final closed = _object(output(close), 'close_agent result');
-    expect(closed['agentId'], id);
-    expect(closed['executionClosed'], isTrue);
+    // AgentCloseOutcome is serialized by pl-tool/collaboration/control.rs;
+    // per-member facts are in agents, never flattened into the outcome.
+    expect(closed.keys, containsAll(['target', 'agents', 'error']));
+    expect(closed['target'], id);
+    expect(closed['error'], isNull);
+    expect(closed['agents'], isA<List>());
+    final closeFacts = closed['agents'] as List;
+    expect(closeFacts, hasLength(1), reason: 'Ordinary ACP child close scope');
+    final childClosed = _object(closeFacts.single, 'original child close fact');
+    expect(childClosed['agentId'], id);
+    expect(childClosed['executionClosed'], isTrue);
     return {
       'agentId': id,
       'profileId': profile,
@@ -231,7 +240,7 @@ abstract class AgyCallValidator<C> {
       'run': original['run'],
       'completionSequence': original['completionSequence'],
       'cursor': cursor,
-      'executionClosed': closed['executionClosed'],
+      'executionClosed': childClosed['executionClosed'],
       'childObservedHostToolCalls': childMcp['observedToolCalls'],
     };
   }

@@ -660,7 +660,17 @@ void main() {
         'r4',
         'anywork_close_agent',
         {'target': child},
-        {'agentId': child, 'executionClosed': true},
+        {
+          'target': child,
+          'agents': [
+            {
+              'agentId': child,
+              'executionClosed': true,
+              'worktreeCleanup': {'kind': 'notApplicable'},
+            },
+          ],
+          'error': null,
+        },
       ),
     ];
     final children = [
@@ -700,6 +710,43 @@ void main() {
     );
     owned.verifyGeneratedResults();
     await r.verifyDrained();
+    final outcome = rows.last['value'] as Map<String, dynamic>;
+    final fact = (outcome['agents'] as List).single as Map<String, dynamic>;
+    for (final invalid in [
+      {'agentId': child, 'executionClosed': true},
+      {...outcome, 'target': 'other-child'},
+      {...outcome, 'agents': []},
+      {
+        ...outcome,
+        'agents': [
+          {...fact, 'agentId': 'other-child'},
+        ],
+      },
+      {
+        ...outcome,
+        'agents': [
+          {...fact, 'executionClosed': false},
+        ],
+      },
+      {
+        ...outcome,
+        'error': {'code': 'synthetic.close.failure'},
+      },
+    ]) {
+      final invalidCalls = AgyHostCalls([
+        for (var i = 0; i < rows.length; i++)
+          AgyHostRecord.parse(
+            i == rows.length - 1 ? {...rows[i], 'value': invalid} : rows[i],
+            gui,
+            'studio.log',
+            i + 1,
+          ),
+      ]);
+      expect(
+        () => invalidCalls.verifyChild('profile', marker, root),
+        throwsA(isA<TestFailure>()),
+      );
+    }
   });
   test(
     'C task remains running at exact 1ms observation under same validator',
