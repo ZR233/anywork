@@ -1,6 +1,6 @@
 ---
 name: lsp-code-navigation
-description: Use for semantic code understanding and navigation, including definitions, inferred types, references, implementations, call relationships and diagnostics. Includes preparing a missing language server for code questions, discovering query tools and recovering initialization or query failures.
+description: Prepare and verify language servers for a project's languages, or use semantic queries for definitions, inferred types, references, implementations, call relationships and diagnostics. Covers project loading, query discovery and initialization or query failures.
 category: development
 ---
 
@@ -26,6 +26,17 @@ Trace the target file to its manifest and workspace membership rather than assum
 the shell directory, repository root and language project root are interchangeable.
 Check native LSP status and reuse a suitable healthy server. Readiness alone does
 not establish that it analyzes the intended project or conditional/generated code.
+
+Before starting a missing server, verify that the language's project tooling can
+resolve the target project's structure. Prefer the lowest-cost official metadata
+or project-inspection command for the installed toolchain, using the project's
+existing SDK and build context. Check its exit status and whether the target file
+belongs to the resolved project; reading a manifest is not a successful load.
+An enclosing workspace, missing dependency resolution or generated inputs can
+prevent analysis even when the server starts. Repair an authorized preparation
+gap before initialization; do not conceal it with server tuning or a dummy
+manifest. Standalone files may be valid without a manifest. This check does not
+require a full build, dependency upgrade or execution of untrusted project code.
 
 Before declaring sources absent, check the execution root, manifest paths and
 search filters or ignore rules. An empty default file listing can exclude an
@@ -108,7 +119,9 @@ For position queries, read the target file's relevant lines and place the cursor
 inside the intended identifier, or use a symbol query's returned source position.
 Keep each file's path and own line numbers together: numbering across concatenated
 files is not a position in any one file. Follow the advertised character encoding
-and coordinate base rather than counting output prefixes or bytes.
+and coordinate base rather than counting output prefixes or bytes. Recompute the
+position after an edit; a cursor on a neighboring module or import can produce a
+valid response about the wrong symbol.
 
 Check the returned declaration and type against the intended symbol. A jump from
 an import path to a library is not evidence that a function call resolved. For an
@@ -125,9 +138,16 @@ Initial indexing can produce transient empty results or `ContentModified` even
 without a source edit. Preserve the response, wait for progress through bounded
 retries, and inspect the eventual result; do not rewrite source to provoke an
 update. For persistent failure, inspect the actual configuration, initialization
-or query error and fix its cause within scope. Keep ordinary development available.
+or query error and fix its cause within scope. If a ready server repeatedly gives
+empty results at a verified position, inspect project loading and membership
+rather than treating readiness as proof that indexing will eventually succeed.
+Retry after correcting a concrete cause; reload only the affected server if that
+server's lifecycle requires it. Keep ordinary development available.
 
 Report useful semantic results and relevant locations when obtained. Otherwise
 explain the observed permission, executable, project, configuration or query gap,
 and what the available source evidence does establish. Do not claim unavailability
 from an empty initial catalog, or overstate unverified branches and platforms.
+Distinguish first-attempt success from recovery after retries or repairs. A useful
+setup report identifies the execution side, project, configuration source and
+meaningful query result, with any remaining gap; do not report only "configured".
