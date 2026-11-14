@@ -414,6 +414,11 @@ mod tests {
     async fn derived_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         let completed = completion_boundary::applied(db).await?;
         let mut facts = Vec::new();
+        let lifecycle_query = if version(db).await? >= 24 {
+            "SELECT json_array(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_effect,started_suborder,started_at,ended_effect,ended_suborder,finished_at,outcome,completion_item_id,last_write_seq) AS fact FROM execution_lifecycle ORDER BY identity"
+        } else {
+            "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS fact FROM conversation_atom_facts ORDER BY effect_seq,suborder,fact_order,atom_id,phase"
+        };
         for query in [
         "SELECT json_array(item_id,kind,location,position,commit_seq,hex(metadata),projection_version) AS fact
          FROM timeline_items ORDER BY location,position,item_id",
@@ -421,8 +426,7 @@ mod tests {
          FROM timeline_item_members ORDER BY item_id,member_order",
         "SELECT json_array(projection_version,next_position,source_effect_seq,projection_generation,hex(recovery)) AS fact
          FROM timeline_projection_state ORDER BY singleton_id",
-        "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS fact
-         FROM conversation_atom_facts ORDER BY effect_seq,suborder,fact_order,atom_id,phase",
+        lifecycle_query,
     ] {
         let query = if completed {
             query.replace("FROM timeline_items ", "FROM completion_boundary_archive_timeline_items ")
@@ -516,6 +520,11 @@ mod tests {
 
     async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
         let completed = completion_boundary::applied(db).await?;
+        let atom_table = if version(db).await? >= 24 {
+            "execution_lifecycle"
+        } else {
+            "conversation_atom_facts"
+        };
         let current_table = if completed {
             "completion_boundary_archive_view_state"
         } else {
@@ -537,11 +546,11 @@ mod tests {
             "timeline_projection_state"
         };
         db.execute_unprepared(
-        &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON conversation_atom_facts
+        &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
-         CREATE TRIGGER reject_atom_update BEFORE UPDATE ON conversation_atom_facts
+         CREATE TRIGGER reject_atom_update BEFORE UPDATE ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
-         CREATE TRIGGER reject_atom_delete BEFORE DELETE ON conversation_atom_facts
+         CREATE TRIGGER reject_atom_delete BEFORE DELETE ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
          CREATE TRIGGER reject_item_insert BEFORE INSERT ON {item_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote items'); END;
