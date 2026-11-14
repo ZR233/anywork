@@ -46,10 +46,7 @@
       "$ref": "#/$defs/utcTimestamp"
     },
     "threadId": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
     "source": {
       "$ref": "#/$defs/EventSourceV2"
@@ -57,116 +54,32 @@
   },
   "allOf": [
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "runStarted"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/RunStartedData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "runStarted" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunStartedData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "agentRegistered"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/AgentRegisteredData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "agentRegistered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/AgentRegisteredData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "skillsDiscovered"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/SkillsDiscoveredData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "skillsDiscovered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/SkillsDiscoveredData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "inferenceFinished"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/InferenceFinishedData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "inferenceFinished" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/InferenceFinishedData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "completion"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/CompletionData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "completion" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/CompletionData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "threadSealed"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/ThreadSealedData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "threadSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/ThreadSealedData" } } }
     },
     {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "runSealed"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "data": {
-            "$ref": "#/$defs/RunSealedData"
-          }
-        }
-      }
+      "if": { "properties": { "type": { "const": "runSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunSealedData" } } }
     },
     {
       "if": {
@@ -201,16 +114,9 @@
     "BuildInfoV2": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "version",
-        "gitCommit",
-        "target"
-      ],
+      "required": ["version", "gitCommit", "target"],
       "properties": {
-        "version": {
-          "type": "string",
-          "minLength": 1
-        },
+        "version": { "type": "string", "minLength": 1 },
         "gitCommit": {
           "type": [
             "string",
@@ -218,10 +124,7 @@
           ],
           "pattern": "^[0-9a-f]{40}$"
         },
-        "target": {
-          "type": "string",
-          "minLength": 1
-        }
+        "target": { "type": "string", "minLength": 1 }
       }
     },
     "EventSourceV2": {
@@ -237,91 +140,35 @@
         "completionSeq"
       ],
       "properties": {
-        "epoch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "effectSeq": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "turnId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "attemptId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "toolCallId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "completionItemId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "completionSeq": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        }
+        "epoch": { "type": ["string", "null"] },
+        "effectSeq": { "type": ["integer", "null"], "minimum": 0 },
+        "turnId": { "type": ["string", "null"] },
+        "attemptId": { "type": ["string", "null"] },
+        "toolCallId": { "type": ["string", "null"] },
+        "completionItemId": { "type": ["string", "null"] },
+        "completionSeq": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
     "CompletionCursorV2": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "epoch",
-        "completionSeq"
-      ],
+      "required": ["epoch", "completionSeq"],
       "properties": {
-        "epoch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "completionSeq": {
-          "type": "integer",
-          "minimum": 0
-        }
+        "epoch": { "type": ["string", "null"] },
+        "completionSeq": { "type": "integer", "minimum": 0 }
       }
     },
     "RunStartedData": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "runId",
-        "build",
-        "manifestSha256"
-      ],
+      "required": ["runId", "build", "manifestSha256"],
       "properties": {
         "runId": {
           "type": "string",
           "format": "uuid"
         },
-        "build": {
-          "$ref": "#/$defs/BuildInfoV2"
-        },
-        "manifestSha256": {
-          "$ref": "#/$defs/sha256Hex"
-        }
+        "build": { "$ref": "#/$defs/BuildInfoV2" },
+        "manifestSha256": { "$ref": "#/$defs/sha256Hex" }
       }
     },
     "AgentRegisteredData": {
@@ -339,75 +186,26 @@
         "initialCompletionCursor"
       ],
       "properties": {
-        "agentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "threadId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "parentAgentId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "parentThreadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "role": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "workspaceId": {
-          "type": "string"
-        },
-        "spawnToolCallId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "initialEffectSeq": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "initialCompletionCursor": {
-          "$ref": "#/$defs/CompletionCursorV2"
-        }
+        "agentId": { "type": "string", "minLength": 1 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "parentThreadId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "workspaceId": { "type": "string" },
+        "spawnToolCallId": { "type": ["string", "null"] },
+        "initialEffectSeq": { "type": "integer", "minimum": 0 },
+        "initialCompletionCursor": { "$ref": "#/$defs/CompletionCursorV2" }
       }
     },
     "SkillDiscoverySourceSummary": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "providerId",
-        "kind",
-        "location",
-        "identity"
-      ],
+      "required": ["providerId", "kind", "location", "identity"],
       "properties": {
-        "providerId": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "location": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "identity": {
-          "type": "string"
-        }
+        "providerId": { "type": "string" },
+        "kind": { "type": "string" },
+        "location": { "type": ["string", "null"] },
+        "identity": { "type": "string" }
       }
     },
     "SkillResourceBase": {
@@ -415,49 +213,28 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind",
-            "path"
-          ],
+          "required": ["kind", "path"],
           "properties": {
-            "kind": {
-              "const": "directory"
-            },
-            "path": {
-              "type": "string"
-            }
+            "kind": { "const": "directory" },
+            "path": { "type": "string" }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind",
-            "url"
-          ],
+          "required": ["kind", "url"],
           "properties": {
-            "kind": {
-              "const": "url"
-            },
-            "url": {
-              "type": "string"
-            }
+            "kind": { "const": "url" },
+            "url": { "type": "string" }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind",
-            "description"
-          ],
+          "required": ["kind", "description"],
           "properties": {
-            "kind": {
-              "const": "opaque"
-            },
-            "description": {
-              "type": "string"
-            }
+            "kind": { "const": "opaque" },
+            "description": { "type": "string" }
           }
         }
       ]
@@ -474,31 +251,12 @@
         "resourceBase"
       ],
       "properties": {
-        "name": {
-          "type": "string"
-        },
-        "source": {
-          "enum": [
-            "project",
-            "user",
-            "system",
-            "external"
-          ]
-        },
-        "providerId": {
-          "type": "string"
-        },
-        "rank": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "localOrder": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "resourceBase": {
-          "$ref": "#/$defs/SkillResourceBase"
-        }
+        "name": { "type": "string" },
+        "source": { "enum": ["project", "user", "system", "external"] },
+        "providerId": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 0 },
+        "localOrder": { "type": "integer", "minimum": 0 },
+        "resourceBase": { "$ref": "#/$defs/SkillResourceBase" }
       }
     },
     "SkillsDiscoveredData": {
@@ -513,44 +271,27 @@
         "complete"
       ],
       "properties": {
-        "threadId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "sourceFingerprint": {
-          "type": "string"
-        },
+        "threadId": { "type": "string", "minLength": 1 },
+        "sourceFingerprint": { "type": "string" },
         "sources": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/SkillDiscoverySourceSummary"
-          }
+          "items": { "$ref": "#/$defs/SkillDiscoverySourceSummary" }
         },
         "winners": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/SkillWinnerSummary"
-          }
+          "items": { "$ref": "#/$defs/SkillWinnerSummary" }
         },
         "warnings": {
           "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "items": { "type": "string" }
         },
-        "complete": {
-          "type": "boolean"
-        }
+        "complete": { "type": "boolean" }
       }
     },
     "InferenceFinishedData": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "status",
-        "auxiliary",
-        "billing"
-      ],
+      "required": ["status", "auxiliary", "billing"],
       "properties": {
         "status": {
           "enum": [
@@ -561,9 +302,7 @@
             "failed"
           ]
         },
-        "auxiliary": {
-          "type": "boolean"
-        },
+        "auxiliary": { "type": "boolean" },
         "billing": {
           "$ref": "native.schema.json#/$defs/InferenceBillingRecord"
         }
@@ -580,60 +319,23 @@
         "byteLength"
       ],
       "properties": {
-        "appendSeq": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "itemId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "queryClass": {
-          "type": "string"
-        },
-        "parentId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "byteLength": {
-          "type": "integer",
-          "minimum": 0
-        }
+        "appendSeq": { "type": "integer", "minimum": 1 },
+        "itemId": { "type": "string", "minLength": 1 },
+        "queryClass": { "type": "string" },
+        "parentId": { "type": ["string", "null"] },
+        "byteLength": { "type": "integer", "minimum": 0 }
       }
     },
     "ExportedBlobV2": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "path",
-        "byteLength",
-        "sha256",
-        "mediaType",
-        "encoding"
-      ],
+      "required": ["path", "byteLength", "sha256", "mediaType", "encoding"],
       "properties": {
-        "path": {
-          "$ref": "#/$defs/relativeBlobPath"
-        },
-        "byteLength": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "sha256": {
-          "$ref": "#/$defs/sha256Hex"
-        },
-        "mediaType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "encoding": {
-          "type": "string",
-          "minLength": 1
-        }
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
       }
     },
     "ExportedContentV2": {
@@ -662,57 +364,29 @@
                 "toolOutput"
               ]
             },
-            {
-              "type": "null"
-            }
+            { "type": "null" }
           ]
         },
-        "path": {
-          "$ref": "#/$defs/relativeBlobPath"
-        },
-        "byteLength": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "sha256": {
-          "$ref": "#/$defs/sha256Hex"
-        },
-        "mediaType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "encoding": {
-          "type": "string",
-          "minLength": 1
-        }
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
       }
     },
     "CompletionData": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "header",
-        "atom",
-        "payload",
-        "contents"
-      ],
+      "required": ["header", "atom", "payload", "contents"],
       "properties": {
-        "header": {
-          "$ref": "#/$defs/ChatItemHeaderExportV2"
-        },
+        "header": { "$ref": "#/$defs/ChatItemHeaderExportV2" },
         "atom": {
           "$ref": "native.schema.json#/$defs/ChatAtom"
         },
-        "payload": {
-          "$ref": "#/$defs/ExportedBlobV2"
-        },
+        "payload": { "$ref": "#/$defs/ExportedBlobV2" },
         "contents": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/ExportedContentV2"
-          }
+          "items": { "$ref": "#/$defs/ExportedContentV2" }
         }
       }
     },
@@ -732,35 +406,13 @@
         "error"
       ],
       "properties": {
-        "threadId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "throughEffectSeq": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "completionCut": {
-          "$ref": "#/$defs/CompletionCursorV2"
-        },
-        "summary": {
-          "$ref": "#/$defs/UsageSummary"
-        },
-        "status": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "aborted": {
-          "type": "boolean"
-        },
-        "error": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
+        "threadId": { "type": "string", "minLength": 1 },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV2" },
+        "summary": { "$ref": "#/$defs/UsageSummary" },
+        "status": { "type": ["string", "null"] },
+        "aborted": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
       }
     },
     "SealedMemberCutV2": {
@@ -777,39 +429,14 @@
         "sealed"
       ],
       "properties": {
-        "threadId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "agentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "parentAgentId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "role": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "throughEffectSeq": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "completionCut": {
-          "$ref": "#/$defs/CompletionCursorV2"
-        },
-        "aborted": {
-          "type": "boolean"
-        },
-        "sealed": {
-          "type": "boolean"
-        }
+        "threadId": { "type": "string", "minLength": 1 },
+        "agentId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV2" },
+        "aborted": { "type": "boolean" },
+        "sealed": { "type": "boolean" }
       }
     },
     "RunSealedData": {
@@ -826,28 +453,13 @@
       "properties": {
         "members": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/SealedMemberCutV2"
-          }
+          "items": { "$ref": "#/$defs/SealedMemberCutV2" }
         },
-        "reconciled": {
-          "type": "boolean"
-        },
-        "reconcileError": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "traceComplete": {
-          "type": "boolean"
-        },
-        "usageComplete": {
-          "type": "boolean"
-        },
-        "costComplete": {
-          "type": "boolean"
-        }
+        "reconciled": { "type": "boolean" },
+        "reconcileError": { "type": ["string", "null"] },
+        "traceComplete": { "type": "boolean" },
+        "usageComplete": { "type": "boolean" },
+        "costComplete": { "type": "boolean" }
       }
     },
     "ExecutionLifecycleExportV2": {
