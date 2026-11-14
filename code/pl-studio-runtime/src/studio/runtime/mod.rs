@@ -71,7 +71,6 @@ pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
 mod timeline_reader;
 pub use presentation_reader::DisplayMembers;
 pub use product_subscription::StudioProductTopicSubscription;
-pub use timeline_reader::TimelineReader;
 pub use run_export::{
     BuildInfoV1, ChatItemHeaderExportV1, ChatReadHintExportV1, ChatRunPositionExportV1,
     CompletionCursorV1, ConfigInputEntryV1, EVENTS_SCHEMA_VERSION, EventBodyV1, EventSourceV1,
@@ -85,6 +84,7 @@ pub use run_export::{
     prepare_output_dir as prepare_export_output_dir, sha256_hex as export_sha256_hex,
     validate_output_dir_preflight as validate_export_output_dir_preflight,
 };
+pub use timeline_reader::TimelineReader;
 pub(crate) mod thread_observation;
 mod thread_title;
 mod updater;
