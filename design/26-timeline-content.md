@@ -59,7 +59,7 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 原件 `item_id` 是稳定业务身份，`seq` 是完成发布顺序，范围为 `1..=i64::MAX`，由原 Session 在 RAM 分配，不是时间戳或开始顺序。原件历史始终按完成 seq，不反向改写。
 
-展示组不按来源分桶。唯一 open_work 接纳前台、后台与旧 Turn 的所有新 Work；关联键仍由 typed source、真实 atom/call/part ID 与责任阶段组成。当前组已有同键行则补真实终态并保留 member_key/位置/total；没有则新增 terminal-only 行，不查旧组、不补开始。原业务准入必须拒绝重复派发，不能因旧行已释放再次插入。段首 source/source_key 只作诊断；成员保留各自来源，捕获校验成员自己的来源、关联键和阶段，不要求等于组头来源。ID 不透明，既有已发布 ID、history_pos 不改。
+展示组不按来源分桶。唯一 open_work 接纳前台、后台与旧 Turn 的所有新 Work；关联键仍由 typed source、真实 atom/call/part ID 与责任阶段组成。当前组已有同键行则补真实终态并保留 member_key/位置/total；没有则新增 terminal-only 行，不查旧组、不补开始。原业务准入必须拒绝重复派发，不能因旧行已释放再次插入。段首 source/source_key 只作诊断；成员保留各自来源，捕获校验成员自己的来源、关联键和阶段，不要求等于组头来源。块和成员 ID 是稳定身份，不从其格式推断语义；既有 ID 不改，正常运行中的 block_order 一经创建不再移动。
 
 同一 Native Thread 维护唯一未封存 Work、仅指向该组的关联索引及统一有序待发布块。结束只查询当前组同关联身份的开始行：存在则补充该行结束引用，不存在则按本次结束事实创建新行；合法 terminal-only 来源不补造开始。封存立即撤销旧组可更新资格，后续 progress/terminal 不回查历史、不命中旧成员位置。事实幂等和矛盾检查仍在原接纳/PreparedEffect 层，不因新组无开始而重复显示结束。统一按块顺序推进 ready 前缀，不重排已发布块。
 

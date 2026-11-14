@@ -1150,10 +1150,10 @@ mod run_read_tests {
                 {
                     return Kind::Heads;
                 }
-                if matches!(scope, Scope::DisplayMembers) {
-                    if sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?" {
-                return Kind::Members;
-            }
+                if matches!(scope, Scope::DisplayMembers)
+                    && sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"
+                {
+                    return Kind::Members;
                 }
                 return Kind::Unexpected;
             }

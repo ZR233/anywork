@@ -58,6 +58,11 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
             studio::thread_projection::presentation::tests::hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies \
             -- --exact --ignored --nocapture
+      - name: Verify hundred-thousand frozen waiting blocks
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
+            studio::thread_projection::presentation::tests::hundred_thousand_waiting_blocks_reclaim_before_frontier_and_advance_without_a_walk \
+            -- --exact --ignored --nocapture
       - name: Verify both two-thousand-item consumers
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite \

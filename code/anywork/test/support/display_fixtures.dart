@@ -36,7 +36,8 @@ TimelineBatch displayBatch(
   placement: placement,
   blocks: blocks,
   fromOrder: from,
-  throughOrder: through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
+  throughOrder:
+      through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
   before: before,
   live: live,
 );

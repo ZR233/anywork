@@ -773,7 +773,8 @@ extension _DemoTimelineReader on _DemoReader {
       selected.add(candidate);
       through = b.blockOrder;
     }
-    if (selected.length < demand.maxItems && records.length == selected.length) {
+    if (selected.length < demand.maxItems &&
+        records.length == selected.length) {
       through = target.readyFrontier;
     }
     // A partial append carries no live replacement: it cannot retire an ID

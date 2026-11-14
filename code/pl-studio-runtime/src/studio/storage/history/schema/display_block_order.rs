@@ -265,6 +265,10 @@ mod tests {
         let mut atom: ChatAtom =
             serde_json::from_slice(&conversation::tests::metadata("observed-tool"))?;
         atom.kind = ChatAtomKind::ToolCall;
+        atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+        atom.source = ChatSourceId::ForegroundTurn {
+            turn_id: "observed-turn".into(),
+        };
         atom.completion_item_id = None;
         atom.completion_seq = None;
         atom.payload = None;
