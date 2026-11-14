@@ -302,10 +302,10 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     });
   }
 
+  // Creation is a submit intent, not a difference from the template baseline.
   bool get _dirty =>
       !_finished &&
-      ((_key.creating && !_created) ||
-          (_key.creating &&
+      ((_key.creating &&
               _key.target.kind == AccountKind.native &&
               _setDefaultOnCreate != _baselineSetDefaultOnCreate) ||
           (_raw != null &&
@@ -1273,7 +1273,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         isReady &&
         _accounts.state.value.loaded &&
         (draft?.templateId == null || catalog.revision.isNotEmpty) &&
-        _dirty &&
+        ((_key.creating && !_created) || _dirty) &&
         !_saving &&
         !_unknownResult &&
         !_stale &&
