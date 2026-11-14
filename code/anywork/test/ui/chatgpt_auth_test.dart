@@ -188,9 +188,8 @@ void main() {
         await tester.pumpAndSettle();
         await tap(AccountViewKeyValues.template('native', 'openai'));
         await tester.pumpAndSettle();
-        expect(find.text('放弃更改'), findsOneWidget);
-        await tester.tap(find.text('放弃更改'));
-        await tester.pumpAndSettle();
+        // Selecting a template does not modify the untouched creation draft.
+        expect(find.text('放弃更改'), findsNothing);
         expect(editor().isOpenAiTemplate, isTrue);
       }
 
