@@ -1143,8 +1143,13 @@ final class TimelineSessionOwner {
           throw const ConversationContinuityError('Invalid history page');
         }
         var order = 0;
+        final ids = <String>{};
         for (final block in page.blocks) {
-          if (block.blockOrder <= order || block.blockOrder > page.ceiling) {
+          if (block.id.isEmpty ||
+              !ids.add(block.id) ||
+              block.blockOrder <= order ||
+              block.blockOrder > page.ceiling ||
+              page.ceiling > 0x7fffffffffffffff) {
             throw const ConversationContinuityError('Invalid history range');
           }
           order = block.blockOrder;
@@ -1154,12 +1159,16 @@ final class TimelineSessionOwner {
             page.blocks.last.blockOrder >= current._firstOrder!) {
           throw const ConversationContinuityError('History pages overlap');
         }
-        await current._mutate(
-          () => current._presentation!.applyBlocks(
-            page.blocks,
-            ChatPlacement.prepend,
-          ),
-        );
+        await current._mutate(() async {
+          try {
+            await current._presentation!.applyBlocks(
+              page.blocks,
+              ChatPlacement.prepend,
+            );
+          } catch (error) {
+            throw _TimelineApplyFailure(error);
+          }
+        });
         if (!identical(_current, current) ||
             current.isRetired ||
             !scope.isActive) {
@@ -1172,10 +1181,18 @@ final class TimelineSessionOwner {
         current._hasOlder = page.before != null;
         current._recordBatch(ChatPlacement.prepend);
       });
-      _publishState(isLoadingOlder: false, olderError: null);
+      if (identical(_current, current) &&
+          !current.isRetired &&
+          scope.isActive) {
+        _publishState(isLoadingOlder: false, olderError: null);
+      }
     } catch (error) {
       if (identical(_current, current) && !current.isRetired) {
-        _publishState(isLoadingOlder: false, olderError: error);
+        _publishState(
+          isLoadingOlder: false,
+          olderError: error is _TimelineApplyFailure ? error.cause : error,
+        );
+        if (error is _TimelineApplyFailure) refresh(current.threadId);
       }
     } finally {
       if (identical(_current, current) &&

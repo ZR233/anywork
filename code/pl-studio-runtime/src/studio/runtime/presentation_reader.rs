@@ -171,11 +171,15 @@ impl ConversationReader {
             })
             .collect::<Vec<_>>();
         live_window(
-            cut.revision,
-            cut.layout_revision,
-            cut.published,
-            cut.execution_present,
-            cut.current_work_id.clone(),
+            TailSnapshot {
+                revision: cut.revision,
+                layout_revision: cut.layout_revision,
+                ready_frontier: cut.published,
+                execution_present: cut.execution_present,
+                current_work_id: cut.current_work_id.clone(),
+                blocks: Vec::new(),
+                older: None,
+            },
             heads.iter().rev(),
             demand,
             |boundary| tokens.live_before(cut.layout_revision, boundary),
@@ -632,25 +636,18 @@ fn too_small() -> anyhow::Error {
 /// Select only the requested latest live heads; continuation is bound by the caller's reader.
 /// `newest_first` must be a bounded range/index iterator, not a materialized full live list.
 pub(super) fn live_window<'a>(
-    revision: u64,
-    layout_revision: u64,
-    ready_frontier: u64,
-    execution_present: bool,
-    current_work_id: Option<String>,
+    mut result: TailSnapshot,
     newest_first: impl IntoIterator<Item = &'a LiveDisplayBlock>,
     demand: ReadDemand,
     mut continuation: impl FnMut(u64) -> Result<String>,
 ) -> Result<TailSnapshot> {
     demand.validate(1)?;
-    let mut result = TailSnapshot {
-        revision,
-        layout_revision,
-        ready_frontier,
-        execution_present,
-        current_work_id: current_work_id.clone(),
-        blocks: Vec::new(),
-        older: None,
-    };
+    ensure!(
+        result.blocks.is_empty() && result.older.is_none(),
+        ChatError::InvalidArgument("live selector requires an empty envelope".into())
+    );
+    let envelope_bytes = encoded_size(&result)?;
+    let no_older_bytes = encoded_size(&result.older)?;
     let mut heads = newest_first.into_iter().peekable();
     let mut bytes = 0;
     let mut previous = u64::MAX;
@@ -663,18 +660,9 @@ pub(super) fn live_window<'a>(
         let item_bytes = encoded_size(head)?;
         // Optimistically admit using the envelope without a continuation. A complete small list can
         // fit even when its intermediate continuation would be larger than the remaining heads.
-        let envelope = TailSnapshot {
-            revision,
-            layout_revision,
-            ready_frontier,
-            execution_present,
-            current_work_id: current_work_id.clone(),
-            blocks: Vec::new(),
-            older: None,
-        };
         if !fits(
             demand,
-            encoded_size(&envelope)?,
+            envelope_bytes,
             bytes + item_bytes,
             result.blocks.len() + 1,
         ) {
@@ -692,7 +680,7 @@ pub(super) fn live_window<'a>(
         result.blocks.push(head.clone());
         result.older = if heads.peek().is_some()
             || (result.blocks.len() == demand.max_items as usize
-                && head.block_order > ready_frontier.saturating_add(1))
+                && head.block_order > result.ready_frontier.saturating_add(1))
         {
             Some(continuation(head.block_order)?)
         } else {
@@ -703,16 +691,8 @@ pub(super) fn live_window<'a>(
         }
     }
     loop {
-        let envelope = TailSnapshot {
-            revision,
-            layout_revision,
-            ready_frontier,
-            execution_present,
-            current_work_id: current_work_id.clone(),
-            blocks: Vec::new(),
-            older: result.older.clone(),
-        };
-        if fits(demand, encoded_size(&envelope)?, bytes, result.blocks.len()) {
+        let envelope_with_older = envelope_bytes - no_older_bytes + encoded_size(&result.older)?;
+        if fits(demand, envelope_with_older, bytes, result.blocks.len()) {
             break;
         }
         let removed = result.blocks.pop().ok_or_else(too_small)?;
@@ -722,7 +702,8 @@ pub(super) fn live_window<'a>(
     }
     result.blocks.reverse();
     ensure!(
-        current_work_id
+        result
+            .current_work_id
             .as_ref()
             .is_none_or(|id| result.blocks.iter().any(|block| {
                 &block.id == id
@@ -926,11 +907,15 @@ mod tests {
     fn live_pages_are_newest_first_selected_but_delivered_in_original_order() -> Result<()> {
         let heads: Vec<_> = (1..=5).map(head).collect();
         let page = live_window(
-            10,
-            10,
-            4,
-            true,
-            None,
+            TailSnapshot {
+                revision: 10,
+                layout_revision: 10,
+                ready_frontier: 4,
+                execution_present: true,
+                current_work_id: None,
+                blocks: Vec::new(),
+                older: None,
+            },
             heads.iter().rev(),
             demand(2),
             |boundary| Ok(format!("qualified:{boundary}")),
@@ -944,11 +929,15 @@ mod tests {
         );
         assert_eq!(page.older.as_deref(), Some("qualified:4"));
         let next = live_window(
-            10,
-            10,
-            4,
-            true,
-            None,
+            TailSnapshot {
+                revision: 10,
+                layout_revision: 10,
+                ready_frontier: 4,
+                execution_present: true,
+                current_work_id: None,
+                blocks: Vec::new(),
+                older: None,
+            },
             heads.iter().rev().filter(|head| head.block_order < 4),
             demand(2),
             |boundary| Ok(format!("qualified:{boundary}")),
@@ -962,11 +951,15 @@ mod tests {
         );
         assert_eq!(next.older.as_deref(), Some("qualified:2"));
         let last = live_window(
-            10,
-            10,
-            4,
-            true,
-            None,
+            TailSnapshot {
+                revision: 10,
+                layout_revision: 10,
+                ready_frontier: 4,
+                execution_present: true,
+                current_work_id: None,
+                blocks: Vec::new(),
+                older: None,
+            },
             heads[..1].iter().rev(),
             demand(1),
             |_| anyhow::bail!("a complete last page must not request a cursor"),
@@ -981,11 +974,15 @@ mod tests {
         let mut heads = [head(1), head(2)];
         heads[0].state = DisplayBlockState::Sealed;
         let latest = live_window(
-            3,
-            3,
-            0,
-            false,
-            Some(heads[1].id.clone()),
+            TailSnapshot {
+                revision: 3,
+                layout_revision: 3,
+                ready_frontier: 0,
+                execution_present: false,
+                current_work_id: Some(heads[1].id.clone()),
+                blocks: Vec::new(),
+                older: None,
+            },
             heads.iter().rev(),
             demand(1),
             |at| Ok(format!("before:{at}")),
@@ -1000,11 +997,15 @@ mod tests {
         };
         assert!(
             live_window(
-                3,
-                3,
-                0,
-                false,
-                Some(heads[1].id.clone()),
+                TailSnapshot {
+                    revision: 3,
+                    layout_revision: 3,
+                    ready_frontier: 0,
+                    execution_present: false,
+                    current_work_id: Some(heads[1].id.clone()),
+                    blocks: Vec::new(),
+                    older: None
+                },
                 heads.iter().rev(),
                 too_small,
                 |at| Ok(format!("before:{at}"))
@@ -1013,11 +1014,15 @@ mod tests {
         );
         assert!(
             live_window(
-                3,
-                3,
-                0,
-                false,
-                Some(heads[0].id.clone()),
+                TailSnapshot {
+                    revision: 3,
+                    layout_revision: 3,
+                    ready_frontier: 0,
+                    execution_present: false,
+                    current_work_id: Some(heads[0].id.clone()),
+                    blocks: Vec::new(),
+                    older: None
+                },
                 heads.iter().rev(),
                 demand(1),
                 |at| Ok(format!("before:{at}"))
@@ -1025,11 +1030,15 @@ mod tests {
             .is_err()
         );
         let older = live_window(
-            3,
-            3,
-            0,
-            false,
-            None,
+            TailSnapshot {
+                revision: 3,
+                layout_revision: 3,
+                ready_frontier: 0,
+                execution_present: false,
+                current_work_id: None,
+                blocks: Vec::new(),
+                older: None,
+            },
             heads[..1].iter().rev(),
             demand(1),
             |_| anyhow::bail!("complete old page"),
@@ -1044,18 +1053,40 @@ mod tests {
     -> Result<()> {
         let mut heads = [head(1), head(2)];
         heads[1].id = "显示头".repeat(40);
-        let complete = live_window(1, 1, 0, true, None, heads.iter().rev(), demand(2), |_| {
-            Ok("cursor".repeat(1000))
-        })?;
+        let complete = live_window(
+            TailSnapshot {
+                revision: 1,
+                layout_revision: 1,
+                ready_frontier: 0,
+                execution_present: true,
+                current_work_id: None,
+                blocks: Vec::new(),
+                older: None,
+            },
+            heads.iter().rev(),
+            demand(2),
+            |_| Ok("cursor".repeat(1000)),
+        )?;
         let exact_bytes = encoded_size(&complete)? as u32;
         let exact = ReadDemand {
             max_items: 2,
             max_bytes: exact_bytes,
         };
         assert_eq!(
-            live_window(1, 1, 0, true, None, heads.iter().rev(), exact, |_| {
-                Ok("cursor".repeat(1000))
-            })?,
+            live_window(
+                TailSnapshot {
+                    revision: 1,
+                    layout_revision: 1,
+                    ready_frontier: 0,
+                    execution_present: true,
+                    current_work_id: None,
+                    blocks: Vec::new(),
+                    older: None
+                },
+                heads.iter().rev(),
+                exact,
+                |_| { Ok("cursor".repeat(1000)) }
+            )?,
             complete
         );
         let undersized = ReadDemand {
@@ -1063,9 +1094,20 @@ mod tests {
             ..exact
         };
         assert!(
-            live_window(1, 1, 0, true, None, heads.iter().rev(), undersized, |_| Ok(
-                "c".into()
-            ))
+            live_window(
+                TailSnapshot {
+                    revision: 1,
+                    layout_revision: 1,
+                    ready_frontier: 0,
+                    execution_present: true,
+                    current_work_id: None,
+                    blocks: Vec::new(),
+                    older: None
+                },
+                heads.iter().rev(),
+                undersized,
+                |_| Ok("c".into())
+            )
             .is_err()
         );
         // The JSON byte counter uses the same encoding as the transport, not character count.

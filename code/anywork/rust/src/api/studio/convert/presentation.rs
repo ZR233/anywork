@@ -98,6 +98,95 @@ pub(crate) fn member_page(value: protocol::DisplayMemberPage) -> BridgeDisplayMe
     }
 }
 
+pub(crate) fn open_timeline(value: protocol::OpenTimeline) -> BridgeOpenTimeline {
+    BridgeOpenTimeline {
+        reader_id: value.reader_id,
+        presentation_version: value.presentation_version,
+        reader_protocol_version: value.reader_protocol_version,
+        initial_cursor: value.initial_cursor.0,
+    }
+}
+fn display_blocks(values: Vec<protocol::DisplayBlock>) -> Vec<BridgeDisplayBlock> {
+    values
+        .into_iter()
+        .map(|value| BridgeDisplayBlock {
+            id: value.id,
+            block_order: value.block_order,
+            body: body(value.body),
+        })
+        .collect()
+}
+pub(crate) fn tail_snapshot(value: protocol::TailSnapshot) -> BridgeTailSnapshot {
+    BridgeTailSnapshot {
+        revision: value.revision,
+        layout_revision: value.layout_revision,
+        ready_frontier: value.ready_frontier,
+        execution_present: value.execution_present,
+        current_work_id: value.current_work_id,
+        older: value.older,
+        blocks: value
+            .blocks
+            .into_iter()
+            .map(|block| BridgeLiveDisplayBlock {
+                id: block.id,
+                block_order: block.block_order,
+                source: block.source.map(chat::source_id),
+                body: body(block.body),
+                has_unfinished_members: block.has_unfinished_members,
+                thinking_summary: block.thinking_summary,
+                state: match block.state {
+                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
+                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
+                },
+            })
+            .collect(),
+    }
+}
+pub(crate) fn view_update(value: protocol::ViewUpdate) -> BridgeViewUpdate {
+    BridgeViewUpdate {
+        presentation_version: value.presentation_version,
+        reader_protocol_version: value.reader_protocol_version,
+        after: value.after.0,
+        next: value.next.0,
+        history: BridgeHistoryDelta {
+            placement: match value.history.placement {
+                protocol::HistoryPlacement::Set => BridgeHistoryPlacement::Set,
+                protocol::HistoryPlacement::Append => BridgeHistoryPlacement::Append,
+            },
+            from_order: value.history.from_order,
+            through_order: value.history.through_order,
+            blocks: display_blocks(value.history.blocks),
+            before: value.history.before,
+        },
+        tail: match value.tail {
+            protocol::TailUpdate::Keep => BridgeTailUpdate::Keep,
+            protocol::TailUpdate::Replace { snapshot } => BridgeTailUpdate::Replace {
+                snapshot: tail_snapshot(snapshot),
+            },
+            protocol::TailUpdate::Status {
+                base_layout_revision,
+                revision,
+                current_work_id,
+                thinking_summary,
+            } => BridgeTailUpdate::Status {
+                base_layout_revision,
+                revision,
+                current_work_id,
+                thinking_summary,
+            },
+        },
+    }
+}
+pub(crate) fn timeline_page(value: protocol::TimelinePage) -> BridgeTimelinePage {
+    BridgeTimelinePage {
+        presentation_version: value.presentation_version,
+        database_id: value.database_id,
+        ceiling: value.ceiling,
+        blocks: display_blocks(value.blocks),
+        before: value.before,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,94 +402,5 @@ mod tests {
             member_window(BridgeDisplayMemberWindow::Latest),
             protocol::DisplayMemberWindow::Latest
         );
-    }
-}
-
-pub(crate) fn open_timeline(value: protocol::OpenTimeline) -> BridgeOpenTimeline {
-    BridgeOpenTimeline {
-        reader_id: value.reader_id,
-        presentation_version: value.presentation_version,
-        reader_protocol_version: value.reader_protocol_version,
-        initial_cursor: value.initial_cursor.0,
-    }
-}
-fn display_blocks(values: Vec<protocol::DisplayBlock>) -> Vec<BridgeDisplayBlock> {
-    values
-        .into_iter()
-        .map(|value| BridgeDisplayBlock {
-            id: value.id,
-            block_order: value.block_order,
-            body: body(value.body),
-        })
-        .collect()
-}
-pub(crate) fn tail_snapshot(value: protocol::TailSnapshot) -> BridgeTailSnapshot {
-    BridgeTailSnapshot {
-        revision: value.revision,
-        layout_revision: value.layout_revision,
-        ready_frontier: value.ready_frontier,
-        execution_present: value.execution_present,
-        current_work_id: value.current_work_id,
-        older: value.older,
-        blocks: value
-            .blocks
-            .into_iter()
-            .map(|block| BridgeLiveDisplayBlock {
-                id: block.id,
-                block_order: block.block_order,
-                source: block.source.map(chat::source_id),
-                body: body(block.body),
-                has_unfinished_members: block.has_unfinished_members,
-                thinking_summary: block.thinking_summary,
-                state: match block.state {
-                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
-                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
-                },
-            })
-            .collect(),
-    }
-}
-pub(crate) fn view_update(value: protocol::ViewUpdate) -> BridgeViewUpdate {
-    BridgeViewUpdate {
-        presentation_version: value.presentation_version,
-        reader_protocol_version: value.reader_protocol_version,
-        after: value.after.0,
-        next: value.next.0,
-        history: BridgeHistoryDelta {
-            placement: match value.history.placement {
-                protocol::HistoryPlacement::Set => BridgeHistoryPlacement::Set,
-                protocol::HistoryPlacement::Append => BridgeHistoryPlacement::Append,
-            },
-            from_order: value.history.from_order,
-            through_order: value.history.through_order,
-            blocks: display_blocks(value.history.blocks),
-            before: value.history.before,
-        },
-        tail: match value.tail {
-            protocol::TailUpdate::Keep => BridgeTailUpdate::Keep,
-            protocol::TailUpdate::Replace { snapshot } => BridgeTailUpdate::Replace {
-                snapshot: tail_snapshot(snapshot),
-            },
-            protocol::TailUpdate::Status {
-                base_layout_revision,
-                revision,
-                current_work_id,
-                thinking_summary,
-            } => BridgeTailUpdate::Status {
-                base_layout_revision,
-                revision,
-                current_work_id,
-                thinking_summary,
-            },
-        },
-    }
-}
-pub(crate) fn timeline_page(value: protocol::TimelinePage) -> BridgeTimelinePage {
-    BridgeTimelinePage {
-        presentation_version: value.presentation_version,
-        database_id: value.database_id,
-        ceiling: value.ceiling,
-        blocks: display_blocks(value.blocks),
-        before: value.before,
     }
 }

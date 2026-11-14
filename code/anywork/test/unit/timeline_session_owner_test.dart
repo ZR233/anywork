@@ -283,6 +283,50 @@ void main() {
   }
 
   test(
+    'a component Prepend failure replaces the reader with Set before any retry',
+    () async {
+      final h = _Harness();
+      h.transport.controlOlder = true;
+      h.transport.initial = displayBatch(
+        [displayWork('current', 10)],
+        through: 10,
+        before: 'older-10',
+        live: _tail(10),
+      );
+      await h.open();
+      final old = h.lease;
+      final original = h.reader;
+      final load = h.owner.loadOlder('thread-main', generation: old.generation);
+      final gate = Completer<void>();
+      h.transport.nextOpenGate = gate.future;
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      final opening = h.transport.opened.stream.first;
+      original.olderRequests.single.reply.complete(
+        TimelinePage(
+          presentationVersion: 6,
+          databaseId: 'db',
+          ceiling: 10,
+          blocks: [displayWork('current', 3)],
+        ),
+      );
+      await load;
+      await opening;
+      expect(h.lease, same(old));
+      expect(original.closed, isTrue);
+      expect(original.olderRequests, hasLength(1));
+      gate.complete();
+      await timelineReady(h.owner, 'thread-main');
+      expect(h.lease, isNot(same(old)));
+      expect(h.lease.controller.messages.map((message) => message.id), [
+        'current',
+      ]);
+      expect(old.isRetired, isTrue);
+    },
+  );
+
+  test(
     'refresh retains the accepted surface until a new Set applies',
     () async {
       final h = _Harness();
