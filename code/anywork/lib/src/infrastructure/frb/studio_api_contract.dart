@@ -2713,8 +2713,10 @@ class FrbStudioTransport
         threadId: threadId,
         scope: frb_chat_types.BridgeChatScope(
           queryClass: switch (scope.queryClass) {
-            ExactChatClass(:final value) => frb_chat_types.BridgeChatClassFilter.class_(value: value),
-            AllChatClasses() => const frb_chat_types.BridgeChatClassFilter.all(),
+            ExactChatClass(:final value) =>
+              frb_chat_types.BridgeChatClassFilter.class_(value: value),
+            AllChatClasses() =>
+              const frb_chat_types.BridgeChatClassFilter.all(),
           },
           parentId: scope.parentId,
         ),

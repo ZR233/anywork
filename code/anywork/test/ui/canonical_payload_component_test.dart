@@ -83,12 +83,8 @@ ChatAtom _head({
   contents: contents,
 );
 
-CompletedEntry _entry(ChatAtom atom) => CompletedEntry(
-  recordId: 'completion',
-  completionSeq: 7,
-
-  atom: atom,
-);
+CompletedEntry _entry(ChatAtom atom) =>
+    CompletedEntry(recordId: 'completion', completionSeq: 7, atom: atom);
 
 InlinePayload _envelope(
   String type,
