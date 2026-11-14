@@ -109,7 +109,10 @@ async fn next(feed: &mut ObservedFeed) -> Result<Observation> {
             snapshot,
         } = update.as_ref()
     {
-        ensure!(*completed_history_version == 1 && snapshot.schema_version == 17);
+        ensure!(
+            *completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION
+                && snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+        );
         if !snapshot.interactions.is_empty() {
             ensure!(
                 snapshot.business_refs.interactions.is_some(),
