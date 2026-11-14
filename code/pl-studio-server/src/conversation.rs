@@ -629,8 +629,16 @@ mod tests {
     }
 
     async fn open(state: &AppState, thread_id: &str) -> Result<axum::response::Response> {
+        let mut url = reqwest::Url::parse("http://127.0.0.1/")?;
+        url.query_pairs_mut()
+            .append_pair("maxItems", "1")
+            .append_pair("maxBytes", "16384")
+            .append_pair(
+                "queryClass",
+                &serde_json::to_string(&ChatScope::conversation(None).query_class)?,
+            );
         let (mut parts, _) = Request::builder()
-            .uri("/?maxItems=1&maxBytes=16384")
+            .uri(url.as_str())
             .header("last-event-id", "timeline:obsolete:999")
             .body(())?
             .into_parts();
@@ -1949,9 +1957,8 @@ mod tests {
             }
         }
         ensure!(retired && response_seen);
-        // Reopening Main preserves the actual display item and original body;
-        // successful Turn identity comes from the typed business completion,
-        // never from a fabricated Main TurnReceipt.
+        // Records preserve the original body and the real successful Turn receipt.
+        // Reopening must not duplicate it or manufacture another receipt for a parent query.
         let (latest_cap, mut latest) = env.open(&thread, None, 1).await?;
         let latest_set = latest
             .chat()
@@ -1959,12 +1966,14 @@ mod tests {
             .context("waiting for reopened Main Set after NEXT")?;
         ensure!(latest_set.placement == ChatPlacement::Set);
         let latest_items = all_items(&env, &thread, &latest_cap, latest_set).await?;
-        ensure!(latest_items
-            .iter()
-            .all(|item| item.atom.kind != ChatAtomKind::TurnReceipt),
-            "reopening fabricated a successful Main TurnReceipt");
         let next_turn_identity = next_completed_turn.id.clone();
         let next_turn = next_turn_identity.as_str();
+        let mut receipts = latest_items.iter().filter(|item| {
+            item.atom.kind == ChatAtomKind::TurnReceipt
+                && item.atom.turn_id.as_deref() == Some(next_turn)
+        });
+        let reopened_receipt = receipts.next().context("reopened real Turn receipt")?;
+        ensure!(receipts.next().is_none(), "reopening duplicated the Turn receipt");
         let next_parent = turn_parent_key(&next_turn_identity);
         let restored_text = latest_items
             .iter()
@@ -2088,7 +2097,8 @@ mod tests {
                 Some("turn") => {
                     next_turn_receipts += 1;
                     ensure!(
-                        message.atom.kind == ChatAtomKind::TurnReceipt
+                        message == reopened_receipt
+                            && message.atom.kind == ChatAtomKind::TurnReceipt
                             && matches!(&message.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
                                 outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
                             })

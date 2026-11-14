@@ -1339,16 +1339,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_sse_encodes_typed_completed_entries_without_legacy_display_shapes() -> Result<()>
-    {
+    async fn records_sse_encodes_typed_completed_entries_without_legacy_display_shapes()
+    -> Result<()> {
         let batch: ChatBatch = serde_json::from_value(serde_json::json!({
             "placement": "set",
             "entries": [
                 {
                     "recordId": "record-a",
                     "completionSeq": 8,
-                    "run": {"startSeq": 8, "ordinal": 1},
-                    "mainPresentation": "single",
                     "atom": {
                         "id": "atom-a",
                         "completionItemId": "record-a",
@@ -1365,7 +1363,7 @@ mod tests {
                     }
                 }
             ],
-            "before": "opaque-run-page",
+            "before": "opaque-record-page",
             "fromSeq": null,
             "throughSeq": 8
         }))?;
@@ -1380,10 +1378,12 @@ mod tests {
         let data = wire
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
-            .context("missing Main chat")?;
+            .context("missing records chat")?;
         let decoded: ChatBatch = serde_json::from_str(data)?;
         assert_eq!(decoded, batch);
         assert!(!wire.contains("currentMembers"));
+        assert!(!wire.contains("\"run\""));
+        assert!(!wire.contains("mainPresentation"));
         Ok(())
     }
 
