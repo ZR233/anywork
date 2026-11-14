@@ -95,7 +95,10 @@ intended build/run command before choosing options. Consult documentation matchi
 the installed version, including help/version output where supported. Preserve
 intentional project settings rather than replacing them with generic defaults.
 
-Useful official sources include:
+The same selection process applies to any language: identify the project's
+toolchain and supported server, verify the installed executable's stdio invocation,
+and use the server's documented project discovery and settings. The examples below
+are sources for particular servers, not the product's supported-language list:
 
 - [rust-analyzer configuration](https://rust-analyzer.github.io/book/configuration.html)
   and [installation](https://rust-analyzer.github.io/book/installation.html).
@@ -113,8 +116,11 @@ Useful official sources include:
   edit generated package configuration. Native LSP does not require a Flutter app
   launch and has separate configuration/state from Dart MCP.
 
-These are sources for decisions, not fixed parameter lists. The product does not
-automatically install servers. Install components only within authorization.
+Do not transpose one server's arguments, project markers or settings onto another.
+The product does not automatically install servers. Install components only within
+authorization. For the common project-loading and semantic acceptance workflow,
+use `lsp-code-navigation`; a saved document and a successful handshake are separate
+from resolving the target project.
 
 ## Initialization options and settings
 
@@ -156,9 +162,14 @@ Project browsing and Settings do not keep servers alive or start them; an explic
 probe holds only a temporary lease and releases it when the probe completes.
 
 Configuration changes in a leased directory trigger background loading and
-initialization; the GUI also provides explicit reload. Servers initialize
-concurrently. The read-only status
-operation reports published state; it does not scan, start or wait for a server.
+initialization. File tools notify the registry directly; completed command and
+stdin tool results also cause the active Thread to check its configuration, so
+documents written by shell scripts do not require another turn or an unrelated
+service update. Unchanged documents do not restart healthy servers. The started
+items menu observes this Thread's server rows, including loading and failure
+states; opening it does not start servers. The GUI also provides explicit reload. Servers initialize
+concurrently. The read-only status operation reports published state; it does not
+scan, start or wait for a server.
 
 Check the reported configuration source, phase and error. Detection mismatch is
 different from an executable or handshake failure. A changed document restarts
