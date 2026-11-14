@@ -76,7 +76,7 @@ Studio 数据根目录（默认 `~/.anywork/`）的目录结构如下：
 │   │       └── temp/               # 宿主传输与处理中间文件；归档清理
 │   ├── calls/
 │   │   ├── calls.sqlite            # 有界调用调试索引与轻量性能统计投影
-│   │   └── logs/                   # 版本化滚动 JSONL 调试日志
+│   │   └── logs/                   # 版本化滚动 JSONL 调试日志（不作外部完整归档数据源；详见 [29.6](./29-cli-harbor.md#296-运行轨迹用量与关闭结果导出)）
 │   ├── migrations/                 # 当前领域的必要迁移记录
 │   └── temp/
 │       ├── attachment-drafts/      # 尚未绑定会话的附件草稿

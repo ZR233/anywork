@@ -20,11 +20,11 @@ pub use catalog::{
 };
 pub use provider::{
     ExecutorSkillProvider, FileSystemSkillProvider, FrozenSkillCatalog, SkillCandidate,
-    SkillDefinition, SkillDirectorySource, SkillDiscoverySources, SkillInvocationPolicy,
-    SkillLoadInvocation, SkillProvider, SkillProviderId, SkillProviderInvalidator,
-    SkillProviderObservation, SkillProviderRegistration, SkillProviderRequest, SkillRegistry,
-    SkillResourceBase, SkillSummary, SkillUserInvocationLoad, discover_local_skills,
-    local_skill_registry,
+    SkillDefinition, SkillDirectorySource, SkillDiscoveryReport, SkillDiscoverySourceSummary,
+    SkillDiscoverySources, SkillInvocationPolicy, SkillLoadInvocation, SkillProvider,
+    SkillProviderId, SkillProviderInvalidator, SkillProviderObservation, SkillProviderRegistration,
+    SkillProviderRequest, SkillRegistry, SkillResourceBase, SkillSummary, SkillUserInvocationLoad,
+    SkillWinnerSummary, discover_local_skills, local_skill_registry,
 };
 pub use scanning::{
     list_support_files, project_skill_dir_for_create, read_skill_file, support_file_path,

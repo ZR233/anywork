@@ -49,6 +49,8 @@ pub struct StudioRuntimeOptions {
     pub host_mcp_source: HostMcpSource,
     /// Optional host-selected SSH configuration; explicit handles also reach OpenSSH via `-F`.
     pub ssh_config: Option<crate::SshConfigFile>,
+    /// Optional bounded run export handle attached before runtime assembly.
+    pub run_export: Option<crate::RunExporter>,
 }
 
 impl StudioRuntimeOptions {
@@ -61,6 +63,7 @@ impl StudioRuntimeOptions {
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
             ssh_config: None,
+            run_export: None,
         }
     }
 
@@ -73,6 +76,7 @@ impl StudioRuntimeOptions {
             helper_source: RemoteHelperSource::External,
             host_mcp_source: HostMcpSource::External,
             ssh_config: None,
+            run_export: None,
         }
     }
 
@@ -97,6 +101,12 @@ impl StudioRuntimeOptions {
 
     pub fn with_host_mcp_source(mut self, source: HostMcpSource) -> Self {
         self.host_mcp_source = source;
+        self
+    }
+
+    /// Attaches a host-owned run exporter for trace, usage, and shutdown result export.
+    pub fn with_run_export(mut self, exporter: crate::RunExporter) -> Self {
+        self.run_export = Some(exporter);
         self
     }
 }
@@ -204,6 +214,7 @@ pub(super) struct ResolvedRuntimeOptions {
     pub helper_source: RemoteHelperSource,
     pub host_mcp_source: HostMcpSource,
     pub ssh_config: Option<crate::SshConfigFile>,
+    pub run_export: Option<Arc<super::runtime::run_export::RunExportCoordinator>>,
 }
 
 impl StudioRuntimeOptions {
@@ -227,6 +238,7 @@ impl StudioRuntimeOptions {
             helper_source: self.helper_source,
             host_mcp_source: self.host_mcp_source,
             ssh_config: self.ssh_config,
+            run_export: self.run_export.map(|exporter| exporter.coordinator()),
         })
     }
 }

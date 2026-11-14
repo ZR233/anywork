@@ -1,0 +1,1719 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anywork.dev/schemas/run-export/v1/native.schema.json",
+  "title": "原生完成事实和计费契约",
+  "$defs": {
+    "UsageReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "totalTokens"
+      ],
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheReadTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheWriteTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "amount"
+      ],
+      "properties": {
+        "currency": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "number"
+        }
+      }
+    },
+    "PricingOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "disabled"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "noCharge"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unpriced"
+            },
+            "reason": {
+              "enum": [
+                "missingUsage",
+                "invalidUsage",
+                "missingPrice",
+                "missingCacheUsage",
+                "unsupportedServiceTier"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cost",
+            "cacheSavings"
+          ],
+          "properties": {
+            "kind": {
+              "const": "estimated"
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "cacheSavings": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Cost"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ModelPricingSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputPerMtok": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputPerMtok": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheReadPerMtok": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheWritePerMtok": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "InferenceAccounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usage",
+        "pricing",
+        "priceSnapshot",
+        "requestStartedAt"
+      ],
+      "properties": {
+        "usage": {
+          "$ref": "#/$defs/UsageReport"
+        },
+        "pricing": {
+          "$ref": "#/$defs/PricingOutcome"
+        },
+        "priceSnapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPricingSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestStartedAt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ModelObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuredModel",
+        "sentModel"
+      ],
+      "properties": {
+        "configuredModel": {
+          "type": "string"
+        },
+        "sentModel": {
+          "type": "string"
+        },
+        "reportedModel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "InferenceTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "firstOutputSource"
+      ],
+      "properties": {
+        "firstOutputSource": {
+          "enum": [
+            "unobserved",
+            "incremental",
+            "completedToolInput",
+            "legacyUnknown"
+          ]
+        },
+        "ttftMillis": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decodeMillis": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "responseMillis": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Orchestration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "toolSchemaEstimatedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolResultEstimatedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parallelCandidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "actualParallelCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolBatchElapsedMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolExecutionMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCriticalPathMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCacheHits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicateSuppressed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "programCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "programToolCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transportAttempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "continuationAttempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "continuationUsed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "continuationInvalid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "httpFallbacks": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "InferenceBillingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inferenceId",
+        "accounting",
+        "recordedAt"
+      ],
+      "properties": {
+        "inferenceId": {
+          "type": "string"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "accountDisplayName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelObservation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextWindow": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounting": {
+          "$ref": "#/$defs/InferenceAccounting"
+        },
+        "promptGeneration": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "promptCachePolicy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prefixChangedReason": {
+          "anyOf": [
+            {
+              "enum": [
+                "initial",
+                "promptScopeChanged",
+                "accountChanged",
+                "modelChanged",
+                "baseInstructionsChanged",
+                "globalInstructionsChanged",
+                "modeRoleChanged",
+                "skillCatalogChanged",
+                "workspaceInstructionsChanged",
+                "requestPropertiesChanged",
+                "fixedPrefixChanged",
+                "toolSchemaChanged",
+                "contextCompacted",
+                "contextAppended",
+                "contextRecovered"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "orchestration": {
+          "$ref": "#/$defs/Orchestration"
+        },
+        "timing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InferenceTiming"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recordedAt": {
+          "type": "integer"
+        }
+      }
+    },
+    "ContentOwner": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "itemId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "item"
+            },
+            "itemId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "domain",
+            "id",
+            "revision"
+          ],
+          "properties": {
+            "kind": {
+              "const": "current"
+            },
+            "domain": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "blockId",
+            "memberKey"
+          ],
+          "properties": {
+            "kind": {
+              "const": "displayObservation"
+            },
+            "blockId": {
+              "type": "string"
+            },
+            "memberKey": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ContentTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "itemId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "itemPayload"
+            },
+            "itemId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "owner",
+            "key"
+          ],
+          "properties": {
+            "kind": {
+              "const": "body"
+            },
+            "owner": {
+              "$ref": "#/$defs/ContentOwner"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ContentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseId",
+        "target"
+      ],
+      "properties": {
+        "databaseId": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/ContentTarget"
+        }
+      }
+    },
+    "PayloadData": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bytes"
+          ],
+          "properties": {
+            "kind": {
+              "const": "inline"
+            },
+            "bytes": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reference",
+            "byteLength"
+          ],
+          "properties": {
+            "kind": {
+              "const": "deferred"
+            },
+            "reference": {
+              "$ref": "#/$defs/ContentRef"
+            },
+            "byteLength": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "ChatSourceId": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "turnId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "foregroundTurn"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "inputId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "input"
+            },
+            "inputId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sourceId",
+            "messageId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "inboxMessage"
+            },
+            "sourceId": {
+              "type": "string"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "messageId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "backgroundResult"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operationId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "operation"
+            },
+            "operationId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "receiptId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "receipt"
+            },
+            "receiptId": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ChatFactPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effectSeq",
+        "suborder"
+      ],
+      "properties": {
+        "effectSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "suborder": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChatAtomLifecycle": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "started",
+            "status"
+          ],
+          "properties": {
+            "kind": {
+              "const": "active"
+            },
+            "started": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChatFactPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "enum": [
+                "running",
+                "waiting"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "started",
+            "ended",
+            "outcome"
+          ],
+          "properties": {
+            "kind": {
+              "const": "terminal"
+            },
+            "started": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChatFactPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ended": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChatFactPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "completed",
+                "failed",
+                "cancelled",
+                "transferred"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ChatAtomContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "reference"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "body",
+            "reasoningSummary",
+            "toolArguments",
+            "toolOutput"
+          ]
+        },
+        "reference": {
+          "$ref": "#/$defs/ContentRef"
+        }
+      }
+    },
+    "ChatAtom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "completionItemId",
+        "completionSeq",
+        "source",
+        "sourceOrder",
+        "kind",
+        "delivery",
+        "lifecycle",
+        "turnId",
+        "attemptId",
+        "tool",
+        "textChannel",
+        "startedAt",
+        "finishedAt",
+        "contents",
+        "payload"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "completionItemId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completionSeq": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ChatSourceId"
+        },
+        "sourceOrder": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "input",
+            "text",
+            "reasoning",
+            "toolCall",
+            "fileChange",
+            "skill",
+            "interaction",
+            "plan",
+            "compaction",
+            "turnReceipt",
+            "receipt",
+            "raw",
+            "agent",
+            "inference",
+            "unknown"
+          ]
+        },
+        "delivery": {
+          "enum": [
+            "foreground",
+            "backgroundHandoff",
+            "independent"
+          ]
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/ChatAtomLifecycle"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attemptId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "callId",
+                "name"
+              ],
+              "properties": {
+                "callId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "textChannel": {
+          "anyOf": [
+            {
+              "enum": [
+                "user",
+                "parentAgent",
+                "commentary",
+                "final"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contentPresent": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatAtomContent"
+          }
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PayloadData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ModelUsageBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "contextWindow"
+      ],
+      "properties": {
+        "routeIdentity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "contextWindow": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxContextWindow": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "autoCompactLimit": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "UsageIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "reason"
+      ],
+      "properties": {
+        "field": {
+          "enum": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite",
+            "reasoning",
+            "total",
+            "inferenceCount",
+            "cachePair",
+            "throughputPair"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "unreported",
+            "inconsistent",
+            "overflow"
+          ]
+        }
+      }
+    },
+    "UsageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "callId",
+        "turnId",
+        "effectSequence",
+        "observedAt",
+        "purpose",
+        "outcome"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effectSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observedAt": {
+          "type": "integer"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "succeeded",
+            "rejected",
+            "cancelled",
+            "failed",
+            "interrupted"
+          ]
+        }
+      }
+    },
+    "ModelUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "totalTokens"
+      ],
+      "properties": {
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheReadTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cacheWriteTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "UsageObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "status",
+        "usage",
+        "issues"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/UsageSource"
+        },
+        "status": {
+          "enum": [
+            "legacyUnknown",
+            "missing",
+            "partial",
+            "reported",
+            "invalid"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/ModelUsage"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsageIssue"
+          }
+        }
+      }
+    },
+    "UsageDiagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incompleteCalls",
+        "missingCalls",
+        "partialCalls",
+        "invalidCalls",
+        "overflowCalls",
+        "otherPurposeCalls",
+        "byOutcome",
+        "byPurpose",
+        "byIssue",
+        "recentGaps",
+        "legacyUnknown",
+        "legacyIncomplete",
+        "countsOverflowed"
+      ],
+      "properties": {
+        "incompleteCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missingCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partialCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalidCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "overflowCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "otherPurposeCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byOutcome": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "outcome",
+              "calls",
+              "incompleteCalls"
+            ],
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "succeeded",
+                  "rejected",
+                  "cancelled",
+                  "failed",
+                  "interrupted"
+                ]
+              },
+              "calls": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "incompleteCalls": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "byPurpose": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "purpose",
+              "calls",
+              "incompleteCalls"
+            ],
+            "properties": {
+              "purpose": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "calls": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "incompleteCalls": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "byIssue": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "issue",
+              "calls"
+            ],
+            "properties": {
+              "issue": {
+                "$ref": "#/$defs/UsageIssue"
+              },
+              "calls": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "recentGaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsageObservation"
+          }
+        },
+        "legacyUnknown": {
+          "type": "boolean"
+        },
+        "legacyIncomplete": {
+          "type": "boolean"
+        },
+        "countsOverflowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "UsageSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appliedSequence",
+        "binding",
+        "totals",
+        "cache",
+        "context",
+        "throughput",
+        "diagnostics",
+        "pricing"
+      ],
+      "properties": {
+        "appliedSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelUsageBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inferenceCount",
+            "promptTokens",
+            "completionTokens",
+            "cachedPromptTokens",
+            "cacheWriteTokens",
+            "reasoningTokens",
+            "totalTokens"
+          ],
+          "properties": {
+            "inferenceCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promptTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "completionTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cachedPromptTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cacheWriteTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reasoningTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalTokens": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inputTokens",
+            "readTokens",
+            "sampleCount",
+            "incomplete"
+          ],
+          "properties": {
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "readTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sampleCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "incomplete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens",
+            "latestCall"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "latestCall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UsageObservation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "throughput": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turnId",
+            "completionTokens",
+            "responseMillis"
+          ],
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "completionTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "responseMillis": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/UsageDiagnostics"
+        },
+        "pricing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "incomplete",
+            "estimatedCosts",
+            "estimatedCacheSavings"
+          ],
+          "properties": {
+            "incomplete": {
+              "type": "boolean"
+            },
+            "estimatedCosts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Cost"
+              }
+            },
+            "estimatedCacheSavings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Cost"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

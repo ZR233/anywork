@@ -79,16 +79,34 @@ impl StudioRuntime {
         session.delegation_mode = delegation.mode;
         session.delegation_preference = delegation.preference;
         delta.session_upserts = vec![session.clone()];
-        self.agent_facility
+        let enrolled_root_id = agent.thread_id.clone();
+        if let Some(exporter) = &self.agent_facility.run_export {
+            exporter.enroll_root(&enrolled_root_id);
+        }
+        if let Err(error) = self
+            .agent_facility
             .product_events
             .commit_directory(delta)
-            .await?;
+            .await
+        {
+            if let Some(exporter) = &self.agent_facility.run_export {
+                exporter
+                    .unenroll_or_abort_root(&enrolled_root_id, "create_thread_directory_failed");
+            }
+            return Err(error);
+        }
         let thread = ThreadRecord::from_directory_thread(
             crate::studio::records::thread_projection(&session, &agent, |id| {
                 (id == agent.agent_id).then(|| agent.thread_id.clone())
             })?,
         );
-        self.register_new_thread(thread.clone()).await?;
+        if let Err(error) = self.register_new_thread(thread.clone()).await {
+            if let Some(exporter) = &self.agent_facility.run_export {
+                exporter
+                    .unenroll_or_abort_root(&enrolled_root_id, "create_thread_activation_failed");
+            }
+            return Err(error);
+        }
         Ok(thread)
     }
 
@@ -255,6 +273,9 @@ impl StudioRuntime {
         // activate this identity, and must use this exact request route.
         self.thread_factory
             .stage_initial_route(&thread.id, selector);
+        if let Some(exporter) = &self.agent_facility.run_export {
+            exporter.enroll_root(&thread.id);
+        }
         // 目录事实内存先行；SQLite 失败进入持久化降级而不是命令失败
         // （design/18 §18.2）。
         if let Err(error) = self
@@ -263,6 +284,9 @@ impl StudioRuntime {
             .commit_directory(delta)
             .await
         {
+            if let Some(exporter) = &self.agent_facility.run_export {
+                exporter.unenroll_or_abort_root(&thread.id, "start_thread_directory_failed");
+            }
             self.thread_factory.clear_initial_route(&thread.id);
             self.clear_creating_session_worktree(&session_lease);
             let error = match self
@@ -285,6 +309,9 @@ impl StudioRuntime {
         let activation_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "activation", "starting");
         if let Err(error) = self.register_new_thread(thread.clone()).await {
+            if let Some(exporter) = &self.agent_facility.run_export {
+                exporter.unenroll_or_abort_root(&thread.id, "start_thread_activation_failed");
+            }
             self.thread_factory.clear_initial_route(&thread.id);
             // 目录事实已发布：必须先按未启动会话补偿（关闭并归档），不能留下无法激活的
             // 已发布会话；会话自身 worktree 仍按 D6 只收束为 `preserved`。
