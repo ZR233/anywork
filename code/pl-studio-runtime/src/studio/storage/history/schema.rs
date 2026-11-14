@@ -8,6 +8,7 @@ mod demand_conversation;
 mod display_block_order;
 pub(in crate::studio::storage::history) mod immutable_completion_runs;
 pub(in crate::studio::storage::history) mod legacy_completion_projection;
+mod legacy_completion_types;
 pub(in crate::studio::storage::history) mod legacy_content;
 pub(in crate::studio::storage::history) mod legacy_current;
 pub(in crate::studio::storage::history) mod legacy_timeline_projection;

@@ -1341,7 +1341,7 @@ mod production {
                 .await?;
             let mut completed = env
                 .runtime
-                .open_conversation_feed(&h.thread.id, ChatScope::Main, demand(1))
+                .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand(1))
                 .await?;
             assert_eq!(atomic(&mut completed).await?.through_seq, 0);
             let initial = timeline(&mut feed).await?;

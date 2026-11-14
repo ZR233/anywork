@@ -972,7 +972,7 @@ mod timeline_backlog_tests {
                 result = &mut operation => return result,
                 event = feed.recv() => {
                     if let ConversationEvent::Chat { batch } = event?.context("A34 original feed ended")? {
-                        batch.validate_for(&ChatScope::Main)?;
+                        batch.validate_for(&ChatScope::conversation(None))?;
                         assert_eq!(batch.placement, ChatPlacement::Append);
                         assert!(batch.encoded_len()? <= demand().max_bytes as usize);
                         for entry in batch.entries {
@@ -1312,10 +1312,10 @@ mod timeline_backlog_tests {
             phase = "original Main Set and T range";
             feeds.push(
                 env.runtime
-                    .open_conversation_feed(&id, ChatScope::Main, demand())
+                    .open_conversation_feed(&id, ChatScope::conversation(None), demand())
                     .await?,
             );
-            let initial = chat(&mut feeds[0], &ChatScope::Main).await?;
+            let initial = chat(&mut feeds[0], &ChatScope::conversation(None)).await?;
             assert_eq!(initial.placement, ChatPlacement::Set);
             assert_eq!(initial.through_seq, cut_head);
             assert_eq!(
@@ -1486,10 +1486,10 @@ mod timeline_backlog_tests {
                 let pending_feed = feeds.len();
                 feeds.push(
                     env.runtime
-                        .open_conversation_feed(&id, ChatScope::Main, demand())
+                        .open_conversation_feed(&id, ChatScope::conversation(None), demand())
                         .await?,
                 );
-                let set = chat(&mut feeds[pending_feed], &ChatScope::Main).await?;
+                let set = chat(&mut feeds[pending_feed], &ChatScope::conversation(None)).await?;
                 let pending = set.entries.last().context("pending U representative")?;
                 assert!(pending.completion_seq > live.session.durable_seq());
                 let original = feeds[pending_feed]
@@ -1613,7 +1613,7 @@ mod timeline_backlog_tests {
                 .filter(|row| row.seq > cut_head)
                 .collect::<Vec<_>>();
             while delivered.len() < suffix.len() {
-                let batch = chat(&mut feeds[0], &ChatScope::Main).await?;
+                let batch = chat(&mut feeds[0], &ChatScope::conversation(None)).await?;
                 assert_eq!(batch.placement, ChatPlacement::Append);
                 delivered.extend(batch.entries);
             }
@@ -1679,10 +1679,10 @@ mod timeline_backlog_tests {
             let final_feed = feeds.len();
             feeds.push(
                 env.runtime
-                    .open_conversation_feed(&id, ChatScope::Main, demand())
+                    .open_conversation_feed(&id, ChatScope::conversation(None), demand())
                     .await?,
             );
-            let set = chat(&mut feeds[final_feed], &ChatScope::Main).await?;
+            let set = chat(&mut feeds[final_feed], &ChatScope::conversation(None)).await?;
             assert_eq!(set.placement, ChatPlacement::Set);
             assert_eq!(set.through_seq, latest.head);
             assert_eq!(set.entries.len(), 3);
@@ -1705,9 +1705,9 @@ mod timeline_backlog_tests {
                 })
                 .context("real successful Turn receipt")?;
             assert!(hidden.run.is_none());
-            let scope = ChatScope::Children {
-                parent_id: hidden.parent.clone().context("real receipt parent")?,
-            };
+            let scope = ChatScope::conversation(Some(
+                hidden.parent.clone().context("real receipt parent")?,
+            ));
             let children_feed = feeds.len();
             feeds.push(
                 env.runtime

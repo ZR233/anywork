@@ -4461,7 +4461,7 @@ mod storage_fault_tests {
                     .runtime
                     .open_conversation_feed(
                         id,
-                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ChatScope::conversation(None),
                         pl_protocol::ReadDemand {
                             max_items: 37,
                             max_bytes: 256 * 1024,

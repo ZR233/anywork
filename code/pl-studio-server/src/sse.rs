@@ -251,8 +251,10 @@ impl ConversationQuery {
             self.run_index_version,
             self.run_start_seq,
         ) {
-            (None, None, None, None) => pl_protocol::ChatScope::Main,
-            (Some(parent_id), None, None, None) => pl_protocol::ChatScope::Children { parent_id },
+            (None, None, None, None) => pl_protocol::ChatScope::conversation(None),
+            (Some(parent_id), None, None, None) => {
+                pl_protocol::ChatScope::conversation(Some(parent_id))
+            }
             (None, Some(database_id), Some(index_version), Some(start_seq)) => {
                 if index_version != pl_protocol::COMPLETED_READ_INDEX_VERSION {
                     return Err(ApiError(
@@ -952,7 +954,7 @@ mod tests {
         assert!(matches!(
             conversation_query("/?maxItems=7&maxBytes=4096").await,
             Ok((
-                ChatScope::Main,
+                ChatScope::conversation(None),
                 ReadDemand {
                     max_items: 7,
                     max_bytes: 4096
@@ -961,7 +963,7 @@ mod tests {
         ));
         assert!(matches!(
             conversation_query("/?maxItems=3&maxBytes=4096&parentId=parent-a").await,
-            Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
+            Ok((ChatScope::conversation(Some(parent_id)), _)) if parent_id == "parent-a"
         ));
         assert!(matches!(
             conversation_query("/?maxItems=3&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=17").await,
@@ -1061,9 +1063,7 @@ mod tests {
             from_seq: None,
             through_seq: 7,
         };
-        batch.validate_for(&ChatScope::Children {
-            parent_id: "parent-a".into(),
-        })?;
+        batch.validate_for(&ChatScope::conversation(Some("parent-a".into())))?;
         let event = encode_conversation_event(&ConversationEvent::Chat {
             batch: Box::new(batch.clone()),
         })?;
@@ -1411,7 +1411,7 @@ mod tests {
             "fromSeq": null,
             "throughSeq": 8
         }))?;
-        batch.validate_for(&ChatScope::Main)?;
+        batch.validate_for(&ChatScope::conversation(None))?;
         let event = encode_conversation_event(&ConversationEvent::Chat {
             batch: Box::new(batch.clone()),
         })?;

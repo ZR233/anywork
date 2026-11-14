@@ -397,7 +397,7 @@ async fn count(
     };
     let mut feed = cancellable(
         interrupt,
-        runtime.open_conversation_feed(thread_id, ChatScope::Main, demand),
+        runtime.open_conversation_feed(thread_id, ChatScope::conversation(None), demand),
     )
     .await?;
     let result = cancellable(interrupt, async {
@@ -419,7 +419,7 @@ async fn count(
         let mut seen = BTreeSet::new();
         loop {
             checkpoint(interrupt)?;
-            batch.validate_for(&ChatScope::Main)?;
+            batch.validate_for(&ChatScope::conversation(None))?;
             total = total
                 .checked_add(batch.entries.len())
                 .context("Main count overflow")?;

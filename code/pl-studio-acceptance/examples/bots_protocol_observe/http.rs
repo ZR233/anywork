@@ -73,9 +73,7 @@ impl ChatRead {
         self.http
             .open_chat(
                 &self.thread_id,
-                ChatScope::Children {
-                    parent_id: parent_id.to_owned(),
-                },
+                ChatScope::conversation(Some(parent_id.to_owned())),
                 demand,
             )
             .await
@@ -458,8 +456,8 @@ impl StudioHttp {
                 .append_pair("maxItems", &demand.max_items.to_string())
                 .append_pair("maxBytes", &demand.max_bytes.to_string());
             match &scope {
-                ChatScope::Main => {}
-                ChatScope::Children { parent_id } => {
+                ChatScope::conversation(None) => {}
+                ChatScope::conversation(Some(parent_id)) => {
                     query.append_pair("parentId", parent_id);
                 }
                 ChatScope::Run { reference } => {

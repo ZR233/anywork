@@ -526,7 +526,7 @@ mod tests {
             self.runtime
                 .open_conversation_feed(
                     &self.thread_id,
-                    pl_protocol::ChatScope::Main,
+                    pl_protocol::ChatScope::conversation(None),
                     pl_protocol::ReadDemand {
                         max_items: 1,
                         max_bytes: 64 * 1024,

@@ -1463,7 +1463,7 @@ mod tests {
         draft.metadata = serde_json::to_vec(&ended)?.into();
         draft.read_hint =
             crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
-        let original = Arc::new(ChatItem::complete(draft, 1, None));
+        let original = Arc::new(ChatItem::complete(draft, 1));
         let finish = owner.prepare(2, 20, &[ended], &[], std::slice::from_ref(&original))?;
         assert!(finish.blocks.iter().all(|block| block.header.sealed));
         assert_eq!(finish.ready_frontier, 1);
@@ -1545,14 +1545,7 @@ mod tests {
         draft.metadata = serde_json::to_vec(&atom)?.into();
         draft.read_hint =
             crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
-        let item = Arc::new(ChatItem::complete(
-            draft,
-            1,
-            Some(pl_core::chat::ChatRunPosition {
-                start_seq: 1,
-                ordinal: 1,
-            }),
-        ));
+        let item = Arc::new(ChatItem::complete(draft, 1));
         let ended = pl_protocol::ChatSourceState {
             source: atom.source.clone(),
             lifecycle: pl_protocol::ChatSourceLifecycle::Ended {

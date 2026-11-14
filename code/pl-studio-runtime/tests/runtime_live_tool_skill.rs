@@ -231,7 +231,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             .with_context(|| format!("Main feed close: {main_closed:?}"))?
             .with_context(|| format!("Main feed close: {main_closed:?}"))?;
         main_closed?;
-        let scope = ChatScope::Children { parent_id };
+        let scope = ChatScope::conversation(Some(parent_id));
         // The following provider request proves admission to model context, not a durable
         // writer barrier. Derive the authored child preview from that selected typed receipt;
         // publication and cancellation are then checked through the public conversation reader.

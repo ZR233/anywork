@@ -367,9 +367,7 @@ pub(crate) async fn completed_turn_from_children(
     deadline: Instant,
 ) -> Result<()> {
     let parent_id = format!("{}:{turn_id}", turn_id.len());
-    let scope = ChatScope::Children {
-        parent_id: parent_id.clone(),
-    };
+    let scope = ChatScope::conversation(Some(parent_id.clone()));
     let (children_read, mut page) = tokio::time::timeout_at(
         tokio::time::Instant::from_std(deadline),
         read.open_children(&parent_id, CHAT_DEMAND),

@@ -69,7 +69,7 @@ async fn public_history(
         max_bytes: 64 * 1024,
     };
     let mut feed = runtime
-        .open_conversation_feed(id, ChatScope::Main, demand)
+        .open_conversation_feed(id, ChatScope::conversation(None), demand)
         .await?;
     let reader = feed.reader().clone();
     let result = async {
@@ -83,7 +83,7 @@ async fn public_history(
             }
         };
         ensure!(batch.placement == ChatPlacement::Set && batch.from_seq.is_none());
-        batch.validate_for(&ChatScope::Main)?;
+        batch.validate_for(&ChatScope::conversation(None))?;
         let mut pages = Vec::new();
         loop {
             let mut page = Vec::new();
@@ -185,7 +185,7 @@ async fn public_history(
             };
             batch = reader.load_older(&before, demand).await?;
             ensure!(batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none());
-            batch.validate_for(&ChatScope::Main)?;
+            batch.validate_for(&ChatScope::conversation(None))?;
             ensure!(
                 batch.before.as_ref() != Some(&before),
                 "history continuation did not advance"

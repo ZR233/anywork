@@ -431,7 +431,7 @@ mod tests {
         };
         a.completion_seq = Some(1);
         draft.metadata = serde_json::to_vec(&a)?.into();
-        let record = ChatItem::complete(draft, 1, None);
+        let record = ChatItem::complete(draft, 1);
         timeline::append_fixture(db, &record).await?;
         let mut start = a.clone();
         start.lifecycle = ChatAtomLifecycle::Active {

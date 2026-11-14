@@ -4,8 +4,7 @@ use super::{integer, statement};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{
     ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatItem, ChatItemHeader, ChatKey,
-    ChatPageItem, ChatPublicationSeed, ChatReadHint, ChatRunPosition, ChatRunSeed, ChatSelection,
-    PayloadData, PayloadMode, select_payload,
+    ChatPageItem, ChatPublicationSeed, PayloadData, PayloadMode, select_payload,
 };
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 use std::{collections::BTreeMap, sync::Arc};
@@ -21,7 +20,6 @@ mod facts;
 pub(super) mod migration;
 #[path = "conversation/range.rs"]
 mod range;
-mod run_read;
 
 pub(in super::super) mod sources;
 
@@ -39,19 +37,6 @@ pub(super) async fn validate_content(
 fn header(row: &QueryResult) -> Result<ChatItemHeader> {
     let metadata: Arc<[u8]> = Arc::from(row.try_get::<Vec<u8>>("", "metadata")?);
     let query_class: String = row.try_get("", "query_class")?;
-    let atom: pl_protocol::ChatAtom = serde_json::from_slice(&metadata)
-        .context("invalid completed Native metadata; original history preserved")?;
-    let read_hint = crate::studio::runtime::chat_item::native_read_hint_v1(&query_class, &atom);
-    let start: Option<i64> = row.try_get("", "display_run_start")?;
-    let ordinal: Option<i64> = row.try_get("", "display_run_ordinal")?;
-    let run = match (start, ordinal) {
-        (None, None) => None,
-        (Some(start), Some(ordinal)) => Some(ChatRunPosition {
-            start_seq: u64::try_from(start)?,
-            ordinal: u64::try_from(ordinal)?,
-        }),
-        _ => anyhow::bail!("incomplete immutable run position; original history preserved"),
-    };
     let header = ChatItemHeader {
         append_seq: u64::try_from(row.try_get::<i64>("", "seq")?)?,
         item_id: row.try_get("", "item_id")?,
@@ -62,38 +47,8 @@ fn header(row: &QueryResult) -> Result<ChatItemHeader> {
             .transpose()?,
         byte_length: u64::try_from(row.try_get::<i64>("", "byte_length")?)?,
         metadata,
-        read_hint,
-        run,
     };
-    header.validate_run()?;
     Ok(header)
-}
-
-/// Check only a selected header's indexed reference. Applied corruption never causes a rebuild
-/// or an all-history scan, and the run's original payload remains untouched.
-async fn validate_run_reference(db: &impl ConnectionTrait, h: &ChatItemHeader) -> Result<()> {
-    let Some(run) = h.run.filter(|run| run.start_seq != h.append_seq) else {
-        return Ok(());
-    };
-    let row = db
-        .query_one_raw(statement(
-            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,
-                display_run_start,display_run_ordinal FROM conversation_items WHERE seq=?",
-            vec![integer(run.start_seq)?.into()],
-        ))
-        .await?
-        .context("immutable run start is missing; original history preserved")?;
-    let start = header(&row)?;
-    ensure!(
-        start.run
-            == Some(ChatRunPosition {
-                start_seq: run.start_seq,
-                ordinal: 1
-            })
-            && start.read_hint == h.read_hint,
-        "immutable run start differs; original history preserved"
-    );
-    Ok(())
 }
 
 pub(super) async fn latest_append_seq(db: &impl ConnectionTrait) -> Result<u64> {
@@ -108,42 +63,16 @@ pub(super) async fn latest_append_seq(db: &impl ConnectionTrait) -> Result<u64> 
 }
 
 pub(super) async fn publication_seed(db: &impl ConnectionTrait) -> Result<ChatPublicationSeed> {
-    let head_seq = latest_append_seq(db).await?;
-    let last = db
-        .query_one_raw(statement(
-            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,
-                display_run_start,display_run_ordinal
-         FROM conversation_items INDEXED BY conversation_items_visible_seq
-         WHERE display_run_start IS NOT NULL ORDER BY seq DESC LIMIT 1",
-            vec![],
-        ))
-        .await?
-        .map(|row| header(&row))
-        .transpose()?;
-    let last_visible = if let Some(h) = last {
-        validate_run_reference(db, &h).await?;
-        Some(ChatRunSeed {
-            seq: h.append_seq,
-            hint: h.read_hint,
-            position: h.run.context("visible completion has no run")?,
-        })
-    } else {
-        None
-    };
-    let seed = ChatPublicationSeed {
-        head_seq,
-        last_visible,
-    };
-    seed.validate()?;
-    Ok(seed)
+    Ok(ChatPublicationSeed {
+        head_seq: latest_append_seq(db).await?,
+    })
 }
 
 /// This complete read is for publication idempotency, not normal pages or range reads.
 pub(super) async fn read_item(db: &impl ConnectionTrait, id: &str) -> Result<Option<ChatItem>> {
     let Some(row) = db
         .query_one_raw(statement(
-            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload,
-                    display_run_start,display_run_ordinal
+            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload
          FROM conversation_items WHERE item_id=?",
             vec![id.into()],
         ))
@@ -152,7 +81,6 @@ pub(super) async fn read_item(db: &impl ConnectionTrait, id: &str) -> Result<Opt
         return Ok(None);
     };
     let header = header(&row)?;
-    validate_run_reference(db, &header).await?;
     Ok(Some(ChatItem {
         header,
         payload: Arc::from(row.try_get::<Vec<u8>>("", "payload")?),
@@ -189,13 +117,6 @@ pub(super) async fn append_records_at_head<'a>(
             h.byte_length == item.payload.len() as u64,
             "completion payload length differs"
         );
-        h.validate_run()?;
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&h.metadata)?;
-        ensure!(
-            crate::studio::runtime::chat_item::native_read_hint_v1(&h.query_class, &atom)
-                == h.read_hint,
-            "completion hint differs from Native metadata"
-        );
         let rows = if h.append_seq <= head.head_seq {
             db.query_all_raw(statement(
                 "SELECT seq,item_id FROM conversation_items WHERE seq=? OR item_id=?",
@@ -216,8 +137,7 @@ pub(super) async fn append_records_at_head<'a>(
                 "immutable completion identity conflict"
             );
             let old = db.query_one_raw(statement(
-                "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload,
-                        display_run_start,display_run_ordinal
+                "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,payload
                  FROM conversation_items WHERE item_id=?", vec![h.item_id.clone().into()],
             )).await?.context("committed completion disappeared")?;
             ensure!(
@@ -253,18 +173,13 @@ pub(super) async fn append_records_at_head<'a>(
             "retried effect is missing a committed completion"
         );
         let mut next = head.clone();
-        let (seq, run) = next.advance(&h.read_hint)?;
-        ensure!(
-            seq == h.append_seq && run == h.run,
-            "completion sequence/run is not contiguous"
-        );
+        let seq = next.advance()?;
+        ensure!(seq == h.append_seq, "completion sequence is not contiguous");
         db.execute_raw(statement(
-            "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata) VALUES(?,?,?,?,?,?)",
             vec![integer(h.append_seq)?.into(), h.item_id.clone().into(), h.query_class.clone().into(),
                 h.parent_id.as_ref().map(|key| key.as_str().to_owned()).into(),
-                item.payload.to_vec().into(),h.metadata.to_vec().into(),
-                h.run.map(|run| integer(run.start_seq)).transpose()?.into(),
-                h.run.map(|run| integer(run.ordinal)).transpose()?.into()],
+                item.payload.to_vec().into(),h.metadata.to_vec().into()],
         )).await?;
         write_contents(db, &h.item_id, &item.contents).await?;
         *head = next;
@@ -286,8 +201,7 @@ pub(super) async fn read_selected_item(
     );
     let rows = db
         .query_all_raw(statement(
-            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,
-                display_run_start,display_run_ordinal
+            "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length
          FROM conversation_items WHERE item_id=? AND seq<=?",
             vec![
                 request.item_id.clone().into(),
@@ -305,7 +219,7 @@ pub(super) async fn read_selected_item(
         ceiling: request.ceiling,
         demand: request.demand,
     };
-    let mut page = materialize(db, &page_request, budget, true, &rows, true, false).await?;
+    let mut page = materialize(db, &page_request, budget, true, &rows, true).await?;
     ensure!(
         !page.items.is_empty(),
         pl_core::chat::ChatError::InvalidDemand("item detail cannot fit demand".into())
@@ -323,16 +237,8 @@ pub(super) async fn page(
     request.demand.validate()?;
     integer(request.ceiling)?;
     integer(request.after)?;
-    if request
-        .query
-        .as_ref()
-        .is_some_and(|query| query.selection != ChatSelection::Records)
-    {
-        return run_read::page(db, request, budget, ascending).await;
-    }
     let mut sql = String::from(
-        "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length,
-                display_run_start,display_run_ordinal
+        "SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length
          FROM conversation_items WHERE seq<=? AND seq>?",
     );
     let mut values = vec![
@@ -344,12 +250,11 @@ pub(super) async fn page(
         values.push(integer(before)?.into());
     }
     if let Some(query) = &request.query {
-        ensure!(
-            !query.query_class.is_empty(),
-            "empty completion query class"
-        );
-        sql.push_str(" AND query_class=?");
-        values.push(query.query_class.clone().into());
+        if let Some(class) = &query.query_class {
+            ensure!(!class.is_empty(), "empty completion query class");
+            sql.push_str(" AND query_class=?");
+            values.push(class.clone().into());
+        }
         if let Some(parent) = &query.parent_id {
             sql.push_str(" AND parent_id=?");
             values.push(parent.as_str().into());
@@ -368,7 +273,7 @@ pub(super) async fn page(
         "SQL header selection"
     );
     let natural_end = rows.len() < request.demand.max_items;
-    materialize(db, request, budget, ascending, &rows, natural_end, false).await
+    materialize(db, request, budget, ascending, &rows, natural_end).await
 }
 
 async fn materialize(
@@ -378,7 +283,6 @@ async fn materialize(
     ascending: bool,
     rows: &[QueryResult],
     natural_end: bool,
-    run_heads: bool,
 ) -> Result<ChatHistoryPage> {
     let mut selected = Vec::with_capacity(rows.len());
     let mut bytes = request.demand.max_bytes;
@@ -387,12 +291,7 @@ async fn materialize(
     for row in rows {
         header_decodes += 1;
         let h = header(row)?;
-        validate_run_reference(db, &h).await?;
-        let mode = if run_heads && matches!(h.read_hint, ChatReadHint::Adjacent { .. }) {
-            (budget.item_bytes(&h, PayloadMode::Deferred) <= bytes).then_some(PayloadMode::Deferred)
-        } else {
-            select_payload(&h, bytes, budget)
-        };
+        let mode = select_payload(&h, bytes, budget);
         let Some(mode) = mode else {
             exhausted = false;
             break;
@@ -491,11 +390,7 @@ mod run_read_tests {
         draft.read_hint =
             crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
         draft.metadata = serde_json::to_vec(&atom).unwrap().into();
-        ChatItem::complete(
-            draft,
-            seq,
-            run.map(|(start_seq, ordinal)| ChatRunPosition { start_seq, ordinal }),
-        )
+        ChatItem::complete(draft, seq)
     }
 
     fn request(
@@ -1355,7 +1250,7 @@ pub(in crate::studio::storage::history) mod tests {
             start_seq: seq,
             ordinal: 1,
         });
-        ChatItem::complete(draft, seq, run)
+        ChatItem::complete(draft, seq)
     }
 
     pub(in crate::studio::storage::history) fn metadata(id: &str) -> Arc<[u8]> {

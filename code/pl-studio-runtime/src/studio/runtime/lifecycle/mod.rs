@@ -1146,7 +1146,7 @@ mod startup_fault_tests {
             max_bytes: 64 * 1024,
         };
         let mut feed = runtime
-            .open_conversation_feed("cold", pl_protocol::ChatScope::Main, demand)
+            .open_conversation_feed("cold", pl_protocol::ChatScope::conversation(None), demand)
             .await?;
         let reader = feed.reader().clone();
         let manifest = reader.list_contents(&item.id, None, demand).await?;

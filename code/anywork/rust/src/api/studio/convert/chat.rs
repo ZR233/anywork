@@ -12,7 +12,7 @@ pub(crate) fn demand(value: BridgeReadDemand) -> protocol::ReadDemand {
 
 pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
     match value {
-        BridgeChatScope::Main => protocol::ChatScope::Main,
+        BridgeChatScope::conversation(None) => protocol::ChatScope::conversation(None),
         BridgeChatScope::Run { reference } => protocol::ChatScope::Run {
             reference: protocol::CompletionRunRef {
                 database_id: reference.database_id,
@@ -20,7 +20,9 @@ pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
                 start_seq: reference.start_seq,
             },
         },
-        BridgeChatScope::Children { parent_id } => protocol::ChatScope::Children { parent_id },
+        BridgeChatScope::conversation(Some(parent_id)) => {
+            protocol::ChatScope::conversation(Some(parent_id))
+        }
     }
 }
 

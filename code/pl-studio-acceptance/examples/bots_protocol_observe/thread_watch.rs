@@ -313,7 +313,7 @@ impl ThreadWatch {
                         "thread SSE delivered Chat before snapshot"
                     );
                     let batch: ChatBatch = decode(&event.data, "chat")?;
-                    batch.validate_for(&ChatScope::Main)?;
+                    batch.validate_for(&ChatScope::conversation(None))?;
                     ensure!(
                         batch.entries.len() <= CHAT_DEMAND.max_items as usize
                             && batch.encoded_len()? <= CHAT_DEMAND.max_bytes as usize,

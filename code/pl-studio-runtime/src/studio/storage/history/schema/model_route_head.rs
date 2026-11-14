@@ -259,7 +259,6 @@ mod tests {
                 std::sync::Arc::from(b"{\"unknownProducer\":\"retained\"}".as_slice()),
             ),
             1,
-            None,
         );
         super::super::super::conversation::migration::append_published(&db, &completion).await?;
         let before = retained(&db).await?;

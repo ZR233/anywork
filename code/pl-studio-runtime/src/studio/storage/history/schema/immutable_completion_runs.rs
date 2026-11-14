@@ -1,7 +1,8 @@
 //! Schema 17 -> 18. Only immutable read indexes are added; original bytes never change.
+use super::legacy_completion_types::{
+    ChatReadHint, ChatRunPosition, ChatRunSeed, native_read_hint_v1,
+};
 use super::*;
-use crate::studio::runtime::chat_item::native_read_hint_v1;
-use pl_core::chat::{ChatReadHint, ChatRunPosition, ChatRunSeed};
 use pl_protocol::{ChatAtom, ChatAtomLifecycle};
 
 mod summary_coverage;
@@ -88,7 +89,7 @@ fn position(
     hint: &ChatReadHint,
     last: Option<&ChatRunSeed>,
 ) -> Result<Option<ChatRunPosition>> {
-    let mut seed = pl_core::chat::ChatPublicationSeed {
+    let mut seed = super::legacy_completion_types::ChatPublicationSeed {
         head_seq: seq.checked_sub(1).context("completion sequence is zero")?,
         last_visible: last.cloned(),
     };

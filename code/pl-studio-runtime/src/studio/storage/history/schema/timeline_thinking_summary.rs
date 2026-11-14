@@ -166,7 +166,7 @@ mod tests {
                 )).await?;
             }
             draft.metadata = terminal.into();
-            records.push(ChatItem::complete(draft, records.len() as u64 + 1, None));
+            records.push(ChatItem::complete(draft, records.len() as u64 + 1));
         }
         for record in &records {
             timeline::append_fixture(db, record).await?;

@@ -380,10 +380,6 @@ mod tests {
         let mut item = ChatItem::complete(
             ChatDraft::new("selected", "conversation", Arc::from([255; 8192])),
             1,
-            Some(pl_core::chat::ChatRunPosition {
-                start_seq: 1,
-                ordinal: 1,
-            }),
         );
         item.header.metadata = super::super::tests::metadata("selected");
         item.header.read_hint = pl_core::chat::ChatReadHint::Single;
@@ -392,7 +388,6 @@ mod tests {
         let mut skipped = ChatItem::complete(
             ChatDraft::new("not-selected", "diagnostic", Arc::from([])),
             2,
-            None,
         );
         skipped.header.metadata = super::super::tests::metadata("not-selected");
         let source = ChatSourceId::Receipt {

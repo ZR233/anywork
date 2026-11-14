@@ -3178,7 +3178,7 @@ mod mode_migration_tests {
         for (child, path) in children.iter().skip(2) {
             assert!(HistoryStore::open(path, &child.id).await?.checkpoint().await.is_err());
             if child.id == "timeline-child" {
-                let mut feed = runtime.open_conversation_feed(&child.id, pl_protocol::ChatScope::Main,
+                let mut feed = runtime.open_conversation_feed(&child.id, pl_protocol::ChatScope::conversation(None),
                     pl_protocol::ReadDemand { max_items: 10, max_bytes: 64 * 1024 }).await?;
                 let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
                     anyhow::bail!("cold conversation did not publish its initial Chat");

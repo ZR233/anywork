@@ -574,7 +574,7 @@ impl Observation<'_> {
             let (mut read, page) = self
                 .session
                 .http()?
-                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
             loop {
@@ -944,7 +944,7 @@ impl Observation<'_> {
             let (mut read, _) = self
                 .session
                 .http()?
-                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
             let input_id = input(phase).input_id;
             let target_turn = loop {
@@ -967,7 +967,7 @@ impl Observation<'_> {
             let (main_read, mut page) = self
                 .session
                 .http()?
-                .open_chat(id, ChatScope::Main, CHAT_DEMAND)
+                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
             let mut seen = std::collections::HashSet::new();
             let mut representatives = Vec::new();
@@ -1067,7 +1067,9 @@ async fn cold_main_chat(
     deadline: Instant,
 ) -> Result<(http::ChatRead, Vec<serde_json::Value>)> {
     tokio::time::timeout_at(deadline.into(), async {
-        let (read, mut page) = http.open_chat(id, ChatScope::Main, CHAT_DEMAND).await?;
+        let (read, mut page) = http
+            .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
+            .await?;
         let mut payloads = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..256 {

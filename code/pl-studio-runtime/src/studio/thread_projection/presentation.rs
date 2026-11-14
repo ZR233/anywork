@@ -442,11 +442,17 @@ pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
 }
 
 fn hidden(atom: &ChatAtom) -> bool {
-    atom.kind != ChatAtomKind::Text
-        && matches!(
-            crate::studio::runtime::chat_item::native_read_hint_v1("conversation", atom),
-            pl_core::chat::ChatReadHint::Hidden
-        )
+    // 展示隐藏只在展示所有者决定；原件读取永远保留这些完成事实。
+    !matches!(atom.source, ChatSourceId::InboxMessage { .. })
+        && (atom.kind == ChatAtomKind::Inference
+            || (atom.kind == ChatAtomKind::TurnReceipt
+                && matches!(
+                    atom.lifecycle,
+                    ChatAtomLifecycle::Terminal {
+                        outcome: ChatTerminalOutcome::Completed,
+                        ..
+                    }
+                )))
 }
 
 fn evidence(atom: &ChatAtom) -> Option<ChatFactPosition> {
@@ -2895,14 +2901,6 @@ mod tests {
                     .find(|m| m.head.record.atom.id == result.id)
                     .unwrap();
                 assert_eq!(result_member.head.record.atom, result);
-                assert_eq!(
-                    crate::studio::runtime::chat_item::native_read_class_v1(
-                        "conversation",
-                        &result
-                    )
-                    .main_presentation,
-                    pl_protocol::MainPresentation::BackgroundResults
-                );
                 assert_eq!(result_member.head.record.start_fact, None);
                 assert_eq!(result_member.head.record.end_fact, Some(at(2)));
                 if name == pl_tool::file_display::TOOL_SHOW_FILES {
@@ -3447,7 +3445,7 @@ mod tests {
             };
             atom.started_at = Some(10);
             atom.finished_at = Some(20);
-            Ok((atom, Arc::new(ChatItem::complete(draft, append_seq, None))))
+            Ok((atom, Arc::new(ChatItem::complete(draft, append_seq))))
         }
 
         let mut s = state();

@@ -19,7 +19,7 @@ async fn public_artifact(
     let mut feed = runtime
         .open_conversation_feed(
             thread,
-            ChatScope::Main,
+            ChatScope::conversation(None),
             ReadDemand {
                 max_items: 64,
                 max_bytes: 256 * 1024,

@@ -181,7 +181,7 @@ impl ReadOwners {
         self.open_scoped(
             runtime,
             session,
-            ChatScope::Main,
+            ChatScope::conversation(None),
             demand,
             fingerprint,
             cancel,
@@ -621,7 +621,7 @@ pub(super) async fn read(
             .open_scoped(
                 runtime,
                 &args.session_id,
-                args.scope.unwrap_or(ChatScope::Main),
+                args.scope.unwrap_or(ChatScope::conversation(None)),
                 page_demand,
                 None,
                 None,
@@ -1701,7 +1701,7 @@ mod tests {
             assert_eq!(after["pending"], json!([]));
             let mut history = env
                 .runtime
-                .open_conversation_feed(id, ChatScope::Main, demand(100)?)
+                .open_conversation_feed(id, ChatScope::conversation(None), demand(100)?)
                 .await?;
             let Some(crate::studio::ConversationEvent::Chat { batch }) = history.recv().await?
             else {

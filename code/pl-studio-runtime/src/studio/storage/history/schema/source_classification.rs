@@ -476,7 +476,7 @@ mod tests {
                 draft.payload = std::sync::Arc::from(&b"unsupported original bytes"[..]);
             }
             draft.metadata = serde_json::to_vec(&atom)?.into();
-            let completion = pl_core::chat::ChatItem::complete(draft, seq, None);
+            let completion = pl_core::chat::ChatItem::complete(draft, seq);
             conversation::migration::append_published(&db, &completion).await?;
             db.execute_raw(statement(
                 "UPDATE conversation_items SET metadata=?,query_class=? WHERE seq=?",

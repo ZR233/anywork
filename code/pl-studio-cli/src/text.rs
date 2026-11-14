@@ -11,7 +11,7 @@ pub(super) async fn final_text(runtime: &StudioRuntime, turn: &Turn) -> Result<S
         max_bytes: pl_protocol::CHAT_BATCH_MAX_BYTES,
     };
     let mut feed = runtime
-        .open_conversation_feed(&turn.thread_id, ChatScope::Main, demand)
+        .open_conversation_feed(&turn.thread_id, ChatScope::conversation(None), demand)
         .await?;
     let result = async {
         let mut batch = loop {

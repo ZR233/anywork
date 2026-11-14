@@ -19,8 +19,6 @@ use std::{collections::BTreeMap, sync::Arc};
 mod accepted;
 mod atom;
 pub(in crate::studio) use accepted::{accepted_inbox_draft, accepted_input_draft};
-mod read_hint;
-pub(in crate::studio) use read_hint::{native_read_class_v1, native_read_hint_v1};
 mod descriptor;
 mod payload;
 pub(crate) use atom::atom;
@@ -447,7 +445,6 @@ fn freeze(
     Ok(ChatDraft {
         item_id: id.into(),
         query_class: "conversation".into(),
-        read_hint: native_read_hint_v1("conversation", &atom),
         parent_id,
         metadata: serde_json::to_vec(&atom)?.into(),
         payload: Arc::from(serde_json::to_vec(&envelope)?),

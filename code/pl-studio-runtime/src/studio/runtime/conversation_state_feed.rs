@@ -1688,7 +1688,7 @@ mod tests {
         phase.set("open content");
         let mut content = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         phase.set("open State");
         let mut state = env.runtime.open_conversation_state_feed(id).await?;

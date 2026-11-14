@@ -390,7 +390,7 @@ async fn history(
     first: ChatBatch,
     read_demand: ReadDemand,
 ) -> Result<Vec<CompletedEntry>> {
-    let heads = items(pages(reader, &ChatScope::Main, first, read_demand).await?)?;
+    let heads = items(pages(reader, &ChatScope::conversation(None), first, read_demand).await?)?;
     let mut messages = Vec::new();
     for head in heads {
         let run = head.run.context("Main run position")?;
@@ -524,7 +524,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
         let id = thread.thread.id;
         let mut feed = env
             .runtime
-            .open_observed_feed(&id, ChatScope::Main, demand(7))
+            .open_observed_feed(&id, ChatScope::conversation(None), demand(7))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
@@ -542,7 +542,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
                 .any(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning)
             {
                 let batch = chat(&mut feed).await?;
-                batch.validate_for(&ChatScope::Main)?;
+                batch.validate_for(&ChatScope::conversation(None))?;
                 ensure!(batch.from_seq == Some(through));
                 through = batch.through_seq;
                 appended.extend(items(batch.entries)?);
@@ -554,7 +554,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
                 while retired_through.is_none() {
                     match next(&mut feed).await? {
                         Observation::Chat { batch } => {
-                            batch.validate_for(&ChatScope::Main)?;
+                            batch.validate_for(&ChatScope::conversation(None))?;
                             ensure!(batch.placement == ChatPlacement::Append);
                             ensure!(batch.from_seq == Some(through));
                             through = batch.through_seq;
@@ -583,7 +583,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
             {
                 match next(&mut feed).await? {
                     Observation::Chat { batch } => {
-                        batch.validate_for(&ChatScope::Main)?;
+                        batch.validate_for(&ChatScope::conversation(None))?;
                         ensure!(batch.placement == ChatPlacement::Append);
                         ensure!(batch.from_seq == Some(through));
                         through = batch.through_seq;
@@ -665,7 +665,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
         env.restart().await?;
         let mut reopened = env
             .runtime
-            .open_observed_feed(&id, ChatScope::Main, demand(7))
+            .open_observed_feed(&id, ChatScope::conversation(None), demand(7))
             .await?;
         let read = async {
             let first = chat(&mut reopened).await?;
@@ -801,7 +801,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
         reached(&stage).await?;
         let mut probe = env
             .runtime
-            .open_observed_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::conversation(None), demand(1))
             .await?;
         let ready = async {
             loop {
@@ -827,7 +827,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
         let (target, accepted, accepted_bytes) = finish_feed(&mut probe, ready).await?;
         let mut feed = env
             .runtime
-            .open_observed_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::conversation(None), demand(1))
             .await?;
         let observed = async {
             let reader = feed.reader().clone();
@@ -876,7 +876,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
             loop {
                 match next(&mut feed).await? {
                     Observation::Chat { batch } => {
-                        batch.validate_for(&ChatScope::Main)?;
+                        batch.validate_for(&ChatScope::conversation(None))?;
                         ensure!(
                             batch.placement == ChatPlacement::Append
                                 && batch.from_seq == Some(through)
@@ -1025,7 +1025,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
         let observed = async {
             let mut feed = env
                 .runtime
-                .open_observed_feed(id, ChatScope::Main, demand(7))
+                .open_observed_feed(id, ChatScope::conversation(None), demand(7))
                 .await?;
             let observed = async {
                 let first = chat(&mut feed).await?;
@@ -1053,7 +1053,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 loop {
                     match next(&mut feed).await? {
                         Observation::Chat { batch } => {
-                            batch.validate_for(&ChatScope::Main)?;
+                            batch.validate_for(&ChatScope::conversation(None))?;
                             ensure!(batch.from_seq == Some(through));
                             through = batch.through_seq;
                         }
@@ -1081,7 +1081,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 while reasoning.len() < 2 || text_owner.is_none() {
                     match next(&mut feed).await? {
                         Observation::Chat { batch } => {
-                            batch.validate_for(&ChatScope::Main)?;
+                            batch.validate_for(&ChatScope::conversation(None))?;
                             ensure!(
                                 batch.placement == ChatPlacement::Append
                                     && batch.from_seq == Some(through)
@@ -1258,7 +1258,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
         ensure!(matches!(terminal.state, TurnState::Completed(_)));
         let mut feed = env
             .runtime
-            .open_observed_feed(id, ChatScope::Main, demand(1))
+            .open_observed_feed(id, ChatScope::conversation(None), demand(1))
             .await?;
         let observed = async {
             let old = chat(&mut feed).await?;
@@ -1319,7 +1319,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             );
             let mut restored = env
                 .runtime
-                .open_observed_feed(id, ChatScope::Main, demand(1))
+                .open_observed_feed(id, ChatScope::conversation(None), demand(1))
                 .await?;
             let read = async {
                 let first = chat(&mut restored).await?;
@@ -1494,7 +1494,7 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
     .await?;
     let result = async {
         let thread = env.start(ThreadWorkspaceMode::Worktree, &prompt).await?;
-        let mut feed = env.runtime.open_observed_feed(&thread.thread.id, ChatScope::Main, demand(37)).await?;
+        let mut feed = env.runtime.open_observed_feed(&thread.thread.id, ChatScope::conversation(None), demand(37)).await?;
         let observed = async {
             let first = chat(&mut feed).await?;
             ensure!(first.placement == ChatPlacement::Set);
@@ -1514,7 +1514,7 @@ async fn observe_realistic_output_limit(item_count: usize) -> Result<()> {
                 while terminal.is_none() || !retired {
                     match next(&mut feed).await? {
                         Observation::Chat { batch } => {
-                            batch.validate_for(&ChatScope::Main)?;
+                            batch.validate_for(&ChatScope::conversation(None))?;
                             ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                             ensure!(batch.entries.len() <= demand(37).max_items as usize);
                             peak_batch = peak_batch.max(batch.encoded_len()?);
@@ -1750,11 +1750,11 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
         let id = &thread.thread.id;
         let mut feed = env
             .runtime
-            .open_observed_feed(id, ChatScope::Main, demand(37))
+            .open_observed_feed(id, ChatScope::conversation(None), demand(37))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
-            first.validate_for(&ChatScope::Main)?;
+            first.validate_for(&ChatScope::conversation(None))?;
             ensure!(first.placement == ChatPlacement::Set);
             let reader = feed.reader().clone();
             let (offer, received) = tokio::sync::oneshot::channel();
@@ -1776,7 +1776,7 @@ async fn realistic_output_limit_single_item_reads_live_body() -> Result<()> {
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
                             Observation::Chat { batch } => {
-                                batch.validate_for(&ChatScope::Main)?;
+                                batch.validate_for(&ChatScope::conversation(None))?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                                 ensure!(batch.entries.len() <= demand(37).max_items as usize);
                                 peak_batch = peak_batch.max(batch.encoded_len()?);
@@ -1880,11 +1880,11 @@ async fn observe_many_live_bodies(item_count: usize) -> Result<()> {
         };
         let mut feed = env
             .runtime
-            .open_observed_feed(id, ChatScope::Main, demand(37))
+            .open_observed_feed(id, ChatScope::conversation(None), demand(37))
             .await?;
         let observed = async {
             let first = chat(&mut feed).await?;
-            first.validate_for(&ChatScope::Main)?;
+            first.validate_for(&ChatScope::conversation(None))?;
             ensure!(first.placement == ChatPlacement::Set);
             ensure!(first.entries.len() <= demand(37).max_items as usize);
             let mut peak_batch = first.encoded_len()?;
@@ -1905,7 +1905,7 @@ async fn observe_many_live_bodies(item_count: usize) -> Result<()> {
                     while terminal.is_none() || !retired {
                         match next(&mut feed).await? {
                             Observation::Chat { batch } => {
-                                batch.validate_for(&ChatScope::Main)?;
+                                batch.validate_for(&ChatScope::conversation(None))?;
                                 ensure!(batch.placement == ChatPlacement::Append && batch.before.is_none());
                                 ensure!(batch.entries.len() <= demand(37).max_items as usize);
                                 peak_batch = peak_batch.max(batch.encoded_len()?);

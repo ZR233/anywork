@@ -1676,7 +1676,7 @@ async fn target_timeline(session: &Session, bot_id: &str, message_id: &str) -> R
     );
     let (read, batch) = session
         .http()?
-        .open_chat(&thread_id, ChatScope::Main, CHAT_DEMAND)
+        .open_chat(&thread_id, ChatScope::conversation(None), CHAT_DEMAND)
         .await?;
     let mut remaining = CHAT_OBSERVATION_BYTES;
     charge_chat_batch(&batch, &mut remaining)?;
@@ -1700,7 +1700,7 @@ async fn inbound_target_timeline(
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
     let (read, batch) = session
         .http()?
-        .open_chat(&thread_id, ChatScope::Main, CHAT_DEMAND)
+        .open_chat(&thread_id, ChatScope::conversation(None), CHAT_DEMAND)
         .await?;
     ensure!(
         batch.before.is_none(),

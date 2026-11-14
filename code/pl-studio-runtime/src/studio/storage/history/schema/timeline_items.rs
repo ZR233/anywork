@@ -215,7 +215,6 @@ mod tests {
             let completion = pl_core::chat::ChatItem::complete(
                 crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity)?,
                 part,
-                None,
             );
             conversation::migration::append_published(db, &completion).await?;
         }
@@ -238,7 +237,6 @@ mod tests {
         let completion = pl_core::chat::ChatItem::complete(
             crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity)?,
             3,
-            None,
         );
         conversation::migration::append_published(db, &completion).await?;
 

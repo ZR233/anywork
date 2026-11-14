@@ -698,7 +698,7 @@ mod tests {
                 })
                 .await??;
                 assert_eq!(batch.placement, ChatPlacement::Set);
-                batch.validate_for(&ChatScope::Main)?;
+                batch.validate_for(&ChatScope::conversation(None))?;
 
                 if disconnect {
                     drop(body);
@@ -962,10 +962,8 @@ mod tests {
                 items: u32,
             ) -> Result<(String, SseBody)> {
                 let scope = match parent {
-                    Some(parent_id) => ChatScope::Children {
-                        parent_id: parent_id.to_owned(),
-                    },
-                    None => ChatScope::Main,
+                    Some(parent_id) => ChatScope::conversation(Some(parent_id.to_owned())),
+                    None => ChatScope::conversation(None),
                 };
                 self.open_scope(thread, scope, items).await
             }
@@ -999,8 +997,8 @@ mod tests {
                     query.append_pair("maxItems", &items.to_string());
                     query.append_pair("maxBytes", &demand(items).max_bytes.to_string());
                     match scope {
-                        ChatScope::Main => {}
-                        ChatScope::Children { parent_id } => {
+                        ChatScope::conversation(None) => {}
+                        ChatScope::conversation(Some(parent_id)) => {
                             query.append_pair("parentId", &parent_id);
                         }
                         ChatScope::Run { reference } => {
@@ -1609,7 +1607,7 @@ mod tests {
         let first_items = first.entries.len();
         ensure!(first.from_seq.is_none());
         ensure!(first.placement == ChatPlacement::Set && first_items > 0);
-        first.validate_for(&ChatScope::Main)?;
+        first.validate_for(&ChatScope::conversation(None))?;
         let original = env.lease(&thread, &capability)?;
         ensure!(original.owner.reader.subscription_id() == capability);
         drop(original);

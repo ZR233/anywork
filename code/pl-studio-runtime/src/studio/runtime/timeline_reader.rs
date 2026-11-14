@@ -109,7 +109,12 @@ impl StudioRuntime {
         demand.validate(1)?;
         // Registers observation before any display query, without executing the Thread.
         let shared = self
-            .open_feed_resources(thread_id, pl_protocol::ChatScope::Main, demand, false)
+            .open_feed_resources(
+                thread_id,
+                pl_protocol::ChatScope::conversation(None),
+                demand,
+                false,
+            )
             .await?;
         let initial = cursor();
         Ok(TimelineReader {

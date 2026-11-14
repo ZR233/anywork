@@ -326,7 +326,6 @@ pub(super) fn convert(
             contents: Arc::new(contents),
         },
         seq,
-        None,
     ))
 }
 

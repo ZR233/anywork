@@ -4334,7 +4334,7 @@ mod future_size_tests {
                 future_size(|runtime: &'static StudioRuntime| {
                     runtime.open_conversation_feed(
                         "size",
-                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ChatScope::conversation(None),
                         pl_protocol::ReadDemand {
                             max_items: 1,
                             max_bytes: 16 * 1024,
@@ -4483,14 +4483,7 @@ mod storage_fault_tests {
                 draft.metadata = serde_json::to_vec(&atom)?.into();
                 draft.read_hint =
                     crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
-                let record = ChatItem::complete(
-                    draft,
-                    1,
-                    Some(pl_core::chat::ChatRunPosition {
-                        start_seq: 1,
-                        ordinal: 1,
-                    }),
-                );
+                let record = ChatItem::complete(draft, 1);
                 conversation::append_records(db, [&record], true).await?;
             }
             let shape = || {
