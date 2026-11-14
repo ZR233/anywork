@@ -282,7 +282,7 @@ mod real_transport {
             ensure!(completed.summary == "actual answer");
             let close = convert::close(fixture.runtime.close_acp_session(target.clone()).await?)?;
             ensure!(
-                close.local_complete && close.sdk_finished && !close.cleanup_timed_out,
+                close.local_complete && !close.sdk_finished && !close.cleanup_timed_out,
                 "{close:?}"
             );
             ensure!(
@@ -292,8 +292,9 @@ mod real_transport {
             );
             ensure!(close.unfinished_prompt.is_none() && !close.unfinished_controls);
             ensure!(close.last_completed.as_ref().map(|done| done.run) == Some(bridged_run));
-            ensure!(!PathBuf::from(format!("/proc/{}", fixture.pid("pid")?)).exists());
-            // Inspect only after the peer was released and the real owner/worker joined.
+            // Closing a member retains the shared account process; finish verifies its final exit.
+            ensure!(PathBuf::from(format!("/proc/{}", fixture.pid("pid")?)).exists());
+            // Inspect after the peer was released and the member driver joined.
             let methods = std::fs::read_to_string(fixture.home.path().join("calls"))?;
             ensure!(
                 methods
@@ -351,7 +352,7 @@ mod real_transport {
         ensure!(snapshot.ready && snapshot.acp_session_id.as_ref().map(|id| id.value.as_str()) == Some("remote-one"));
         ensure!(snapshot.observation_gap == Some(BridgeAcpObservationGap::WindowExceeded));
         let close = fixture.runtime.close_acp_session(target).await?;
-        ensure!(close.local_complete && close.sdk_finished && close.owner_failures.is_empty(), "{close:?}");
+        ensure!(close.local_complete && !close.sdk_finished && close.owner_failures.is_empty(), "{close:?}");
         Ok::<_, anyhow::Error>(())
     })).catch_unwind().await;
         finish(&fixture).await?;

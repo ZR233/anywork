@@ -42,46 +42,6 @@ pub(super) fn preparation(message: &str) -> AcpBusinessFailure {
     }
 }
 
-pub(super) fn launch_failure(
-    error: super::super::acp_launch::AcpLaunchError,
-) -> AcpBusinessFailure {
-    use super::super::{acp_install::PrepareFailure, acp_launch::AcpLaunchError};
-    use AcpBusinessFailureKind as Kind;
-    let (kind, message) = match error {
-        AcpLaunchError::Template(PrepareFailure::PreparationRequired) => {
-            (Kind::InstallRequired, "ACP installation is required")
-        }
-        AcpLaunchError::Template(PrepareFailure::InstallationInvalid) => {
-            (Kind::InstallationInvalid, "ACP installation is invalid")
-        }
-        AcpLaunchError::Template(PrepareFailure::UnsupportedPlatform) => (
-            Kind::UnsupportedPlatform,
-            "ACP installation does not support this platform",
-        ),
-        AcpLaunchError::Template(PrepareFailure::Io) => {
-            (Kind::Io, "ACP installation verification failed")
-        }
-        AcpLaunchError::Template(PrepareFailure::Cancelled) | AcpLaunchError::Cancelled => {
-            (Kind::Cancelled, "ACP launch was cancelled")
-        }
-        AcpLaunchError::MissingExecutable => {
-            (Kind::MissingExecutable, "ACP executable was not found")
-        }
-        AcpLaunchError::InvalidWorkingDirectory => (
-            Kind::InvalidWorkingDirectory,
-            "ACP working directory is invalid",
-        ),
-        AcpLaunchError::InvalidDefinition => (Kind::InvalidDefinition, "ACP definition is invalid"),
-    };
-    AcpBusinessFailure {
-        kind,
-        message: message.into(),
-        rpc_code: None,
-        rpc_data: None,
-        auth_methods: Vec::new(),
-    }
-}
-
 pub(super) fn run(run: sdk::RunId) -> AcpRunId {
     AcpRunId {
         instance: run.instance,

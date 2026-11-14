@@ -30,6 +30,8 @@ pub(super) struct Slot {
     /// 已从配置删除但仍持有资源责任的退役记录；不进入已发布快照。
     pub(super) retired: bool,
     pub(super) operation: Option<Arc<Operation>>,
+    pub(super) connection: Option<Arc<super::connection::AccountConnection>>,
+    pub(super) background_scheduled: bool,
 }
 
 impl Slot {
@@ -173,6 +175,9 @@ pub(super) struct Registry {
     /// 关闭闸门：与 start 登记同锁，一旦封闭不再接受新操作。
     pub(super) closed: bool,
     pub(super) slots: BTreeMap<String, Slot>,
+    pub(super) retiring: Vec<Arc<super::connection::AccountConnection>>,
+    /// 已完成退役的最近一次安全关闭失败；不持有历史 owner 或无界错误列表。
+    pub(super) retirement_issue: Option<String>,
     /// 已受理操作身份（含已完成）；容量有界、只增不减，重启运行时才重置。
     pub(super) accepted: BTreeMap<String, AcceptedIntent>,
 }
@@ -212,8 +217,11 @@ impl Registry {
 pub(super) struct AcpAuthInner {
     pub(super) store: StudioStore,
     pub(super) config: ConfigRuntime,
-    events: ProductEventBus,
+    pub(super) events: ProductEventBus,
     pub(super) workers: Executor,
+    pub(super) mcp_source: crate::host_mcp_assets::HostMcpSource,
+    pub(super) retirement_wake: Arc<tokio::sync::Notify>,
+    pub(super) retirement_join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     registry: Mutex<Registry>,
 }
 
@@ -223,12 +231,16 @@ impl AcpAuthInner {
         config: ConfigRuntime,
         events: ProductEventBus,
         workers: Executor,
+        mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
         Self {
             store,
             config,
             events,
             workers,
+            mcp_source,
+            retirement_wake: Arc::new(tokio::sync::Notify::new()),
+            retirement_join: tokio::sync::Mutex::new(None),
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -269,6 +281,7 @@ impl AcpAuthInner {
             registry.settings_revision = settings_revision;
             let mut changed = false;
             let mut cancelled = 0usize;
+            let mut retiring = Vec::new();
             for (account_id, account) in &config.definitions {
                 let identity = ConnectionIdentity::of(account);
                 if !registry.slots.contains_key(account_id) {
@@ -282,6 +295,8 @@ impl AcpAuthInner {
                             usage: None,
                             retired: false,
                             operation: None,
+                            connection: None,
+                            background_scheduled: false,
                         },
                     );
                     changed = true;
@@ -304,6 +319,11 @@ impl AcpAuthInner {
                     .as_ref()
                     .map(|operation| operation.operation_id.clone());
                 slot.identity = identity;
+                slot.background_scheduled = false;
+                if let Some(connection) = slot.connection.take() {
+                    connection.signal_cancel();
+                    retiring.push(connection);
+                }
                 slot.retired = false;
                 slot.revision = revision;
                 slot.usage = None;
@@ -338,6 +358,10 @@ impl AcpAuthInner {
                     continue;
                 }
                 slot.retired = true;
+                if let Some(connection) = slot.connection.take() {
+                    connection.signal_cancel();
+                    retiring.push(connection);
+                }
                 if let Some(operation) = slot.operation.as_ref() {
                     operation.cancel.cancel();
                     cancelled += 1;
@@ -345,6 +369,8 @@ impl AcpAuthInner {
                 changed = true;
             }
             // 已退役且没有在途操作的记录不再持有任何资源责任。
+            registry.retiring.extend(retiring);
+            self.retirement_wake.notify_one();
             registry
                 .slots
                 .retain(|_, slot| !(slot.retired && slot.operation.is_none()));
@@ -527,6 +553,8 @@ mod tests {
             state,
             usage,
             retired: false,
+            connection: None,
+            background_scheduled: false,
             operation: Some(operation(
                 3,
                 7,
@@ -556,6 +584,8 @@ mod tests {
                     },
                     usage: None,
                     retired: false,
+                    connection: None,
+                    background_scheduled: false,
                     operation: Some(operation(3, 7, action.clone())),
                 },
             );
@@ -593,6 +623,8 @@ mod tests {
                 },
                 usage: None,
                 retired: false,
+                connection: None,
+                background_scheduled: false,
                 operation: Some(operation(
                     3,
                     7,

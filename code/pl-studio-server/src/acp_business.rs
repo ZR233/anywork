@@ -689,7 +689,7 @@ mod tests {
         async fn closed(server: &Server, target: &AcpSessionTarget) -> Result<AcpBusinessClose> {
             let close: AcpBusinessClose = server.json("close", target).await?;
             ensure!(
-                close.local_complete && close.sdk_finished && !close.cleanup_timed_out,
+                close.local_complete && !close.sdk_finished && !close.cleanup_timed_out,
                 "{close:?}"
             );
             ensure!(
@@ -792,7 +792,8 @@ mod tests {
                 ensure!(completed.summary == "actual answer");
                 let close = closed(&server, &target).await?;
                 ensure!(close.last_completed.as_ref().map(|done| done.run) == Some(run));
-                ensure!(!PathBuf::from(format!("/proc/{}", fixture.pid("pid")?)).exists());
+                // Closing a member retains the shared account process; finish verifies its final exit.
+                ensure!(PathBuf::from(format!("/proc/{}", fixture.pid("pid")?)).exists());
 
                 // Reopen the real product member to distinguish stale qualification from Closed.
                 let mut reopened = Sse::new(

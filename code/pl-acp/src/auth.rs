@@ -1,6 +1,6 @@
 //! ACP 认证：协商、登录与受控探测。
 //!
-//! 调用方提供独占子进程的字节流（通常 stdout/stdin）与接入专属的空工作目录；本模块只编排
+//! 调用方提供账户共享连接与接入专属的空工作目录；本模块只编排
 //! 协议步骤并返回类型化结果。物理进程、stderr 消费与最终回收不属于这里。
 //!
 //! 本阶段只实现 ACP v1 中已落地的能力：`initialize`、`session/new`、`authenticate`、
@@ -11,9 +11,10 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use agent_client_protocol::{
-    ByteStreams, Client, Error as RpcError, ErrorCode, is_incoming_transport_closed,
-};
+#[cfg(test)]
+use agent_client_protocol::ByteStreams;
+use agent_client_protocol::{Error as RpcError, ErrorCode, is_incoming_transport_closed};
+#[cfg(test)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod flow;
@@ -331,24 +332,6 @@ impl AuthError {
             source: Some(RedactedRpcFailure { error }),
         }
     }
-
-    /// 对端或连接失败：入站预算耗尽按资源限制；流层已记录真实读/写失败或对端 EOF 按传输
-    /// 失败；其余用调用方指定的阶段默认类别（如探测为 `Probe`、远端会话关闭为 `Cleanup`）。
-    fn peer_failure(
-        stage: AuthStage,
-        peer_kind: AuthFailureKind,
-        error: RpcError,
-        stream: &limits::StreamGuard,
-    ) -> Self {
-        let kind = if stream.budget_exhausted() {
-            AuthFailureKind::ResourceLimit
-        } else if stream.io_failed() || is_incoming_transport_closed(&error) {
-            AuthFailureKind::Transport
-        } else {
-            peer_kind
-        };
-        Self::rpc(stage, kind, error)
-    }
 }
 
 impl fmt::Debug for AuthError {
@@ -423,15 +406,66 @@ impl std::error::Error for RedactedRpcFailure {
     }
 }
 
-/// 在给定字节流上驱动一条持续认证连接。
-///
-/// `AuthRequired` 通过进度发布，连接保留并等待宿主命令。初始化、人工授权与探测只等待
-/// 实际响应、断连或取消；结果未知的请求不重发。前台结束后才使用宿主提供的统一关闭预算，
-/// 等待 SDK 排空与写端关闭。清理失败优先于业务结果，物理进程仍由宿主负责回收。
-///
-/// # Errors
-/// 返回带阶段与安全 RPC 错误码的 [`AuthError`]；版本不匹配时不会发送登录或探测请求。
-pub async fn run_connection<W, R>(
+/// 在账户的同一已初始化连接上执行一次探测或显式登录；结束只关闭自己的 session。
+pub async fn run(
+    connection: crate::connection::Connection,
+    request: AuthRequest,
+) -> Result<AuthOutcome, AuthError> {
+    let ready = tokio::select! {
+        biased;
+        () = request.cancellation.cancelled() => return Err(AuthError::cancelled(AuthStage::Initialize)),
+        result = connection.ready() => result.map_err(|error| AuthError::from_session(error, AuthStage::Initialize))?,
+    };
+    let _lease = connection
+        .lease()
+        .map_err(|error| AuthError::from_session(error, AuthStage::Initialize))?;
+    if request
+        .expected_server_version
+        .as_ref()
+        .is_some_and(|expected| {
+            ready
+                .initialize
+                .agent_info
+                .as_ref()
+                .map(|info| &info.version)
+                != Some(expected)
+        })
+    {
+        return Err(AuthError::server_version_mismatch());
+    }
+    flow::negotiate(connection, ready.sdk, ready.initialize, request).await
+}
+
+impl AuthError {
+    /// 共享连接准备失败的安全认证分类。
+    pub fn from_connection(error: crate::session::Error) -> Self {
+        Self::from_session(error, AuthStage::Initialize)
+    }
+    pub(crate) fn from_session(error: crate::session::Error, stage: AuthStage) -> Self {
+        use crate::session::Error;
+        match error {
+            Error::UnsupportedVersion => Self::unsupported_version(),
+            Error::ServerVersionMismatch => Self::server_version_mismatch(),
+            Error::Rpc(error) => Self::rpc(
+                stage,
+                if is_incoming_transport_closed(&error) {
+                    AuthFailureKind::Transport
+                } else if stage == AuthStage::Probe {
+                    AuthFailureKind::Probe
+                } else if stage == AuthStage::Close {
+                    AuthFailureKind::Cleanup
+                } else {
+                    AuthFailureKind::Protocol
+                },
+                error,
+            ),
+            _ => Self::new(AuthFailureKind::Transport, stage),
+        }
+    }
+}
+
+#[cfg(test)]
+async fn run_connection<W, R>(
     outgoing: W,
     incoming: R,
     request: AuthRequest,
@@ -441,108 +475,20 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let cleanup = request.cleanup.clone();
-    let stream = limits::StreamGuard::new();
-    let observed = request.progress.clone();
-    let transport = ByteStreams::new(
-        limits::GuardedWriter::new(outgoing, stream.clone()).compat_write(),
-        limits::BudgetedReader::new(incoming, limits::INPUT_BYTE_BUDGET, stream.clone()).compat(),
-    );
-    let flow_stream = stream.clone();
-    let (foreground_tx, mut foreground_rx) = tokio::sync::oneshot::channel();
-    let connection =
-        Client
-            .v1()
-            .name("anywork-acp-auth")
-            .connect_with(transport, async move |connection| {
-                let outcome = flow::negotiate(connection, request, flow_stream).await;
-                // 前台结论只在这里发布一次；随后 SDK 的排空不再改动它。
-                let _ = foreground_tx.send(outcome);
-                Ok(())
-            });
-    let mut connection = std::pin::pin!(connection);
-
-    // 阶段一：等前台发布结论，期间必须持续驱动连接 future。
-    let phase = tokio::select! {
-        result = &mut foreground_rx => Phase::Published(result.ok()),
-        result = &mut connection => Phase::Finished(result),
-    };
-
-    match phase {
-        // 前台已结束：此后才为 SDK 收束另起预算。
-        Phase::Published(Some(observed_outcome)) => {
-            match tokio::time::timeout_at(cleanup.deadline(), connection.as_mut()).await {
-                // 只有 SDK 收束成功，才发布前台协议结果。
-                Ok(Ok(())) => observed_outcome,
-                // 收束失败按实际类别上报（真实读/写失败是 `Transport`，预算是 `ResourceLimit`）；
-                // 前台结论被丢弃，不能被当作已收束。
-                Ok(Err(error)) => Err(AuthError::peer_failure(
-                    AuthStage::Close,
-                    AuthFailureKind::Protocol,
-                    error,
-                    &stream,
-                )),
-                // 收束超时一律 `Timeout`@`Close`：协议取消或认证失败都不代表资源已收束。
-                Err(_elapsed) => Err(AuthError::timeout(AuthStage::Close)),
-            }
-        }
-        // 前台 future 被丢弃且没有发布结论：连接在得出结论前就终止了。
-        Phase::Published(None) => {
-            let stage = last_stage(&observed);
-            let failure =
-                match tokio::time::timeout_at(cleanup.deadline(), connection.as_mut()).await {
-                    Ok(Ok(())) => AuthError::new(AuthFailureKind::Protocol, stage),
-                    Ok(Err(error)) => {
-                        AuthError::peer_failure(stage, AuthFailureKind::Protocol, error, &stream)
-                    }
-                    Err(_elapsed) => AuthError::timeout(AuthStage::Close),
-                };
-            Err(failure)
-        }
-        // 连接先结束：`main_fn` 先发布结论再返回，因此结论通常已经可取。
-        Phase::Finished(result) => match (foreground_rx.await.ok(), result) {
-            // 收束完整完成：可以发布前台结论。
-            (Some(observed_outcome), Ok(())) => observed_outcome,
-            // 收束失败优先于前台结论：前台结果（含取消）被丢弃。
-            (Some(_observed), Err(error)) => Err(AuthError::peer_failure(
-                AuthStage::Close,
-                AuthFailureKind::Protocol,
-                error,
-                &stream,
-            )),
-            // 防御分支：`main_fn` 总是先发布再返回，因此连接正常结束时应已有结论；
-            // 真到这里只说明结论没有被发布，按协议失败上报而不是伪造成功。
-            (None, Ok(())) => Err(AuthError::new(
-                AuthFailureKind::Protocol,
-                last_stage(&observed),
-            )),
-            (None, Err(error)) => Err(AuthError::peer_failure(
-                last_stage(&observed),
-                AuthFailureKind::Protocol,
-                error,
-                &stream,
-            )),
-        },
+    let (connection, driver) =
+        crate::connection::channel(request.expected_server_version.clone(), cleanup);
+    let sdk = tokio::spawn(driver.run(outgoing, incoming));
+    let result = run(connection.clone(), request).await;
+    connection.cancel();
+    let sdk = sdk.await.expect("SDK joined");
+    if sdk.cleanup_timed_out {
+        return Err(AuthError::timeout(AuthStage::Close));
     }
-}
-
-/// 阶段一的两个可能终局。
-enum Phase {
-    /// 前台发布了结论（`None` 表示发送端被丢弃、没有结论）。
-    Published(Option<Result<AuthOutcome, AuthError>>),
-    /// 连接 future 先结束。
-    Finished(Result<(), RpcError>),
-}
-
-/// 把最后发布的进度还原为阶段，供连接级失败定位。
-fn last_stage(progress: &watch::Sender<AuthProgress>) -> AuthStage {
-    match &*progress.borrow() {
-        AuthProgress::Initializing => AuthStage::Initialize,
-        AuthProgress::Required { .. } | AuthProgress::Authenticating { .. } => {
-            AuthStage::Authenticate
-        }
-        AuthProgress::Verifying => AuthStage::Probe,
-        AuthProgress::Closing => AuthStage::Close,
+    if result.is_ok() {
+        sdk.result
+            .map_err(|error| AuthError::from_session(error, AuthStage::Close))?;
     }
+    result
 }
 
 #[cfg(test)]
@@ -627,7 +573,10 @@ mod tests {
                     {
                         let mut observed = observed.lock().unwrap_or_else(PoisonError::into_inner);
                         observed.initializes += 1;
-                        observed.default_capabilities = request.client_capabilities == Default::default();
+                        observed.default_capabilities = request.client_capabilities == agent_client_protocol::v1::schema::ClientCapabilities::new().session(
+                            agent_client_protocol::v1::schema::ClientSessionCapabilities::new().config_options(
+                                agent_client_protocol::v1::schema::SessionConfigOptionsCapabilities::new().boolean(
+                                    agent_client_protocol::v1::schema::BooleanConfigOptionCapabilities::new())));
                     }
                     tokio::time::sleep(scenario.initialize_delay).await;
                     if scenario.cancel_at == Some(AuthStage::Initialize) { cancel.cancel(); }
@@ -1066,7 +1015,8 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(outcome, Ok(AuthOutcome::Verified { usage: Some(UsageReport::Text(ref text)), .. }) if text == REPORT)
+            matches!(outcome, Ok(AuthOutcome::Verified { usage: Some(UsageReport::Text(ref text)), .. }) if text == REPORT),
+            "actual outcome: {outcome:?}"
         );
         assert_eq!(
             observed.prompts,

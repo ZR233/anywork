@@ -1119,19 +1119,6 @@ mod tests {
             .await?;
         assert_eq!(reused.target, target);
         assert!(reused.observation.is_none());
-        let entry = fixture
-            .runtime
-            .config_runtime
-            .read_acp_definitions()
-            .definitions["business-peer"]
-            .clone();
-        let mut disabled = entry.definition;
-        disabled.enabled = false;
-        fixture.runtime.config_runtime.save_acp_definition(
-            fixture.runtime.config_runtime.read()?.revision,
-            &disabled,
-            Some(entry.document_revision),
-        )?;
         let unavailable = fixture
             .runtime
             .list_acp_sessions(target.clone(), ListSessionsRequest::new())
@@ -1156,6 +1143,27 @@ mod tests {
                 break;
             }
         }
+        let entry = fixture
+            .runtime
+            .config_runtime
+            .read_acp_definitions()
+            .definitions["business-peer"]
+            .clone();
+        let mut disabled = entry.definition;
+        disabled.enabled = false;
+        fixture.runtime.config_runtime.save_acp_definition(
+            fixture.runtime.config_runtime.read()?.revision,
+            &disabled,
+            Some(entry.document_revision),
+        )?;
+        assert!(
+            fixture
+                .runtime
+                .prompt_acp_session(target.clone(), vec![])
+                .await
+                .is_err(),
+            "disabled account must revoke existing business admission"
+        );
         let pid = fixture.pid("pid")?;
         let close = fixture.runtime.close_acp_session(target.clone()).await?;
         assert!(close.local_complete, "{close:?}");
@@ -1165,10 +1173,6 @@ mod tests {
                 .acp_prompt_capabilities_for_thread(&target.thread_id)
                 .await
                 .is_err()
-        );
-        assert!(
-            !PathBuf::from(format!("/proc/{pid}")).exists(),
-            "supervised process must exit"
         );
         let methods = std::fs::read_to_string(fixture.home.path().join("calls"))?;
         assert_eq!(
@@ -1198,6 +1202,10 @@ mod tests {
             "unsupported list must not fallback"
         );
         fixture.runtime.shutdown_runtime().await?;
+        assert!(
+            !PathBuf::from(format!("/proc/{pid}")).exists(),
+            "account shutdown must reap the process"
+        );
         Ok(())
     }
 
@@ -1232,8 +1240,12 @@ mod tests {
                 .is_none()
         );
         let pid = fixture.pid("pid")?;
-        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(
+            PathBuf::from(format!("/proc/{pid}")).exists(),
+            "failed business session must retain shared account connection"
+        );
         fixture.runtime.shutdown_runtime().await?;
+        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
         Ok(())
     }
 
@@ -1381,27 +1393,19 @@ mod tests {
         .await?;
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
-        // This joins the same retained Session close, not the cancelled request future.
+        assert!(
+            PathBuf::from(format!("/proc/{pid}")).exists(),
+            "cancelling a waiter cannot kill shared server"
+        );
+        std::fs::write(fixture.home.path().join("release"), "continue")?;
         let report = timeout(Duration::from_secs(15), owner.close_session()).await?;
-        if !report.is_empty() {
-            timeout(Duration::from_secs(5), async {
-                while PathBuf::from(format!("/proc/{pid}")).exists()
-                    || PathBuf::from(format!("/proc/{child}")).exists()
-                {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await?;
-            assert!(
-                timeout(Duration::from_secs(5), owner.close_session())
-                    .await?
-                    .is_empty()
-            );
-        }
+        assert!(report.is_empty(), "{report:#?}");
         assert!(!resources.has_obligations());
+        assert!(PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(PathBuf::from(format!("/proc/{child}")).exists());
+        fixture.runtime.shutdown_runtime().await?;
         assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
         assert!(!PathBuf::from(format!("/proc/{child}")).exists());
-        fixture.runtime.shutdown_runtime().await?;
         Ok(())
     }
 
@@ -2013,7 +2017,10 @@ mod tests {
             .get_session(&open.target.session_id)
             .unwrap();
         assert!(session.archived);
-        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(
+            PathBuf::from(format!("/proc/{pid}")).exists(),
+            "project archive must not close account connection"
+        );
         assert!(PathBuf::from(&fixture.workspace.path).is_dir());
         assert!(
             fixture
@@ -2024,6 +2031,7 @@ mod tests {
                 .contains_key("business-peer")
         );
         fixture.runtime.shutdown_runtime().await?;
+        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
         Ok(())
     }
 
@@ -2054,15 +2062,8 @@ mod tests {
         )
         .await?;
         if first.is_err() {
-            // A real Pending acknowledgement retains the original owner; no new process is started.
-            timeout(Duration::from_secs(15), async {
-                while PathBuf::from(format!("/proc/{pid}")).exists()
-                    || PathBuf::from(format!("/proc/{child}")).exists()
-                {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await?;
+            // Release the original delayed response, never restart the shared process.
+            std::fs::write(fixture.home.path().join("release"), "continue")?;
             assert!(
                 fixture
                     .runtime
@@ -2074,8 +2075,8 @@ mod tests {
             assert!(first?.is_some());
         }
         assert!(open.completion.wait().await.is_err());
-        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
-        assert!(!PathBuf::from(format!("/proc/{child}")).exists());
+        assert!(PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(PathBuf::from(format!("/proc/{child}")).exists());
         assert!(
             fixture
                 .runtime
@@ -2106,6 +2107,8 @@ mod tests {
             1
         );
         fixture.runtime.shutdown_runtime().await?;
+        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(!PathBuf::from(format!("/proc/{child}")).exists());
         Ok(())
     }
 }
