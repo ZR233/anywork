@@ -518,6 +518,18 @@ impl PresentationState {
         Ok(())
     }
 
+    /// Publication and subsequent execution retirement each need at most one revision.
+    /// Check before admission so the synchronous publication cannot fail after commit.
+    pub(in crate::studio) fn ensure_publication_capacity(&self) -> Result<()> {
+        self.revision
+            .checked_add(2)
+            .context("display view revision exhausted")?;
+        self.layout_revision
+            .checked_add(2)
+            .context("display layout revision exhausted")?;
+        Ok(())
+    }
+
     pub(in crate::studio) fn observe_execution(&mut self, present: bool) -> Result<()> {
         if self.execution_present != present {
             self.advance_layout()?;
@@ -540,16 +552,19 @@ impl PresentationState {
 
     /// Streaming replaces only the open group's bounded in-memory title. No member
     /// read, durable delta or persisted header revision is produced by progress.
-    pub(super) fn observe_thinking_summary(&mut self, summary: &str) {
-        let Some(order) = self.open_work else { return };
+    pub(super) fn observe_thinking_summary(&mut self, summary: &str) -> Result<()> {
+        let Some(order) = self.open_work else {
+            return Ok(());
+        };
         let header = self.blocks.get(&order).expect("open Work header");
         if header.thinking_summary.as_deref() == Some(summary) {
-            return;
+            return Ok(());
         }
         self.revision = self
             .revision
             .checked_add(1)
-            .expect("display view revision exhausted");
+            .filter(|revision| *revision < u64::MAX)
+            .context("display view revision exhausted")?;
         let previous = header.thinking_summary.as_ref().map_or(0, String::len);
         // A queued version detached by streaming still needs one charge until its
         // original effect commits. Keep that charge in the existing batch metadata;
@@ -576,6 +591,7 @@ impl PresentationState {
             .retained
             .saturating_sub(previous as u64)
             .saturating_add(summary.len() as u64);
+        Ok(())
     }
 
     fn admitted(&self, atom: &ChatAtom) -> bool {
@@ -1286,6 +1302,7 @@ impl PresentationState {
         }
         let owned = Arc::get_mut(&mut delta).expect("unpublished display delta");
         owned.retained_bytes = owned.retained_bytes.saturating_add(replaced);
+        next.ensure_publication_capacity()?;
         Ok((
             PresentationPlan {
                 next,
@@ -2519,7 +2536,7 @@ mod tests {
 
         let mut streaming = state();
         let first = streaming.prepare(1, 10, &[started], &[], &[])?;
-        streaming.observe_thinking_summary("streamed title");
+        streaming.observe_thinking_summary("streamed title")?;
         let before = streaming.retained_bytes();
         streaming.confirm_cut(1, 0, 1)?;
         assert!(
@@ -3414,8 +3431,8 @@ mod tests {
         let persisted = serde_json::to_value(&s.blocks[&BlockOrder(1)])?;
         let revision = s.blocks[&BlockOrder(1)].revision;
         s.members.begin();
-        s.observe_thinking_summary("流式 **摘要**");
-        s.observe_thinking_summary("最新流式 **摘要**");
+        s.observe_thinking_summary("流式 **摘要**")?;
+        s.observe_thinking_summary("最新流式 **摘要**")?;
         let accesses = s.members.finish();
         assert_eq!(
             (accesses.reads, accesses.writes, accesses.misses),

@@ -65,7 +65,7 @@ pub(crate) async fn open(
         .await?;
     let metadata = reader.metadata();
     let id = metadata.reader_id.clone();
-    let owner = Arc::new(ReadOwner::with_timeline(thread_id, reader));
+    let owner = Arc::new(ReadOwner::with_timeline(thread_id, reader, permit));
     let registered = {
         let mut owners = state
             .conversations
@@ -85,7 +85,6 @@ pub(crate) async fn open(
             let task_id = id.clone();
             let task_owner = owner.clone();
             owners.tasks.spawn(async move {
-                let _permit = permit;
                 tokio::select! { biased;
                     _ = task_state.shutdown.cancelled() => {},
                     _ = task_owner.cancel.cancelled() => {},

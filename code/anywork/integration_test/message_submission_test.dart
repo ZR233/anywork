@@ -420,7 +420,7 @@ void main() {
       'inputId': inputId,
       'blockId': canonical.id,
       'recordId': completedOriginalId(canonicalBody.record),
-      'deliverySequence': transport.lastHeldSequence,
+      'nextCursor': transport.lastHeldCursor,
     });
     await capturePresentation(tester, 'submission-canonical.png');
     await fixtureGate(tester, provider, _stage, release: true);
@@ -626,7 +626,7 @@ class _SubmissionTransport extends FrbStudioTransport {
   SubmitPromptReceipt? receipt;
   bool realSecondRpcStarted = false;
   int heldFrames = 0;
-  int? lastHeldSequence;
+  String? lastHeldCursor;
 
   void arm() {
     _rpc = Completer<void>();
@@ -707,52 +707,56 @@ class _SubmissionTransport extends FrbStudioTransport {
     return result;
   }
 
-  Future<ConversationFrame> deliver(ConversationFrame frame) async {
+  Future<ViewUpdate> deliver(ViewUpdate update) async {
     final gate = _feed;
     if (gate != null && !gate.isCompleted) {
       heldFrames++;
-      lastHeldSequence = frame.deliverySequence;
-      record('real-frame-held', {
-        'subscriptionId': frame.subscriptionId,
-        'deliverySequence': frame.deliverySequence,
+      lastHeldCursor = update.next.value;
+      record('real-response-held', {
+        'after': update.after.value,
+        'next': update.next.value,
       });
       await gate.future;
     }
-    return frame;
+    return update;
   }
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
-  }) async => _SubmissionFeed(
-    await super.openTimelineFeed(threadId, demand: demand),
+  }) async => _SubmissionReader(
+    await super.openTimelineReader(
+      threadId,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: readerProtocolVersion,
+      demand: demand,
+    ),
     this,
   );
 }
 
-/// asyncMap preserves order/identity/backpressure. ACK and reader stay on the
-/// original feed. Closing releases an in-flight barrier before joining native.
-class _SubmissionFeed implements TimelineFeed {
-  _SubmissionFeed(this.original, this.owner);
-  final TimelineFeed original;
+/// Holds only delivery of the original response. Closing releases that local barrier first.
+class _SubmissionReader implements TimelineReader {
+  _SubmissionReader(this.original, this.owner);
+  final TimelineReader original;
   final _SubmissionTransport owner;
-  late final Stream<ConversationFrame> _events = original.events.asyncMap(
-    owner.deliver,
-  );
   @override
-  String get threadId => original.threadId;
-  @override
-  String get subscriptionId => original.subscriptionId;
+  OpenTimeline get metadata => original.metadata;
   @override
   ConversationReader get reader => original.reader;
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<ViewUpdate> next({required ViewCursor after}) async =>
+      owner.deliver(await original.next(after: after));
+  @override
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) => original.loadTimelineOlder(before: before, demand: demand);
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   }) => original.loadLiveOlder(before: before, demand: demand);
@@ -766,11 +770,6 @@ class _SubmissionFeed implements TimelineFeed {
     window: window,
     demand: demand,
   );
-  @override
-  Stream<ConversationFrame> get events => _events;
-  @override
-  Future<void> acknowledge(int deliverySequence) =>
-      original.acknowledge(deliverySequence);
   @override
   void requestClose() {
     owner.releaseFeed();

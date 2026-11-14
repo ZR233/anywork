@@ -601,7 +601,8 @@ final class _TimelineScene {
       if (display == null ||
           !display.isMounted ||
           display.isRetired ||
-          display.content.state.value is! ChatReady<bool> ||
+          graph.timeline.source.value?.connection !=
+              TimelineConnectionPhase.ready ||
           execution == null ||
           execution.phase != AgentExecutionPhase.running ||
           turn == null ||
@@ -652,7 +653,8 @@ final class _TimelineScene {
             !display.isMounted ||
             display.isRetired ||
             display.appliedSets != 1 ||
-            display.content.state.value is! ChatReady<bool> ||
+            graph.timeline.source.value?.connection !=
+                TimelineConnectionPhase.ready ||
             display.live.value?.executionPresent != true) {
           return false;
         }
@@ -761,7 +763,7 @@ final class _TimelineScene {
         (widget) =>
             widget is TimelineMemberAtom &&
             widget.displayId == id &&
-            identical(widget.content, display.content) &&
+            identical(widget.content, display) &&
             widget.isActive(),
       );
 

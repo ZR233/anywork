@@ -21,7 +21,7 @@ class TimelineCanonicalPayloadConnector extends StatefulWidget {
   });
 
   final ChatItemPresentation item;
-  final ConversationContent content;
+  final ConversationQueries content;
   final bool Function() isActive;
   final ValueListenable<bool>? retirement;
   final Widget Function(ChatItemPresentation) render;

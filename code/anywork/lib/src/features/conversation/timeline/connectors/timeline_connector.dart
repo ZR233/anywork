@@ -188,12 +188,7 @@ class _TimelineConnectorBodyState
       );
     }
 
-    void retry() => ref
-        .read(anyworkClientProvider)
-        .conversations
-        .session(threadId)
-        .content
-        .refresh();
+    void retry() => ref.read(timelineSessionOwnerProvider).refresh(threadId);
     if (view == null || lease == null) {
       final failedView =
           lease == null &&
@@ -258,7 +253,7 @@ class _TimelineConnectorBodyState
                             TimelineConnectionPhase.failed) {
                       return;
                     }
-                    failedSession.content.refresh();
+                    ref.read(timelineSessionOwnerProvider).refresh(threadId);
                   },
                   child: Text(context.l10n.sidebarRetry),
                 ),
@@ -311,7 +306,7 @@ class _TimelineConnectorBodyState
             onLoadOlder: notifier.loadOlderTimelineWork,
             onReturnToLatest: notifier.returnToLatestTimelineWork,
             threadId: threadId,
-            content: lease.content,
+            content: lease,
             liveUnit: lease.liveUnit,
             registerDisplay: lease.registerCurrentDisplay,
             images: lease.imageResources,
@@ -324,7 +319,7 @@ class _TimelineConnectorBodyState
           TimelineCanonicalPayloadConnector(
             key: ValueKey((lease.generation, item.id)),
             item: item,
-            content: lease.content,
+            content: lease,
             retirement: lease.retirement,
             isActive: active,
             render: render,
@@ -332,7 +327,7 @@ class _TimelineConnectorBodyState
       groupMembersBuilder: (unit) => CompletionRunConnector(
         unit: unit,
         threadId: threadId,
-        content: lease.content,
+        content: lease,
         images: lease.imageResources,
         readAttachment: readAttachment,
         monotonicMicros: () => owner.monotonicMicros,

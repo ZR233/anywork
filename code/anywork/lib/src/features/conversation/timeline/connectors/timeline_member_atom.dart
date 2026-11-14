@@ -48,7 +48,7 @@ class TimelineMemberAtom extends StatefulWidget {
   final DisplayRecord record;
   final String displayId;
   ChatAtom get atom => record.atom;
-  final ConversationContent content;
+  final ConversationQueries content;
   final ValueListenable<bool>? retirement;
   final bool Function() isActive;
   final TimelineImageResources images;
@@ -166,6 +166,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     _observationError = null;
     _owner ??= ConversationCurrentOwner(
       widget.content,
+      isActive: () => _active,
       frozen: widget.record.contentSource is FrozenObservation,
     );
     _owner!.synchronizeSources([

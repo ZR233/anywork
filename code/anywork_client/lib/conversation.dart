@@ -11,3 +11,7 @@ export 'src/observation/latest_value.dart'
 export 'src/conversation/domain/content_lifecycle.dart';
 export 'src/conversation/domain/conversation_watermark.dart';
 export 'src/conversation/domain/conversation_errors.dart';
+
+export 'conversation_ports.dart' show TimelineReader, TimelineTransport;
+export 'src/conversation/data/conversation_read_scope.dart'
+    show ConversationReadScope;

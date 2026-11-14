@@ -5,7 +5,6 @@ import 'package:anywork/src/features/conversation/timeline/view_models/conversat
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/conversation/data/conversation_read_scope.dart';
 import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -37,7 +36,7 @@ ContentWindow _window(String text, {int offset = 0, int available = 100000}) =>
 void main() {
   test('owner close joins real SDK scopes retired during an existing join', () async {
     final content = _RealScopeContent();
-    final owner = ConversationCurrentOwner(content);
+    final owner = ConversationCurrentOwner(content, isActive: () => true);
     owner.synchronizeSources([
       CurrentWindowSource(id: 'body', reference: _reference(), text: ''),
     ]);
@@ -117,7 +116,7 @@ void main() {
     'owner close leaves failures for explicit retry without looping',
     () async {
       final content = _Content();
-      final owner = ConversationCurrentOwner(content);
+      final owner = ConversationCurrentOwner(content, isActive: () => true);
       owner.synchronizeSources([
         CurrentWindowSource(id: 'body', reference: _reference(), text: ''),
       ]);

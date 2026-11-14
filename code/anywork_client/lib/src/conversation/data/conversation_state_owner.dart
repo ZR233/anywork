@@ -186,7 +186,6 @@ final class ConversationStateOwner {
             }
           }
         case ConversationChatEvent() ||
-            ConversationTimelineEvent() ||
             ConversationActivityEvent() ||
             ConversationFailureEvent() ||
             ConversationClosedEvent():

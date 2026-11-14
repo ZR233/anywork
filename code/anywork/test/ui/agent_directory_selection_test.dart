@@ -32,7 +32,7 @@ void main() {
       expect(graph.client.conversations.visibleThreadId.value, isNull);
       expect(graph.client.conversations.existingSession(row.threadId), isNull);
       expect(fixture.transport.stateReads, isEmpty);
-      expect(fixture.transport.feeds, isEmpty);
+      expect(fixture.transport.timelineReaders, isEmpty);
       expect(graph.client.drafts.existingComposer(row.threadId), isNotNull);
     },
   );
@@ -178,7 +178,7 @@ void main() {
     expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.feeds, isEmpty);
+    expect(fixture.transport.timelineReaders, isEmpty);
   });
 
   test(
@@ -243,7 +243,11 @@ void main() {
         );
         expect(fixture.transport.metadataReads, [fixture.child.threadId]);
         expect(fixture.transport.stateReads, isEmpty, reason: invalidation);
-        expect(fixture.transport.feeds, isEmpty, reason: invalidation);
+        expect(
+          fixture.transport.timelineReaders,
+          isEmpty,
+          reason: invalidation,
+        );
       }
     },
   );
@@ -329,7 +333,7 @@ void main() {
         reason: action,
       );
       expect(
-        fixture.transport.feeds.map((timeline) => timeline.threadId),
+        fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
         isNot(contains(fixture.child.threadId)),
         reason: action,
       );
@@ -371,7 +375,7 @@ void main() {
       await newer;
       fixture.graph.timeline.updateReadDemand(chatDemand);
       fixture.graph.setConversationPageVisible(true);
-      await client.conversations.session(fixture.other.threadId).content.ready;
+      await timelineReady(fixture.graph.timeline, fixture.other.threadId);
       expect(
         client.selection.state.selectedProjectId,
         fixture.other.workspaceId,
@@ -460,7 +464,7 @@ void main() {
     await client.conversations.visibleThreadId.waitFor(
       (value) => value == sibling.threadId,
     );
-    await client.conversations.session(sibling.threadId).content.ready;
+    await timelineReady(fixture.graph.timeline, sibling.threadId);
     expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
       sibling.threadId,
@@ -695,7 +699,7 @@ Future<void> _expectLatestQueuedColdSelection({
   );
   expect(client.conversations.sessionStates, isEmpty);
   expect(fixture.transport.stateReads, isEmpty);
-  expect(fixture.transport.feeds, isEmpty);
+  expect(fixture.transport.timelineReaders, isEmpty);
   if (newFails) {
     newReply.completeError(newError);
     expect(
@@ -710,7 +714,7 @@ Future<void> _expectLatestQueuedColdSelection({
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.feeds, isEmpty);
+    expect(fixture.transport.timelineReaders, isEmpty);
   } else {
     newReply.complete(sibling);
     expect(await newNavigation, isNull);
@@ -721,16 +725,17 @@ Future<void> _expectLatestQueuedColdSelection({
     );
     final session = client.conversations.existingSession(sibling.threadId)!;
     await session.source.waitFor((state) => state.workspace != null);
-    await session.content.state.waitFor((state) => state.snapshot == true);
+    await timelineReady(fixture.graph.timeline, session.threadId);
     expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
       sibling.threadId,
     ]);
     expect(fixture.transport.stateReads, [sibling.threadId]);
-    expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
-      sibling.threadId,
-    ]);
+    expect(
+      fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
+      [sibling.threadId],
+    );
   }
   expect(client.findThread(fixture.child.threadId), isNull);
   expect(client.conversations.existingSession(fixture.child.threadId), isNull);
@@ -798,7 +803,11 @@ SessionDirectoryRow _secondColdChild(_ColdFixture fixture) {
 
 Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final client = fixture.graph.client;
-  expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
+  expect(
+    fixture.transport.timelineReaders,
+    isEmpty,
+    reason: '选择身份本身不产生 GUI 内容需求',
+  );
   fixture.graph.timeline.updateReadDemand(chatDemand);
   fixture.graph.setConversationPageVisible(true);
   await client.conversations.visibleThreadId.waitFor(
@@ -806,7 +815,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   );
   final session = client.conversations.existingSession(fixture.child.threadId)!;
   await session.source.waitFor((state) => state.workspace != null);
-  await session.content.state.waitFor((state) => state.snapshot == true);
+  await timelineReady(fixture.graph.timeline, session.threadId);
   expect(client.selection.state.selectedThreadId, fixture.child.threadId);
   expect(client.selection.state.needsOpen, isFalse);
   expect(
@@ -826,9 +835,10 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
     fixture.child.threadId,
   }, reason: 'The selected history observes only its own Thread ID');
   expect(fixture.transport.stateReads, [fixture.child.threadId]);
-  expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
-    fixture.child.threadId,
-  ]);
+  expect(
+    fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
+    [fixture.child.threadId],
+  );
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
 }
@@ -1047,12 +1057,19 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
-    return super.openTimelineFeed(threadId, demand: demand);
+    return super.openTimelineReader(
+      threadId,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: timelineReaderProtocolVersion,
+      demand: demand,
+    );
   }
 
   @override

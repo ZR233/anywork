@@ -1,3 +1,4 @@
+import '../../../conversation_ports.dart' show TimelineReader;
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart' show CloseReport;
@@ -7,6 +8,10 @@ import 'conversation_state.dart';
 
 abstract interface class ConversationRepository {
   ConversationSession session(String threadId);
+  Future<TimelineReader> openTimelineReader(
+    String threadId, {
+    required ReadDemand demand,
+  });
   ConversationSession? existingSession(String threadId);
   ThreadSessionState? sessionState(String threadId);
   Iterable<ThreadSessionState> get sessionStates;
@@ -47,26 +52,12 @@ abstract interface class ConversationBatchConsumer {
   Future<void> applyActivity(ActivitySnapshot snapshot);
 }
 
-abstract interface class TimelineBatchConsumer {
-  Future<void> applyTimeline(TimelineBatch batch, LiveDisplayWindow live);
-}
-
-abstract interface class TimelineContent implements ConversationContent {
-  ValueObservation<LiveDisplayWindow?> get live;
-  Observation attachTimelineConsumer(
-    TimelineBatchConsumer consumer, {
-    required ReadDemand demand,
-  });
-  @override
-  TimelineQueryScope openScope({required int generation});
-}
-
 abstract interface class TimelineQueryScope implements ConversationQueryScope {
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   });
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   });
@@ -84,7 +75,12 @@ abstract interface class DisplayMembers {
   Future<void> close();
 }
 
-abstract interface class ConversationContent {
+abstract interface class ConversationQueries {
+  String get threadId;
+  ConversationQueryScope openScope({required int generation});
+}
+
+abstract interface class ConversationContent implements ConversationQueries {
   String get threadId;
   ValueObservation<ChatUiState<bool>> get state;
   ValueObservation<ActivitySnapshot?> get activity;

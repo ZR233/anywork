@@ -133,7 +133,7 @@ void main() {
           resources.release();
           controller.dispose();
         });
-        await adapter.applyTimeline(
+        await adapter.applyFixtureUpdate(
           displayBatch([
             displaySingle(
               statusItem(
@@ -172,7 +172,7 @@ void main() {
         expect(find.text(body), findsOneWidget);
         final old = controller.messages.single;
         final card = old.metadata![chatItemPresentationKey];
-        await adapter.applyTimeline(
+        await adapter.applyFixtureUpdate(
           displayBatch(
             [displaySingle(chatMessage('next', completionSeq: 2))],
             placement: ChatPlacement.append,

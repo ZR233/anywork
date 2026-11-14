@@ -3,13 +3,11 @@ import 'package:anywork_client/models.dart';
 import '../../interactions/state/interaction_payload.dart';
 import 'live_status_state.dart';
 
-/// 实时状态栏纯领域状态机（`design/05-conventions.md` §5.3）：
-/// 不执行任何异步 I/O、不读取 Provider、不依赖 Widget 上下文。
-/// 所有窗口切换、遮蔽门控、阶段合并与外部副作用统一在此完成确定性转换。
-abstract final class LiveStatusStateMachine {
+/// 规范尾部和独立业务状态的纯展示投影；不保存事件账本、不执行 I/O。
+abstract final class LiveStatusProjection {
   /// 当前轮次正文或压缩记录已承担展示时，接管并抑制对应的普通同类状态提示。
   static bool hasCurrentOutputRenderer({
-    required LiveDisplayWindow? live,
+    required TailSnapshot? live,
     required String? activeTurnId,
     required LiveStatusNotice notice,
   }) {
@@ -42,7 +40,7 @@ abstract final class LiveStatusStateMachine {
   }
 
   /// 规范最新窗口是当前尾组身份的唯一来源；旧页和来源仅描述内容。
-  static LiveDisplayBlock? currentWork(LiveDisplayWindow? live) {
+  static LiveDisplayBlock? currentWork(TailSnapshot? live) {
     final id = live?.currentWorkId;
     if (id == null) return null;
     for (final block in live!.blocks) {
@@ -69,7 +67,7 @@ abstract final class LiveStatusStateMachine {
   /// 普通活动沿原 State 合并到明确的当前尾组；不把来源或成员状态当活动。
   /// 审批、存储故障等关键提示仍保持独立呈现。
   static ({String blockId, ExecutionLiveNotice notice})? mergeableWorkNotice({
-    required LiveDisplayWindow? live,
+    required TailSnapshot? live,
     required List<LiveStatusNotice> notices,
   }) {
     if (live == null || !live.executionPresent) {
@@ -120,175 +118,15 @@ abstract final class LiveStatusStateMachine {
     backgroundToolCount: activity.tools.background,
   );
 
-  /// 封闭状态转换主入口：输入前一聚合根与领域事件，输出新聚合根与待执行副作用。
-  static LiveStatusTransition transition(
-    LiveStatusAggregate previous,
-    LiveStatusEvent event,
-  ) {
-    return switch (event) {
-      LiveStatusObserved(:final observation) => _recompute(
-        previous: previous,
-        observation: observation,
-        outputPaging: previous.outputPaging.reconcile(observation.cut),
-        timelineWorkPaging: previous.timelineWorkPaging.reconcile(
-          observation.cut,
-        ),
-      ),
-      LiveStatusLoadOlderRequested(:final target, :final before) =>
-        _handleLoadOlderRequested(
-          previous: previous,
-          target: target,
-          before: before,
-        ),
-      LiveStatusOlderLoaded(
-        :final target,
-        :final before,
-        :final window,
-        :final cut,
-      ) =>
-        _handleOlderLoaded(
-          previous: previous,
-          target: target,
-          before: before,
-          window: window,
-          cut: cut,
-        ),
-      LiveStatusOlderFailed(
-        :final target,
-        :final before,
-        :final error,
-        :final cut,
-      ) =>
-        _handleOlderFailed(
-          previous: previous,
-          target: target,
-          before: before,
-          error: error,
-          cut: cut,
-        ),
-      LiveStatusReturnToLatestRequested(:final target) => _recompute(
-        previous: previous,
-        observation: previous.observation,
-        outputPaging: target == LiveStatusSectionTarget.outputBar
-            ? const LatestLiveWindow()
-            : previous.outputPaging,
-        timelineWorkPaging: target == LiveStatusSectionTarget.timelineWork
-            ? const LatestLiveWindow()
-            : previous.timelineWorkPaging,
-      ),
-    };
-  }
-
-  static LiveStatusTransition _handleLoadOlderRequested({
-    required LiveStatusAggregate previous,
-    required LiveStatusSectionTarget target,
-    required String before,
-  }) {
-    final cut = previous.observation.cut;
-    if (!cut.hasWindow) {
-      return LiveStatusTransition(state: previous);
-    }
-    final currentPaging = target == LiveStatusSectionTarget.outputBar
-        ? previous.outputPaging
-        : previous.timelineWorkPaging;
-    if (currentPaging.isLoading) {
-      return LiveStatusTransition(state: previous);
-    }
-    final nextPaging = LoadingOlderLiveWindow(
-      before: before,
-      cut: cut,
-      previousOlder: currentPaging.olderWindow,
-    );
-    final recomputed = _recompute(
-      previous: previous,
-      observation: previous.observation,
-      outputPaging: target == LiveStatusSectionTarget.outputBar
-          ? nextPaging
-          : previous.outputPaging,
-      timelineWorkPaging: target == LiveStatusSectionTarget.timelineWork
-          ? nextPaging
-          : previous.timelineWorkPaging,
-    );
-    return LiveStatusTransition(
-      state: recomputed.state,
-      effects: [
-        ...recomputed.effects,
-        ReadOlderLiveWindowEffect(target: target, before: before, cut: cut),
-      ],
-    );
-  }
-
-  static LiveStatusTransition _handleOlderLoaded({
-    required LiveStatusAggregate previous,
-    required LiveStatusSectionTarget target,
-    required String before,
-    required LiveDisplayWindow window,
-    required LiveWindowCut cut,
-  }) {
-    final activeCut = previous.observation.cut;
-    if (!activeCut.hasWindow ||
-        activeCut != cut ||
-        !activeCut.matchesWindow(window)) {
-      return LiveStatusTransition(state: previous);
-    }
-    final nextPaging = ViewingOlderLiveWindow(
-      before: before,
-      window: window,
-      cut: activeCut,
-    );
-    return _recompute(
-      previous: previous,
-      observation: previous.observation,
-      outputPaging: target == LiveStatusSectionTarget.outputBar
-          ? nextPaging
-          : previous.outputPaging,
-      timelineWorkPaging: target == LiveStatusSectionTarget.timelineWork
-          ? nextPaging
-          : previous.timelineWorkPaging,
-    );
-  }
-
-  static LiveStatusTransition _handleOlderFailed({
-    required LiveStatusAggregate previous,
-    required LiveStatusSectionTarget target,
-    required String before,
-    required Object error,
-    required LiveWindowCut cut,
-  }) {
-    final activeCut = previous.observation.cut;
-    if (!activeCut.hasWindow || activeCut != cut) {
-      return LiveStatusTransition(state: previous);
-    }
-    final currentPaging = target == LiveStatusSectionTarget.outputBar
-        ? previous.outputPaging
-        : previous.timelineWorkPaging;
-    final nextPaging = OlderLiveWindowFailed(
-      before: before,
-      error: error,
-      cut: activeCut,
-      previousOlder: currentPaging.olderWindow,
-    );
-    return _recompute(
-      previous: previous,
-      observation: previous.observation,
-      outputPaging: target == LiveStatusSectionTarget.outputBar
-          ? nextPaging
-          : previous.outputPaging,
-      timelineWorkPaging: target == LiveStatusSectionTarget.timelineWork
-          ? nextPaging
-          : previous.timelineWorkPaging,
-    );
-  }
-
   /// 在有效窗口上计算上方时间线实时工作块与底部状态栏主表面（纯函数，无副作用）。
   static ({
     LiveStatusPrimarySurface? surface,
     List<LiveDisplayBlock> timelineWorkBlocks,
   })
   projectSurfaceAndTimelineWork({
-    required LiveDisplayWindow? effectiveOutputWindow,
-    required LiveDisplayWindow? effectiveTimelineWindow,
-    required LiveDisplayWindow? latestWindow,
+    required TailSnapshot? effectiveOutputWindow,
+    required TailSnapshot? effectiveTimelineWindow,
+    required TailSnapshot? latestWindow,
     required String? activeTurnId,
     required LiveWindowPagingState outputPaging,
     required List<LiveStatusNotice> rawNotices,
@@ -357,9 +195,9 @@ abstract final class LiveStatusStateMachine {
     return (surface: surface, timelineWorkBlocks: timelineWorkBlocks);
   }
 
-  static LiveStatusTransition _recompute({
-    required LiveStatusAggregate previous,
-    required LiveStatusObservation observation,
+  static LiveStatusView project({
+    required String threadId,
+    required LiveStatusInputs observation,
     required LiveWindowPagingState outputPaging,
     required LiveWindowPagingState timelineWorkPaging,
   }) {
@@ -441,8 +279,8 @@ abstract final class LiveStatusStateMachine {
     // 2. 若普通待决提问占据底部交互停靠区，则遮蔽底部活动条（不影响独立时间线工作区）。
     if (questionMasked) {
       return _finalize(
-        previous: previous,
-        observation: observation,
+        threadId: threadId,
+        cut: observation.cut,
         barState: LiveStatusDockMasked(
           interactionId: interaction!.id,
           showInteractionDetails: showInteractionDetails,
@@ -464,8 +302,8 @@ abstract final class LiveStatusStateMachine {
     // or notifications. The observation and timeline work slice remain untouched.
     if (confirmingPlan && interaction != null) {
       return _finalize(
-        previous: previous,
-        observation: observation,
+        threadId: threadId,
+        cut: observation.cut,
         barState: LiveStatusDockMasked(
           interactionId: interaction.id,
           showInteractionDetails: false,
@@ -487,8 +325,8 @@ abstract final class LiveStatusStateMachine {
             )
           : const LiveStatusHidden();
       return _finalize(
-        previous: previous,
-        observation: observation,
+        threadId: threadId,
+        cut: observation.cut,
         barState: barState,
         timelineWork: timelineSlice,
         outputPaging: outputPaging,
@@ -498,8 +336,8 @@ abstract final class LiveStatusStateMachine {
     }
 
     return _finalize(
-      previous: previous,
-      observation: observation,
+      threadId: threadId,
+      cut: observation.cut,
       barState: LiveStatusPresenting(
         surface: surface,
         effectiveWindow: effectiveOutputWindow,
@@ -513,34 +351,19 @@ abstract final class LiveStatusStateMachine {
     );
   }
 
-  static LiveStatusTransition _finalize({
-    required LiveStatusAggregate previous,
-    required LiveStatusObservation observation,
+  static LiveStatusView _finalize({
+    required String threadId,
+    required LiveWindowCut cut,
     required LiveStatusMachineState barState,
     required LiveStatusTimelineWorkSlice timelineWork,
     required LiveWindowPagingState outputPaging,
     required LiveWindowPagingState timelineWorkPaging,
     required ConversationActivityView? primaryActivity,
-  }) {
-    final driverChanged =
-        !previous.hasPublishedDriver ||
-        primaryActivity != previous.publishedDriverActivity;
-    final nextState = LiveStatusAggregate(
-      threadId: previous.threadId,
-      observation: observation,
-      barState: barState,
-      timelineWork: timelineWork,
-      outputPaging: outputPaging,
-      timelineWorkPaging: timelineWorkPaging,
-      primaryActivity: primaryActivity,
-      publishedDriverActivity: primaryActivity,
-      hasPublishedDriver: true,
-    );
-    return LiveStatusTransition(
-      state: nextState,
-      effects: [
-        if (driverChanged) SyncStudioDriverActivityEffect(primaryActivity),
-      ],
-    );
-  }
+  }) => LiveStatusView(
+    threadId: threadId,
+    cut: cut,
+    barState: barState,
+    timelineWork: timelineWork,
+    primaryActivity: primaryActivity,
+  );
 }

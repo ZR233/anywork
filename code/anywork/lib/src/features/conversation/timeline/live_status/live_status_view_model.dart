@@ -6,231 +6,162 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
-import '../../../../shared/studio_driver_state.dart';
 import '../view_models/timeline_view_model.dart';
 import 'live_status_state.dart';
-import 'live_status_state_machine.dart';
+import 'live_status_projection.dart';
 
 part 'live_status_view_model.g.dart';
 
-/// 实时状态栏组件专属 ViewModel：
-/// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-/// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-/// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 @riverpod
 class LiveStatusViewModel extends _$LiveStatusViewModel {
-  LiveStatusAggregate? _aggregate;
+  LiveWindowPagingState _output = const LatestLiveWindow();
+  LiveWindowPagingState _work = const LatestLiveWindow();
+  Object? _outputRequest;
+  Object? _workRequest;
 
   @override
-  LiveStatusAggregate? build(String threadId) {
-    final session = ref.watch(threadSessionStoreProvider(threadId));
+  LiveStatusView? build(String threadId) {
+    ref.watch(threadSessionStoreProvider(threadId));
     final conversations = ref.read(anyworkClientProvider).conversations;
-    final visibleThreadId = observeClient(ref, conversations.visibleThreadId, (
-      _,
-    ) {
+    final visible = observeClient(ref, conversations.visibleThreadId, (_) {
       if (ref.mounted) ref.invalidateSelf();
     });
-    if (visibleThreadId != threadId) {
-      if (_aggregate?.hasPublishedDriver == true &&
-          _aggregate?.publishedDriverActivity != null) {
-        StudioDriverState.publishConversationActivity(null);
-      }
-      _aggregate = null;
-      return null;
-    }
-
+    if (visible != threadId) return null;
     ref.watch(timelineViewModelProvider(threadId));
-    final timeline = ref.read(timelineSessionOwnerProvider);
-    final lease = timeline.lease(threadId);
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
     if (lease != null) {
-      void onLeaseUpdated() {
-        if (!ref.mounted) return;
-        _reobserveCurrentSources();
+      void changed() {
+        if (ref.mounted) state = _project();
       }
 
-      lease.live.addListener(onLeaseUpdated);
-      lease.retirement.addListener(onLeaseUpdated);
+      lease.live.addListener(changed);
+      lease.retirement.addListener(changed);
       ref.onDispose(() {
-        lease.live.removeListener(onLeaseUpdated);
-        lease.retirement.removeListener(onLeaseUpdated);
+        lease.live.removeListener(changed);
+        lease.retirement.removeListener(changed);
       });
     }
+    return _project();
+  }
 
-    final live = lease?.live.value;
+  LiveStatusView? _project() {
+    final conversations = ref.read(anyworkClientProvider).conversations;
+    if (conversations.visibleThreadId.value != threadId) return null;
+    final session = ref.read(threadSessionStoreProvider(threadId));
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    final active = lease != null && !lease.retirement.value;
+    final live = active ? lease.live.value : null;
     if (session.workspace == null && !session.hasSnapshot && live == null) {
-      _aggregate = null;
       return null;
     }
-
-    final observation = _buildObservation(
-      threadId: threadId,
-      session: session,
-      conversations: conversations,
-      timeline: timeline,
-    );
-    final transition = LiveStatusStateMachine.transition(
-      _aggregate ?? LiveStatusAggregate.initial(threadId),
-      LiveStatusObserved(observation),
-    );
-    _aggregate = transition.state;
-    _runEffects(transition.effects);
-    return transition.state;
-  }
-
-  /// 请求加载底部实时状态栏的更早实时窗口片段。
-  void loadOlderOutput(String before) {
-    _dispatch(
-      LiveStatusLoadOlderRequested(
-        target: LiveStatusSectionTarget.outputBar,
-        before: before,
-      ),
-    );
-  }
-
-  /// 从更早实时窗口返回最新底部实时状态栏片段。
-  void returnToLatestOutput() {
-    _dispatch(
-      const LiveStatusReturnToLatestRequested(
-        target: LiveStatusSectionTarget.outputBar,
-      ),
-    );
-  }
-
-  /// 请求加载上方时间线实时工作区的更早实时窗口片段。
-  void loadOlderTimelineWork(String before) {
-    _dispatch(
-      LiveStatusLoadOlderRequested(
-        target: LiveStatusSectionTarget.timelineWork,
-        before: before,
-      ),
-    );
-  }
-
-  /// 从更早实时窗口返回最新时间线实时工作区片段。
-  void returnToLatestTimelineWork() {
-    _dispatch(
-      const LiveStatusReturnToLatestRequested(
-        target: LiveStatusSectionTarget.timelineWork,
-      ),
-    );
-  }
-
-  void _reobserveCurrentSources() {
-    final conversations = ref.read(anyworkClientProvider).conversations;
-    if (conversations.visibleThreadId.value != threadId) {
-      if (state != null) {
-        StudioDriverState.publishConversationActivity(null);
-        _aggregate = null;
-        state = null;
-      }
-      return;
-    }
-    final session = ref.read(threadSessionStoreProvider(threadId));
-    final timeline = ref.read(timelineSessionOwnerProvider);
-    final lease = timeline.lease(threadId);
-    if (session.workspace == null &&
-        !session.hasSnapshot &&
-        lease?.live.value == null) {
-      if (state != null) {
-        _aggregate = null;
-        state = null;
-      }
-      return;
-    }
-    final observation = _buildObservation(
-      threadId: threadId,
-      session: session,
-      conversations: conversations,
-      timeline: timeline,
-    );
-    _dispatch(LiveStatusObserved(observation));
-  }
-
-  LiveStatusObservation _buildObservation({
-    required String threadId,
-    required ThreadSessionState session,
-    required ConversationRepository conversations,
-    required Object timeline,
-  }) {
-    final owner = ref.read(timelineSessionOwnerProvider);
-    final lease = owner.lease(threadId);
-    final activeLease = lease != null && !lease.retirement.value;
-    final live = activeLease ? lease.live.value : null;
-    final cut = activeLease && live != null
+    final cut = active && live != null
         ? LiveWindowCut(
-            revision: live.revision,
+            revision: live.layoutRevision,
             readyFrontier: live.readyFrontier,
             executionPresent: live.executionPresent,
-            attemptId: lease.content.currentAttemptId,
+            attemptId: lease.reader.metadata.readerId,
             isDisplayActive: true,
           )
         : const LiveWindowCut.inactive();
-    return LiveStatusObservation(
-      cut: cut,
-      storage: session.storage,
-      interactions: session.interactions,
-      businessRefs: session.businessRefs,
-      activeTurnId: session.activeTurn?.turnId,
-      activity: session.activity,
-      latestLive: live,
-      hasContentOwner: conversations.existingSession(threadId)?.content != null,
+    _output = _output.reconcile(cut);
+    _work = _work.reconcile(cut);
+    final view = LiveStatusProjection.project(
+      threadId: threadId,
+      observation: LiveStatusInputs(
+        cut: cut,
+        storage: session.storage,
+        interactions: session.interactions,
+        businessRefs: session.businessRefs,
+        activeTurnId: session.activeTurn?.turnId,
+        activity: session.activity,
+        latestLive: live,
+        hasContentOwner: active,
+      ),
+      outputPaging: _output,
+      timelineWorkPaging: _work,
     );
+    // Diagnostics borrow the very object rendered by this component, not a second projection.
+    if (active) lease.liveStatus = view;
+    return view;
   }
 
-  void _dispatch(LiveStatusEvent event) {
-    if (!ref.mounted) return;
-    final base = _aggregate ?? LiveStatusAggregate.initial(threadId);
-    final transition = LiveStatusStateMachine.transition(base, event);
-    _aggregate = transition.state;
-    state = transition.state;
-    _runEffects(transition.effects);
+  void loadOlderOutput(String before) =>
+      unawaited(_load(LiveStatusSectionTarget.outputBar, before));
+  void loadOlderTimelineWork(String before) =>
+      unawaited(_load(LiveStatusSectionTarget.timelineWork, before));
+  void returnToLatestOutput() {
+    _outputRequest = null;
+    _output = const LatestLiveWindow();
+    state = _project();
   }
 
-  void _runEffects(List<LiveStatusEffect> effects) {
-    for (final effect in effects) {
-      switch (effect) {
-        case SyncStudioDriverActivityEffect(:final view):
-          StudioDriverState.publishConversationActivity(view);
-        case ReadOlderLiveWindowEffect(
-          :final target,
-          :final before,
-          :final cut,
-        ):
-          unawaited(
-            _fetchOlderWindow(target: target, before: before, cut: cut),
-          );
+  void returnToLatestTimelineWork() {
+    _workRequest = null;
+    _work = const LatestLiveWindow();
+    state = _project();
+  }
+
+  Future<void> _load(LiveStatusSectionTarget target, String before) async {
+    final current = state;
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    if (current == null ||
+        !current.cut.hasWindow ||
+        lease == null ||
+        lease.retirement.value) {
+      return;
+    }
+    final output = target == LiveStatusSectionTarget.outputBar;
+    final previous = output ? _output : _work;
+    if (previous.isLoading) return;
+    final request = Object();
+    final cut = current.cut;
+    void install(LiveWindowPagingState value) {
+      if (output) {
+        _output = value;
+      } else {
+        _work = value;
       }
     }
-  }
 
-  Future<void> _fetchOlderWindow({
-    required LiveStatusSectionTarget target,
-    required String before,
-    required LiveWindowCut cut,
-  }) async {
-    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
-    if (lease == null || lease.retirement.value) return;
+    if (output) {
+      _outputRequest = request;
+    } else {
+      _workRequest = request;
+    }
+    install(
+      LoadingOlderLiveWindow(
+        before: before,
+        cut: cut,
+        previousOlder: previous.olderWindow,
+      ),
+    );
+    state = _project();
+    bool eligible() =>
+        ref.mounted &&
+        !lease.retirement.value &&
+        identical(
+          ref.read(timelineSessionOwnerProvider).lease(threadId),
+          lease,
+        ) &&
+        identical(output ? _outputRequest : _workRequest, request) &&
+        state?.cut == cut;
     try {
-      final window = await lease.loadLiveOlder(before: before);
-      if (!ref.mounted) return;
-      _dispatch(
-        LiveStatusOlderLoaded(
-          target: target,
-          before: before,
-          window: window,
-          cut: cut,
-        ),
-      );
+      final page = await lease.loadLiveOlder(before: before);
+      if (!eligible()) return;
+      if (!cut.matchesWindow(page)) throw const StaleConversationScope();
+      install(ViewingOlderLiveWindow(before: before, window: page, cut: cut));
     } catch (error) {
-      if (!ref.mounted) return;
-      _dispatch(
-        LiveStatusOlderFailed(
-          target: target,
+      if (!eligible()) return;
+      install(
+        OlderLiveWindowFailed(
           before: before,
           error: error,
           cut: cut,
+          previousOlder: previous.olderWindow,
         ),
       );
     }
+    if (eligible()) state = _project();
   }
 }

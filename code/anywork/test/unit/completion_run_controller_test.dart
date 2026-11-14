@@ -38,7 +38,7 @@ void main() {
   test(
     'a frozen Work head is one synchronous Main operation without members',
     () async {
-      final accepted = adapter.applyTimeline(
+      final accepted = adapter.applyFixtureUpdate(
         displayBatch([displayWork('large', 3)]),
       );
       expect(
@@ -58,16 +58,19 @@ void main() {
   test(
     'Set/Prepend/Append each batch once and never update an old tail block',
     () async {
-      await adapter.applyTimeline(displayBatch([displayWork('middle', 3)]));
-      await adapter.applyTimeline(
+      await adapter.applyFixtureUpdate(
+        displayBatch([displayWork('middle', 3)]),
+      );
+      await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('old-a', 1), displayWork('old-b', 2)],
           placement: ChatPlacement.prepend,
           through: 3,
         ),
+        placement: ChatPlacement.prepend,
       );
       final oldTail = stock.messages.last;
-      await adapter.applyTimeline(
+      await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('next-a', 4), displayWork('next-b', 5)],
           placement: ChatPlacement.append,
@@ -96,17 +99,20 @@ void main() {
     () async {
       final reads = _ReadCounter();
       final controller = TimelineMessageController(reads, generation: 1);
-      await controller.applyTimeline(displayBatch([displayWork('first', 1)]));
+      await controller.applyFixtureUpdate(
+        displayBatch([displayWork('first', 1)]),
+      );
       reads.reads = 0;
-      await controller.applyTimeline(
+      await controller.applyFixtureUpdate(
         displayBatch(
           [],
           placement: ChatPlacement.append,
           from: 1,
           through: 1,
-          live: LiveDisplayWindow(
+          live: TailSnapshot(
             currentWorkId: null,
             revision: 2,
+            layoutRevision: 2,
             readyFrontier: 1,
             executionPresent: true,
             blocks: [],
@@ -122,7 +128,7 @@ void main() {
   test('handoff borrows the exact live disclosure identity and keeps expansion intent', () async {
     final intent = intents.putIfAbsent('work', TimelineExpansionIntent.new);
     intent.expanded = true;
-    await adapter.applyTimeline(displayBatch([displayWork('work', 1)]));
+    await adapter.applyFixtureUpdate(displayBatch([displayWork('work', 1)]));
     expect(unit(0).expansion, same(intent));
     expect(unit(0).expansion.expanded, isTrue);
     expect(
@@ -131,36 +137,12 @@ void main() {
     );
   });
 
-  test('invalid cuts reject synchronously before touching Main', () async {
-    await adapter.applyTimeline(displayBatch([displayWork('work', 1)]));
-    final original = stock.messages.single;
-    expect(
-      () => adapter.applyTimeline(
-        displayBatch(
-          [displayWork('invalid', 2)],
-          placement: ChatPlacement.append,
-          from: 0,
-        ),
-      ),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-    expect(stock.messages.single, same(original));
-    expect(
-      () => adapter.applyTimeline(
-        displayBatch(
-          [displayWork('overlap', 1)],
-          placement: ChatPlacement.prepend,
-          through: 1,
-        ),
-      ),
-      throwsA(isA<ConversationContinuityError>()),
-    );
-  });
-
   test(
     'cross-batch duplicate IDs reject synchronously for Append and Prepend',
     () async {
-      await adapter.applyTimeline(displayBatch([displayWork('existing', 3)]));
+      await adapter.applyFixtureUpdate(
+        displayBatch([displayWork('existing', 3)]),
+      );
       final original = stock.messages.single;
       final current = intents['existing']!.current;
       for (final batch in [
@@ -175,15 +157,12 @@ void main() {
           through: 3,
         ),
       ]) {
-        expect(
-          () => adapter.applyTimeline(batch),
-          throwsA(isA<ConversationContinuityError>()),
-        );
+        expect(() => adapter.applyFixtureUpdate(batch), throwsArgumentError);
         expect(stock.messages.single, same(original));
         expect(intents['existing']!.current, same(current));
         expect(intents['existing']!.isRetired, isFalse);
       }
-      await adapter.applyTimeline(
+      await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('valid', 4)],
           placement: ChatPlacement.append,
@@ -213,7 +192,9 @@ void main() {
           onUnitCreated: (unit) => created.add(unit.id),
           onUnitRetired: (unit) => retired.add(unit.id),
         );
-        await projection.applyTimeline(displayBatch([displayWork('old', 3)]));
+        await projection.applyFixtureUpdate(
+          displayBatch([displayWork('old', 3)]),
+        );
         final old = component.messages.single;
         final oldUnit = localIntents['old']!.current!;
         final pendingIntent = localIntents.putIfAbsent(
@@ -240,7 +221,10 @@ void main() {
             from: 3,
           ),
         };
-        final applying = projection.applyTimeline(batch);
+        final applying = projection.applyFixtureUpdate(
+          batch,
+          placement: placement,
+        );
         final failure = StateError('component failed asynchronously');
         final rejected = expectLater(applying, throwsA(same(failure)));
         expect(pendingIntent.current, same(liveUnit));
@@ -256,7 +240,7 @@ void main() {
         expect(created, ['old']);
         expect(retired, isEmpty);
         component.failure = null;
-        await projection.applyTimeline(
+        await projection.applyFixtureUpdate(
           displayBatch(
             [displayWork('next', 4)],
             placement: ChatPlacement.append,

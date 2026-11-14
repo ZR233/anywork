@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
@@ -368,7 +368,7 @@ class _Content extends Fake implements ConversationContent {
 
 class _LiveHarness {
   final content = _Content();
-  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  final live = ValueNotifier<TailSnapshot?>(null);
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = [];
@@ -378,14 +378,15 @@ class _LiveHarness {
   DateTime Function()? now;
   int revision = 0;
   Widget host() {
-    live.value = LiveDisplayWindow(
+    live.value = TailSnapshot(
       currentWorkId: currentWorkId,
       revision: ++revision,
+      layoutRevision: revision,
       readyFrontier: 0,
       executionPresent: executionPresent,
       blocks: blocks,
     );
-    final projected = LiveStatusStateMachine.projectSurfaceAndTimelineWork(
+    final projected = LiveStatusProjection.projectSurfaceAndTimelineWork(
       latestWindow: live.value,
       effectiveOutputWindow: live.value,
       effectiveTimelineWindow: live.value,

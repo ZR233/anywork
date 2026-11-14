@@ -7,7 +7,7 @@ use std::{
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
 use pl_studio_runtime::{
-    ConversationFeed, ConversationReader, ConversationStateFeed, TimelineFeed,
+    ConversationFeed, ConversationReader, ConversationStateFeed, TimelineReader,
 };
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -27,6 +27,7 @@ pub(crate) struct ConversationOwner {
     pub(super) state: SyncMutex<DeliveryState>,
     pub(super) credit: Notify,
     native: Mutex<Option<NativeFeed>>,
+    pub(super) timeline: Option<Arc<TimelineReader>>,
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
     producer: Mutex<OwnedTaskSlot>,
@@ -44,7 +45,6 @@ pub(super) struct ContentCapabilities {
 pub(super) enum NativeFeed {
     Content(Box<ConversationFeed>),
     State(Box<ConversationStateFeed>),
-    Timeline(Box<TimelineFeed>),
 }
 
 impl NativeFeed {
@@ -52,7 +52,7 @@ impl NativeFeed {
         &mut self,
     ) -> Result<Option<crate::api::studio::types::BridgeConversationEvent>, BridgeError> {
         use crate::api::studio::{
-            convert::{chat, presentation, thread_stream::bridge_thread_update},
+            convert::{chat, thread_stream::bridge_thread_update},
             types::BridgeConversationEvent,
         };
         match self {
@@ -68,13 +68,6 @@ impl NativeFeed {
                     }
                 }
             })),
-            Self::Timeline(feed) => match feed.receive().await? {
-                pl_studio_runtime::TimelineEvent::Timeline { batch } => {
-                    Ok(Some(BridgeConversationEvent::Timeline {
-                        batch: Box::new(presentation::batch(*batch)?),
-                    }))
-                }
-            },
             Self::State(feed) => feed
                 .recv()
                 .await?
@@ -91,7 +84,6 @@ impl NativeFeed {
         match self {
             Self::Content(feed) => feed.request_close(),
             Self::State(feed) => feed.request_close(),
-            Self::Timeline(feed) => feed.request_close(),
         }
     }
 
@@ -99,7 +91,6 @@ impl NativeFeed {
         match self {
             Self::Content(feed) => Ok(feed.close().await?),
             Self::State(feed) => Ok(feed.close().await?),
-            Self::Timeline(feed) => Ok(feed.close().await?),
         }
     }
 }
@@ -133,31 +124,33 @@ impl ConversationOwner {
         Self::with_native(
             feed.thread_id().to_owned(),
             feed.subscription_id().to_owned(),
-            NativeFeed::Content(Box::new(feed)),
+            Some(NativeFeed::Content(Box::new(feed))),
             Some(content),
             cancel,
         )
     }
 
-    pub(super) fn timeline(feed: TimelineFeed, cancel: CancellationToken) -> Self {
+    pub(super) fn timeline(reader: TimelineReader, cancel: CancellationToken) -> Self {
         let content = ContentCapabilities {
-            reader: feed.reader().clone(),
-            watches: ContentWatches::new(feed.subscription_id()),
+            reader: reader.reader().clone(),
+            watches: ContentWatches::new(&reader.metadata().reader_id),
         };
-        Self::with_native(
-            feed.thread_id().to_owned(),
-            feed.subscription_id().to_owned(),
-            NativeFeed::Timeline(Box::new(feed)),
+        let mut owner = Self::with_native(
+            reader.thread_id().to_owned(),
+            reader.metadata().reader_id,
+            None,
             Some(content),
             cancel,
-        )
+        );
+        owner.timeline = Some(Arc::new(reader));
+        owner
     }
 
     pub(super) fn new_state(feed: ConversationStateFeed, cancel: CancellationToken) -> Self {
         Self::with_native(
             feed.thread_id().to_owned(),
             feed.subscription_id().to_owned(),
-            NativeFeed::State(Box::new(feed)),
+            Some(NativeFeed::State(Box::new(feed))),
             None,
             cancel,
         )
@@ -166,7 +159,7 @@ impl ConversationOwner {
     fn with_native(
         thread_id: String,
         subscription_id: String,
-        feed: NativeFeed,
+        feed: Option<NativeFeed>,
         content: Option<ContentCapabilities>,
         cancel: CancellationToken,
     ) -> Self {
@@ -174,7 +167,8 @@ impl ConversationOwner {
             thread_id,
             subscription_id,
             content,
-            native: Mutex::new(Some(feed)),
+            native: Mutex::new(feed),
+            timeline: None,
             producer_cancel: cancel.child_token(),
             cancel,
             state: SyncMutex::new(DeliveryState::default()),
@@ -294,6 +288,9 @@ impl ConversationOwner {
     }
 
     pub(crate) fn request_close(&self) {
+        if let Some(reader) = &self.timeline {
+            reader.request_close();
+        }
         self.state.lock().unwrap_or_else(|e| e.into_inner()).closing = true;
         if let Some(content) = &self.content {
             content.watches.request_close_all();
@@ -386,6 +383,9 @@ impl ConversationOwner {
     /// Retires only production; the original read lease belongs to finish_close independently.
     /// Keep the original feed in its slot across every await so cancellation loses no join.
     pub(super) async fn close_native(&self) -> Result<(), BridgeError> {
+        if let Some(reader) = &self.timeline {
+            reader.close().await?;
+        }
         let mut slot = self.native.lock().await;
         if let Some(feed) = slot.as_mut() {
             feed.request_close();
@@ -2086,17 +2086,18 @@ mod tests {
 
     mod timeline {
         use super::*;
-
         #[tokio::test]
-        async fn timeline_uses_original_credit_and_lock_free_read_lease() -> Result<()> {
+        async fn cursor_reader_queries_and_close_do_not_use_producer_credit() -> Result<()> {
             let env = Environment::new().await?;
             let result: Result<()> = async {
                 let native = env
                     .runtime
-                    .open_timeline_feed(
+                    .open_timeline_reader(
                         &env.thread_id,
+                        6,
+                        1,
                         pl_protocol::ReadDemand {
-                            max_items: 1,
+                            max_items: 2,
                             max_bytes: 64 * 1024,
                         },
                     )
@@ -2106,64 +2107,15 @@ mod tests {
                     CancellationToken::new(),
                 ));
                 owner.install_lifecycle(|_| {})?;
-                let mut port = start_port(&owner).await;
-                let frame = receive(&mut port).await?;
-                let (sequence, before) = match frame.event {
-                    BridgeConversationEvent::Timeline { batch } => {
-                        ensure!(batch.presentation_version == pl_protocol::PRESENTATION_VERSION);
-                        ensure!(
-                            batch.placement == crate::api::studio::types::BridgeChatPlacement::Set
-                        );
-                        (
-                            frame.delivery_sequence,
-                            batch.before.context("fixture needs older display blocks")?,
-                        )
-                    }
-                    event => anyhow::bail!("GUI feed emitted non-timeline event: {event:?}"),
-                };
-                ensure!(owner.native.try_lock().is_err());
-                let page = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    owner
-                        .content()?
-                        .reader
-                        .load_timeline_older(&before, chat_demand()),
-                )
-                .await??;
-                ensure!(page.placement == pl_protocol::ChatPlacement::Prepend);
-                ensure!(!page.blocks.is_empty());
-                ensure!(
-                    port.try_recv().is_err(),
-                    "read must not ACK the pending frame"
-                );
-                ensure!(owner.acknowledge("foreign", sequence).is_err());
-                ensure!(
-                    owner
-                        .acknowledge(&owner.subscription_id, sequence + 1)
-                        .is_err()
-                );
-                owner.producer_cancel.cancel();
-                let terminal = receive(&mut port).await?;
-                ensure!(terminal.delivery_sequence == sequence);
-                ensure!(matches!(terminal.event, BridgeConversationEvent::Closed));
-                ensure!(port.recv().await.is_none());
-                // Producer retirement must not steal the read owner's independent responsibility.
-                owner
-                    .content()?
-                    .reader
-                    .load_timeline_older(&before, chat_demand())
-                    .await?;
+                let reader = owner.timeline.as_ref().context("timeline capability")?;
+                let first = reader.next(reader.metadata().initial_cursor).await?;
+                ensure!(first.history.placement == pl_protocol::HistoryPlacement::Set);
+                ensure!(first == reader.next(first.after.clone()).await?);
+                ensure!(owner.native.lock().await.is_none());
+                owner.content()?.reader.read_business_refs().await?;
                 owner.close().await?;
                 ensure!(owner.is_settled());
-                ensure!(owner.native.lock().await.is_none());
-                ensure!(
-                    owner
-                        .content()?
-                        .reader
-                        .load_timeline_older(&before, chat_demand())
-                        .await
-                        .is_err()
-                );
+                ensure!(reader.next(first.next).await.is_err());
                 Ok(())
             }
             .await;

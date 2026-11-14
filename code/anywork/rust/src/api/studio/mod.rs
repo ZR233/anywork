@@ -20,7 +20,7 @@ pub use self::handlers::acp_business::{
     prompt_acp_session, replace_acp_session, set_acp_session_mode,
 };
 pub use self::handlers::chat::timeline::{
-    BridgeDisplayMembers, BridgeTimelineFeed, open_timeline_feed,
+    BridgeDisplayMembers, BridgeTimelineReader, open_timeline_reader,
 };
 pub use self::handlers::{
     BridgeConversationFeed, BridgeConversationStateFeed, BridgeStudioUpdateOperation,

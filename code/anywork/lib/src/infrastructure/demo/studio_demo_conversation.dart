@@ -543,9 +543,10 @@ final class _DemoHistory {
   final Map<String, String> displayMembership = {};
   final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
   final Map<String, int> displayMemberRevisions = {};
-  LiveDisplayWindow? displayLiveSeed;
+  TailSnapshot? displayLiveSeed;
   String? displayCurrentWorkId;
   int displayRevision = 0;
+  int displayLayoutRevision = 0;
   bool displayExecutionPresent = false;
   int displayLastOrder = 0;
   int displayReadyFrontier = 0;
@@ -623,6 +624,7 @@ final class _DemoHistory {
     if (displayExecutionPresent != executionPresent) {
       displayExecutionPresent = executionPresent;
       displayRevision++;
+      displayLayoutRevision++;
     }
     prepareCurrent(workspace);
     for (final wake in changes.toList()) {
@@ -1506,16 +1508,11 @@ class _DemoConversationFeed implements ConversationFeed {
     this.threadId,
     this._history,
     ChatScope scope,
-    this._demand, {
-    this.timeline = false,
-  }) : subscriptionId = 'demo:${newStudioCorrelationId()}',
-       reader = _DemoReader(_api, threadId, _history, scope) {
+    this._demand,
+  ) : subscriptionId = 'demo:${newStudioCorrelationId()}',
+      reader = _DemoReader(_api, threadId, _history, scope) {
     _demoDemand(_demand);
-    if (timeline) {
-      _initialTimeline = reader.timelinePage(_demand, initial: true);
-    } else {
-      _initial = reader.page(_demand);
-    }
+    _initial = reader.page(_demand);
     _completed = reader.h0;
     _currentRevision = _history.revision;
     // No await separates source registration and capture. Failed preparation
@@ -1526,12 +1523,6 @@ class _DemoConversationFeed implements ConversationFeed {
   final DemoStudioTransport _api;
   final _DemoHistory _history;
   final ReadDemand _demand;
-  final bool timeline;
-  TimelineBatch? _initialTimeline;
-  // One bounded (Pt, live_t) cut owns this catch-up, including a separate live
-  // frame when the last immutable prefix consumes the byte budget.
-  LiveDisplayWindow? _displayTarget;
-  int _displayThrough = 0, _displayRevision = -1;
   @override
   final String threadId;
   @override
@@ -1607,39 +1598,16 @@ class _DemoConversationFeed implements ConversationFeed {
     try {
       if (_phase == 0) {
         _phase = 1;
-        if (timeline) {
-          final batch = _initialTimeline!;
-          _displayThrough = batch.throughOrder;
-          _displayRevision = batch.live!.revision;
-          _send(ConversationTimelineEvent(batch: batch));
-          _initialTimeline = null;
-        } else {
-          _send(ConversationChatEvent(batch: _initial!));
-        }
+        _send(ConversationChatEvent(batch: _initial!));
         _initial = null;
         return;
       }
-      if (!timeline && _phase == 1 && reader.scope is MainChatScope) {
+      if (_phase == 1 && reader.scope is MainChatScope) {
         _phase = 2;
         _send(ConversationActivityEvent(snapshot: _activity()));
         return;
       }
       _phase = 2;
-      if (timeline) {
-        if (_displayTarget != null ||
-            _displayThrough < _history.displayHead ||
-            _displayRevision != _history.displayRevision) {
-          final target = _displayTarget ??= reader.timelineTarget(_demand);
-          final batch = reader.timelineAppend(_demand, _displayThrough, target);
-          _displayThrough = batch.throughOrder;
-          if (batch.live != null) {
-            _displayRevision = batch.live!.revision;
-            _displayTarget = null;
-          }
-          _send(ConversationTimelineEvent(batch: batch));
-        }
-        return;
-      }
       final head = _history.head;
       if (_completed < head) {
         final selected = <CompletedEntry>[];
@@ -1734,8 +1702,6 @@ class _DemoConversationFeed implements ConversationFeed {
     _send(const ConversationClosedEvent(), terminal: true);
     _closed = true;
     _initial = null;
-    _initialTimeline = null;
-    _displayTarget = null;
     _unregister();
     if (!_ended) {
       _ended = true;

@@ -8,64 +8,6 @@ import 'support/timeline_transport.dart';
 const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
 const _reference = DisplayBlockRef(databaseId: 'db', blockId: 'work');
 
-DisplayBlockBody _body(String id) => SingleDisplayBlock(
-  visibility: SingleVisibility.content,
-  record: DisplayRecord(
-    atom: fixtureMember(id),
-    contentSource: CompletedOriginal(completionId: id),
-  ),
-);
-DisplayBlock _block(String id, int pos) =>
-    DisplayBlock(id: id, blockOrder: pos, body: _body(id));
-LiveDisplayBlock _work(
-  String id,
-  int order, {
-  DisplayBlockState state = DisplayBlockState.open,
-}) => LiveDisplayBlock(
-  id: id,
-  blockOrder: order,
-  state: state,
-  body: WorkDisplayBlock(
-    timing: const WorkTiming(startedAt: 0, finishedAt: null),
-    members: DisplayBlockRef(databaseId: 'db', blockId: id),
-  ),
-);
-LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
-    LiveDisplayWindow(
-      currentWorkId: null,
-      revision: revision,
-      readyFrontier: pos,
-      executionPresent: true,
-      blocks: [
-        for (var i = 0; i < ids.length; i++)
-          LiveDisplayBlock(
-            id: ids[i],
-            blockOrder: pos + i + 1,
-            body: _body(ids[i]),
-            state: DisplayBlockState.sealed,
-          ),
-      ],
-    );
-TimelineBatch _set({
-  List<String> live = const ['work', 'text'],
-  int version = presentationVersion,
-}) => TimelineBatch(
-  presentationVersion: version,
-  placement: ChatPlacement.set,
-  blocks: [],
-  throughOrder: 0,
-  live: _live(live),
-);
-TimelineBatch _append(String id, int pos, {LiveDisplayWindow? live}) =>
-    TimelineBatch(
-      presentationVersion: presentationVersion,
-      placement: ChatPlacement.append,
-      blocks: [_block(id, pos)],
-      fromOrder: pos - 1,
-      throughOrder: pos,
-      live: live,
-    );
-
 DisplayMemberHead _sealHead({
   String memberKey = 'member',
   int order = 1,
@@ -154,11 +96,10 @@ DisplayMemberPage _sealPage({
 
 Future<(DisplayMembers, _Members)> _openSealMembers(_Harness h) async {
   final feed = await h.open();
-  await feed.deliver(ConversationTimelineEvent(batch: _set()));
   final native = _Members();
   feed.members = native;
-  final members = await h.content
-      .openScope(generation: 1)
+  final members = await h
+      .scope(generation: 1)
       .openDisplayMembers(
         reference: _reference,
         window: const LatestDisplayMembers(),
@@ -179,248 +120,6 @@ Future<DisplayMemberPage?> _deliverMemberPage(
 }
 
 void main() {
-  test('v6 accepts sparse orders and advances an empty checked suffix without replacing prior history', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set(live: const [])));
-    await feed.deliver(
-      ConversationTimelineEvent(
-        batch: TimelineBatch(
-          presentationVersion: presentationVersion,
-          placement: ChatPlacement.append,
-          blocks: [_block('order-3', 3)],
-          fromOrder: 0,
-          throughOrder: 3,
-        ),
-      ),
-    );
-    await feed.deliver(
-      ConversationTimelineEvent(
-        batch: TimelineBatch(
-          presentationVersion: presentationVersion,
-          placement: ChatPlacement.append,
-          blocks: const [],
-          fromOrder: 3,
-          throughOrder: 10,
-          live: _live(const [], pos: 10),
-        ),
-      ),
-    );
-    expect(
-      h.consumer.values
-          .map(
-            (entry) =>
-                entry.$1.blocks.map((block) => block.blockOrder).toList(),
-          )
-          .toList(),
-      <List<int>>[
-        <int>[],
-        <int>[3],
-        <int>[],
-      ],
-    );
-    expect(h.consumer.values.last.$1.throughOrder, 10);
-    expect(feed.acknowledgements, [1, 2, 3]);
-  });
-
-  test('#364 current Work survives split max_items=1, older pages and P-unchanged updates', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final feed = await h.open();
-    LiveDisplayWindow tail({
-      int revision = 1,
-      int pos = 0,
-      bool active = false,
-      bool prefix = false,
-    }) => LiveDisplayWindow(
-      currentWorkId: 'work',
-      revision: revision,
-      readyFrontier: pos,
-      executionPresent: true,
-      blocks: [
-        if (prefix)
-          LiveDisplayBlock(
-            id: 'prefix',
-            blockOrder: 1,
-            state: DisplayBlockState.sealed,
-            body: _body('prefix'),
-          ),
-        LiveDisplayBlock(
-          id: 'work',
-          blockOrder: 2,
-          state: DisplayBlockState.open,
-          body: WorkDisplayBlock(
-            timing: WorkTiming(startedAt: 0, finishedAt: null),
-            members: _reference,
-          ),
-        ),
-      ],
-    );
-    await feed.deliver(
-      ConversationTimelineEvent(
-        batch: TimelineBatch(
-          presentationVersion: presentationVersion,
-          placement: ChatPlacement.set,
-          blocks: [],
-          throughOrder: 0,
-          live: tail(prefix: true),
-        ),
-      ),
-    );
-    await feed.deliver(ConversationTimelineEvent(batch: _append('prefix', 1)));
-    expect(h.content.live.value!.currentWorkId, 'work');
-    expect(h.content.live.value!.blocks.single.id, 'work');
-    final accepted = h.content.live.value;
-    final scope = h.content.openScope(generation: 1);
-    // An older query is a local viewport, not a replacement latest window.
-    final olderPage = LiveDisplayWindow(
-      currentWorkId: null,
-      revision: 1,
-      readyFrontier: 1,
-      executionPresent: true,
-      blocks: [_work('work', 2)],
-    );
-    feed.onLiveOlder = (_, _) async => olderPage;
-    final older = await scope.loadLiveOlder(before: 'older', demand: _demand);
-    expect(older, same(olderPage));
-    expect(older.currentWorkId, isNull);
-    expect(older.blocks.single.state, DisplayBlockState.open);
-    expect(h.content.live.value, same(accepted));
-    final updated = tail(revision: 2, pos: 1, active: true);
-    await feed.deliver(
-      ConversationTimelineEvent(
-        batch: TimelineBatch(
-          presentationVersion: presentationVersion,
-          placement: ChatPlacement.append,
-          blocks: [],
-          fromOrder: 1,
-          throughOrder: 1,
-          live: updated,
-        ),
-      ),
-    );
-    expect(h.content.live.value, same(updated));
-    expect(h.content.live.value!.currentWorkId, 'work');
-    expect(h.consumer.values.last.$1.blocks, isEmpty);
-    expect(h.consumer.values.last.$1.throughOrder, 1);
-    expect(feed.acknowledgements, [1, 2, 3]);
-  });
-
-  for (final kind in [
-    'missing',
-    'sealed',
-    'single',
-    'null-with-open',
-    'null-with-multiple-open',
-    'selected-with-multiple-open',
-  ]) {
-    for (final placement in [ChatPlacement.set, ChatPlacement.append]) {
-      test(
-        '#364 ${placement.name} rejects $kind current Work before consumer/ACK and resynchronizes a new scope',
-        () async {
-          final h = _Harness();
-          addTearDown(h.close);
-          final feed = await h.open();
-          await feed.eventsSubscribed.future;
-          if (placement == ChatPlacement.append) {
-            await feed.deliver(ConversationTimelineEvent(batch: _set()));
-          }
-          final accepted = h.content.live.value;
-          final acceptedCount = h.consumer.values.length;
-          final acknowledgements = feed.acknowledgements.toList();
-          final oldScope = h.content.openScope(generation: 1);
-          final live = LiveDisplayWindow(
-            currentWorkId: kind.startsWith('null-') ? null : 'invalid',
-            revision: 1,
-            readyFrontier: 0,
-            executionPresent: true,
-            blocks: [
-              if (kind == 'sealed')
-                _work('invalid', 1, state: DisplayBlockState.sealed),
-              if (kind == 'single')
-                LiveDisplayBlock(
-                  id: 'invalid',
-                  blockOrder: 1,
-                  state: DisplayBlockState.open,
-                  body: _body('invalid'),
-                ),
-              if (kind == 'null-with-open' ||
-                  kind == 'null-with-multiple-open' ||
-                  kind == 'selected-with-multiple-open')
-                _work('invalid', 1),
-              if (kind == 'null-with-multiple-open' ||
-                  kind == 'selected-with-multiple-open')
-                _work('other-open', 2),
-            ],
-          );
-          feed.send(
-            ConversationTimelineEvent(
-              batch: TimelineBatch(
-                presentationVersion: presentationVersion,
-                placement: placement,
-                blocks: [],
-                fromOrder: placement == ChatPlacement.append ? 0 : null,
-                throughOrder: 0,
-                live: live,
-              ),
-            ),
-          );
-          await feed.requestCloseStarted.future;
-          expect(h.consumer.values, hasLength(acceptedCount));
-          expect(feed.acknowledgements, acknowledgements);
-          expect(h.content.live.value, same(accepted));
-          expect(
-            h.content.state.value,
-            isA<ChatReconnecting<bool>>().having(
-              (state) => state.error,
-              'error',
-              isA<ConversationContinuityError>(),
-            ),
-          );
-          expect(oldScope.isActive, isFalse);
-          await feed.closeCompleted.future;
-          expect(feed.closeCalls, 1);
-          expect(feed.reader.requested, isTrue);
-          expect(feed.reader.closeCalls, 1);
-
-          final replacement = await h.finishOpen(1);
-          final restored = TimelineBatch(
-            presentationVersion: presentationVersion,
-            placement: ChatPlacement.set,
-            blocks: [],
-            throughOrder: 0,
-            live: LiveDisplayWindow(
-              currentWorkId: 'restored',
-              revision: 1,
-              readyFrontier: 0,
-              executionPresent: true,
-              blocks: [_work('restored', 1)],
-            ),
-          );
-          await replacement.deliver(ConversationTimelineEvent(batch: restored));
-          final newScope = h.content.openScope(generation: 2);
-          expect(newScope, isNot(same(oldScope)));
-          expect(newScope.isActive, isTrue);
-          expect(oldScope.isActive, isFalse);
-          expect((await oldScope.close()).complete, isTrue);
-          await expectLater(
-            oldScope.loadLiveOlder(before: 'retired', demand: _demand),
-            throwsA(isA<StaleConversationScope>()),
-          );
-          expect(h.content.state.value, isA<ChatReady<bool>>());
-          expect(h.consumer.values, hasLength(acceptedCount + 1));
-          expect(h.consumer.values.last.$1, same(restored));
-          expect(h.content.live.value, same(restored.live));
-          expect(h.content.live.value!.blocks.single.id, 'restored');
-          expect(h.content.live.value!.currentWorkId, 'restored');
-          expect(feed.acknowledgements, acknowledgements);
-          expect(replacement.acknowledgements, [1]);
-        },
-      );
-    }
-  }
-
   for (final cold in [false, true]) {
     test(
       'member seal ${cold ? 'cold first page' : 'same revision handoff'} preserves values and reaches EOF',
@@ -638,10 +337,9 @@ void main() {
       final h = _Harness();
       addTearDown(h.close);
       final feed = await h.open();
-      await feed.deliver(ConversationTimelineEvent(batch: _set()));
       final native = _Members();
       feed.members = native;
-      final scope = h.content.openScope(generation: 1);
+      final scope = h.scope(generation: 1);
       final members = await scope.openDisplayMembers(
         reference: _reference,
         window: const LatestDisplayMembers(),
@@ -666,200 +364,13 @@ void main() {
     },
   );
 
-  test('max_items=1 retires only delivered IDs and publishes/ACKs after acceptance', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set()));
-    expect(
-      h.transport.opens,
-      isEmpty,
-      reason: 'GUI does not consume the atomic feed',
-    );
-    expect(h.transport.demands.single.maxItems, 1);
-    final observed = <List<String>>[];
-    final observation = h.content.live.watch(
-      (window) =>
-          observed.add(window!.blocks.map((block) => block.id).toList()),
-    );
-    addTearDown(observation.cancel);
-    final gate = Completer<void>();
-    h.consumer.onApply = (_, _) => gate.future;
-    feed.send(ConversationTimelineEvent(batch: _append('work', 1)));
-    await h.consumer.called(2);
-    expect(h.consumer.values.last.$2.blocks.map((block) => block.id), ['text']);
-    expect(h.content.live.value!.blocks.map((block) => block.id), [
-      'work',
-      'text',
-    ]);
-    expect(observed, isEmpty);
-    expect(feed.acknowledgements, [1]);
-    gate.complete();
-    await feed.acknowledged(2);
-    expect(observed, [
-      ['text'],
-    ]);
-    h.consumer.onApply = null;
-    await feed.deliver(
-      ConversationTimelineEvent(
-        batch: _append('text', 2, live: _live([], pos: 2, revision: 2)),
-      ),
-    );
-    expect(observed, <List<String>>[
-      ['text'],
-      [],
-    ]);
-    expect(h.content.live.value!.readyFrontier, 2);
-  });
-
-  test('pure live Append keeps P and Prepend shares the serial gate but not credit', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set()));
-    final gate = Completer<void>();
-    h.consumer.onApply = (_, _) => gate.future;
-    final updated = _live(['work'], revision: 2);
-    feed.send(
-      ConversationTimelineEvent(
-        batch: TimelineBatch(
-          presentationVersion: presentationVersion,
-          placement: ChatPlacement.append,
-          blocks: [],
-          fromOrder: 0,
-          throughOrder: 0,
-          live: updated,
-        ),
-      ),
-    );
-    await h.consumer.called(2);
-    final io = Completer<void>();
-    feed.onOlder = (_, _) async {
-      io.complete();
-      return TimelineBatch(
-        presentationVersion: presentationVersion,
-        placement: ChatPlacement.prepend,
-        blocks: [],
-        throughOrder: 0,
-      );
-    };
-    final scope = h.content.openScope(generation: 1);
-    final page = scope.loadTimelineOlder(before: 'older', demand: _demand);
-    await io.future;
-    expect(
-      h.consumer.values.length,
-      2,
-      reason: 'query IO is not blocked by apply/credit',
-    );
-    gate.complete();
-    await page;
-    await feed.acknowledged(2);
-    expect(h.consumer.values.length, 3);
-    expect(h.consumer.values.last.$2, same(updated));
-    expect(feed.acknowledgements, [1, 2], reason: 'query Prepend does not ACK');
-  });
-
-  test(
-    'wrong presentation version is rejected before delivery and ACK',
-    () async {
-      final h = _Harness();
-      addTearDown(h.close);
-      final feed = await h.open();
-      feed.send(ConversationTimelineEvent(batch: _set(version: 2)));
-      await feed.requestCloseStarted.future;
-      expect(h.consumer.values, isEmpty);
-      expect(feed.acknowledgements, isEmpty);
-      expect(h.content.state.value, isA<ChatFailed<bool>>());
-    },
-  );
-
-  test(
-    'Timeline feed rejects atomic Chat and Activity rather than combining them',
-    () async {
-      for (final event in <ConversationEvent>[
-        ConversationChatEvent(batch: chatSet()),
-        ConversationActivityEvent(
-          snapshot: ActivitySnapshot(
-            revision: 1,
-            completedThrough: 0,
-            executionPresent: true,
-            entries: [],
-          ),
-        ),
-      ]) {
-        final h = _Harness();
-        final feed = await h.open();
-        feed.send(event);
-        await feed.requestCloseStarted.future;
-        expect(feed.acknowledgements, isEmpty);
-        expect(h.consumer.values, isEmpty);
-        await h.close();
-      }
-    },
-  );
-
-  test('A-B-A old successful acceptance cannot publish or ACK into new qualification', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    final old = await h.open();
-    await old.deliver(ConversationTimelineEvent(batch: _set()));
-    final gate = Completer<void>();
-    h.consumer.onApply = (_, _) => gate.future;
-    old.send(ConversationTimelineEvent(batch: _append('work', 1)));
-    await h.consumer.called(2);
-    h.fixture.repository.setVisibleThread(null);
-    h.consumer.onApply = null;
-    h.fixture.repository.setVisibleThread('thread');
-    final current = await h.finishOpen(1);
-    await current.deliver(
-      ConversationTimelineEvent(batch: _set(live: ['new'])),
-    );
-    gate.complete();
-    await old.closeCompleted.future;
-    expect(h.content.live.value!.blocks.single.id, 'new');
-    expect(old.acknowledgements, [1]);
-    expect(current.acknowledgements, [1]);
-  });
-
-  test(
-    'late query error after close is stale and does not change new admission',
-    () async {
-      final h = _Harness();
-      addTearDown(h.close);
-      final old = await h.open();
-      await old.deliver(ConversationTimelineEvent(batch: _set()));
-      final scope = h.content.openScope(generation: 1);
-      final response = Completer<LiveDisplayWindow>();
-      old.onLiveOlder = (_, _) => response.future;
-      final pending = scope.loadLiveOlder(
-        before: 'live-older',
-        demand: _demand,
-      );
-      final assertion = expectLater(
-        pending,
-        throwsA(isA<StaleConversationScope>()),
-      );
-      h.fixture.repository.setVisibleThread(null);
-      h.fixture.repository.setVisibleThread('thread');
-      final current = await h.finishOpen(1);
-      await current.deliver(
-        ConversationTimelineEvent(batch: _set(live: ['new'])),
-      );
-      response.completeError(StateError('old IO failed'));
-      await assertion;
-      expect(h.content.live.value!.blocks.single.id, 'new');
-      expect(h.content.state.value, isA<ChatReady<bool>>());
-    },
-  );
-
   test('member window is bounded, single-flight, and close wakes and joins its exact handle', () async {
     final h = _Harness();
     addTearDown(h.close);
     final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set()));
     final native = _Members();
     feed.members = native;
-    final scope = h.content.openScope(generation: 1);
+    final scope = h.scope(generation: 1);
     final members = await scope.openDisplayMembers(
       reference: _reference,
       window: const LatestDisplayMembers(),
@@ -905,10 +416,9 @@ void main() {
     final h = _Harness();
     addTearDown(h.close);
     final feed = await h.open();
-    await feed.deliver(ConversationTimelineEvent(batch: _set()));
     final response = Completer<DisplayMembers>();
     feed.membersOpening = response;
-    final scope = h.content.openScope(generation: 1);
+    final scope = h.scope(generation: 1);
     final opening = scope.openDisplayMembers(
       reference: _reference,
       window: const LatestDisplayMembers(),
@@ -928,41 +438,63 @@ void main() {
 final class _Harness {
   _Harness() {
     fixture = ConversationFixture(transport: transport);
-    content = fixture.session().content as TimelineContent;
-    content.attachTimelineConsumer(consumer, demand: _demand);
   }
   final _Transport transport = _Transport();
-  final _Consumer consumer = _Consumer();
   late final ConversationFixture fixture;
-  late final TimelineContent content;
-  Future<_Feed> open() async {
-    fixture.repository.setVisibleThread('thread');
-    return finishOpen(0);
+  final Set<ConversationReadScope> scopes = {};
+  _Reader? reader;
+  Future<_Reader> open() async {
+    final opening = fixture.repository.openTimelineReader(
+      'thread',
+      demand: _demand,
+    );
+    await transport.openedTimeline(0);
+    final result = _Reader();
+    reader = result;
+    transport.timelineOpens[0].complete(result);
+    expect(await opening, same(result));
+    return result;
   }
 
-  Future<_Feed> finishOpen(int index) async {
-    await transport.openedTimeline(index);
-    final feed = _Feed(subscriptionId: 'timeline-$index');
-    transport.timelineOpens[index].complete(feed);
-    return feed;
+  ConversationReadScope scope({required int generation}) {
+    final owner = reader!;
+    final result = ConversationReadScope(
+      threadId: 'thread',
+      generation: generation,
+      reader: owner.reader,
+      timeline: owner,
+      isEligible: () => !owner.closed,
+    );
+    scopes.add(result);
+    return result;
   }
 
-  Future<void> close() async =>
-      expect((await fixture.close()).complete, isTrue);
+  Future<void> close() async {
+    for (final scope in scopes) {
+      scope.retire();
+      expect((await scope.close()).complete, isTrue);
+    }
+    await reader?.close();
+    expect((await fixture.close()).complete, isTrue);
+  }
 }
 
 final class _Transport extends TestConversationTransport
     implements TimelineTransport {
-  final List<Completer<TimelineFeed>> timelineOpens = [];
-  final List<ReadDemand> demands = [];
+  final List<Completer<TimelineReader>> timelineOpens = [];
   final Map<int, Completer<void>> _opening = {};
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) {
-    demands.add(demand);
-    final result = Completer<TimelineFeed>();
+    expect(threadId, 'thread');
+    expect(presentationVersion, 6);
+    expect(readerProtocolVersion, 1);
+    expect(demand, same(_demand));
+    final result = Completer<TimelineReader>();
     timelineOpens.add(result);
     _opening.remove(timelineOpens.length - 1)?.complete();
     return result.future;
@@ -973,56 +505,48 @@ final class _Transport extends TestConversationTransport
       : (_opening[index] ??= Completer<void>()).future;
 }
 
-final class _Feed extends TestConversationFeed implements TimelineFeed {
-  _Feed({required super.subscriptionId});
-  final eventsSubscribed = Completer<void>();
-
+final class _Reader implements TimelineReader {
   @override
-  Stream<ConversationFrame> get events {
-    final stream = super.events;
-    eventsSubscribed.complete();
-    return stream;
-  }
-
-  Future<TimelineBatch> Function(String, ReadDemand)? onOlder;
-  Future<LiveDisplayWindow> Function(String, ReadDemand)? onLiveOlder;
+  final TestConversationReader reader = TestConversationReader();
+  @override
+  final OpenTimeline metadata = const OpenTimeline(
+    readerId: 'reader',
+    presentationVersion: 6,
+    readerProtocolVersion: 1,
+    initialCursor: ViewCursor('opaque'),
+  );
   DisplayMembers? members;
   Completer<DisplayMembers>? membersOpening;
+  bool closed = false;
+  Future<TimelinePage> Function(String, ReadDemand)? onOlder;
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) => onOlder!(before, demand);
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
-  }) => onLiveOlder!(before, demand);
+  }) => throw UnimplementedError();
+  @override
+  Future<ViewUpdate> next({required ViewCursor after}) =>
+      throw UnimplementedError();
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
     required DisplayMemberWindow window,
     required ReadDemand demand,
   }) async => membersOpening == null ? members! : await membersOpening!.future;
-}
-
-final class _Consumer implements TimelineBatchConsumer {
-  final List<(TimelineBatch, LiveDisplayWindow)> values = [];
-  final Map<int, Completer<void>> _called = {};
-  Future<void> Function(TimelineBatch, LiveDisplayWindow)? onApply;
   @override
-  Future<void> applyTimeline(
-    TimelineBatch batch,
-    LiveDisplayWindow live,
-  ) async {
-    values.add((batch, live));
-    _called.remove(values.length)?.complete();
-    await onApply?.call(batch, live);
+  void requestClose() {
+    closed = true;
   }
 
-  Future<void> called(int count) => values.length >= count
-      ? Future.value()
-      : (_called[count] ??= Completer<void>()).future;
+  @override
+  Future<void> close() async {
+    requestClose();
+  }
 }
 
 final class _Members implements DisplayMembers {

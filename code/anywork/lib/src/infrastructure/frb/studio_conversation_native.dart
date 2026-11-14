@@ -1,12 +1,18 @@
 part of 'studio_api.dart';
 
-/// Typed mechanical dispatch only; both native facades share the same owner.
-final class _FrbNativeConversation {
-  _FrbNativeConversation.conversation(frb_chat.BridgeConversationFeed native)
+/// Shared query capability only; it carries no delivery queue, cursor or ACK.
+abstract interface class _FrbContentOwner {
+  String get threadId;
+  bool get _admissionsClosed;
+  _FrbNativeReader get _native;
+  Set<_FrbContentWatch> get _contentWatches;
+  void requestClose();
+  Future<void> close();
+}
+
+class _FrbNativeReader {
+  _FrbNativeReader.conversation(frb_chat.BridgeConversationFeed native)
     : threadId = native.threadId,
-      subscriptionId = native.subscriptionId,
-      events = native.events,
-      acknowledge = native.acknowledge,
       requestClose = native.requestClose,
       close = native.close,
       dispose = native.dispose,
@@ -20,12 +26,8 @@ final class _FrbNativeConversation {
       nextContentWindow = native.nextContentWindow,
       requestCloseContentWatch = native.requestCloseContentWatch,
       closeContentWatch = native.closeContentWatch;
-
-  _FrbNativeConversation.timeline(frb_timeline.BridgeTimelineFeed native)
-    : threadId = native.threadId,
-      subscriptionId = native.subscriptionId,
-      events = native.events,
-      acknowledge = native.acknowledge,
+  _FrbNativeReader.timeline(frb_timeline.BridgeTimelineReader native)
+    : threadId = (() => native.threadId()),
       requestClose = native.requestClose,
       close = native.close,
       dispose = native.dispose,
@@ -41,13 +43,6 @@ final class _FrbNativeConversation {
       closeContentWatch = native.closeContentWatch;
 
   final String Function() threadId;
-  final String Function() subscriptionId;
-  final Stream<frb_chat_types.BridgeConversationFrame> Function() events;
-  final void Function({
-    required String subscriptionId,
-    required BigInt deliverySequence,
-  })
-  acknowledge;
   final void Function() requestClose;
   final Future<void> Function() close;
   final void Function() dispose;
@@ -90,4 +85,19 @@ final class _FrbNativeConversation {
   nextContentWindow;
   final void Function({required String watchId}) requestCloseContentWatch;
   final Future<void> Function({required String watchId}) closeContentWatch;
+}
+
+final class _FrbNativeConversation extends _FrbNativeReader {
+  _FrbNativeConversation.conversation(super.native)
+    : subscriptionId = native.subscriptionId,
+      events = native.events,
+      acknowledge = native.acknowledge,
+      super.conversation();
+  final String Function() subscriptionId;
+  final Stream<frb_chat_types.BridgeConversationFrame> Function() events;
+  final void Function({
+    required String subscriptionId,
+    required BigInt deliverySequence,
+  })
+  acknowledge;
 }

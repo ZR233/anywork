@@ -44,7 +44,7 @@ void main() {
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
-      await session.content.ready;
+      await timelineReady(graph.timeline, session.threadId);
       await transport.firstSetAcknowledged.future;
       await session.source.waitFor((value) => value.hasSnapshot);
       final initial = session.state.workspace!;
@@ -459,7 +459,7 @@ void main() {
         .waitFor((value) => value == 'thread-main')
         .timeout(const Duration(seconds: 10));
     final session = graph.client.conversations.existingSession('thread-main')!;
-    await session.content.ready;
+    await timelineReady(graph.timeline, session.threadId);
     await transport.firstSetAcknowledged.future;
     await session.source.waitFor((value) => value.hasSnapshot);
     final composer = graph.client.drafts.existingComposer('thread-main')!;
@@ -526,7 +526,7 @@ void main() {
     contextNotifications = 0;
     chromeNotifications = 0;
     startedItemsNotifications = 0;
-    final timelineConnections = transport.timelineFeeds.length;
+    final timelineConnections = transport.timelineReaders.length;
 
     await transport.stateFeeds.last.emitStateAndWait(
       _runtimeFrame(
@@ -645,7 +645,7 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.timelineFeeds, hasLength(timelineConnections));
+    expect(transport.timelineReaders, hasLength(timelineConnections));
     expect(
       graph.client.conversations.existingSession('thread-main'),
       same(session),
@@ -681,7 +681,7 @@ void main() {
 
 final class _StatusTransport extends RecordingDemoTransport {
   _StatusTransport() {
-    timelineFeedFactory = (_, inner) async =>
+    timelineReaderFactory = (_, inner) async =>
         _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
   }
 
@@ -738,31 +738,21 @@ final class _StatusTransport extends RecordingDemoTransport {
 
 /// Wait for the actual Set ACK before injecting State frames into the same feed.
 /// This observes transport ownership; it never publishes or reduces a projection.
-final class _SetAcknowledgedFeed extends RecordingTimelineFeed {
+final class _SetAcknowledgedFeed extends RecordingTimelineReader {
   _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
 
   final Completer<void> acknowledged;
-  int? _firstSetSequence;
-
+  ViewCursor? _firstSet;
   @override
-  Stream<ConversationFrame> get events => super.events.map((frame) {
-    if (frame.event case ConversationTimelineEvent(
-      batch: TimelineBatch(placement: ChatPlacement.set),
-    )) {
-      _firstSetSequence ??= frame.deliverySequence;
-    }
-    return frame;
-  });
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    await super.acknowledge(deliverySequence);
-    final firstSet = _firstSetSequence;
-    if (firstSet != null &&
-        deliverySequence >= firstSet &&
-        !acknowledged.isCompleted) {
+  Future<ViewUpdate> next({required ViewCursor after}) async {
+    if (_firstSet == after && !acknowledged.isCompleted) {
       acknowledged.complete();
     }
+    final response = await super.next(after: after);
+    if (response.history.placement == HistoryPlacement.set) {
+      _firstSet ??= response.next;
+    }
+    return response;
   }
 }
 

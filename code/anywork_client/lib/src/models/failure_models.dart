@@ -51,6 +51,9 @@ enum StudioFailureReason {
   /// 目标会话已归档：只读，拒绝继续、发送、停止与交互决议。
   threadArchived,
   staleContent,
+  conversationResyncRequired,
+  staleViewCursor,
+  concurrentNext,
 
   /// Native 内容或 State 版本缺失、不受支持；code 仍为 protocol。
   protocolVersionMismatch;
@@ -70,6 +73,10 @@ enum StudioFailureReason {
     'interactionNotHosted' => StudioFailureReason.interactionNotHosted,
     'staleInteraction' => StudioFailureReason.staleInteraction,
     'staleContent' => StudioFailureReason.staleContent,
+    'conversationResyncRequired' =>
+      StudioFailureReason.conversationResyncRequired,
+    'staleViewCursor' => StudioFailureReason.staleViewCursor,
+    'concurrentNext' => StudioFailureReason.concurrentNext,
     'protocolVersionMismatch' => StudioFailureReason.protocolVersionMismatch,
     'threadArchived' => StudioFailureReason.threadArchived,
     _ => null,

@@ -13,6 +13,15 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get studioFailureConversationResyncRequired => '会话内容需要重新同步，请重试。';
+
+  @override
+  String get studioFailureStaleViewCursor => '当前阅读位置已失效，请重新打开会话。';
+
+  @override
+  String get studioFailureConcurrentNext => '正在读取会话内容，请等待当前读取完成。';
+
+  @override
   String get conversationDirectoryUnavailable => '无法获取会话信息。请重试。';
 
   @override

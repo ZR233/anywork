@@ -2455,7 +2455,8 @@ impl LiveProjection {
             self.presentation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .observe_thinking_summary(summary);
+                .observe_thinking_summary(summary)
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
         Ok(())
     }

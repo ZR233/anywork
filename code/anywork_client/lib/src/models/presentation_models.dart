@@ -105,42 +105,6 @@ final class LiveDisplayBlock {
   final String? thinkingSummary;
 }
 
-final class LiveDisplayWindow {
-  LiveDisplayWindow({
-    required this.revision,
-    required this.readyFrontier,
-    required this.executionPresent,
-    required this.currentWorkId,
-    required List<LiveDisplayBlock> blocks,
-    this.older,
-  }) : blocks = List.unmodifiable(blocks);
-  final int revision;
-  final int readyFrontier;
-  final bool executionPresent;
-  final String? currentWorkId;
-  final List<LiveDisplayBlock> blocks;
-  final String? older;
-}
-
-final class TimelineBatch {
-  TimelineBatch({
-    required this.presentationVersion,
-    required this.placement,
-    required List<DisplayBlock> blocks,
-    this.before,
-    this.fromOrder,
-    required this.throughOrder,
-    this.live,
-  }) : blocks = List.unmodifiable(blocks);
-  final int presentationVersion;
-  final ChatPlacement placement;
-  final List<DisplayBlock> blocks;
-  final String? before;
-  final int? fromOrder;
-  final int throughOrder;
-  final LiveDisplayWindow? live;
-}
-
 sealed class DisplayMemberWindow {
   const DisplayMemberWindow();
 }
@@ -178,4 +142,122 @@ final class DisplayMemberPage {
   final bool sealed;
   final List<DisplayMemberHead> entries;
   final int? before;
+}
+
+const timelineReaderProtocolVersion = 1;
+
+final class ViewCursor {
+  const ViewCursor(this.value);
+  final String value;
+  @override
+  bool operator ==(Object other) => other is ViewCursor && value == other.value;
+  @override
+  int get hashCode => value.hashCode;
+}
+
+final class OpenTimeline {
+  const OpenTimeline({
+    required this.readerId,
+    required this.presentationVersion,
+    required this.readerProtocolVersion,
+    required this.initialCursor,
+  });
+  final String readerId;
+  final int presentationVersion;
+  final int readerProtocolVersion;
+  final ViewCursor initialCursor;
+}
+
+enum HistoryPlacement { set, append }
+
+final class HistoryDelta {
+  HistoryDelta({
+    required this.placement,
+    this.fromOrder,
+    required this.throughOrder,
+    required List<DisplayBlock> blocks,
+    this.before,
+  }) : blocks = List.unmodifiable(blocks);
+  final HistoryPlacement placement;
+  final int? fromOrder;
+  final int throughOrder;
+  final List<DisplayBlock> blocks;
+  final String? before;
+}
+
+final class TailSnapshot {
+  TailSnapshot({
+    required this.revision,
+    required this.layoutRevision,
+    required this.readyFrontier,
+    required this.executionPresent,
+    required this.currentWorkId,
+    required List<LiveDisplayBlock> blocks,
+    this.older,
+  }) : blocks = List.unmodifiable(blocks);
+  final int revision;
+  final int layoutRevision;
+  final int readyFrontier;
+  final bool executionPresent;
+  final String? currentWorkId;
+  final List<LiveDisplayBlock> blocks;
+  final String? older;
+}
+
+sealed class TailUpdate {
+  const TailUpdate();
+}
+
+final class KeepTail extends TailUpdate {
+  const KeepTail();
+}
+
+final class ReplaceTail extends TailUpdate {
+  const ReplaceTail({required this.snapshot});
+  final TailSnapshot snapshot;
+}
+
+final class TailStatus extends TailUpdate {
+  const TailStatus({
+    required this.baseLayoutRevision,
+    required this.revision,
+    required this.currentWorkId,
+    required this.thinkingSummary,
+  });
+  final int baseLayoutRevision;
+  final int revision;
+  final String? currentWorkId;
+  final String? thinkingSummary;
+}
+
+final class ViewUpdate {
+  const ViewUpdate({
+    required this.presentationVersion,
+    required this.readerProtocolVersion,
+    required this.after,
+    required this.next,
+    required this.history,
+    required this.tail,
+  });
+  final int presentationVersion;
+  final int readerProtocolVersion;
+  final ViewCursor after;
+  final ViewCursor next;
+  final HistoryDelta history;
+  final TailUpdate tail;
+}
+
+final class TimelinePage {
+  TimelinePage({
+    required this.presentationVersion,
+    required this.databaseId,
+    required this.ceiling,
+    required List<DisplayBlock> blocks,
+    this.before,
+  }) : blocks = List.unmodifiable(blocks);
+  final int presentationVersion;
+  final String databaseId;
+  final int ceiling;
+  final List<DisplayBlock> blocks;
+  final String? before;
 }

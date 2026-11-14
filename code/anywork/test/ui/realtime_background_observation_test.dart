@@ -68,7 +68,7 @@ void main() {
         controller.dispose();
       });
       final single = _single();
-      await adapter.applyTimeline(
+      await adapter.applyFixtureUpdate(
         displayBatch([
           displayWork('unrelated-work', 1),
           DisplayBlock(id: single.id, blockOrder: 2, body: single.body),

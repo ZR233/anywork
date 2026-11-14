@@ -665,6 +665,13 @@ pub(crate) async fn close_conversation(
                 .retain(|entry| !Arc::ptr_eq(entry, &member));
         }
     }
+    if failure.is_none() {
+        owner
+            .timeline_permit
+            .lock()
+            .expect("timeline permit poisoned")
+            .take();
+    }
     failure.map_or(Ok(()), Err)
 }
 
@@ -1079,7 +1086,7 @@ mod tests {
         let paths = document["paths"].as_object().context("missing paths")?;
         let timeline_routes = [
             ("open", "post", Some("OpenRequest")),
-            ("events", "get", None),
+            ("next", "post", Some("NextRequest")),
             ("older", "post", Some("OlderRequest")),
             ("live-older", "post", Some("OlderRequest")),
             ("close", "post", None),
@@ -1137,7 +1144,7 @@ mod tests {
                 assert!(operation.get("requestBody").is_none(), "{path}");
             }
             match suffix {
-                "events" | "members" => {
+                "members" => {
                     assert!(
                         operation["responses"]["200"]["content"]["text/event-stream"].is_object(),
                         "{path}"
@@ -1146,9 +1153,10 @@ mod tests {
                 "close" => assert!(operation["responses"]["204"].is_object(), "{path}"),
                 _ => {
                     let schema = match suffix {
-                        "open" => "OpenResponse",
-                        "older" => "TimelineBatch",
-                        "live-older" => "LiveDisplayWindow",
+                        "open" => "OpenTimeline",
+                        "next" => "ViewUpdate",
+                        "older" => "TimelinePage",
+                        "live-older" => "TailSnapshot",
                         _ => unreachable!("all timeline routes are covered"),
                     };
                     assert_eq!(
@@ -1193,21 +1201,48 @@ mod tests {
         assert!(schemas.get("TimelineMembersRef").is_none());
         assert!(schemas.get("ChatEntry").is_none());
         for (schema, fields) in [
-            ("OpenRequest", &["demand"][..]),
             (
-                "OpenResponse",
-                &["subscriptionId", "presentationVersion"][..],
+                "OpenRequest",
+                &["presentationVersion", "readerProtocolVersion", "demand"][..],
+            ),
+            ("NextRequest", &["after"][..]),
+            (
+                "OpenTimeline",
+                &[
+                    "readerId",
+                    "presentationVersion",
+                    "readerProtocolVersion",
+                    "initialCursor",
+                ][..],
             ),
             ("OlderRequest", &["before", "demand"][..]),
             ("MembersRequest", &["reference", "window", "demand"][..]),
+            ("HistoryDelta", &["placement", "blocks", "throughOrder"][..]),
             (
-                "TimelineBatch",
-                &["presentationVersion", "placement", "blocks", "throughOrder"][..],
+                "TimelinePage",
+                &["presentationVersion", "databaseId", "ceiling", "blocks"][..],
+            ),
+            (
+                "ViewUpdate",
+                &[
+                    "presentationVersion",
+                    "readerProtocolVersion",
+                    "after",
+                    "next",
+                    "history",
+                    "tail",
+                ][..],
             ),
             ("DisplayBlock", &["id", "blockOrder", "body"][..]),
             (
-                "LiveDisplayWindow",
-                &["revision", "readyFrontier", "executionPresent", "blocks"][..],
+                "TailSnapshot",
+                &[
+                    "revision",
+                    "layoutRevision",
+                    "readyFrontier",
+                    "executionPresent",
+                    "blocks",
+                ][..],
             ),
             (
                 "LiveDisplayBlock",
@@ -1293,41 +1328,28 @@ mod tests {
             );
         }
         assert_eq!(
-            schemas["TimelineBatch"]["properties"]["blocks"]["items"]["$ref"],
+            schemas["HistoryDelta"]["properties"]["blocks"]["items"]["$ref"],
             "#/components/schemas/DisplayBlock"
         );
         assert_eq!(
-            schemas["LiveDisplayWindow"]["properties"]["blocks"]["items"]["$ref"],
+            schemas["TailSnapshot"]["properties"]["blocks"]["items"]["$ref"],
             "#/components/schemas/LiveDisplayBlock"
         );
-        // A split handoff may omit live; it must not become the atomic completion schema.
-        let live = &schemas["TimelineBatch"]["properties"]["live"];
-        assert!(
-            live["oneOf"]
-                .as_array()
-                .context("missing nullable live window schema")?
-                .iter()
-                .any(|schema| schema["$ref"] == "#/components/schemas/LiveDisplayWindow")
+        assert!(schemas.get("TimelineBatch").is_none());
+        assert!(schemas.get("LiveDisplayWindow").is_none());
+        assert_eq!(
+            schemas["ViewUpdate"]["properties"]["history"]["$ref"],
+            "#/components/schemas/HistoryDelta"
         );
-        assert!(
-            live["oneOf"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|schema| schema["type"] == "null")
+        assert_eq!(
+            schemas["ViewUpdate"]["properties"]["tail"]["$ref"],
+            "#/components/schemas/TailUpdate"
         );
-        assert!(schemas["TimelineBatch"]["properties"]["fromOrder"].is_object());
+        assert!(schemas["HistoryDelta"]["properties"]["fromOrder"].is_object());
         assert!(
-            schemas["TimelineBatch"]["properties"]
+            schemas["HistoryDelta"]["properties"]
                 .get("fromSeq")
                 .is_none()
-        );
-        assert!(
-            !schemas["TimelineBatch"]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|field| field == "live")
         );
         for suffix in [
             "chat/older",

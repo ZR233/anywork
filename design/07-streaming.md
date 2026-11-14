@@ -52,7 +52,7 @@ FRB 的消费确认与在途上限遵循 §7.10；HTTP 与原生消费者同样�
 
 SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型映射，ViewModel 只从已提交快照派生不可变 ViewState。Flutter 不把 snapshot 拆为伪事件再归约，也不保存 competing mirror。首帧、恢复和版本缺口仅更新受影响域，不清理草稿或无关状态。
 
-GUI TimelineBatch 经 SDK 原串行接纳链交 Flutter controller，流与旧页共用入口，一冻结块一条 Message.custom。历史批量插入和同 ID live 退役共同完成后才公开一次更新并 ACK；SDK 不保存历史镜像或组合尾组。ACK 复核原 lease，不等布局、query、数据库或用户展开。纯 live Append 不枚举历史，Prepend 不带 live；原件消费者仍使用 ChatBatch，详见 [26](./26-timeline-content.md)。
+GUI 主时间线由 Flutter 的唯一应用所有者带已应用游标按需领取；SDK 只转发读取能力。历史组件操作成功且原资格仍有效后，共同公开尾部与游标，不等待绘制。空历史更新不枚举主列表，翻页仅返回结果；固定切面、响应重放及预算合同见 [26](./26-timeline-content.md#265-展示协议与同切面交付)。完成原件仍使用独立 `ChatBatch` 与原信用机制。
 
 迟到结果按首次 await 前冻结的会话、incarnation、operationId、领域/草稿版本和附件归属结算。未知结果保留原意图，不自动重发。选择 null 仍为合法新会话草稿，流恢复或目录新增不能擅自选中历史会话。
 
@@ -75,14 +75,15 @@ FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，�
 
 会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选参数互斥地选择真实 Children 或完整 Run 引用（database_id、index_version、start_seq），省略选择 Main。成功打开后，`X-Anywork-Conversation` 响应头返回原 feed 订阅身份；独立查询以同名请求头携带，并与 Thread 校验。它定位原 read lease，不替代授权、scope 或 cursor。
 
-HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
+HTTP 适配器只在原读取所有者存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
 
 | 方法与 Thread 内路径 | 请求内容 | 返回内容 |
 | --- | --- | --- |
 | `POST /chat/older` | before、demand | Prepend ChatBatch |
-| `POST /timeline/open`、`GET /timeline/events` | demand、原订阅资格 | Timeline feed，presentation_version=1 |
-| `POST /timeline/older` | before、demand | Prepend TimelineBatch |
-| `POST /timeline/live-older` | before、demand | LiveDisplayWindow |
+| `POST /timeline/open` | presentationVersion、readerProtocolVersion、demand | OpenTimeline，回显版本与初始游标 |
+| `POST /timeline/next` | after、原读取资格 | ViewUpdate；无变化达到等待期限时返回 204，不分配游标 |
+| `POST /timeline/older` | before、demand、原读取资格 | 纯查询 TimelinePage |
+| `POST /timeline/live-older` | before、demand、原读取资格 | TailSnapshot |
 | `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
 | `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，本次页观察 sealed 后结束；冷 saved-only 页固定后结束不代表业务块封组，见 [26.7](./26-timeline-content.md#267-内容成员窗口与资源) |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
@@ -124,15 +125,17 @@ HTTP 适配器只在原 SSE owner 存活期间索引该读取能力，不另建 
 
 ## 7.10 会话推送、交付确认与关闭
 
+主时间线通过原会话读取注册表登记 `TimelineReader`，不建立独立时间线注册表。`next` 最长等待 25 秒，无变化返回无正文的 204；120 秒没有请求、在途主读取或子观察时回收。查询与子观察持原读取租约并计入活动资格；最后请求完成后重新开始空闲计时。`next` 和 `close` 不占普通请求池，读取器仍受原流配额约束。关闭先同步撤销准入，再汇合原资源并释放其配额，不等待旧主事件流的完成通知，也不关闭共享执行。旧 `GET /timeline/events` 已删除，没有转发入口。
+
 HTTP 的 `/api/v1/threads/{thread_id}/events` 仅交付内容并提供原读取租约；`/api/v1/threads/{thread_id}/state/events` 独立交付状态快照与通知，不授予内容读取能力。两个 SSE 各有有界发送窗口和关闭责任，不保留原组合事件流的兼容分支。FRB 与 SDK 使用相同的领域边界，传输确认按各自现役协议处理。
 
 会话观察绑定同一注册 Session、读取资格和被动 observation slot。事件与切点遵循 [26](./26-timeline-content.md)，不是旧状态/内容流的兼容壳。多 GUI、HTTP、机器人各自持需求；登记与捕获必须防漏，接收者数量提示不替代证明。打开与旧页不装配执行，idle pending 也属于有效来源。
 
 State 与内容分别观察原所有者，使用独立的接收、消费及确认通道。State 首帧和后续通知由唯一的被动状态观察实现组装，保留可靠通知顺序、连续版本与 Lagged 语义；完成级内容通道交付完成补读和 Activity，GUI 展示通道交付冻结块与 live 切面，均不重复组装 State。打开状态观察与内容读取都不激活执行。正文消费、内容信用等待与翻页不得阻塞运行时、上下文、轮次、交互、业务引用或存储状态的交付；状态也不能从活动或正文重建。活动可合并最新值，完成事实只从原集合按前缀补读，完成前缀与活动退役仍由内容 owner 原子接纳；GUI 历史块与同 ID live 退役沿独立展示水位原子接纳，不以独立 State 的到达代替该屏障。
 
-FRB 的状态句柄与内容句柄各有唯一 producer、独立订阅身份、投递序号和信用；每句柄最多一个未确认普通数据批次（状态首快照与内容首 Set 均计入各自额度），单帧和待发/在途总字节均有上界。StreamSink.add 成功仅表示端口接纳。Frame 保留会话、订阅身份及递增 deliverySequence，不在 ChatBatch/Message 再复制身份。Failure/Closed 在各自 producer 退出时至多尝试一次，复用该句柄最后 sent 序号，首普通帧前可为零，不占 credit、不 ACK、不等待确认且有固定字节上限。
+FRB 的状态句柄与完成原件句柄各有唯一 producer、独立订阅身份、投递序号和信用；每句柄最多一个未确认普通数据批次（状态首快照与内容首 Set 均计入各自额度），单帧和待发/在途总字节均有上界。StreamSink.add 成功仅表示端口接纳。Frame 保留会话、订阅身份及递增 deliverySequence，不在 ChatBatch/Message 再复制身份。Failure/Closed 在各自 producer 退出时至多尝试一次，复用该句柄最后 sent 序号，首普通帧前可为零，不占 credit、不 ACK、不等待确认且有固定字节上限。
 
-SDK 各 feed owner 唯一发送自身 ACK：Chat 在 applyBatch 完成且原 lease 有效后 ready，Activity 在活动接纳完成后 ready，Timeline 在冻结块插入与同 ID live 退役共同接纳后 ready，State 在所属会话 Repository 提交后 ready；只确认同句柄连续帧前缀，状态确认不经过内容消费队列。Failure/Closed 先分类，构成所属通道的接纳资格屏障，不进入普通 ACK。重复旧 ACK 幂等，未发送或其他句柄 ACK 拒绝；转投无界队列、提前确认未消费内容或增大信用窗口不算接纳。
+SDK 各 feed owner 唯一发送自身 ACK：Chat 在 applyBatch 完成且原 lease 有效后 ready，Activity 在活动接纳完成后 ready，State 在所属会话 Repository 提交后 ready；只确认同句柄连续帧前缀，状态确认不经过内容消费队列。Failure/Closed 先分类，构成所属通道的接纳资格屏障，不进入普通 ACK。重复旧 ACK 幂等，未发送或其他句柄 ACK 拒绝；转投无界队列、提前确认未消费内容或增大信用窗口不算接纳。
 
 内容 facade 组合内容 feed 与私有 read lease，独立状态 facade 只持状态观察。loadOlder 锁外直接查询，不获取 producer 挂起 recv/credit 所持 native feed 锁，不排进其命令队列、不带 delivery sequence 或 ACK。会话 owner 按同一可见需求持有两种观察，但各有代次和局部恢复：状态失连续重建状态基线，不重开有效内容窗口或清空草稿；内容重连也不回退有效状态。打开前登记取消与汇合责任，尚未启动 events 就退役也要回收。producer 终止只关闭自己的 feed，已准入 query 仍由 read owner 收束；显式 requestClose 同步封闭自有资源新准入，close 等待全部自有资源，任一侧失败仍收束其余资源并保留 unresolved 责任。页面隐藏、切换与应用关闭覆盖状态和内容两种观察，旧代次迟到结果不能恢复准入。外部另开的 reader 和共享执行不因此关闭；取消一次等待、Stream.cancel 或丢句柄不等于 join。
 

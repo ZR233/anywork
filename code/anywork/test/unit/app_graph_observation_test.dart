@@ -33,7 +33,7 @@ void main() {
       graph.timeline.updateReadDemand(chatDemand);
       graph.setConversationPageVisible(true);
       await graph.client.directoryCommands.selectThread('thread-main');
-      await graph.client.conversations.session('thread-main').content.ready;
+      await timelineReady(graph.timeline, 'thread-main');
       final lease = graph.timeline.lease('thread-main')!..bind();
       Future<CloseReport>? nested;
       final observation = graph.timeline.source.watch((state) {
@@ -100,7 +100,7 @@ void main() {
       expect(costs.read().loaded, isFalse);
       // 未加载会话只观察 visibleThreadId；其他三个缺失 owner 各观察 selection 与 failure。
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.timelineFeeds, isEmpty);
+      expect(transport.timelineReaders, isEmpty);
     } finally {
       session.close();
       composer.close();
@@ -130,13 +130,14 @@ void main() {
       await graph.client.conversations.visibleThreadId.waitFor(
         (id) => id == 'thread-main',
       );
-      final session = graph.client.conversations.existingSession(
-        'thread-main',
-      )!;
-      await session.content.state.waitFor((state) => state.snapshot == true);
-      final connection = transport.timelineFeeds.single;
+      await timelineReady(graph.timeline, 'thread-main');
+      final connection = transport.timelineReaders.single;
       await connection.nextEntered.future;
-      final attemptId = session.content.currentAttemptId?.value;
+      final attemptId = graph.timeline
+          .lease('thread-main')!
+          .reader
+          .metadata
+          .readerId;
       final workspaceId = graph.client.selection.state.selectedProjectId!;
       final startOwner = graph.client.drafts.startDraft;
       final composerOwner = graph.client.drafts.existingComposer(
@@ -176,8 +177,11 @@ void main() {
 
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
-      expect(session.content.currentAttemptId?.value, attemptId);
-      expect(session.content.state.value.snapshot, isNotNull);
+      expect(
+        graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+        attemptId,
+      );
+      expect(graph.timeline.lease('thread-main'), isNotNull);
       expect(graph.client.drafts.startDraft, same(startOwner));
       expect(graph.client.drafts.composer('thread-main'), same(composerOwner));
       expect(
@@ -208,11 +212,7 @@ void main() {
       addTearDown(rebuiltComposer.close);
 
       expect(
-        graph.client.conversations
-            .session('thread-main')
-            .content
-            .currentAttemptId
-            ?.value,
+        graph.timeline.lease('thread-main')!.reader.metadata.readerId,
         attemptId,
       );
       expect(
@@ -226,7 +226,7 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(transport.timelineFeeds, hasLength(1));
+      expect(transport.timelineReaders, hasLength(1));
       expect(connection.initialCalls, 1);
 
       final report = await graph.close(deadline: _deadline());
@@ -261,25 +261,17 @@ void main() {
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
     final afterVisibleSelection = first.timeline.monotonicMicros;
-    expect(firstTransport.timelineFeeds, isEmpty);
+    expect(firstTransport.timelineReaders, isEmpty);
     expect(
-      secondTransport.timelineFeeds,
+      secondTransport.timelineReaders,
       isEmpty,
       reason: 'canonical visible selection does not fabricate viewport demand',
     );
     first.timeline.updateReadDemand(chatDemand);
     second.timeline.updateReadDemand(chatDemand);
     await Future.wait([
-      first.client.conversations
-          .session('thread-main')
-          .content
-          .state
-          .waitFor((state) => state.snapshot == true),
-      second.client.conversations
-          .session('thread-main')
-          .content
-          .state
-          .waitFor((state) => state.snapshot == true),
+      timelineReady(first.timeline, 'thread-main'),
+      timelineReady(second.timeline, 'thread-main'),
     ]);
     final display = first.timeline.lease('thread-main')!;
     expect(display.selectionId, isNotNull);
@@ -320,8 +312,8 @@ void main() {
       isNot(same(second.client.conversations.session('thread-main'))),
     );
     expect(
-      firstTransport.timelineFeeds.single,
-      isNot(same(secondTransport.timelineFeeds.single)),
+      firstTransport.timelineReaders.single,
+      isNot(same(secondTransport.timelineReaders.single)),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
@@ -340,18 +332,10 @@ void main() {
     );
 
     expect((await first.close(deadline: _deadline())).complete, isTrue);
-    expect(firstTransport.timelineFeeds.single.joined.isCompleted, isTrue);
-    expect(secondTransport.timelineFeeds.single.requestCloseCalls, 0);
+    expect(firstTransport.timelineReaders.single.joined.isCompleted, isTrue);
+    expect(secondTransport.timelineReaders.single.requestCloseCalls, 0);
     expect(second.client.isClosed, isFalse);
-    expect(
-      second.client.conversations
-          .session('thread-main')
-          .content
-          .state
-          .value
-          .snapshot,
-      isNotNull,
-    );
+    expect(second.timeline.lease('thread-main'), isNotNull);
     expect(
       secondContainer
           .read(composerDraftControllerProvider('thread-main'))
@@ -364,12 +348,12 @@ void main() {
     'late open after selecting B is reclaimed without clearing current B',
     () async {
       final transport = DemoStudioTransport(lspActivityLoop: false);
-      final firstOpen = Completer<RecordingTimelineFeed>();
+      final firstOpen = Completer<RecordingTimelineReader>();
       final releaseFirst = Completer<void>();
       var mainOpens = 0;
-      final connections = <RecordingTimelineFeed>[];
-      transport.timelineFeedFactory = (threadId, inner) async {
-        final window = RecordingTimelineFeed(inner: inner);
+      final connections = <RecordingTimelineReader>[];
+      transport.timelineReaderFactory = (threadId, inner) async {
+        final window = RecordingTimelineReader(inner: inner);
         connections.add(window);
         if (threadId == 'thread-main' && ++mainOpens == 1) {
           firstOpen.complete(window);
@@ -400,13 +384,12 @@ void main() {
           .client
           .directoryCommands
           .selectThread('thread-alt');
-      await graph.client.conversations
-          .session('thread-alt')
-          .content
-          .state
-          .waitFor((state) => state.snapshot == true);
-      final selected = graph.client.conversations.session('thread-alt');
-      final currentAttempt = selected.content.currentAttemptId?.value;
+      await timelineReady(graph.timeline, 'thread-alt');
+      final currentAttempt = graph.timeline
+          .lease('thread-alt')!
+          .reader
+          .metadata
+          .readerId;
       final current = connections.lastWhere(
         (value) => value.threadId == 'thread-alt',
       );
@@ -423,8 +406,11 @@ void main() {
       expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(late.closeCalls, 1);
       expect(current.requestCloseCalls, 0);
-      expect(selected.content.currentAttemptId?.value, currentAttempt);
-      expect(selected.content.state.value.snapshot, isNotNull);
+      expect(
+        graph.timeline.lease('thread-alt')!.reader.metadata.readerId,
+        currentAttempt,
+      );
+      expect(graph.timeline.lease('thread-alt'), isNotNull);
       final display = graph.timeline.lease('thread-alt')!;
       expect(display.controller.messages, isNotEmpty);
       // This is the Client attempt contract over Demo connections, not native FRB.

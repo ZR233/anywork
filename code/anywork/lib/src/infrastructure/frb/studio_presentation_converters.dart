@@ -83,10 +83,11 @@ DisplayBlockBody _displayBodyFromFrb(
     ),
 };
 
-LiveDisplayWindow _liveDisplayWindowFromFrb(
-  frb_presentation.BridgeLiveDisplayWindow value,
-) => LiveDisplayWindow(
-  revision: _exactTimelineInt(value.revision, 'live display revision'),
+TailSnapshot _tailSnapshotFromFrb(
+  frb_presentation.BridgeTailSnapshot value,
+) => TailSnapshot(
+  revision: _exactTimelineInt(value.revision, 'view revision'),
+  layoutRevision: _exactTimelineInt(value.layoutRevision, 'layout revision'),
   readyFrontier: _exactTimelineInt(
     value.readyFrontier,
     'display history prefix',
@@ -113,37 +114,73 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
   older: value.older,
 );
 
-TimelineBatch _timelineBatchFromFrb(
-  frb_presentation.BridgeTimelineBatch value,
-) {
-  if (value.presentationVersion != presentationVersion) {
-    throw ProtocolVersionMismatch(
-      received: value.presentationVersion,
-      supported: presentationVersion,
-      field: 'presentationVersion',
+OpenTimeline _openTimelineFromFrb(frb_presentation.BridgeOpenTimeline value) =>
+    OpenTimeline(
+      readerId: value.readerId,
+      presentationVersion: value.presentationVersion,
+      readerProtocolVersion: value.readerProtocolVersion,
+      initialCursor: ViewCursor(value.initialCursor),
     );
-  }
-  return TimelineBatch(
-    presentationVersion: value.presentationVersion,
-    placement: switch (value.placement) {
-      frb_chat_types.BridgeChatPlacement.set_ => ChatPlacement.set,
-      frb_chat_types.BridgeChatPlacement.prepend => ChatPlacement.prepend,
-      frb_chat_types.BridgeChatPlacement.append => ChatPlacement.append,
+List<DisplayBlock> _displayBlocksFromFrb(
+  List<frb_presentation.BridgeDisplayBlock> values,
+) => [
+  for (final value in values)
+    DisplayBlock(
+      id: value.id,
+      blockOrder: _exactTimelineInt(value.blockOrder, 'block order'),
+      body: _displayBodyFromFrb(value.body),
+    ),
+];
+TimelinePage _timelinePageFromFrb(frb_presentation.BridgeTimelinePage value) =>
+    TimelinePage(
+      presentationVersion: value.presentationVersion,
+      databaseId: value.databaseId,
+      ceiling: _exactTimelineInt(value.ceiling, 'history ceiling'),
+      blocks: _displayBlocksFromFrb(value.blocks),
+      before: value.before,
+    );
+ViewUpdate _viewUpdateFromFrb(
+  frb_presentation.BridgeViewUpdate value,
+) => ViewUpdate(
+  presentationVersion: value.presentationVersion,
+  readerProtocolVersion: value.readerProtocolVersion,
+  after: ViewCursor(value.after),
+  next: ViewCursor(value.next),
+  history: HistoryDelta(
+    placement: switch (value.history.placement) {
+      frb_presentation.BridgeHistoryPlacement.set_ => HistoryPlacement.set,
+      frb_presentation.BridgeHistoryPlacement.append => HistoryPlacement.append,
     },
-    blocks: [
-      for (final block in value.blocks)
-        DisplayBlock(
-          id: block.id,
-          blockOrder: _exactTimelineInt(block.blockOrder, 'display position'),
-          body: _displayBodyFromFrb(block.body),
+    fromOrder: _exactNullableTimelineInt(
+      value.history.fromOrder,
+      'history start',
+    ),
+    throughOrder: _exactTimelineInt(value.history.throughOrder, 'history end'),
+    blocks: _displayBlocksFromFrb(value.history.blocks),
+    before: value.history.before,
+  ),
+  tail: switch (value.tail) {
+    frb_presentation.BridgeTailUpdate_Keep() => const KeepTail(),
+    frb_presentation.BridgeTailUpdate_Replace(:final snapshot) => ReplaceTail(
+      snapshot: _tailSnapshotFromFrb(snapshot),
+    ),
+    frb_presentation.BridgeTailUpdate_Status(
+      :final baseLayoutRevision,
+      :final revision,
+      :final currentWorkId,
+      :final thinkingSummary,
+    ) =>
+      TailStatus(
+        baseLayoutRevision: _exactTimelineInt(
+          baseLayoutRevision,
+          'base layout revision',
         ),
-    ],
-    before: value.before,
-    fromOrder: _exactNullableTimelineInt(value.fromOrder, 'display prefix'),
-    throughOrder: _exactTimelineInt(value.throughOrder, 'display prefix'),
-    live: value.live == null ? null : _liveDisplayWindowFromFrb(value.live!),
-  );
-}
+        revision: _exactTimelineInt(revision, 'view revision'),
+        currentWorkId: currentWorkId,
+        thinkingSummary: thinkingSummary,
+      ),
+  },
+);
 
 DisplayMemberPage _displayMemberPageFromFrb(
   frb_presentation.BridgeDisplayMemberPage value,

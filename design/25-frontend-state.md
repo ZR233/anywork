@@ -172,7 +172,7 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。分页条数、编码字节、流量控制、缓存淘汰及领域业务校验各自保留，不以移除数量限制推导内存恒定或无限并发性能保证。
 
-状态 feed、内容 feed、read lease、呈现 owner 和 UI controller 是不同资源。内容 facade 组合内容 feed 与独立 read lease，状态 facade 只持状态观察；SDK 会话 owner 管独立状态接纳与操作，内容 owner 管内容连接、机械串行接纳与 Activity 完成屏障，生命周期边界见 [§25.15](#2515-会话草稿与呈现分域)。Flutter 原 ChatController 唯一持已加载代表 Message，原呈现 owner 管段/成员游标、选择代次和资源，不另存原子/分组全量镜像；资源不跨 AppGraph 共享。
+状态观察、完成原件观察、主时间线读取器、正文能力与界面控制器是不同资源。SDK 会话所有者接纳独立业务状态，完成原件所有者保留 `ChatBatch`／Activity 的连续性与确认；主时间线读取器由 Flutter 的时间线会话所有者持有。SDK 不为 GUI 建立第二个内容消费者或接纳队列。`ChatController` 唯一保存已加载历史，显示租约持有一个规范尾窗、局部成员需求及选择代次；资源不跨 AppGraph 共享，生命周期边界见 [§25.15](#2515-会话草稿与呈现分域)。
 
 范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
 
@@ -186,13 +186,13 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有的 open、producer、consumer、sink；独立 query 归原 read scope，不挂回 feed credit。失败保留 unresolved owner 与清理责任，丢句柄、Provider dispose 或取消 Future 不是 join。只回收观察，不停止 Session、Turn、后台任务、writer 或其他消费者。应用退出继续由既有唯一协调器承担；业务会话运行代次、Native 实例回收与界面读取租约的区分见 [14](./14-runtime-host.md#1411-生命周期作用域与关闭)。
 
-流与旧页通过 SDK domain 交同一个串行 applyBatch；先 await 捕获的原 controller 操作，复核 lease 后发布 before/current，再允许流 ACK。ACK 仅由 feed owner 确认连续 ready 前缀，不越过未应用 Chat；终态先分类且不 ACK，规则见 [07](./07-streaming.md)。重同步失效旧 handle/read 资格，保留旧数据显示直到新 Set 接纳，不先 Set([]) 清空，也不清无关草稿/领域。
+主读取响应和纯历史页在 Flutter 的同一应用队列接纳。先等待捕获的原组件操作，重新核对读取器与显示代次，再公开尾部和主游标。完成原件通道仍由其 SDK 所有者确认连续 ready 前缀；主时间线没有单独 ACK。组件失败以新读取器 Set 重建，旧显示保留至新 Set 成功，不清无关草稿或业务状态。计划、交互详情和文件阅读借用该显示租约的正文能力；其当前资格来自原租约和业务引用，不依赖已移除的 SDK 主展示 attempt。
 
 ## 25.6 只读模型与细粒度呈现
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。GUI TimelineBatch 经 transport→SDK 一次机械映射，在原串行 applyBatch 接纳，Flutter controller 一冻结块一卡，不组合旧完成 run 或重写业务分类。Message.metadata 持块，display lease 持需求内成员窗口与 block_id 展开意图；不保存 rawAtoms/groups/messages 三份完整历史或无界成员 map。SDK 只维护有界传输、展示接纳位置、live 窗口、游标、single-flight 和资格，原完成端口继续服务完成级消费者，见 [26](./26-timeline-content.md)。
+完成历史不是 SDK 当前态缓存。主时间线 DTO 经 FRB 和 SDK 机械映射后交唯一 Flutter 应用所有者；冻结块、历史分页与尾部的合同见 [26](./26-timeline-content.md)。`Message.metadata` 保存已加载块，显示租约按稳定 `block_id` 保存展开意图和有界成员窗口，不建立原子、分组和消息三份全量镜像。SDK 的旧页查询只返回结果，不自动修改组件。状态栏是规范尾部和独立业务状态的纯投影，诊断借用已得到的结果。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -477,7 +477,7 @@ Client 按 `threadId` 借用会话 LSP 主题并在同一个只读接纳入口�
 
 conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 data 实现，领域消费者不依赖 Flutter、Riverpod 或 FRB。ConversationRepository 持有各域当前态、观察/操作资源与传输责任，DraftsRepository 持有冻结提交和附件归属；不经旧 AnyworkClient 转发，不建立历史镜像。
 
-五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。会话 Repository 是 State 的唯一 Dart writer，通过独立状态观察接纳首快照与连续通知；完成级内容观察交付 Chat 与 Activity，GUI 展示观察交付 Timeline，均不转发另一份 State。状态与内容按同一可见会话需求登记，但各自持有资源、确认及恢复代次，正文消费受阻时仍能接纳状态变化；状态断流只重建状态基线，不清空内容或草稿。Activity 是有完成前缀屏障的独立活动快照，GUI live 则是有展示前缀屏障的权威块窗口，State 保留真实业务状态，Children 不写全局活动。loadOlder/readCompleted/内容查询沿独立 read lease，在应用队列外执行，不竞争 recv/credit 锁；ACK 只归各自 feed owner，背压、关闭与迟到结果资格见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。
+五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。会话 Repository 是 State 的唯一 Dart writer，通过独立状态观察接纳首快照与连续通知；完成级内容观察交付 Chat 与 Activity，GUI 通过独立时间线读取器拉取展示更新，均不转发另一份 State。各通道独立持有资源与恢复资格，正文消费受阻时仍能接纳状态变化；状态断流只重建状态基线，不清空内容或草稿。Activity 的完成前缀屏障只约束完成原件通道；GUI 的历史水位和实时尾部由其读取协议共同交付。历史页和正文查询在应用队列外执行，不竞争主 next 的生成锁；State 与完成原件仍保留原信用与确认，主时间线仅使用已应用游标续取，关闭及迟到结果资格见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。
 
 Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#266-业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，GUI 公开内容只由 Timeline 接纳，完成级消费者沿原 Chat 接纳。
 
@@ -487,9 +487,9 @@ GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。原 TimelineMessageController 持唯一已加载消息集合：Set 一次、Prepend/Append 批量插入冻结块，不更新历史尾组。历史插入与相同 ID live 退役共同完成才公开视图更新及 ACK，live=None 的分帧中间态保留其余实时块；纯 live 帧不枚举历史。原内容 owner 保留窗口/订阅，View 按布局补旧块，无总页数上限，ACK 不等布局。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。TimelineMessageController 持唯一已加载历史：Set 一次，Prepend/Append 批量插入冻结块，不更新历史尾组。主更新与历史页经过同一应用队列；组件操作成功并复核原读取器资格后，才共同公开尾部、历史水位及游标。Keep 仅退役本批实际入历史的同 ID 实时块，其余仍保持原值；空历史更新不枚举主列表，也不产生绘制确认。显示租约保留独立有界尾页与展开窗口，View 按布局补旧块。
 
-底部实时状态栏以自包含模块 `features/conversation/timeline/live_status/` 封装：外壳只向 `LiveStatusBar(threadId: threadId)` 传入会话标识；专属生成式 `LiveStatusViewModel` 在组件内部统一观察 FRB 驱动的会话状态流（`ThreadSessionStore`）与时间线实时窗口流（`TimelineDisplayLease.live`），驱动无 I/O 纯领域状态机 `LiveStatusStateMachine` 一次归约封闭生命周期态（`LiveStatusHidden` / `LiveStatusDockMasked` / `LiveStatusPresenting`）、封闭主表面（`LiveStatusWorkSurface` / `LiveStatusStreamingSurface` / `LiveStatusNoticeOnlySurface`）、独立的更早窗口分页子状态机（`LiveWindowPagingState`）与上方 `Timeline` 实时工作切片（`LiveStatusTimelineWorkSlice`），并以显式副作用同步驱动诊断状态，不在外围外壳或 Widget `build()` 重复拼装阶段合并、工作组归属与切面失效判断。已有同源正文 renderer 时不叠加普通“正在输出”，旧正文结束后不复用其摘要；当前阶段来自权威 owner，不以有界窗口缺正文推断无活动。保存/停止/审批/错误和冷读提示独立保留。展开、滚动、跟随输出属于原 display lease；冻结观察明确“封存时尚未结束”，不画运行计时或未恢复异常。
+底部实时状态栏由 `features/conversation/timeline/live_status/` 自包含呈现，外壳只传入会话标识。其视图模型观察既有 State 和显示租约，用 `LiveStatusProjection` 纯函数派生状态栏、时间线工作区和主活动呈现；局部分页只保留加载/错误与请求资格，不复制业务快照或归约状态机。诊断借用同一派生结果。保存、停止、审批和错误等业务状态继续独立交付，状态栏不因为有界尾页缺少正文就推断执行已结束。已有同源正文 renderer 时不叠加普通输出提示；新组不继承旧组摘要，封存观察明确说明封存时未结束的事实。展开、滚动与跟随输出属于显示租约，不进入业务摘要。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 

@@ -2726,18 +2726,55 @@ class FrbStudioTransport
   );
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
-    frb_timeline.BridgeTimelineFeed? timeline;
-    return _openConversationOwner<FrbTimelineFeed>(threadId, () async {
-      timeline = await frb_timeline.openTimelineFeed(
-        threadId: threadId,
-        initialDemand: _readDemandToFrb(demand),
+    await _ensureReady();
+    frb_timeline.BridgeTimelineReader? handle;
+    FrbTimelineReader? adapter;
+    final tracked = _DartSubscription(
+      'timeline:$threadId',
+      () async {
+        final owned = adapter;
+        if (owned != null) {
+          await owned._releaseNative();
+        } else if (handle != null) {
+          handle.requestClose();
+          await handle.close();
+          handle!.dispose();
+        }
+      },
+      _forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    _trackDartSubscription(tracked);
+    try {
+      handle = await _bridgeCall(
+        () => frb_timeline.openTimelineReader(
+          threadId: threadId,
+          presentationVersion: presentationVersion,
+          readerProtocolVersion: readerProtocolVersion,
+          initialDemand: _readDemandToFrb(demand),
+        ),
       );
-      return _FrbNativeConversation.timeline(timeline!);
-    }, (_) => FrbTimelineFeed(timeline!));
+      adapter = FrbTimelineReader(handle!);
+      adapter._registration = tracked;
+      tracked.markCreated();
+      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
+        await adapter.close();
+        throw _conversationClosedFailure;
+      }
+      return adapter;
+    } catch (error, stack) {
+      tracked.markCreated();
+      await tracked.beginCancel();
+      Error.throwWithStackTrace(_studioFailure(error), stack);
+    } finally {
+      tracked.markCreated();
+    }
   }
 
   Future<T> _openConversationOwner<T extends FrbConversationFeed>(

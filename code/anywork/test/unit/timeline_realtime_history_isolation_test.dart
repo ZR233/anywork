@@ -8,6 +8,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
+import '../support/mapped_conversation_feed.dart';
+
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -44,7 +48,7 @@ void main() {
         .selectThread(threadId);
     final session = graph.client.conversations.session(threadId);
     await session.source.waitFor((state) => state.hasSnapshot);
-    await session.content.ready;
+    await timelineReady(graph.timeline, threadId);
 
     final lease = graph.timeline.lease(threadId)!;
     expect(lease.controller.messages, isNotEmpty);
@@ -65,7 +69,7 @@ void main() {
     final feed = transport.feeds.singleWhere(
       (candidate) => candidate.threadId == threadId,
     );
-    await feed.waitForAcknowledgements(feed.deliveredFrames);
+    await feed.waitForAccepted(feed.deliveredFrames);
     final framesBeforeUpdates = feed.deliveredFrames;
     void expectRealtimeOnly(String phase) {
       expect(operations, isEmpty, reason: '$phase must not mutate history');
@@ -83,9 +87,10 @@ void main() {
       );
     }
 
-    final live = LiveDisplayWindow(
+    final live = TailSnapshot(
       currentWorkId: null,
       revision: (lease.live.value?.revision ?? 0) + 1,
+      layoutRevision: (lease.live.value?.revision ?? 0) + 1,
       readyFrontier: feed.readyFrontier,
       executionPresent: true,
       blocks: [
@@ -118,28 +123,24 @@ void main() {
       ],
     );
     await feed.emitAndWait(
-      ConversationTimelineEvent(
-        batch: displayBatch(
-          [],
-          placement: ChatPlacement.append,
-          from: feed.readyFrontier,
-          through: feed.readyFrontier,
-          live: live,
-        ),
+      displayBatch(
+        [],
+        placement: ChatPlacement.append,
+        from: feed.readyFrontier,
+        through: feed.readyFrontier,
+        live: live,
       ),
     );
     expect(lease.live.value, same(live));
     expect(lease.live.value!.blocks.single.id, 'live');
     expectRealtimeOnly('live snapshot');
     await feed.emitAndWait(
-      ConversationTimelineEvent(
-        batch: displayBatch(
-          [],
-          placement: ChatPlacement.append,
-          from: feed.readyFrontier,
-          through: feed.readyFrontier,
-          live: live,
-        ),
+      displayBatch(
+        [],
+        placement: ChatPlacement.append,
+        from: feed.readyFrontier,
+        through: feed.readyFrontier,
+        live: live,
       ),
     );
     expect(
@@ -249,48 +250,48 @@ void main() {
     expectRealtimeOnly('存储保存水位');
 
     // 所有注入事实均被 SDK 处理并 ACK；连接保持 ready。
-    expect(feed.acknowledgements.length, feed.deliveredFrames);
+    expect(feed.acceptedCursors.length, feed.deliveredFrames);
     expect(framesBeforeUpdates, lessThan(feed.deliveredFrames));
-    expect(session.content.state.value, isA<ChatReady<bool>>());
+    expect(
+      graph.timeline.source.value!.connection,
+      TimelineConnectionPhase.ready,
+    );
 
     // Positive control: an explicit producer item traverses the same SDK/ACK path.
-    final acksBeforeSeed = feed.acknowledgements.length;
+    final acksBeforeSeed = feed.acceptedCursors.length;
     await feed.emitAndWait(
-      ConversationTimelineEvent(
-        batch: displayBatch(
-          [
-            displaySingle(
-              chatMessage('isolation-completed', completionSeq: 200),
-              blockOrder: feed.readyFrontier + 1,
-            ),
-          ],
-          placement: ChatPlacement.append,
-          from: feed.readyFrontier,
-        ),
+      displayBatch(
+        [
+          displaySingle(
+            chatMessage('isolation-completed', completionSeq: 200),
+            blockOrder: feed.readyFrontier + 1,
+          ),
+        ],
+        placement: ChatPlacement.append,
+        from: feed.readyFrontier,
       ),
     );
     await operationSeen.future.timeout(const Duration(seconds: 5));
     await feed
-        .waitForAcknowledgements(acksBeforeSeed + 1)
+        .waitForAccepted(acksBeforeSeed + 1)
         .timeout(const Duration(seconds: 5));
     expect(operations, isNotEmpty, reason: '正对照：真实完成批次必须产生历史 Controller 操作');
     expect(lease.loadedCount, baselineLoaded + 1);
     expect(lease.controller.messages.last.id, 'isolation-completed');
     expect(feed.reader.queries + feed.timelineQueries, 0);
     await feed.emitAndWait(
-      ConversationTimelineEvent(
-        batch: displayBatch(
-          [],
-          placement: ChatPlacement.append,
-          from: feed.readyFrontier,
-          through: feed.readyFrontier,
-          live: LiveDisplayWindow(
-            currentWorkId: null,
-            revision: live.revision + 1,
-            readyFrontier: feed.readyFrontier,
-            executionPresent: false,
-            blocks: const [],
-          ),
+      displayBatch(
+        [],
+        placement: ChatPlacement.append,
+        from: feed.readyFrontier,
+        through: feed.readyFrontier,
+        live: TailSnapshot(
+          currentWorkId: null,
+          revision: live.revision + 1,
+          layoutRevision: live.revision + 1,
+          readyFrontier: feed.readyFrontier,
+          executionPresent: false,
+          blocks: const [],
         ),
       ),
     );
@@ -319,190 +320,49 @@ final class _IsolationTransport extends DemoStudioTransport {
   @override
   Duration get shutdownPhaseDelay => Duration.zero;
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     final feed = _InjectingFeed(
-      await super.openTimelineFeed(threadId, demand: demand),
+      await super.openTimelineReader(
+        threadId,
+        presentationVersion: presentationVersion,
+        readerProtocolVersion: timelineReaderProtocolVersion,
+        demand: demand,
+      ),
     );
     feeds.add(feed);
     return feed;
   }
 }
 
-/// 输入边界包装：原样转发原生帧并重排连续 deliverySequence，注入的显式
-/// typed 事实在同一序列上排队，并等待 SDK 处理后的真实 ACK。不是归约者。
-final class _InjectingFeed implements TimelineFeed {
-  _InjectingFeed(this.inner) : reader = _CountingReader(inner.reader);
+/// Injects only peer responses. Application and all cursor decisions remain in the real GUI owner.
+final class _InjectingFeed extends RecordingTimelineReader {
+  _InjectingFeed(TimelineReader inner)
+    : super(
+        inner: MappedTimelineReader(
+          inner,
+          reader: _CountingReader(inner.reader),
+        ),
+      );
   @override
-  final _CountingReader reader;
-  final TimelineFeed inner;
-  int timelineQueries = 0;
-  @override
-  Future<TimelineBatch> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
-    timelineQueries++;
-    return inner.loadTimelineOlder(before: before, demand: demand);
-  }
-
-  @override
-  Future<LiveDisplayWindow> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
-    timelineQueries++;
-    return inner.loadLiveOlder(before: before, demand: demand);
-  }
-
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
-  }) {
-    timelineQueries++;
-    return inner.openDisplayMembers(
-      reference: reference,
-      window: window,
-      demand: demand,
-    );
-  }
-
-  final acknowledgements = <int>[];
-  int deliveredFrames = 0;
+  _CountingReader get reader => super.reader as _CountingReader;
   int readyFrontier = 0;
-  bool _closed = false;
-  bool _claimed = false;
-  int _sequence = 0;
-  final Map<int, int> _nativeSequences = {};
-  final Map<int, Completer<void>> _ackWaiters = {};
-  final _ackEvents = StreamController<void>.broadcast();
-  StreamSubscription<ConversationFrame>? _subscription;
-  Future<void>? _closing;
-  late final StreamController<ConversationFrame> _events = StreamController(
-    onListen: _listen,
-    onCancel: () {
-      requestClose();
-      return close();
-    },
-  );
-
+  int get timelineQueries => pageCalls + detailCalls;
   @override
-  String get threadId => inner.threadId;
-
-  @override
-  String get subscriptionId => inner.subscriptionId;
-
-  @override
-  Stream<ConversationFrame> get events {
-    if (_claimed) throw StateError('Injecting feed already has a consumer');
-    _claimed = true;
-    return _events.stream;
+  Future<ViewUpdate> next({required ViewCursor after}) async {
+    final update = await super.next(after: after);
+    readyFrontier = update.history.throughOrder;
+    return update;
   }
 
-  void _listen() {
-    if (_closed) {
-      unawaited(_events.close());
-      return;
-    }
-    _subscription = inner.events.listen(
-      (frame) {
-        if (_closed) return;
-        if (frame.event case ConversationTimelineEvent(:final batch)) {
-          readyFrontier = batch.throughOrder;
-        }
-        final terminal =
-            frame.event is ConversationClosedEvent ||
-            frame.event is ConversationFailureEvent;
-        final sequence = terminal ? _sequence : ++_sequence;
-        deliveredFrames = _sequence;
-        if (!terminal) _nativeSequences[sequence] = frame.deliverySequence;
-        _events.add(
-          ConversationFrame(
-            threadId: threadId,
-            subscriptionId: subscriptionId,
-            deliverySequence: sequence,
-            event: frame.event,
-          ),
-        );
-      },
-      onError: (Object error, StackTrace stack) {
-        if (!_closed) _events.addError(error, stack);
-      },
-      onDone: () {
-        if (!_closed) unawaited(_events.close());
-      },
-    );
-  }
-
-  /// 在传输输入边界发布一条显式 typed 事实，并等待 SDK 的真实 ACK。
-  Future<void> emitAndWait(ConversationEvent event) {
-    if (_closed) return Future.error(StateError('Injecting feed is closed'));
-    if (event case ConversationTimelineEvent(:final batch)) {
-      readyFrontier = batch.throughOrder;
-    }
-    final accepted = Completer<void>();
-    final sequence = ++_sequence;
-    deliveredFrames = _sequence;
-    _ackWaiters[sequence] = accepted;
-    _events.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: sequence,
-        event: event,
-      ),
-    );
-    return accepted.future;
-  }
-
-  /// 事件驱动地等待 SDK 累计 ACK 数量；不是 sleep 轮询。
-  Future<void> waitForAcknowledgements(int count) async {
-    while (acknowledgements.length < count) {
-      await _ackEvents.stream.first.timeout(const Duration(seconds: 5));
-    }
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    acknowledgements.add(deliverySequence);
-    final native = _nativeSequences.remove(deliverySequence);
-    if (native != null) await inner.acknowledge(native);
-    _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
-    _ackWaiters.remove(deliverySequence)?.complete();
-    _ackEvents.add(null);
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    _closed = true;
-    inner.requestClose();
-    for (final waiter in _ackWaiters.values) {
-      waiter.completeError(StateError('Injecting feed closed before ACK'));
-    }
-    _ackWaiters.clear();
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    return _closing ??= _join();
-  }
-
-  Future<void> _join() async {
-    try {
-      await inner.close();
-      await _subscription?.cancel();
-      if (_claimed) unawaited(_events.close());
-      await _ackEvents.close();
-    } catch (_) {
-      _closing = null;
-      rethrow;
-    }
+  Future<void> emitAndWait(ViewUpdate update) {
+    final response = deliveredFrames + 1;
+    emitTimeline(update);
+    return waitForAccepted(response);
   }
 }
 

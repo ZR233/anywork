@@ -6,15 +6,14 @@
 use super::{
     ConversationReader,
     conversation_reader::{PresentationTokens, ReadObservation, cancelled, resync},
-    presentation_feed::history_batch,
 };
 use crate::studio::thread_projection::presentation::{BlockOrder, DisplayHeader, display_upper};
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
 use pl_protocol::DisplayBlockState;
 use pl_protocol::{
-    ChatPlacement, DisplayBlock, DisplayBlockRef, DisplayMemberHead, DisplayMemberPage,
-    DisplayMemberWindow, LiveDisplayBlock, LiveDisplayWindow, ReadDemand, TimelineBatch,
+    DisplayBlock, DisplayBlockRef, DisplayMemberHead, DisplayMemberPage, DisplayMemberWindow,
+    LiveDisplayBlock, ReadDemand, TailSnapshot, TimelinePage,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -153,7 +152,7 @@ impl ConversationReader {
         cut: &DisplayReadCut,
         demand: ReadDemand,
         tokens: &PresentationTokens,
-    ) -> Result<LiveDisplayWindow> {
+    ) -> Result<TailSnapshot> {
         let heads = cut
             .open
             .iter()
@@ -173,6 +172,7 @@ impl ConversationReader {
             .collect::<Vec<_>>();
         live_window(
             cut.revision,
+            cut.layout_revision,
             cut.published,
             cut.execution_present,
             cut.current_work_id.clone(),
@@ -254,115 +254,53 @@ impl ConversationReader {
         ))
     }
 
-    fn pack_history(
+    /// A pure history query; applying the returned page belongs to the caller.
+    pub async fn load_timeline_older(
         &self,
-        placement: ChatPlacement,
-        mut heads: Vec<DisplayBlock>,
-        ceiling: u64,
-        live: Option<LiveDisplayWindow>,
+        before: &str,
         demand: ReadDemand,
-        tokens: &PresentationTokens,
-    ) -> Result<TimelineBatch> {
+    ) -> Result<TimelinePage> {
+        demand.validate(1)?;
+        let (ceiling, boundary) = self.display_boundary(before).await?;
+        let n = demand.max_items as usize;
+        let cut = self.capture_display(Some(boundary), 0, None, n).await?;
+        let mut heads = self.history_heads(&cut, ceiling, Some(boundary), n).await?;
+        let tokens = self.presentation_tokens().await?;
+        let database_id = self
+            .resources()
+            .await?
+            .as_ref()
+            .and_then(|r| r.database_id.clone())
+            .unwrap_or_default();
         let sizes = heads.iter().map(encoded_size).collect::<Result<Vec<_>>>()?;
         let mut bytes = sizes.iter().sum::<usize>();
         let mut start = 0;
-        let live_bytes = live.as_ref().map(encoded_size).transpose()?.unwrap_or(4) - 4;
         loop {
             let before = heads
                 .get(start)
-                .filter(|head| head.block_order > 1)
-                .map(|head| tokens.before(ceiling, head.block_order))
+                .filter(|h| h.block_order > 1)
+                .map(|h| tokens.before(ceiling, h.block_order))
                 .transpose()?;
-            let envelope = TimelineBatch {
+            let mut page = TimelinePage {
                 presentation_version: pl_protocol::PRESENTATION_VERSION,
-                placement,
+                database_id: database_id.clone(),
+                ceiling,
                 blocks: Vec::new(),
-                before: before.clone(),
-                from_order: None,
-                through_order: ceiling,
-                live: None,
+                before,
             };
-            let count = heads.len() - start;
-            if fits(demand, encoded_size(&envelope)? + live_bytes, bytes, count) {
+            if fits(demand, encoded_size(&page)?, bytes, heads.len() - start) {
                 heads.drain(..start);
-                let batch = history_batch(placement, heads, before, ceiling, live, demand)?;
+                page.blocks = heads;
                 self.ensure()?;
-                return Ok(batch);
+                return Ok(page);
             }
-            ensure!(count > 1, too_small());
+            ensure!(heads.len() > start, too_small());
             bytes -= sizes[start];
             start += 1;
         }
     }
 
-    pub(super) async fn initial_timeline(&self, demand: ReadDemand) -> Result<TimelineBatch> {
-        demand.validate(1)?;
-        let n = demand.max_items as usize;
-        let cut = self.capture_display(None, n, None, n).await?;
-        self.bind_presentation_ceiling(cut.published)?;
-        let tokens = self.presentation_tokens().await?;
-        let heads = self.history_heads(&cut, cut.published, None, n).await?;
-        // Reserve the exact Set envelope and one newest historical head before selecting live.
-        let reserve = TimelineBatch {
-            presentation_version: pl_protocol::PRESENTATION_VERSION,
-            placement: ChatPlacement::Set,
-            blocks: heads.last().cloned().into_iter().collect(),
-            before: heads
-                .last()
-                .filter(|h| h.block_order > 1)
-                .map(|h| tokens.before(cut.published, h.block_order))
-                .transpose()?,
-            from_order: None,
-            through_order: cut.published,
-            live: None,
-        };
-        let bytes = (demand.max_bytes as usize)
-            .checked_sub(encoded_size(&reserve)?.saturating_sub(4))
-            .ok_or_else(too_small)?;
-        let live = self.cut_live(
-            &cut,
-            ReadDemand {
-                max_bytes: bytes as u32,
-                ..demand
-            },
-            &tokens,
-        )?;
-        self.pack_history(
-            ChatPlacement::Set,
-            heads,
-            cut.published,
-            Some(live),
-            demand,
-            &tokens,
-        )
-    }
-
-    pub async fn load_timeline_older(
-        &self,
-        before: &str,
-        demand: ReadDemand,
-    ) -> Result<TimelineBatch> {
-        demand.validate(1)?;
-        let (ceiling, boundary) = self.display_boundary(before).await?;
-        let n = demand.max_items as usize;
-        let cut = self.capture_display(Some(boundary), 0, None, n).await?;
-        let heads = self.history_heads(&cut, ceiling, Some(boundary), n).await?;
-        let tokens = self.presentation_tokens().await?;
-        self.pack_history(
-            ChatPlacement::Prepend,
-            heads,
-            ceiling,
-            None,
-            demand,
-            &tokens,
-        )
-    }
-
-    pub async fn load_live_older(
-        &self,
-        before: &str,
-        demand: ReadDemand,
-    ) -> Result<LiveDisplayWindow> {
+    pub async fn load_live_older(&self, before: &str, demand: ReadDemand) -> Result<TailSnapshot> {
         demand.validate(1)?;
         let first = self.capture_display(None, 0, Some(u64::MAX), 0).await?;
         let boundary = self
@@ -376,7 +314,23 @@ impl ConversationReader {
             ChatError::StaleContent
         );
         let tokens = self.presentation_tokens().await?;
-        let live = self.cut_live(&cut, demand, &tokens)?;
+        // Older pages retain the canonical identity even when that Work is outside
+        // the page. Reserve its exact JSON cost before selecting any page heads.
+        let identity_bytes = encoded_size(&first.current_work_id)?
+            .saturating_sub(encoded_size(&cut.current_work_id)?);
+        let page_demand = ReadDemand {
+            max_bytes: demand
+                .max_bytes
+                .checked_sub(identity_bytes as u32)
+                .ok_or_else(too_small)?,
+            ..demand
+        };
+        let mut live = self.cut_live(&cut, page_demand, &tokens)?;
+        live.current_work_id = first.current_work_id;
+        ensure!(
+            encoded_size(&live)? <= demand.max_bytes as usize,
+            too_small()
+        );
         self.ensure()?;
         Ok(live)
     }
@@ -679,16 +633,18 @@ fn too_small() -> anyhow::Error {
 /// `newest_first` must be a bounded range/index iterator, not a materialized full live list.
 pub(super) fn live_window<'a>(
     revision: u64,
+    layout_revision: u64,
     ready_frontier: u64,
     execution_present: bool,
     current_work_id: Option<String>,
     newest_first: impl IntoIterator<Item = &'a LiveDisplayBlock>,
     demand: ReadDemand,
     mut continuation: impl FnMut(u64) -> Result<String>,
-) -> Result<LiveDisplayWindow> {
+) -> Result<TailSnapshot> {
     demand.validate(1)?;
-    let mut result = LiveDisplayWindow {
+    let mut result = TailSnapshot {
         revision,
+        layout_revision,
         ready_frontier,
         execution_present,
         current_work_id: current_work_id.clone(),
@@ -707,8 +663,9 @@ pub(super) fn live_window<'a>(
         let item_bytes = encoded_size(head)?;
         // Optimistically admit using the envelope without a continuation. A complete small list can
         // fit even when its intermediate continuation would be larger than the remaining heads.
-        let envelope = LiveDisplayWindow {
+        let envelope = TailSnapshot {
             revision,
+            layout_revision,
             ready_frontier,
             execution_present,
             current_work_id: current_work_id.clone(),
@@ -746,8 +703,9 @@ pub(super) fn live_window<'a>(
         }
     }
     loop {
-        let envelope = LiveDisplayWindow {
+        let envelope = TailSnapshot {
             revision,
+            layout_revision,
             ready_frontier,
             execution_present,
             current_work_id: current_work_id.clone(),
@@ -969,6 +927,7 @@ mod tests {
         let heads: Vec<_> = (1..=5).map(head).collect();
         let page = live_window(
             10,
+            10,
             4,
             true,
             None,
@@ -986,6 +945,7 @@ mod tests {
         assert_eq!(page.older.as_deref(), Some("qualified:4"));
         let next = live_window(
             10,
+            10,
             4,
             true,
             None,
@@ -1002,6 +962,7 @@ mod tests {
         );
         assert_eq!(next.older.as_deref(), Some("qualified:2"));
         let last = live_window(
+            10,
             10,
             4,
             true,
@@ -1021,6 +982,7 @@ mod tests {
         heads[0].state = DisplayBlockState::Sealed;
         let latest = live_window(
             3,
+            3,
             0,
             false,
             Some(heads[1].id.clone()),
@@ -1039,6 +1001,7 @@ mod tests {
         assert!(
             live_window(
                 3,
+                3,
                 0,
                 false,
                 Some(heads[1].id.clone()),
@@ -1051,6 +1014,7 @@ mod tests {
         assert!(
             live_window(
                 3,
+                3,
                 0,
                 false,
                 Some(heads[0].id.clone()),
@@ -1061,6 +1025,7 @@ mod tests {
             .is_err()
         );
         let older = live_window(
+            3,
             3,
             0,
             false,
@@ -1079,7 +1044,7 @@ mod tests {
     -> Result<()> {
         let mut heads = [head(1), head(2)];
         heads[1].id = "显示头".repeat(40);
-        let complete = live_window(1, 0, true, None, heads.iter().rev(), demand(2), |_| {
+        let complete = live_window(1, 1, 0, true, None, heads.iter().rev(), demand(2), |_| {
             Ok("cursor".repeat(1000))
         })?;
         let exact_bytes = encoded_size(&complete)? as u32;
@@ -1088,7 +1053,7 @@ mod tests {
             max_bytes: exact_bytes,
         };
         assert_eq!(
-            live_window(1, 0, true, None, heads.iter().rev(), exact, |_| {
+            live_window(1, 1, 0, true, None, heads.iter().rev(), exact, |_| {
                 Ok("cursor".repeat(1000))
             })?,
             complete
@@ -1098,7 +1063,7 @@ mod tests {
             ..exact
         };
         assert!(
-            live_window(1, 0, true, None, heads.iter().rev(), undersized, |_| Ok(
+            live_window(1, 1, 0, true, None, heads.iter().rev(), undersized, |_| Ok(
                 "c".into()
             ))
             .is_err()
@@ -1211,7 +1176,7 @@ mod tests {
             database_id: h.history.conversation_database_id().await?.context("database")?,
             block_id: delta.blocks[0].header.id.clone(),
         };
-        let mut feed = env.runtime.open_timeline_feed(&h.thread.id, demand(1)).await?;
+        let feed = env.runtime.open_timeline_reader(&h.thread.id, pl_protocol::PRESENTATION_VERSION, pl_protocol::TIMELINE_READER_PROTOCOL_VERSION, demand(1)).await?;
         let reader = feed.reader().clone();
         let cut = reader.capture_display(None, 1, None, 0).await?;
         assert_eq!((cut.published, cut.last_order), (0, 1));

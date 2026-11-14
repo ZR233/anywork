@@ -908,4 +908,344 @@ as BigInt,
 
 }
 
+/// @nodoc
+mixin _$BridgeTailUpdate {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTailUpdate);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTailUpdate()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTailUpdateCopyWith<$Res>  {
+$BridgeTailUpdateCopyWith(BridgeTailUpdate _, $Res Function(BridgeTailUpdate) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTailUpdate].
+extension BridgeTailUpdatePatterns on BridgeTailUpdate {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTailUpdate_Keep value)?  keep,TResult Function( BridgeTailUpdate_Replace value)?  replace,TResult Function( BridgeTailUpdate_Status value)?  status,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep() when keep != null:
+return keep(_that);case BridgeTailUpdate_Replace() when replace != null:
+return replace(_that);case BridgeTailUpdate_Status() when status != null:
+return status(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTailUpdate_Keep value)  keep,required TResult Function( BridgeTailUpdate_Replace value)  replace,required TResult Function( BridgeTailUpdate_Status value)  status,}){
+final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep():
+return keep(_that);case BridgeTailUpdate_Replace():
+return replace(_that);case BridgeTailUpdate_Status():
+return status(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTailUpdate_Keep value)?  keep,TResult? Function( BridgeTailUpdate_Replace value)?  replace,TResult? Function( BridgeTailUpdate_Status value)?  status,}){
+final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep() when keep != null:
+return keep(_that);case BridgeTailUpdate_Replace() when replace != null:
+return replace(_that);case BridgeTailUpdate_Status() when status != null:
+return status(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  keep,TResult Function( BridgeTailSnapshot snapshot)?  replace,TResult Function( BigInt baseLayoutRevision,  BigInt revision,  String? currentWorkId,  String? thinkingSummary)?  status,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep() when keep != null:
+return keep();case BridgeTailUpdate_Replace() when replace != null:
+return replace(_that.snapshot);case BridgeTailUpdate_Status() when status != null:
+return status(_that.baseLayoutRevision,_that.revision,_that.currentWorkId,_that.thinkingSummary);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  keep,required TResult Function( BridgeTailSnapshot snapshot)  replace,required TResult Function( BigInt baseLayoutRevision,  BigInt revision,  String? currentWorkId,  String? thinkingSummary)  status,}) {final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep():
+return keep();case BridgeTailUpdate_Replace():
+return replace(_that.snapshot);case BridgeTailUpdate_Status():
+return status(_that.baseLayoutRevision,_that.revision,_that.currentWorkId,_that.thinkingSummary);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  keep,TResult? Function( BridgeTailSnapshot snapshot)?  replace,TResult? Function( BigInt baseLayoutRevision,  BigInt revision,  String? currentWorkId,  String? thinkingSummary)?  status,}) {final _that = this;
+switch (_that) {
+case BridgeTailUpdate_Keep() when keep != null:
+return keep();case BridgeTailUpdate_Replace() when replace != null:
+return replace(_that.snapshot);case BridgeTailUpdate_Status() when status != null:
+return status(_that.baseLayoutRevision,_that.revision,_that.currentWorkId,_that.thinkingSummary);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTailUpdate_Keep extends BridgeTailUpdate {
+  const BridgeTailUpdate_Keep(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTailUpdate_Keep);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTailUpdate.keep()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeTailUpdate_Replace extends BridgeTailUpdate {
+  const BridgeTailUpdate_Replace({required this.snapshot}): super._();
+
+
+ final  BridgeTailSnapshot snapshot;
+
+/// Create a copy of BridgeTailUpdate
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTailUpdate_ReplaceCopyWith<BridgeTailUpdate_Replace> get copyWith => _$BridgeTailUpdate_ReplaceCopyWithImpl<BridgeTailUpdate_Replace>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTailUpdate_Replace&&(identical(other.snapshot, snapshot) || other.snapshot == snapshot));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,snapshot);
+}
+
+@override
+String toString() {
+    return 'BridgeTailUpdate.replace(snapshot: $snapshot)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTailUpdate_ReplaceCopyWith<$Res> implements $BridgeTailUpdateCopyWith<$Res> {
+  factory $BridgeTailUpdate_ReplaceCopyWith(BridgeTailUpdate_Replace value, $Res Function(BridgeTailUpdate_Replace) _then) = _$BridgeTailUpdate_ReplaceCopyWithImpl;
+@useResult
+$Res call({
+ BridgeTailSnapshot snapshot
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTailUpdate_ReplaceCopyWithImpl<$Res>
+    implements $BridgeTailUpdate_ReplaceCopyWith<$Res> {
+  _$BridgeTailUpdate_ReplaceCopyWithImpl(this._self, this._then);
+
+  final BridgeTailUpdate_Replace _self;
+  final $Res Function(BridgeTailUpdate_Replace) _then;
+
+/// Create a copy of BridgeTailUpdate
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? snapshot = null,}) {
+  return _then(BridgeTailUpdate_Replace(
+snapshot: null == snapshot ? _self.snapshot : snapshot // ignore: cast_nullable_to_non_nullable
+as BridgeTailSnapshot,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTailUpdate_Status extends BridgeTailUpdate {
+  const BridgeTailUpdate_Status({required this.baseLayoutRevision, required this.revision, this.currentWorkId, this.thinkingSummary}): super._();
+
+
+ final  BigInt baseLayoutRevision;
+ final  BigInt revision;
+ final  String? currentWorkId;
+ final  String? thinkingSummary;
+
+/// Create a copy of BridgeTailUpdate
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTailUpdate_StatusCopyWith<BridgeTailUpdate_Status> get copyWith => _$BridgeTailUpdate_StatusCopyWithImpl<BridgeTailUpdate_Status>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTailUpdate_Status&&(identical(other.baseLayoutRevision, baseLayoutRevision) || other.baseLayoutRevision == baseLayoutRevision)&&(identical(other.revision, revision) || other.revision == revision)&&(identical(other.currentWorkId, currentWorkId) || other.currentWorkId == currentWorkId)&&(identical(other.thinkingSummary, thinkingSummary) || other.thinkingSummary == thinkingSummary));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,baseLayoutRevision,revision,currentWorkId,thinkingSummary);
+}
+
+@override
+String toString() {
+    return 'BridgeTailUpdate.status(baseLayoutRevision: $baseLayoutRevision, revision: $revision, currentWorkId: $currentWorkId, thinkingSummary: $thinkingSummary)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTailUpdate_StatusCopyWith<$Res> implements $BridgeTailUpdateCopyWith<$Res> {
+  factory $BridgeTailUpdate_StatusCopyWith(BridgeTailUpdate_Status value, $Res Function(BridgeTailUpdate_Status) _then) = _$BridgeTailUpdate_StatusCopyWithImpl;
+@useResult
+$Res call({
+ BigInt baseLayoutRevision, BigInt revision, String? currentWorkId, String? thinkingSummary
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTailUpdate_StatusCopyWithImpl<$Res>
+    implements $BridgeTailUpdate_StatusCopyWith<$Res> {
+  _$BridgeTailUpdate_StatusCopyWithImpl(this._self, this._then);
+
+  final BridgeTailUpdate_Status _self;
+  final $Res Function(BridgeTailUpdate_Status) _then;
+
+/// Create a copy of BridgeTailUpdate
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? baseLayoutRevision = null,Object? revision = null,Object? currentWorkId = freezed,Object? thinkingSummary = freezed,}) {
+  return _then(BridgeTailUpdate_Status(
+baseLayoutRevision: null == baseLayoutRevision ? _self.baseLayoutRevision : baseLayoutRevision // ignore: cast_nullable_to_non_nullable
+as BigInt,revision: null == revision ? _self.revision : revision // ignore: cast_nullable_to_non_nullable
+as BigInt,currentWorkId: freezed == currentWorkId ? _self.currentWorkId : currentWorkId // ignore: cast_nullable_to_non_nullable
+as String?,thinkingSummary: freezed == thinkingSummary ? _self.thinkingSummary : thinkingSummary // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
 // dart format on

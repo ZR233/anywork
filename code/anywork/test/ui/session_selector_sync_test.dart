@@ -1,3 +1,4 @@
+import '../support/recording_demo_transport.dart' show timelineReady;
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
@@ -1368,7 +1369,7 @@ void main() {
       final createdThreadId = graph.client.selection.state.selectedThreadId!;
       await pumpClientFuture(
         tester,
-        graph.client.conversations.session(createdThreadId).content.ready,
+        timelineReady(graph.timeline, createdThreadId),
         'Enter submission observed through the visible conversation feed',
       );
       final metadataDemand = graph.client.threadDirectory.observeThread(

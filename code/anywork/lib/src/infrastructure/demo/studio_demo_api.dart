@@ -375,6 +375,9 @@ class DemoStudioTransport extends StudioTransport
   void _stopDemoBusiness() {
     if (_runtimeExiting) return;
     _runtimeExiting = true;
+    for (final reader in _ownedTimelineReaders.toList()) {
+      reader.requestClose();
+    }
     for (final feed in _ownedConversationFeeds.toList()) {
       feed.requestClose();
     }
@@ -976,6 +979,8 @@ class DemoStudioTransport extends StudioTransport
       {};
   final Set<_DemoReader> _ownedHistoryReaders = {};
   // 受管句柄不等于 GUI demand：未监听句柄和迟到 factory 也有真实关闭责任。
+  final Set<TimelineReader> _ownedTimelineReaders =
+      Set<TimelineReader>.identity();
   final Set<ConversationFeed> _ownedConversationFeeds =
       Set<ConversationFeed>.identity();
   final Set<ConversationStateFeed> _ownedConversationStateFeeds =
@@ -1011,6 +1016,10 @@ class DemoStudioTransport extends StudioTransport
 
   Future<void> _joinDemoConversations() async {
     await Future.wait([
+      for (final reader in _ownedTimelineReaders.toList())
+        reader.close().then<void>((_) {
+          _ownedTimelineReaders.remove(reader);
+        }),
       for (final feed in _ownedConversationFeeds.toList())
         _closeDemoConversation(feed),
       for (final feed in _ownedConversationStateFeeds.toList())
@@ -1019,7 +1028,8 @@ class DemoStudioTransport extends StudioTransport
       ..._openingConversationFeeds,
     ]);
     // 迟到 factory 自己汇合其返回的 owner。失败 owner 留在集合供下次 cleanup。
-    if (_ownedConversationFeeds.isNotEmpty ||
+    if (_ownedTimelineReaders.isNotEmpty ||
+        _ownedConversationFeeds.isNotEmpty ||
         _ownedConversationStateFeeds.isNotEmpty) {
       throw StateError('Demo conversation close still has unresolved owners');
     }
@@ -4744,36 +4754,42 @@ class DemoStudioTransport extends StudioTransport
     _conversationFeedFactory = factory;
   }
 
-  Future<TimelineFeed> Function(String, TimelineFeed)? _timelineFeedFactory;
+  Future<TimelineReader> Function(String, TimelineReader)?
+  _timelineReaderFactory;
 
   @visibleForTesting
-  set timelineFeedFactory(
-    Future<TimelineFeed> Function(String, TimelineFeed)? factory,
-  ) => _timelineFeedFactory = factory;
+  set timelineReaderFactory(
+    Future<TimelineReader> Function(String, TimelineReader)? factory,
+  ) => _timelineReaderFactory = factory;
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     _ensureDemoRunning();
+    if (presentationVersion != 6 || readerProtocolVersion != 1) {
+      throw _demoQueryFailure('ProtocolVersionMismatch');
+    }
     if (!_workspaces.containsKey(threadId)) throw _demoMissing();
-    final connection = _DemoTimelineFeed(
+    final connection = _DemoTimelineReader(
       this,
       threadId,
       _historyOf(threadId),
       demand,
     );
-    _ownedConversationFeeds.add(connection);
-    final factory = _timelineFeedFactory;
+    _ownedTimelineReaders.add(connection);
+    final factory = _timelineReaderFactory;
     if (factory == null) return connection;
     final opening = Completer<void>();
     _openingConversationFeeds.add(opening.future);
     try {
       final feed = await factory(threadId, connection);
-      _ownedConversationFeeds.add(feed);
+      _ownedTimelineReaders.add(feed);
       if (_runtimeExiting) {
-        await _closeDemoConversation(feed);
+        await feed.close();
         await connection.close();
         throw _conversationClosedFailure;
       }
@@ -4829,7 +4845,7 @@ class DemoStudioTransport extends StudioTransport
   void seedDisplayBlocks({
     required String threadId,
     required List<DisplayBlock> blocks,
-    LiveDisplayWindow? live,
+    TailSnapshot? live,
     Map<DisplayBlockRef, List<DisplayMemberHead>>? members,
   }) {
     _ensureDemoRunning();

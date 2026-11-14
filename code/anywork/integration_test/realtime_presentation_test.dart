@@ -623,12 +623,14 @@ final class _RealtimeScene {
           display.isRetired ||
           display.appliedSets != 1 ||
           display.live.value == null ||
-          display.content.state.value is! ChatReady<bool>) {
+          graph.timeline.source.value?.connection !=
+              TimelineConnectionPhase.ready) {
         return false;
       }
+      expect(display.reader.reader.threadId, threadId);
       expect(
-        display.content,
-        same(graph.client.conversations.session(threadId).content),
+        graph.client.conversations.session(threadId).content.currentAttemptId,
+        isNull,
       );
       accepted = display;
       return true;
@@ -861,9 +863,7 @@ final class _RealtimeScene {
     final summary = reasoning.contents.singleWhere(
       (content) => content.role == ChatContentRole.reasoningSummary,
     );
-    final scope = prepared.lease.content.openScope(
-      generation: prepared.generation,
-    );
+    final scope = prepared.lease.openScope(generation: prepared.generation);
     try {
       final window = await scope
           .watchContent(
@@ -1304,7 +1304,7 @@ final class _RealtimeScene {
     expect(head.completionItemId, isNotNull);
     expect(head.completionSeq, isNotNull);
     final original = lease;
-    final scope = original.content.openScope(generation: original.generation);
+    final scope = original.openScope(generation: original.generation);
     try {
       final entry = await scope
           .readCompleted(
@@ -2814,7 +2814,7 @@ final class _RealtimeScene {
             'turnStatus': turn?.state.status.name,
             'leaseGeneration': lease.generation,
             'leaseMode': lease.mode.name,
-            'contentPhase': lease.content.state.value.runtimeType.toString(),
+            'readerId': lease.reader.metadata.readerId,
             'livePresent': liveCut != null,
             'liveRevision': liveCut?.revision,
             'executionPresent': liveCut?.executionPresent,
@@ -3087,11 +3087,11 @@ final class _RealtimeScene {
           !originalLease.isRetired &&
           ((widget is ConversationCurrentConnector &&
                   singles.isNotEmpty &&
-                  identical(widget.content, originalLease.content) &&
+                  identical(widget.content, originalLease) &&
                   widget.isDisplayActive()) ||
               (widget is CompletionRunConnector &&
                   widget.threadId == originalLease.threadId &&
-                  identical(widget.content, originalLease.content) &&
+                  identical(widget.content, originalLease) &&
                   heads.any((head) => head.blockId == widget.unit.id) &&
                   runs.contains(widget.unit.memberReference) &&
                   widget.unit.expansion.expanded == true)),
@@ -3113,7 +3113,7 @@ final class _RealtimeScene {
             widget.atom.completionItemId == atom.completionItemId &&
             widget.atom.completionSeq == atom.completionSeq &&
             (active
-                ? identical(widget.content, originalLease.content)
+                ? identical(widget.content, originalLease)
                 : atom.completionItemId != null &&
                       atom.lifecycle is TerminalChatAtom),
       ),
@@ -3148,16 +3148,13 @@ final class _RealtimeScene {
                   'completionItemId': widget.atom.completionItemId,
                   'completionSeq': widget.atom.completionSeq,
                   'contentIdentity': identityHashCode(widget.content),
-                  'sameMainContent': identical(widget.content, lease.content),
+                  'sameMainContent': identical(widget.content, lease),
                   'activeScope': widget.isActive(),
                 };
               } else if (widget is ConversationCurrentConnector) {
                 match['scope'] = 'Timeline live';
                 match['scopeActive'] = widget.isDisplayActive();
-                match['sameMainContent'] = identical(
-                  widget.content,
-                  lease.content,
-                );
+                match['sameMainContent'] = identical(widget.content, lease);
               } else if (widget is CompletionRunConnector) {
                 match['scope'] = 'Work';
                 match['blockId'] = widget.unit.id;

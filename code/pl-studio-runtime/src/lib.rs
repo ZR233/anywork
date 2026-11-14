@@ -106,7 +106,7 @@ pub use studio::{
     StudioUpdateActivity, StudioUpdatePreparationResult, StudioUpdateStateSnapshot,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    ThreadsObservation, TimelineEvent, TimelineFeed, TimelineReader, WorkspaceRecord,
+    ThreadsObservation, TimelineReader, WorkspaceRecord,
 };
 pub use worker_assets::RemoteHelperSource;
 

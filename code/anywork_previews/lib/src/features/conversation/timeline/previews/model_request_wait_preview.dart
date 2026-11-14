@@ -2,7 +2,7 @@ import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
@@ -23,9 +23,10 @@ class ModelRequestWaitPreview extends StatefulWidget {
 class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
   final _expansion = TimelineExpansionIntent();
   static final _now = DateTime.fromMillisecondsSinceEpoch(1428000);
-  static final _window = LiveDisplayWindow(
+  static final _window = TailSnapshot(
     currentWorkId: 'model-request-wait',
     revision: 7,
+    layoutRevision: 7,
     readyFrontier: 0,
     executionPresent: true,
     blocks: const [
@@ -44,32 +45,32 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
       ),
     ],
   );
-  late final _aggregate = LiveStatusStateMachine.transition(
-    LiveStatusAggregate.initial('preview-thread'),
-    LiveStatusObserved(
-      LiveStatusObservation(
-        cut: LiveWindowCut(
-          revision: _window.revision,
-          readyFrontier: _window.readyFrontier,
-          executionPresent: _window.executionPresent,
-          attemptId: 1,
-          isDisplayActive: true,
-        ),
-        activeTurnId: 'preview-turn',
-        activity: const ThreadActivityView(
-          threadId: 'preview-thread',
-          identity: 'preview-model-request',
-          revision: 7,
-          turnId: 'preview-turn',
-          kind: ThreadActivityKind.waitingApi,
-          summary: '',
-          thinkingSeconds: 17,
-        ),
-        latestLive: _window,
-        hasContentOwner: true,
+  late final _aggregate = LiveStatusProjection.project(
+    threadId: 'preview-thread',
+    observation: LiveStatusInputs(
+      cut: LiveWindowCut(
+        revision: _window.revision,
+        readyFrontier: _window.readyFrontier,
+        executionPresent: _window.executionPresent,
+        attemptId: 1,
+        isDisplayActive: true,
       ),
+      activeTurnId: 'preview-turn',
+      activity: const ThreadActivityView(
+        threadId: 'preview-thread',
+        identity: 'preview-model-request',
+        revision: 7,
+        turnId: 'preview-turn',
+        kind: ThreadActivityKind.waitingApi,
+        summary: '',
+        thinkingSeconds: 17,
+      ),
+      latestLive: _window,
+      hasContentOwner: true,
     ),
-  ).state;
+    outputPaging: const LatestLiveWindow(),
+    timelineWorkPaging: const LatestLiveWindow(),
+  );
 
   @override
   void dispose() {

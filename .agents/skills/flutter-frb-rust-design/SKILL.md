@@ -57,3 +57,8 @@ SSH 项目中的 ACP 仍在宿主运行，业务工具经 Host MCP 复用普通�
 
 按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety、rust-unsafe-safety 与 test-quality；
 不因本技能固定追加全量测试。交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。
+
+主时间线沿现役游标读取器交付，Flutter 的时间线会话所有者独占应用队列、主游标及规范尾部；
+SDK 只转发查询能力，历史页不自动接纳。计划、交互和文件正文借用显示租约，不能依赖 SDK
+完成原件消费者的 attempt／ready 充当 GUI 资格。组件 Future 失败须用新读取器 Set 重建；
+局部详情、状态栏分页和诊断分别复用原范围、局部请求身份及实际视图结果，详见设计 25、26。

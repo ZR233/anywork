@@ -78,6 +78,7 @@ extension _DemoDisplayHistory on _DemoHistory {
       updateDisplayMember(member);
     }
     displayRevision++;
+    displayLayoutRevision++;
   }
 
   void updateDisplayMember(String itemId) {
@@ -122,6 +123,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     }
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
     displayRevision++;
+    displayLayoutRevision++;
   }
 
   DisplayBlockBody scriptBody(_DemoDisplayScript script) {
@@ -270,6 +272,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     advanceDisplayFrontier();
     if (displayCurrentWorkId == id) displayCurrentWorkId = null;
     displayRevision++;
+    displayLayoutRevision++;
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
   }
 
@@ -313,9 +316,15 @@ extension _DemoDisplayHistory on _DemoHistory {
 
   void installDisplay({
     required List<DisplayBlock> blocks,
-    LiveDisplayWindow? live,
+    TailSnapshot? live,
     Map<DisplayBlockRef, List<DisplayMemberHead>>? members,
   }) {
+    final summaryOnly =
+        blocks.isEmpty &&
+        (members == null || members.isEmpty) &&
+        live != null &&
+        displayLiveSeed != null &&
+        _demoSameTailLayout(displayLiveSeed!, live);
     var through = displayHead;
     final ids = {for (final block in displayBlocks) block.id};
     final existingBodies = {
@@ -438,7 +447,10 @@ extension _DemoDisplayHistory on _DemoHistory {
     for (final id in changedMemberBlocks) {
       displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
     }
-    if (blocks.isNotEmpty || live != null) displayRevision++;
+    if (blocks.isNotEmpty || live != null) {
+      displayRevision++;
+      if (!summaryOnly) displayLayoutRevision++;
+    }
   }
 
   List<LiveDisplayBlock> liveBlocks() => [
@@ -515,8 +527,9 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
     'timing': {'startedAt': timing.startedAt, 'finishedAt': timing.finishedAt},
   },
 };
-Object _liveJson(LiveDisplayWindow live) => {
+Map<String, Object?> _liveJson(TailSnapshot live) => {
   'revision': live.revision,
+  'layoutRevision': live.layoutRevision,
   'readyFrontier': live.readyFrontier,
   'executionPresent': live.executionPresent,
   'currentWorkId': live.currentWorkId,
@@ -534,24 +547,26 @@ Object _liveJson(LiveDisplayWindow live) => {
       },
   ],
 };
-int _timelineBytes(TimelineBatch batch) => _demoEncoded({
-  'presentationVersion': batch.presentationVersion,
-  'placement': batch.placement.name,
-  'before': batch.before,
-  'fromOrder': batch.fromOrder,
-  'throughOrder': batch.throughOrder,
-  'live': batch.live == null ? null : _liveJson(batch.live!),
-  'blocks': [
-    for (final b in batch.blocks)
-      {
-        'id': b.id,
-        'blockOrder': b.blockOrder,
-        'body': _displayBodyJson(b.body),
-      },
-  ],
-});
 
-extension _DemoTimelineReader on _DemoReader {
+bool _demoSameTailLayout(TailSnapshot before, TailSnapshot after) {
+  Map<String, Object?> layout(TailSnapshot value) {
+    final result = _liveJson(value)
+      ..remove('revision')
+      ..remove('layoutRevision');
+    result['blocks'] = [
+      for (final entry in result['blocks'] as List)
+        if ((entry as Map)['id'] == value.currentWorkId)
+          (Map<String, Object?>.from(entry)..remove('thinkingSummary'))
+        else
+          entry,
+    ];
+    return result;
+  }
+
+  return jsonEncode(layout(before)) == jsonEncode(layout(after));
+}
+
+extension _DemoPresentationQueries on _DemoReader {
   DisplayBlockBody fitDisplay(DisplayBlockBody body) => switch (body) {
     SingleDisplayBlock(:final record, :final visibility) => SingleDisplayBlock(
       visibility: visibility,
@@ -565,19 +580,21 @@ extension _DemoTimelineReader on _DemoReader {
     WorkDisplayBlock() => body,
   };
 
-  LiveDisplayWindow livePage(ReadDemand demand, {String? before}) {
+  TailSnapshot livePage(ReadDemand demand, {String? before}) {
     _demoDemand(demand);
     final history = _history;
     final revision = history.displayRevision;
+    final layout = history.displayLayoutRevision;
     final blocks = history.liveBlocks();
     final end = before == null
         ? blocks.length
-        : boundary(before, 'display-live', revision);
+        : boundary(before, 'display-live', layout);
     final selected = <LiveDisplayBlock>[];
     String? older;
-    LiveDisplayWindow page() => LiveDisplayWindow(
+    TailSnapshot page() => TailSnapshot(
       currentWorkId: history.displayCurrentWorkId,
       revision: revision,
+      layoutRevision: layout,
       readyFrontier: history.displayHead,
       executionPresent:
           history.displayLiveSeed?.executionPresent ??
@@ -596,10 +613,11 @@ extension _DemoTimelineReader on _DemoReader {
         hasUnfinishedMembers: b.hasUnfinishedMembers,
         thinkingSummary: b.thinkingSummary,
       );
-      final next = i > 0 ? cursor('display-live', revision, i) : null;
-      final trial = LiveDisplayWindow(
+      final next = i > 0 ? cursor('display-live', layout, i) : null;
+      final trial = TailSnapshot(
         currentWorkId: history.displayCurrentWorkId,
         revision: revision,
+        layoutRevision: layout,
         readyFrontier: history.displayHead,
         executionPresent: page().executionPresent,
         blocks: [candidate, ...selected],
@@ -638,202 +656,417 @@ extension _DemoTimelineReader on _DemoReader {
     return result;
   }
 
-  TimelineBatch timelinePage(
-    ReadDemand demand, {
-    String? before,
-    bool initial = false,
-  }) {
+  TimelinePage timelinePage(ReadDemand demand, {String? before}) {
     _demoDemand(demand);
-    final h0 = before == null
+    final ceiling = before == null
         ? _history.displayHead
         : boundary('h0:$before', 'display-h0', 0);
     final end = before == null
-        ? h0 + 1
-        : boundary(before, 'display-history', h0);
+        ? ceiling + 1
+        : boundary(before, 'display-history', ceiling);
     final records = _history.displayBlocks
-        .where((b) => b.blockOrder < end && b.blockOrder <= h0)
+        .where((b) => b.blockOrder < end && b.blockOrder <= ceiling)
         .toList();
-    DisplayBlock fitted(DisplayBlock b) => DisplayBlock(
-      id: b.id,
-      blockOrder: b.blockOrder,
-      body: fitDisplay(b.body),
-    );
-    String? historyCursor(int index) {
-      if (index == 0) return null;
-      final token = cursor('display-history', h0, records[index].blockOrder);
-      _cursors['h0:$token'] = ('display-h0', 0, h0);
-      return token;
-    }
-
-    // Reserve the actual newest history envelope before allocating live's
-    // bounded suffix. Both surfaces share the caller's byte budget.
-    final reserved = TimelineBatch(
-      presentationVersion: presentationVersion,
-      placement: ChatPlacement.set,
-      blocks: records.isEmpty ? [] : [fitted(records.last)],
-      before: records.isEmpty ? null : historyCursor(records.length - 1),
-      throughOrder: h0,
-    );
-    final live = initial
-        ? livePage(
-            ReadDemand(
-              maxItems: demand.maxItems,
-              maxBytes: demand.maxBytes - _timelineBytes(reserved) + 4,
-            ),
-          )
-        : null;
     final selected = <DisplayBlock>[];
     String? next;
-    TimelineBatch batch() => TimelineBatch(
+    TimelinePage page() => TimelinePage(
       presentationVersion: presentationVersion,
-      placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
+      databaseId: _history.epoch,
+      ceiling: ceiling,
       blocks: selected,
       before: next,
-      throughOrder: h0,
-      live: live,
     );
     for (var i = records.length - 1; i >= 0; i--) {
-      final candidate = fitted(records[i]);
-      final token = historyCursor(i);
-      final trial = TimelineBatch(
+      final b = records[i];
+      final candidate = DisplayBlock(
+        id: b.id,
+        blockOrder: b.blockOrder,
+        body: fitDisplay(b.body),
+      );
+      final token = i > 0
+          ? cursor('display-history', ceiling, b.blockOrder)
+          : null;
+      if (token != null) _cursors['h0:$token'] = ('display-h0', 0, ceiling);
+      final trial = TimelinePage(
         presentationVersion: presentationVersion,
-        placement: batch().placement,
+        databaseId: _history.epoch,
+        ceiling: ceiling,
         blocks: [candidate, ...selected],
         before: token,
-        throughOrder: h0,
-        live: live,
       );
-      if (_timelineBytes(trial) > demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: display envelope does not fit',
-          );
-        }
+      if (_pageBytes(trial) > demand.maxBytes) {
+        if (selected.isEmpty) throw _demoQueryFailure('InvalidDemand');
         break;
       }
       selected.insert(0, candidate);
       next = token;
       if (selected.length == demand.maxItems) break;
     }
-    if (_timelineBytes(batch()) > demand.maxBytes) {
-      throw _demoQueryFailure('InvalidDemand: timeline envelope does not fit');
+    if (_pageBytes(page()) > demand.maxBytes) {
+      throw _demoQueryFailure('InvalidDemand');
     }
-    return batch();
-  }
-
-  LiveDisplayWindow timelineTarget(ReadDemand demand) {
-    final through = _history.displayHead;
-    final empty = TimelineBatch(
-      presentationVersion: presentationVersion,
-      placement: ChatPlacement.append,
-      blocks: [],
-      fromOrder: through,
-      throughOrder: through,
-    );
-    return livePage(
-      ReadDemand(
-        maxItems: demand.maxItems,
-        maxBytes: demand.maxBytes - _timelineBytes(empty) + 4,
-      ),
-    );
-  }
-
-  TimelineBatch timelineAppend(
-    ReadDemand demand,
-    int from,
-    LiveDisplayWindow target,
-  ) {
-    final records = _history.displayBlocks.where(
-      (b) => b.blockOrder > from && b.blockOrder <= target.readyFrontier,
-    );
-    final selected = <DisplayBlock>[];
-    var through = from;
-    for (final b in records) {
-      final candidate = DisplayBlock(
-        id: b.id,
-        blockOrder: b.blockOrder,
-        body: fitDisplay(b.body),
-      );
-      final trial = TimelineBatch(
-        presentationVersion: presentationVersion,
-        placement: ChatPlacement.append,
-        blocks: [...selected, candidate],
-        fromOrder: from,
-        throughOrder: b.blockOrder,
-      );
-      if (selected.length == demand.maxItems ||
-          _timelineBytes(trial) > demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: display envelope does not fit',
-          );
-        }
-        break;
-      }
-      selected.add(candidate);
-      through = b.blockOrder;
-    }
-    if (selected.length < demand.maxItems &&
-        records.length == selected.length) {
-      through = target.readyFrontier;
-    }
-    // A partial append carries no live replacement: it cannot retire an ID
-    // before the matching sealed block reaches the consumer.
-    LiveDisplayWindow? live;
-    if (through == target.readyFrontier) {
-      final combined = TimelineBatch(
-        presentationVersion: presentationVersion,
-        placement: ChatPlacement.append,
-        blocks: selected,
-        fromOrder: from,
-        throughOrder: through,
-        live: target,
-      );
-      if (_timelineBytes(combined) <= demand.maxBytes) {
-        live = target;
-      } else if (selected.isEmpty) {
-        throw _demoQueryFailure(
-          'InvalidDemand: timeline envelope does not fit',
-        );
-      }
-    }
-    return TimelineBatch(
-      presentationVersion: presentationVersion,
-      placement: ChatPlacement.append,
-      blocks: selected,
-      fromOrder: from,
-      throughOrder: through,
-      live: live,
-    );
+    return page();
   }
 }
 
-final class _DemoTimelineFeed extends _DemoConversationFeed
-    implements TimelineFeed {
-  _DemoTimelineFeed(
-    DemoStudioTransport api,
+final class _DemoTimelineReader implements TimelineReader {
+  _DemoTimelineReader(
+    this._api,
     String threadId,
     _DemoHistory history,
-    ReadDemand demand,
-  ) : super(
-        api,
-        threadId,
-        history,
-        const MainChatScope(),
-        demand,
-        timeline: true,
+    this._demand,
+  ) : reader = _DemoReader(_api, threadId, history, const MainChatScope()),
+      metadata = OpenTimeline(
+        readerId: newStudioCorrelationId(),
+        presentationVersion: presentationVersion,
+        readerProtocolVersion: timelineReaderProtocolVersion,
+        initialCursor: ViewCursor(newStudioCorrelationId()),
+      ) {
+    _demoDemand(_demand);
+    _confirmed = metadata.initialCursor;
+    _api._ownedHistoryReaders.add(reader);
+    history.changes.add(_changed);
+  }
+  final DemoStudioTransport _api;
+  @override
+  final _DemoReader reader;
+  @override
+  final OpenTimeline metadata;
+  final ReadDemand _demand;
+  late ViewCursor _confirmed;
+  ViewUpdate? _pending;
+  TailSnapshot? _tail;
+  TailSnapshot? _pendingTail;
+  TailSnapshot? _target;
+  int? _through;
+  bool _closed = false;
+  bool _reading = false;
+  Completer<void>? _changedWait;
+  Future<void>? _active;
+
+  void _changed() {
+    final waiter = _changedWait;
+    _changedWait = null;
+    waiter?.complete();
+  }
+
+  TailSnapshot _captureTail(ReadDemand demand, {String? before}) =>
+      reader.livePage(demand, before: before);
+  TailSnapshot _mainTail(
+    ViewCursor after, {
+    required bool initial,
+    String? before,
+  }) {
+    var tail = _captureTail(_demand);
+    while (true) {
+      final response = _response(
+        after,
+        HistoryDelta(
+          placement: initial ? HistoryPlacement.set : HistoryPlacement.append,
+          fromOrder: initial ? null : tail.readyFrontier,
+          throughOrder: tail.readyFrontier,
+          blocks: const [],
+          before: before,
+        ),
+        ReplaceTail(snapshot: tail),
       );
+      if (_fits(response)) return tail;
+      if (tail.blocks.isEmpty || tail.blocks.first.id == tail.currentWorkId) {
+        throw _demoQueryFailure('InvalidDemand');
+      }
+      final blocks = tail.blocks.skip(1).toList();
+      final index = blocks.isEmpty
+          ? reader._history.liveBlocks().length
+          : reader._history.liveBlocks().indexWhere(
+              (b) => b.id == blocks.first.id,
+            );
+      final older = reader.cursor('display-live', tail.layoutRevision, index);
+      tail = TailSnapshot(
+        revision: tail.revision,
+        layoutRevision: tail.layoutRevision,
+        readyFrontier: tail.readyFrontier,
+        executionPresent: tail.executionPresent,
+        currentWorkId: tail.currentWorkId,
+        blocks: blocks,
+        older: older,
+      );
+    }
+  }
 
   @override
-  Future<TimelineBatch> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => reader._read(() => reader.timelinePage(demand, before: before));
+  Future<ViewUpdate> next({required ViewCursor after}) {
+    if (_closed) return Future.error(_conversationClosedFailure);
+    if (_reading) return Future.error(_demoQueryFailure('ConcurrentNext'));
+    _reading = true;
+    final done = Completer<void>();
+    _active = done.future;
+    return _next(after).whenComplete(() {
+      _reading = false;
+      done.complete();
+    });
+  }
+
+  ViewUpdate _response(
+    ViewCursor after,
+    HistoryDelta history,
+    TailUpdate tail,
+  ) => ViewUpdate(
+    presentationVersion: presentationVersion,
+    readerProtocolVersion: timelineReaderProtocolVersion,
+    after: after,
+    next: ViewCursor(newStudioCorrelationId()),
+    history: history,
+    tail: tail,
+  );
+  bool _fits(ViewUpdate response) =>
+      response.history.blocks.length +
+              (response.tail is ReplaceTail
+                  ? (response.tail as ReplaceTail).snapshot.blocks.length
+                  : 0) <=
+          _demand.maxItems &&
+      _viewBytes(response) <= _demand.maxBytes;
+  Future<ViewUpdate> _next(ViewCursor after) async {
+    final pending = _pending;
+    if (pending != null) {
+      if (after == pending.after) return pending;
+      if (after != pending.next) throw _demoQueryFailure('StaleViewCursor');
+      _confirmed = pending.next;
+      _through = pending.history.throughOrder;
+      _tail = _pendingTail;
+      _pending = null;
+    }
+    if (after != _confirmed) throw _demoQueryFailure('StaleViewCursor');
+    while (!_closed) {
+      final history = reader._history;
+      final through = _through;
+      if (through == null) {
+        final page = reader.timelinePage(_demand);
+        final zeroBefore = history.displayHead == 0
+            ? null
+            : reader.cursor(
+                'display-history',
+                history.displayHead,
+                history.displayHead + 1,
+              );
+        if (zeroBefore != null) {
+          reader._cursors['h0:$zeroBefore'] = (
+            'display-h0',
+            0,
+            history.displayHead,
+          );
+        }
+        final tail = _mainTail(after, initial: true, before: zeroBefore);
+        var heads = page.blocks;
+        var before = page.before;
+        while (true) {
+          final response = _response(
+            after,
+            HistoryDelta(
+              placement: HistoryPlacement.set,
+              throughOrder: history.displayHead,
+              blocks: heads,
+              before: before,
+            ),
+            ReplaceTail(snapshot: tail),
+          );
+          if (_fits(response)) {
+            _pendingTail = tail;
+            return _pending = response;
+          }
+          if (heads.isEmpty) throw _demoQueryFailure('InvalidDemand');
+          heads = heads.skip(1).toList();
+          final boundary = heads.isEmpty
+              ? history.displayHead + 1
+              : heads.first.blockOrder;
+          before = reader.cursor(
+            'display-history',
+            history.displayHead,
+            boundary,
+          );
+          reader._cursors['h0:$before'] = (
+            'display-h0',
+            0,
+            history.displayHead,
+          );
+        }
+      }
+      final previousTail = _tail;
+      if (_target == null &&
+          previousTail != null &&
+          previousTail.layoutRevision == history.displayLayoutRevision &&
+          previousTail.readyFrontier == history.displayHead &&
+          previousTail.revision != history.displayRevision) {
+        final work = history.displayLiveSeed?.blocks
+            .where((block) => block.id == previousTail.currentWorkId)
+            .firstOrNull;
+        final summary = work?.thinkingSummary;
+        final status = _response(
+          after,
+          HistoryDelta(
+            placement: HistoryPlacement.append,
+            fromOrder: through,
+            throughOrder: through,
+            blocks: const [],
+          ),
+          TailStatus(
+            baseLayoutRevision: previousTail.layoutRevision,
+            revision: history.displayRevision,
+            currentWorkId: previousTail.currentWorkId,
+            thinkingSummary: summary,
+          ),
+        );
+        if (!_fits(status)) throw _demoQueryFailure('InvalidDemand');
+        _pendingTail = TailSnapshot(
+          revision: history.displayRevision,
+          layoutRevision: previousTail.layoutRevision,
+          readyFrontier: previousTail.readyFrontier,
+          executionPresent: previousTail.executionPresent,
+          currentWorkId: previousTail.currentWorkId,
+          older: previousTail.older,
+          blocks: [
+            for (final block in previousTail.blocks)
+              if (block.id != previousTail.currentWorkId)
+                block
+              else
+                LiveDisplayBlock(
+                  id: block.id,
+                  blockOrder: block.blockOrder,
+                  source: block.source,
+                  body: block.body,
+                  state: block.state,
+                  hasUnfinishedMembers: block.hasUnfinishedMembers,
+                  thinkingSummary: summary,
+                ),
+          ],
+        );
+        return _pending = status;
+      }
+      if (_target == null &&
+          (_tail?.layoutRevision != history.displayLayoutRevision ||
+              _tail?.readyFrontier != history.displayHead)) {
+        _target = _mainTail(after, initial: false);
+      }
+      final target = _target;
+      if (target != null) {
+        final records = history.displayBlocks
+            .where(
+              (b) =>
+                  b.blockOrder > through &&
+                  b.blockOrder <= target.readyFrontier,
+            )
+            .take(_demand.maxItems)
+            .toList();
+        final selected = <DisplayBlock>[];
+        var checked = through;
+        for (final b in records) {
+          final head = DisplayBlock(
+            id: b.id,
+            blockOrder: b.blockOrder,
+            body: reader.fitDisplay(b.body),
+          );
+          final trial = _response(
+            after,
+            HistoryDelta(
+              placement: HistoryPlacement.append,
+              fromOrder: through,
+              throughOrder: b.blockOrder,
+              blocks: [...selected, head],
+            ),
+            const KeepTail(),
+          );
+          if (!_fits(trial)) break;
+          selected.add(head);
+          checked = b.blockOrder;
+        }
+        if (records.isNotEmpty && selected.isEmpty) {
+          throw _demoQueryFailure('InvalidDemand');
+        }
+        if (records.length < _demand.maxItems &&
+            selected.length == records.length) {
+          checked = target.readyFrontier;
+        }
+        TailUpdate tail = checked == target.readyFrontier
+            ? ReplaceTail(snapshot: target)
+            : const KeepTail();
+        var response = _response(
+          after,
+          HistoryDelta(
+            placement: HistoryPlacement.append,
+            fromOrder: through,
+            throughOrder: checked,
+            blocks: selected,
+          ),
+          tail,
+        );
+        if (!_fits(response) && tail is ReplaceTail && selected.isNotEmpty) {
+          tail = const KeepTail();
+          response = ViewUpdate(
+            presentationVersion: response.presentationVersion,
+            readerProtocolVersion: response.readerProtocolVersion,
+            after: response.after,
+            next: response.next,
+            history: response.history,
+            tail: tail,
+          );
+        }
+        if (!_fits(response)) throw _demoQueryFailure('InvalidDemand');
+        if (tail is ReplaceTail) {
+          _pendingTail = target;
+          _target = null;
+        } else {
+          final ids = selected.map((b) => b.id).toSet();
+          final previous = _tail!;
+          _pendingTail = TailSnapshot(
+            revision: previous.revision,
+            layoutRevision: previous.layoutRevision,
+            readyFrontier: previous.readyFrontier,
+            executionPresent: previous.executionPresent,
+            currentWorkId: ids.contains(previous.currentWorkId)
+                ? null
+                : previous.currentWorkId,
+            blocks: previous.blocks.where((b) => !ids.contains(b.id)).toList(),
+            older: previous.older,
+          );
+        }
+        return _pending = response;
+      }
+      final wait = _changedWait ??= Completer<void>();
+      await wait.future;
+    }
+    throw _conversationClosedFailure;
+  }
+
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
-  }) => reader._read(() => reader.livePage(demand, before: before));
+  }) => reader._read(() {
+    return reader.timelinePage(demand, before: before);
+  });
+  @override
+  Future<TailSnapshot> loadLiveOlder({
+    required String before,
+    required ReadDemand demand,
+  }) => reader._read(() => _captureTail(demand, before: before));
+  @override
+  void requestClose() {
+    _closed = true;
+    reader.requestClose();
+    _changed();
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
+    await _active;
+    await reader.close();
+    reader._history.changes.remove(_changed);
+    _pending = null;
+    _tail = null;
+    _target = null;
+    _api._ownedTimelineReaders.remove(this);
+  }
+
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
@@ -845,12 +1078,12 @@ final class _DemoTimelineFeed extends _DemoConversationFeed
         when memberOrder < 1) {
       throw _demoQueryFailure('Invalid display member boundary');
     }
-    if (reference.databaseId != _history.epoch) throw _demoStale();
+    if (reference.databaseId != reader._history.epoch) throw _demoStale();
     final known =
-        _history.displayBlocks.any(
+        reader._history.displayBlocks.any(
           (b) => b.id == reference.blockId && b.body is WorkDisplayBlock,
         ) ||
-        _history.liveBlocks().any(
+        reader._history.liveBlocks().any(
           (b) => b.id == reference.blockId && b.body is WorkDisplayBlock,
         );
     if (!known) throw _demoMissing();
@@ -985,3 +1218,59 @@ final class _DemoDisplayMembers implements DisplayMembers {
     reader._displayReads.remove(this);
   }
 }
+
+int _viewBytes(ViewUpdate value) => _demoEncoded({
+  'presentationVersion': value.presentationVersion,
+  'readerProtocolVersion': value.readerProtocolVersion,
+  'after': value.after.value,
+  'next': value.next.value,
+  'history': {
+    'placement': value.history.placement.name,
+    'fromOrder': value.history.fromOrder,
+    'throughOrder': value.history.throughOrder,
+    'blocks': [
+      for (final b in value.history.blocks)
+        {
+          'id': b.id,
+          'blockOrder': b.blockOrder,
+          'body': _displayBodyJson(b.body),
+        },
+    ],
+    'before': value.history.before,
+  },
+  'tail': switch (value.tail) {
+    KeepTail() => {'kind': 'keep'},
+    ReplaceTail(:final snapshot) => {
+      'kind': 'replace',
+      'snapshot': _liveJson(snapshot),
+    },
+    TailStatus(
+      :final baseLayoutRevision,
+      :final revision,
+      :final currentWorkId,
+      :final thinkingSummary,
+    ) =>
+      {
+        'kind': 'status',
+        'baseLayoutRevision': baseLayoutRevision,
+        'revision': revision,
+        'currentWorkId': currentWorkId,
+        'thinkingSummary': thinkingSummary,
+      },
+  },
+});
+
+int _pageBytes(TimelinePage page) => _demoEncoded({
+  'presentationVersion': page.presentationVersion,
+  'databaseId': page.databaseId,
+  'ceiling': page.ceiling,
+  'blocks': [
+    for (final b in page.blocks)
+      {
+        'id': b.id,
+        'blockOrder': b.blockOrder,
+        'body': _displayBodyJson(b.body),
+      },
+  ],
+  'before': page.before,
+});

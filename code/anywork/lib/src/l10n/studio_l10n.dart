@@ -323,6 +323,10 @@ extension StudioLocalizationsX on BuildContext {
         l10n.composerFailureStaleInteraction,
       // A local content/collection revision expired, not the whole conversation.
       StudioFailureReason.staleContent => l10n.studioFailureCodeStaleRevision,
+      StudioFailureReason.conversationResyncRequired =>
+        l10n.studioFailureConversationResyncRequired,
+      StudioFailureReason.staleViewCursor => l10n.studioFailureStaleViewCursor,
+      StudioFailureReason.concurrentNext => l10n.studioFailureConcurrentNext,
       StudioFailureReason.protocolVersionMismatch =>
         l10n.studioFailureCodeProtocol,
       // 归档会话只读：使用专用的继续/提交阻塞说明，不复用侧栏的归档标签。

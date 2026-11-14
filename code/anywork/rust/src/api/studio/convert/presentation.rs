@@ -80,53 +80,6 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
     }
 }
 
-pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDisplayWindow {
-    BridgeLiveDisplayWindow {
-        revision: value.revision,
-        ready_frontier: value.ready_frontier,
-        execution_present: value.execution_present,
-        current_work_id: value.current_work_id,
-        blocks: value
-            .blocks
-            .into_iter()
-            .map(|block| BridgeLiveDisplayBlock {
-                id: block.id,
-                block_order: block.block_order,
-                source: block.source.map(chat::source_id),
-                body: body(block.body),
-                has_unfinished_members: block.has_unfinished_members,
-                thinking_summary: block.thinking_summary,
-                state: match block.state {
-                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
-                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
-                },
-            })
-            .collect(),
-        older: value.older,
-    }
-}
-
-pub(crate) fn batch(value: protocol::TimelineBatch) -> Result<BridgeTimelineBatch, BridgeError> {
-    value.validate()?;
-    Ok(BridgeTimelineBatch {
-        presentation_version: value.presentation_version,
-        placement: chat::placement(value.placement),
-        blocks: value
-            .blocks
-            .into_iter()
-            .map(|block| BridgeDisplayBlock {
-                id: block.id,
-                block_order: block.block_order,
-                body: body(block.body),
-            })
-            .collect(),
-        before: value.before,
-        from_order: value.from_order,
-        through_order: value.through_order,
-        live: value.live.map(live_window),
-    })
-}
-
 pub(crate) fn member_page(value: protocol::DisplayMemberPage) -> BridgeDisplayMemberPage {
     BridgeDisplayMemberPage {
         block: block_ref(value.block),
@@ -166,78 +119,41 @@ mod tests {
         }
     }
 
-    fn cut() -> protocol::TimelineBatch {
-        protocol::TimelineBatch {
-            presentation_version: protocol::PRESENTATION_VERSION,
-            placement: protocol::ChatPlacement::Append,
-            blocks: vec![protocol::DisplayBlock {
-                id: "work".into(),
-                block_order: 4,
-                body: work(),
-            }],
-            before: None,
-            from_order: Some(3),
-            through_order: 4,
-            live: None,
-        }
-    }
-
     #[test]
-    fn split_handoff_preserves_absent_live_and_presentation_positions() {
-        let mapped = batch(cut()).unwrap();
-        assert_eq!(mapped.placement, BridgeChatPlacement::Append);
-        assert_eq!(mapped.from_order, Some(3));
-        assert_eq!(mapped.through_order, 4);
-        assert_eq!(mapped.blocks[0].block_order, 4);
-        let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.blocks[0].body else {
-            panic!("expected Work");
-        };
-        assert_eq!(timing.started_at, Some(1_700_000_000));
-        assert_eq!(timing.finished_at, Some(1_700_000_125));
-        assert!(mapped.live.is_none(), "split cut must not clear live");
-
-        let mut live_only = cut();
-        live_only.blocks.clear();
-        live_only.from_order = Some(4);
-        live_only.live = Some(protocol::LiveDisplayWindow {
-            revision: 8,
-            ready_frontier: 4,
-            execution_present: false,
-            current_work_id: None,
-            blocks: vec![protocol::LiveDisplayBlock {
-                has_unfinished_members: false,
-                thinking_summary: None,
-                id: "unresolved".into(),
-                block_order: 11,
-                source: Some(protocol::ChatSourceId::ForegroundTurn {
-                    turn_id: "original-work-turn".into(),
-                }),
-                body: work(),
-                state: protocol::DisplayBlockState::Sealed,
-            }],
-            older: Some("original-live-continuation".into()),
+    fn cursor_handoff_preserves_keep_and_independent_versions() {
+        let mapped = view_update(protocol::ViewUpdate {
+            presentation_version: 6,
+            reader_protocol_version: 1,
+            after: protocol::ViewCursor("C0".into()),
+            next: protocol::ViewCursor("C1".into()),
+            history: protocol::HistoryDelta {
+                placement: protocol::HistoryPlacement::Append,
+                from_order: Some(3),
+                through_order: 4,
+                before: None,
+                blocks: vec![protocol::DisplayBlock {
+                    id: "work".into(),
+                    block_order: 4,
+                    body: work(),
+                }],
+            },
+            tail: protocol::TailUpdate::Keep,
         });
-        let mapped = batch(live_only).unwrap();
-        assert!(mapped.blocks.is_empty());
-        let live = mapped.live.unwrap();
-        assert!(!live.execution_present);
-        assert_eq!(live.older.as_deref(), Some("original-live-continuation"));
-        assert_eq!(live.blocks[0].state, BridgeDisplayBlockState::Sealed);
-        assert!(matches!(&live.blocks[0].source,
-            Some(BridgeChatSourceId::ForegroundTurn { turn_id }) if turn_id == "original-work-turn"));
-        let BridgeDisplayBlockBody::Work { timing, members } = &live.blocks[0].body else {
-            panic!("work body must not be inferred from completed content");
+        assert_eq!(mapped.after, "C0");
+        assert_eq!(mapped.next, "C1");
+        assert!(matches!(mapped.tail, BridgeTailUpdate::Keep));
+        assert_eq!(mapped.history.from_order, Some(3));
+        let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.history.blocks[0].body else {
+            panic!("Work")
         };
-        assert_eq!(protocol_block_ref(members.clone()), reference());
-
-        assert_eq!(timing.started_at, Some(1_700_000_000));
         assert_eq!(timing.finished_at, Some(1_700_000_125));
     }
 
     #[test]
     fn live_source_preserves_unknown_and_independent_ownership() {
-        let mut window = protocol::LiveDisplayWindow {
+        let mut window = protocol::TailSnapshot {
             revision: 1,
+            layout_revision: 1,
             ready_frontier: 0,
             execution_present: false,
             current_work_id: Some("not-an-encoded-turn".into()),
@@ -252,13 +168,13 @@ mod tests {
             }],
             older: None,
         };
-        let mapped = live_window(window.clone());
+        let mapped = tail_snapshot(window.clone());
         assert!(mapped.blocks[0].source.is_none());
         assert_eq!(mapped.current_work_id, window.current_work_id);
         window.blocks[0].source = Some(protocol::ChatSourceId::Input {
             input_id: "independent-input".into(),
         });
-        assert!(matches!(&live_window(window).blocks[0].source,
+        assert!(matches!(&tail_snapshot(window).blocks[0].source,
             Some(BridgeChatSourceId::Input { input_id }) if input_id == "independent-input"));
     }
 
@@ -295,17 +211,6 @@ mod tests {
             assert_eq!(visibility, expected);
             assert!(record.atom.payload.is_none());
         }
-    }
-
-    #[test]
-    fn unsupported_presentation_is_rejected_before_bridge_delivery() {
-        let mut value = cut();
-        value.presentation_version = 2;
-        let error = batch(value).unwrap_err();
-        assert_eq!(error.code, BridgeErrorCode::Protocol);
-        let details: serde_json::Value =
-            serde_json::from_str(error.details_json.as_deref().unwrap()).unwrap();
-        assert_eq!(details["reason"], "protocolVersionMismatch");
     }
 
     fn atom(lifecycle: protocol::ChatAtomLifecycle) -> protocol::ChatAtom {
@@ -408,5 +313,94 @@ mod tests {
             member_window(BridgeDisplayMemberWindow::Latest),
             protocol::DisplayMemberWindow::Latest
         );
+    }
+}
+
+pub(crate) fn open_timeline(value: protocol::OpenTimeline) -> BridgeOpenTimeline {
+    BridgeOpenTimeline {
+        reader_id: value.reader_id,
+        presentation_version: value.presentation_version,
+        reader_protocol_version: value.reader_protocol_version,
+        initial_cursor: value.initial_cursor.0,
+    }
+}
+fn display_blocks(values: Vec<protocol::DisplayBlock>) -> Vec<BridgeDisplayBlock> {
+    values
+        .into_iter()
+        .map(|value| BridgeDisplayBlock {
+            id: value.id,
+            block_order: value.block_order,
+            body: body(value.body),
+        })
+        .collect()
+}
+pub(crate) fn tail_snapshot(value: protocol::TailSnapshot) -> BridgeTailSnapshot {
+    BridgeTailSnapshot {
+        revision: value.revision,
+        layout_revision: value.layout_revision,
+        ready_frontier: value.ready_frontier,
+        execution_present: value.execution_present,
+        current_work_id: value.current_work_id,
+        older: value.older,
+        blocks: value
+            .blocks
+            .into_iter()
+            .map(|block| BridgeLiveDisplayBlock {
+                id: block.id,
+                block_order: block.block_order,
+                source: block.source.map(chat::source_id),
+                body: body(block.body),
+                has_unfinished_members: block.has_unfinished_members,
+                thinking_summary: block.thinking_summary,
+                state: match block.state {
+                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
+                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
+                },
+            })
+            .collect(),
+    }
+}
+pub(crate) fn view_update(value: protocol::ViewUpdate) -> BridgeViewUpdate {
+    BridgeViewUpdate {
+        presentation_version: value.presentation_version,
+        reader_protocol_version: value.reader_protocol_version,
+        after: value.after.0,
+        next: value.next.0,
+        history: BridgeHistoryDelta {
+            placement: match value.history.placement {
+                protocol::HistoryPlacement::Set => BridgeHistoryPlacement::Set,
+                protocol::HistoryPlacement::Append => BridgeHistoryPlacement::Append,
+            },
+            from_order: value.history.from_order,
+            through_order: value.history.through_order,
+            blocks: display_blocks(value.history.blocks),
+            before: value.history.before,
+        },
+        tail: match value.tail {
+            protocol::TailUpdate::Keep => BridgeTailUpdate::Keep,
+            protocol::TailUpdate::Replace { snapshot } => BridgeTailUpdate::Replace {
+                snapshot: tail_snapshot(snapshot),
+            },
+            protocol::TailUpdate::Status {
+                base_layout_revision,
+                revision,
+                current_work_id,
+                thinking_summary,
+            } => BridgeTailUpdate::Status {
+                base_layout_revision,
+                revision,
+                current_work_id,
+                thinking_summary,
+            },
+        },
+    }
+}
+pub(crate) fn timeline_page(value: protocol::TimelinePage) -> BridgeTimelinePage {
+    BridgeTimelinePage {
+        presentation_version: value.presentation_version,
+        database_id: value.database_id,
+        ceiling: value.ceiling,
+        blocks: display_blocks(value.blocks),
+        before: value.before,
     }
 }

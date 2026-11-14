@@ -24,7 +24,7 @@ class CompletionRunConnector extends StatefulWidget {
   });
   final TimelineDisplayUnit unit;
   final String threadId;
-  final ConversationContent content;
+  final ConversationQueries content;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;

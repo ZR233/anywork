@@ -8,22 +8,23 @@ use crate::api::studio::{
     convert::{chat, presentation},
     types::*,
 };
-use crate::frb_generated::StreamSink;
 
-pub struct BridgeTimelineFeed {
+pub struct BridgeTimelineReader {
     conversation: BridgeConversationFeed,
 }
 
-pub async fn open_timeline_feed(
+pub async fn open_timeline_reader(
     thread_id: String,
+    presentation_version: u32,
+    reader_protocol_version: u32,
     initial_demand: BridgeReadDemand,
-) -> Result<BridgeTimelineFeed, BridgeError> {
+) -> Result<BridgeTimelineReader, BridgeError> {
     let bridge = active_bridge().await?;
     let cancel = bridge.shutdown.child_token();
     let feed = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(closed()),
-        feed = bridge.studio.open_timeline_feed(&thread_id, chat::demand(initial_demand)) => feed?,
+        feed = bridge.studio.open_timeline_reader(&thread_id, presentation_version, reader_protocol_version, chat::demand(initial_demand)) => feed?,
     };
     let inner = Arc::new(ConversationOwner::timeline(feed, cancel));
     let opening = inner.cancel.clone().drop_guard();
@@ -31,12 +32,17 @@ pub async fn open_timeline_feed(
         .subscriptions
         .register_conversation(&inner, &bridge.shutdown)?;
     drop(opening.disarm());
-    Ok(BridgeTimelineFeed {
+    Ok(BridgeTimelineReader {
         conversation: BridgeConversationFeed { inner },
     })
 }
 
-impl BridgeTimelineFeed {
+impl BridgeTimelineReader {
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn thread_id(&self) -> String {
+        self.conversation.inner.thread_id.clone()
+    }
+
     /// Atomic content tools retain the original completion reader; GUI history uses load_older.
     pub async fn load_completed_older(
         &self,
@@ -50,32 +56,34 @@ impl BridgeTimelineFeed {
         &self,
         before: String,
         demand: BridgeReadDemand,
-    ) -> Result<BridgeTimelineBatch, BridgeError> {
+    ) -> Result<BridgeTimelinePage, BridgeError> {
         let owner = &self.conversation.inner;
         owner.ensure_read_open()?;
-        let batch = owner
-            .content()?
-            .reader
-            .load_timeline_older(&before, chat::demand(demand))
+        let page = owner
+            .timeline
+            .as_ref()
+            .ok_or_else(closed)?
+            .load_older(&before, chat::demand(demand))
             .await?;
         owner.ensure_read_open()?;
-        presentation::batch(batch)
+        Ok(presentation::timeline_page(page))
     }
 
     pub async fn load_live_older(
         &self,
         before: String,
         demand: BridgeReadDemand,
-    ) -> Result<BridgeLiveDisplayWindow, BridgeError> {
+    ) -> Result<BridgeTailSnapshot, BridgeError> {
         let owner = &self.conversation.inner;
         owner.ensure_read_open()?;
-        let window = owner
-            .content()?
-            .reader
+        let tail = owner
+            .timeline
+            .as_ref()
+            .ok_or_else(closed)?
             .load_live_older(&before, chat::demand(demand))
             .await?;
         owner.ensure_read_open()?;
-        Ok(presentation::live_window(window))
+        Ok(presentation::tail_snapshot(tail))
     }
 
     pub async fn open_display_members(
@@ -169,31 +177,26 @@ impl BridgeTimelineFeed {
         self.conversation.close_content_watch(watch_id).await
     }
 
-    pub async fn events(
-        &self,
-        sink: StreamSink<BridgeConversationFrame>,
-    ) -> Result<(), BridgeError> {
-        self.conversation.events(sink).await
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn metadata(&self) -> Result<BridgeOpenTimeline, BridgeError> {
+        let owner = &self.conversation.inner;
+        owner.ensure_read_open()?;
+        Ok(presentation::open_timeline(
+            owner.timeline.as_ref().ok_or_else(closed)?.metadata(),
+        ))
     }
 
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn thread_id(&self) -> String {
-        self.conversation.thread_id()
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn subscription_id(&self) -> String {
-        self.conversation.subscription_id()
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn acknowledge(
-        &self,
-        subscription_id: String,
-        delivery_sequence: u64,
-    ) -> Result<(), BridgeError> {
-        self.conversation
-            .acknowledge(subscription_id, delivery_sequence)
+    pub async fn next(&self, after: String) -> Result<BridgeViewUpdate, BridgeError> {
+        let owner = &self.conversation.inner;
+        owner.ensure_read_open()?;
+        let value = owner
+            .timeline
+            .as_ref()
+            .ok_or_else(closed)?
+            .next(pl_protocol::ViewCursor(after))
+            .await?;
+        owner.ensure_read_open()?;
+        Ok(presentation::view_update(value))
     }
 
     #[flutter_rust_bridge::frb(sync)]

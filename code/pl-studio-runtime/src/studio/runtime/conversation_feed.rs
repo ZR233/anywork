@@ -3516,7 +3516,7 @@ pub(super) mod tests {
         }
     }
 
-    mod state_activity {
+    pub(in crate::studio::runtime) mod state_activity {
         //! Typed State summaries do not require completed members or content credit.
         use super::*;
         use completed_runs::{Harness, activity};
@@ -3532,7 +3532,7 @@ pub(super) mod tests {
             },
         };
 
-        fn thinking(revision: u64) -> Result<CoreSnapshot> {
+        pub(in crate::studio::runtime) fn thinking(revision: u64) -> Result<CoreSnapshot> {
             let attempt: RequestAttempt = serde_json::from_value(serde_json::json!({
                 "turnId": "summary-turn", "attemptId": "summary-attempt",
                 "retryOf": null, "inputRevision": 0, "status": {"kind": "running"}
@@ -3570,7 +3570,10 @@ pub(super) mod tests {
             })
         }
 
-        async fn admit_thinking(h: &mut Harness, state: &CoreSnapshot) -> Result<()> {
+        pub(in crate::studio::runtime) async fn admit_thinking(
+            h: &mut Harness,
+            state: &CoreSnapshot,
+        ) -> Result<()> {
             // State delivery is independent of body credit, not of reliable start admission.
             let progress = state
                 .model_progress
@@ -3584,9 +3587,7 @@ pub(super) mod tests {
                     turn_id: "summary-turn".into(),
                     attempt_id: progress.attempt_id.clone(),
                     generation: progress.progress.observation().generation,
-                    identity: ObservedPartIdentity::Aggregate {
-                        channel: AggregateChannel::Reasoning,
-                    },
+                    identity: progress.progress.parts()[0].identity().clone(),
                 }]
                 .into(),
                 ..Default::default()
@@ -3602,7 +3603,10 @@ pub(super) mod tests {
             Ok(())
         }
 
-        async fn publish(h: &mut Harness, state: &CoreSnapshot) -> Result<Option<ThreadActivity>> {
+        pub(in crate::studio::runtime) async fn publish(
+            h: &mut Harness,
+            state: &CoreSnapshot,
+        ) -> Result<Option<ThreadActivity>> {
             h.projection
                 .stream(&h.session, &h.thread, state, state.commit_sequence)
                 .await?;

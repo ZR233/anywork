@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
+import '../../features/conversation/timeline/live_status/live_status_state.dart'
+    show LiveStatusView;
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
@@ -17,13 +19,20 @@ export '../../features/conversation/timeline/state/timeline_view_state.dart';
 
 const Object _unset = Object();
 
+/// Component futures may fail after a partial mutation. Their response cannot be replayed.
+final class _TimelineApplyFailure implements Exception {
+  const _TimelineApplyFailure(this.cause);
+  final Object cause;
+}
+
 /// One presentation generation. Only its component controller owns loaded messages.
-final class TimelineDisplayLease implements TimelineUiControllers {
+final class TimelineDisplayLease
+    implements TimelineUiControllers, ConversationQueries {
   TimelineDisplayLease({
     required this.threadId,
     required this.generation,
     required this.demand,
-    required this.content,
+    required this.reader,
     this.selectionId,
     this.selectionStartedMicros,
   }) : _controller = InMemoryChatController(),
@@ -37,10 +46,12 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     );
   }
 
+  @override
   final String threadId;
   final int generation;
   final ReadDemand demand;
-  final ConversationContent content;
+  final TimelineReader reader;
+  LiveStatusView? liveStatus;
   final int? selectionId;
   final int? selectionStartedMicros;
   final TimelineImageResources imageResources;
@@ -54,12 +65,13 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
 
   /// Published only by this display's serial admission, never directly by the transport.
-  final ValueNotifier<LiveDisplayWindow?> live = ValueNotifier(null);
+  final ValueNotifier<TailSnapshot?> live = ValueNotifier(null);
   final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<ConversationQueryScope> _ownedQueries = {};
   final Map<ConversationQueryScope, Future<void>> _closingQueries = {};
   ConversationQueryScope? _queries;
   String? _before;
+  int? _firstOrder;
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
   bool _hasOlder = false;
   bool _mounted = false;
@@ -120,7 +132,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return members;
   }
 
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     ReadDemand? demand,
   }) async {
@@ -265,19 +277,36 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int get loadedCount => _controller?.messages.length ?? 0;
   Future<void> get released => _released.future;
 
+  @override
+  ConversationQueryScope openScope({required int generation}) {
+    if (_retired) throw const StaleConversationScope();
+    _ownedQueries.removeWhere(
+      (scope) => scope is ConversationReadScope && scope.isSettled,
+    );
+    final scope = ConversationReadScope(
+      threadId: threadId,
+      generation: generation,
+      reader: reader.reader,
+      timeline: reader,
+      isEligible: () => !_retired,
+    );
+    _ownedQueries.add(scope);
+    return scope;
+  }
+
   ConversationQueryScope? get queries {
     if (_retired) return null;
     final existing = _queries;
     if (existing != null && existing.isActive) return existing;
     if (existing != null) unawaited(_settleQueries(existing));
-    final scope = content.openScope(generation: generation);
+    final scope = openScope(generation: generation);
     _ownedQueries.add(scope);
     return _queries = scope;
   }
 
   ConversationQueryScope? openDetailQueries() {
     if (_retired) return null;
-    final scope = content.openScope(generation: generation);
+    final scope = openScope(generation: generation);
     _ownedQueries.add(scope);
     return scope;
   }
@@ -399,7 +428,6 @@ final class TimelineSessionOwner {
 
   final AnyworkClient client;
   final LatestValue<TimelineSessionViewState?> source = LatestValue(null);
-  Observation? _connectionObservation;
   Observation? _consumerObservation;
   ConversationSession? _observedSession;
   String? _observedThread;
@@ -530,11 +558,9 @@ final class TimelineSessionOwner {
     }
     final selection = ++_selection;
     final previousConsumer = _consumerObservation;
-    final previousConnection = _connectionObservation;
     final previous = _current;
     final preparing = _preparingDisplays.toList();
     _consumerObservation = null;
-    _connectionObservation = null;
     _current = null;
     _olderInFlight = null;
     _observedThread = threadId;
@@ -546,7 +572,6 @@ final class TimelineSessionOwner {
     // Publish ownership before invoking cancellation or retirement callbacks.
     // Reentry owns a new selection and may only be followed by cleanup of these
     // captured old handles, never by writing into the new selection.
-    previousConnection?.cancel();
     previousConsumer?.cancel();
     if (previous != null) _retire(previous);
     for (final display in preparing) {
@@ -566,50 +591,27 @@ final class TimelineSessionOwner {
       ),
     );
     if (session == null || !_selected(selection, session)) return;
-    final watched = session.content.state.watchLatest((state) {
-      if (_selected(selection, session)) _onConnection(state);
-    });
-    if (!_selected(selection, session)) {
-      watched.observation.cancel();
-      return;
-    }
-    _connectionObservation = watched.observation;
-    _onConnection(watched.value);
     if (_selected(selection, session)) _attachConsumer(selection, session);
   }
 
-  void _attachConsumer(int selection, ConversationSession session) {
-    // attachConsumer may synchronously open a feed and notify SDK observers
-    // before returning its lease. A nested selection waits for this one local
-    // acquisition to return, so A -> B -> A cannot bind over its provisional A.
+  final Set<_TimelineRead> _reads = {};
+  void _attachConsumer(
+    int selection,
+    ConversationSession session, {
+    int restarts = 0,
+  }) {
     final demand = _readDemand;
     if (_bindingConsumer || !_selected(selection, session) || demand == null) {
       return;
     }
     _bindingConsumer = true;
     try {
-      final content = session.content;
-      if (content is! TimelineContent) {
-        throw const ConversationContinuityError(
-          'Native timeline requires the presentation feed',
-        );
-      }
-      final observation = content.attachTimelineConsumer(
-        _TimelineConsumer(this, selection, session),
-        demand: demand,
-      );
-      if (_selected(selection, session)) {
-        _consumerObservation = observation;
-      } else {
-        observation.cancel();
-      }
-    } catch (error) {
-      if (_selected(selection, session)) {
-        _publishState(
-          connection: TimelineConnectionPhase.failed,
-          connectionError: error,
-        );
-      }
+      final read = _TimelineRead(this, selection, session, restarts);
+      _reads.add(read);
+      _consumerObservation = read;
+      final done = Completer<void>();
+      read.task = done.future;
+      done.complete(_runReader(read, demand));
     } finally {
       _bindingConsumer = false;
       final selected = _observedSession;
@@ -622,93 +624,285 @@ final class TimelineSessionOwner {
     }
   }
 
+  void refresh(String threadId) {
+    final selected = _observedSession;
+    if (_closed || selected?.threadId != threadId) return;
+    _consumerObservation?.cancel();
+    _consumerObservation = null;
+    _attachConsumer(_selection, selected!);
+  }
+
+  bool _ownsRead(_TimelineRead read) =>
+      !read.isCancelled &&
+      _selected(read.selection, read.session) &&
+      identical(_consumerObservation, read);
+
+  Future<void> _runReader(_TimelineRead read, ReadDemand demand) async {
+    try {
+      if (_ownsRead(read)) {
+        _publishState(connection: TimelineConnectionPhase.opening);
+      }
+      final reader = await client.conversations.openTimelineReader(
+        read.session.threadId,
+        demand: demand,
+      );
+      read.reader = reader;
+      if (!_ownsRead(read)) return;
+      final metadata = reader.metadata;
+      if (metadata.presentationVersion != presentationVersion ||
+          metadata.readerProtocolVersion != timelineReaderProtocolVersion ||
+          metadata.readerId.isEmpty) {
+        throw const ConversationContinuityError(
+          'Unsupported timeline reader handshake',
+        );
+      }
+      read.cursor = metadata.initialCursor;
+      var failures = 0;
+      while (_ownsRead(read)) {
+        ViewUpdate update;
+        try {
+          update = await reader.next(after: read.cursor!);
+          failures = 0;
+        } catch (error) {
+          if (!_ownsRead(read)) break;
+          if (error is StudioFailure && error.retryable && failures++ < 3) {
+            continue; // Same capability and applied cursor replay the original response.
+          }
+          rethrow;
+        }
+        if (!_ownsRead(read)) break;
+        await _serialize(() => _applyUpdate(read, update));
+      }
+    } catch (error) {
+      if (_ownsRead(read)) {
+        _publishState(
+          connection: TimelineConnectionPhase.failed,
+          connectionError: error is _TimelineApplyFailure ? error.cause : error,
+        );
+        if (read.restarts < 1 &&
+            (error is _TimelineApplyFailure ||
+                studioFailureReason(error) ==
+                    StudioFailureReason.conversationResyncRequired)) {
+          read.cancel();
+          _attachConsumer(
+            read.selection,
+            read.session,
+            restarts: read.restarts + 1,
+          );
+        }
+      }
+    } finally {
+      read.reader?.requestClose();
+      try {
+        await read.reader?.close();
+        _reads.remove(read);
+      } catch (error) {
+        read.closeError = error;
+      }
+    }
+  }
+
   void _detach() {
     final consumer = _consumerObservation;
-    final connection = _connectionObservation;
     _consumerObservation = null;
-    _connectionObservation = null;
     _observedSession = null;
-    connection?.cancel();
     consumer?.cancel();
   }
 
-  void _onConnection(ChatUiState<bool> state) {
-    final phase = switch (state) {
-      ChatIdle<bool>() => TimelineConnectionPhase.idle,
-      ChatOpening<bool>() => TimelineConnectionPhase.opening,
-      ChatReady<bool>() => TimelineConnectionPhase.ready,
-      ChatReconnecting<bool>() => TimelineConnectionPhase.reconnecting,
-      ChatFailed<bool>() => TimelineConnectionPhase.failed,
-      ChatClosed<bool>() => TimelineConnectionPhase.closed,
-    };
-    final error = switch (state) {
-      ChatReconnecting<bool>(:final error) ||
-      ChatFailed<bool>(:final error) => error,
-      _ => null,
-    };
-    _publishState(connection: phase, connectionError: error);
-  }
-
-  Future<void> _accept(
-    int selection,
-    ConversationSession session,
-    TimelineBatch batch,
-    LiveDisplayWindow live,
-  ) => _serialize(() async {
-    if (!_selected(selection, session)) return;
-    if (batch.placement == ChatPlacement.set) {
-      await _set(selection, session, batch, live);
-      return;
+  Future<void> _applyUpdate(_TimelineRead read, ViewUpdate update) async {
+    if (!_ownsRead(read)) return;
+    if (read.cursor == update.next) return;
+    final history = update.history;
+    final isSet = history.placement == HistoryPlacement.set;
+    var valid =
+        update.presentationVersion == presentationVersion &&
+        update.readerProtocolVersion == timelineReaderProtocolVersion &&
+        read.cursor == update.after &&
+        update.next != update.after &&
+        update.next.value.isNotEmpty &&
+        history.throughOrder >= 0 &&
+        history.throughOrder <= 0x7fffffffffffffff &&
+        (isSet
+            ? read.through == null &&
+                  history.fromOrder == null &&
+                  update.tail is ReplaceTail
+            : read.through != null &&
+                  history.fromOrder == read.through &&
+                  history.throughOrder >= read.through! &&
+                  history.before == null);
+    final ids = <String>{};
+    var order = history.fromOrder ?? 0;
+    for (final block in history.blocks) {
+      valid =
+          valid &&
+          block.id.isNotEmpty &&
+          ids.add(block.id) &&
+          block.blockOrder > order &&
+          block.blockOrder <= history.throughOrder;
+      order = block.blockOrder;
     }
-    final current = _current;
-    if (current == null || current.isRetired) {
-      throw const ConversationContinuityError('Chat has no active display');
+    final previous = _current?.live.value;
+    TailSnapshot? tail;
+    switch (update.tail) {
+      case ReplaceTail(:final snapshot):
+        tail = snapshot;
+        valid =
+            valid &&
+            snapshot.readyFrontier == history.throughOrder &&
+            snapshot.revision >= 0 &&
+            snapshot.layoutRevision >= 0 &&
+            (isSet ||
+                previous == null ||
+                (snapshot.layoutRevision >= previous.layoutRevision &&
+                    snapshot.revision >= previous.revision));
+        var last = history.throughOrder;
+        String? work;
+        var works = 0;
+        for (final block in snapshot.blocks) {
+          valid =
+              valid &&
+              block.id.isNotEmpty &&
+              ids.add(block.id) &&
+              block.blockOrder > last &&
+              block.blockOrder <= 0x7fffffffffffffff;
+          last = block.blockOrder;
+          if (block.state == DisplayBlockState.open &&
+              block.body is WorkDisplayBlock) {
+            work = block.id;
+            works++;
+          }
+        }
+        valid = valid && works <= 1 && snapshot.currentWorkId == work;
+      case KeepTail():
+        valid =
+            valid &&
+            previous != null &&
+            !isSet &&
+            history.throughOrder > read.through!;
+        if (previous != null) {
+          tail = TailSnapshot(
+            revision: previous.revision,
+            layoutRevision: previous.layoutRevision,
+            readyFrontier: previous.readyFrontier,
+            executionPresent: previous.executionPresent,
+            currentWorkId: ids.contains(previous.currentWorkId)
+                ? null
+                : previous.currentWorkId,
+            blocks: previous.blocks.where((b) => !ids.contains(b.id)).toList(),
+            older: previous.older,
+          );
+        }
+      case TailStatus(
+        :final baseLayoutRevision,
+        :final revision,
+        :final currentWorkId,
+        :final thinkingSummary,
+      ):
+        valid =
+            valid &&
+            previous != null &&
+            !isSet &&
+            history.blocks.isEmpty &&
+            history.throughOrder == read.through &&
+            previous.layoutRevision == baseLayoutRevision &&
+            previous.currentWorkId == currentWorkId &&
+            revision >= previous.revision;
+        if (previous != null) {
+          tail = TailSnapshot(
+            revision: revision,
+            layoutRevision: previous.layoutRevision,
+            readyFrontier: previous.readyFrontier,
+            executionPresent: previous.executionPresent,
+            currentWorkId: currentWorkId,
+            older: previous.older,
+            blocks: [
+              for (final b in previous.blocks)
+                if (b.id != currentWorkId)
+                  b
+                else
+                  LiveDisplayBlock(
+                    id: b.id,
+                    blockOrder: b.blockOrder,
+                    source: b.source,
+                    body: b.body,
+                    state: b.state,
+                    hasUnfinishedMembers: b.hasUnfinishedMembers,
+                    thinkingSummary: thinkingSummary,
+                  ),
+            ],
+          );
+        }
     }
-    final presentation = current._presentation!;
-    await current._mutate(() async {
-      // The component API reports validation failures through its Future even
-      // though its in-memory mutation contains no await. Commit live only after
-      // successful admission; the completed microtasks precede the next frame.
-      // No content query, layout or animation is part of this commit.
-      if (batch.blocks.isNotEmpty) {
-        await presentation.applyTimeline(batch);
+    if (!valid || tail == null) {
+      throw const ConversationContinuityError(
+        'Invalid timeline cursor, range or tail',
+      );
+    }
+    if (isSet) {
+      await _set(read, history, tail);
+    } else {
+      final current = _current;
+      if (current == null || current.isRetired) {
+        throw const StaleConversationScope();
       }
-      if (!_selected(selection, session) ||
+      await current._mutate(() async {
+        if (history.blocks.isNotEmpty) {
+          try {
+            await current._presentation!.applyBlocks(
+              history.blocks,
+              ChatPlacement.append,
+            );
+          } catch (error) {
+            throw _TimelineApplyFailure(error);
+          }
+        }
+        if (!_ownsRead(read) ||
+            !identical(_current, current) ||
+            current.isRetired) {
+          return;
+        }
+        current.live.value = tail;
+      });
+      if (!_ownsRead(read) ||
           !identical(_current, current) ||
           current.isRetired) {
         return;
       }
-      current.live.value = live;
-    });
-    if (!_selected(selection, session) ||
-        !identical(_current, current) ||
-        current.isRetired) {
-      return;
+      if (history.blocks.isNotEmpty) {
+        current._firstOrder ??= history.blocks.first.blockOrder;
+        current._recordBatch(ChatPlacement.append);
+      }
+      _markPresentedInputs(
+        read.session.threadId,
+        history.blocks,
+        update.tail is ReplaceTail ? tail.blocks : const [],
+      );
+      if (history.blocks.isNotEmpty) {
+        _publishState(
+          hasNewOutput: current.mode == TimelineDisplayMode.history,
+        );
+      }
     }
-    if (batch.blocks.isNotEmpty || batch.placement != ChatPlacement.append) {
-      current._recordBatch(batch.placement);
-    }
-    _markPresentedInputs(session.threadId, batch);
-    if (batch.placement == ChatPlacement.prepend) {
-      current._before = batch.before;
-      current._hasOlder = batch.before != null;
-      _publishState(isLoadingOlder: false, olderError: null);
-    } else if (batch.blocks.isNotEmpty) {
-      _publishState(hasNewOutput: current.mode == TimelineDisplayMode.history);
-    }
-  });
+    if (!_ownsRead(read)) return;
+    read.through = history.throughOrder;
+    read.cursor = update.next;
+    _publishState(
+      connection: TimelineConnectionPhase.ready,
+      connectionError: null,
+    );
+  }
 
   Future<void> _set(
-    int selection,
-    ConversationSession session,
-    TimelineBatch batch,
-    LiveDisplayWindow live,
+    _TimelineRead read,
+    HistoryDelta batch,
+    TailSnapshot live,
   ) async {
+    final session = read.session;
     final next = TimelineDisplayLease(
       threadId: session.threadId,
       generation: ++_generation,
       demand: _readDemand!,
-      content: session.content,
+      reader: read.reader!,
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
@@ -720,8 +914,12 @@ final class TimelineSessionOwner {
     try {
       final presentation = next._presentation!;
       await next._mutate(() async {
-        await presentation.applyTimeline(batch);
-        next.live.value = live;
+        try {
+          await presentation.applyBlocks(batch.blocks, ChatPlacement.set);
+        } catch (error) {
+          throw _TimelineApplyFailure(error);
+        }
+        if (_ownsRead(read)) next.live.value = live;
       });
     } catch (_) {
       _preparingDisplays.remove(next);
@@ -729,28 +927,33 @@ final class TimelineSessionOwner {
       rethrow;
     }
     _preparingDisplays.remove(next);
-    if (!_selected(selection, session)) {
+    if (!_ownsRead(read)) {
       _retire(next);
       return;
     }
     next._before = batch.before;
-    next._recordBatch(batch.placement);
+    next._firstOrder = batch.blocks.firstOrNull?.blockOrder;
+    next._recordBatch(ChatPlacement.set);
     next._hasOlder = batch.before != null;
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
-    _markPresentedInputs(session.threadId, batch);
+    _markPresentedInputs(session.threadId, batch.blocks, live.blocks);
     _olderInFlight = null;
     if (previous != null) _retire(previous);
     _publishState(isLoadingOlder: false, olderError: null, hasNewOutput: false);
   }
 
-  void _markPresentedInputs(String threadId, TimelineBatch batch) {
+  void _markPresentedInputs(
+    String threadId,
+    List<DisplayBlock> history,
+    List<LiveDisplayBlock> tail,
+  ) {
     final inputIds = <String>[
-      for (final block in batch.blocks)
+      for (final block in history)
         if (block.body case SingleDisplayBlock(:final record))
           if (record.atom.source case InputChatSource(:final inputId)) inputId,
-      for (final block in batch.live?.blocks ?? const <LiveDisplayBlock>[])
+      for (final block in tail)
         if (block.body case SingleDisplayBlock(:final record))
           if (record.atom.source case InputChatSource(:final inputId)) inputId,
     ];
@@ -919,9 +1122,7 @@ final class TimelineSessionOwner {
       if (scope is! TimelineQueryScope) {
         throw const StaleConversationScope();
       }
-      // The SDK performs IO outside admission, then resolves only after the same
-      // captured consumer applied the Prepend. Do not insert the returned batch twice.
-      await scope.loadTimelineOlder(
+      final page = await scope.loadTimelineOlder(
         before: before,
         demand: _readDemand ?? current.demand,
       );
@@ -930,9 +1131,47 @@ final class TimelineSessionOwner {
           !scope.isActive) {
         return;
       }
-      if (current._before == before) {
-        throw const ConversationContinuityError('History page did not advance');
-      }
+      await _serialize(() async {
+        if (!identical(_current, current) ||
+            current.isRetired ||
+            !scope.isActive ||
+            current._before != before) {
+          return;
+        }
+        if (page.presentationVersion != presentationVersion ||
+            page.before == before) {
+          throw const ConversationContinuityError('Invalid history page');
+        }
+        var order = 0;
+        for (final block in page.blocks) {
+          if (block.blockOrder <= order || block.blockOrder > page.ceiling) {
+            throw const ConversationContinuityError('Invalid history range');
+          }
+          order = block.blockOrder;
+        }
+        if (page.blocks.isNotEmpty &&
+            current._firstOrder != null &&
+            page.blocks.last.blockOrder >= current._firstOrder!) {
+          throw const ConversationContinuityError('History pages overlap');
+        }
+        await current._mutate(
+          () => current._presentation!.applyBlocks(
+            page.blocks,
+            ChatPlacement.prepend,
+          ),
+        );
+        if (!identical(_current, current) ||
+            current.isRetired ||
+            !scope.isActive) {
+          return;
+        }
+        if (page.blocks.isNotEmpty) {
+          current._firstOrder = page.blocks.first.blockOrder;
+        }
+        current._before = page.before;
+        current._hasOlder = page.before != null;
+        current._recordBatch(ChatPlacement.prepend);
+      });
       _publishState(isLoadingOlder: false, olderError: null);
     } catch (error) {
       if (identical(_current, current) && !current.isRetired) {
@@ -993,6 +1232,7 @@ final class TimelineSessionOwner {
   ) async {
     final pending = Future.wait<void>([
       _commits,
+      for (final read in _reads.toList()) read.join(),
       ?_olderInFlight,
       for (final lease in leases) lease.released,
     ]);
@@ -1010,6 +1250,12 @@ final class TimelineSessionOwner {
     }
     return CloseReport(
       unresolved: [
+        for (final read in _reads)
+          UnresolvedResource(
+            owner: 'timeline-reader:${read.session.threadId}',
+            attemptId: AttemptId(read.selection),
+            reason: read.closeError ?? StateError('Reader is still closing'),
+          ),
         for (final lease in leases)
           if (!lease.isReleased)
             UnresolvedResource(
@@ -1025,12 +1271,42 @@ final class TimelineSessionOwner {
   }
 }
 
-final class _TimelineConsumer implements TimelineBatchConsumer {
-  const _TimelineConsumer(this.owner, this.selection, this.session);
+final class _TimelineRead implements Observation {
+  _TimelineRead(this.owner, this.selection, this.session, this.restarts);
   final TimelineSessionOwner owner;
   final int selection;
   final ConversationSession session;
+  final int restarts;
+  TimelineReader? reader;
+  ViewCursor? cursor;
+  int? through;
+  Future<void>? task;
+  Object? closeError;
   @override
-  Future<void> applyTimeline(TimelineBatch batch, LiveDisplayWindow live) =>
-      owner._accept(selection, session, batch, live);
+  bool isCancelled = false;
+  @override
+  bool get isPaused => false;
+  @override
+  void cancel() {
+    isCancelled = true;
+    reader?.requestClose();
+  }
+
+  @override
+  void pause() => throw UnsupportedError('Timeline reader cannot be paused');
+  @override
+  void resume() {}
+  Future<void> join() async {
+    cancel();
+    await task;
+    if (closeError != null) {
+      try {
+        await reader?.close();
+        closeError = null;
+        owner._reads.remove(this);
+      } catch (error) {
+        closeError = error;
+      }
+    }
+  }
 }
