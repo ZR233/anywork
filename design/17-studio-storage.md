@@ -754,6 +754,8 @@ CREATE INDEX conversation_display_unfinished
 
 PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，冻结后保持创建位置。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
 
+展示预算沿原可靠通道统一计算：当前行和观察内容持续由 Store 计费，准备批次只计自身容器及被替换后仍由原队列保留的未耐久旧版本，避免共享 Arc 重复计费。流式摘要替换产生的旧头计费保留在原 effect 的批次元数据中，随对应提交释放；耐久确认只减少 Store 计费，不为仍可变行临时新增未受理的预算。受理按准备完成后的 Store 规模核算，失败保留原义务，不依赖界面确认。
+
 正常路径不删除已接纳块，也不使用 RemoveEmpty。始终空且无附件的正文不建块，曾可见的权威终值变空则保留既有边界并显示 FinalEmptyAfterContent。
 
 ### 单一展示位置的保全迁移

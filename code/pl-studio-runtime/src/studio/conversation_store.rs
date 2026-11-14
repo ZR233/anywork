@@ -328,25 +328,49 @@ impl ConversationStore {
         LiveProjection::complete_prepared(&mut prepared, plan.records().clone(), display);
         prepared.current_state = None;
         let prepared = Arc::new(prepared);
-        channel.set_projection_retention(super::storage::thread_writer::ProjectionRetention {
+        let previous_retention = super::storage::thread_writer::ProjectionRetention {
             resident_bytes: retained
                 .projection
                 .retained_bytes()
                 .saturating_add(pending.extra_retained_bytes()),
             pending: Some(super::storage::thread_writer::PendingProjectionRetention {
-                sequence: prepared.sequence,
-                prepared_bytes: prepared.retained_bytes(),
+                sequence: pending.prepared.sequence,
+                prepared_bytes: pending.prepared.retained_bytes(),
             }),
-        })?;
-        channel.prepare_with(Some(&pending.write), prepared.clone(), || {
-            self.session.admit_prepared(plan, || {
-                retained.projection.apply_display(display_state);
-                if let Some(source) = source {
-                    self.publication.apply(source);
+        };
+        let handoff = (|| {
+            channel.set_projection_retention(
+                super::storage::thread_writer::ProjectionRetention {
+                    resident_bytes: retained
+                        .projection
+                        .retained_after_display(&display_state)
+                        .saturating_add(pending.extra_retained_bytes()),
+                    pending: Some(super::storage::thread_writer::PendingProjectionRetention {
+                        sequence: prepared.sequence,
+                        prepared_bytes: prepared.retained_bytes(),
+                    }),
+                },
+            )?;
+            channel.prepare_with(Some(&pending.write), prepared.clone(), || {
+                self.session.admit_prepared(plan, || {
+                    retained.projection.apply_display(display_state);
+                    if let Some(source) = source {
+                        self.publication.apply(source);
+                    }
+                })?;
+                Ok(())
+            })
+        })();
+        if let Err(error) = handoff {
+            // Publication did not run: the original Store rows and pending batch
+            // still own the material. Restore their charge before releasing admission.
+            return match channel.set_projection_retention(previous_retention) {
+                Ok(()) => Err(error),
+                Err(retention) => {
+                    Err(error.context(format!("restoring retained projection budget: {retention}")))
                 }
-            })?;
-            Ok(())
-        })?;
+            };
+        }
         for item in prepared.completions.iter() {
             channel
                 .order_index()

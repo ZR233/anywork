@@ -277,7 +277,7 @@ void main() {
     final feed = await h.opened();
     final work = LiveDisplayBlock(
       id: 'work',
-      blockOrder: 1,
+      blockOrder: 2,
       state: DisplayBlockState.sealed,
       body: WorkDisplayBlock(
         timing: displayTiming(),

@@ -213,7 +213,7 @@ pub(in crate::studio) struct PresentationState {
     unready: BTreeSet<BlockOrder>,
     block_versions: BTreeMap<BlockOrder, u64>,
     member_versions: BTreeMap<(BlockOrder, MemberOrder), u64>,
-    block_batches: BTreeMap<u64, Vec<BlockOrder>>,
+    block_batches: BTreeMap<u64, HeaderBatch>,
     member_batches: BTreeMap<u64, Vec<(BlockOrder, MemberOrder)>>,
     resident_block_floor: Option<BlockOrder>,
     resident_member_floor: HashMap<BlockOrder, Option<MemberOrder>>,
@@ -232,8 +232,11 @@ pub(in crate::studio) struct PresentationState {
     applied_effect: u64,
     changes: Option<tokio::sync::watch::Sender<u64>>,
     retained: u64,
-    // Row payloads shared with the original reliable queue are charged there once.
-    shared_pending: u64,
+}
+
+struct HeaderBatch {
+    orders: Vec<BlockOrder>,
+    detached_bytes: u64,
 }
 
 impl Default for PresentationState {
@@ -264,7 +267,6 @@ impl Default for PresentationState {
             applied_effect: Default::default(),
             changes: Default::default(),
             retained: Default::default(),
-            shared_pending: 0,
         }
     }
 }
@@ -317,6 +319,12 @@ pub(in crate::studio) struct PresentationPlan {
     keys: BTreeSet<String>,
     positions: BTreeSet<(BlockOrder, MemberOrder)>,
     old_work: Option<BlockOrder>,
+}
+
+impl PresentationPlan {
+    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        self.next.retained_bytes()
+    }
 }
 
 // JSON's tuple encoding is unambiguous, including the typed source discriminant.
@@ -500,16 +508,22 @@ impl PresentationState {
             return;
         }
         let previous = header.thinking_summary.as_ref().map_or(0, String::len);
-        // This streaming replacement owns a new header allocation; the queued
-        // immutable header remains charged to its prepared effect until commit.
-        if self
+        // A queued version detached by streaming still needs one charge until its
+        // original effect commits. Keep that charge in the existing batch metadata;
+        // the mutable replacement remains charged to Store throughout confirmation.
+        if let Some(version) = self
             .block_versions
             .get(&order)
-            .is_some_and(|effect| *effect != 0)
+            .copied()
+            .filter(|effect| *effect != 0)
         {
-            self.shared_pending = self
-                .shared_pending
-                .saturating_sub(bytes(header.as_ref()).expect("validated header size"));
+            let detached = header_bytes(header.as_ref()).expect("validated header size");
+            let batch = self
+                .block_batches
+                .get_mut(&version)
+                .expect("pending header batch");
+            batch.detached_bytes = batch.detached_bytes.saturating_add(detached);
+            self.retained = self.retained.saturating_add(detached);
             self.block_versions.insert(order, 0);
         }
         let mut header = header.as_ref().clone();
@@ -560,7 +574,7 @@ impl PresentationState {
     }
 
     pub fn retained_bytes(&self) -> u64 {
-        self.retained.saturating_sub(self.shared_pending)
+        self.retained
     }
 
     #[cfg(test)]
@@ -789,7 +803,6 @@ impl PresentationState {
                 if let Some((_, content)) = self.observations.remove(&key) {
                     let bytes = content.data.len() as u64 + 192;
                     self.retained = self.retained.saturating_sub(bytes);
-                    self.shared_pending = self.shared_pending.saturating_sub(bytes);
                 }
             }
         }
@@ -811,9 +824,6 @@ impl PresentationState {
                     continue;
                 }
                 if version != 0 {
-                    self.shared_pending = self
-                        .shared_pending
-                        .saturating_sub(bytes(member.as_ref()).expect("validated member size"));
                     self.member_versions.insert(position, 0);
                 }
                 if !member.terminal && self.unready.contains(&position.0) {
@@ -841,11 +851,12 @@ impl PresentationState {
             .first_key_value()
             .is_some_and(|(at, _)| *at <= effect)
         {
-            let (_, orders) = self
+            let (_, batch) = self
                 .block_batches
                 .pop_first()
                 .expect("confirmed block batch");
-            for order in orders {
+            self.retained = self.retained.saturating_sub(batch.detached_bytes);
+            for order in batch.orders {
                 let Some(header) = self.blocks.get(&order) else {
                     continue;
                 };
@@ -854,9 +865,6 @@ impl PresentationState {
                     continue;
                 }
                 if version != 0 {
-                    self.shared_pending = self
-                        .shared_pending
-                        .saturating_sub(bytes(header.as_ref()).expect("validated header size"));
                     self.block_versions.insert(order, 0);
                 }
                 if !header.sealed {
@@ -1189,7 +1197,7 @@ impl PresentationState {
                 }
             }
         }
-        let delta = next.fold_visible(
+        let mut delta = next.fold_visible(
             effect,
             committed_at,
             DisplayInput {
@@ -1200,7 +1208,10 @@ impl PresentationState {
             completions,
             capture,
         )?;
-        next.shared_pending = self.shared_pending;
+        // Current rows are funded once by Store. When a pending version is
+        // replaced, move its previous Store charge into this original reliable
+        // batch; its immutable Arc is still held by an earlier queued effect.
+        let mut replaced = 0u64;
         for block in &delta.blocks {
             let order = block.header.block_order;
             if self
@@ -1208,13 +1219,8 @@ impl PresentationState {
                 .get(&order)
                 .is_some_and(|effect| *effect != 0)
             {
-                next.shared_pending = next
-                    .shared_pending
-                    .saturating_sub(bytes(self.blocks[&order].as_ref())?);
+                replaced = replaced.saturating_add(header_bytes(self.blocks[&order].as_ref())?);
             }
-            next.shared_pending = next
-                .shared_pending
-                .saturating_add(bytes(block.header.as_ref())?);
         }
         for member in &delta.members {
             if let Some(order) = self.by_id.get(&member.block_id) {
@@ -1224,20 +1230,12 @@ impl PresentationState {
                     .get(&position)
                     .is_some_and(|effect| *effect != 0)
                 {
-                    next.shared_pending = next
-                        .shared_pending
-                        .saturating_sub(bytes(self.members[&position].as_ref())?);
+                    replaced = replaced.saturating_add(bytes(self.members[&position].as_ref())?);
                 }
             }
-            next.shared_pending = next.shared_pending.saturating_add(bytes(member.as_ref())?);
         }
-        next.shared_pending = next.shared_pending.saturating_add(
-            delta
-                .contents
-                .iter()
-                .map(|content| content.data.len() as u64 + 192)
-                .sum::<u64>(),
-        );
+        let owned = Arc::get_mut(&mut delta).expect("unpublished display delta");
+        owned.retained_bytes = owned.retained_bytes.saturating_add(replaced);
         Ok((
             PresentationPlan {
                 next,
@@ -1287,7 +1285,13 @@ impl PresentationState {
                 .or_insert(Some(MemberOrder(1)));
             orders.push(order);
         }
-        self.block_batches.insert(delta.effect_seq, orders);
+        self.block_batches.insert(
+            delta.effect_seq,
+            HeaderBatch {
+                orders,
+                detached_bytes: 0,
+            },
+        );
         let mut changed = Vec::new();
         for member in &delta.members {
             let order = self.by_id[&member.block_id];
@@ -1306,7 +1310,6 @@ impl PresentationState {
         self.next_order = next.next_order;
         self.applied_effect = next.applied_effect;
         self.retained = next.retained;
-        self.shared_pending = next.shared_pending;
         if let Some(changes) = &self.changes
             && *changes.borrow() != self.member_change
         {
@@ -1597,13 +1600,13 @@ impl PresentationState {
             contents,
             retained_bytes: 0,
         };
-        delta.retained_bytes = bytes(&delta)?.saturating_add(
-            delta
-                .contents
-                .iter()
-                .map(|content| content.data.len() as u64 + 192)
-                .sum::<u64>(),
-        );
+        // Row and observation Arcs are shared with Store, which keeps their
+        // charge until reclamation. The batch owns only its collection shells
+        // plus any previous pending versions transferred by plan_visible.
+        delta.retained_bytes = std::mem::size_of::<PreparedDisplayDelta>() as u64
+            + (delta.blocks.capacity() * std::mem::size_of::<DisplayBlockWrite>()) as u64
+            + (delta.members.capacity() * std::mem::size_of::<Arc<DisplayMemberWrite>>()) as u64
+            + (delta.contents.capacity() * std::mem::size_of::<Arc<ChatContent>>()) as u64;
         self.applied_effect = effect;
         Ok(Arc::new(delta))
     }
@@ -2453,30 +2456,63 @@ mod tests {
     }
 
     #[test]
-    fn shared_pending_rows_transfer_their_charge_to_durable_mutable_rows() -> Result<()> {
+    fn shared_rows_remain_funded_and_confirmation_only_releases_their_charge() -> Result<()> {
         let mut s = state();
         let started = at_effect(atom("tool", ChatAtomKind::ToolCall, false), 1);
-        let pending = s.prepare(1, 10, &[started], &[], &[])?;
-        assert!(pending.retained_bytes > 0);
-        assert_eq!(
-            s.retained_bytes(),
-            0,
-            "the same queued Arcs must not be charged again by Store indexes"
+        let pending = s.prepare(1, 10, std::slice::from_ref(&started), &[], &[])?;
+        let resident = s.retained_bytes();
+        assert!(
+            resident > pending.retained_bytes,
+            "the pending batch must not charge the shared row payload again"
         );
         s.confirm_cut(1, 0, 1)?;
-        assert!(
-            s.retained_bytes() > 0,
-            "durable mutable rows remain resident after the queue releases its charge"
+        assert_eq!(
+            s.retained_bytes(),
+            resident,
+            "mutable rows must already be funded before the writer releases its batch"
         );
         let terminal = at_effect(atom("tool", ChatAtomKind::ToolCall, true), 2);
-        s.prepare(2, 20, &[terminal], &[], &[])?;
-        assert_eq!(s.retained_bytes(), 0);
+        let completed = s.prepare(2, 20, &[terminal], &[], &[])?;
+        assert!(s.retained_bytes() > completed.retained_bytes);
+        let before = s.retained_bytes();
         s.confirm_cut(2, 0, 1)?;
         assert_eq!(s.members.len(), 0);
+        assert!(s.retained_bytes() > 0 && s.retained_bytes() < before);
+
+        let mut streaming = state();
+        let first = streaming.prepare(1, 10, &[started], &[], &[])?;
+        streaming.observe_thinking_summary("streamed title");
+        let before = streaming.retained_bytes();
+        streaming.confirm_cut(1, 0, 1)?;
         assert!(
-            s.retained_bytes() > 0,
-            "the appendable work header is still owned by Store"
+            streaming.retained_bytes() < before,
+            "the detached queued header charge must end at its original commit"
         );
+        assert!(streaming.retained_bytes() > first.retained_bytes);
+
+        let mut queued = state();
+        let first = queued.prepare(
+            1,
+            10,
+            &[at_effect(atom("tool", ChatAtomKind::ToolCall, false), 1)],
+            &[],
+            &[],
+        )?;
+        let old_bytes = header_bytes(&first.blocks[0].header)? + bytes(first.members[0].as_ref())?;
+        let second = queued.prepare(
+            2,
+            20,
+            &[at_effect(atom("tool", ChatAtomKind::ToolCall, true), 2)],
+            &[],
+            &[],
+        )?;
+        assert!(
+            second.retained_bytes >= old_bytes,
+            "replaced pending versions still held by the original queue must keep their charge"
+        );
+        let before = queued.retained_bytes();
+        queued.confirm_cut(2, 0, 1)?;
+        assert!(queued.retained_bytes() <= before);
         Ok(())
     }
     fn timing(h: &DisplayHeader) -> &WorkTiming {

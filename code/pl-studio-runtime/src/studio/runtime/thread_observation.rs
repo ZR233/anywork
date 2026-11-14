@@ -4722,6 +4722,26 @@ mod storage_fault_tests {
         assert_eq!(store.session().head_seq(), 0);
         assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
         owner_a.retained.pending.as_mut().unwrap().prepared = frozen;
+        owner_a.publish_retained()?;
+        let funded = sink.pressure(&thread.id).thread_bytes;
+        owner_a.retained.pending.as_mut().unwrap().write = Arc::new(write.as_ref().clone());
+        let rejected = store
+            .admit_prepared(&binding_a, &channel, &mut owner_a.retained)
+            .err()
+            .context("a different write Arc must reject the handoff")?;
+        assert!(
+            rejected
+                .to_string()
+                .contains("original effect is not this channel's accepted write")
+        );
+        assert_eq!(
+            sink.pressure(&thread.id).thread_bytes,
+            funded,
+            "failed publication must restore the original Store and pending-batch charge"
+        );
+        assert_eq!(store.session().head_seq(), 0);
+        assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
+        owner_a.retained.pending.as_mut().unwrap().write = write.clone();
         let original = store.admit_prepared(&binding_a, &channel, &mut owner_a.retained)?;
         let record = original
             .completions

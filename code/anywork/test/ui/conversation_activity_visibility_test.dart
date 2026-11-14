@@ -854,7 +854,7 @@ void main() {
         );
         final work = LiveDisplayBlock(
           id: 'plan-work',
-          blockOrder: 1,
+          blockOrder: lease.live.value!.readyFrontier + 2,
           state: DisplayBlockState.open,
           source: const ForegroundTurnChatSource(turnId: 'background-turn'),
           body: WorkDisplayBlock(
@@ -1051,7 +1051,7 @@ void main() {
             blocks: [
               LiveDisplayBlock(
                 id: 'older-output',
-                blockOrder: 0,
+                blockOrder: work.blockOrder - 1,
                 state: completed
                     ? DisplayBlockState.sealed
                     : DisplayBlockState.open,
@@ -1156,7 +1156,7 @@ void main() {
 
         final output = LiveDisplayBlock(
           id: 'plan-output',
-          blockOrder: 2,
+          blockOrder: work.blockOrder + 1,
           state: DisplayBlockState.open,
           source: const ForegroundTurnChatSource(turnId: 'turn'),
           body: SingleDisplayBlock(

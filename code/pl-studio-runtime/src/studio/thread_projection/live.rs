@@ -1557,6 +1557,23 @@ impl LiveProjection {
     /// A frame while many final parts remain resident therefore still visits those report entries;
     /// the identity accumulator does not make the whole retention query constant-time.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        self.retained_without_display().saturating_add(
+            self.presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retained_bytes(),
+        )
+    }
+
+    pub(in crate::studio) fn retained_after_display(
+        &self,
+        plan: &super::presentation::PresentationPlan,
+    ) -> u64 {
+        self.retained_without_display()
+            .saturating_add(plan.retained_bytes())
+    }
+
+    fn retained_without_display(&self) -> u64 {
         let mut bytes = self
             .items_bytes
             .saturating_add(self.facts_bytes)
@@ -1567,12 +1584,6 @@ impl LiveProjection {
                     + RETAINED_ENTRY_OVERHEAD
             }))
             .saturating_add(self.current.retained_bytes());
-        bytes = bytes.saturating_add(
-            self.presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retained_bytes(),
-        );
         bytes = bytes
             .saturating_add(
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
