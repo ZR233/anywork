@@ -760,9 +760,26 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let mut sealed_threads = 0usize;
     let mut seen_run_sealed = false;
     let mut seen_child_spawn = false;
+    let mut seen_child_input = false;
+    let mut seen_spawn_completion = false;
+
+    let (child_thread, parent_thread) = events
+        .iter()
+        .find_map(|event| match &event.body {
+            EventBodyV1::AgentRegistered {
+                thread_id,
+                parent_thread_id: Some(parent_thread),
+                parent_agent_id: Some(_),
+                spawn_tool_call_id: Some(call),
+                ..
+            } if call == "spawn" => Some((thread_id, parent_thread)),
+            _ => None,
+        })
+        .context("registered child and its direct parent")?;
 
     for (idx, ev) in events.iter().enumerate() {
         assert_eq!(ev.event_seq, idx as u64 + 1);
+        assert_eq!(ev.run_id, manifest.run_id);
         match &ev.body {
             EventBodyV1::RunStarted {
                 manifest_sha256, ..
@@ -790,8 +807,39 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             }
             EventBodyV1::InferenceFinished { .. } => seen_inference += 1,
             EventBodyV1::Completion {
-                payload, contents, ..
+                atom,
+                payload,
+                contents,
+                ..
             } => {
+                if ev.thread_id.as_ref() == Some(child_thread)
+                    && matches!(atom.source, pl_protocol::ChatSourceId::InboxMessage { .. })
+                {
+                    assert_eq!(atom.kind, pl_protocol::ChatAtomKind::Text);
+                    assert_eq!(
+                        atom.text_channel,
+                        Some(pl_protocol::ThreadTextChannel::ParentAgent)
+                    );
+                    let body = contents
+                        .iter()
+                        .find(|content| content.role == Some(pl_protocol::ChatContentRole::Body))
+                        .context(
+                            "child task body must be exported as an input, not model output",
+                        )?;
+                    assert_eq!(
+                        std::fs::read(export_dir.join(&body.path))?,
+                        CHILD_INPUT.as_bytes()
+                    );
+                    seen_child_input = true;
+                }
+                if ev.thread_id.as_ref() == Some(parent_thread)
+                    && atom
+                        .tool
+                        .as_ref()
+                        .is_some_and(|tool| tool.call_id == "spawn")
+                {
+                    seen_spawn_completion = true;
+                }
                 let p_bytes = std::fs::read(export_dir.join(&payload.path))?;
                 assert_eq!(p_bytes.len() as u64, payload.byte_length);
                 assert_eq!(
@@ -826,6 +874,11 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     }
     assert!(seen_agents >= 2, "expected root + child agents");
     assert!(seen_child_spawn, "expected child spawnToolCallId");
+    assert!(seen_child_input, "expected original parent-to-child input");
+    assert!(
+        seen_spawn_completion,
+        "expected the parent spawn observation"
+    );
     assert!(seen_skills, "expected explicit skill provenance");
     assert!(seen_inference >= 4, "expected root + child inferences");
     assert!(
