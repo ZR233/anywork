@@ -226,12 +226,61 @@ mod tests {
     use super::*;
     use pl_protocol::{ChatSourceId, DisplayBlockBody, DisplayBlockRef, WorkTiming};
 
+    const THREAD: &str = "display-snapshot-migration";
+
+    #[tokio::test]
+    async fn schema22_preparation_rejects_missing_structure_and_earlier_pending_migrations()
+    -> Result<()> {
+        async fn snapshot(db: &DatabaseConnection) -> Result<Vec<String>> {
+            Ok(db
+                .query_all_raw(statement(
+                    "SELECT json_array(type,name,tbl_name,sql) AS fact FROM sqlite_schema
+                     UNION ALL SELECT json_array(version,applied_at) FROM seaql_migrations
+                     ORDER BY fact",
+                    vec![],
+                ))
+                .await?
+                .iter()
+                .map(|row| row.try_get("", "fact"))
+                .collect::<std::result::Result<Vec<_>, _>>()?)
+        }
+
+        for (damage, diagnostic) in [
+            (
+                "DROP INDEX conversation_display_current_work",
+                "unique display tail index is missing",
+            ),
+            (
+                "DELETE FROM seaql_migrations WHERE version='m20261108_000001_history_source_classification'",
+                "schema 22 has pending earlier content migrations",
+            ),
+        ] {
+            let (_dir, db) = work_snapshots::tests::fixture().await?;
+            Migrator {
+                thread_id: THREAD.into(),
+                execution_identity: None,
+                bot_root: None,
+            }
+            .up(&db, Some(1))
+            .await?;
+            db.execute_unprepared(damage).await?;
+            let before = snapshot(&db).await?;
+            let error = super::super::prepare(&db, THREAD, Preparation::Schema, None)
+                .await
+                .expect_err("inconsistent schema22 must be rejected before migration");
+            assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
+            assert_eq!(version(&db).await?, 22);
+            assert_eq!(snapshot(&db).await?, before);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn nonempty_upgrade_preserves_published_order_original_bytes_and_rolls_back_before_retry()
     -> Result<()> {
         let (_dir, db) = work_snapshots::tests::fixture().await?;
         let migrator = Migrator {
-            thread_id: "display-snapshot-migration".into(),
+            thread_id: THREAD.into(),
             execution_identity: None,
             bot_root: None,
         };
@@ -393,13 +442,12 @@ mod tests {
         db.execute_unprepared("UPDATE history_meta SET display_published_through=2 WHERE id=1;
 
             CREATE TRIGGER reject_display_version BEFORE UPDATE OF schema_version ON history_meta WHEN NEW.schema_version=23 BEGIN SELECT RAISE(ABORT,'controlled migration failure'); END;").await?;
-        let error = migrator
-            .up(&db, Some(1))
+        let error = super::super::prepare(&db, THREAD, Preparation::Schema, None)
             .await
             .expect_err("injected failure must roll back the entire migration including DDL");
         assert!(
-            error.to_string().contains("controlled migration failure"),
-            "{error}"
+            format!("{error:#}").contains("controlled migration failure"),
+            "{error:#}"
         );
         assert_eq!(version(&db).await?, 22);
         assert!(
@@ -428,7 +476,8 @@ mod tests {
         );
         db.execute_unprepared("DROP TRIGGER reject_display_version")
             .await?;
-        migrator.up(&db, Some(1)).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         validate(&db).await?;
         let heads = conversation::display::block_page(&db, 0, 4, 10, true).await?;
         assert_eq!(

@@ -509,6 +509,15 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 demand_conversation::validate_tables(db).await?;
             }
             match version {
+                22 => {
+                    work_snapshots::validate(db).await?;
+                    ensure!(
+                        pending
+                            .iter()
+                            .all(|step| is_lifecycle_migration(step.name())),
+                        "schema 22 has pending earlier content migrations; existing data preserved"
+                    );
+                }
                 19..=21 => {
                     immutable_completion_runs::validate_preserved(db).await?;
                     ensure!(
