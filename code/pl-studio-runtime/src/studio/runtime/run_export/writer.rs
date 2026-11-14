@@ -1231,10 +1231,24 @@ impl WriterWorker {
             }
         }
 
-        let trace_complete = self.sealed && fatal.is_none() && native_clean;
         let final_usage = built_usage;
 
-        let (events_sha256, event_count) = self.measure_events_file().await;
+        let (events_sha256, event_count) = match self.measure_events_file().await {
+            Ok((hash, count)) => (Some(hash), count),
+            Err(error) => {
+                self.sealed = false;
+                if fatal.is_none() {
+                    fatal = Some(ExecutionErrorV1 {
+                        stage: ExecutionErrorStage::Export,
+                        code: "exportMeasureFailed".into(),
+                        message: error.to_string(),
+                        turn_failure: None,
+                    });
+                }
+                (None, self.last_event_seq.unwrap_or(0))
+            }
+        };
+        let trace_complete = self.sealed && fatal.is_none() && native_clean;
         let reason = if trace_complete {
             None
         } else if let Some(err) = &fatal {
@@ -1315,23 +1329,21 @@ impl WriterWorker {
         Ok(())
     }
 
-    async fn measure_events_file(&self) -> (Option<String>, u64) {
-        let Ok(mut file) = File::open(&self.events_path).await else {
-            return (None, self.last_event_seq.unwrap_or(0));
-        };
+    async fn measure_events_file(&self) -> Result<(String, u64)> {
+        let mut file = File::open(&self.events_path).await?;
         let mut hasher = Sha256::new();
         let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
         loop {
-            match file.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => hasher.update(&buf[..n]),
-                Err(_) => return (None, self.last_event_seq.unwrap_or(0)),
+            let count = file.read(&mut buf).await?;
+            if count == 0 {
+                break;
             }
+            hasher.update(&buf[..count]);
         }
-        (
-            Some(hex::encode(hasher.finalize())),
+        Ok((
+            hex::encode(hasher.finalize()),
             self.last_event_seq.unwrap_or(0),
-        )
+        ))
     }
 }
 
