@@ -706,6 +706,9 @@ impl PresentationState {
         self.durable = published;
         self.next_order = next_order;
         self.applied_effect = effect;
+        // Passive windows use this saved effect as their view revision. Keep the
+        // same baseline when execution attaches to the existing read lease.
+        self.revision = effect;
         self.resident_block_floor = successor(next_order).map(BlockOrder);
         for header in headers {
             ensure!(
@@ -2706,6 +2709,11 @@ mod tests {
             vec![s.blocks[&BlockOrder(1)].as_ref().clone()],
             vec![],
         )?;
+        let saved_revision = 2; // The passive window uses the saved display effect.
+        assert!(
+            cold.capture(None, 1, None, 0).revision >= saved_revision,
+            "execution attach must not make the existing cold Timeline window regress"
+        );
         let mut next = atom("resumed", ChatAtomKind::Reasoning, false);
         next.source = ChatSourceId::ForegroundTurn {
             turn_id: "resumed-turn".into(),
@@ -2715,6 +2723,10 @@ mod tests {
             status: ChatActiveStatus::Running,
         };
         cold.prepare(3, 100_000, &[next], &[], &[])?;
+        assert!(
+            cold.capture(None, 1, None, 0).revision >= saved_revision,
+            "continuing the restored tail must remain acceptable to the same client lease"
+        );
         assert_eq!(cold.blocks.len(), 1);
         assert_eq!(cold.blocks[&BlockOrder(1)].id, id);
         assert_eq!(cold.blocks[&BlockOrder(1)].next_member, 2);

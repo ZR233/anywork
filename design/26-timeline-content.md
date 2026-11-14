@@ -136,6 +136,8 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 
 ## 26.5 展示协议与同切面交付
 
+冷只读窗口以已保存的展示 effect 初始化视图版本；执行附加沿用该基线，后续结构变化再递增，保证同一读取资格接续时版本不倒退。该基线只服务视图版本，不参与块、成员或完成原件的顺序判断。
+
 公共展示协议为 presentation_version=6，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/block_order/body。Work 仅持 WorkTiming（可空 startedAt、可空 finishedAt，均为 Unix 秒；旧组缺少可靠时间时保留 null）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
 
 
