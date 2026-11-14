@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'agy_call_validator.dart';
+import 'agy_json_evidence.dart';
 
 // Decode only formal ACP raw values or one same-call JSON content container,
 // followed by the existing single MCP structuredContent envelope.
@@ -106,11 +107,7 @@ final class AgyHostTrace extends AgyCallValidator<AcpConversationToolItem> {
         'rawOutputType': call.fields.rawOutput?.runtimeType.toString(),
         ..._contentDiagnostics(call, safeCommands, markers),
         if (canonicalName(call.fields.name) != null) ...{
-          'rawInput': _diagnosticJson(
-            _value(call.fields.rawInput),
-            safeCommands,
-            markers,
-          ),
+          ..._inputDiagnostics(call.fields.rawInput, safeCommands, markers),
           'rawOutput': _diagnosticJson(
             _value(call.fields.rawOutput),
             safeCommands,
@@ -119,6 +116,36 @@ final class AgyHostTrace extends AgyCallValidator<AcpConversationToolItem> {
         },
       },
   ];
+}
+
+Map<String, Object?> _inputDiagnostics(
+  AcpJsonValue? raw,
+  Set<String> safeCommands,
+  Set<String> markers,
+) {
+  dynamic value;
+  try {
+    value = _value(raw);
+  } on StateError {
+    // An unsupported original input must not hide the primary failure while
+    // writing a snapshot. Business input()/matching remain strict and unchanged.
+    return {
+      'rawInputState': 'unrepresentable',
+      'rawInputType': raw.runtimeType.toString(),
+      'rawInput': {'unsupportedType': raw.runtimeType.toString()},
+    };
+  }
+  return {
+    'rawInputState': raw == null
+        ? 'missing'
+        : raw is AcpJsonNull
+        ? 'null'
+        : 'present',
+    'rawInputType': _jsonType(value),
+    'rawInput': _diagnosticJson(value, safeCommands, markers),
+    if (value is Map<String, dynamic>)
+      'rawInputFingerprint': agyArgumentsFingerprint(value),
+  };
 }
 
 bool _hasRawOutput(AcpConversationToolItem call) =>

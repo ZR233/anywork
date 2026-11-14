@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 
 import 'agy_call_validator.dart';
 import 'agy_host_trace.dart';
+import 'agy_json_evidence.dart';
 
 const agyHostEvidenceFilter =
     'warn,pl_studio_runtime::acp_host_call_evidence=trace';
@@ -97,6 +98,7 @@ final class AgyHostRecord {
         'isError': isError,
         'file': file,
         'line': line,
+        'argumentsFingerprint': agyArgumentsFingerprint(arguments),
         'arguments': agyEvidenceDiagnostic(
           arguments,
           safeCommands: commands,
@@ -427,7 +429,7 @@ final class AgyHostEvidenceLog {
             'hostCallIds': available.map((r) => r.hostCallId).toList(),
             'callCount': available.length,
             'argumentsMultisetSha256': sha256
-                .convert(utf8.encode(jsonEncode(_canonical(expected))))
+                .convert(utf8.encode(jsonEncode(agyCanonicalJson(expected))))
                 .toString(),
             'pairing': 'multiset equality only; no ID-to-ID mapping',
           },
@@ -525,24 +527,15 @@ dynamic _freeze(dynamic value) => switch (value) {
   List list => List<dynamic>.unmodifiable(list.map(_freeze)),
   _ => value,
 };
-dynamic _canonical(dynamic value) {
-  if (value is Map<String, dynamic>) {
-    final keys = value.keys.toList()..sort();
-    return {for (final key in keys) key: _canonical(value[key])};
-  }
-  if (value is List) return value.map(_canonical).toList();
-  return value;
-}
-
 String _key(String tool, Map<String, dynamic> args) =>
-    jsonEncode([tool, _canonical(args)]);
+    jsonEncode([tool, agyCanonicalJson(args)]);
 String _identity(AgyHostRecord r) => jsonEncode([
   r.pid,
   r.caller,
   r.hostCallId,
   r.toolId,
-  _canonical(r.arguments),
-  _canonical(r.value),
+  agyCanonicalJson(r.arguments),
+  agyCanonicalJson(r.value),
   r.isError,
 ]);
 void _add(Map<String, int> map, String key) => map[key] = (map[key] ?? 0) + 1;
