@@ -1551,6 +1551,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn http_auth_tools_and_instance_shutdown_are_isolated() -> Result<()> {
         let evidence = EvidenceBuffer::default();
+        // Match the IPC test's warn -> TRACE scopes. Keeping both dispatches alive
+        // prevents uncaptured concurrent calls from caching this shared callsite as
+        // never through tracing-core's single-dispatch fast path.
+        let _baseline = capture_evidence(evidence.clone(), "warn");
         let _capture = capture_evidence(
             evidence.clone(),
             "warn,pl_studio_runtime::acp_host_call_evidence=trace",
@@ -1656,7 +1660,12 @@ mod tests {
             let records = evidence_records(&evidence)?;
             ensure!(
                 records.len() == 1,
-                "one HTTP call must emit one evidence record"
+                "one HTTP call must emit one evidence record; observed {}, scoped TRACE enabled {}",
+                records.len(),
+                tracing::enabled!(
+                    target: "pl_studio_runtime::acp_host_call_evidence",
+                    tracing::Level::TRACE
+                )
             );
             check_evidence(
                 &records[0],
