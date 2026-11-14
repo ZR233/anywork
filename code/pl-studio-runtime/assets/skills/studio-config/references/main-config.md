@@ -7,6 +7,25 @@ to create accounts from templates and preserve their provider-specific metadata.
 External edits require explicit settings reload; Settings saves validate and write
 atomically. A successful save is not proof of provider, usage API or MCP health.
 
+## Desktop diagnostic logging
+
+Desktop diagnostics read the Studio host's startup environment, not the SSH
+workspace or an ACP definition's `env`. A valid `ANYWORK_LOG_LEVEL` (`error`,
+`warn`, `info`, `debug`, `trace`) takes precedence over `RUST_LOG`; otherwise
+`RUST_LOG` accepts tracing EnvFilter directives. The default is `warn`. Restart
+the isolated application to apply startup logging changes; settings reload does
+not replace its process-wide subscriber.
+
+`pl_studio_runtime::acp_host_call_evidence=trace` records the original Host MCP
+domain result with its bound caller and host call ID in the existing log. It is
+disabled at the default level. A global `trace` level also enables this target and
+may record complete arguments and results, as may protocol-library TRACE logs.
+Use payload tracing only for explicitly authorized, disposable synthetic-data
+acceptance processes; do not enable it for everyday conversations or upload raw
+logs. To select a narrow target, leave `ANYWORK_LOG_LEVEL` unset and use a scoped
+`RUST_LOG` directive in that process's launch environment. This is not an ACP/MCP
+configuration key, a business result store, a recovery mechanism or a peer ACK.
+
 ## Noninteractive CLI execution
 
 `anywk exec` requires explicit `--studio-home`, `--cwd`, `--account`, `--model`
@@ -252,5 +271,15 @@ business sessions retain their frozen definition after reload, disable or delete
 Local detection only checks help/version; it neither downloads nor logs in and
 does not prove authentication. ACP accounts are not Native model-route candidates.
 Never repair a conflict by deleting migration records, definitions or credentials.
+
+For SSH projects, keep this same host-side definition and login. Do not install
+agy or an ACP server on the SSH target, copy credentials, or add an SSH tunnel.
+Host MCP exposes the ordinary session command, file and enabled Git capabilities
+through the project's frozen execution binding. Existing tool capability switches
+and permission checks still apply; tool availability is not a sandbox for the
+external agent's own local tools. ACP uses a private host session working directory
+while business tool paths refer to the real SSH workspace. Command receipts,
+stdin, task wait/results and cancellation must use the original returned identity;
+an accepted cancellation is not proof of remote process exit.
 
 `runtime.tool_capabilities.exec` controls the `exec_command` / `write_stdin` command bindings. Native tools are called through Lua `exec`, which accepts `code`; shell commands use `tools.exec_command({command=...})` inside that program. Disabling command bindings still permits orchestration of other enabled tools. There is no legacy execution-mode switch.

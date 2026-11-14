@@ -66,7 +66,7 @@ impl StudioThreadFactory {
             return Ok(record.result());
         }
         let member = self.directory_member(id)?;
-        let pl_protocol::session::AgentBackend::Acp { reference } = &member.agent.backend else {
+        let pl_protocol::session::AgentBackend::Acp { .. } = &member.agent.backend else {
             anyhow::bail!("ACP close requires an ACP member");
         };
         let parent = member
@@ -87,7 +87,8 @@ impl StudioThreadFactory {
             )
             .await?;
             ensure!(
-                identity.matches_root(&reference.cwd),
+                self.services.store.workspace_identity(id).await?.as_ref() == Some(&identity)
+                    && identity.matches_root(&lease.path),
                 "ACP execution workspace changed"
             );
             Some(OwnedWorktreeBinding { lease, identity })
@@ -171,12 +172,8 @@ impl StudioThreadFactory {
         &self,
         id: &str,
         project: &crate::studio::WorkspaceRecord,
-        cwd: &str,
+        business_root: &str,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            project.ssh_alias.is_none(),
-            "ACP requires a local workspace"
-        );
         let frozen = self
             .services
             .store
@@ -184,7 +181,7 @@ impl StudioThreadFactory {
             .await?
             .ok_or_else(|| anyhow::anyhow!("ACP member has no physical workspace identity"))?;
         let actual = self
-            .resolve_workspace_identity(project, std::path::Path::new(cwd))
+            .resolve_workspace_identity(project, std::path::Path::new(business_root))
             .await?;
         anyhow::ensure!(frozen == actual, "ACP physical workspace identity changed");
         if let Some(lease) = self.services.worktrees.get(id) {

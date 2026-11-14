@@ -61,7 +61,6 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
     String? serviceName,
     String? brandKey,
     @Default(false) bool submitting,
-    @Default(false) bool isRemoteSsh,
     @Default(false) bool serviceEnabled,
     @Default(<AttachmentDraftView>[])
     List<AttachmentDraftView> stagedAttachments,
@@ -70,8 +69,7 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
 
   bool get canEditDraft => !submitting;
 
-  bool get canCreate =>
-      accountId != null && serviceEnabled && !isRemoteSsh && !submitting;
+  bool get canCreate => accountId != null && serviceEnabled && !submitting;
 }
 
 enum AcpCapabilityKind {

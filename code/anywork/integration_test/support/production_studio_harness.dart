@@ -16,6 +16,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:path/path.dart' as p;
 
 /// Narrow integration-test host for the production Studio shell.
 ///
@@ -49,16 +50,30 @@ final class ProductionStudioHarness {
     await artifacts.create(recursive: true);
 
     final graph = createProductionAppGraph();
-    await graph.initialize();
-    if (graph.client.bootstrapState.value.failure case final failure?) {
-      throw StateError('Production Studio bootstrap failed: $failure');
-    }
-    await _verifyDirectoryObservation(graph);
-    return ProductionStudioHarness._(
+    final harness = ProductionStudioHarness._(
       binding: binding,
       graph: graph,
       artifacts: artifacts,
     );
+    try {
+      await graph.initialize();
+      if (graph.client.bootstrapState.value.failure case final failure?) {
+        throw StateError('Production Studio bootstrap failed: $failure');
+      }
+      await _verifyDirectoryObservation(graph);
+      return harness;
+    } catch (error, stack) {
+      try {
+        await harness.close();
+      } catch (cleanup) {
+        await File(p.join(artifacts.path, 'startup-cleanup-error.json'))
+            .writeAsString(
+              jsonEncode({'errorType': cleanup.runtimeType.toString()}),
+              flush: true,
+            );
+      }
+      Error.throwWithStackTrace(error, stack);
+    }
   }
 
   static Future<void> _verifyDirectoryObservation(AppGraph graph) async {
@@ -144,12 +159,21 @@ final class ProductionStudioHarness {
 
   Future<StudioProject> openProject(
     ProductionStudioScene scene,
-    String path,
-  ) async {
-    if (!await Directory(path).exists()) {
-      throw StateError('Synthetic project directory does not exist: $path');
+    String path, {
+    String? sshAlias,
+  }) async {
+    if (sshAlias == null) {
+      if (!await Directory(path).exists()) {
+        throw StateError('Synthetic project directory does not exist: $path');
+      }
+      await graph.client.directoryCommands.openProject(path);
+    } else {
+      final opened = await graph.client.directoryCommands.openRemoteProject(
+        sshAlias,
+        path,
+      );
+      if (!opened) throw StateError('Remote project was not selected');
     }
-    await graph.client.directoryCommands.openProject(path);
     final projectId = graph.client.selection.state.selectedProjectId;
     late StudioProject project;
     await scene.until(() {
@@ -162,7 +186,10 @@ final class ProductionStudioHarness {
       project = matches.single;
       return true;
     }, 'canonical project directory contains the opened project');
-    if (!await FileSystemEntity.identical(project.path, path)) {
+    final samePath = sshAlias == null
+        ? await FileSystemEntity.identical(project.path, path)
+        : project.path == path;
+    if (!samePath || project.sshAlias != sshAlias) {
       throw StateError(
         'Opened project does not identify the requested directory',
       );

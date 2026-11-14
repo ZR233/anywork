@@ -41,6 +41,7 @@ pub mod lsp;
 pub mod command;
 pub mod exec;
 pub mod execution;
+pub mod invocation;
 pub mod remote;
 
 pub mod container;

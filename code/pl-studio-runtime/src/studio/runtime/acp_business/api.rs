@@ -37,7 +37,8 @@ struct MemberOpen {
     session_record: SessionDirectoryRecord,
     previous: Option<AgentDirectoryRecord>,
     intent: AcpOpenIntent,
-    cwd: String,
+    cwd: Option<String>,
+    business_root: String,
     role: String,
     title: Option<String>,
     usage: Option<crate::studio::WorkspaceUsageLease>,
@@ -103,9 +104,10 @@ impl AcpBusinessOwner {
             .await?
             .context("ACP workspace is missing")?;
         let cwd = reference.cwd.clone();
+        let business_root = self.factory.acp_business_root(target, &member.session);
         let usage = self.factory.reserve_workspace_use(target, &project).await?;
         self.factory
-            .verify_acp_workspace(target, &project, &cwd)
+            .verify_acp_workspace(target, &project, &business_root)
             .await?;
         let identity = self
             .events
@@ -120,7 +122,8 @@ impl AcpBusinessOwner {
             session_record: member.session,
             previous: Some(member.agent.clone()),
             intent: AcpOpenIntent::Load(reference.acp_session_id.clone()),
-            cwd,
+            cwd: Some(cwd),
+            business_root,
             role: member.agent.role,
             title: member.agent.title,
             usage: Some(usage),
@@ -158,10 +161,6 @@ impl AcpBusinessOwner {
             .factory
             .prepare_acp_child_workspace(request, profile.workspace_mode)
             .await?;
-        ensure!(
-            prepared.project.ssh_alias.is_none(),
-            "ACP child requires a local workspace"
-        );
         let pending = self.begin_open(MemberOpen {
             owner: owner.clone(),
             identity: prepared.child_identity,
@@ -170,7 +169,8 @@ impl AcpBusinessOwner {
             session_record: prepared.parent.session,
             previous: None,
             intent: AcpOpenIntent::New,
-            cwd: prepared.assignment.root.clone(),
+            cwd: None,
+            business_root: prepared.assignment.root.clone(),
             role: profile.definition.definition_id.clone(),
             title: Some(request.task_summary.as_str().to_owned()),
             usage: Some(prepared.workspace_usage),
@@ -222,6 +222,7 @@ impl AcpBusinessOwner {
             previous,
             intent,
             cwd,
+            business_root,
             role,
             title,
             usage,
@@ -258,15 +259,6 @@ impl AcpBusinessOwner {
             let mut started = Some(started);
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
-                    let cwd_path = std::path::PathBuf::from(&cwd);
-                    let launch = acp_launch::resolve_launch(
-                        &store,
-                        &definition,
-                        &cwd_path,
-                        &resources.cancellation,
-                    )
-                    .await
-                    .map_err(projection::launch_failure)?;
                     let usage = match usage {
                         Some(usage) => usage,
                         None => factory
@@ -276,12 +268,60 @@ impl AcpBusinessOwner {
                                 projection::preparation("ACP workspace admission failed")
                             })?,
                     };
-                    factory
-                        .assign_workspace_use(&usage, &project, &cwd_path)
+                    let cwd = factory
+                        .prepare_acp_protocol_cwd(
+                            &thread_id,
+                            &project,
+                            &business_root,
+                            cwd.as_deref(),
+                        )
                         .await
-                        .map_err(|_| {
-                            projection::preparation("ACP workspace identity is unavailable")
-                        })?;
+                        .map_err(|error| projection::preparation(&error.to_string()))?;
+                    let cwd_path = std::path::PathBuf::from(&cwd);
+                    if project.ssh_alias.is_some() {
+                        let binding = factory
+                            .prepare_acp_workspace(
+                                &thread_id,
+                                &project,
+                                &business_root,
+                                &usage,
+                                session_record.workspace_mode,
+                                &resources.cancellation,
+                            )
+                            .await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                        let tools = super::super::acp_workspace_tools::WorkspaceTools::new(
+                            thread_id.clone(),
+                            binding,
+                            &config
+                                .read()
+                                .map_err(|error| projection::preparation(&error.to_string()))?
+                                .config,
+                        );
+                        resources
+                            .retain_workspace_tools(tools, usage.clone())
+                            .await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                    } else {
+                        factory
+                            .assign_workspace_use(
+                                &usage,
+                                &project,
+                                std::path::Path::new(&business_root),
+                            )
+                            .await
+                            .map_err(|_| {
+                                projection::preparation("ACP workspace identity is unavailable")
+                            })?;
+                    }
+                    let launch = acp_launch::resolve_launch(
+                        &store,
+                        &definition,
+                        &cwd_path,
+                        &resources.cancellation,
+                    )
+                    .await
+                    .map_err(projection::launch_failure)?;
                     let intent = match intent {
                         AcpOpenIntent::New => sdk::Open::New,
                         AcpOpenIntent::Load(id) => sdk::Open::Load(id.into()),
@@ -304,6 +344,7 @@ impl AcpBusinessOwner {
                                     },
                                     mcp_source,
                                 )
+                                .await
                                 .map_err(|error| projection::preparation(&error.to_string()))?,
                             ),
                             expected_server_version: launch.expected_server_version,
@@ -444,9 +485,6 @@ impl StudioRuntime {
             .read_project(&request.workspace_id)
             .await?
             .context("ACP workspace is missing")?;
-        if project.ssh_alias.is_some() {
-            return Err(projection::failure(sdk::Error::Unsupported).into());
-        }
         self.ensure_project_thread_admission_open(&project.id)?;
         let now = crate::studio::ids::unix_seconds();
         let mut _admission = None;
@@ -500,14 +538,17 @@ impl StudioRuntime {
             };
             ensure!(
                 id == &reference.acp_session_id
-                    && (agent.parent_agent_id.is_some() || reference.cwd == session.workspace_path),
+                    && (project.ssh_alias.is_some()
+                        || agent.parent_agent_id.is_some()
+                        || reference.cwd == session.workspace_path),
                 "ACP remote session reference differs"
             );
-            if agent.parent_agent_id.is_some() {
-                self.thread_factory
-                    .verify_acp_workspace(&agent.thread_id, &project, &reference.cwd)
-                    .await?;
-            }
+            let business_root = self
+                .thread_factory
+                .acp_business_root(&agent.thread_id, &session);
+            self.thread_factory
+                .verify_acp_workspace(&agent.thread_id, &project, &business_root)
+                .await?;
             let agent_id = agent.agent_id.clone();
             let thread_id = agent.thread_id.clone();
             (session, Some(agent), agent_id, thread_id)
@@ -571,11 +612,14 @@ impl StudioRuntime {
         );
         let cwd = match &previous {
             Some(agent) => match &agent.backend {
-                AgentBackend::Acp { reference } => reference.cwd.clone(),
+                AgentBackend::Acp { reference } => Some(reference.cwd.clone()),
                 _ => unreachable!("ACP association checked"),
             },
-            None => session_record.workspace_path.clone(),
+            None => None,
         };
+        let business_root = self
+            .thread_factory
+            .acp_business_root(&thread_id, &session_record);
         let role = previous.as_ref().map_or_else(
             || crate::config::ROOT_AGENT_ROUTE_KEY.into(),
             |agent| agent.role.clone(),
@@ -590,6 +634,7 @@ impl StudioRuntime {
             previous,
             intent: request.intent,
             cwd,
+            business_root,
             role,
             title,
             usage: None,

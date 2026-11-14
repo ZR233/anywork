@@ -1532,7 +1532,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerWorkspaceModeLabel => 'Session workspace';
 
   @override
-  String get composerWorkspaceModeLocal => 'Local directory';
+  String get composerWorkspaceModeLocal => 'Project directory';
 
   @override
   String get composerWorkspaceModeWorktree => 'New worktree';
@@ -6386,7 +6386,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerNewProject => 'New project…';
 
   @override
-  String get composerFixedLocalDirectory => 'Fixed local directory';
+  String get composerFixedLocalDirectory => 'Fixed project directory';
 
   @override
   String get composerWorktreeHint =>
@@ -6503,17 +6503,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpStartHandshakeNote =>
-      'Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.';
+      'ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.';
 
   @override
   String get acpStartCreateAction => 'Start ACP session';
 
   @override
   String get acpStartCreatingAction => 'Starting…';
-
-  @override
-  String get acpStartSshUnsupported =>
-      'ACP sessions do not support SSH remote projects yet. Select a local project.';
 
   @override
   String get acpStartExistingAttachmentsHint =>

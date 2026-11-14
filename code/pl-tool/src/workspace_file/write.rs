@@ -4,6 +4,7 @@ use super::{
     independent::{FileCapability, granted_backend},
 };
 use crate::{file::WriteFileInput, workspace::ToolWorkspace};
+use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -42,6 +43,16 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
         &self,
         input: Self::Args,
         context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
+    pub async fn execute_workspace(
+        &self,
+        input: WriteFileInput,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         self.workspace
             .ensure_workspace_writable()

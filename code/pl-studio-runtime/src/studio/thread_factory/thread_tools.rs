@@ -252,18 +252,10 @@ impl StudioThreadFactory {
         } else {
             match &preparation {
                 CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
-                CatalogPreparation::Initial => match &project.ssh_alias {
-                    Some(server) => Some(
-                        self.services
-                            .ssh_manager
-                            .open_workspace_binding(server, root.to_string_lossy().into_owned())
-                            .await
-                            .map_err(|error| {
-                                resource_error("open child remote workspace", error)
-                            })?,
-                    ),
-                    None => None,
-                },
+                CatalogPreparation::Initial => self
+                    .open_remote_workspace(project, &root)
+                    .await
+                    .map_err(|error| resource_error("open child remote workspace", error))?,
             }
         };
         if cancellation.is_cancelled() {

@@ -63,9 +63,9 @@ impl Owner {
         if task.status != task::TaskStatus::Running
             || task.cancel_requested
             || self
-                .task_tokens
-                .get(&caller)
-                .is_none_or(CancellationToken::is_cancelled)
+                .executions
+                .token(&caller)
+                .is_none_or(|token| token.is_cancelled())
         {
             return Err(ThreadError::TaskAccessExpired);
         }
@@ -173,9 +173,9 @@ impl Owner {
         if task.status != task::TaskStatus::Running
             || task.cancel_requested
             || self
-                .task_tokens
-                .get(&previous.task_id)
-                .is_none_or(CancellationToken::is_cancelled)
+                .executions
+                .token(&previous.task_id)
+                .is_none_or(|token| token.is_cancelled())
         {
             return Err(ThreadError::TaskAccessExpired);
         }

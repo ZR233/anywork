@@ -71,6 +71,12 @@ Linux CI 另通过同次 workflow 的受控交接共享验收工具、debug brid
 执行编译的作业管理 Cargo 缓存；默认 CI desktop 分片与 native 作业只恢复同次产物，不恢复或保存 Rust 缓存。同一 job 内的步骤共享本地 `target`，无需额外交接整份目录；没有上游编译产物的独立验证作业保留自身缓存。
 具体身份、计时与清理边界见[原生 GUI 观察与隔离](../../../design/24-testing.md#243-原生-gui-观察与隔离)。
 
+桌面准备身份覆盖整个 checkout 的 HEAD、已跟踪差异及未跟踪源码，不只覆盖所选 case。
+从 `test-project` 准备开始到整次命令终态，须协调停止同 checkout 的源码、Git 和生成写入；
+其他文件的并行编辑也会使准备失效。收到 `desktop preparation source changed` 时保留原件，
+区分用例尚未启动与业务断言失败；先建立稳定源码窗口再显式安排新尝试，不跳过身份校验。
+只读调查或各自会话产物准备可以并行，未知邻居 checkout 的进程不自动证明共享缓存争用。
+
 普通运行和构建不执行生成器或可写格式化。Riverpod、Freezed、本地化或 FRB 的生成与一致性检查入口为：
 
 ```powershell

@@ -2816,7 +2816,7 @@ abstract class AppLocalizations {
   /// No description provided for @composerWorkspaceModeLocal.
   ///
   /// In en, this message translates to:
-  /// **'Local directory'**
+  /// **'Project directory'**
   String get composerWorkspaceModeLocal;
 
   /// No description provided for @composerWorkspaceModeWorktree.
@@ -11352,7 +11352,7 @@ abstract class AppLocalizations {
   /// No description provided for @composerFixedLocalDirectory.
   ///
   /// In en, this message translates to:
-  /// **'Fixed local directory'**
+  /// **'Fixed project directory'**
   String get composerFixedLocalDirectory;
 
   /// No description provided for @composerWorktreeHint.
@@ -11568,7 +11568,7 @@ abstract class AppLocalizations {
   /// No description provided for @acpStartHandshakeNote.
   ///
   /// In en, this message translates to:
-  /// **'Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.'**
+  /// **'ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.'**
   String get acpStartHandshakeNote;
 
   /// No description provided for @acpStartCreateAction.
@@ -11582,12 +11582,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Starting…'**
   String get acpStartCreatingAction;
-
-  /// No description provided for @acpStartSshUnsupported.
-  ///
-  /// In en, this message translates to:
-  /// **'ACP sessions do not support SSH remote projects yet. Select a local project.'**
-  String get acpStartSshUnsupported;
 
   /// No description provided for @acpStartExistingAttachmentsHint.
   ///

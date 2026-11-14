@@ -96,6 +96,19 @@ impl AgentHost {
         Ok(self.identity.thread_id.to_string())
     }
 
+    pub(crate) async fn authorize_workspace_call(
+        &self,
+        context: &AgentCallContext,
+    ) -> Result<(), ControlError> {
+        let caller = self.caller(context)?;
+        let owner = self.owner()?;
+        owner
+            .ensure_agent_admission_open(&caller)
+            .map_err(ControlError::service)?;
+        Self::ensure_archive_execution_admission(&owner, &caller).await?;
+        self.validate_instance()
+    }
+
     pub(super) fn target_identity(
         &self,
         target: &str,

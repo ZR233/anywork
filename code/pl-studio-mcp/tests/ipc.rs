@@ -40,7 +40,7 @@ async fn domain_roundtrip_flow_control_limits_authentication_and_join() {
     assert!(!format!("{client:?}").contains(&capability));
     let catalog = client.catalog().await.unwrap();
     assert_eq!(catalog.len(), 1);
-    assert_eq!(catalog[0].operation.tool_name(), "anywork_wait_agent");
+    assert_eq!(catalog[0].tool_id, "anywork_fixture_echo");
 
     let wrong = IpcClient::connect(endpoint.clone(), uuid::Uuid::new_v4().to_string())
         .await

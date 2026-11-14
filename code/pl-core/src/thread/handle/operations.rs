@@ -195,7 +195,7 @@ impl ThreadHandle {
             publish,
             tools,
             pending: Default::default(),
-            task_tokens: Default::default(),
+            executions: Default::default(),
             nested_replies: Default::default(),
             nested_sequence: 0,
             nested_plans: Default::default(),

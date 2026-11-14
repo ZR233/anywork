@@ -1,4 +1,5 @@
 //! Command execution through the opaque Thread contract.
+use pl_agent_tool::Tool;
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 use pl_core::context::{OpaquePayload, ResourceReference};
@@ -214,7 +215,7 @@ impl<A: CommandOutputArchive> OutputRetryObligation for ArchiveRetentionObligati
 
 /// Input writer paired with an exec instance from the same Thread assembly.
 #[derive(Debug)]
-struct ThreadWriteStdinTool<B: CommandBackend> {
+pub struct ThreadWriteStdinTool<B: CommandBackend> {
     definition: pl_agent_tool::ToolDefinition,
     processes: Arc<CommandProcessManager<B>>,
 }
@@ -233,6 +234,25 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
         &self,
         input: OpaquePayload,
         context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B: CommandBackend> ThreadWriteStdinTool<B> {
+    pub fn new(
+        processes: Arc<CommandProcessManager<B>>,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
+        Self {
+            processes,
+            definition,
+        }
+    }
+    pub async fn execute_workspace(
+        &self,
+        input: OpaquePayload,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         let tool = pl_tool_command::write_stdin::WriteStdinTool::new(self.definition.clone());
         let result = tool
@@ -328,6 +348,16 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
+    pub async fn execute_workspace(
+        &self,
+        input: OpaquePayload,
+        context: crate::invocation::WorkspaceInvocation,
+    ) -> Result<ToolOutput, ToolError> {
         let task_id = safe_identity(&context.call_id);
         let (observer, previews) = super::progress::ExecOutputObserver::channel();
         let tool = pl_tool_command::exec::ExecTool::new(self.definition.clone());
@@ -337,7 +367,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 process: ThreadCommandPort {
                     processes: self.processes.clone(),
                     task_id: task_id.clone(),
-                    thread_id: context.thread_id.clone(),
+                    thread_id: context.owner_id.clone(),
                     observer,
                 },
                 allow_workspace_escape: match self.access {
@@ -350,7 +380,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 cancellation: context.cancellation.clone(),
             },
         );
-        let result = super::progress::drive(execution, previews, context.tasks.as_ref()).await;
+        let result = super::progress::drive(execution, previews, context.tasks.as_deref()).await;
         let mut result = result.map_err(|error| match error {
             pl_tool_command::exec::ExecError::InvalidInput(error) => {
                 super::ExecInputError(error).into_tool_error()
@@ -372,7 +402,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             }
             match super::capture_retention::retain(
                 &*self.archive,
-                &context.thread_id,
+                &context.owner_id,
                 snapshot,
                 stream,
             )
@@ -383,14 +413,14 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                     let error = attach_archive_obligation(
                         error,
                         self.archive.clone(),
-                        &context.thread_id,
+                        &context.owner_id,
                         &context.call_id,
                         snapshot,
                         stream,
                     );
                     if let Some(fault) = error.source.downcast_ref::<OutputStorageFault>() {
                         report_output_storage_fault(
-                            context.tasks.as_ref(),
+                            context.tasks.as_deref(),
                             &Arc::new(fault.clone()),
                         )
                         .await;
@@ -488,14 +518,14 @@ fn attach_archive_obligation<A: CommandOutputArchive>(
 
 /// Reports one typed output fault through the running call's reliable channel, if it has one.
 async fn report_output_storage_fault(
-    tasks: Option<&pl_core::thread::TaskAccess>,
+    tasks: Option<&dyn crate::invocation::CommandTaskAccess>,
     fault: &Arc<OutputStorageFault>,
 ) {
     if let Some(tasks) = tasks {
         // A closed owner or a revoked executor still blocks admission through the return path below,
         // so a refused notification is not the only report; but it must never be silently dropped, so
         // the exact reason is surfaced instead of being discarded.
-        if let Err(error) = tasks.report_output_storage_fault(fault.clone()).await {
+        if let Err(error) = tasks.report_storage_fault(fault.clone()).await {
             tracing::warn!(%error, "the running call could not report its output storage fault early");
         }
     }
@@ -541,7 +571,7 @@ impl<B: CommandBackend> ProcessExecutor for ThreadCommandPort<B> {
 }
 struct ThreadInputPort<B: CommandBackend> {
     processes: Arc<CommandProcessManager<B>>,
-    tasks: Option<pl_core::thread::TaskAccess>,
+    tasks: Option<Arc<dyn crate::invocation::CommandTaskAccess>>,
 }
 impl<B: CommandBackend> ProcessInput for ThreadInputPort<B> {
     type Target = String;
@@ -551,7 +581,7 @@ impl<B: CommandBackend> ProcessInput for ThreadInputPort<B> {
             .tasks
             .as_ref()
             .ok_or_else(|| ToolError::new(ExecFailure::InvalidInput))?;
-        let target = access.get(receipt).map_err(ToolError::new)?;
+        let target = access.get(receipt)?;
         if target.tool_id == super::TOOL_EXEC
             && target.status != pl_core::thread::task::TaskStatus::Running
             && terminal_eof

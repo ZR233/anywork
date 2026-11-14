@@ -6,23 +6,37 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_co
 import 'package:anywork/src/features/conversation/composer/widgets/start_backend_selector.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path/path.dart' as p;
 
+import 'support/agy_remote_workspace.dart';
+import 'support/agy_phase_runner.dart';
+import 'support/agy_load_only.dart';
 import 'support/presentation_capture.dart';
 import 'support/production_studio_harness.dart';
 
 // Explicit live acceptance only. HOME is deliberately untouched: official agy
 // owns authentication. The caller must provide an empty, disposable Studio home
-// and synthetic project, both under ANYWORK_AGY_SANDBOX. No login is attempted.
+// under ANYWORK_AGY_SANDBOX. A local project is under the same sandbox; the
+// explicit SSH variant uses an independently provisioned remote fixture.
+// Neither variant attempts login or writes SSH configuration.
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
   testWidgets(
     'logged-in agy through the complete production ACP conversation shell',
     (tester) async {
+      if (Platform.environment['ANYWORK_AGY_LIVE'] != '1') {
+        throw StateError('Explicit live opt-in requires ANYWORK_AGY_LIVE=1');
+      }
+      final load = AgyLoadRequest.fromEnvironment(Platform.environment);
+      if (load != null) {
+        await runAgyLoadOnly(binding: binding, request: load);
+        return;
+      }
       String requiredEnvironment(String name) {
         final value = Platform.environment[name]?.trim();
         if (value == null || value.isEmpty) throw StateError('Supply $name');
@@ -34,11 +48,15 @@ void main() {
       ).resolveSymbolicLinks();
       final home = await Directory(requiredEnvironment('ANYWORK_HOME'))
           .resolveSymbolicLinks();
-      final projectPath = await Directory(
-        requiredEnvironment('ANYWORK_AGY_PROJECT'),
-      ).resolveSymbolicLinks();
+      final remote = AgyRemoteWorkspace.fromEnvironment();
+      final projectPath =
+          remote?.path ??
+          await Directory(requiredEnvironment('ANYWORK_AGY_PROJECT'))
+              .resolveSymbolicLinks();
       expect(p.equals(home, p.join(sandbox, 'studio-home')), isTrue);
-      expect(p.equals(projectPath, p.join(sandbox, 'project')), isTrue);
+      if (remote == null) {
+        expect(p.equals(projectPath, p.join(sandbox, 'project')), isTrue);
+      }
       final existing = await Directory(home).list().toList();
       expect(
         existing.map((entry) => p.basename(entry.path)),
@@ -47,13 +65,23 @@ void main() {
       expect(await Directory(p.join(home, 'data')).exists(), isFalse);
       expect(await File(p.join(home, 'config.toml')).exists(), isFalse);
       expect(await Directory(p.join(home, 'acp')).exists(), isFalse);
-      expect(
-        await File(p.join(projectPath, 'README.md')).readAsString(),
-        'Disposable ACP live acceptance workspace. No private data.\n',
-      );
+      if (remote == null) {
+        expect(
+          await File(p.join(projectPath, 'README.md')).readAsString(),
+          'Disposable ACP live acceptance workspace. No private data.\n',
+        );
+      } else {
+        await remote.verifyFixture();
+      }
       // Managed acceptance uses the product template and a verified installation
       // prepared under this isolated home's studio directory, never a raw command.
       final managed = Platform.environment['ANYWORK_AGY_MANAGED'] == '1';
+      if (remote != null && managed) {
+        throw StateError(
+          'Remote process evidence requires an explicit local '
+          'ANYWORK_AGY_COMMAND; managed installation is a separate scenario',
+        );
+      }
       final command = managed
           ? null
           : requiredEnvironment('ANYWORK_AGY_COMMAND');
@@ -65,12 +93,22 @@ void main() {
           Platform.environment['ANYWORK_AGY_ARGS'] ?? '["acp"]',
         ) as List<dynamic>;
         commandArgs = arguments.cast<String>();
+        if (remote != null) {
+          expect(commandArgs.first, 'acp');
+          expect(commandArgs, isNot(contains('--login')));
+          expect(
+            commandArgs,
+            isNot(contains('--dangerously-skip-permissions')),
+          );
+        }
       }
       final harness = await ProductionStudioHarness.start(
         binding: binding,
         artifactsEnvironmentVariable: 'ANYWORK_AGY_ARTIFACTS',
       );
-      addTearDown(harness.close);
+      Future<void>? shutdown;
+      Future<void> closeHarness() => shutdown ??= harness.close();
+      addTearDown(closeHarness);
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
       final graph = harness.graph;
@@ -79,10 +117,20 @@ void main() {
       final evidence = <String, Object?>{
         'platform': Platform.operatingSystem,
         'launchKind': managed ? 'managedAntigravityTemplate' : 'agyCli',
+        'workspaceKind': remote == null ? 'local' : 'ssh',
+        if (remote != null) 'remoteProjectPath': remote.path,
+        if (remote != null) 'sshAlias': remote.alias,
+        'coverage': remote == null
+            ? 'text-only conversation'
+            : 'remote file/command/STDIN/cancel/ACP child/process closure',
+        'verdict': 'running',
+        'overallAcceptance': 'Native mixed-direction regression is separate',
         'guiPid': pid,
         'promptCount': 0,
-        'permission': 'not requested by the text-only prompt; not covered',
-        'cancellation': 'not attempted; no artificial in-flight run',
+        'permission': remote == null
+            ? 'not requested by the text-only prompt; not covered'
+            : 'no auto-approval; unexpected permission requests fail',
+        'cancellation': remote == null ? 'not attempted' : 'pending evidence',
         'preparation':
             'public Client save/openProject; all business controls UI',
       };
@@ -97,6 +145,9 @@ void main() {
       }
 
       await record('production-shell-mounted');
+      if (remote != null) {
+        await remote.verifyServer(await graph.client.remote.listSshServers());
+      }
       evidence['geometry'] = await configurePresentationWindow(
         tester,
         logicalWidth: 1440,
@@ -105,6 +156,7 @@ void main() {
       );
       const serviceId = 'agy-live-acceptance';
       const serviceName = 'AGY live acceptance';
+      const childProfileId = 'agy-live-acceptance-child';
       final saved = await graph.acp.save(
         AcpAccountUpdateView(
           accountId: serviceId,
@@ -124,6 +176,35 @@ void main() {
         ),
         'saved isolated ACP definition is observed',
       );
+      if (remote != null) {
+        // Isolated Studio configuration only, through the ordinary public
+        // command also used by Settings. Never touch the operator's profiles.
+        await graph.client.settingsCommands.saveUserAgentProfile(
+          const AgentProfileDraft(
+            definition: AgentDefinitionView(
+              definitionId: childProfileId,
+              displayName: 'AGY acceptance child',
+              description: 'Synthetic remote ACP collaboration acceptance',
+              whenToUse: 'Only for the disposable live acceptance workspace',
+              source: '',
+              revision: '',
+              contentHash: '',
+            ),
+            binding: AcpAgentBindingView(accountId: serviceId),
+          ),
+        );
+        await scene.until(
+          () =>
+              graph.client.settings.state.agentProfiles?.data.profiles.any(
+                (profile) =>
+                    profile.id == childProfileId &&
+                    profile.enabled &&
+                    profile.binding is AcpAgentBindingView,
+              ) ==
+              true,
+          'isolated ACP child Profile is canonical before root creation',
+        );
+      }
       if (managed) {
         final authDemand = graph.acp.observeAuth();
         addTearDown(authDemand.release);
@@ -159,7 +240,11 @@ void main() {
         );
         await record('managed-connection-verified');
       }
-      final project = await harness.openProject(scene, projectPath);
+      final project = await harness.openProject(
+        scene,
+        projectPath,
+        sshAlias: remote?.alias,
+      );
       await scene.until(
         () => find.byType(StartBackendSelector).evaluate().length == 1,
         'project start page exposes backend selector',
@@ -178,8 +263,9 @@ void main() {
       );
       final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
       final prompt =
+          remote?.promptA('${marker}A') ??
           'Reply with exactly $marker and nothing else. Do not call tools, '
-          'run commands, use the network, or read or write any files.';
+              'run commands, use the network, or read or write any files.';
       await tester.enterText(
         find.descendant(
           of: find.byType(AcpStartComposerView),
@@ -250,6 +336,13 @@ void main() {
       });
       addTearDown(configWatch.cancel);
       final options = owner.state.configOptions;
+      if (remote != null) {
+        expect(
+          options,
+          isNotNull,
+          reason: 'Remote acceptance requires real configOptions',
+        );
+      }
       if (options != null) {
         final selects = options.where((option) {
           final kind = option.kind;
@@ -346,96 +439,26 @@ void main() {
       await scene.capture('agy-live-configured-shell');
       await record('real-configuration-confirmed');
 
-      evidence['promptCount'] = 1;
-      evidence['marker'] = marker;
-      await record('prompt-dispatch-once');
-      await tester.tap(
-        find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId))),
-      );
-      await scene.until(
-        () {
-          checkOwner();
-          return owner.state.lastCompleted != null;
-        },
-        'actual prompt terminal result',
-        timeout: const Duration(seconds: 120),
-      );
-      final completed = owner.state.lastCompleted!;
-      final result = completed.result;
-      expect(result, isA<AcpSuccessView<AcpPromptResponseView>>());
-      final stop =
-          (result as AcpSuccessView<AcpPromptResponseView>).value.stopReason;
-      expect(stop, AcpStopReasonView.endTurn);
-      expect(owner.state.activeRun, isNull);
-      expect(owner.state.sendPending, isFalse);
-      expect(draft.state.draft, isEmpty);
-      final userMessages = owner.state.content
-          .whereType<AcpConversationMessageItem>()
-          .where((item) => item.kind == AcpConversationMessageKind.user)
-          .toList();
-      evidence['userMessageCount'] = userMessages.length;
-      expect(userMessages, hasLength(1));
-      final userText = userMessages.single.chunks
-          .map((chunk) => chunk.content)
-          .whereType<AcpTextContentView>()
-          .map((block) => block.text)
-          .join();
-      expect(userText, prompt);
-      evidence['actualUserText'] = userText;
-      final text = owner.state.content
-          .whereType<AcpConversationMessageItem>()
-          .where((item) => item.kind == AcpConversationMessageKind.assistant)
-          .expand((item) => item.chunks)
-          .map((chunk) => chunk.content)
-          .whereType<AcpTextContentView>()
-          .map((block) => block.text)
-          .join();
-      expect(text.trim(), marker);
-      expect(owner.state.pendingPermissions, isEmpty);
-      evidence['stopReason'] = stop.name;
-      evidence['actualAssistantText'] = text;
-      await record('actual-text-and-end-turn-confirmed');
-      final assistantIndex = owner.state.content.lastIndexWhere(
-        (item) =>
-            item is AcpConversationMessageItem &&
-            item.kind == AcpConversationMessageKind.assistant,
-      );
-      final assistantItem = find.byKey(
-        ValueKey(AcpViewKeyValues.timelineItem(threadId, assistantIndex)),
-      );
-      await tester.scrollUntilVisible(
-        assistantItem,
-        250,
-        scrollable: find
-            .descendant(
-              of: find.byType(AcpConversationContentView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-        maxScrolls: 20,
-      );
-      await scene.until(
-        () => find
-            .descendant(
-              of: assistantItem,
-              matching: find.textContaining(marker, findRichText: true),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'real assistant text rendered in production content',
-      );
-      await scene.capture('agy-live-response-shell');
-      await record('real-text-and-end-turn-confirmed');
-      expect(tester.takeException(), isNull);
       expect(
         graph.client.project.state.projects!.values.any(
           (item) => item.id == project.id,
         ),
         isTrue,
       );
+      await runAgyAcceptancePhases(
+        scene: scene,
+        owner: owner,
+        remote: remote,
+        command: command,
+        marker: marker,
+        childProfileId: childProfileId,
+        evidence: evidence,
+        record: record,
+        closeHarness: closeHarness,
+      );
     },
-    skip: Platform.environment['ANYWORK_AGY_LIVE'] != '1',
-    timeout: const Timeout(Duration(minutes: 6)),
+    // Three independently bounded 240-second prompts, plus setup and closure.
+    timeout: const Timeout(Duration(minutes: 16)),
   );
 }
 

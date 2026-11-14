@@ -49,6 +49,7 @@ dev_dependencies:
     path: ../anywork_previews
   analyzer: 14.7.0
   args: 2.7.0
+  crypto: 3.0.8
   ffi: ^2.2.0
   win32: ^6.4.0
   flutter_test:

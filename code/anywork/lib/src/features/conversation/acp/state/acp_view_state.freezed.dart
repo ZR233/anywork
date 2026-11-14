@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$AcpStartComposerViewState {
 
- String get workspaceId; String get text; String? get accountId; String? get serviceName; String? get brandKey; bool get submitting; bool get isRemoteSsh; bool get serviceEnabled; List<AttachmentDraftView> get stagedAttachments; String? get failureMessage;
+ String get workspaceId; String get text; String? get accountId; String? get serviceName; String? get brandKey; bool get submitting; bool get serviceEnabled; List<AttachmentDraftView> get stagedAttachments; String? get failureMessage;
 /// Create a copy of AcpStartComposerViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,20 +27,20 @@ $AcpStartComposerViewStateCopyWith<AcpStartComposerViewState> get copyWith => _$
 @override
 bool operator ==(Object other) {
   final _this = this as AcpStartComposerViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpStartComposerViewState&&(identical(other.workspaceId, _this.workspaceId) || other.workspaceId == _this.workspaceId)&&(identical(other.text, _this.text) || other.text == _this.text)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.serviceName, _this.serviceName) || other.serviceName == _this.serviceName)&&(identical(other.brandKey, _this.brandKey) || other.brandKey == _this.brandKey)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&(identical(other.isRemoteSsh, _this.isRemoteSsh) || other.isRemoteSsh == _this.isRemoteSsh)&&(identical(other.serviceEnabled, _this.serviceEnabled) || other.serviceEnabled == _this.serviceEnabled)&&const DeepCollectionEquality().equals(other.stagedAttachments, _this.stagedAttachments)&&(identical(other.failureMessage, _this.failureMessage) || other.failureMessage == _this.failureMessage));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpStartComposerViewState&&(identical(other.workspaceId, _this.workspaceId) || other.workspaceId == _this.workspaceId)&&(identical(other.text, _this.text) || other.text == _this.text)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.serviceName, _this.serviceName) || other.serviceName == _this.serviceName)&&(identical(other.brandKey, _this.brandKey) || other.brandKey == _this.brandKey)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&(identical(other.serviceEnabled, _this.serviceEnabled) || other.serviceEnabled == _this.serviceEnabled)&&const DeepCollectionEquality().equals(other.stagedAttachments, _this.stagedAttachments)&&(identical(other.failureMessage, _this.failureMessage) || other.failureMessage == _this.failureMessage));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpStartComposerViewState;
-  return Object.hash(runtimeType,_this.workspaceId,_this.text,_this.accountId,_this.serviceName,_this.brandKey,_this.submitting,_this.isRemoteSsh,_this.serviceEnabled,const DeepCollectionEquality().hash(_this.stagedAttachments),_this.failureMessage);
+  return Object.hash(runtimeType,_this.workspaceId,_this.text,_this.accountId,_this.serviceName,_this.brandKey,_this.submitting,_this.serviceEnabled,const DeepCollectionEquality().hash(_this.stagedAttachments),_this.failureMessage);
 }
 
 @override
 String toString() {
   final _this = this as AcpStartComposerViewState;
-  return 'AcpStartComposerViewState(workspaceId: ${_this.workspaceId}, text: ${_this.text}, accountId: ${_this.accountId}, serviceName: ${_this.serviceName}, brandKey: ${_this.brandKey}, submitting: ${_this.submitting}, isRemoteSsh: ${_this.isRemoteSsh}, serviceEnabled: ${_this.serviceEnabled}, stagedAttachments: ${_this.stagedAttachments}, failureMessage: ${_this.failureMessage})';
+  return 'AcpStartComposerViewState(workspaceId: ${_this.workspaceId}, text: ${_this.text}, accountId: ${_this.accountId}, serviceName: ${_this.serviceName}, brandKey: ${_this.brandKey}, submitting: ${_this.submitting}, serviceEnabled: ${_this.serviceEnabled}, stagedAttachments: ${_this.stagedAttachments}, failureMessage: ${_this.failureMessage})';
 }
 
 
@@ -51,7 +51,7 @@ abstract mixin class $AcpStartComposerViewStateCopyWith<$Res>  {
   factory $AcpStartComposerViewStateCopyWith(AcpStartComposerViewState value, $Res Function(AcpStartComposerViewState) _then) = _$AcpStartComposerViewStateCopyWithImpl;
 @useResult
 $Res call({
- String workspaceId, String text, String? accountId, String? serviceName, String? brandKey, bool submitting, bool isRemoteSsh, bool serviceEnabled, List<AttachmentDraftView> stagedAttachments, String? failureMessage
+ String workspaceId, String text, String? accountId, String? serviceName, String? brandKey, bool submitting, bool serviceEnabled, List<AttachmentDraftView> stagedAttachments, String? failureMessage
 });
 
 
@@ -68,7 +68,7 @@ class _$AcpStartComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpStartComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? workspaceId = null,Object? text = null,Object? accountId = freezed,Object? serviceName = freezed,Object? brandKey = freezed,Object? submitting = null,Object? isRemoteSsh = null,Object? serviceEnabled = null,Object? stagedAttachments = null,Object? failureMessage = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? workspaceId = null,Object? text = null,Object? accountId = freezed,Object? serviceName = freezed,Object? brandKey = freezed,Object? submitting = null,Object? serviceEnabled = null,Object? stagedAttachments = null,Object? failureMessage = freezed,}) {
   return _then(AcpStartComposerViewState(
 workspaceId: null == workspaceId ? _self.workspaceId : workspaceId // ignore: cast_nullable_to_non_nullable
 as String,text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
@@ -76,7 +76,6 @@ as String,accountId: freezed == accountId ? _self.accountId : accountId // ignor
 as String?,serviceName: freezed == serviceName ? _self.serviceName : serviceName // ignore: cast_nullable_to_non_nullable
 as String?,brandKey: freezed == brandKey ? _self.brandKey : brandKey // ignore: cast_nullable_to_non_nullable
 as String?,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
-as bool,isRemoteSsh: null == isRemoteSsh ? _self.isRemoteSsh : isRemoteSsh // ignore: cast_nullable_to_non_nullable
 as bool,serviceEnabled: null == serviceEnabled ? _self.serviceEnabled : serviceEnabled // ignore: cast_nullable_to_non_nullable
 as bool,stagedAttachments: null == stagedAttachments ? _self.stagedAttachments : stagedAttachments // ignore: cast_nullable_to_non_nullable
 as List<AttachmentDraftView>,failureMessage: freezed == failureMessage ? _self.failureMessage : failureMessage // ignore: cast_nullable_to_non_nullable
@@ -165,10 +164,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool isRemoteSsh,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpStartComposerViewState() when $default != null:
-return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.isRemoteSsh,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
+return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
   return orElse();
 
 }
@@ -186,10 +185,10 @@ return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool isRemoteSsh,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)  $default,) {final _that = this;
 switch (_that) {
 case _AcpStartComposerViewState():
-return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.isRemoteSsh,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
+return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -206,10 +205,10 @@ return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool isRemoteSsh,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String workspaceId,  String text,  String? accountId,  String? serviceName,  String? brandKey,  bool submitting,  bool serviceEnabled,  List<AttachmentDraftView> stagedAttachments,  String? failureMessage)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpStartComposerViewState() when $default != null:
-return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.isRemoteSsh,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
+return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_that.brandKey,_that.submitting,_that.serviceEnabled,_that.stagedAttachments,_that.failureMessage);case _:
   return null;
 
 }
@@ -221,7 +220,7 @@ return $default(_that.workspaceId,_that.text,_that.accountId,_that.serviceName,_
 
 
 class _AcpStartComposerViewState extends AcpStartComposerViewState {
-  const _AcpStartComposerViewState({required this.workspaceId, required this.text, this.accountId, this.serviceName, this.brandKey, this.submitting = false, this.isRemoteSsh = false, this.serviceEnabled = false,  List<AttachmentDraftView> stagedAttachments = const <AttachmentDraftView>[], this.failureMessage}): _stagedAttachments = stagedAttachments,super._();
+  const _AcpStartComposerViewState({required this.workspaceId, required this.text, this.accountId, this.serviceName, this.brandKey, this.submitting = false, this.serviceEnabled = false,  List<AttachmentDraftView> stagedAttachments = const <AttachmentDraftView>[], this.failureMessage}): _stagedAttachments = stagedAttachments,super._();
 
 
 @override final  String workspaceId;
@@ -230,7 +229,6 @@ class _AcpStartComposerViewState extends AcpStartComposerViewState {
 @override final  String? serviceName;
 @override final  String? brandKey;
 @override@JsonKey() final  bool submitting;
-@override@JsonKey() final  bool isRemoteSsh;
 @override@JsonKey() final  bool serviceEnabled;
  final  List<AttachmentDraftView> _stagedAttachments;
 @override@JsonKey() List<AttachmentDraftView> get stagedAttachments {
@@ -251,18 +249,18 @@ _$AcpStartComposerViewStateCopyWith<_AcpStartComposerViewState> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpStartComposerViewState&&(identical(other.workspaceId, workspaceId) || other.workspaceId == workspaceId)&&(identical(other.text, text) || other.text == text)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.serviceName, serviceName) || other.serviceName == serviceName)&&(identical(other.brandKey, brandKey) || other.brandKey == brandKey)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&(identical(other.isRemoteSsh, isRemoteSsh) || other.isRemoteSsh == isRemoteSsh)&&(identical(other.serviceEnabled, serviceEnabled) || other.serviceEnabled == serviceEnabled)&&const DeepCollectionEquality().equals(other.stagedAttachments, _stagedAttachments)&&(identical(other.failureMessage, failureMessage) || other.failureMessage == failureMessage));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpStartComposerViewState&&(identical(other.workspaceId, workspaceId) || other.workspaceId == workspaceId)&&(identical(other.text, text) || other.text == text)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.serviceName, serviceName) || other.serviceName == serviceName)&&(identical(other.brandKey, brandKey) || other.brandKey == brandKey)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&(identical(other.serviceEnabled, serviceEnabled) || other.serviceEnabled == serviceEnabled)&&const DeepCollectionEquality().equals(other.stagedAttachments, _stagedAttachments)&&(identical(other.failureMessage, failureMessage) || other.failureMessage == failureMessage));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,workspaceId,text,accountId,serviceName,brandKey,submitting,isRemoteSsh,serviceEnabled,const DeepCollectionEquality().hash(_stagedAttachments),failureMessage);
+    return Object.hash(runtimeType,workspaceId,text,accountId,serviceName,brandKey,submitting,serviceEnabled,const DeepCollectionEquality().hash(_stagedAttachments),failureMessage);
 }
 
 @override
 String toString() {
-    return 'AcpStartComposerViewState(workspaceId: $workspaceId, text: $text, accountId: $accountId, serviceName: $serviceName, brandKey: $brandKey, submitting: $submitting, isRemoteSsh: $isRemoteSsh, serviceEnabled: $serviceEnabled, stagedAttachments: $stagedAttachments, failureMessage: $failureMessage)';
+    return 'AcpStartComposerViewState(workspaceId: $workspaceId, text: $text, accountId: $accountId, serviceName: $serviceName, brandKey: $brandKey, submitting: $submitting, serviceEnabled: $serviceEnabled, stagedAttachments: $stagedAttachments, failureMessage: $failureMessage)';
 }
 
 
@@ -273,7 +271,7 @@ abstract mixin class _$AcpStartComposerViewStateCopyWith<$Res> implements $AcpSt
   factory _$AcpStartComposerViewStateCopyWith(_AcpStartComposerViewState value, $Res Function(_AcpStartComposerViewState) _then) = __$AcpStartComposerViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- String workspaceId, String text, String? accountId, String? serviceName, String? brandKey, bool submitting, bool isRemoteSsh, bool serviceEnabled, List<AttachmentDraftView> stagedAttachments, String? failureMessage
+ String workspaceId, String text, String? accountId, String? serviceName, String? brandKey, bool submitting, bool serviceEnabled, List<AttachmentDraftView> stagedAttachments, String? failureMessage
 });
 
 
@@ -290,7 +288,7 @@ class __$AcpStartComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpStartComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? workspaceId = null,Object? text = null,Object? accountId = freezed,Object? serviceName = freezed,Object? brandKey = freezed,Object? submitting = null,Object? isRemoteSsh = null,Object? serviceEnabled = null,Object? stagedAttachments = null,Object? failureMessage = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? workspaceId = null,Object? text = null,Object? accountId = freezed,Object? serviceName = freezed,Object? brandKey = freezed,Object? submitting = null,Object? serviceEnabled = null,Object? stagedAttachments = null,Object? failureMessage = freezed,}) {
   return _then(_AcpStartComposerViewState(
 workspaceId: null == workspaceId ? _self.workspaceId : workspaceId // ignore: cast_nullable_to_non_nullable
 as String,text: null == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
@@ -298,7 +296,6 @@ as String,accountId: freezed == accountId ? _self.accountId : accountId // ignor
 as String?,serviceName: freezed == serviceName ? _self.serviceName : serviceName // ignore: cast_nullable_to_non_nullable
 as String?,brandKey: freezed == brandKey ? _self.brandKey : brandKey // ignore: cast_nullable_to_non_nullable
 as String?,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
-as bool,isRemoteSsh: null == isRemoteSsh ? _self.isRemoteSsh : isRemoteSsh // ignore: cast_nullable_to_non_nullable
 as bool,serviceEnabled: null == serviceEnabled ? _self.serviceEnabled : serviceEnabled // ignore: cast_nullable_to_non_nullable
 as bool,stagedAttachments: null == stagedAttachments ? _self._stagedAttachments : stagedAttachments // ignore: cast_nullable_to_non_nullable
 as List<AttachmentDraftView>,failureMessage: freezed == failureMessage ? _self.failureMessage : failureMessage // ignore: cast_nullable_to_non_nullable
