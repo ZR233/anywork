@@ -58,9 +58,19 @@ fn emit_git_commit_env() {
                 && let Some(ref_path) = head_content.trim().strip_prefix("ref: ")
             {
                 let target_ref = git_dir.join(ref_path.trim());
-                if target_ref.exists() {
-                    println!("cargo:rerun-if-changed={}", target_ref.display());
-                }
+                let common = fs::read_to_string(git_dir.join("commondir"))
+                    .map(|path| git_dir.join(path.trim()))
+                    .unwrap_or_else(|_| git_dir.clone());
+                let target_ref = if target_ref.exists() {
+                    target_ref
+                } else {
+                    common.join(ref_path.trim())
+                };
+                println!("cargo:rerun-if-changed={}", target_ref.display());
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    common.join("packed-refs").display()
+                );
             }
         }
     }
@@ -76,7 +86,7 @@ fn emit_git_commit_env() {
         return;
     }
     let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !commit.is_empty() && commit.chars().all(|ch| ch.is_ascii_hexdigit()) {
+    if commit.len() == 40 && commit.chars().all(|ch| ch.is_ascii_hexdigit()) {
         println!("cargo:rustc-env=PL_GIT_COMMIT={commit}");
     }
 }

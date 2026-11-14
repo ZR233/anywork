@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runId": "run-golden-0001",
+  "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
   "rootThreadId": "thread-root",
   "outcome": "completed",
   "executionOutcome": "completed",
@@ -25,7 +25,7 @@
   "costComplete": true,
   "trace": {
     "eventsPath": "events.jsonl",
-    "eventsSha256": "050c3735ee85962974a85692cd49e856c19b27f68e886bdbb790712c07eadf55",
+    "eventsSha256": "d8f3f83b8d6325c1009d62b85fb117eee972578780db6ae239c2557cd39d6eaa",
     "eventCount": 11,
     "lastEventSeq": 11,
     "sealed": true,
@@ -94,7 +94,7 @@
             "model": "vendor/golden-model",
             "contextWindow": 128000,
             "maxContextWindow": 128000,
-            "compactionThreshold": null
+            "autoCompactLimit": null
           },
           "totals": {
             "inferenceCount": 1,
@@ -157,7 +157,7 @@
             "model": "vendor/golden-model",
             "contextWindow": 128000,
             "maxContextWindow": 128000,
-            "compactionThreshold": null
+            "autoCompactLimit": null
           },
           "totals": {
             "inferenceCount": 1,

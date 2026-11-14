@@ -545,6 +545,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let huge_answer = format!("root finished {}\n", "L".repeat(320 * 1024));
 
     let child_stage = ReplyStage::new();
+    let root_stage = ReplyStage::new();
     let child = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -605,11 +606,11 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             "spawn",
             "agentId",
             2,
-            Reply::Sse(pl_provider_fixture::responses_text(
-                &huge_answer,
-                "root-done",
-                MODEL,
-            )),
+            root_stage.gated(
+                vec![serde_json::json!({"type":"response.created","response":{"id":"root-done","model":MODEL}})],
+                pl_provider_fixture::responses_text(&huge_answer, "root-done", MODEL)
+                    .into_iter().skip(1).collect(),
+            ),
         ),
         Step::agent_report(
             Protocol::ResponsesHttp,
@@ -698,6 +699,8 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let process = command.spawn()?;
     tokio::time::timeout(Duration::from_secs(60), child_stage.wait_reached()).await?;
     child_stage.release();
+    tokio::time::timeout(Duration::from_secs(60), root_stage.wait_reached()).await?;
+    root_stage.release();
     let result =
         tokio::time::timeout(Duration::from_secs(90), process.wait_with_output()).await??;
     assert_eq!(
@@ -732,7 +735,13 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let manifest_sha = pl_studio_runtime::export_sha256_hex(&run_bytes);
     let manifest_text = String::from_utf8(run_bytes)?;
     assert!(!manifest_text.contains("synthetic-secret-should-not-leak"));
-    assert!(manifest_text.contains("ANYWK_TEST_ENV_TOKEN"));
+    assert!(
+        manifest
+            .config_inputs
+            .iter()
+            .all(|entry| entry.redacted_summary.is_none())
+    );
+    uuid::Uuid::parse_str(&manifest.run_id)?;
     assert_eq!(manifest.schema_version, 1);
 
     let events_bytes = std::fs::read(export_dir.join("events.jsonl"))?;

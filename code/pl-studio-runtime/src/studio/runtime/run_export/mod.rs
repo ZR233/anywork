@@ -13,7 +13,7 @@ pub mod writer;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use pl_core::chat::Session;
@@ -43,7 +43,7 @@ use writer::{
 };
 
 use crate::StudioStore;
-use crate::studio::thread_projection::{BillingFact, PreparedAccounting};
+use crate::studio::thread_projection::PreparedAccounting;
 
 /// Host handle enabling atomic run export across `StudioRuntime` lifecycle stages.
 #[derive(Clone)]
@@ -95,6 +95,7 @@ pub(in crate::studio) struct RunExportCoordinator {
     queue: Arc<BoundedExportQueue>,
     shared_members: Arc<Mutex<SharedMemberState>>,
     state: Mutex<CoordinatorState>,
+    finalize: tokio::sync::Mutex<()>,
     run_cancel: CancellationToken,
     deadline_cancel: Mutex<Option<CancellationToken>>,
     writer_task: Mutex<Option<JoinHandle<()>>>,
@@ -116,13 +117,13 @@ struct CoordinatorState {
     primary_root_thread_id: Option<String>,
     admitted_effect_fingerprints: BTreeMap<String, BTreeMap<u64, String>>,
     report: Option<RunExportReport>,
-    finalized: bool,
 }
 
 impl RunExporter {
     /// Validates/prepares `--output-dir`, atomically writes `run.json` BEFORE runtime startup,
     /// starts the bounded writer task, and emits `runStarted` into `events.jsonl`.
     pub async fn start(options: RunExportOptions) -> Result<Self> {
+        uuid::Uuid::parse_str(&options.run_id)?;
         prepare_output_dir(&options.output_dir)?;
         let (manifest, manifest_sha256) = write_run_manifest(&options)?;
         let run_cancel = CancellationToken::new();
@@ -143,6 +144,7 @@ impl RunExporter {
             queue: queue.clone(),
             shared_members,
             state: Mutex::new(CoordinatorState::default()),
+            finalize: tokio::sync::Mutex::new(()),
             run_cancel,
             deadline_cancel: Mutex::new(None),
             writer_task: Mutex::new(Some(writer_task)),
@@ -262,7 +264,6 @@ impl RunExportCoordinator {
         }
         let initial_epoch = Some(reg.session.epoch().as_str().to_string());
         let initial_head_seq = reg.session.head_seq();
-        let weak_session = reg.session.downgrade();
 
         {
             let mut guard = self
@@ -274,7 +275,11 @@ impl RunExportCoordinator {
                     && existing.parent_agent_id == reg.parent_agent_id
                     && existing.role == reg.role
                     && existing.workspace_id == reg.workspace_id
-                    && existing.initial_effect_seq == reg.initial_effect_seq;
+                    && existing.initial_effect_seq == reg.initial_effect_seq
+                    && existing.parent_thread_id == reg.parent_thread_id
+                    && existing.spawn_tool_call_id == reg.spawn_tool_call_id
+                    && existing.session.epoch() == reg.session.epoch()
+                    && existing.initial_completion_seq == initial_head_seq;
                 if !matches {
                     self.queue.fail_permanently(ExecutionErrorV1 {
                         stage: ExecutionErrorStage::Export,
@@ -293,10 +298,13 @@ impl RunExportCoordinator {
                 MemberSnapshot {
                     agent_id: reg.agent_id.clone(),
                     parent_agent_id: reg.parent_agent_id.clone(),
+                    parent_thread_id: reg.parent_thread_id.clone(),
+                    spawn_tool_call_id: reg.spawn_tool_call_id.clone(),
                     role: reg.role.clone(),
                     workspace_id: reg.workspace_id.clone(),
                     initial_effect_seq: reg.initial_effect_seq,
-                    session: weak_session.clone(),
+                    session: reg.session.clone(),
+                    initial_completion_seq: initial_head_seq,
                     latest_usage: UsageSummary {
                         applied_sequence: reg.initial_effect_seq,
                         ..UsageSummary::default()
@@ -322,7 +330,35 @@ impl RunExportCoordinator {
             initial_completion_epoch: initial_epoch,
             initial_completion_seq: initial_head_seq,
         };
-        let _ = self.queue.admit(cmd, 512).await;
+        let metadata_bytes = match &cmd {
+            ExportCommand::AgentRegistered {
+                agent_id,
+                thread_id,
+                parent_agent_id,
+                parent_thread_id,
+                role,
+                workspace_id,
+                spawn_tool_call_id,
+                initial_completion_epoch,
+                ..
+            } => [
+                Some(agent_id),
+                Some(thread_id),
+                parent_agent_id.as_ref(),
+                parent_thread_id.as_ref(),
+                role.as_ref(),
+                Some(workspace_id),
+                spawn_tool_call_id.as_ref(),
+                initial_completion_epoch.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(std::mem::size_of::<ExportCommand>(), |bytes, text| {
+                bytes.saturating_add(text.len())
+            }),
+            _ => unreachable!(),
+        };
+        let _ = self.queue.admit(cmd, metadata_bytes).await;
     }
 
     /// Emits `skillsDiscovered` provenance for an enrolled run member from a frozen catalog.
@@ -349,7 +385,22 @@ impl RunExportCoordinator {
                 return;
             }
         };
-        let estimated = 256 + report.sources.len() * 96 + report.winners.len() * 128;
+        let estimated = match serde_json::to_vec(&report) {
+            Ok(bytes) => bytes
+                .len()
+                .saturating_mul(2)
+                .saturating_add(thread_id.len())
+                .saturating_add(std::mem::size_of::<ExportCommand>()),
+            Err(error) => {
+                self.queue.fail_permanently(ExecutionErrorV1 {
+                    stage: ExecutionErrorStage::Export,
+                    code: "skillsDiscoveryReportFailed".to_string(),
+                    message: error.to_string(),
+                    turn_failure: None,
+                });
+                return;
+            }
+        };
         let _ = self
             .queue
             .admit(
@@ -384,6 +435,7 @@ impl RunExportCoordinator {
         accounting: &PreparedAccounting,
         latest_usage: &UsageSummary,
         session: &Session,
+        database_id: Option<&str>,
     ) {
         let effect_seq = accounting.sequence;
         {
@@ -398,7 +450,7 @@ impl RunExportCoordinator {
                 return;
             }
         }
-        let effect_fp = fingerprint_handoff(accounting);
+        let effect_fp = accounting.export_fingerprint();
         {
             let mut guard = self
                 .state
@@ -423,12 +475,10 @@ impl RunExportCoordinator {
                 });
                 return;
             }
-            effects.insert(effect_seq, effect_fp);
         }
 
         let head_seq_hint = session.head_seq();
         let epoch_str = Some(session.epoch().as_str().to_string());
-        let weak_session = session.downgrade();
         {
             let mut guard = self
                 .shared_members
@@ -442,18 +492,29 @@ impl RunExportCoordinator {
                 member.latest_completion_epoch = epoch_str;
                 member.latest_completion_head_seq =
                     member.latest_completion_head_seq.max(head_seq_hint);
-                member.session = weak_session.clone();
             }
         }
 
-        let metadata_bytes = estimate_handoff_metadata_bytes(accounting);
+        let metadata_bytes = estimate_handoff_metadata_bytes(accounting)
+            .saturating_add(database_id.map_or(0, str::len));
         let cmd = ExportCommand::LiveHandoff {
             thread_id: thread_id.to_string(),
             effect_seq,
             accounting: accounting.clone(),
-            session: weak_session,
+            session: session.clone(),
+            database_id: database_id.map(str::to_owned),
         };
-        let _ = self.queue.admit(cmd, metadata_bytes).await;
+        if self.queue.admit(cmd, metadata_bytes).await.is_ok() {
+            // Admission may wait and be cancelled. Only accepted batches suppress a later
+            // retained-handoff retry; the writer independently validates all redeliveries.
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .admitted_effect_fingerprints
+                .entry(thread_id.to_string())
+                .or_default()
+                .insert(effect_seq, effect_fp);
+        }
     }
 
     /// Captures the immutable final source cut and own `UsageSummary` right before
@@ -466,17 +527,27 @@ impl RunExportCoordinator {
         let Some(member) = guard.members.get_mut(&cut.thread_id) else {
             return;
         };
+        if member.session.epoch() != cut.session.epoch() {
+            self.queue.fail_permanently(ExecutionErrorV1 {
+                stage: ExecutionErrorStage::Export,
+                code: "completionEpochConflict".into(),
+                message: format!(
+                    "final completion source changed for thread {}",
+                    cut.thread_id
+                ),
+                turn_failure: None,
+            });
+            return;
+        }
         if member.final_cut.is_some() {
             return;
         }
         let completion_epoch = Some(cut.session.epoch().as_str().to_string());
         let completion_head_seq = cut.session.head_seq();
-        let weak_session = cut.session.downgrade();
         member.final_cut = Some(MemberFinalCut {
             through_effect_seq: cut.through_effect_seq,
             completion_epoch,
             completion_head_seq,
-            session: weak_session,
             summary: cut.summary,
             status: cut.status,
             aborted: cut.aborted,
@@ -555,6 +626,7 @@ impl RunExportCoordinator {
         pending_after: Option<usize>,
         deadline: Option<tokio::time::Instant>,
     ) -> RunExportReport {
+        let _finalize = self.finalize.lock().await;
         if let Some(report) = self.cached_report() {
             return report;
         }
@@ -592,13 +664,22 @@ impl RunExportCoordinator {
             .take();
         if let Some(handle) = join_handle {
             if let Some(limit) = deadline {
-                let remaining = limit.saturating_duration_since(tokio::time::Instant::now());
-                let _ =
-                    tokio::time::timeout(remaining.min(Duration::from_millis(50)), handle).await;
+                let mut handle = handle;
+                if tokio::time::timeout_at(limit, &mut handle).await.is_err() {
+                    handle.abort();
+                    let _ = handle.await;
+                }
             } else {
                 let _ = handle.await;
             }
         }
+        // These are read-only sources, never execution owners. Release them before store.close(),
+        // including the timeout path after the writer task has actually stopped.
+        self.shared_members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .members
+            .clear();
         if let Some(cancel) = self
             .deadline_cancel
             .lock()
@@ -630,7 +711,6 @@ impl RunExportCoordinator {
             failure: outcome.failure,
         };
         guard.report = Some(report.clone());
-        guard.finalized = true;
         report
     }
 
@@ -642,19 +722,3 @@ impl RunExportCoordinator {
 
 #[cfg(test)]
 mod tests;
-
-fn fingerprint_handoff(accounting: &PreparedAccounting) -> String {
-    let facts: Vec<&BillingFact> = accounting.facts.iter().collect();
-    let value = serde_json::json!({
-        "threadId": &accounting.thread_id,
-        "sequence": accounting.sequence,
-        "committedAt": accounting.committed_at(),
-        "primaryTurnId": accounting.primary_turn_id(),
-        "facts": facts.iter().map(|f| serde_json::json!({
-            "status": f.status.as_str(),
-            "auxiliary": f.auxiliary,
-            "record": &f.record,
-        })).collect::<Vec<_>>(),
-    });
-    crate::hash::canonical_json_hash(&value)
-}

@@ -12,12 +12,12 @@ use pl_protocol::{
 };
 use sha2::{Digest, Sha256};
 
-use super::manifest::{sanitize_json_value, validate_output_dir_preflight, write_run_manifest};
-use super::reader::{export_completions_range, resolve_readonly_session};
+use super::manifest::{validate_output_dir_preflight, write_run_manifest};
+use super::reader::export_completions_range;
 use super::types::{
     EventV1, MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV1, UsageCoverage, UsageMetricKey,
 };
-use super::usage::{ThreadUsageInput, build_and_reconcile_usage};
+use super::usage::{UsageAccumulator, fold_next_accounting};
 use super::writer::{ExportCommand, FsContentBlobSink};
 use super::{NewMemberRegistration, RetiredThreadCut, RunExporter};
 use crate::studio::paths::StudioPaths;
@@ -28,6 +28,45 @@ use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::thread_projection::{
     AuxiliaryBillingReceipt, FrozenCurrentProjection, PreparedAccounting,
 };
+
+struct ThreadUsageInput<'a> {
+    thread_id: &'a str,
+    initial_effect_seq: u64,
+    through_effect_seq: u64,
+    summary: &'a UsageSummary,
+    receipts: &'a [PreparedAccounting],
+}
+
+fn build_and_reconcile_usage(
+    trace_complete: bool,
+    threads: &[ThreadUsageInput<'_>],
+) -> super::usage::BuiltUsageExport {
+    let mut acc = UsageAccumulator::default();
+    let mut replays = Vec::new();
+    for thread in threads {
+        let mut replay = UsageSummary {
+            applied_sequence: thread.initial_effect_seq,
+            ..Default::default()
+        };
+        for receipt in thread.receipts {
+            fold_next_accounting(thread.thread_id, receipt, &mut replay)
+                .expect("contiguous test receipts");
+            acc.record(receipt);
+        }
+        replays.push(replay);
+    }
+    let inputs: Vec<_> = threads
+        .iter()
+        .zip(&replays)
+        .map(|(thread, replayed)| super::usage::ThreadUsageInput {
+            thread_id: thread.thread_id,
+            through_effect_seq: thread.through_effect_seq,
+            summary: thread.summary,
+            replayed,
+        })
+        .collect();
+    acc.finish(trace_complete, &inputs)
+}
 
 fn test_current(sequence: u64) -> PreparedCurrent {
     PreparedCurrent::new(
@@ -306,6 +345,10 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
     );
     assert!(built_big.reconciled);
     assert!(!built_big.usage_complete);
+    assert!(
+        built_big.cost_complete,
+        "token overflow must not invalidate known NoCharge costs"
+    );
     assert_eq!(built_big.export.totals.input_tokens, None);
 
     // 5. Reconciliation mismatch against tampered UsageSummary fails reconciliation cleanly.
@@ -345,6 +388,54 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
 }
 
 #[tokio::test]
+async fn missing_effects_and_conflicting_blobs_cannot_be_sealed() -> Result<()> {
+    use super::writer::{BlobChunkWriter, ContentBlobSink};
+    let skipped = PreparedAccounting::prepare(&ThreadEffectBatch {
+        thread_id: "gap".into(),
+        sequence: 2,
+        ..Default::default()
+    })?;
+    let mut replay = UsageSummary::default();
+    assert!(fold_next_accounting("gap", &skipped, &mut replay).is_err());
+    assert_eq!(
+        replay,
+        UsageSummary::default(),
+        "reject the gap before changing the reducer"
+    );
+
+    let dir = tempfile::tempdir()?;
+    let mut sink = FsContentBlobSink::new(dir.path().to_path_buf());
+    let mut writer = sink.begin_blob().await?;
+    writer.write_chunk(b"safe").await?;
+    let target = dir
+        .path()
+        .join(format!("contents/{}.bin", super::sha256_hex(b"safe")));
+    std::fs::write(&target, b"evil")?;
+    assert!(writer.finish(None, "utf-8".into()).await.is_err());
+    assert_eq!(
+        std::fs::read(&target)?,
+        b"evil",
+        "never overwrite a conflicting hash target"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("contents"))?.count(),
+        1,
+        "failed blob temporaries must be removed"
+    );
+
+    #[cfg(unix)]
+    {
+        let linked = tempfile::tempdir()?;
+        let external = tempfile::tempdir()?;
+        std::os::unix::fs::symlink(external.path(), linked.path().join("contents"))?;
+        let mut sink = FsContentBlobSink::new(linked.path().to_path_buf());
+        assert!(sink.begin_blob().await.is_err());
+        assert_eq!(std::fs::read_dir(external.path())?.count(), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let out_dir = dir.path().join("export-bp");
@@ -354,7 +445,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
 
     let exporter = RunExporter::start(RunExportOptions {
         output_dir: out_dir.clone(),
-        run_id: "run-bp-1".to_string(),
+        run_id: uuid::Uuid::new_v4().to_string(),
         cwd: dir.path().to_path_buf(),
         studio_home: studio_home.clone(),
         account_id: Some("acct".to_string()),
@@ -455,7 +546,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     let out_dir2 = dir.path().join("export-deadline");
     let exp2 = RunExporter::start(RunExportOptions {
         output_dir: out_dir2,
-        run_id: "run-bp-2".to_string(),
+        run_id: uuid::Uuid::new_v4().to_string(),
         cwd: dir.path().to_path_buf(),
         studio_home,
         account_id: Some("acct".to_string()),
@@ -527,7 +618,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     // 1. Identical redelivery & non-billing effect sequence advance stay idempotent & sealed.
     let exporter = RunExporter::start(RunExportOptions {
         output_dir: dir.path().join("idem-ok"),
-        run_id: "run-idem-ok".into(),
+        run_id: uuid::Uuid::new_v4().to_string(),
         cwd: dir.path().to_path_buf(),
         studio_home: studio_home.clone(),
         account_id: Some("acct".into()),
@@ -585,13 +676,13 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     billing.fold_into(&mut summary);
 
     coord
-        .admit_live_handoff("t-idem", &non_billing, &summary, &session)
+        .admit_live_handoff("t-idem", &non_billing, &summary, &session, None)
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &summary, &session)
+        .admit_live_handoff("t-idem", &billing, &summary, &session, None)
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &summary, &session)
+        .admit_live_handoff("t-idem", &billing, &summary, &session, None)
         .await; // idempotent redelivery
 
     coord.record_thread_final_cut(RetiredThreadCut {
@@ -614,7 +705,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     // 2. Conflicting effect at same (threadId, effectSeq) triggers fatal failure + cancellation.
     let exp_conflict = RunExporter::start(RunExportOptions {
         output_dir: dir.path().join("idem-conflict"),
-        run_id: "run-idem-bad".into(),
+        run_id: uuid::Uuid::new_v4().to_string(),
         cwd: dir.path().to_path_buf(),
         studio_home,
         account_id: Some("acct".into()),
@@ -658,9 +749,9 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         },
         PricingOutcome::NoCharge,
     )?;
-    c2.admit_live_handoff("t-idem", &billing, &summary, &session)
+    c2.admit_live_handoff("t-idem", &billing, &summary, &session, None)
         .await;
-    c2.admit_live_handoff("t-idem", &changed_billing, &summary, &session)
+    c2.admit_live_handoff("t-idem", &changed_billing, &summary, &session, None)
         .await;
     assert!(exp_conflict.cancellation().is_cancelled());
     let bad_report = c2.finalize_internal(None, true, true, Some(0), None).await;
@@ -728,7 +819,7 @@ http_headers = { "Authorization" = "Bearer secret", "X-Custom" = "val" }
     std::fs::create_dir_all(&out)?;
     let (manifest, _sha) = write_run_manifest(&RunExportOptions {
         output_dir: out,
-        run_id: "run-manifest-test".into(),
+        run_id: uuid::Uuid::new_v4().to_string(),
         cwd: dir.path().to_path_buf(),
         studio_home: home,
         account_id: Some("acct1".into()),
@@ -744,36 +835,33 @@ http_headers = { "Authorization" = "Bearer secret", "X-Custom" = "val" }
     assert!(!manifest.skill_search.skills_enabled);
     assert!(!manifest.skill_search.system_enabled);
     assert_eq!(manifest.skill_search.external_dirs, vec!["/opt/ext-skills"]);
-    let summary_text = serde_json::to_string(
-        manifest.config_inputs[0]
-            .redacted_summary
-            .as_ref()
-            .expect("config summary"),
-    )?;
-    assert!(summary_text.contains("ANYWK_SAFE_ENV_NAME"));
-    assert!(!summary_text.contains("inline-secret-token-should-disappear"));
-    assert!(!summary_text.contains("Bearer secret"));
-    assert!(summary_text.contains("[REDACTED]"));
-    assert!(summary_text.contains("redactedHeaderNames"));
-
-    let extra_redacted = sanitize_json_value(serde_json::json!({
-        "apiKey": "raw-api-key",
-        "apiKeyEnv": "MY_API_KEY_ENV",
-        "password": "secret-pw",
-        "env": { "SECRET_TOKEN": "raw-val" }
-    }));
-    let extra_text = extra_redacted.to_string();
-    assert!(!extra_text.contains("raw-api-key"));
-    assert!(!extra_text.contains("secret-pw"));
-    assert!(!extra_text.contains("raw-val"));
-    assert!(extra_text.contains("MY_API_KEY_ENV"));
+    let manifest_text = serde_json::to_string(&manifest)?;
+    assert!(!manifest_text.contains("inline-secret-token-should-disappear"));
+    assert!(!manifest_text.contains("Bearer secret"));
+    assert!(
+        manifest
+            .config_inputs
+            .iter()
+            .all(|entry| entry.redacted_summary.is_none())
+    );
+    let config_entry = &manifest.config_inputs[0];
+    assert_eq!(
+        config_entry.sha256.as_deref(),
+        Some(
+            super::sha256_hex(&std::fs::read(
+                manifest.invocation.studio_home.clone() + "/config.toml"
+            )?)
+            .as_str()
+        )
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn closed_child_read_only_backfill_streams_large_content_beyond_window() -> Result<()> {
+async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let studio_home = dir.path().join("home");
+    let exporter_home = studio_home.clone();
     let paths = StudioPaths::resolve(Some(studio_home))?;
     std::fs::create_dir_all(paths.data_dir())?;
     let store = StudioStore::open(paths.database()).await?;
@@ -831,13 +919,46 @@ async fn closed_child_read_only_backfill_streams_large_content_beyond_window() -
         .await?
         .context("database_id missing after first commit")?;
     let writer_session = store.chat_session(child_thread_id).await?;
-    let huge_text = "B".repeat(320 * 1024);
+    let epoch = writer_session.epoch();
+    let weak = writer_session.downgrade();
+    let exporter = RunExporter::start(RunExportOptions {
+        output_dir: dir.path().join("backfill-out"),
+        run_id: uuid::Uuid::new_v4().to_string(),
+        cwd: workspace.clone(),
+        studio_home: exporter_home,
+        account_id: None,
+        model_id: None,
+        reasoning_effort: None,
+        mode: None,
+        max_model_steps: None,
+        prompt_sha256: "a".repeat(64),
+        skill_search: Default::default(),
+        config: None,
+    })
+    .await?;
+    let coord = exporter.coordinator();
+    coord.enroll_root(child_thread_id);
+    coord
+        .register_member(NewMemberRegistration {
+            root_thread_id: child_thread_id.into(),
+            thread_id: child_thread_id.into(),
+            agent_id: "child-agent".into(),
+            parent_agent_id: Some("parent".into()),
+            parent_thread_id: Some("parent-thread".into()),
+            role: Some("child".into()),
+            workspace_id: "ws-closed".into(),
+            spawn_tool_call_id: Some("spawn".into()),
+            initial_effect_seq: 0,
+            session: writer_session.clone(),
+        })
+        .await;
+    let huge_text = "中".repeat(110 * 1024);
 
     let mut drafts = Vec::new();
     let mut items = Vec::new();
-    for idx in 1..=40u64 {
+    for idx in 1..=257u64 {
         let seq = idx + 1;
-        let content = if idx == 40 {
+        let content = if idx == 257 {
             huge_text.clone()
         } else {
             format!("message-{idx}")
@@ -864,9 +985,9 @@ async fn closed_child_read_only_backfill_streams_large_content_beyond_window() -
         .collect();
     history
         .commit_effect(
-            41,
+            258,
             EffectCommit {
-                current: &test_current(41),
+                current: &test_current(258),
                 items: &items,
                 completions: &completions,
                 rolled_back_turns: &Default::default(),
@@ -880,45 +1001,71 @@ async fn closed_child_read_only_backfill_streams_large_content_beyond_window() -
             },
         )
         .await?;
-    writer_session.confirm_durable(40)?;
-    let expired_weak = writer_session.downgrade();
+    writer_session.confirm_durable(257)?;
+    coord.record_thread_final_cut(RetiredThreadCut {
+        thread_id: child_thread_id.into(),
+        through_effect_seq: 0,
+        session: writer_session.clone(),
+        summary: UsageSummary::default(),
+        status: Some("closed".into()),
+        aborted: false,
+        error: None,
+    });
     drop(writer_session);
     drop(history);
-    store.close().await?;
-
-    // Reopen a cold Store + read-only Session on disk (simulating a retired/closed child) and
-    // verify all 40 completions (beyond ChatWindow / hot cache) + >300 KiB chunked blob export.
-    let store_ro = StudioStore::open(paths.database()).await?;
-    let out_dir = dir.path().join("backfill-out");
-    std::fs::create_dir_all(out_dir.join("contents"))?;
-    let (readonly_session, ro_db_id) =
-        resolve_readonly_session(&expired_weak, &store_ro, child_thread_id).await?;
-    assert_eq!(ro_db_id.as_deref(), Some(db_id.as_str()));
+    let readonly_session = weak
+        .upgrade()
+        .context("export must retain the original completion source")?;
+    assert_eq!(readonly_session.epoch(), epoch);
+    let out_dir = exporter.output_dir().to_path_buf();
     let mut sink = FsContentBlobSink::new(out_dir.clone());
-    let (through_seq, records) = export_completions_range(
-        &readonly_session,
-        ro_db_id.as_deref(),
-        0,
-        Some(40),
-        &mut sink,
-    )
-    .await?;
-    assert_eq!(through_seq, 40);
-    assert_eq!(records.len(), 40);
-    let last = records.last().expect("40th item");
-    assert_eq!(last.header.append_seq, 40);
+    let mut through_seq = 0;
+    let mut records = Vec::new();
+    while through_seq < 257 {
+        let (next, page) = export_completions_range(
+            &readonly_session,
+            Some(&db_id),
+            through_seq,
+            Some(257),
+            &mut sink,
+        )
+        .await?;
+        assert!(page.len() <= 256, "one read must remain bounded");
+        records.extend(page);
+        through_seq = next;
+    }
+    assert_eq!(through_seq, 257);
+    assert_eq!(records.len(), 257);
+    let last = records.last().expect("257th item");
+    assert_eq!(last.header.append_seq, 257);
     let expected_hash = hex::encode(Sha256::digest(huge_text.as_bytes()));
     let blob_path = out_dir.join(format!("contents/{expected_hash}.bin"));
     let exported_bytes = std::fs::read(&blob_path)?;
     assert_eq!(exported_bytes.len(), huge_text.len());
     assert!(
-        last.contents
-            .iter()
-            .any(|c| c.sha256 == expected_hash && c.byte_length == huge_text.len() as u64)
+        last.contents.iter().any(|c| c.sha256 == expected_hash
+            && c.byte_length == huge_text.len() as u64
+            && c.encoding == "utf-8")
             || last.payload.byte_length > 300 * 1024
     );
 
-    store_ro.close().await?;
+    drop(readonly_session);
+    let report = coord
+        .finalize_internal(Some(store.clone()), true, true, Some(0), None)
+        .await;
+    assert!(report.trace_complete, "{:?}", report.failure);
+    assert!(
+        weak.upgrade().is_none(),
+        "export sources must be released before store.close"
+    );
+    let events: Vec<EventV1> = std::fs::read_to_string(out_dir.join("events.jsonl"))?
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    for event in events.iter().filter(|event| event.source.epoch.is_some()) {
+        assert_eq!(event.source.epoch.as_deref(), Some(epoch.as_str()));
+    }
+    store.close().await?;
     Ok(())
 }
 

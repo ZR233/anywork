@@ -150,8 +150,17 @@ impl PreparedAccounting {
         self.retained_bytes
     }
 
-    pub(in crate::studio) fn committed_at(&self) -> i64 {
-        self.committed_at
+    pub(in crate::studio) fn export_fingerprint(&self) -> String {
+        crate::hash::canonical_json_hash(&serde_json::json!({
+            "threadId": self.thread_id,
+            "sequence": self.sequence,
+            "committedAt": self.committed_at,
+            "binding": self.binding,
+            "primaryTurnId": self.primary_turn_id,
+            "facts": self.facts.iter().map(|fact| serde_json::json!({
+                "status": fact.status.as_str(), "auxiliary": fact.auxiliary, "record": fact.record,
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     #[cfg(test)]

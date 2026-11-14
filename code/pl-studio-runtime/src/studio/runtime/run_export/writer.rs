@@ -2,27 +2,30 @@
 //! bounded queue admission (`256 batches / 16 MiB`), backpressure, and failure isolation.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
+use std::fs;
+use std::future::Future;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 
-use anyhow::{Context, Result, anyhow, ensure};
-use pl_core::chat::WeakSession;
+use anyhow::{Context, Result, ensure};
+use pl_core::chat::Session;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::reader::{export_completions_range, resolve_readonly_session};
+use super::reader::export_completions_range;
 use super::types::{
     BuildInfoV1, CompletionCursorV1, EVENTS_SCHEMA_VERSION, EventBodyV1, EventSourceV1, EventV1,
     ExecutionErrorStage, ExecutionErrorV1, ExportedBlobV1, MAX_QUEUED_BATCHES,
     MAX_QUEUED_METADATA_BYTES, SealedMemberCutV1, TraceSummaryV1, format_utc_rfc3339,
     validate_export_relative_path,
 };
-use super::usage::{ThreadUsageInput, build_and_reconcile_usage};
+use super::usage::{ThreadUsageInput, UsageAccumulator, fold_next_accounting};
 use crate::StudioStore;
 use crate::studio::thread_projection::{BillingFact, PreparedAccounting};
 
@@ -33,12 +36,16 @@ const VERIFY_CHUNK_BYTES: usize = 64 * 1024;
 /// Streaming content-addressed blob writer abstraction (allows test doubles without bypassing real files).
 pub trait ContentBlobSink {
     type Writer: BlobChunkWriter;
-    fn begin_blob(&mut self) -> Result<Self::Writer>;
+    fn begin_blob(&mut self) -> impl Future<Output = Result<Self::Writer>> + Send;
 }
 
 pub trait BlobChunkWriter {
-    fn write_chunk(&mut self, chunk: &[u8]) -> Result<()>;
-    fn finish(self, media_type: Option<String>, encoding: String) -> Result<ExportedBlobV1>;
+    fn write_chunk(&mut self, chunk: &[u8]) -> impl Future<Output = Result<()>> + Send;
+    fn finish(
+        self,
+        media_type: Option<String>,
+        encoding: String,
+    ) -> impl Future<Output = Result<ExportedBlobV1>> + Send;
 }
 
 pub struct FsContentBlobSink {
@@ -67,23 +74,30 @@ pub struct FsBlobWriter {
 
 impl Drop for FsBlobWriter {
     fn drop(&mut self) {
-        if self.file.take().is_some() {
-            let _ = fs::remove_file(&self.temp_path);
-        }
+        self.file.take();
+        let _ = fs::remove_file(&self.temp_path);
     }
 }
 
 impl ContentBlobSink for FsContentBlobSink {
     type Writer = FsBlobWriter;
 
-    fn begin_blob(&mut self) -> Result<Self::Writer> {
-        fs::create_dir_all(&self.contents_dir)
+    async fn begin_blob(&mut self) -> Result<Self::Writer> {
+        tokio::fs::create_dir_all(&self.contents_dir)
+            .await
             .with_context(|| format!("ensure contents dir {}", self.contents_dir.display()))?;
+        ensure!(
+            !fs::symlink_metadata(&self.contents_dir)?
+                .file_type()
+                .is_symlink(),
+            "contents directory must not be a symlink"
+        );
         let nonce = uuid::Uuid::new_v4().simple();
         let temp_path = self
             .contents_dir
             .join(format!(".blob.{}.{nonce}.tmp", std::process::id()));
         let file = File::create(&temp_path)
+            .await
             .with_context(|| format!("create content temp file {}", temp_path.display()))?;
         Ok(FsBlobWriter {
             output_dir: self.output_dir.clone(),
@@ -97,9 +111,9 @@ impl ContentBlobSink for FsContentBlobSink {
 }
 
 impl BlobChunkWriter for FsBlobWriter {
-    fn write_chunk(&mut self, chunk: &[u8]) -> Result<()> {
+    async fn write_chunk(&mut self, chunk: &[u8]) -> Result<()> {
         let writer = self.file.as_mut().context("blob writer already finished")?;
-        writer.write_all(chunk)?;
+        writer.write_all(chunk).await?;
         self.hasher.update(chunk);
         self.byte_length = self
             .byte_length
@@ -108,13 +122,15 @@ impl BlobChunkWriter for FsBlobWriter {
         Ok(())
     }
 
-    fn finish(mut self, media_type: Option<String>, encoding: String) -> Result<ExportedBlobV1> {
+    async fn finish(
+        mut self,
+        media_type: Option<String>,
+        encoding: String,
+    ) -> Result<ExportedBlobV1> {
         let mut writer = self.file.take().context("blob writer already finished")?;
-        writer.flush()?;
-        let file = writer
-            .into_inner()
-            .map_err(|err| anyhow!("flush content temp file: {err}"))?;
-        file.sync_all()?;
+        writer.flush().await?;
+        let file = writer.into_inner();
+        file.sync_all().await?;
         drop(file);
 
         let sha256 = hex::encode(self.hasher.clone().finalize());
@@ -127,7 +143,7 @@ impl BlobChunkWriter for FsBlobWriter {
             final_path.display()
         );
 
-        match fs::symlink_metadata(&final_path) {
+        match tokio::fs::symlink_metadata(&final_path).await {
             Ok(meta) => {
                 ensure!(
                     !meta.file_type().is_symlink() && meta.is_file(),
@@ -141,17 +157,19 @@ impl BlobChunkWriter for FsBlobWriter {
                     meta.len(),
                     self.byte_length
                 );
-                verify_existing_file_sha256(&final_path, &sha256)?;
+                verify_existing_file_sha256(&final_path, &sha256).await?;
                 let _ = fs::remove_file(&self.temp_path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::rename(&self.temp_path, &final_path).with_context(|| {
-                    format!(
-                        "commit content blob {} -> {}",
-                        self.temp_path.display(),
-                        final_path.display()
-                    )
-                })?;
+                tokio::fs::rename(&self.temp_path, &final_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "commit content blob {} -> {}",
+                            self.temp_path.display(),
+                            final_path.display()
+                        )
+                    })?;
             }
             Err(error) => {
                 let _ = fs::remove_file(&self.temp_path);
@@ -170,13 +188,14 @@ impl BlobChunkWriter for FsBlobWriter {
     }
 }
 
-fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Result<()> {
+async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Result<()> {
     let mut file = File::open(path)
+        .await
         .with_context(|| format!("open existing content blob {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
@@ -217,7 +236,8 @@ pub enum ExportCommand {
         thread_id: String,
         effect_seq: u64,
         accounting: PreparedAccounting,
-        session: WeakSession,
+        session: Session,
+        database_id: Option<String>,
     },
     Finalize {
         store: Option<StudioStore>,
@@ -260,7 +280,6 @@ pub struct MemberFinalCut {
     pub through_effect_seq: u64,
     pub completion_epoch: Option<String>,
     pub completion_head_seq: u64,
-    pub session: WeakSession,
     pub summary: pl_core::thread::UsageSummary,
     pub status: Option<String>,
     pub aborted: bool,
@@ -277,10 +296,13 @@ pub struct SharedMemberState {
 pub struct MemberSnapshot {
     pub agent_id: String,
     pub parent_agent_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub spawn_tool_call_id: Option<String>,
     pub role: Option<String>,
     pub workspace_id: String,
     pub initial_effect_seq: u64,
-    pub session: WeakSession,
+    pub session: Session,
+    pub initial_completion_seq: u64,
     pub latest_usage: pl_core::thread::UsageSummary,
     pub latest_effect_seq: u64,
     pub latest_completion_epoch: Option<String>,
@@ -299,7 +321,7 @@ struct WriterMemberState {
     last_epoch: Option<String>,
     last_effect_seq: u64,
     admitted_effects: BTreeMap<u64, String>,
-    admitted_receipts: Vec<PreparedAccounting>,
+    replayed_usage: pl_core::thread::UsageSummary,
     inferences: BTreeMap<String, (u64, String)>,
     completions_by_seq: BTreeMap<u64, (String, String)>,
     completions_by_epoch: BTreeMap<(String, u64), String>,
@@ -519,8 +541,30 @@ impl BoundedExportQueue {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.writer_exited = true;
         guard.admission_closed = true;
+        guard.queue.clear();
+        guard.queued_batches = 0;
+        guard.queued_bytes = 0;
         drop(guard);
         self.slot_notify.notify_waiters();
+    }
+}
+
+struct WriterExitGuard {
+    queue: Arc<BoundedExportQueue>,
+    completed: bool,
+}
+
+impl Drop for WriterExitGuard {
+    fn drop(&mut self) {
+        if !self.completed && self.queue.fatal_error().is_none() {
+            self.queue.fail_permanently(ExecutionErrorV1 {
+                stage: ExecutionErrorStage::Export,
+                code: "exportWriterStopped".into(),
+                message: "export writer stopped before finalization".into(),
+                turn_failure: None,
+            });
+        }
+        self.queue.mark_writer_exited();
     }
 }
 
@@ -532,9 +576,13 @@ pub fn spawn_writer_task(
     shared_members: Arc<Mutex<SharedMemberState>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut exit = WriterExitGuard {
+            queue: queue.clone(),
+            completed: false,
+        };
         let mut worker = WriterWorker::new(run_id, output_dir, queue.clone(), shared_members);
         worker.run().await;
-        queue.mark_writer_exited();
+        exit.completed = true;
     })
 }
 
@@ -549,6 +597,7 @@ struct WriterWorker {
     last_event_seq: Option<u64>,
     members: BTreeMap<String, WriterMemberState>,
     sealed: bool,
+    usage: UsageAccumulator,
 }
 
 impl WriterWorker {
@@ -571,6 +620,7 @@ impl WriterWorker {
             last_event_seq: None,
             members: BTreeMap::new(),
             sealed: false,
+            usage: UsageAccumulator::default(),
         }
     }
 
@@ -623,7 +673,8 @@ impl WriterWorker {
                         build,
                         manifest_sha256,
                     },
-                )?;
+                )
+                .await?;
             }
             ExportCommand::AgentRegistered {
                 agent_id,
@@ -660,7 +711,10 @@ impl WriterWorker {
                         last_epoch: initial_completion_epoch.clone(),
                         last_effect_seq: initial_effect_seq,
                         admitted_effects: BTreeMap::new(),
-                        admitted_receipts: Vec::new(),
+                        replayed_usage: pl_core::thread::UsageSummary {
+                            applied_sequence: initial_effect_seq,
+                            ..Default::default()
+                        },
                         inferences: BTreeMap::new(),
                         completions_by_seq: BTreeMap::new(),
                         completions_by_epoch: BTreeMap::new(),
@@ -689,7 +743,8 @@ impl WriterWorker {
                             completion_seq: initial_completion_seq,
                         },
                     },
-                )?;
+                )
+                .await?;
             }
             ExportCommand::SkillsDiscovered { thread_id, report } => {
                 self.write_event(
@@ -703,15 +758,17 @@ impl WriterWorker {
                         warnings: report.warnings,
                         complete: report.complete,
                     },
-                )?;
+                )
+                .await?;
             }
             ExportCommand::LiveHandoff {
                 thread_id,
                 effect_seq,
                 accounting,
                 session,
+                database_id,
             } => {
-                self.handle_live_handoff(thread_id, effect_seq, accounting, session)
+                self.handle_live_handoff(thread_id, effect_seq, accounting, session, database_id)
                     .await?;
             }
             ExportCommand::Finalize { .. } => {}
@@ -724,13 +781,14 @@ impl WriterWorker {
         thread_id: String,
         effect_seq: u64,
         accounting: PreparedAccounting,
-        weak_session: WeakSession,
+        session: Session,
+        database_id: Option<String>,
     ) -> Result<()> {
         let member = self
             .members
             .get_mut(&thread_id)
             .with_context(|| format!("live handoff arrived for unregistered thread {thread_id}"))?;
-        let effect_fp = fingerprint_prepared_accounting(&accounting)?;
+        let effect_fp = accounting.export_fingerprint();
         if let Some(prev_fp) = member.admitted_effects.get(&effect_seq) {
             ensure!(
                 *prev_fp == effect_fp,
@@ -772,22 +830,22 @@ impl WriterWorker {
 
         member.admitted_effects.insert(effect_seq, effect_fp);
         if effect_seq > member.initial_effect_seq {
-            member.admitted_receipts.push(accounting);
+            fold_next_accounting(&thread_id, &accounting, &mut member.replayed_usage)?;
+            self.usage.record(&accounting);
         }
         if effect_seq > member.last_effect_seq {
             member.last_effect_seq = effect_seq;
         }
 
         for (source, body) in events_to_emit {
-            self.write_event(Some(thread_id.clone()), source, body)?;
+            self.write_event(Some(thread_id.clone()), source, body)
+                .await?;
         }
 
         // Incrementally stream newly sealed completion items while the session is alive so
         // body content reads proceed continuously without waiting for final producer ACK.
-        if let Some(live_session) = weak_session.upgrade() {
-            self.export_completions_for_member(&thread_id, &live_session, None, None)
-                .await?;
-        }
+        self.export_completions_for_member(&thread_id, &session, database_id.as_deref(), None)
+            .await?;
         Ok(())
     }
 
@@ -798,7 +856,7 @@ impl WriterWorker {
         database_id: Option<&str>,
         ceiling: Option<u64>,
     ) -> Result<()> {
-        let after_seq = self
+        let mut after_seq = self
             .members
             .get(thread_id)
             .with_context(|| format!("missing member {thread_id}"))?
@@ -807,63 +865,68 @@ impl WriterWorker {
         if target <= after_seq {
             return Ok(());
         }
-        let (through_seq, records) = export_completions_range(
-            session,
-            database_id,
-            after_seq,
-            Some(target),
-            &mut self.blob_sink,
-        )
-        .await?;
-        for record in records {
-            let member = self
-                .members
-                .get_mut(thread_id)
-                .with_context(|| format!("missing member {thread_id}"))?;
-            let seq = record.header.append_seq;
-            let key = (record.epoch.clone(), seq);
-            if let Some(prev_fp) = member.completions_by_epoch.get(&key) {
-                ensure!(
-                    *prev_fp == record.header_payload_fingerprint,
-                    "conflicting completion record at ({thread_id}, {}, {seq})",
-                    record.epoch
+        while after_seq < target {
+            let (through_seq, records) = export_completions_range(
+                session,
+                database_id,
+                after_seq,
+                Some(target),
+                &mut self.blob_sink,
+            )
+            .await?;
+            for record in records {
+                let member = self
+                    .members
+                    .get_mut(thread_id)
+                    .with_context(|| format!("missing member {thread_id}"))?;
+                let seq = record.header.append_seq;
+                let key = (record.epoch.clone(), seq);
+                if let Some(prev_fp) = member.completions_by_epoch.get(&key) {
+                    ensure!(
+                        *prev_fp == record.header_payload_fingerprint,
+                        "conflicting completion record at ({thread_id}, {}, {seq})",
+                        record.epoch
+                    );
+                    continue;
+                }
+                if let Some((prev_id, prev_fp)) = member.completions_by_seq.get(&seq) {
+                    ensure!(
+                        *prev_id == record.header.item_id
+                            && *prev_fp == record.header_payload_fingerprint,
+                        "conflicting completion record across epochs at ({thread_id}, seq={seq})"
+                    );
+                    continue;
+                }
+                member
+                    .completions_by_epoch
+                    .insert(key, record.header_payload_fingerprint.clone());
+                member.completions_by_seq.insert(
+                    seq,
+                    (
+                        record.header.item_id.clone(),
+                        record.header_payload_fingerprint,
+                    ),
                 );
-                continue;
+                member.last_epoch = Some(record.epoch);
+                member.exported_completion_seq = member.exported_completion_seq.max(seq);
+                self.write_event(
+                    Some(thread_id.to_string()),
+                    record.source,
+                    EventBodyV1::Completion {
+                        header: record.header,
+                        atom: record.atom,
+                        payload: record.payload,
+                        contents: record.contents,
+                    },
+                )
+                .await?;
             }
-            if let Some((prev_id, prev_fp)) = member.completions_by_seq.get(&seq) {
-                ensure!(
-                    *prev_id == record.header.item_id
-                        && *prev_fp == record.header_payload_fingerprint,
-                    "conflicting completion record across epochs at ({thread_id}, seq={seq})"
-                );
-                continue;
+            if let Some(member) = self.members.get_mut(thread_id) {
+                member.exported_completion_seq = member.exported_completion_seq.max(through_seq);
+                member.last_epoch = Some(session.epoch().as_str().to_string());
             }
-            member
-                .completions_by_epoch
-                .insert(key, record.header_payload_fingerprint.clone());
-            member.completions_by_seq.insert(
-                seq,
-                (
-                    record.header.item_id.clone(),
-                    record.header_payload_fingerprint,
-                ),
-            );
-            member.last_epoch = Some(record.epoch);
-            member.exported_completion_seq = member.exported_completion_seq.max(seq);
-            self.write_event(
-                Some(thread_id.to_string()),
-                record.source,
-                EventBodyV1::Completion {
-                    header: record.header,
-                    atom: record.atom,
-                    payload: record.payload,
-                    contents: record.contents,
-                },
-            )?;
-        }
-        if let Some(member) = self.members.get_mut(thread_id) {
-            member.exported_completion_seq = member.exported_completion_seq.max(through_seq);
-            member.last_epoch = Some(session.epoch().as_str().to_string());
+            after_seq = through_seq;
+            tokio::task::yield_now().await;
         }
         Ok(())
     }
@@ -910,16 +973,20 @@ impl WriterWorker {
                     break;
                 }
                 let expected_head = final_cut.map(|c| c.completion_head_seq);
-                let weak_session = final_cut.map(|c| &c.session).unwrap_or(&snap.session);
-                let res = match (&store, weak_session.upgrade()) {
-                    (Some(store), _) => {
-                        resolve_readonly_session(weak_session, store, thread_id).await
-                    }
-                    (None, Some(session)) => Ok((session, None)),
-                    (None, None) => Err(anyhow!(
-                        "store unavailable to reopen retired session {thread_id}"
-                    )),
-                };
+                let res = async {
+                    let db_id = match &store {
+                        Some(store) => {
+                            store
+                                .history(thread_id)
+                                .await?
+                                .conversation_database_id()
+                                .await?
+                        }
+                        None => None,
+                    };
+                    anyhow::Ok((snap.session.clone(), db_id))
+                }
+                .await;
                 match res {
                     Ok((session, db_id)) => {
                         if let Some(expected) = expected_head
@@ -969,8 +1036,10 @@ impl WriterWorker {
 
         // Verify all member cuts, reconcile receipts, and emit ThreadSealed + RunSealed when clean.
         let native_clean = agent_ok && flush_ok && pending_after == Some(0);
-        let cuts_complete =
-            fatal.is_none() && missing_final_cut.is_empty() && !snapshots.is_empty();
+        let cuts_complete = !snapshots.is_empty()
+            && snapshots
+                .values()
+                .all(|snap| snap.spawn_aborted.is_some() || snap.final_cut.is_some());
 
         // Check that admitted effects per member cover [initial ..= final through_effect_seq] without missing cuts.
         let mut usage_storage: Vec<(
@@ -978,7 +1047,7 @@ impl WriterWorker {
             u64,
             u64,
             pl_core::thread::UsageSummary,
-            Vec<PreparedAccounting>,
+            pl_core::thread::UsageSummary,
         )> = Vec::new();
         for (thread_id, snap) in &snapshots {
             if let Some(writer_member) = self.members.get(thread_id) {
@@ -991,22 +1060,23 @@ impl WriterWorker {
                     snap.initial_effect_seq,
                     through_seq,
                     summary,
-                    writer_member.admitted_receipts.clone(),
+                    writer_member.replayed_usage.clone(),
                 ));
             }
         }
 
-        let tentative_trace_complete = native_clean && cuts_complete && fatal.is_none();
-        for (thread_id, init_seq, through_seq, summary, receipts) in &usage_storage {
+        for (thread_id, _init_seq, through_seq, summary, replayed) in &usage_storage {
             member_usage_inputs.push(ThreadUsageInput {
                 thread_id,
-                initial_effect_seq: *init_seq,
                 through_effect_seq: *through_seq,
                 summary,
-                receipts,
+                replayed,
             });
         }
-        let built_usage = build_and_reconcile_usage(tentative_trace_complete, &member_usage_inputs);
+        // A content/flush failure does not erase already reconciled accounting coverage.
+        let accounting_complete =
+            native_clean && cuts_complete && member_usage_inputs.len() == snapshots.len();
+        let built_usage = self.usage.finish(accounting_complete, &member_usage_inputs);
 
         if fatal.is_none() && !built_usage.reconciled {
             fatal = Some(ExecutionErrorV1 {
@@ -1024,7 +1094,7 @@ impl WriterWorker {
             && cuts_complete
             && fatal.is_none()
             && built_usage.reconciled
-            && !self.queue.fatal_error().is_some();
+            && self.queue.fatal_error().is_none();
 
         // Emit `threadSealed` for every member with a settled cut or explicit abort (if writer alive).
         let mut sealed_member_cuts = Vec::with_capacity(snapshots.len());
@@ -1070,27 +1140,29 @@ impl WriterWorker {
             let member_clean = snap.spawn_aborted.is_some() || snap.final_cut.is_some();
             if sealed_write_ok
                 && member_clean
-                && let Err(err) = self.write_event(
-                    Some(thread_id.clone()),
-                    EventSourceV1 {
-                        epoch: cut_epoch.clone(),
-                        effect_seq: Some(through_effect_seq),
-                        completion_seq: Some(cut_seq),
-                        ..Default::default()
-                    },
-                    EventBodyV1::ThreadSealed {
-                        thread_id: thread_id.clone(),
-                        through_effect_seq,
-                        completion_cut: CompletionCursorV1 {
+                && let Err(err) = self
+                    .write_event(
+                        Some(thread_id.clone()),
+                        EventSourceV1 {
                             epoch: cut_epoch.clone(),
-                            completion_seq: cut_seq,
+                            effect_seq: Some(through_effect_seq),
+                            completion_seq: Some(cut_seq),
+                            ..Default::default()
                         },
-                        summary,
-                        status,
-                        aborted,
-                        error: err_msg,
-                    },
-                )
+                        EventBodyV1::ThreadSealed {
+                            thread_id: thread_id.clone(),
+                            through_effect_seq,
+                            completion_cut: CompletionCursorV1 {
+                                epoch: cut_epoch.clone(),
+                                completion_seq: cut_seq,
+                            },
+                            summary,
+                            status,
+                            aborted,
+                            error: err_msg,
+                        },
+                    )
+                    .await
             {
                 sealed_write_ok = false;
                 if fatal.is_none() {
@@ -1119,18 +1191,21 @@ impl WriterWorker {
         }
 
         if can_seal && sealed_write_ok {
-            if let Err(err) = self.write_event(
-                None,
-                EventSourceV1::default(),
-                EventBodyV1::RunSealed {
-                    members: sealed_member_cuts,
-                    reconciled: built_usage.reconciled,
-                    reconcile_error: built_usage.reconcile_error.clone(),
-                    trace_complete: true,
-                    usage_complete: built_usage.usage_complete,
-                    cost_complete: built_usage.cost_complete,
-                },
-            ) {
+            if let Err(err) = self
+                .write_event(
+                    None,
+                    EventSourceV1::default(),
+                    EventBodyV1::RunSealed {
+                        members: sealed_member_cuts,
+                        reconciled: built_usage.reconciled,
+                        reconcile_error: built_usage.reconcile_error.clone(),
+                        trace_complete: true,
+                        usage_complete: built_usage.usage_complete,
+                        cost_complete: built_usage.cost_complete,
+                    },
+                )
+                .await
+            {
                 if fatal.is_none() {
                     fatal = Some(ExecutionErrorV1 {
                         stage: ExecutionErrorStage::Export,
@@ -1144,7 +1219,7 @@ impl WriterWorker {
             }
         }
 
-        if let Err(err) = self.flush_and_close_events_file() {
+        if let Err(err) = self.flush_and_close_events_file().await {
             self.sealed = false;
             if fatal.is_none() {
                 fatal = Some(ExecutionErrorV1 {
@@ -1157,14 +1232,9 @@ impl WriterWorker {
         }
 
         let trace_complete = self.sealed && fatal.is_none() && native_clean;
-        // Recompute UsageExportV1 only if final trace_complete ended up false while tentative was true.
-        let final_usage = if trace_complete == tentative_trace_complete {
-            built_usage
-        } else {
-            build_and_reconcile_usage(trace_complete, &member_usage_inputs)
-        };
+        let final_usage = built_usage;
 
-        let (events_sha256, event_count) = self.measure_events_file();
+        let (events_sha256, event_count) = self.measure_events_file().await;
         let reason = if trace_complete {
             None
         } else if let Some(err) = &fatal {
@@ -1199,7 +1269,7 @@ impl WriterWorker {
         }
     }
 
-    fn write_event(
+    async fn write_event(
         &mut self,
         thread_id: Option<String>,
         source: EventSourceV1,
@@ -1207,9 +1277,10 @@ impl WriterWorker {
     ) -> Result<()> {
         if self.events_file.is_none() {
             let file = OpenOptions::new()
-                .create(true)
-                .append(true)
+                .create_new(true)
+                .write(true)
                 .open(&self.events_path)
+                .await
                 .with_context(|| format!("open events file {}", self.events_path.display()))?;
             self.events_file = Some(BufWriter::new(file));
         }
@@ -1229,31 +1300,29 @@ impl WriterWorker {
             .events_file
             .as_mut()
             .context("events writer not initialized")?;
-        writer.write_all(&line)?;
+        writer.write_all(&line).await?;
         self.next_event_seq = event_seq.checked_add(1).context("event_seq overflow")?;
         self.last_event_seq = Some(event_seq);
         Ok(())
     }
 
-    fn flush_and_close_events_file(&mut self) -> Result<()> {
+    async fn flush_and_close_events_file(&mut self) -> Result<()> {
         if let Some(mut writer) = self.events_file.take() {
-            writer.flush()?;
-            let file = writer
-                .into_inner()
-                .map_err(|err| anyhow!("unwrap buffered events writer: {err}"))?;
-            file.sync_all()?;
+            writer.flush().await?;
+            let file = writer.into_inner();
+            file.sync_all().await?;
         }
         Ok(())
     }
 
-    fn measure_events_file(&self) -> (Option<String>, u64) {
-        let Ok(mut file) = File::open(&self.events_path) else {
+    async fn measure_events_file(&self) -> (Option<String>, u64) {
+        let Ok(mut file) = File::open(&self.events_path).await else {
             return (None, self.last_event_seq.unwrap_or(0));
         };
         let mut hasher = Sha256::new();
         let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
         loop {
-            match file.read(&mut buf) {
+            match file.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => hasher.update(&buf[..n]),
                 Err(_) => return (None, self.last_event_seq.unwrap_or(0)),
@@ -1264,22 +1333,6 @@ impl WriterWorker {
             self.last_event_seq.unwrap_or(0),
         )
     }
-}
-
-fn fingerprint_prepared_accounting(accounting: &PreparedAccounting) -> Result<String> {
-    let facts: Vec<&BillingFact> = accounting.facts.iter().collect();
-    let value = serde_json::json!({
-        "threadId": &accounting.thread_id,
-        "sequence": accounting.sequence,
-        "committedAt": accounting.committed_at(),
-        "primaryTurnId": accounting.primary_turn_id(),
-        "facts": facts.iter().map(|f| serde_json::json!({
-            "status": f.status.as_str(),
-            "auxiliary": f.auxiliary,
-            "record": &f.record,
-        })).collect::<Vec<_>>(),
-    });
-    Ok(crate::hash::canonical_json_hash(&value))
 }
 
 fn fingerprint_billing_fact(fact: &BillingFact) -> Result<String> {
@@ -1294,12 +1347,10 @@ fn fingerprint_billing_fact(fact: &BillingFact) -> Result<String> {
 /// Estimates serialized metadata byte size charged against the 16 MiB queue bound without copying
 /// body content into the queue.
 pub fn estimate_handoff_metadata_bytes(accounting: &PreparedAccounting) -> usize {
-    let facts_bytes: usize = accounting
-        .facts
-        .iter()
-        .map(|fact| serde_json::to_vec(&fact.record).map_or(256, |v| v.len()) + 32)
-        .sum();
-    accounting.thread_id.len() + facts_bytes + 128
+    usize::try_from(accounting.retained_bytes())
+        .unwrap_or(usize::MAX)
+        .saturating_add(std::mem::size_of::<ExportCommand>())
+        .saturating_add(accounting.thread_id.len())
 }
 
 /// Waits for finalize writer response, closing admission if `deadline` expires while blocked.

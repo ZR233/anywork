@@ -1,6 +1,5 @@
 //! Output directory validation, sanitized startup manifest generation, and atomic JSON writes.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,7 +13,6 @@ use super::types::{
     RUN_MANIFEST_SCHEMA_VERSION, RunExportOptions, RunInvocationV1, RunManifestV1,
     SkillSearchManifestV1, format_utc_rfc3339,
 };
-use crate::config::StudioConfig;
 use crate::studio::paths::StudioPaths;
 
 const RUN_MANIFEST_FILE_NAME: &str = "run.json";
@@ -146,7 +144,7 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV1, 
     let started_at = format_utc_rfc3339(SystemTime::now());
     let paths = StudioPaths::resolve(Some(options.studio_home.clone()))?;
     let config_paths = paths.config_paths();
-    let config_inputs = collect_config_inputs(&paths, &config_paths, options.config.as_ref());
+    let config_inputs = collect_config_inputs(&paths, &config_paths);
     let (external_dirs, system_enabled, skills_enabled) = match &options.config {
         Some(config) => (
             config.skills.external_dirs.clone(),
@@ -253,13 +251,9 @@ fn temp_path(dir: &Path, prefix: &str) -> PathBuf {
 fn collect_config_inputs(
     paths: &StudioPaths,
     config_paths: &crate::config::ConfigPaths,
-    loaded_config: Option<&StudioConfig>,
 ) -> Vec<ConfigInputEntryV1> {
     let mut entries = Vec::new();
-    entries.push(inspect_config_toml(
-        config_paths.config_file(),
-        loaded_config,
-    ));
+    entries.push(inspect_config_toml(config_paths.config_file()));
     collect_dir_inputs(
         &mut entries,
         config_paths.agents_dir().as_path(),
@@ -277,21 +271,15 @@ fn collect_config_inputs(
     entries
 }
 
-fn inspect_config_toml(path: &Path, loaded: Option<&StudioConfig>) -> ConfigInputEntryV1 {
+fn inspect_config_toml(path: &Path) -> ConfigInputEntryV1 {
     let raw = fs::read(path).ok();
-    let sha256 = raw.as_deref().map(sha256_hex);
-    let summary = loaded
-        .and_then(|cfg| serde_json::to_value(cfg).ok())
-        .map(sanitize_json_value)
-        .or_else(|| {
-            raw.as_deref()
-                .and_then(|bytes| parse_and_sanitize("config.toml", bytes))
-        });
     ConfigInputEntryV1 {
         logical_name: crate::config::STUDIO_CONFIG_FILE_NAME.to_string(),
         present: raw.is_some(),
-        sha256,
-        redacted_summary: summary,
+        sha256: raw.as_deref().map(sha256_hex),
+        // Configuration can embed arbitrary command arguments, URL credentials and vendor fields.
+        // A hash preserves input identity without claiming a key-name denylist can sanitize them.
+        redacted_summary: None,
     }
 }
 
@@ -356,98 +344,11 @@ fn collect_dir_inputs(
     for (logical_name, path) in files {
         let raw = fs::read(&path).ok();
         let sha256 = raw.as_deref().map(sha256_hex);
-        let summary = raw
-            .as_deref()
-            .and_then(|bytes| parse_and_sanitize(&logical_name, bytes));
         out.push(ConfigInputEntryV1 {
             logical_name,
             present: true,
             sha256,
-            redacted_summary: summary,
+            redacted_summary: None,
         });
     }
-}
-
-fn parse_and_sanitize(logical_name: &str, bytes: &[u8]) -> Option<serde_json::Value> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    if logical_name.ends_with(".json") {
-        let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        return Some(sanitize_json_value(value));
-    }
-    if logical_name.ends_with(".toml") {
-        let value: toml::Value = toml::from_str(text).ok()?;
-        let json = serde_json::to_value(value).ok()?;
-        return Some(sanitize_json_value(json));
-    }
-    None
-}
-
-/// Strips inline secrets while keeping non-secret metadata and env var references.
-pub fn sanitize_json_value(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
-            let mut entries: BTreeMap<String, serde_json::Value> = map.into_iter().collect();
-            for (key, val) in std::mem::take(&mut entries) {
-                if is_secret_header_map_key(&key) {
-                    if let serde_json::Value::Object(headers) = val {
-                        let keys: Vec<serde_json::Value> = headers
-                            .keys()
-                            .map(|k| serde_json::Value::String(k.clone()))
-                            .collect();
-                        out.insert(key, serde_json::json!({ "redactedHeaderNames": keys }));
-                    } else {
-                        out.insert(key, serde_json::Value::String("[REDACTED]".to_string()));
-                    }
-                    continue;
-                }
-                if is_secret_value_key(&key) {
-                    if !val.is_null() {
-                        out.insert(key, serde_json::Value::String("[REDACTED]".to_string()));
-                    } else {
-                        out.insert(key, serde_json::Value::Null);
-                    }
-                    continue;
-                }
-                out.insert(key, sanitize_json_value(val));
-            }
-            serde_json::Value::Object(out)
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.into_iter().map(sanitize_json_value).collect())
-        }
-        other => other,
-    }
-}
-
-fn is_secret_header_map_key(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    lower == "http_headers" || lower == "httpheaders" || lower == "headers" || lower == "env"
-}
-
-fn is_secret_value_key(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    // Preserve explicit environment variable *name* references while redacting inline values.
-    if lower.ends_with("_env")
-        || key.ends_with("Env")
-        || lower.ends_with("_env_var")
-        || lower.ends_with("envvar")
-    {
-        return false;
-    }
-    lower.contains("bearer_token")
-        || lower.contains("bearertoken")
-        || lower.contains("api_key")
-        || lower.contains("apikey")
-        || lower.contains("secret")
-        || lower.contains("password")
-        || lower.contains("private_key")
-        || lower.contains("privatekey")
-        || lower.contains("credentials")
-        || lower == "token"
-        || lower == "authorization"
-        || lower == "chatgpt_session"
-        || lower == "chatgptsession"
-        || lower == "chatgpt_credentials"
-        || lower == "chatgptcredentials"
 }

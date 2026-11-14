@@ -1,8 +1,8 @@
 //! Read-only core `Session` completion and streaming content exporter.
 //!
 //! Reads directly from `pl_core::chat::Session` using `query = None` and explicit bounds,
-//! reconstructing `Session` on demand from `StudioStore::chat_session` for retired/early-closed
-//! children without ever activating a `ThreadHandle` or calling `thread_snapshot()`.
+//! retaining the original read-only `Session` across thread retirement without retaining
+//! execution owners or changing completion epochs.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, ensure};
 use pl_core::chat::{
     ChatBudget, ChatCompletionCursor, ChatContentKey, ChatError, ChatItemHeader, ChatPageItem,
     ChatQuery, ContentDescriptor, ContentManifestRequest, ContentReadRequest, ContentRef,
-    PayloadData, PayloadMode, ReadDemand, Session, WeakSession,
+    PayloadData, PayloadMode, ReadDemand, Session,
 };
 use pl_protocol::{ChatContentRole, ContentTarget};
 use sha2::{Digest, Sha256};
@@ -20,7 +20,6 @@ use super::types::{
     ExportedContentV1,
 };
 use super::writer::{BlobChunkWriter, ContentBlobSink};
-use crate::StudioStore;
 
 const EXPORT_BATCH_MAX_ITEMS: usize = 256;
 
@@ -56,37 +55,6 @@ impl ChatBudget for ExportChatBudget {
     }
 }
 
-/// Resolves a read-only `Session` handle for `thread_id`.
-///
-/// Always prefers the still-live `WeakSession` and falls back cleanly to
-/// `StudioStore::conversation_store`, which never restores execution owners or calls `thread_snapshot()`.
-pub async fn resolve_readonly_session(
-    weak: &WeakSession,
-    store: &StudioStore,
-    thread_id: &str,
-) -> Result<(Session, Option<String>)> {
-    let session = match weak.upgrade() {
-        Some(session) => session,
-        None => store.conversation_store(thread_id).await?.session().clone(),
-    };
-    let history = store.history(thread_id).await?;
-    let database_id = history.conversation_database_id().await?;
-    // Cold reopened Sessions report head_seq == 0 until the first read seeds H/D from history.
-    if database_id.is_some() && session.head_seq() == 0 {
-        let budget = ExportChatBudget;
-        session
-            .completed_after(
-                ChatCompletionCursor::new(session.epoch(), 0),
-                None,
-                Some(0),
-                ReadDemand::new(1, pl_core::chat::MAX_READ_BYTES),
-                &budget,
-            )
-            .await?;
-    }
-    Ok((session, database_id))
-}
-
 /// Decoded and persisted completion payload ready to become an `EventV1::Completion`.
 pub struct ExportedCompletionRecord {
     pub epoch: String,
@@ -116,40 +84,25 @@ impl Utf8StreamValidator {
         if !self.valid || chunk.is_empty() {
             return;
         }
-        let mut combined_storage = Vec::new();
-        let slice = if self.pending_len > 0 {
-            combined_storage.extend_from_slice(&self.pending[..self.pending_len]);
-            let take = chunk.len().min(4 - self.pending_len);
-            combined_storage.extend_from_slice(&chunk[..take]);
-            match std::str::from_utf8(&combined_storage) {
-                Ok(_) => {
-                    self.pending_len = 0;
-                    &chunk[take..]
-                }
-                Err(err) if err.error_len().is_none() => {
-                    let valid_up_to = err.valid_up_to();
-                    if valid_up_to > 0 {
-                        let rem = combined_storage.len() - valid_up_to;
-                        self.pending[..rem].copy_from_slice(&combined_storage[valid_up_to..]);
-                        self.pending_len = rem;
-                        &chunk[take..]
-                    } else if combined_storage.len() < 4 {
-                        self.pending_len = combined_storage.len();
-                        self.pending[..self.pending_len].copy_from_slice(&combined_storage);
-                        return;
-                    } else {
-                        self.valid = false;
-                        return;
-                    }
-                }
+        let mut slice = chunk;
+        // Complete exactly the pending code point. Consuming up to four bytes at once can
+        // also consume the next character's lead byte and misclassify valid Chinese text.
+        while self.pending_len > 0 {
+            let Some((&byte, rest)) = slice.split_first() else {
+                return;
+            };
+            self.pending[self.pending_len] = byte;
+            self.pending_len += 1;
+            slice = rest;
+            match std::str::from_utf8(&self.pending[..self.pending_len]) {
+                Ok(_) => self.pending_len = 0,
+                Err(error) if error.error_len().is_none() => {}
                 Err(_) => {
                     self.valid = false;
                     return;
                 }
             }
-        } else {
-            chunk
-        };
+        }
 
         if slice.is_empty() {
             return;
@@ -184,7 +137,8 @@ impl Utf8StreamValidator {
     }
 }
 
-/// Reads all completed records strictly after `after_seq` up through `ceiling` (`None` = live head).
+/// Exports at most one bounded page after `after_seq` up through `ceiling`.
+/// The caller writes this page before requesting the next, avoiding a run-sized record buffer.
 pub async fn export_completions_range<S: ContentBlobSink>(
     session: &Session,
     database_id: Option<&str>,
@@ -198,7 +152,7 @@ pub async fn export_completions_range<S: ContentBlobSink>(
     let demand = ReadDemand::new(EXPORT_BATCH_MAX_ITEMS, pl_core::chat::MAX_READ_BYTES);
     let budget = ExportChatBudget;
 
-    while seq < target_ceiling {
+    if seq < target_ceiling {
         let epoch = session.epoch();
         let cursor = ChatCompletionCursor::new(epoch.clone(), seq);
         let batch = session
@@ -212,12 +166,22 @@ pub async fn export_completions_range<S: ContentBlobSink>(
             .await?;
         let batch_through = batch.through_seq;
         for item in batch.items {
+            ensure!(
+                seq.checked_add(records.len() as u64 + 1) == Some(item.header.append_seq),
+                "missing completion before {}",
+                item.header.append_seq
+            );
             let record = export_single_item(session, database_id, &budget, item, sink).await?;
             records.push(record);
         }
-        if batch_through <= seq {
-            break;
-        }
+        ensure!(
+            batch_through > seq && batch_through <= target_ceiling,
+            "completion export did not advance to its requested cut"
+        );
+        ensure!(
+            batch_through - seq == records.len() as u64,
+            "completion range contains missing originals"
+        );
         seq = batch_through;
     }
 
@@ -236,15 +200,17 @@ async fn export_single_item<S: ContentBlobSink>(
 
     let (exported_payload, proto_payload) = match &item.payload {
         PayloadData::Inline(bytes) => {
-            let mut writer = sink.begin_blob()?;
-            writer.write_chunk(bytes)?;
+            let mut writer = sink.begin_blob().await?;
+            writer.write_chunk(bytes).await?;
             let encoding = if std::str::from_utf8(bytes).is_ok() {
                 "utf-8"
             } else {
                 "binary"
             }
             .to_string();
-            let blob = writer.finish(infer_payload_media_type(bytes), encoding)?;
+            let blob = writer
+                .finish(infer_payload_media_type(bytes), encoding)
+                .await?;
             let proto = pl_protocol::PayloadData::Inline {
                 bytes: bytes.to_vec(),
             };
@@ -278,8 +244,7 @@ async fn export_single_item<S: ContentBlobSink>(
 
     let header_export = ChatItemHeaderExportV1::from_core(&item.header);
     let mut header_fp = Sha256::new();
-    header_fp.update(item.header.item_id.as_bytes());
-    header_fp.update(item.header.append_seq.to_le_bytes());
+    header_fp.update(serde_json::to_vec(&header_export)?);
     header_fp.update(item.header.metadata.as_ref());
     header_fp.update(exported_payload.sha256.as_bytes());
     let header_payload_fingerprint = hex::encode(header_fp.finalize());
@@ -454,7 +419,7 @@ async fn stream_content_to_sink<S: ContentBlobSink>(
     let mut offset = 0_u64;
     let mut expected_generation = None;
     let mut total_bytes: Option<u64> = expected_len;
-    let mut writer = sink.begin_blob()?;
+    let mut writer = sink.begin_blob().await?;
     let mut utf8 = Utf8StreamValidator::default();
     let mut first_non_ws: Option<u8> = None;
 
@@ -497,7 +462,7 @@ async fn stream_content_to_sink<S: ContentBlobSink>(
                 .find(|byte| !byte.is_ascii_whitespace());
         }
         utf8.push(chunk);
-        writer.write_chunk(chunk)?;
+        writer.write_chunk(chunk).await?;
         offset = offset
             .checked_add(chunk.len() as u64)
             .context("content offset overflow during export")?;
@@ -516,7 +481,7 @@ async fn stream_content_to_sink<S: ContentBlobSink>(
         (is_payload && encoding == "utf-8" && matches!(first_non_ws, Some(b'{') | Some(b'[')))
             .then(|| "application/json".to_string())
     });
-    writer.finish(media_type, encoding)
+    writer.finish(media_type, encoding).await
 }
 
 fn infer_payload_media_type(bytes: &[u8]) -> Option<String> {

@@ -321,7 +321,7 @@ async fn execute_observed(
     };
     let init_wall_ms = init_start.elapsed().as_millis() as u64;
 
-    let agent_start = Instant::now();
+    let mut agent_start = None;
     if report.signal.is_none() {
         let project = latch_during(
             runtime.open_project(&request.cwd),
@@ -339,6 +339,7 @@ async fn execute_observed(
         if report.signal.is_none()
             && let Some(project) = project
         {
+            agent_start = Some(Instant::now());
             let operation = async {
                 let response = runtime
                     .start_new_thread(StudioStartNewThreadRequest {
@@ -402,6 +403,7 @@ async fn execute_observed(
             }
         }
     }
+    let agent_wall_ms = agent_start.map(|start| start.elapsed().as_millis() as u64);
     if report.signal.is_none()
         && !exporter
             .as_ref()
@@ -417,7 +419,6 @@ async fn execute_observed(
             }
         }
     }
-    let agent_wall_ms = agent_start.elapsed().as_millis() as u64;
 
     let shutdown_start = Instant::now();
     report.shutdown = latch_during(
@@ -434,7 +435,7 @@ async fn execute_observed(
             exp,
             run_start,
             Some(init_wall_ms),
-            Some(agent_wall_ms),
+            agent_wall_ms,
             Some(shutdown_wall_ms),
         )
         .await;

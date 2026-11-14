@@ -130,7 +130,7 @@ impl ExecArgs {
             SkillSearchOptions::resolve(!self.no_default_user_skills, self.skill_dir, startup_cwd)?;
         let export = output_dir.map(|output_dir| PreparedExport {
             output_dir,
-            run_id: format!("run-{}", uuid::Uuid::new_v4()),
+            run_id: uuid::Uuid::new_v4().to_string(),
             cwd: cwd.clone(),
             studio_home,
             account_id: Some(self.account.clone()),

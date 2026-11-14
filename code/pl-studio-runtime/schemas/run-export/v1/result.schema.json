@@ -32,7 +32,7 @@
     },
     "runId": {
       "type": "string",
-      "minLength": 1
+      "format": "uuid"
     },
     "rootThreadId": {
       "type": ["string", "null"]
@@ -129,7 +129,13 @@
       "required": ["version", "gitCommit", "target"],
       "properties": {
         "version": { "type": "string", "minLength": 1 },
-        "gitCommit": { "type": ["string", "null"] },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "target": { "type": "string", "minLength": 1 }
       }
     },
@@ -272,13 +278,7 @@
         "threadId": { "type": "string", "minLength": 1 },
         "throughEffectSeq": { "type": "integer", "minimum": 0 },
         "summary": {
-          "type": "object",
-          "required": ["appliedSequence", "binding", "totals", "pricing"],
-          "properties": {
-            "appliedSequence": { "type": "integer", "minimum": 0 },
-            "totals": { "type": "object" },
-            "pricing": { "type": "object" }
-          }
+          "$ref": "native.schema.json#/$defs/UsageSummary"
         }
       }
     },

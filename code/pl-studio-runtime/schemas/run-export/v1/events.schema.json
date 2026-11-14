@@ -21,7 +21,7 @@
     },
     "runId": {
       "type": "string",
-      "minLength": 1
+      "format": "uuid"
     },
     "eventSeq": {
       "type": "integer",
@@ -100,7 +100,13 @@
       "required": ["version", "gitCommit", "target"],
       "properties": {
         "version": { "type": "string", "minLength": 1 },
-        "gitCommit": { "type": ["string", "null"] },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "target": { "type": "string", "minLength": 1 }
       }
     },
@@ -140,7 +146,10 @@
       "additionalProperties": false,
       "required": ["runId", "build", "manifestSha256"],
       "properties": {
-        "runId": { "type": "string", "minLength": 1 },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
         "build": { "$ref": "#/$defs/BuildInfoV1" },
         "manifestSha256": { "$ref": "#/$defs/sha256Hex" }
       }
@@ -267,19 +276,18 @@
       "additionalProperties": false,
       "required": ["status", "auxiliary", "billing"],
       "properties": {
-        "status": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": [
+            "committed",
+            "rejected",
+            "cancelled",
+            "interrupted",
+            "failed"
+          ]
+        },
         "auxiliary": { "type": "boolean" },
         "billing": {
-          "type": "object",
-          "required": ["inferenceId"],
-          "properties": {
-            "inferenceId": { "type": "string", "minLength": 1 },
-            "purpose": { "type": ["string", "null"] },
-            "accountId": { "type": "string" },
-            "accountDisplayName": { "type": ["string", "null"] },
-            "modelId": { "type": ["string", "null"] },
-            "effort": { "type": ["string", "null"] }
-          }
+          "$ref": "native.schema.json#/$defs/InferenceBillingRecord"
         }
       }
     },
@@ -370,12 +378,7 @@
       ],
       "properties": {
         "nativeRef": {
-          "type": "object",
-          "required": ["databaseId", "target"],
-          "properties": {
-            "databaseId": { "type": "string" },
-            "target": { "type": "object" }
-          }
+          "$ref": "native.schema.json#/$defs/ContentRef"
         },
         "role": {
           "oneOf": [
@@ -404,14 +407,7 @@
       "properties": {
         "header": { "$ref": "#/$defs/ChatItemHeaderExportV1" },
         "atom": {
-          "type": "object",
-          "required": ["id", "kind", "delivery", "lifecycle"],
-          "properties": {
-            "id": { "type": "string" },
-            "kind": { "type": "string" },
-            "delivery": { "type": "string" },
-            "lifecycle": { "type": "object" }
-          }
+          "$ref": "native.schema.json#/$defs/ChatAtom"
         },
         "payload": { "$ref": "#/$defs/ExportedBlobV1" },
         "contents": {
@@ -421,20 +417,7 @@
       }
     },
     "UsageSummary": {
-      "type": "object",
-      "required": ["appliedSequence", "binding", "totals", "pricing"],
-      "properties": {
-        "appliedSequence": { "type": "integer", "minimum": 0 },
-        "totals": { "type": "object" },
-        "pricing": {
-          "type": "object",
-          "required": ["incomplete", "estimatedCosts"],
-          "properties": {
-            "incomplete": { "type": "boolean" },
-            "estimatedCosts": { "type": "array" }
-          }
-        }
-      }
+      "$ref": "native.schema.json#/$defs/UsageSummary"
     },
     "ThreadSealedData": {
       "type": "object",

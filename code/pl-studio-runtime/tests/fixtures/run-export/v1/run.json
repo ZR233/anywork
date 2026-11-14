@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runId": "run-golden-0001",
+  "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
   "startedAt": "2026-11-13T15:00:00.000Z",
   "build": {
     "version": "1.0.0-test",
@@ -31,21 +31,7 @@
       "logicalName": "config.toml",
       "present": true,
       "sha256": "35b55765277b63654698bb1c4403d94ed396cf9c57043373e3e375dbdc8f7e2e",
-      "redactedSummary": {
-        "models": {
-          "accounts": {
-            "fixture": {
-              "bearerTokenEnv": "ANYWK_TEST_ENV_TOKEN",
-              "bearerToken": "[REDACTED]",
-              "httpHeaders": {
-                "redactedHeaderNames": [
-                  "X-Api-Key"
-                ]
-              }
-            }
-          }
-        }
-      }
+      "redactedSummary": null
     }
   ],
   "exportSchema": {

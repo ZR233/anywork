@@ -34,6 +34,7 @@ struct MetricGroupAcc {
     known_estimated_cost_usd: f64,
     any_incomplete_analysis: bool,
     any_overflow: bool,
+    cost_overflow: bool,
 }
 
 impl MetricGroupAcc {
@@ -57,6 +58,7 @@ impl MetricGroupAcc {
             known_estimated_cost_usd: 0.0,
             any_incomplete_analysis: false,
             any_overflow: false,
+            cost_overflow: false,
         }
     }
 
@@ -133,7 +135,7 @@ impl MetricGroupAcc {
             &mut self.estimated_cost_usd,
             &mut self.known_estimated_cost_usd,
             usd_contrib,
-            &mut self.any_overflow,
+            &mut self.cost_overflow,
         );
     }
 
@@ -300,10 +302,9 @@ fn collect_unknown_fields(totals: &UsageTotalsV1) -> Vec<UsageMetricKey> {
 /// Authoritative per-thread input supplied to the reconciler & exporter summary builder.
 pub struct ThreadUsageInput<'a> {
     pub thread_id: &'a str,
-    pub initial_effect_seq: u64,
     pub through_effect_seq: u64,
     pub summary: &'a UsageSummary,
-    pub receipts: &'a [PreparedAccounting],
+    pub replayed: &'a UsageSummary,
 }
 
 /// Output of full run usage aggregation + raw-receipt reconciliation.
@@ -318,102 +319,115 @@ pub struct BuiltUsageExport {
 /// Replays every admitted raw `PreparedAccounting` through the canonical reducer and verifies
 /// exact field-for-field agreement with each thread's authoritative `UsageSummary`, then builds
 /// `UsageExportV1` with frozen model identities and honest unknown-value handling.
-pub fn build_and_reconcile_usage(
-    trace_complete: bool,
-    threads: &[ThreadUsageInput<'_>],
-) -> BuiltUsageExport {
-    let mut reconcile_error = None;
-    for thread in threads {
-        if let Err(error) = reconcile_single_thread(thread) {
-            reconcile_error = Some(error.to_string());
-            break;
+pub struct UsageAccumulator {
+    run: MetricGroupAcc,
+    by_model: BTreeMap<(Option<String>, Option<String>), MetricGroupAcc>,
+}
+
+impl Default for UsageAccumulator {
+    fn default() -> Self {
+        Self {
+            run: MetricGroupAcc::new_complete_zero(),
+            by_model: BTreeMap::new(),
         }
     }
-    let reconciled = reconcile_error.is_none();
-    let coverage = if trace_complete && reconciled {
-        UsageCoverage::Complete
-    } else {
-        UsageCoverage::Partial
-    };
+}
 
-    let mut run_acc = MetricGroupAcc::new_complete_zero();
-    let mut by_model_acc: BTreeMap<(Option<String>, Option<String>), MetricGroupAcc> =
-        BTreeMap::new();
-    let mut any_thread_counts_overflowed = false;
-    let mut by_thread = Vec::with_capacity(threads.len());
-
-    for thread in threads {
-        any_thread_counts_overflowed |= thread.summary.diagnostics.counts_overflowed;
-        by_thread.push(ThreadUsageExportV1 {
-            thread_id: thread.thread_id.to_string(),
-            through_effect_seq: thread.through_effect_seq,
-            summary: thread.summary.clone(),
-        });
-        for prepared in thread.receipts {
-            if prepared.sequence <= thread.initial_effect_seq
-                || prepared.sequence > thread.through_effect_seq
-            {
-                continue;
-            }
-            for fact in prepared.facts.iter() {
-                run_acc.record_call(&fact.record);
-                let account_id =
-                    (!fact.record.account_id.is_empty()).then(|| fact.record.account_id.clone());
-                let model_id = fact
-                    .record
-                    .model_id
-                    .as_deref()
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_owned);
-                by_model_acc
-                    .entry((account_id, model_id))
-                    .or_insert_with(MetricGroupAcc::new_complete_zero)
-                    .record_call(&fact.record);
-            }
+impl UsageAccumulator {
+    pub fn record(&mut self, prepared: &PreparedAccounting) {
+        for fact in prepared.facts.iter() {
+            self.run.record_call(&fact.record);
+            let account_id =
+                (!fact.record.account_id.is_empty()).then(|| fact.record.account_id.clone());
+            let model_id = fact
+                .record
+                .model_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+            self.by_model
+                .entry((account_id, model_id))
+                .or_insert_with(MetricGroupAcc::new_complete_zero)
+                .record_call(&fact.record);
         }
     }
 
-    let (totals, known_totals, run_unknown_fields) = run_acc.finish(coverage);
-    let mut by_model = Vec::with_capacity(by_model_acc.len());
-    let mut any_model_unknown = false;
-    for ((account_id, model_id), acc) in by_model_acc {
-        let (m_totals, m_known, m_unknown) = acc.finish(coverage);
-        let has_unknown_values = coverage != UsageCoverage::Complete || !m_unknown.is_empty();
-        any_model_unknown |= has_unknown_values;
-        by_model.push(ModelUsageExportV1 {
-            account_id,
-            model_id,
-            coverage,
-            has_unknown_values,
-            totals: m_totals,
-            known_totals: m_known,
-            unknown_fields: m_unknown,
-        });
-    }
+    pub fn finish(
+        &self,
+        trace_complete: bool,
+        threads: &[ThreadUsageInput<'_>],
+    ) -> BuiltUsageExport {
+        let mut reconcile_error = None;
+        for thread in threads {
+            if let Err(error) = reconcile_single_thread(thread) {
+                reconcile_error = Some(error.to_string());
+                break;
+            }
+        }
+        let reconciled = reconcile_error.is_none();
+        let coverage = if trace_complete && reconciled {
+            UsageCoverage::Complete
+        } else {
+            UsageCoverage::Partial
+        };
 
-    let has_unknown_values =
-        coverage != UsageCoverage::Complete || !run_unknown_fields.is_empty() || any_model_unknown;
-    let usage_complete = coverage == UsageCoverage::Complete
-        && !run_acc.any_incomplete_analysis
-        && !run_acc.any_overflow
-        && !any_thread_counts_overflowed;
-    let cost_complete = coverage == UsageCoverage::Complete
-        && totals.estimated_cost_usd.is_some()
-        && !run_acc.any_overflow;
+        let run_acc = &self.run;
+        let mut any_thread_counts_overflowed = false;
+        let mut by_thread = Vec::with_capacity(threads.len());
 
-    BuiltUsageExport {
-        export: UsageExportV1 {
-            coverage,
-            has_unknown_values,
-            totals,
-            known_totals,
-            by_model,
-            by_thread,
-        },
-        usage_complete,
-        cost_complete,
-        reconciled,
-        reconcile_error,
+        for thread in threads {
+            any_thread_counts_overflowed |= thread.summary.diagnostics.counts_overflowed
+                || thread.summary.diagnostics.overflow_calls != 0;
+            by_thread.push(ThreadUsageExportV1 {
+                thread_id: thread.thread_id.to_string(),
+                through_effect_seq: thread.through_effect_seq,
+                summary: thread.summary.clone(),
+            });
+        }
+
+        let (totals, known_totals, run_unknown_fields) = run_acc.finish(coverage);
+        let mut by_model = Vec::with_capacity(self.by_model.len());
+        let mut any_model_unknown = false;
+        for ((account_id, model_id), acc) in &self.by_model {
+            let (m_totals, m_known, m_unknown) = acc.finish(coverage);
+            let has_unknown_values = coverage != UsageCoverage::Complete || !m_unknown.is_empty();
+            any_model_unknown |= has_unknown_values;
+            by_model.push(ModelUsageExportV1 {
+                account_id: account_id.clone(),
+                model_id: model_id.clone(),
+                coverage,
+                has_unknown_values,
+                totals: m_totals,
+                known_totals: m_known,
+                unknown_fields: m_unknown,
+            });
+        }
+
+        let has_unknown_values = coverage != UsageCoverage::Complete
+            || !run_unknown_fields.is_empty()
+            || any_model_unknown;
+        let usage_complete = coverage == UsageCoverage::Complete
+            && !run_acc.any_incomplete_analysis
+            && !run_acc.any_overflow
+            && !any_thread_counts_overflowed;
+        let cost_complete = coverage == UsageCoverage::Complete
+            && totals.estimated_cost_usd.is_some()
+            && !run_acc.cost_overflow;
+
+        BuiltUsageExport {
+            export: UsageExportV1 {
+                coverage,
+                has_unknown_values,
+                totals,
+                known_totals,
+                by_model,
+                by_thread,
+            },
+            usage_complete,
+            cost_complete,
+            reconciled,
+            reconcile_error,
+        }
     }
 }
 
@@ -426,42 +440,31 @@ fn reconcile_single_thread(thread: &ThreadUsageInput<'_>) -> Result<()> {
         thread.summary.applied_sequence,
         expected_seq
     );
-    let mut receipts: Vec<&PreparedAccounting> = thread
-        .receipts
-        .iter()
-        .filter(|item| item.sequence > thread.initial_effect_seq && item.sequence <= expected_seq)
-        .collect();
-    receipts.sort_by_key(|item| item.sequence);
-    let mut replayed = UsageSummary::default();
-    let mut last_seq = thread.initial_effect_seq;
-    for prepared in receipts {
-        ensure!(
-            prepared.thread_id == thread.thread_id,
-            "receipt thread_id {} does not belong to member {}",
-            prepared.thread_id,
-            thread.thread_id
-        );
-        ensure!(
-            prepared.sequence > last_seq,
-            "duplicate or out-of-order accounting receipt at effect_seq {} for thread {}",
-            prepared.sequence,
-            thread.thread_id
-        );
-        last_seq = prepared.sequence;
-        prepared.fold_into(&mut replayed);
-    }
     ensure!(
-        last_seq == expected_seq,
-        "thread {} accounting receipts cover effect_seq {}, expected {}",
-        thread.thread_id,
-        last_seq,
-        expected_seq
-    );
-    ensure!(
-        replayed == *thread.summary,
+        thread.replayed == thread.summary,
         "thread {} replayed raw billing receipts differ from authoritative UsageSummary (applied_seq={})",
         thread.thread_id,
         expected_seq
     );
+    Ok(())
+}
+
+/// Incremental replay retains the native reducer result, not every raw billing record.
+pub fn fold_next_accounting(
+    thread_id: &str,
+    prepared: &PreparedAccounting,
+    replayed: &mut UsageSummary,
+) -> Result<()> {
+    ensure!(
+        prepared.thread_id == thread_id,
+        "accounting receipt belongs to another thread"
+    );
+    ensure!(
+        replayed.applied_sequence.checked_add(1) == Some(prepared.sequence),
+        "accounting effect gap for thread {thread_id}: after {}, got {}",
+        replayed.applied_sequence,
+        prepared.sequence
+    );
+    prepared.fold_into(replayed);
     Ok(())
 }
