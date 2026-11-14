@@ -13,6 +13,29 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.41.0](https://github.com/ZR233/anywork/compare/v6.40.0...v6.41.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 展示协议升级到 presentation v6，展示历史使用单一 BlockOrder，旧展示游标须重新打开。
+
+### Features
+
+* **studio:** ACP 通过 MCP 复用普通会话远程能力 ([#434](https://github.com/ZR233/anywork/issues/434)) ([b2c9b92](https://github.com/ZR233/anywork/commit/b2c9b9243cd9dc98fb2843a9085a9bfb740b52bf))
+
+
+### Bug Fixes
+
+* **lsp:** 修复保存后语言服务诊断不刷新 ([#436](https://github.com/ZR233/anywork/issues/436)) ([5a26fd1](https://github.com/ZR233/anywork/commit/5a26fd1ab1e326f627d7de44467dcb9ab52619ab))
+* **lsp:** 修复配置自动加载并完善首次使用指引 ([#438](https://github.com/ZR233/anywork/issues/438)) ([9ce1277](https://github.com/ZR233/anywork/commit/9ce127769bb6b6c669532a562584069cbb55780a))
+
+
+### Refactoring
+
+* **studio:** 统一 ConversationStore 与完成原件内存准入 ([#435](https://github.com/ZR233/anywork/issues/435)) ([cb52476](https://github.com/ZR233/anywork/commit/cb52476b50eadf6dffc08c282a3f43f6ca582b7e))
+* **studio:** 统一展示块顺序与有界分页 ([#437](https://github.com/ZR233/anywork/issues/437)) ([f32e62c](https://github.com/ZR233/anywork/commit/f32e62c80f3572c552f092854dad427af579d60d))
+
 ## [6.40.0](https://github.com/ZR233/anywork/compare/v6.39.0...v6.40.0) (2026-11-13)
 
 
