@@ -312,7 +312,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_thread_turns))
         .routes(routes!(conversation::older))
         .routes(routes!(timeline::open))
-        .routes(routes!(timeline::events))
+        .routes(routes!(timeline::next))
         .routes(routes!(timeline::older))
         .routes(routes!(timeline::live_older))
         .routes(routes!(timeline::close))

@@ -125,7 +125,7 @@ impl PresentationTokens {
     }
     pub(super) fn before(&self, ceiling: u64, boundary: u64) -> Result<String> {
         ensure!(
-            boundary > 0 && boundary <= ceiling && ceiling == self.ceiling,
+            boundary > 0 && boundary <= ceiling.saturating_add(1) && ceiling == self.ceiling,
             core::ChatError::InvalidArgument("invalid display history boundary".into())
         );
         self.encode(CursorKind::DisplayBefore {
@@ -397,7 +397,7 @@ impl ConversationReader {
         };
         ensure!(
             boundary > 0
-                && boundary <= ceiling
+                && boundary <= ceiling.saturating_add(1)
                 && self.inner.presentation_ceiling.get() == Some(&ceiling),
             core::ChatError::InvalidArgument("invalid display history boundary".into())
         );

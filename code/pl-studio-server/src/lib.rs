@@ -116,7 +116,10 @@ async fn limit_normal_requests(
     let path = request.uri().path();
     if path == "/api/v1/events/product"
         || (path.starts_with("/api/v1/threads/")
-            && (path.ends_with("/events") || path.ends_with("/contents/watch")))
+            && (path.ends_with("/events")
+                || path.ends_with("/contents/watch")
+                || path.ends_with("/timeline/next")
+                || path.ends_with("/timeline/close")))
     {
         return next.run(request).await;
     }

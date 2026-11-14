@@ -8,9 +8,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
 use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
-use pl_studio_runtime::{
-    ConversationEvent, ConversationStateFeed, StudioProductFrame, TimelineEvent,
-};
+use pl_studio_runtime::{ConversationEvent, ConversationStateFeed, StudioProductFrame};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -571,22 +569,12 @@ async fn run_conversation(
                     received = events.recv() => received,
                 };
                 match received {
-                    Ok(Some(event)) => {
-                        if let NativeEvent::Timeline(TimelineEvent::Timeline { batch }) = &event
-                            && let Err(error) = batch.validate()
-                        {
-                            if let Ok(event) = encode_event("error", None, &error) {
-                                capacity.send(Ok(event));
-                            }
-                            break;
+                    Ok(Some(event)) => match encode_native_event(&event) {
+                        Ok(event) => {
+                            capacity.send(Ok(event));
                         }
-                        match encode_native_event(&event) {
-                            Ok(event) => {
-                                capacity.send(Ok(event));
-                            }
-                            Err(_) => break,
-                        }
-                    }
+                        Err(_) => break,
+                    },
                     Ok(None) => break,
                     Err(error) => {
                         let error = pl_studio_runtime::studio_error_from_anyhow(error);
@@ -625,6 +613,9 @@ pub(crate) async fn close_conversation(
     let _close = owner.close_gate.lock().await;
     // These are independent owners: one failure must never skip the other join.
     let feed_close = async {
+        if let Some(reader) = &owner.timeline {
+            reader.close().await?;
+        }
         let mut native = owner.native.lock().await;
         if let Some(feed) = native.as_mut() {
             feed.request_close();
@@ -680,9 +671,6 @@ pub(crate) async fn close_conversation(
 fn encode_native_event(event: &NativeEvent) -> Result<Event, axum::Error> {
     match event {
         NativeEvent::Conversation(event) => encode_conversation_event(event),
-        NativeEvent::Timeline(TimelineEvent::Timeline { batch }) => {
-            encode_event("timeline", None, batch)
-        }
     }
 }
 

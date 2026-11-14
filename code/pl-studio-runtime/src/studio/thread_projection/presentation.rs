@@ -195,6 +195,7 @@ pub(in crate::studio) struct PresentationCut {
     pub last_order: u64,
     pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
+    pub layout_revision: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
     pub history: Vec<Arc<DisplayHeader>>,
@@ -227,6 +228,8 @@ pub(in crate::studio) struct PresentationState {
     published: u64,
     durable: u64,
     revision: u64,
+    layout_revision: u64,
+    execution_present: bool,
     member_change: u64,
     next_order: u64,
     applied_effect: u64,
@@ -262,6 +265,8 @@ impl Default for PresentationState {
             published: Default::default(),
             durable: Default::default(),
             revision: Default::default(),
+            layout_revision: 0,
+            execution_present: false,
             member_change: Default::default(),
             next_order: Default::default(),
             applied_effect: Default::default(),
@@ -499,6 +504,40 @@ fn header_bytes(header: &DisplayHeader) -> Result<u64> {
 }
 
 impl PresentationState {
+    fn advance_layout(&mut self) -> Result<()> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .context("display view revision exhausted")?;
+        let layout = self
+            .layout_revision
+            .checked_add(1)
+            .context("display layout revision exhausted")?;
+        self.revision = revision;
+        self.layout_revision = layout;
+        Ok(())
+    }
+
+    pub(in crate::studio) fn observe_execution(&mut self, present: bool) -> Result<()> {
+        if self.execution_present != present {
+            self.advance_layout()?;
+            self.execution_present = present;
+        }
+        Ok(())
+    }
+
+    /// Constant-size summary read: no member iteration, body decoding or database access.
+    pub(in crate::studio) fn view_status(&self) -> (u64, u64, u64, Option<String>, Option<String>) {
+        let work = self.open_work.map(|order| &self.blocks[&order]);
+        (
+            self.revision,
+            self.layout_revision,
+            self.published,
+            work.map(|h| h.id.clone()),
+            work.and_then(|h| h.thinking_summary.clone()),
+        )
+    }
+
     /// Streaming replaces only the open group's bounded in-memory title. No member
     /// read, durable delta or persisted header revision is produced by progress.
     pub(super) fn observe_thinking_summary(&mut self, summary: &str) {
@@ -507,6 +546,10 @@ impl PresentationState {
         if header.thinking_summary.as_deref() == Some(summary) {
             return;
         }
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("display view revision exhausted");
         let previous = header.thinking_summary.as_ref().map_or(0, String::len);
         // A queued version detached by streaming still needs one charge until its
         // original effect commits. Keep that charge in the existing batch metadata;
@@ -656,6 +699,7 @@ impl PresentationState {
             last_order: self.next_order,
             resident_block_floor: self.resident_block_floor,
             revision: self.revision,
+            layout_revision: self.layout_revision,
             current_work_id: self.open_work.map(|order| self.blocks[&order].id.clone()),
             open,
             history,
@@ -709,6 +753,7 @@ impl PresentationState {
         // Passive windows use this saved effect as their view revision. Keep the
         // same baseline when execution attaches to the existing read lease.
         self.revision = effect;
+        self.layout_revision = effect;
         self.resident_block_floor = successor(next_order).map(BlockOrder);
         for header in headers {
             ensure!(
@@ -1134,6 +1179,8 @@ impl PresentationState {
             published: self.published,
             durable: self.durable,
             revision: self.revision,
+            layout_revision: self.layout_revision,
+            execution_present: self.execution_present,
             member_change: self.member_change,
             next_order: self.next_order,
             applied_effect: self.applied_effect,
@@ -1309,6 +1356,7 @@ impl PresentationState {
         self.open_work = next.open_work;
         self.published = next.published;
         self.revision = next.revision;
+        self.layout_revision = next.layout_revision;
         self.member_change = next.member_change;
         self.next_order = next.next_order;
         self.applied_effect = next.applied_effect;
@@ -1619,17 +1667,7 @@ impl PresentationState {
         header: DisplayHeader,
         touched: &mut BTreeSet<BlockOrder>,
     ) -> Result<()> {
-        if header.sealed
-            && self
-                .blocks
-                .get(&header.block_order)
-                .is_some_and(|old| !old.sealed)
-        {
-            self.revision = self
-                .revision
-                .checked_add(1)
-                .context("display structure revision exhausted")?;
-        }
+        self.advance_layout()?;
         if header.sealed {
             self.unready.remove(&header.block_order);
         } else {
@@ -1658,10 +1696,7 @@ impl PresentationState {
         committed_at: i64,
         touched: &mut BTreeSet<BlockOrder>,
     ) -> Result<BlockOrder> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("display structure revision exhausted")?;
+        self.advance_layout()?;
         self.next_order = self
             .next_order
             .checked_add(1)

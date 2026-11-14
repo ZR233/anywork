@@ -11,9 +11,7 @@ use pl_protocol::{
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
-use pl_studio_runtime::{
-    ConversationEvent, ConversationFeed, ConversationReader, TimelineEvent, TimelineFeed,
-};
+use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineReader};
 use serde::Deserialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -42,6 +40,10 @@ pub(crate) struct Owners {
 pub(crate) struct ReadOwner {
     thread_id: String,
     pub(crate) reader: ConversationReader,
+    pub(crate) timeline: Option<Arc<TimelineReader>>,
+    activity: Mutex<tokio::time::Instant>,
+    activity_changed: tokio::sync::Notify,
+    main_reads: std::sync::atomic::AtomicUsize,
     pub(crate) cancel: CancellationToken,
     reads: Arc<Semaphore>,
     pub(crate) native: tokio::sync::Mutex<Option<NativeFeed>>,
@@ -59,26 +61,22 @@ pub(crate) type EventSender =
 
 pub(crate) enum NativeFeed {
     Conversation(Box<ConversationFeed>),
-    Timeline(Box<TimelineFeed>),
 }
 
 pub(crate) enum NativeEvent {
     Conversation(ConversationEvent),
-    Timeline(TimelineEvent),
 }
 
 impl NativeFeed {
     pub(crate) fn subscription_id(&self) -> &str {
         match self {
             Self::Conversation(feed) => feed.subscription_id(),
-            Self::Timeline(feed) => feed.subscription_id(),
         }
     }
 
     pub(crate) fn reader(&self) -> &ConversationReader {
         match self {
             Self::Conversation(feed) => feed.reader(),
-            Self::Timeline(feed) => feed.reader(),
         }
     }
 
@@ -88,21 +86,18 @@ impl NativeFeed {
                 .recv()
                 .await
                 .map(|event| event.map(NativeEvent::Conversation)),
-            Self::Timeline(feed) => feed.receive().await.map(NativeEvent::Timeline).map(Some),
         }
     }
 
     pub(crate) fn request_close(&self) {
         match self {
             Self::Conversation(feed) => feed.request_close(),
-            Self::Timeline(feed) => feed.request_close(),
         }
     }
 
     pub(crate) async fn close(&mut self) -> anyhow::Result<()> {
         match self {
             Self::Conversation(feed) => feed.close().await,
-            Self::Timeline(feed) => feed.close().await,
         }
     }
 }
@@ -112,6 +107,10 @@ impl ReadOwner {
         Self {
             thread_id,
             reader,
+            timeline: None,
+            activity: Mutex::new(tokio::time::Instant::now()),
+            activity_changed: tokio::sync::Notify::new(),
+            main_reads: std::sync::atomic::AtomicUsize::new(0),
             cancel: CancellationToken::new(),
             reads: Arc::new(Semaphore::new(MAX_READS as usize)),
             native: tokio::sync::Mutex::new(None),
@@ -129,6 +128,9 @@ impl ReadOwner {
     }
 
     pub(crate) fn request_close(&self) {
+        if let Some(reader) = &self.timeline {
+            reader.request_close();
+        }
         self.cancel.cancel();
         self.reader.request_close();
         self.events
@@ -146,10 +148,72 @@ impl ReadOwner {
 
 pub(crate) struct ReadLease {
     pub(crate) owner: Arc<ReadOwner>,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+impl ReadOwner {
+    pub(crate) fn with_timeline(thread_id: String, timeline: TimelineReader) -> Self {
+        let mut owner = Self::new(thread_id, timeline.reader().clone());
+        owner.timeline = Some(Arc::new(timeline));
+        owner
+    }
+    fn touch(&self) {
+        *self.activity.lock().expect("reader activity poisoned") = tokio::time::Instant::now();
+        self.activity_changed.notify_one();
+    }
+    pub(crate) async fn wait_idle(&self, timeout: std::time::Duration) {
+        loop {
+            let notified = self.activity_changed.notified();
+            let deadline = *self.activity.lock().expect("reader activity poisoned") + timeout;
+            if deadline <= tokio::time::Instant::now() {
+                if self.reads.available_permits() == MAX_READS as usize
+                    && self.main_reads.load(std::sync::atomic::Ordering::Acquire) == 0
+                    && self
+                        .members
+                        .lock()
+                        .expect("reader members poisoned")
+                        .is_empty()
+                {
+                    return;
+                }
+                notified.await;
+            } else {
+                tokio::select! { _ = tokio::time::sleep_until(deadline) => {}, _ = notified => {} }
+            }
+        }
+    }
+}
+impl Drop for ReadLease {
+    fn drop(&mut self) {
+        if self._permit.is_none() {
+            self.owner
+                .main_reads
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+        self.owner.touch();
+    }
 }
 
 impl Conversations {
+    pub(crate) fn borrow_next(
+        &self,
+        thread_id: &str,
+        headers: &HeaderMap,
+        shutdown: &CancellationToken,
+    ) -> Result<ReadLease, ApiError> {
+        let (_, owner) = self.closing_owner(thread_id, headers)?;
+        if shutdown.is_cancelled() || owner.cancel.is_cancelled() || owner.timeline.is_none() {
+            return Err(stale_scope());
+        }
+        owner
+            .main_reads
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        owner.touch();
+        Ok(ReadLease {
+            owner,
+            _permit: None,
+        })
+    }
     pub(crate) fn borrow(
         &self,
         thread_id: &str,
@@ -174,6 +238,7 @@ impl Conversations {
         {
             return Err(stale_scope());
         }
+        owner.touch();
         let permit = owner
             .reads
             .clone()
@@ -181,7 +246,7 @@ impl Conversations {
             .map_err(|_| ApiError::overloaded())?;
         Ok(ReadLease {
             owner: owner.clone(),
-            _permit: permit,
+            _permit: Some(permit),
         })
     }
 

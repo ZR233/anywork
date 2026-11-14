@@ -9,6 +9,106 @@ use crate::{
 };
 
 pub const PRESENTATION_VERSION: u32 = 6;
+pub const TIMELINE_READER_PROTOCOL_VERSION: u32 = 1;
+
+/// A capability-local position, unrelated to persisted block or completion order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct ViewCursor(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenTimeline {
+    pub reader_id: String,
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub initial_cursor: ViewCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryPlacement {
+    Set,
+    Append,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryDelta {
+    pub placement: HistoryPlacement,
+    pub from_order: Option<u64>,
+    pub through_order: u64,
+    pub blocks: Vec<DisplayBlock>,
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TailSnapshot {
+    pub revision: u64,
+    pub layout_revision: u64,
+    pub ready_frontier: u64,
+    pub execution_present: bool,
+    pub current_work_id: Option<String>,
+    pub blocks: Vec<LiveDisplayBlock>,
+    pub older: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TailUpdate {
+    Keep,
+    Replace {
+        snapshot: TailSnapshot,
+    },
+    Status {
+        base_layout_revision: u64,
+        revision: u64,
+        current_work_id: Option<String>,
+        thinking_summary: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ViewUpdate {
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub after: ViewCursor,
+    pub next: ViewCursor,
+    pub history: HistoryDelta,
+    pub tail: TailUpdate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelinePage {
+    pub presentation_version: u32,
+    pub database_id: String,
+    pub ceiling: u64,
+    pub blocks: Vec<DisplayBlock>,
+    pub before: Option<String>,
+}
+
+pub fn validate_timeline_versions(presentation: u32, reader: u32) -> Result<(), StudioError> {
+    if presentation == PRESENTATION_VERSION && reader == TIMELINE_READER_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(StudioError::new(
+        StudioErrorCode::Protocol,
+        "Unsupported timeline reader protocol",
+        false,
+    )
+    .with_reason(
+        StudioErrorReason::ProtocolVersionMismatch,
+        serde_json::Value::Null,
+    ))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

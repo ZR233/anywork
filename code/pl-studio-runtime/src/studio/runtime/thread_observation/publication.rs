@@ -168,6 +168,12 @@ impl ConversationPublication {
     }
 
     pub(in crate::studio) fn apply(&self, source: Arc<ConversationSource>) {
+        source
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observe_execution(source.current.projection().execution_present)
+            .expect("display publication revision exhausted");
         let serial = source.serial;
         *self
             .latest

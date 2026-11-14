@@ -19,11 +19,13 @@ use pl_protocol::{
 use serde::Serialize;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(super) struct DisplayReadCut {
     pub published: u64,
     pub last_order: u64,
     pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
+    pub layout_revision: u64,
     pub execution_present: bool,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
@@ -65,6 +67,7 @@ impl ConversationReader {
                 last_order: cut.last_order,
                 resident_block_floor: cut.resident_block_floor,
                 revision: cut.revision,
+                layout_revision: cut.layout_revision,
                 execution_present: source.current.projection().execution_present,
                 current_work_id: live_before
                     .is_none()
@@ -90,6 +93,7 @@ impl ConversationReader {
                     last_order: stored.last_order,
                     resident_block_floor: None,
                     revision: stored.effect,
+                    layout_revision: stored.effect,
                     execution_present: false,
                     current_work_id: stored.current_work_id,
                     open: stored.open,
@@ -102,6 +106,7 @@ impl ConversationReader {
                 last_order: 0,
                 resident_block_floor: Some(BlockOrder::new(1)?),
                 revision: 0,
+                layout_revision: 0,
                 execution_present: false,
                 current_work_id: None,
                 open: Vec::new(),
@@ -173,12 +178,12 @@ impl ConversationReader {
             cut.current_work_id.clone(),
             heads.iter().rev(),
             demand,
-            |boundary| tokens.live_before(cut.revision, boundary),
+            |boundary| tokens.live_before(cut.layout_revision, boundary),
         )
     }
 
     /// SQLite and RAM use exactly the same key range. Captured versions always win.
-    async fn history_heads(
+    pub(super) async fn history_heads(
         &self,
         cut: &DisplayReadCut,
         ceiling: u64,
@@ -360,11 +365,16 @@ impl ConversationReader {
     ) -> Result<LiveDisplayWindow> {
         demand.validate(1)?;
         let first = self.capture_display(None, 0, Some(u64::MAX), 0).await?;
-        let boundary = self.live_display_boundary(before, first.revision).await?;
+        let boundary = self
+            .live_display_boundary(before, first.layout_revision)
+            .await?;
         let cut = self
             .capture_display(Some(boundary), demand.max_items as usize, Some(u64::MAX), 0)
             .await?;
-        ensure!(cut.revision == first.revision, ChatError::StaleContent);
+        ensure!(
+            cut.layout_revision == first.layout_revision,
+            ChatError::StaleContent
+        );
         let tokens = self.presentation_tokens().await?;
         let live = self.cut_live(&cut, demand, &tokens)?;
         self.ensure()?;
