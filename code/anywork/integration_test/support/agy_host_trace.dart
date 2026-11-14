@@ -62,6 +62,14 @@ final class AgyHostTrace extends AgyCallValidator<AcpConversationToolItem> {
   Map<String, dynamic> input(AcpConversationToolItem call) =>
       _object(_value(call.fields.rawInput), 'ACP tool rawInput');
 
+  // agy acceptance only: rawInput/input() remain the unmodified peer report.
+  Map<String, dynamic> mcpArguments(AcpConversationToolItem call) {
+    if (canonicalName(call.fields.name) == null) {
+      throw StateError('MCP argument projection requires a formal Host tool');
+    }
+    return _agyMcpArguments(input(call));
+  }
+
   @override
   dynamic output(AcpConversationToolItem call) {
     dynamic value;
@@ -145,6 +153,31 @@ Map<String, Object?> _inputDiagnostics(
     'rawInput': _diagnosticJson(value, safeCommands, markers),
     if (value is Map<String, dynamic>)
       'rawInputFingerprint': agyArgumentsFingerprint(value),
+    if (value is Map<String, dynamic>)
+      'agyMcpArgumentsProjection': _mcpProjectionDiagnostic(value),
+  };
+}
+
+Map<String, dynamic> _agyMcpArguments(Map<String, dynamic> original) {
+  if (original.containsKey('toolSummary') &&
+      original['toolSummary'] is! String) {
+    throw StateError('agy toolSummary metadata must be a string; body private');
+  }
+  return Map<String, dynamic>.of(original)..remove('toolSummary');
+}
+
+Map<String, Object?> _mcpProjectionDiagnostic(Map<String, dynamic> original) {
+  final present = original.containsKey('toolSummary');
+  final valid = !present || original['toolSummary'] is String;
+  return {
+    'origin': 'agy-acceptance-mcp-arguments',
+    'hasKnownToolSummary': present,
+    if (present) 'knownToolSummaryType': _jsonType(original['toolSummary']),
+    'state': valid ? 'available' : 'invalid-toolSummary-type',
+    if (valid)
+      'argumentsFingerprint': agyArgumentsFingerprint(
+        _agyMcpArguments(original),
+      ),
   };
 }
 

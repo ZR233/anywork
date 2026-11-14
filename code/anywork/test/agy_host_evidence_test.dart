@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'support/acp_acceptance_fixture.dart' as f;
 import '../integration_test/support/agy_host_evidence.dart';
 import '../integration_test/support/agy_host_trace.dart';
+import '../integration_test/support/agy_json_evidence.dart';
 
 const gui = 4242,
     root = 'fixture-agent',
@@ -248,8 +249,188 @@ void main() {
         ),
         throwsStateError,
       );
+      final distinctions = <(Map<String, dynamic>, Map<String, dynamic>)>[
+        ({'x': null}, {}),
+        ({}, {'x': null}),
+        (
+          {
+            'x': [1, 2],
+          },
+          {
+            'x': [2, 1],
+          },
+        ),
+        (
+          {
+            'x': [1],
+          },
+          {
+            'x': [1, 1],
+          },
+        ),
+        ({'x': 1}, {'x': 1, 'other': 0}),
+      ];
+      for (final (hostArgs, peerArgs) in distinctions) {
+        final host = rec('strict', 'anywork_list_tool_tasks', hostArgs, []);
+        await log(h).writeAsString(frame(host));
+        await expectLater(
+          reader(h).matchPhase(
+            await acp([
+              {
+                ...host,
+                'arguments': {
+                  ...peerArgs,
+                  'toolSummary': 'PRIVATE_STRICT_SUMMARY',
+                },
+              },
+            ]),
+            root,
+            timeout: Duration.zero,
+          ),
+          throwsStateError,
+        );
+      }
     },
   );
+  test('agy string toolSummary projects duplicate MCP arguments without changing raw evidence', () async {
+    const summaries = ['PRIVATE_SUMMARY_FIRST', 'PRIVATE_SUMMARY_SECOND'];
+    final fixture = await f.Fixture.open();
+    final trace = await fixture.calls([
+      for (final summary in summaries)
+        {
+          'name': 'mcp_anywork_anywork_list_tool_tasks',
+          'input': {'toolSummary': summary},
+          'output': null,
+        },
+    ]);
+    final before = trace.calls.map(trace.input).map(jsonEncode).toList();
+    final diagnostic = trace.diagnostics(safeCommands: {}, markers: {});
+    for (var i = 0; i < trace.calls.length; i++) {
+      final call = trace.calls[i];
+      expect(trace.input(call), {'toolSummary': summaries[i]});
+      expect(trace.mcpArguments(call), isEmpty);
+      final projection = diagnostic[i]['agyMcpArgumentsProjection'] as Map;
+      expect(projection['origin'], 'agy-acceptance-mcp-arguments');
+      expect(projection['hasKnownToolSummary'], isTrue);
+      expect(projection['knownToolSummaryType'], 'string');
+      expect(projection['argumentsFingerprint'], agyArgumentsFingerprint({}));
+      expect(
+        diagnostic[i]['rawInputFingerprint'],
+        agyArgumentsFingerprint({'toolSummary': summaries[i]}),
+      );
+      expect(jsonEncode(diagnostic).contains(summaries[i]), isFalse);
+    }
+    expect(
+      diagnostic[0]['rawInputFingerprint'],
+      isNot(diagnostic[1]['rawInputFingerprint']),
+    );
+    final h = await home();
+    final a = rec('first', 'anywork_list_tool_tasks', {}, []);
+    final b = rec('second', 'anywork_list_tool_tasks', {}, []);
+    await log(h).writeAsString(frame(a) + frame(b));
+    final matched = await reader(h)
+        .matchPhase(trace, root, timeout: Duration.zero);
+    expect(matched.records, hasLength(2));
+    expect(trace.calls.map(trace.input).map(jsonEncode).toList(), before);
+    final plain = await acp([a, b]);
+    for (final call in plain.calls) {
+      expect(plain.mcpArguments(call), plain.input(call));
+    }
+    expect(
+      (await reader(h).matchPhase(plain, root, timeout: Duration.zero)).records,
+      hasLength(2),
+    );
+  });
+
+  test('agy toolSummary rejects non-string metadata without hiding raw diagnostics or matching non-Host tools', () async {
+    for (final summary in [
+      null,
+      7,
+      {'secret': 'PRIVATE_METADATA_BODY'},
+    ]) {
+      final fixture = await f.Fixture.open();
+      final args = {'toolSummary': summary};
+      final trace = await fixture.calls([
+        {'name': 'anywork_list_tool_tasks', 'input': args, 'output': null},
+      ]);
+      expect(() => trace.mcpArguments(trace.calls.single), throwsStateError);
+      expect(trace.input(trace.calls.single), args);
+      final diagnostic = trace
+          .diagnostics(safeCommands: {}, markers: {})
+          .single;
+      expect(diagnostic['rawInputFingerprint'], agyArgumentsFingerprint(args));
+      final projection = diagnostic['agyMcpArgumentsProjection'] as Map;
+      expect(projection['state'], 'invalid-toolSummary-type');
+      expect(projection.containsKey('argumentsFingerprint'), isFalse);
+      expect(jsonEncode(diagnostic).contains('PRIVATE_METADATA_BODY'), isFalse);
+      final h = await home();
+      await log(h)
+          .writeAsString(frame(rec('one', 'anywork_list_tool_tasks', {}, [])));
+      await expectLater(
+        reader(h).matchPhase(trace, root, timeout: Duration.zero),
+        throwsStateError,
+      );
+    }
+    final fixture = await f.Fixture.open();
+    final nonHost = await fixture.calls([
+      {
+        'name': 'other_anywork_list_tool_tasks',
+        'input': {'toolSummary': 'PRIVATE_OTHER'},
+        'output': null,
+      },
+    ]);
+    expect(() => nonHost.mcpArguments(nonHost.calls.single), throwsStateError);
+    expect(
+      nonHost
+          .diagnostics(safeCommands: {}, markers: {})
+          .single
+          .containsKey('agyMcpArgumentsProjection'),
+      isFalse,
+    );
+  });
+
+  test(
+    'Host toolSummary always fails as a domain collision for root and child',
+    () async {
+      for (final caller in [root, child]) {
+        for (final summary in [
+          null,
+          'PRIVATE_SAME_SUMMARY',
+          9,
+          {'secret': 'PRIVATE_HOST_BODY'},
+        ]) {
+          final h = await home();
+          final host = rec(
+            'collision',
+            'anywork_list_tool_tasks',
+            {'toolSummary': summary},
+            [],
+            caller: caller,
+          );
+          await log(h).writeAsString(frame(host));
+          final fixture = await f.Fixture.open();
+          final peer = await fixture.calls([
+            {
+              'name': 'anywork_list_tool_tasks',
+              'input': summary is String ? {'toolSummary': summary} : {},
+              'output': null,
+            },
+          ]);
+          await expectLater(
+            reader(h).matchPhase(peer, root, timeout: Duration.zero),
+            throwsA(
+              isA<StateError>().having(
+                (error) => error.message,
+                'message',
+                contains('conflicts'),
+              ),
+            ),
+          );
+        }
+      }
+    },
+  );
+
   test('duplicate Host id across callers and bad complete JSON fail', () async {
     final h = await home();
     final a = rec('same', 'anywork_list_tool_tasks', {}, []);

@@ -10,6 +10,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 
 import 'agy_host_trace.dart';
+import 'agy_load_sampling.dart';
 import 'agy_remote_workspace.dart';
 import 'production_studio_harness.dart';
 
@@ -164,51 +165,78 @@ Future<void> runAgyLoadOnly({
   AcpConversationSession? owner;
   void Function()? stopWatch;
   Timer? timer;
-  Future<void> samples = Future.value();
   Future<void> writes = Future.value();
-  var processSampleCount = 0;
+  var requireAgySample = false;
+  var finalSampleTaken = false;
+  final samples = AgyLoadSampling(
+    () => processes.capture(command, requireAgy: requireAgySample),
+  );
   Object? primary;
   StackTrace? primaryStack;
-  void sample() {
-    samples = samples.then((_) async {
-      try {
-        processSampleCount++;
-        await processes.capture(command, requireAgy: false);
-      } catch (error) {
-        errors.add({'stage': 'process-sample', ..._error(error)});
-      }
-    });
-  }
+  void sample() => samples.request();
 
   Future<void> save() => File(p.join(artifacts.path, 'agy-load-report.json'))
       .writeAsString(
         const JsonEncoder.withIndent('  ').convert(report),
         flush: true,
       );
+  Future<void> checkpoint(String stage) async {
+    report['stage'] = stage;
+    report['sampling'] = samples.diagnostics;
+    await save();
+  }
+
+  Future<void> finishSamples() async {
+    timer?.cancel();
+    samples.closeAdmission();
+    if (!finalSampleTaken) {
+      finalSampleTaken = true;
+      await samples.finalSample();
+    } else {
+      await samples.drain();
+    }
+  }
+
   Future<void> cleanup(String stage, Future<void> Function() action) async {
+    try {
+      await checkpoint('$stage-before');
+    } catch (error) {
+      errors.add({'stage': '$stage-checkpoint-before', ..._error(error)});
+    }
     try {
       await action();
     } catch (error) {
       errors.add({'stage': stage, ..._error(error)});
+    }
+    try {
+      await checkpoint('$stage-after');
+    } catch (error) {
+      errors.add({'stage': '$stage-checkpoint-after', ..._error(error)});
     }
   }
 
   try {
     await save();
     sample();
-    await samples;
+    await checkpoint('initial-process-sample-before');
+    await samples.drain();
+    await checkpoint('initial-process-sample-after');
     timer = Timer.periodic(const Duration(milliseconds: 100), (_) => sample());
+    await checkpoint('harness-start-before');
     harness = await ProductionStudioHarness.start(
       binding: binding,
       artifactsEnvironmentVariable: 'ANYWORK_AGY_ARTIFACTS',
     );
+    await checkpoint('harness-start-after');
     // Do not mount navigation: only this original thread may be activated.
     final client = harness.graph.client;
     final demand = client.threadDirectory.observeThread(request.threadId);
     try {
+      await checkpoint('directory-read-before');
       final metadata = await demand.state
           .waitFor((s) => s.frame != null || s.error != null || s.closed)
           .timeout(const Duration(seconds: 30));
+      await checkpoint('directory-read-after');
       if (metadata.error != null || metadata.closed) {
         throw StateError('Original thread directory is not available');
       }
@@ -248,12 +276,13 @@ Future<void> runAgyLoadOnly({
         );
       }
       report['openAttempts'] = 1;
-      await save();
+      await checkpoint('public-load-before');
       owner = await client
           .openAcpConversation(request.threadId, resume: false)
           .timeout(const Duration(seconds: 120));
       final currentOwner = owner;
       report['ownerAccepted'] = true;
+      await checkpoint('public-load-after');
       final observer = AgyLoadObservation(request, (event) {
         writes = writes
             .then(
@@ -277,6 +306,7 @@ Future<void> runAgyLoadOnly({
         fireImmediately: true,
       );
       stopWatch = watch.cancel;
+      await checkpoint('ready-wait-before');
       await currentOwner.source
           .waitFor(
             (s) =>
@@ -288,6 +318,9 @@ Future<void> runAgyLoadOnly({
                 s.observationEnded,
           )
           .timeout(const Duration(seconds: 120));
+      timer.cancel();
+      samples.closeAdmission();
+      await checkpoint('ready-wait-after');
       observer.verify();
       final state = currentOwner.state;
       expect(state.target!.sessionId, row.sessionId);
@@ -300,8 +333,10 @@ Future<void> runAgyLoadOnly({
       report['loadedTarget'] = _target(state.target);
       report['acpSessionId'] = state.remoteSessionId?.value;
       report['observedPublications'] = observer.publications;
-      await samples;
-      await processes.capture(command);
+      requireAgySample = true;
+      await checkpoint('final-process-sample-before');
+      await finishSamples();
+      await checkpoint('final-process-sample-after');
       final trace = AgyHostTrace(state.content);
       final host = trace.calls
           .where((call) => AgyHostTrace.canonicalName(call.fields.name) != null)
@@ -319,7 +354,9 @@ Future<void> runAgyLoadOnly({
       observer.verify();
       report['loadEvidenceAvailable'] = true;
     } finally {
-      await demand.release();
+      timer.cancel();
+      samples.closeAdmission();
+      await cleanup('directory-release', demand.release);
     }
   } catch (error, stack) {
     primary = error;
@@ -327,6 +364,7 @@ Future<void> runAgyLoadOnly({
     report['failure'] = _error(error);
   } finally {
     timer?.cancel();
+    samples.closeAdmission();
     await cleanup('stop-watch', () async {
       stopWatch?.call();
     });
@@ -334,8 +372,7 @@ Future<void> runAgyLoadOnly({
       await writes;
     });
     await cleanup('final-process-sample', () async {
-      sample();
-      await samples;
+      await finishSamples();
     });
     if (owner != null) {
       await cleanup('close-member', () async {
@@ -373,7 +410,8 @@ Future<void> runAgyLoadOnly({
     }
     await cleanup('independent-local-exit', processes.verifyClosed);
     report['localOwnedProcesses'] = processes.evidence;
-    report['processSampleCount'] = processSampleCount;
+    report['processSampleCount'] = samples.diagnostics['started'];
+    report['sampling'] = samples.diagnostics;
     report['localProcessExitChecks'] = processes.exitEvidence;
     report['cleanupErrors'] = errors;
     report['verdict'] = primary == null && errors.isEmpty

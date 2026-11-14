@@ -75,6 +75,13 @@ final class AgyHostRecord {
     if (!data['toolId'].startsWith('anywork_')) {
       throw StateError('Host directory key is not an anywork_ tool');
     }
+    // Reject at the reader boundary for every caller, including child scopes.
+    // This key must never hide a genuine Host domain argument behind metadata.
+    if ((data['arguments'] as Map<String, dynamic>).containsKey(
+      'toolSummary',
+    )) {
+      throw StateError('Host domain argument conflicts with agy toolSummary');
+    }
     return AgyHostRecord._(
       expectedPid,
       data['callerAgentId'],
@@ -397,7 +404,7 @@ final class AgyHostEvidenceLog {
     final expected = <String, int>{};
     for (final call in acp.calls) {
       final name = AgyHostTrace.canonicalName(call.fields.name);
-      if (name != null) _add(expected, _key(name, acp.input(call)));
+      if (name != null) _add(expected, _key(name, acp.mcpArguments(call)));
     }
     if (expected.isEmpty) throw StateError('Missing formal ACP Host calls');
     final expires = DateTime.now().add(timeout);

@@ -222,6 +222,8 @@ initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rm
 
 对端工具通知不必回显 HostResult。隔离验收需要核对原返回值时，按 [24](./24-testing.md) 使用原 handler 的定向 TRACE 诊断；它不新增执行通路或产品结果镜像，不修改 ACP 更新，不把宿主 call ID 伪装为 MCP／ACP ID，也不改变任务的受理、取消和关闭语义。普通会话不依赖或读取该日志。
 
+同样，ACP 工具通知的 `rawInput` 与 MCP `arguments` 分属对端报告和宿主执行边界，不能由 SDK 类型相同推导逐字段等值。供应商已核实的展示元字段只可在 [24](./24-testing.md) 指定的窄验收适配中表达，完整原通知仍原样交付 Client；生产映射不删除 `toolSummary` 或其他字段，Host MCP 也不为配合显示而改写实际参数。
+
 IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝远程连接并限定本机用户的 named pipe，复用锁定 Tokio、h2 与 prost。每个 h2 stream 对应一次目录读取或执行调用，protobuf 外层承载原 JSON 参数/结果；收发上限为 4 MiB，超限明确失败，不截断。h2 负责并发关联、流控、reset 和连接关闭，不新增请求账本、业务 deadline、重放、重连或结果缓存，也不把产品调用塞入 SSH helper 协议。
 
 原实例固定可信 caller、具体运行代次及原 Session 的弱访问入口；成员发布前允许发现、拒绝域调用，发布后逐次校验原资格。HTTP bearer 经标准 header 校验；stdio 只从 `ANYWORK_HOST_IPC_ENDPOINT`、`ANYWORK_HOST_IPC_CAPABILITY` 临时环境取得本地 IPC 端点与每实例随机 capability，不放入 argv。IPC 每次请求验证 capability，连接不能更换调用者；调用参数不能提供可信 caller 或 call ID。真实 call ID 由原运行时生成，MCP/IPC request ID 不充当持久消息 ID。凭据不进入模型内容、参数、持久配置、历史或日志，实例关闭后失效。
