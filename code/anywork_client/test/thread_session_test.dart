@@ -123,7 +123,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 1, modelRoute: _route(4)),
         ),
       ),
@@ -220,7 +220,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 1,
             runtime: _approvedPlanRuntime(
@@ -321,7 +321,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 4),
           ),
         ),
@@ -362,7 +362,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 40),
         ),
       ),
@@ -375,7 +375,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 3),
         ),
       ),
@@ -426,7 +426,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 4),
         ),
       ),
@@ -443,7 +443,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 3),
         ),
       ),
@@ -467,7 +467,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 4),
         ),
       ),
@@ -534,7 +534,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 12),
         ),
       ),
@@ -586,7 +586,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace().copyWith(latestTurn: terminal),
         ),
       ),
@@ -886,7 +886,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(latestTurn: terminalA),
           ),
         ),
@@ -898,7 +898,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 2,
               latestTurn: _turnView(turnId: 'turn-b', revision: 5),
@@ -913,7 +913,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 3,
               latestTurn: _turnView(
@@ -938,7 +938,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 4,
               latestTurn: _turnView(turnId: 'turn-b', revision: 9),
@@ -972,7 +972,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(latestTurn: terminalA),
         ),
       ),
@@ -982,7 +982,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 2,
             latestTurn: _turnView(turnId: 'turn-b', revision: 6),
@@ -1010,7 +1010,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 10,
             latestTurn: _turnView(
@@ -1040,7 +1040,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 3,
             latestTurn: _turnView(
@@ -1082,7 +1082,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 1),
           ),
         ),
@@ -1134,7 +1134,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 4),
           ),
         ),
@@ -1161,7 +1161,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 2),
           ),
         ),
@@ -1220,7 +1220,7 @@ void main() {
         ConversationStateEvent(
           frame: ThreadSnapshotFrame(
             schemaVersion: 17,
-            completedHistoryVersion: 1,
+            completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 3),
           ),
         ),

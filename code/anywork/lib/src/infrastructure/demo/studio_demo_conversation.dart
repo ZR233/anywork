@@ -1691,7 +1691,7 @@ final class _DemoConversationStateFeed implements ConversationStateFeed {
     _initialState = ConversationStateEvent(
       frame: ThreadSnapshotFrame(
         schemaVersion: threadSchemaVersion,
-        completedHistoryVersion: 1,
+        completedHistoryVersion: completedHistoryVersion,
         workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
       ),
     );
@@ -1772,7 +1772,7 @@ final class _DemoConversationStateFeed implements ConversationStateFeed {
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
               schemaVersion: threadSchemaVersion,
-              completedHistoryVersion: 1,
+              completedHistoryVersion: completedHistoryVersion,
               workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
             ),
           ),

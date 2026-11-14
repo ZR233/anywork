@@ -1,9 +1,10 @@
+import '../../models/chat_models.dart';
 import 'conversation_watermark.dart';
 
 final class ProtocolVersionMismatch implements Exception {
   const ProtocolVersionMismatch({
     required this.received,
-    this.supported = 1,
+    this.supported = completedHistoryVersion,
     this.field = 'completedHistoryVersion',
   });
   final int? received;

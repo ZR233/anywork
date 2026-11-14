@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../../conversation_ports.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart';
+import '../../models/chat_models.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/conversation_errors.dart';
 
@@ -159,11 +160,11 @@ final class ConversationStateOwner {
       switch (frame.event) {
         case ConversationStateEvent(:final frame):
           if (frame case ThreadSnapshotFrame(
-            :final completedHistoryVersion,
+            completedHistoryVersion: final historyVersion,
             :final schemaVersion,
           )) {
-            if (completedHistoryVersion != 1) {
-              throw ProtocolVersionMismatch(received: completedHistoryVersion);
+            if (historyVersion != completedHistoryVersion) {
+              throw ProtocolVersionMismatch(received: historyVersion);
             }
             if (schemaVersion != threadSchemaVersion) {
               throw ProtocolVersionMismatch(

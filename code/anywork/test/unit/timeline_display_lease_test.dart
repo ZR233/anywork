@@ -443,7 +443,7 @@ final class _LeaseTransport extends Fake
     subscriptionId: 'lease-state',
     initialState: () => ThreadSnapshotFrame(
       workspace: chatWorkspace('thread'),
-      completedHistoryVersion: 1,
+      completedHistoryVersion: completedHistoryVersion,
       schemaVersion: threadSchemaVersion,
     ),
   );
@@ -521,7 +521,7 @@ final class _ScopedTransport extends Fake
     subscriptionId: 'main-state',
     initialState: () => ThreadSnapshotFrame(
       workspace: chatWorkspace('thread'),
-      completedHistoryVersion: 1,
+      completedHistoryVersion: completedHistoryVersion,
       schemaVersion: threadSchemaVersion,
     ),
   );

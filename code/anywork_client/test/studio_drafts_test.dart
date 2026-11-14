@@ -120,7 +120,7 @@ final class _DraftTransport extends AccountsTestTransport
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: turn.revision,
             turn: turn,
