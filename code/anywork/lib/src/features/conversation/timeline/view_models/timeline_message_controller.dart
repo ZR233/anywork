@@ -140,8 +140,9 @@ final class TimelineMessageController {
             : _firstPosition ?? batch.blocks.first.blockOrder;
       }
       _loadedIds.addAll(ids);
-      if (batch.placement != ChatPlacement.prepend)
+      if (batch.placement != ChatPlacement.prepend) {
         _through = batch.throughOrder;
+      }
       for (final message in messages) {
         final unit = _unitOf(message);
         unit.expansion.current = unit;
