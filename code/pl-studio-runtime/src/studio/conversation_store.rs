@@ -772,9 +772,10 @@ mod tests {
             let failed =
                 tokio::time::timeout(std::time::Duration::from_secs(3), initializing).await?;
             assert!(failed.is_err());
-            let cold = snapshot.presentation_baseline().await?;
+            let cold = snapshot.current_state().await?;
             assert_eq!(
-                cold.current.source_effect_seq, 0,
+                cold.projection().source_effect_seq,
+                0,
                 "page mixed the later metadata into its pinned snapshot"
             );
             assert!(

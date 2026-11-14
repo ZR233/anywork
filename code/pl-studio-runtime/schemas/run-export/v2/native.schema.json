@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://anywork.dev/schemas/run-export/v1/native.schema.json",
+  "$id": "https://anywork.dev/schemas/run-export/v2/native.schema.json",
   "title": "原生完成事实和计费契约",
   "$defs": {
     "UsageReport": {

@@ -11,9 +11,9 @@ use pl_protocol::{
     ThreadContextCompactionItem, ThreadFileItem, ThreadRawItemOrigin, ThreadSkillItem,
     ThreadTextChannel, ThreadToolFailure, ThreadWaitPresentation,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum ItemDescriptor {
     Text(TextDescriptor),
@@ -29,7 +29,7 @@ pub(super) enum ItemDescriptor {
     Plan(PlanDescriptor),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TextDescriptor {
     pub channel: ThreadTextChannel,
@@ -37,13 +37,13 @@ pub(super) struct TextDescriptor {
     pub outcome: ContentOutcome,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ThinkingDescriptor {
     pub outcome: ContentOutcome,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum ContentOutcome {
     Streaming(pl_protocol::StreamingThreadContent),
@@ -52,14 +52,14 @@ pub(super) enum ContentOutcome {
     Cancelled(CancelledThreadContent),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AgentDescriptor {
     pub identity: ThreadAgentIdentity,
     pub outcome: AgentOutcome,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum AgentOutcome {
     Queued(pl_protocol::QueuedThreadAgent),
@@ -70,14 +70,14 @@ pub(super) enum AgentOutcome {
     Failed(FailedThreadAgent),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TurnDescriptor {
     pub input_id: Option<String>,
     pub outcome: TurnOutcome,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum TurnOutcome {
     Queued(pl_protocol::QueuedTurnState),
@@ -88,7 +88,7 @@ pub(super) enum TurnOutcome {
     BudgetLimited(BudgetLimitedTurnState),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct InferenceDescriptor {
     pub inference_id: String,
@@ -96,7 +96,7 @@ pub(super) struct InferenceDescriptor {
     pub outcome: InferenceOutcome,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum InferenceOutcome {
     Running(pl_protocol::RunningThreadInference),
@@ -105,7 +105,7 @@ pub(super) enum InferenceOutcome {
     Cancelled(CancelledThreadInference),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PlanDescriptor {
     pub interaction_id: String,
@@ -114,7 +114,7 @@ pub(super) struct PlanDescriptor {
     pub decision: PlanDecision,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum PlanDecision {
     Approved,
@@ -123,7 +123,7 @@ pub(super) enum PlanDecision {
     Resolved,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawDescriptor {
     pub origin: ThreadRawItemOrigin,
@@ -132,14 +132,14 @@ pub(super) struct RawDescriptor {
     pub recorded_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawPayloadDescriptor {
     pub format: String,
     pub version: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ToolDescriptor {
     pub invocation: ToolInvocation,
@@ -148,7 +148,7 @@ pub(super) struct ToolDescriptor {
     pub wait: Option<Box<ThreadWaitPresentation>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ToolInvocation {
     pub tool_call_id: String,
@@ -159,7 +159,7 @@ pub(super) struct ToolInvocation {
     pub task_id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -196,14 +196,14 @@ pub(super) enum ToolState {
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ToolOutputDescriptor {
     pub attachments: Vec<ThreadAttachment>,
     pub exit_code: Option<i32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct UserInputDescriptor {
     pub interaction_id: String,
@@ -211,7 +211,7 @@ pub(super) struct UserInputDescriptor {
     pub state: UserInputState,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct QuestionDescriptor {
     pub id: String,
@@ -221,7 +221,7 @@ pub(super) struct QuestionDescriptor {
     pub option_count: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -232,7 +232,7 @@ pub(super) enum UserInputState {
     Resolved { answers: Vec<AnswerDescriptor> },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AnswerDescriptor {
     pub question_id: String,

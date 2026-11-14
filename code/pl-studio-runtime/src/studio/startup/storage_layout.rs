@@ -2198,7 +2198,7 @@ mod tests {
         let history = crate::studio::storage::history::HistoryStore::open(&live, thread).await?;
         // The real history owner initializes its schema and commits facts, but no checkpoint import
         // has happened yet. Capture only a quiescent donor, never open the migration fixture in flight.
-        history.commit(fence, &[], &[]).await?;
+        crate::studio::storage::history::persist_completed(&history, fence, &[]).await?;
         assert!(history.checkpoint().await?.is_none());
         for suffix in ["", "-wal", "-shm"] {
             let from = donor.path().join(format!("history.sqlite{suffix}"));

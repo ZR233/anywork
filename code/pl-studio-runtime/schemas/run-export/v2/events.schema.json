@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://anywork.dev/schemas/run-export/v1/events.schema.json",
-  "title": "EventV1",
+  "$id": "https://anywork.dev/schemas/run-export/v2/events.schema.json",
+  "title": "EventV2",
   "description": "One immutable JSONL line written to events.jsonl.",
   "type": "object",
   "additionalProperties": false,
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "runId": {
       "type": "string",
@@ -35,7 +35,8 @@
         "inferenceFinished",
         "completion",
         "threadSealed",
-        "runSealed"
+        "runSealed",
+        "executionLifecycle"
       ]
     },
     "data": {
@@ -48,7 +49,7 @@
       "type": ["string", "null"]
     },
     "source": {
-      "$ref": "#/$defs/EventSourceV1"
+      "$ref": "#/$defs/EventSourceV2"
     }
   },
   "allOf": [
@@ -79,6 +80,22 @@
     {
       "if": { "properties": { "type": { "const": "runSealed" } } },
       "then": { "properties": { "data": { "$ref": "#/$defs/RunSealedData" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "executionLifecycle"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ExecutionLifecycleData"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -94,7 +111,7 @@
       "type": "string",
       "pattern": "^contents/[0-9a-f]{64}\\.bin$"
     },
-    "BuildInfoV1": {
+    "BuildInfoV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["version", "gitCommit", "target"],
@@ -110,7 +127,7 @@
         "target": { "type": "string", "minLength": 1 }
       }
     },
-    "EventSourceV1": {
+    "EventSourceV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -132,7 +149,7 @@
         "completionSeq": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
-    "CompletionCursorV1": {
+    "CompletionCursorV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["epoch", "completionSeq"],
@@ -150,7 +167,7 @@
           "type": "string",
           "format": "uuid"
         },
-        "build": { "$ref": "#/$defs/BuildInfoV1" },
+        "build": { "$ref": "#/$defs/BuildInfoV2" },
         "manifestSha256": { "$ref": "#/$defs/sha256Hex" }
       }
     },
@@ -177,7 +194,7 @@
         "workspaceId": { "type": "string" },
         "spawnToolCallId": { "type": ["string", "null"] },
         "initialEffectSeq": { "type": "integer", "minimum": 0 },
-        "initialCompletionCursor": { "$ref": "#/$defs/CompletionCursorV1" }
+        "initialCompletionCursor": { "$ref": "#/$defs/CompletionCursorV2" }
       }
     },
     "SkillDiscoverySourceSummary": {
@@ -291,41 +308,7 @@
         }
       }
     },
-    "ChatReadHintExportV1": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": { "kind": { "const": "hidden" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": { "kind": { "const": "single" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "key"],
-          "properties": {
-            "kind": { "const": "adjacent" },
-            "key": { "type": "string" }
-          }
-        }
-      ]
-    },
-    "ChatRunPositionExportV1": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["startSeq", "ordinal"],
-      "properties": {
-        "startSeq": { "type": "integer", "minimum": 0 },
-        "ordinal": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "ChatItemHeaderExportV1": {
+    "ChatItemHeaderExportV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -333,8 +316,6 @@
         "itemId",
         "queryClass",
         "parentId",
-        "readHint",
-        "run",
         "byteLength"
       ],
       "properties": {
@@ -342,17 +323,10 @@
         "itemId": { "type": "string", "minLength": 1 },
         "queryClass": { "type": "string" },
         "parentId": { "type": ["string", "null"] },
-        "readHint": { "$ref": "#/$defs/ChatReadHintExportV1" },
-        "run": {
-          "oneOf": [
-            { "$ref": "#/$defs/ChatRunPositionExportV1" },
-            { "type": "null" }
-          ]
-        },
         "byteLength": { "type": "integer", "minimum": 0 }
       }
     },
-    "ExportedBlobV1": {
+    "ExportedBlobV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["path", "byteLength", "sha256", "mediaType", "encoding"],
@@ -364,7 +338,7 @@
         "encoding": { "type": "string", "minLength": 1 }
       }
     },
-    "ExportedContentV1": {
+    "ExportedContentV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -405,14 +379,14 @@
       "additionalProperties": false,
       "required": ["header", "atom", "payload", "contents"],
       "properties": {
-        "header": { "$ref": "#/$defs/ChatItemHeaderExportV1" },
+        "header": { "$ref": "#/$defs/ChatItemHeaderExportV2" },
         "atom": {
           "$ref": "native.schema.json#/$defs/ChatAtom"
         },
-        "payload": { "$ref": "#/$defs/ExportedBlobV1" },
+        "payload": { "$ref": "#/$defs/ExportedBlobV2" },
         "contents": {
           "type": "array",
-          "items": { "$ref": "#/$defs/ExportedContentV1" }
+          "items": { "$ref": "#/$defs/ExportedContentV2" }
         }
       }
     },
@@ -434,14 +408,14 @@
       "properties": {
         "threadId": { "type": "string", "minLength": 1 },
         "throughEffectSeq": { "type": "integer", "minimum": 0 },
-        "completionCut": { "$ref": "#/$defs/CompletionCursorV1" },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV2" },
         "summary": { "$ref": "#/$defs/UsageSummary" },
         "status": { "type": ["string", "null"] },
         "aborted": { "type": "boolean" },
         "error": { "type": ["string", "null"] }
       }
     },
-    "SealedMemberCutV1": {
+    "SealedMemberCutV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -460,7 +434,7 @@
         "parentAgentId": { "type": ["string", "null"] },
         "role": { "type": ["string", "null"] },
         "throughEffectSeq": { "type": "integer", "minimum": 0 },
-        "completionCut": { "$ref": "#/$defs/CompletionCursorV1" },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV2" },
         "aborted": { "type": "boolean" },
         "sealed": { "type": "boolean" }
       }
@@ -479,13 +453,234 @@
       "properties": {
         "members": {
           "type": "array",
-          "items": { "$ref": "#/$defs/SealedMemberCutV1" }
+          "items": { "$ref": "#/$defs/SealedMemberCutV2" }
         },
         "reconciled": { "type": "boolean" },
         "reconcileError": { "type": ["string", "null"] },
         "traceComplete": { "type": "boolean" },
         "usageComplete": { "type": "boolean" },
         "costComplete": { "type": "boolean" }
+      }
+    },
+    "ExecutionLifecycleExportV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "kind",
+        "source",
+        "turnId",
+        "attemptId",
+        "tool",
+        "textChannel",
+        "delivery",
+        "sourceOrder",
+        "executionOrder",
+        "started",
+        "startedAt",
+        "ended",
+        "finishedAt",
+        "outcome",
+        "completionItemId",
+        "lastWriteSeq"
+      ],
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "input",
+            "text",
+            "reasoning",
+            "toolCall",
+            "fileChange",
+            "skill",
+            "interaction",
+            "plan",
+            "compaction",
+            "turnReceipt",
+            "receipt",
+            "raw",
+            "agent",
+            "inference",
+            "unknown"
+          ]
+        },
+        "source": {
+          "$ref": "native.schema.json#/$defs/ChatSourceId"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attemptId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "callId",
+                "name"
+              ],
+              "properties": {
+                "callId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "textChannel": {
+          "anyOf": [
+            {
+              "enum": [
+                "user",
+                "parentAgent",
+                "commentary",
+                "final"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delivery": {
+          "enum": [
+            "foreground",
+            "backgroundHandoff",
+            "independent"
+          ]
+        },
+        "sourceOrder": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executionOrder": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started": {
+          "anyOf": [
+            {
+              "$ref": "native.schema.json#/$defs/ChatFactPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ended": {
+          "anyOf": [
+            {
+              "$ref": "native.schema.json#/$defs/ChatFactPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "failed",
+                "cancelled",
+                "transferred"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completionItemId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastWriteSeq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ExecutionLifecycleData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "facts"
+      ],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionLifecycleExportV2"
+          }
+        }
       }
     }
   }

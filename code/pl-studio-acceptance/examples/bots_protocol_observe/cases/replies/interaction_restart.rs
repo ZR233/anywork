@@ -364,9 +364,11 @@ async fn assert_interaction_reference_page(
     tokio::time::timeout_at(deadline.into(), async {
         let (read, main) = tokio::time::timeout_at(
             deadline.into(),
-            session
-                .http()?
-                .open_chat(thread_id, pl_protocol::ChatScope::Main, CHAT_DEMAND),
+            session.http()?.open_chat(
+                thread_id,
+                pl_protocol::ChatScope::conversation(None),
+                CHAT_DEMAND,
+            ),
         )
         .await
         .context("opening interaction-reference Main read exceeded its deadline")??;
@@ -461,9 +463,11 @@ async fn assert_plan_reference(
     tokio::time::timeout_at(deadline.into(), async {
         let (read, main) = tokio::time::timeout_at(
             deadline.into(),
-            session
-                .http()?
-                .open_chat(thread_id, pl_protocol::ChatScope::Main, CHAT_DEMAND),
+            session.http()?.open_chat(
+                thread_id,
+                pl_protocol::ChatScope::conversation(None),
+                CHAT_DEMAND,
+            ),
         )
         .await
         .context("opening Plan document read exceeded its deadline")??;

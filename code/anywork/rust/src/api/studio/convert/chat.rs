@@ -11,16 +11,12 @@ pub(crate) fn demand(value: BridgeReadDemand) -> protocol::ReadDemand {
 }
 
 pub(crate) fn scope(value: BridgeChatScope) -> protocol::ChatScope {
-    match value {
-        BridgeChatScope::Main => protocol::ChatScope::Main,
-        BridgeChatScope::Run { reference } => protocol::ChatScope::Run {
-            reference: protocol::CompletionRunRef {
-                database_id: reference.database_id,
-                index_version: reference.index_version,
-                start_seq: reference.start_seq,
-            },
+    protocol::ChatScope {
+        query_class: match value.query_class {
+            BridgeChatClassFilter::Class { value } => protocol::ChatClassFilter::Class { value },
+            BridgeChatClassFilter::All => protocol::ChatClassFilter::All {},
         },
-        BridgeChatScope::Children { parent_id } => protocol::ChatScope::Children { parent_id },
+        parent_id: value.parent_id,
     }
 }
 
@@ -269,18 +265,6 @@ pub(crate) fn completed(value: protocol::CompletedEntry) -> BridgeCompletedEntry
     BridgeCompletedEntry {
         record_id: value.record_id,
         completion_seq: value.completion_seq,
-        run: value.run.map(|run| BridgeCompletionRunPosition {
-            start_seq: run.start_seq,
-            ordinal: run.ordinal,
-        }),
-        main_presentation: match value.main_presentation {
-            protocol::MainPresentation::Hidden => BridgeMainPresentation::Hidden,
-            protocol::MainPresentation::Single => BridgeMainPresentation::Single,
-            protocol::MainPresentation::ForegroundWork => BridgeMainPresentation::ForegroundWork,
-            protocol::MainPresentation::BackgroundResults => {
-                BridgeMainPresentation::BackgroundResults
-            }
-        },
         atom: atom(value.atom),
     }
 }
@@ -447,34 +431,38 @@ mod tests {
     }
 
     #[test]
-    fn run_scope_and_completed_batch_are_mechanically_mapped() {
-        let run = BridgeCompletionRunRef {
-            database_id: "database".into(),
-            index_version: protocol::COMPLETED_READ_INDEX_VERSION,
-            start_seq: 7,
-        };
-        assert_eq!(
-            scope(BridgeChatScope::Run {
-                reference: run.clone()
-            }),
-            protocol::ChatScope::Run {
-                reference: protocol::CompletionRunRef {
-                    database_id: run.database_id,
-                    index_version: run.index_version,
-                    start_seq: run.start_seq,
+    fn record_scope_and_completed_batch_are_mechanically_mapped() {
+        for (native, expected) in [
+            (
+                BridgeChatClassFilter::All,
+                protocol::ChatClassFilter::All {},
+            ),
+            (
+                BridgeChatClassFilter::Class {
+                    value: "conversation".into(),
+                },
+                protocol::ChatClassFilter::Class {
+                    value: "conversation".into(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                scope(BridgeChatScope {
+                    query_class: native,
+                    parent_id: Some("opaque-parent".into())
+                }),
+                protocol::ChatScope {
+                    query_class: expected,
+                    parent_id: Some("opaque-parent".into())
                 }
-            }
-        );
+            );
+        }
         let mapped = batch(protocol::ChatBatch {
             placement: protocol::ChatPlacement::Append,
             entries: vec![protocol::CompletedEntry {
                 record_id: "record-id".into(),
                 completion_seq: 7,
-                run: Some(protocol::CompletionRunPosition {
-                    start_seq: 3,
-                    ordinal: 2,
-                }),
-                main_presentation: protocol::MainPresentation::ForegroundWork,
+
                 atom: atom(protocol::ChatAtomLifecycle::Terminal {
                     started: None,
                     ended: None,
@@ -492,17 +480,6 @@ mod tests {
         let entry = &mapped.entries[0];
         assert_eq!(entry.record_id, "record-id");
         assert_eq!(entry.completion_seq, 7);
-        assert_eq!(
-            entry.run,
-            Some(BridgeCompletionRunPosition {
-                start_seq: 3,
-                ordinal: 2
-            })
-        );
-        assert_eq!(
-            entry.main_presentation,
-            BridgeMainPresentation::ForegroundWork
-        );
         assert_eq!(entry.atom.completion_item_id.as_deref(), Some("record-id"));
         assert_eq!(entry.atom.completion_seq, Some(7));
     }
@@ -656,8 +633,7 @@ mod tests {
             entries: vec![protocol::CompletedEntry {
                 record_id: "record-id".into(),
                 completion_seq: 12,
-                run: None,
-                main_presentation: protocol::MainPresentation::Hidden,
+
                 atom: original,
             }],
             before: Some("opaque-cursor".into()),
@@ -668,7 +644,7 @@ mod tests {
         assert_eq!(mapped.from_seq, None);
         assert_eq!(mapped.through_seq, 12);
         let entry = &mapped.entries[0];
-        assert_eq!(entry.main_presentation, BridgeMainPresentation::Hidden);
+
         assert_eq!(entry.atom.id, "member-id");
         assert_eq!(entry.atom.completion_seq, Some(12));
         assert_eq!(entry.atom.source_order, None);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
   "startedAt": "2026-11-13T15:00:00.000Z",
   "build": {
@@ -35,9 +35,9 @@
     }
   ],
   "exportSchema": {
-    "manifest": 1,
-    "events": 1,
-    "result": 1,
+    "manifest": 2,
+    "events": 2,
+    "result": 2,
     "contentAddressing": "sha256"
   }
 }

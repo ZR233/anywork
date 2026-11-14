@@ -25,7 +25,7 @@ Markdown 语法与流式未闭合内容由上游渲染组件解析，采用其 C
 | Feed / FRB / HTTP / SDK | 有界读取、固定目标补读、机械串行接纳、信用与资格 |
 | Flutter 原 controller / display lease | 一冻结块一卡、局部展开与滚动、历史插入和实时退役的同次公开 |
 
-原 `ChatDraft → ChatItem` 和 `conversation_items` 是唯一完成原件；`conversation_atom_facts` 分别保存轻量 start/terminal 事实，不以展示合并覆盖原件。边界时原 owner 从同一 effect 捕获未结束成员的公开状态、参数和内容前缀，沿原 immutable chunks/content store 保存派生显示快照。它证明当时显示了什么，不是第三条业务事件或执行状态来源；展示头只持小头、身份、引用及计数。无新 actor、线程、全局注册表、writer、可靠展示队列或保存定时器。真实 Plan、交互和配置仍由原领域 State 管理。
+原 `ChatDraft → ChatItem` 和 `conversation_items` 是唯一完成原件；`execution_lifecycle` 按真实身份单行保存原件无法重建的开始／结束事实，不以展示合并覆盖原件。边界时原 owner 从同一 effect 捕获未结束成员的公开状态、参数和内容前缀，沿原 immutable chunks/content store 保存派生显示快照。它证明当时显示了什么，不是第三条业务事件或执行状态来源；展示头只持小头、身份、引用及计数。无新 actor、线程、全局注册表、writer、可靠展示队列或保存定时器。真实 Plan、交互和配置仍由原领域 State 管理。
 
 会话资源沿原 Session → AgentRuntime → NativeResources 持有，执行与检查点继续归 Core owner；展示投影和当前状态属于稳定的 Native ConversationStore，原观察工作者只持执行绑定及串行驱动，不建立另一份成员登记。关闭先同步撤销发布和新读资格，再由原会话关闭任务汇合订阅、观察及在途读取。冷读只借已保存快照，不物化 Native、不重算分组、不推进计时。
 
@@ -110,7 +110,7 @@ Store 的冷态、初始化中、就绪和失败是明确的生命周期状态�
 
 
 冻结观察的公开 payload 复用原聊天内容编码器的 `anywork.chat/1` 信封、类型描述和
-`bodies` 清单。内部 `ThreadItemState` JSON 不能直接作为公开 payload；正文 chunk
+`bodies` 清单。内部可变执行投影 JSON 不能直接作为公开 payload；正文 chunk
 已经保存也不表示缺失正文清单的 payload 可读。观察入口按边界切面的真实活动状态编码，
 包括 Streaming 和工具仍在运行、等待的状态；完成原件入口仍严格拒绝未终态成员。
 两入口共享类型与正文编码规则，不伪造 completion、终态或结束时间来套用完成入口，
@@ -198,7 +198,9 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始/�
 
 引用换代只退役受影响详情；折叠、换窗或离开撤销本视图资格并汇合读取，不关闭其他观察或执行。搜索区分借入 cursor 与新建未交付资格，失败回收后者，完整结果成功后才退休旧资格，不驱逐其他 scope 或突破原上限。清理失败保留待 join 义务，不掩盖业务错误。
 
-原 Main/Run/Children 完成查询、read_completed 与内容工具继续服务原子用途，Run 列不删除、不反写；GUI 不再用它们分组，也不提供失败后回落旧 Run 的旁路。原件读取的预算、parent 资格和精确完成身份仍有效。
+完成原件 wire／index 使用版本 2；presentation v6 与 reader v1 保持独立含义。原件只提供统一 Records 查询，`ChatScope` 必须显式携带 `queryClass: {kind: "class", value: "conversation"}` 或 `{kind: "all"}`，可选 `parentId` 只能是真实业务父级编码。All 在原会话授权边界内包括 execution 类的 inference；常规对话明确选择 conversation，不能省略过滤而意外扩大集合。旧 Main／Run／Children 分支、Run 游标、读取提示及数据库 Run 列已删除。
+
+`CompletedEntry` 只有 recordId、completionSeq 与冻结 atom；分页不逐条读取当前 source 状态改写原件。`read_completed`、manifest 和范围读取沿原资格、取消、数量及实际编码字节预算工作。原件查询不访问展示块；展示分组继续只归 presentation。
 
 正文窗口已包含完整正文时不显示范围导航，超出窗口明确显示当前范围及下一段操作，不自动累计无限全文。正文不增加键名或字节数折叠栏；原始 ItemPayload/诊断查看器仍按原始内容展示，不将 JSON 信封当 Markdown。缺少公开 Body 声明不阻止已合法解码信封中的附件沿原附件路径呈现，正文读取也不自动公开原始请求。
 

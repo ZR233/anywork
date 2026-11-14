@@ -91,6 +91,7 @@ fn page_size() -> usize {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Cursor {
+    database_id: Option<String>,
     version: u32,
     target: String,
     through: u64,
@@ -531,7 +532,7 @@ impl AgentServices {
                 })
                 .transpose()?;
             if let Some(cursor) = &cursor
-                && (cursor.version != 2
+                && (cursor.version != 3
                     || cursor.target != input.target
                     || cursor.order != input.order
                     || cursor.detail != input.detail)
@@ -539,6 +540,14 @@ impl AgentServices {
                 bail!("session cursor does not belong to this query");
             }
             let history = self.store.history(&input.target).await?;
+            history.prepare_conversation_read().await?;
+            let database_id = history.conversation_database_id().await?;
+            if let Some(cursor) = &cursor {
+                anyhow::ensure!(
+                    cursor.database_id == database_id,
+                    "session cursor belongs to a rebuilt history database"
+                );
+            }
             let (watermark, ceiling, items, has_more) = history
                 .agent_page(
                     input.order == Order::Descending,
@@ -556,10 +565,11 @@ impl AgentServices {
                     let anchor = items
                         .last()
                         .context("session continuation has no anchor")?
-                        .ordinal;
+                        .completion_seq;
                     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
                         serde_json::to_vec(&Cursor {
-                            version: 2,
+                            version: 3,
+                            database_id: database_id.clone(),
                             target: input.target.clone(),
                             through,
                             ceiling,
@@ -995,7 +1005,15 @@ mod tests {
                 .await?;
             let history = store.history("root").await?;
             let saved = history
-                .agent_page(true, false, None, None, None, 20, &CancellationToken::new())
+                .agent_page(
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                    20,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
                 .await?;
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -1116,7 +1134,8 @@ mod tests {
         assert!(services.authorize("cold", "sibling").await.is_err());
         assert!(services.authorize("cold", "root").await.is_err());
         let cursor = Cursor {
-            version: 2,
+            database_id: None,
+            version: 3,
             target: "cold".into(),
             through: 0,
             ceiling: 0,

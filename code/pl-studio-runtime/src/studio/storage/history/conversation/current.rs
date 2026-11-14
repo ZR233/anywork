@@ -25,7 +25,8 @@ pub(crate) struct PreparedCurrent {
         Option<Arc<crate::studio::thread_projection::presentation::PreparedDisplayDelta>>,
     pub(in crate::studio) recovery_interruption: Option<(String, pl_protocol::ChatFactPosition)>,
     /// Actual accepted start/terminal facts, frozen by the existing execution owner.
-    pub(in crate::studio) atom_facts: Arc<[pl_protocol::ChatAtom]>,
+    pub(in crate::studio) lifecycle:
+        Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
     projection: Arc<FrozenCurrentProjection>,
     pub contents: Arc<[CurrentContentWrite]>,
     pub source_changes: Arc<[pl_protocol::ChatSourceState]>,
@@ -39,7 +40,7 @@ impl PreparedCurrent {
         Self {
             display: None,
             recovery_interruption: None,
-            atom_facts: Arc::from([]),
+            lifecycle: Arc::from([]),
             projection,
             contents,
             source_changes: Arc::from([]),

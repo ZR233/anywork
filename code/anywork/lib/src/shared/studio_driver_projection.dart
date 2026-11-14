@@ -508,12 +508,7 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
 Map<String, Object?> _timelineEnvelopeFacts(CompletedEntry entry) => {
   'recordId': entry.recordId,
   'completionSeq': entry.completionSeq,
-  'mainPresentation': entry.mainPresentation.name,
   'source': _sourceFacts(entry.atom.source),
-  'run': switch (entry.run) {
-    final run? => {'startSeq': run.startSeq, 'ordinal': run.ordinal},
-    null => null,
-  },
   'outcome': switch (entry.atom.lifecycle) {
     TerminalChatAtom(:final outcome) => outcome.name,
     _ => null,

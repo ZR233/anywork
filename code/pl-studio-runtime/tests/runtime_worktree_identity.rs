@@ -7,8 +7,8 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
     ChatAtomKind, ChatPlacement, ChatScope, CompletedEntry, ContentOwner, ContentRange, ContentRef,
-    ContentTarget, MainPresentation, ObservedResourceKind, PayloadData, ReadDemand,
-    ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ContentTarget, ObservedResourceKind, PayloadData, ReadDemand, ThreadSubscriptionUpdate,
+    ThreadWorkspaceMode,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -69,7 +69,7 @@ async fn public_history(
         max_bytes: 64 * 1024,
     };
     let mut feed = runtime
-        .open_conversation_feed(id, ChatScope::Main, demand)
+        .open_conversation_feed(id, ChatScope::conversation(None), demand)
         .await?;
     let reader = feed.reader().clone();
     let result = async {
@@ -83,23 +83,13 @@ async fn public_history(
             }
         };
         ensure!(batch.placement == ChatPlacement::Set && batch.from_seq.is_none());
-        batch.validate_for(&ChatScope::Main)?;
+        batch.validate_for(&ChatScope::conversation(None))?;
         let mut pages = Vec::new();
         loop {
             let mut page = Vec::new();
             for mut item in batch.entries {
                 let mut bodies = Vec::new();
-                let envelope = if matches!(
-                    item.main_presentation,
-                    MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
-                ) {
-                    ensure!(
-                        matches!(item.atom.payload, Some(PayloadData::Deferred { .. }))
-                            && item.run.is_some(),
-                        "Main work representative did not stay Deferred"
-                    );
-                    None
-                } else {
+                let envelope = {
                     let owner = item.record_id.as_str();
                     let raw = match item
                         .atom
@@ -185,7 +175,7 @@ async fn public_history(
             };
             batch = reader.load_older(&before, demand).await?;
             ensure!(batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none());
-            batch.validate_for(&ChatScope::Main)?;
+            batch.validate_for(&ChatScope::conversation(None))?;
             ensure!(
                 batch.before.as_ref() != Some(&before),
                 "history continuation did not advance"

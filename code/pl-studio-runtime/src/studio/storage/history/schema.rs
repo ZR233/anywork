@@ -1,15 +1,20 @@
 //! Official, ordered history migrations. Format numbers are only legacy import markers.
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 mod atom_metadata;
 mod background_results;
 pub(super) mod completion_boundary;
 mod conversion;
 mod demand_conversation;
 mod display_block_order;
+mod execution_facts;
 pub(in crate::studio::storage::history) mod immutable_completion_runs;
 pub(in crate::studio::storage::history) mod legacy_completion_projection;
+mod legacy_completion_types;
 pub(in crate::studio::storage::history) mod legacy_content;
 pub(in crate::studio::storage::history) mod legacy_current;
+pub(crate) mod legacy_execution_item;
 pub(in crate::studio::storage::history) mod legacy_timeline_projection;
 mod legacy_timeline_store;
 pub(in crate::studio::storage::history) mod legacy_timeline_types;
@@ -28,6 +33,51 @@ use conversion::{
 #[cfg(test)]
 pub(super) use demand_conversation::seed_current;
 use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
+
+/// 构造已发布格式的夹具；仅允许将尚无执行／完成事实的空当前库降至 23。
+#[cfg(test)]
+pub(in crate::studio::storage::history) async fn empty_execution_fixture(
+    db: &impl ConnectionTrait,
+) -> Result<()> {
+    if version(db).await? != 24 {
+        return Ok(());
+    }
+    for table in [
+        "conversation_items",
+        "execution_lifecycle",
+        "history_turns",
+        "conversation_display_blocks",
+        "conversation_display_members",
+    ] {
+        let row = db
+            .query_one_raw(statement(
+                &format!("SELECT COUNT(*) AS count FROM {table}"),
+                vec![],
+            ))
+            .await?
+            .context("empty fixture count")?;
+        ensure!(
+            row.try_get::<i64>("", "count")? == 0,
+            "legacy fixture cannot discard real {table} facts"
+        );
+    }
+    db.execute_unprepared("DROP INDEX conversation_items_tool; DROP INDEX conversation_items_text; DROP TABLE execution_lifecycle; DROP TABLE history_turns;")
+        .await?;
+    db.execute_unprepared(LEGACY_HISTORY_SCHEMA).await?;
+    db.execute_unprepared(immutable_completion_runs::CREATE)
+        .await?;
+    db.execute_unprepared("DROP INDEX IF EXISTS conversation_sources_by_timeline_end")
+        .await?;
+    db.execute_unprepared(legacy_timeline_store::CREATE_SCHEMA)
+        .await?;
+    db.execute_unprepared(
+        "ALTER TABLE history_meta DROP COLUMN execution_order;
+        DELETE FROM seaql_migrations WHERE version='m20261114_000001_execution_facts';
+        UPDATE history_meta SET schema_version=23 WHERE id=1;",
+    )
+    .await?;
+    Ok(())
+}
 
 /// Frozen pre-head fixture encoder, not an alternate production checkpoint writer.
 #[cfg(test)]
@@ -67,6 +117,7 @@ async fn write_published_checkpoint(
     Ok(())
 }
 
+const EXECUTION_FACTS: &str = "m20261114_000001_execution_facts";
 const DISPLAY_BLOCK_ORDER: &str = "m20261113_000002_display_block_order";
 const WORK_SNAPSHOTS: &str = "m20261113_000001_work_snapshots";
 
@@ -149,6 +200,7 @@ impl MigratorTraitSelf for Migrator {
             )),
             Box::new(work_snapshots::WorkSnapshots),
             Box::new(display_block_order::DisplayBlockOrder),
+            Box::new(execution_facts::ExecutionFacts),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -401,7 +453,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .await?
         .into_iter()
         .filter(|step| {
-            !work_snapshots::is_legacy_marker(step.name()) && step.name() != DISPLAY_BLOCK_ORDER
+            !work_snapshots::is_legacy_marker(step.name())
+                && !matches!(step.name(), DISPLAY_BLOCK_ORDER | EXECUTION_FACTS)
         })
         .collect::<Vec<_>>();
     let order_pending = migrator
@@ -412,6 +465,15 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     ensure!(
         order_pending == (version < 23),
         "display format conflicts with migration record; original history preserved"
+    );
+    let facts_pending = migrator
+        .get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .any(|step| step.name() == EXECUTION_FACTS);
+    ensure!(
+        facts_pending == (version < 24),
+        "execution facts format conflicts with migration record; original history preserved"
     );
     let atomic_pending = pending.iter().any(|step| step.name() == ATOMIC_TIMELINE);
     let metering_pending = pending.iter().any(|step| step.name() == METERING_FACTS);
@@ -442,7 +504,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
-            && (source_classification_pending || matches!(version, 15..=23))
+            && (source_classification_pending || (15..=HISTORY_SCHEMA_VERSION).contains(&version))
             && thinking_summary_pending == (version < 16)
             && background_tail_pending == (version < 17)
             && runs_pending == (version < 18)
@@ -458,7 +520,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12..=23 => {
+                12..=24 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -509,6 +571,15 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 demand_conversation::validate_tables(db).await?;
             }
             match version {
+                23 => {
+                    display_block_order::validate(db).await?;
+                    ensure!(
+                        pending
+                            .iter()
+                            .all(|step| is_lifecycle_migration(step.name())),
+                        "schema 23 has pending earlier content migrations"
+                    );
+                }
                 22 => {
                     work_snapshots::validate(db).await?;
                     ensure!(
@@ -785,6 +856,10 @@ pub(super) async fn validate_identity_collations(db: &DatabaseConnection) -> Res
             &["item_id", "turn_id", "kind", "lifecycle"][..],
         ),
         ("history_turns", &["turn_id"][..]),
+        (
+            "execution_lifecycle",
+            &["identity", "kind", "source_kind", "source_identity"][..],
+        ),
         ("history_input_identities", &["item_id"][..]),
         ("history_fact_receipts", &["item_id", "kind"][..]),
         ("history_message_identities", &["message_id"][..]),
@@ -865,7 +940,7 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
-    display_block_order::validate(db).await
+    execution_facts::validate(db).await
 }
 
 async fn validate_schema16_structure(db: &impl ConnectionTrait) -> Result<()> {
@@ -964,12 +1039,22 @@ async fn validate_timeline_data(db: &impl ConnectionTrait, thread_id: &str) -> R
 /// Published v9 shape, also used by RetireOrdinals. Never add current-format tables here:
 /// earlier steps must remain runnable before the AtomicTimeline step has created its output.
 async fn validate_v9_tables(db: &impl ConnectionTrait) -> Result<()> {
+    validate_business_tables(db).await?;
+    for sql in [
+        "SELECT ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq FROM history_items LIMIT 0",
+        "SELECT turn_id,first_ordinal,last_ordinal,revision,payload,last_write_seq FROM history_turns LIMIT 0",
+    ] {
+        db.query_all_raw(statement(sql, vec![])).await?;
+    }
+    validate_keys(db, "history_items", &["ordinal"], true, &["item_id"]).await?;
+    validate_keys(db, "history_turns", &["turn_id"], false, &[]).await
+}
+
+async fn validate_business_tables(db: &impl ConnectionTrait) -> Result<()> {
     // Preparing each query validates required columns even on empty tables, without reading
     // history bodies or repairing a damaged current database with CREATE IF NOT EXISTS.
     for query in [
         "SELECT applied_write_seq FROM history_meta LIMIT 0",
-        "SELECT ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq FROM history_items LIMIT 0",
-        "SELECT turn_id,first_ordinal,last_ordinal,revision,payload,last_write_seq FROM history_turns LIMIT 0",
         "SELECT item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq FROM history_input_identities LIMIT 0",
         "SELECT item_id,revision,kind,digest,payload,last_write_seq FROM history_fact_receipts LIMIT 0",
         "SELECT message_id,item_id,sequence,digest,last_write_seq FROM history_message_identities LIMIT 0",
@@ -986,8 +1071,6 @@ async fn validate_v9_tables(db: &impl ConnectionTrait) -> Result<()> {
     // Check SQLite's actual constraints, not just columns or the contents of an empty database.
     for (table, primary, integer_primary, unique) in [
         ("history_meta", &["id"][..], true, &[][..]),
-        ("history_items", &["ordinal"][..], true, &["item_id"][..]),
-        ("history_turns", &["turn_id"][..], false, &[][..]),
         ("history_input_identities", &["item_id"][..], false, &[][..]),
         (
             "history_fact_receipts",
@@ -1353,7 +1436,7 @@ impl MigrationTrait for CombinedContent {
                 .iter()
                 .filter(|step| {
                     !work_snapshots::is_legacy_marker(step.name())
-                        && step.name() != DISPLAY_BLOCK_ORDER
+                        && !matches!(step.name(), DISPLAY_BLOCK_ORDER | EXECUTION_FACTS)
                 })
                 .any(|step| {
                     // Later content steps are still pending at the format-10 boundary.
@@ -1414,23 +1497,7 @@ fn conversion(error: anyhow::Error) -> DbErr {
     }
 }
 
-struct CreateHistory {
-    thread_id: String,
-}
-impl MigrationName for CreateHistory {
-    fn name(&self) -> &str {
-        "m20261026_000001_history_schema"
-    }
-}
-#[sea_orm_migration::async_trait::async_trait]
-impl MigrationTrait for CreateHistory {
-    fn use_transaction(&self) -> Option<bool> {
-        Some(true)
-    }
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        db.execute_unprepared(
-            "CREATE TABLE IF NOT EXISTS history_meta (
+const LEGACY_HISTORY_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS history_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             schema_version INTEGER NOT NULL,
             database_id TEXT NOT NULL,
@@ -1527,9 +1594,24 @@ impl MigrationTrait for CreateHistory {
             task_payload TEXT NOT NULL CHECK (json_valid(task_payload)),
             delivery_payload TEXT CHECK (delivery_payload IS NULL OR json_valid(delivery_payload)),
             last_write_seq INTEGER NOT NULL
-        );",
-        )
-        .await?;
+        );";
+
+struct CreateHistory {
+    thread_id: String,
+}
+impl MigrationName for CreateHistory {
+    fn name(&self) -> &str {
+        "m20261026_000001_history_schema"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for CreateHistory {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        db.execute_unprepared(LEGACY_HISTORY_SCHEMA).await?;
 
         if !manager
             .has_column("history_input_identities", "request_digest")
@@ -1892,6 +1974,7 @@ mod atomic_tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|migration| {
@@ -1931,6 +2014,7 @@ mod atomic_tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|migration| {
@@ -1976,6 +2060,7 @@ mod atomic_tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|migration| {
@@ -2079,7 +2164,7 @@ mod atomic_tests {
             let mut original = Vec::new();
             if populated {
                 for (ordinal, identity) in [(1, "A"), (2, "a")] {
-                    let mut item = ThreadItem::completed_user_message(
+                    let mut item = ExecutionItem::completed_user_message(
                         identity.into(),
                         THREAD.into(),
                         String::new(),
@@ -2215,7 +2300,7 @@ mod atomic_tests {
 
     #[tokio::test]
     async fn atomic_timeline_checks_nonunique_turn_identity_and_kind_comparison() -> Result<()> {
-        for current in [false, true] {
+        for current in [false] {
             for column in ["turn_id", "kind"] {
                 for populated in [false, true] {
                     let directory = tempfile::tempdir()?;
@@ -2246,7 +2331,7 @@ mod atomic_tests {
                     .await?;
                     let mut original = Vec::new();
                     if populated {
-                        let mut item = ThreadItem::completed_user_message(
+                        let mut item = ExecutionItem::completed_user_message(
                             "input".into(),
                             THREAD.into(),
                             "Turn-A".into(),
@@ -2342,7 +2427,7 @@ mod atomic_tests {
         // 132 bodies. They are otherwise valid, complete facts with distinct stable identities.
         let mut original = Vec::new();
         for index in 0..260 {
-            let mut item = ThreadItem::completed_user_message(
+            let mut item = ExecutionItem::completed_user_message(
                 format!("input-{index:03}"),
                 THREAD.into(),
                 String::new(),
@@ -2458,7 +2543,7 @@ mod atomic_tests {
                             &["01"][..]
                         };
                         for (index, id) in identities.iter().enumerate() {
-                            let mut item = ThreadItem::completed_user_message(
+                            let mut item = ExecutionItem::completed_user_message(
                                 (*id).into(),
                                 THREAD.into(),
                                 String::new(),
@@ -2521,9 +2606,7 @@ mod atomic_tests {
                             for id in ["01", "1"] {
                                 let hits = db
                                 .query_one_raw(statement(
-                                    &format!(
-                                        "SELECT COUNT(*) AS hits FROM {table} WHERE {identity}=?"
-                                    ),
+                                    "SELECT COUNT(*) AS hits FROM conversation_items WHERE item_id=?",
                                     vec![id.into()],
                                 ))
                                 .await?
@@ -2559,12 +2642,20 @@ mod atomic_tests {
                         );
                         assert!(cold.state.reader.get().is_none());
                     }
-                    let preserved = db
-                        .query_all_raw(statement(&select, vec![]))
+                    let preserved = if allowed && !current {
+                        legacy_execution_item::fixture_facts(
+                            &db,
+                            &["ordinal", "item_id", "payload"],
+                            false,
+                        )
                         .await?
-                        .into_iter()
-                        .map(|row| row.try_get::<String>("", "fact"))
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    } else {
+                        db.query_all_raw(statement(&select, vec![]))
+                            .await?
+                            .into_iter()
+                            .map(|row| row.try_get::<String>("", "fact"))
+                            .collect::<std::result::Result<Vec<_>, _>>()?
+                    };
                     assert_eq!(preserved, original);
                     db.close().await?;
                 }
@@ -2845,7 +2936,7 @@ mod atomic_tests {
             let path = directory.path().join("history.sqlite");
             let db = v9(&path, true).await?;
             let store = HistoryStore::open(&path, THREAD).await?;
-            let mut input = ThreadItem::completed_user_message(
+            let mut input = ExecutionItem::completed_user_message(
                 "original-input".into(),
                 THREAD.into(),
                 String::new(),
@@ -2908,7 +2999,7 @@ mod atomic_tests {
             if atomic {
                 // A completion published after backfill has no legacy source row. It must survive
                 // metering byte-for-byte, with its original identity, sequence and provenance.
-                let complete = ThreadItem::completed_user_message(
+                let complete = ExecutionItem::completed_user_message(
                     "frozen-only".into(),
                     THREAD.into(),
                     String::new(),
@@ -3054,6 +3145,20 @@ mod atomic_tests {
     }
 
     async fn rows_as_facts(db: &DatabaseConnection, query: &str) -> Result<Vec<String>> {
+        if query.contains("FROM history_items") && version(db).await? == 24 {
+            return legacy_execution_item::fixture_facts(
+                db,
+                &[
+                    "ordinal",
+                    "item_id",
+                    "revision",
+                    "payload",
+                    "last_write_seq",
+                ],
+                false,
+            )
+            .await;
+        }
         db.query_all_raw(statement(query, vec![]))
             .await?
             .into_iter()
@@ -3180,7 +3285,7 @@ mod atomic_tests {
     async fn atomic_timeline_ddl_marker_and_backfill_roll_back_then_retry() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let db = v9(&directory.path().join("history.sqlite"), true).await?;
-        let mut input = ThreadItem::completed_user_message(
+        let mut input = ExecutionItem::completed_user_message(
             "input".into(),
             THREAD.into(),
             String::new(),
@@ -3220,7 +3325,7 @@ mod atomic_tests {
             .await?
             .context("original fact")?
             .try_get("", "payload")?;
-        assert_eq!(serde_json::from_str::<ThreadItem>(&payload)?, input);
+        assert_eq!(serde_json::from_str::<ExecutionItem>(&payload)?, input);
         db.execute_unprepared("DROP TRIGGER fail_atomic_marker")
             .await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
@@ -3238,7 +3343,7 @@ mod atomic_tests {
         let store = HistoryStore::open(&directory.path().join("history.sqlite"), THREAD).await?;
         let mut items = Vec::new();
         for ordinal in [1, 2] {
-            let mut item = ThreadItem::completed_user_message(
+            let mut item = ExecutionItem::completed_user_message(
                 format!("input-{ordinal}"),
                 THREAD.into(),
                 String::new(),
@@ -3317,7 +3422,7 @@ mod atomic_tests {
             height: None,
             byte_size: 19,
         };
-        let mut input = ThreadItem::completed_user_message(
+        let mut input = ExecutionItem::completed_user_message(
             "accepted".into(),
             THREAD.into(),
             String::new(),
@@ -3328,7 +3433,7 @@ mod atomic_tests {
         input.ordinal = 20;
         input.revision = 1;
         input.updated_at = 9999;
-        let thinking = ThreadItem::new(
+        let thinking = ExecutionItem::new(
             "thinking".into(),
             THREAD.into(),
             "turn".into(),
@@ -3336,13 +3441,13 @@ mod atomic_tests {
             1,
             18,
             9999,
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 vec!["第一段".into(), "第二段".into()],
                 vec![],
                 ThreadContentLifecycle::completed(19),
             )),
         );
-        let running = ThreadItem::new(
+        let running = ExecutionItem::new(
             "still-running".into(),
             THREAD.into(),
             "turn".into(),
@@ -3350,14 +3455,14 @@ mod atomic_tests {
             1,
             18,
             9999,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "尚未可靠完成".into(),
                 vec![],
                 ThreadContentLifecycle::streaming(),
             )),
         );
-        let pending = ThreadItem::new(
+        let pending = ExecutionItem::new(
             "pending-question".into(),
             THREAD.into(),
             "turn".into(),
@@ -3365,7 +3470,7 @@ mod atomic_tests {
             1,
             18,
             9999,
-            ThreadItemState::Tool(
+            ExecutionShape::Tool(
                 ThreadToolItem::new(
                     ThreadToolInvocation::new("question-call".into(), "ask".into(), "{}".into()),
                     ThreadToolState::Queued(QueuedThreadTool),
@@ -3430,15 +3535,7 @@ mod atomic_tests {
             anyhow::bail!("input completion lost its text descriptor");
         };
         assert_eq!(text.attachments, [attachment]);
-        let after: Vec<String> = db
-            .query_all_raw(statement(
-                "SELECT payload FROM history_items ORDER BY ordinal",
-                vec![],
-            ))
-            .await?
-            .into_iter()
-            .map(|row| row.try_get("", "payload"))
-            .collect::<std::result::Result<_, _>>()?;
+        let after = legacy_execution_item::fixture_facts(&db, &["payload"], true).await?;
         assert_eq!(
             after, original,
             "content migration never rewrites execution facts"

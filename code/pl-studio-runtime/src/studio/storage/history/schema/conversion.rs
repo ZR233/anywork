@@ -1,5 +1,6 @@
 //! Historical v2 data conversions, called only from the named official migrations.
 use super::*;
+use crate::{ExecutionItem, ExecutionShape};
 
 /// The historical context-source step reads only its own frozen envelope view. Checkpoint
 /// layout conversion belongs exclusively to CheckpointV5; this step never rewrites its envelope.
@@ -132,11 +133,13 @@ pub(super) async fn migrate_unconsumed_input_bindings(db: &impl ConnectionTrait)
         }
         for row in rows {
             cursor = row.try_get("", "ordinal")?;
-            let mut item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-            let turn_item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "turn_payload")?)?;
-            let ThreadItemState::Turn(turn) = turn_item.state() else {
+            let mut item: ExecutionItem = super::legacy_execution_item::decode(
+                row.try_get::<String>("", "payload")?.as_bytes(),
+            )?;
+            let turn_item: ExecutionItem = super::legacy_execution_item::decode(
+                row.try_get::<String>("", "turn_payload")?.as_bytes(),
+            )?;
+            let ExecutionShape::Turn(turn) = turn_item.state() else {
                 continue;
             };
             if turn.input_id() != Some(item.id.as_str()) {
@@ -309,8 +312,10 @@ pub(super) async fn backfill_tool_user_input(
                     format!("user-input history `{tool_id}` has no durable tool item")
                 })?;
             let stored_revision: i64 = row.try_get("", "revision")?;
-            let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                .with_context(|| format!("tool item `{tool_id}` cannot be decoded"))?;
+            let mut item: ExecutionItem = super::legacy_execution_item::decode(
+                row.try_get::<String>("", "payload")?.as_bytes(),
+            )
+            .with_context(|| format!("tool item `{tool_id}` cannot be decoded"))?;
             if item.tool().and_then(|tool| tool.user_input()) == Some(&user_input) {
                 continue;
             }

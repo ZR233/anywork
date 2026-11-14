@@ -24,8 +24,8 @@ use tokio::sync::watch;
 
 use crate::chat::{
     ChatContent, ChatContentKey, ChatDraft, ChatError, ChatHistory, ChatItem, ChatKey,
-    ChatPublicationSeed, ChatQuery, ChatRunSeed, ChatSelection, TimelineEpoch,
-    history::ErasedChatHistory, item::draft_matches_record,
+    ChatPublicationSeed, ChatQuery, TimelineEpoch, history::ErasedChatHistory,
+    item::draft_matches_record,
 };
 
 /// 会话的完成集合状态。所有字段只在短临界区内被读写。
@@ -37,7 +37,6 @@ pub(crate) struct TimelineState {
     pub(crate) head: u64,
     /// 连续持久化前缀 D：writer 已确认真实提交的最大 `append_seq`。
     pub(crate) durable: u64,
-    last_visible: Option<ChatRunSeed>,
     /// 按序 pending 的完整不可变记录，覆盖 `(durable, head]`。
     ///
     /// 每条记录与 writer 持有的是同一个 `Arc`：回收前读取只拿有界引用，不复制正文。pending 的
@@ -45,8 +44,7 @@ pub(crate) struct TimelineState {
     pending: BTreeMap<u64, Arc<ChatItem>>,
     pending_ids: BTreeMap<String, u64>,
     by_class: BTreeMap<String, BTreeMap<u64, Arc<ChatItem>>>,
-    visible_by_class: BTreeMap<String, BTreeMap<u64, Arc<ChatItem>>>,
-    by_run: BTreeMap<(String, u64), BTreeMap<u64, Arc<ChatItem>>>,
+    by_parent: BTreeMap<ChatKey, BTreeMap<u64, Arc<ChatItem>>>,
     by_parent_class: BTreeMap<(ChatKey, String), BTreeMap<u64, Arc<ChatItem>>>,
     pending_contents: BTreeMap<ChatContentKey, BTreeMap<u64, Arc<ChatContent>>>,
 }
@@ -64,29 +62,23 @@ impl TimelineState {
         query: Option<&ChatQuery>,
     ) -> Option<&BTreeMap<u64, Arc<ChatItem>>> {
         match query {
-            None => Some(&self.pending),
-            Some(ChatQuery {
-                query_class,
+            None
+            | Some(ChatQuery {
+                query_class: None,
                 parent_id: None,
-                selection: ChatSelection::Records,
-            }) => self.by_class.get(query_class),
+            }) => Some(&self.pending),
             Some(ChatQuery {
-                query_class,
-                selection: ChatSelection::RunHeads,
-                ..
-            }) => self.visible_by_class.get(query_class),
+                query_class: Some(class),
+                parent_id: None,
+            }) => self.by_class.get(class),
             Some(ChatQuery {
-                query_class,
-                selection: ChatSelection::Run { start_seq },
-                ..
-            }) => self.by_run.get(&(query_class.clone(), *start_seq)),
-            Some(ChatQuery {
-                query_class,
+                query_class: None,
                 parent_id: Some(parent),
-                ..
-            }) => self
-                .by_parent_class
-                .get(&(parent.clone(), query_class.clone())),
+            }) => self.by_parent.get(parent),
+            Some(ChatQuery {
+                query_class: Some(class),
+                parent_id: Some(parent),
+            }) => self.by_parent_class.get(&(parent.clone(), class.clone())),
         }
     }
 
@@ -111,17 +103,11 @@ impl TimelineState {
             .entry(header.query_class.clone())
             .or_default()
             .insert(header.append_seq, record.clone());
-        if let Some(run) = header.run {
-            self.visible_by_class
-                .entry(header.query_class.clone())
-                .or_default()
-                .insert(header.append_seq, record.clone());
-            self.by_run
-                .entry((header.query_class.clone(), run.start_seq))
-                .or_default()
-                .insert(header.append_seq, record.clone());
-        }
         if let Some(parent) = &header.parent_id {
+            self.by_parent
+                .entry(parent.clone())
+                .or_default()
+                .insert(header.append_seq, record.clone());
             self.by_parent_class
                 .entry((parent.clone(), header.query_class.clone()))
                 .or_default()
@@ -139,21 +125,6 @@ impl TimelineState {
     fn remove_indexes(&mut self, record: &ChatItem) {
         let header = &record.header;
         self.pending_ids.remove(&header.item_id);
-        if let Some(run) = header.run {
-            if let Some(index) = self.visible_by_class.get_mut(&header.query_class) {
-                index.remove(&header.append_seq);
-                if index.is_empty() {
-                    self.visible_by_class.remove(&header.query_class);
-                }
-            }
-            let key = (header.query_class.clone(), run.start_seq);
-            if let Some(index) = self.by_run.get_mut(&key) {
-                index.remove(&header.append_seq);
-                if index.is_empty() {
-                    self.by_run.remove(&key);
-                }
-            }
-        }
         if let Some(index) = self.by_class.get_mut(&header.query_class) {
             index.remove(&header.append_seq);
             if index.is_empty() {
@@ -161,6 +132,12 @@ impl TimelineState {
             }
         }
         if let Some(parent) = &header.parent_id {
+            if let Some(index) = self.by_parent.get_mut(parent) {
+                index.remove(&header.append_seq);
+                if index.is_empty() {
+                    self.by_parent.remove(parent);
+                }
+            }
             let key = (parent.clone(), header.query_class.clone());
             if let Some(index) = self.by_parent_class.get_mut(&key) {
                 index.remove(&header.append_seq);
@@ -248,7 +225,6 @@ impl Session {
         }
         let mut seed = ChatPublicationSeed {
             head_seq: state.head,
-            last_visible: state.last_visible.clone(),
         };
         let mut records = Vec::with_capacity(drafts.len());
         let mut fresh = Vec::with_capacity(drafts.len());
@@ -272,8 +248,8 @@ impl Session {
                     return Err(ChatError::Conflict(key.key.clone()));
                 }
             }
-            let (seq, run) = seed.advance(&draft.read_hint)?;
-            let record = Arc::new(ChatItem::complete(draft, seq, run));
+            let seq = seed.advance()?;
+            let record = Arc::new(ChatItem::complete(draft, seq));
             records.push(record.clone());
             fresh.push(record);
         }
@@ -302,7 +278,7 @@ impl Session {
             state.insert(record);
         }
         state.head = plan.seed.head_seq;
-        state.last_visible = plan.seed.last_visible;
+
         apply();
         self.0.changed.send_replace(state.head);
         Ok(plan.records)
@@ -381,7 +357,7 @@ impl Session {
         if !state.initialized {
             state.head = seed.head_seq;
             state.durable = seed.head_seq;
-            state.last_visible = seed.last_visible.clone();
+
             state.initialized = true;
             self.0.changed.send_replace(state.head);
         }
@@ -426,7 +402,6 @@ impl Session {
             for draft in unresolved {
                 match self.0.history.item(&draft.item_id).await? {
                     Some(persisted) => {
-                        persisted.header.validate_run()?;
                         if !draft_matches_record(&draft, &persisted) {
                             return Err(ChatError::Conflict(draft.item_id));
                         }
@@ -499,12 +474,11 @@ impl Session {
             // an earlier item or any secondary index published.
             let mut seed = ChatPublicationSeed {
                 head_seq: state.head,
-                last_visible: state.last_visible.clone(),
             };
             let mut candidates = Vec::with_capacity(to_publish.len());
             for draft in to_publish {
-                let (seq, run) = seed.advance(&draft.read_hint)?;
-                candidates.push(Arc::new(ChatItem::complete(draft, seq, run)));
+                let seq = seed.advance()?;
+                candidates.push(Arc::new(ChatItem::complete(draft, seq)));
             }
             for record in candidates {
                 state.insert(record.clone());
@@ -513,7 +487,7 @@ impl Session {
             let published = seed.head_seq > state.head;
             if published {
                 state.head = seed.head_seq;
-                state.last_visible = seed.last_visible;
+
                 // The wake carries the completion head only; the subscription computes its own content
                 // frame from its delivered position. send_replace never blocks, so the notification is
                 // part of the same atomic publication.
@@ -644,13 +618,12 @@ mod tests {
         let query = ChatQuery::new("activity", Some(parent.clone()));
         let mut chosen = ChatDraft::new("chosen", "activity", Arc::from([1]));
         chosen.parent_id = Some(parent);
-        let chosen = Arc::new(ChatItem::complete(chosen, 1, None));
+        let chosen = Arc::new(ChatItem::complete(chosen, 1));
         state.insert(chosen.clone());
         for seq in 2..=8193 {
             state.insert(Arc::new(ChatItem::complete(
                 ChatDraft::new(format!("hidden-{seq}"), "activity", Arc::from([2])),
                 seq,
-                None,
             )));
         }
         let index = state.pending_index(Some(&query)).unwrap();

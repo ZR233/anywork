@@ -1,5 +1,8 @@
 //! Per-Thread durable timeline storage with keyset pagination.
 
+use crate::{ExecutionItem, ExecutionShape};
+#[cfg(test)]
+use crate::{ExecutionKind, LegacyTurn};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -10,26 +13,28 @@ use pl_core::chat::{
     ChatBudget, ChatContent, ChatError, ChatHistory, ChatHistoryPage, ChatHistoryRequest, ChatItem,
     ContentManifestPage, ContentManifestRequest, ContentReadRequest, ContentWindow,
 };
-use pl_protocol::thread::TimelineCursor;
-use pl_protocol::{ThreadItem, ThreadItemKind, ThreadItemState, TimelineTurn};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, SqliteTransactionMode,
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 23;
+const HISTORY_SCHEMA_VERSION: i64 = 24;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
+pub(in crate::studio) mod execution_lifecycle;
+pub(in crate::studio) mod execution_sources;
+pub(in crate::studio) mod turns;
 
 mod checkpoint;
 pub(crate) use checkpoint::SessionAccounting;
 
+mod legacy_evidence;
 mod parent_report;
 mod producer;
 mod review_delivery;
-mod schema;
+pub(crate) mod schema;
 mod timeline;
 pub(crate) use schema::validate_layout_source;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
@@ -88,14 +93,11 @@ impl ConversationSnapshot {
     }
 
     pub(in crate::studio) async fn presentation_baseline(self) -> Result<ColdConversation> {
-        let current = conversation::completed::cold(&self.tx).await?;
         let head = conversation::latest_append_seq(&self.tx).await?;
         self.tx.commit().await?;
         Ok(ColdConversation {
             database_id: self.database_id,
             head,
-            current: current.projection().clone(),
-            sources: Vec::new(),
             page: ChatHistoryPage {
                 items: Vec::new(),
                 exhausted: true,
@@ -109,12 +111,7 @@ impl ConversationSnapshot {
         budget: &dyn ChatBudget,
     ) -> Result<Option<ColdConversation>> {
         let head = conversation::latest_append_seq(&self.tx).await?;
-        let cold = conversation::completed::cold(&self.tx).await?;
-        let current = cold.projection().clone();
         demand.validate()?;
-        let include_current = query.parent_id.is_none()
-            && query.query_class == "conversation"
-            && query.selection == pl_core::chat::ChatSelection::RunHeads;
         // State and Activity own their budgets. A completion page reserves only its own shell.
         let fixed = budget.fixed_bytes();
         let bytes = demand
@@ -136,15 +133,10 @@ impl ConversationSnapshot {
             page.exhausted || !page.items.is_empty(),
             ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
         );
-        let sources =
-            conversation::sources::read_selected(&self.tx, &page, &current, include_current)
-                .await?;
         self.tx.commit().await?;
         Ok(Some(ColdConversation {
             database_id: self.database_id,
             head,
-            current,
-            sources,
             page,
         }))
     }
@@ -223,6 +215,7 @@ struct HistoryStoreState {
 /// They are advanced locally; no second live projection or durable state is created.
 struct EffectTransaction {
     applied: i64,
+    pending_execution_order: u64,
     context: Option<checkpoint::ContextHead>,
     completion: pl_core::chat::ChatPublicationSeed,
 }
@@ -232,6 +225,7 @@ impl EffectTransaction {
         let commit = checkpoint::read_commit_head(db).await?;
         Ok(Self {
             applied: commit.applied_write_seq,
+            pending_execution_order: 0,
             context: commit.context,
             completion: conversation::publication_seed(db).await?,
         })
@@ -308,8 +302,9 @@ pub(crate) struct MessageIdentityReceipt {
 
 /// One effect's durable history write, committed as a single transaction.
 #[derive(Clone, Copy)]
-pub(crate) struct EffectCommit<'a> {
-    pub items: &'a [ThreadItem],
+pub(in crate::studio) struct EffectCommit<'a> {
+    pub turns: &'a [turns::TurnWrite],
+    pub execution_order: u64,
     /// Immutable completions already sequenced by Session, committed with this effect's facts.
     pub completions: &'a [std::sync::Arc<ChatItem>],
     /// The effect-local small current snapshot and its explicitly frozen collection/body changes.
@@ -337,7 +332,7 @@ pub(crate) struct AccountingCommit<'a> {
 
 /// A consecutive prepared effect in one physical history transaction.
 #[derive(Clone, Copy)]
-pub(crate) struct CheckpointEffect<'a> {
+pub(in crate::studio) struct CheckpointEffect<'a> {
     pub checkpoint: &'a pl_core::thread::ThreadCheckpoint,
     pub effect: &'a pl_core::thread::ThreadEffectBatch,
     pub history: EffectCommit<'a>,
@@ -356,9 +351,6 @@ pub(in crate::studio) struct ColdStateFacet {
 pub(in crate::studio) struct ColdConversation {
     pub database_id: String,
     pub head: u64,
-    pub current: pl_protocol::CurrentProjection,
-    /// Actual lifecycle for the selected page/current sources at this transaction's effect cut.
-    pub sources: Vec<pl_protocol::ChatSourceState>,
     pub page: ChatHistoryPage,
 }
 
@@ -446,7 +438,7 @@ impl HistoryStore {
 
     /// The existing database identity after the shared initialization/reader barrier. This never
     /// creates a store, starts a writer, flushes execution or loads recovery state.
-    pub(in crate::studio) async fn conversation_database_id(&self) -> Result<Option<String>> {
+    pub(crate) async fn conversation_database_id(&self) -> Result<Option<String>> {
         {
             let _initializing = self.state.init.read().await;
             ensure!(
@@ -658,6 +650,21 @@ impl HistoryStore {
         Ok(Some(reader))
     }
 
+    #[cfg(test)]
+    pub(in crate::studio) async fn measurement_connections(
+        &self,
+    ) -> Result<(sea_orm::DatabaseConnection, sea_orm::DatabaseConnection)> {
+        self.prepare_conversation_read().await?;
+        let writer = self.writer().await?.db.clone();
+        let reader = self
+            .reader()
+            .await?
+            .context("missing measurement reader")?
+            .db
+            .clone();
+        Ok((writer, reader))
+    }
+
     /// The single writer connection, created and upgraded on first use.
     ///
     /// The whole first connect+initialize runs under the write side of the initialization lock, so a
@@ -745,15 +752,16 @@ impl HistoryStore {
 
     /// Atomically applies one immutable writer batch and advances its fixed waterline.
     #[cfg(test)]
-    pub(crate) async fn commit(
+    pub(crate) async fn commit_legacy_fixture(
         &self,
         write_seq: u64,
-        items: &[ThreadItem],
-        turns: &[TimelineTurn],
+        items: &[ExecutionItem],
+        turns: &[LegacyTurn],
     ) -> Result<()> {
         ensure!(write_seq > 0, "history write sequence must be positive");
         let write_seq = integer(write_seq)?;
         let tx = begin_write(&self.writer().await?.db).await?;
+        schema::empty_execution_fixture(&tx).await?;
         let current = applied_write_seq(&tx).await?;
         if write_seq <= current {
             tx.rollback().await?;
@@ -776,13 +784,60 @@ impl HistoryStore {
         Ok(())
     }
 
+    /// 已发布旧格式的测试种子；只在正式降级夹具后调用，不作为正常 writer 入口。
+    #[cfg(test)]
+    pub(in crate::studio) async fn seed_legacy_items(
+        &self,
+        write_seq: u64,
+        items: &[ExecutionItem],
+    ) -> Result<()> {
+        let tx = begin_write(&self.writer().await?.db).await?;
+        ensure!(
+            schema::version(&tx).await? < 24,
+            "legacy fixture must be explicitly prepared"
+        );
+        for item in items {
+            self.upsert_item(&tx, integer(write_seq)?, item.clone())
+                .await?;
+            if let ExecutionShape::Turn(turn) = item.state() {
+                self.upsert_turn(
+                    &tx,
+                    integer(write_seq)?,
+                    &LegacyTurn {
+                        turn: pl_protocol::Turn {
+                            id: item.turn_id.clone(),
+                            thread_id: item.thread_id.clone(),
+                            input_id: turn.input_id().map(str::to_owned),
+                            revision: item.revision,
+                            state: turn.state().clone(),
+                            updated_at: item.updated_at,
+                        },
+                        last_item_id: item.id.clone(),
+                        context_disposition: Default::default(),
+                    },
+                )
+                .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn legacy_fixture_seeds(
+        &self,
+        ids: impl IntoIterator<Item = String>,
+    ) -> Result<std::collections::BTreeMap<String, ExecutionItem>> {
+        schema::legacy_execution_item::fixture_seeds(self, ids).await
+    }
+
     /// Commits one effect's history facts, including every durable identity index.
     ///
     /// The minimal input/message identities and terminal receipts one effect produced are written in
     /// the same transaction as its items and Turn rows, so an index can never be durable without the
     /// effect it describes (or the other way round) after a crash between two commits.
     #[cfg(test)]
-    pub(crate) async fn commit_effect(
+    pub(in crate::studio) async fn commit_effect(
         &self,
         write_seq: u64,
         commit: EffectCommit<'_>,
@@ -797,7 +852,7 @@ impl HistoryStore {
 
     /// Publishes one consecutive prepared prefix in ONE physical transaction. No result or
     /// acknowledgement escapes until every effect, its current and all recovery facts commit.
-    pub(crate) async fn commit_checkpoint_effects(
+    pub(in crate::studio) async fn commit_checkpoint_effects(
         &self,
         effects: &[CheckpointEffect<'_>],
     ) -> Result<Vec<Option<SessionAccounting>>> {
@@ -860,7 +915,8 @@ impl HistoryStore {
         let accounting = checkpoint.map(|prepared| prepared.accounting);
         let checkpoint = checkpoint.map(|prepared| (prepared.checkpoint, prepared.effect));
         let EffectCommit {
-            items,
+            turns,
+            execution_order,
             completions,
             current: current_view,
             rolled_back_turns,
@@ -896,6 +952,7 @@ impl HistoryStore {
             )
             .await?;
             conversation::completed::verify(tx, current_view).await?;
+            turns::verify(tx, turns).await?;
             if let Some((checkpoint, _)) = checkpoint {
                 checkpoint::verify_committed(tx, checkpoint, current).await?;
             }
@@ -936,60 +993,48 @@ impl HistoryStore {
                 "model interruption is not bound to its real Core effect"
             );
         }
-        let mut turn_ids = std::collections::BTreeSet::new();
-        for item in items {
-            if !item.turn_id.is_empty() {
-                turn_ids.insert(item.turn_id.clone());
+        if let Some((saved, effect)) = checkpoint {
+            for change in effect.inputs.iter() {
+                let id = match change {
+                    pl_core::thread::input::InputChange::Accepted(input) => &input.input.id,
+                    pl_core::thread::input::InputChange::Transition { id, .. } => id,
+                };
+                if let Some(input) = saved
+                    .state
+                    .inputs
+                    .iter()
+                    .find(|input| input.input.id == *id)
+                    && let pl_core::thread::input::InputState::Consumed { turn_id, .. } =
+                        &input.state
+                {
+                    execution_lifecycle::bind_turn(tx, id, turn_id, u64::try_from(write_seq)?)
+                        .await?;
+                }
             }
-            self.upsert_item(tx, write_seq, item.clone()).await?;
+            if let Some(through) = effect.consumed_messages
+                && let Some(attempt) = effect.attempt.as_ref()
+            {
+                for message in saved
+                    .state
+                    .inbox
+                    .iter()
+                    .filter(|message| message.sequence <= through)
+                {
+                    execution_lifecycle::bind_turn(
+                        tx,
+                        &crate::studio::thread_projection::order::message_id(&message.message.id),
+                        &attempt.turn_id,
+                        u64::try_from(write_seq)?,
+                    )
+                    .await?;
+                }
+            }
         }
-        for turn_id in turn_ids {
-            let Some(row) = tx
-                .query_one_raw(statement(
-                    "SELECT payload,last_write_seq FROM history_items WHERE item_id=?",
-                    vec![crate::studio::thread_projection::order::turn_id(&turn_id).into()],
-                ))
-                .await?
-            else {
-                continue;
-            };
-            let payload: String = row.try_get("", "payload")?;
-            let item: ThreadItem = serde_json::from_str(&payload)?;
-            let ThreadItemState::Turn(turn) = item.state() else {
-                continue;
-            };
-            let last = tx
-                .query_one_raw(statement(
-                    "SELECT item_id FROM history_items
-                     WHERE turn_id=? AND kind != 'contextCompaction'
-                     ORDER BY ordinal DESC LIMIT 1",
-                    vec![turn_id.clone().into()],
-                ))
-                .await?
-                .context("history Turn has no last item")?
-                .try_get::<String>("", "item_id")?;
-            self.upsert_turn(
-                tx,
-                write_seq,
-                &TimelineTurn {
-                    turn: pl_protocol::Turn {
-                        input_id: turn.input_id().map(str::to_owned),
-                        id: turn_id.clone(),
-                        thread_id: self.state.thread_id.clone(),
-                        revision: u64::try_from(row.try_get::<i64>("", "last_write_seq")?)?,
-                        state: turn.state().clone(),
-                        updated_at: item.updated_at,
-                    },
-                    last_item_id: last,
-                    context_disposition: if rolled_back_turns.contains(&turn_id) {
-                        pl_protocol::ThreadContextDisposition::RolledBack
-                    } else {
-                        pl_protocol::ThreadContextDisposition::Active
-                    },
-                },
-            )
-            .await?;
+        for turn in turns {
+            turns::apply(tx, turn, &self.state.thread_id).await?;
         }
+        turns::rollback(tx, rolled_back_turns).await?;
+        heads.pending_execution_order = heads.pending_execution_order.max(execution_order);
         for identity in identities {
             write_input_identity(tx, write_seq, identity).await?;
         }
@@ -1008,7 +1053,7 @@ impl HistoryStore {
                     write_seq,
                     &pl_core::thread::task::TaskRecord {
                         parent_call_id: None,
-                        invocation: None,
+                        invocation: Some(call.clone()),
                         id: format!("task:{}", call.call_id),
                         call_id: call.call_id.clone(),
                         tool_id: call.tool_id.clone(),
@@ -1048,8 +1093,8 @@ impl HistoryStore {
         }
         if last {
             tx.execute_raw(statement(
-                "UPDATE history_meta SET applied_write_seq=? WHERE id=1",
-                vec![write_seq.into()],
+                "UPDATE history_meta SET applied_write_seq=?,execution_order=MAX(execution_order,?) WHERE id=1",
+                vec![write_seq.into(),integer(heads.pending_execution_order)?.into()],
             ))
             .await?;
             if let Some((checkpoint, _)) = checkpoint {
@@ -1327,50 +1372,109 @@ impl HistoryStore {
         }
     }
 
-    pub(crate) async fn existing_items(
+    /// 只解析 checkpoint／保留 effect 明确引用的身份，不扫描整个 Turn。
+    pub(crate) async fn execution_seeds(
         &self,
         ids: impl IntoIterator<Item = String>,
-    ) -> Result<std::collections::BTreeMap<String, ThreadItem>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(std::collections::BTreeMap::new());
-        };
+    ) -> Result<std::collections::BTreeMap<String, ExecutionItem>> {
         let mut items = std::collections::BTreeMap::new();
-        let ids = ids
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        for batch in ids.chunks(400) {
-            let placeholders = vec!["?"; batch.len()].join(",");
-            let sql = format!(
-                "SELECT item_id,payload FROM history_items WHERE item_id IN ({placeholders})"
-            );
-            let rows = connection
-                .db
-                .query_all_raw(statement(
-                    &sql,
-                    batch.iter().cloned().map(Into::into).collect(),
-                ))
-                .await?;
-            for row in rows {
-                let id: String = row.try_get("", "item_id")?;
-                let payload: String = row.try_get("", "payload")?;
-                items.insert(id, serde_json::from_str(&payload)?);
+        for id in ids.into_iter().collect::<std::collections::BTreeSet<_>>() {
+            if let Some(item) = self.execution_item(&id).await? {
+                items.insert(id, item);
             }
         }
         Ok(items)
     }
 
-    pub(crate) async fn items_for_turn(&self, turn_id: &str) -> Result<Vec<ThreadItem>> {
+    /// 报告恢复独立读取真实父级的固定原件切面，不依赖展示库或已经打开的页面。
+    pub(in crate::studio) async fn turn_result(
+        &self,
+        turn_id: &str,
+    ) -> Result<crate::studio::thread_projection::TurnResult> {
+        use pl_protocol::{ChatAtom, ChatAtomKind, ThreadTextChannel};
+        let mut result = crate::studio::thread_projection::TurnResult::default();
         let Some(connection) = self.reader().await? else {
-            return Ok(Vec::new());
+            return Ok(result);
         };
-        query_items(
-            &connection.db,
-            "SELECT payload FROM history_items WHERE turn_id=? ORDER BY ordinal ASC",
-            vec![turn_id.into()],
+        let tx = connection.db.begin().await?;
+        let ceiling = conversation::latest_append_seq(&tx).await?;
+        let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
+            connection.database_id.clone(),
+            String::new(),
         )
-        .await
+        .headers_only();
+        let parent = pl_core::chat::ChatKey::new("turn", turn_id)?;
+        let mut before = None;
+        let mut commentary = std::collections::BTreeMap::new();
+        let mut last_tool: Option<(u64, String)> = None;
+        loop {
+            let page = conversation::page(
+                &tx,
+                &ChatHistoryRequest {
+                    query: Some(pl_core::chat::ChatQuery {
+                        query_class: None,
+                        parent_id: Some(parent.clone()),
+                    }),
+                    after: 0,
+                    before,
+                    ceiling,
+                    demand: pl_core::chat::ReadDemand::new(128, 256 * 1024),
+                },
+                &budget,
+                false,
+            )
+            .await?;
+            ensure!(
+                page.exhausted || !page.items.is_empty(),
+                "report record page did not advance"
+            );
+            before = page.items.first().map(|item| item.header.append_seq);
+            for entry in page.items {
+                let atom: ChatAtom = serde_json::from_slice(&entry.header.metadata)?;
+                result.observe_identity(&atom.id);
+                if atom.kind == ChatAtomKind::Text
+                    && atom.text_channel == Some(ThreadTextChannel::Final)
+                {
+                    let record = conversation::read_item(&tx, &entry.header.item_id)
+                        .await?
+                        .context("report original disappeared")?;
+                    result.observe_completion(&record, &self.state.thread_id)?;
+                } else if atom.kind == ChatAtomKind::Text
+                    && atom.text_channel == Some(ThreadTextChannel::Commentary)
+                {
+                    let order = atom
+                        .source_order
+                        .context("report commentary execution order is unknown")?;
+                    commentary.insert((order, entry.header.item_id.clone()), entry.header.item_id);
+                    while commentary.len()
+                        > crate::studio::thread_projection::live::TURN_COMMENTARY_PARTS
+                    {
+                        commentary.pop_first();
+                    }
+                } else if atom.kind == ChatAtomKind::ToolCall {
+                    let order = atom
+                        .source_order
+                        .context("report tool execution order is unknown")?;
+                    if last_tool.as_ref().is_none_or(|(old, _)| order > *old) {
+                        last_tool = Some((order, entry.header.item_id));
+                    }
+                }
+            }
+            if page.exhausted {
+                break;
+            }
+        }
+        for id in commentary
+            .values()
+            .chain(last_tool.iter().map(|(_, id)| id))
+        {
+            let record = conversation::read_item(&tx, id)
+                .await?
+                .context("report original disappeared")?;
+            result.observe_completion(&record, &self.state.thread_id)?;
+        }
+        tx.commit().await?;
+        Ok(result)
     }
 
     pub(crate) async fn watermark(&self) -> Result<u64> {
@@ -1388,7 +1492,7 @@ impl HistoryStore {
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT MAX(ordinal) AS ordinal FROM history_items",
+                "SELECT execution_order AS ordinal FROM history_meta WHERE id=1",
                 vec![],
             ))
             .await?
@@ -1397,12 +1501,14 @@ impl HistoryStore {
         Ok(u64::try_from(maximum.unwrap_or(0))?)
     }
 
+    #[cfg(test)]
     async fn upsert_item(
         &self,
         db: &impl ConnectionTrait,
         write_seq: i64,
-        mut item: ThreadItem,
+        mut item: ExecutionItem,
     ) -> Result<()> {
+        schema::empty_execution_fixture(db).await?;
         ensure!(
             item.thread_id == self.state.thread_id && !item.id.is_empty(),
             "history item identity does not belong to this Thread"
@@ -1525,11 +1631,12 @@ impl HistoryStore {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn upsert_turn(
         &self,
         db: &impl ConnectionTrait,
         write_seq: i64,
-        turn: &TimelineTurn,
+        turn: &LegacyTurn,
     ) -> Result<()> {
         ensure!(
             turn.turn.thread_id == self.state.thread_id && !turn.turn.id.is_empty(),
@@ -1585,7 +1692,7 @@ impl HistoryStore {
                 // Turn 条目）必须逐字相同，结尾只能向后延伸，上下文处置只允许由 Active 落定为
                 // RolledBack。其余差异都说明有人在同一 revision 下改写了这条 Turn，必须显式失败，
                 // 而不是靠更大的 write_seq 静默覆盖旧 payload。
-                let stored: TimelineTurn = serde_json::from_str(&old_payload)?;
+                let stored: LegacyTurn = serde_json::from_str(&old_payload)?;
                 ensure!(
                     stored.turn == turn.turn,
                     "history Turn revision conflict: the Turn fact changed at revision {revision}"
@@ -1805,34 +1912,12 @@ impl HistoryStore {
             return Ok(Vec::new());
         };
         let tx = connection.db.begin().await?;
-        let rows = tx
-            .query_all_raw(statement(
-                "SELECT s.metadata FROM conversation_atom_facts s
-             WHERE s.phase='start' AND s.atom_id>?
-               AND NOT EXISTS(SELECT 1 FROM conversation_atom_facts t
-                              WHERE t.atom_id=s.atom_id AND t.phase='terminal')
-             ORDER BY s.atom_id LIMIT ?",
-                vec![after_atom_id.unwrap_or("").into(), integer(limit)?.into()],
-            ))
-            .await?;
-        let mut atoms = Vec::with_capacity(rows.len());
-        for row in rows {
-            let atom: pl_protocol::ChatAtom =
-                serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
-            ensure!(
-                matches!(
-                    atom.lifecycle,
-                    pl_protocol::ChatAtomLifecycle::Active { .. }
-                ) && atom.payload.is_none(),
-                "invalid reliable recovery start"
-            );
-            atoms.push(atom);
-        }
+        let atoms = execution_lifecycle::active(&tx, after_atom_id, limit).await?;
         tx.commit().await?;
         Ok(atoms)
     }
 
-    pub(crate) async fn conversation_sources(
+    pub(crate) async fn execution_sources(
         &self,
         sources: &[pl_protocol::ChatSourceId],
         effect_cut: u64,
@@ -1856,7 +1941,9 @@ impl HistoryStore {
                 .collect());
         };
         let tx = connection.db.begin().await?;
-        let states = conversation::sources::read(&tx, sources, effect_cut).await?;
+        let states =
+            crate::studio::storage::history::execution_sources::read(&tx, sources, effect_cut)
+                .await?;
         tx.commit().await?;
         Ok(states)
     }
@@ -1929,36 +2016,7 @@ impl HistoryStore {
     async fn newest_terminal_turn_in(
         db: &impl ConnectionTrait,
     ) -> Result<Option<pl_protocol::Turn>> {
-        // `history_terminal_turns_by_write_seq` is declared over exactly this predicate
-        // (`kind='turn' AND lifecycle='terminal'`) and its leading column is `last_write_seq`, so
-        // this is one index scan returning at most one row — no table scan, no ordering work and no
-        // bounded-scan heuristic that a pathological history could defeat.
-        let Some(row) = db
-            .query_one_raw(statement(
-                "SELECT turn_id FROM history_items
-                 WHERE kind='turn' AND lifecycle='terminal'
-                 ORDER BY last_write_seq DESC, ordinal DESC LIMIT 1",
-                vec![],
-            ))
-            .await?
-        else {
-            return Ok(None);
-        };
-        let turn_id: String = row.try_get("", "turn_id")?;
-        let payload: String = db
-            .query_one_raw(statement(
-                "SELECT payload FROM history_turns WHERE turn_id=?",
-                vec![turn_id.into()],
-            ))
-            .await?
-            .context("terminal Turn item has no committed Turn record")?
-            .try_get("", "payload")?;
-        let history: pl_protocol::TimelineTurn = serde_json::from_str(&payload)?;
-        ensure!(
-            history.turn.state.is_terminal(),
-            "terminal Turn item does not resolve to a terminal Turn record"
-        );
-        Ok(Some(history.turn))
+        turns::terminal(db).await
     }
 
     /// Latest real terminal effect, using the same partial index as terminal paging.
@@ -1969,9 +2027,7 @@ impl HistoryStore {
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT last_write_seq FROM history_items
-                 WHERE kind='turn' AND lifecycle='terminal'
-                 ORDER BY last_write_seq DESC, ordinal DESC LIMIT 1",
+                "SELECT terminal_effect AS last_write_seq FROM history_turns WHERE terminal_effect IS NOT NULL ORDER BY terminal_effect DESC,turn_order DESC,turn_id DESC LIMIT 1",
                 vec![],
             ))
             .await?;
@@ -1991,9 +2047,7 @@ impl HistoryStore {
         let rows = connection
             .db
             .query_all_raw(statement(
-                "SELECT last_write_seq FROM history_items
-             WHERE kind='turn' AND lifecycle='terminal' AND last_write_seq>?
-             ORDER BY last_write_seq ASC LIMIT 128",
+                "SELECT DISTINCT terminal_effect AS last_write_seq FROM history_turns WHERE terminal_effect>? ORDER BY terminal_effect ASC LIMIT 128",
                 vec![
                     i64::try_from(after)
                         .context("terminal report cursor exceeds SQLite")?
@@ -2053,7 +2107,7 @@ impl HistoryStore {
             return Ok(None);
         };
         let row = connection.db.query_one_raw(statement(
-            "SELECT last_write_seq FROM history_items WHERE kind='turn' AND lifecycle='terminal' AND turn_id=? LIMIT 1",
+            "SELECT terminal_effect AS last_write_seq FROM history_turns WHERE terminal_effect IS NOT NULL AND turn_id=? LIMIT 1",
             vec![turn_id.to_owned().into()],
         )).await?;
         row.map(|row| {
@@ -2097,143 +2151,23 @@ impl HistoryStore {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<pl_protocol::ThreadTurnPage> {
-        let limit = limit.clamp(1, TURN_PAGE_ROW_LIMIT);
         let Some(connection) = self.reader().await? else {
             return Ok(pl_protocol::ThreadTurnPage {
+                turns: vec![],
                 next_cursor: None,
-                turns: Vec::new(),
             });
         };
-        let watermark = connection_watermark(connection).await?;
-        let resume = match cursor {
-            Some(cursor) => {
-                Some(turn_page_resume(connection, &self.state.thread_id, cursor, watermark).await?)
-            }
-            None => None,
-        };
-        let mut turns = Vec::new();
-        let mut next_cursor = None;
-        let mut used = 0_usize;
-        // 本页真正返回的最后一条位置（Turn id 与窗口内的条目 ordinal）：续传阶段与本轮批量扫描
-        // 都更新它，因此无论是字节预算还是行预算停下，`next_cursor` 都指向真实返回的位置。
-        let mut last_returned: Option<(String, i64)> = None;
-        // 续传：上一页的字节预算停在某条 Turn 内部时，先取回同一条 Turn 的剩余条目，再从它更旧的
-        // Turn 继续。
-        let mut older_than = None;
-        if let Some(resume) = &resume {
-            older_than = Some(resume.end_ordinal);
-            if resume.after_ordinal < resume.end_ordinal {
-                let entry = turn_page_entry(
-                    connection,
-                    &resume.turn_id,
-                    resume.after_ordinal,
-                    PAGE_BYTE_BUDGET,
-                )
-                .await?
-                .context("history cursor does not belong to this Thread")?;
-                used = used.saturating_add(entry.bytes);
-                last_returned = Some((resume.turn_id.clone(), entry.after_ordinal));
-                if entry.more {
-                    next_cursor = Some(turn_page_cursor(
-                        connection,
-                        &self.state.thread_id,
-                        &resume.turn_id,
-                        entry.after_ordinal,
-                        watermark,
-                    )?);
-                }
-                turns.push(entry.history);
-                if next_cursor.is_some() {
-                    return Ok(pl_protocol::ThreadTurnPage { next_cursor, turns });
-                }
-            }
-        }
-        while turns.len() < limit {
-            let take = limit - turns.len();
-            // 多取一行只为判断“还有更旧的 Turn”；这一行不属于本页，下一页用严格更小的
-            // `last_ordinal` 边界重新取回，因此不会跳过任何 Turn。
-            let rows = match older_than {
-                Some(bound) => {
-                    connection
-                        .db
-                        .query_all_raw(statement(
-                            "SELECT turn_id,first_ordinal,last_ordinal FROM history_turns
-                             WHERE last_ordinal < ? ORDER BY last_ordinal DESC LIMIT ?",
-                            vec![bound.into(), integer(take + 1)?.into()],
-                        ))
-                        .await?
-                }
-                None => {
-                    connection
-                        .db
-                        .query_all_raw(statement(
-                            "SELECT turn_id,first_ordinal,last_ordinal FROM history_turns
-                             ORDER BY last_ordinal DESC LIMIT ?",
-                            vec![integer(take + 1)?.into()],
-                        ))
-                        .await?
-                }
-            };
-            if rows.is_empty() {
-                break;
-            }
-            let more_turns = rows.len() > take;
-            let mut last_end = older_than;
-            let mut stopped = false;
-            for row in rows.into_iter().take(take) {
-                let turn_id: String = row.try_get("", "turn_id")?;
-                let first_ordinal: i64 = row.try_get("", "first_ordinal")?;
-                let end_ordinal: i64 = row.try_get("", "last_ordinal")?;
-                let budget = PAGE_BYTE_BUDGET.saturating_sub(used);
-                let Some(entry) = turn_page_entry(
-                    connection,
-                    &turn_id,
-                    first_ordinal.saturating_sub(1),
-                    budget,
-                )
-                .await?
-                else {
-                    continue;
-                };
-                // 整条 Turn 都装不进本页时留在下一页（游标指向本页最后返回的位置）。本页第一条
-                // 永远返回，否则游标无法前进。
-                if !turns.is_empty() && entry.bytes > budget {
-                    stopped = true;
-                    break;
-                }
-                used = used.saturating_add(entry.bytes);
-                last_returned = Some((turn_id, entry.after_ordinal));
-                last_end = Some(end_ordinal);
-                let window_truncated = entry.more;
-                turns.push(entry.history);
-                if window_truncated {
-                    // 字节或行预算在这条 Turn 内部用尽：游标停在窗口内的最后一条条目上。
-                    stopped = true;
-                    break;
-                }
-            }
-            if !stopped && !more_turns {
-                next_cursor = None;
-                break;
-            }
-            let Some((turn_id, after_ordinal)) = &last_returned else {
-                // 唯一一条候选 Turn 都取不到（历史被外部改写）：没有可续传的位置。
-                next_cursor = None;
-                break;
-            };
-            next_cursor = Some(turn_page_cursor(
-                connection,
-                &self.state.thread_id,
-                turn_id,
-                *after_ordinal,
-                watermark,
-            )?);
-            if stopped || turns.len() >= limit {
-                break;
-            }
-            older_than = last_end;
-        }
-        Ok(pl_protocol::ThreadTurnPage { next_cursor, turns })
+        let tx = connection.db.begin().await?;
+        let page = turns::page(
+            &tx,
+            &self.state.thread_id,
+            &connection.database_id,
+            cursor,
+            limit,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(page)
     }
 
     #[expect(
@@ -2249,7 +2183,7 @@ impl HistoryStore {
         through: Option<u64>,
         limit: usize,
         cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(u64, u64, Vec<ThreadItem>, bool)> {
+    ) -> Result<(u64, u64, Vec<pl_protocol::CompletedEntry>, bool)> {
         let read = async {
             // 行上限与探测行必须用同一份 limit：早先的写法按调用方 limit 比较 `has_more`，却把
             // SQL LIMIT 截到 51，limit > 50 时会返回 51 条却宣称“没有更多”。这里先收敛 limit，再
@@ -2279,41 +2213,45 @@ impl HistoryStore {
                     "agent session cursor is ahead of durable history"
                 );
             }
-            let ceiling = match ceiling {
-                Some(ceiling) => ceiling,
-                None => {
-                    let row = tx
-                        .query_one_raw(statement(
-                            "SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM history_items",
-                            vec![],
-                        ))
-                        .await?
-                        .context("history ceiling query returned no row")?;
-                    u64::try_from(row.try_get::<i64>("", "ordinal")?)?
-                }
-            };
-            let mut predicates = vec!["ordinal <= ?"];
-            let mut values = vec![integer(ceiling)?.into()];
-            if let Some(anchor) = anchor {
-                predicates.push(if descending {
-                    "ordinal < ?"
-                } else {
-                    "ordinal > ?"
-                });
-                values.push(integer(anchor)?.into());
-            }
-            if text_only {
-                predicates.push("kind = 'text'");
-            }
-            values.push(integer(limit + 1)?.into());
-            let sql = format!(
-                "SELECT payload FROM history_items WHERE {} ORDER BY ordinal {} LIMIT ?",
-                predicates.join(" AND "),
-                if descending { "DESC" } else { "ASC" }
+            let head = conversation::latest_append_seq(&tx).await?;
+            let ceiling = ceiling.unwrap_or(head);
+            ensure!(
+                ceiling <= head && anchor.is_none_or(|anchor| anchor <= ceiling),
+                "agent cursor exceeds its original completion cut"
             );
-            let mut items = query_items(&tx, &sql, values).await?;
-            let has_more = items.len() > limit;
-            items.truncate(limit);
+            let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
+                connection.database_id.clone(),
+                String::new(),
+            )
+            .headers_only();
+            let max_bytes = PAGE_BYTE_BUDGET
+                .checked_sub(budget.fixed_bytes())
+                .context("agent record envelope cannot fit")?;
+            let page = conversation::page_filtered(
+                &tx,
+                &ChatHistoryRequest {
+                    query: Some(pl_core::chat::ChatQuery {
+                        query_class: None,
+                        parent_id: None,
+                    }),
+                    after: if descending { 0 } else { anchor.unwrap_or(0) },
+                    before: if descending { anchor } else { None },
+                    ceiling,
+                    demand: pl_core::chat::ReadDemand::new(limit, max_bytes),
+                },
+                &budget,
+                !descending,
+                text_only,
+            )
+            .await?;
+            let has_more = !page.exhausted;
+            let mut items = crate::studio::runtime::conversation_reader::entries(
+                page.items,
+                &connection.database_id,
+            )?;
+            if descending {
+                items.reverse();
+            }
             tx.commit().await?;
             Ok((watermark, ceiling, items, has_more))
         };
@@ -2332,22 +2270,154 @@ impl HistoryStore {
     /// released it (for example the tool result a reliable-output repair names) so the *same* owner can
     /// still project the repaired fact with its own content version instead of the writer inventing one.
     /// This is a read of an already-committed fact, never a read-back of the effect being written.
-    pub(crate) async fn item(&self, item_id: &str) -> Result<Option<ThreadItem>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
+    pub(crate) async fn execution_item(&self, item_id: &str) -> Result<Option<ExecutionItem>> {
+        if let Some(id) = crate::studio::thread_projection::order::business_id("turn", item_id) {
+            let Some(connection) = self.reader().await? else {
+                return Ok(None);
+            };
+            if let Some(value) = turns::read(&connection.db, id).await? {
+                let started = value
+                    .turn
+                    .state
+                    .started_at()
+                    .unwrap_or(value.turn.updated_at);
+                return Ok(Some(ExecutionItem::new(
+                    item_id.into(),
+                    self.state.thread_id.clone(),
+                    id.into(),
+                    value.turn_order,
+                    value.updated_effect.unwrap_or(value.turn.revision),
+                    started,
+                    value.turn.updated_at,
+                    ExecutionShape::Turn(
+                        pl_protocol::ThreadTurnItem::new(value.turn.state)
+                            .with_input_id(value.turn.input_id),
+                    ),
+                )));
+            }
+        }
+        if let Some(record) = self.read_chat_item(item_id).await?
+            && serde_json::from_slice::<serde_json::Value>(&record.payload)?["type"] != "plan"
+        {
+            let connection = self
+                .reader()
+                .await?
+                .context("execution history connection")?;
+            let life = execution_lifecycle::read(&connection.db, item_id).await?;
+            let placement = life.as_ref().and_then(|life| {
+                life.execution_order
+                    .map(|order| (order, life.last_write_seq))
+            });
+            let mut item = crate::studio::runtime::chat_item::execution_item(
+                &record,
+                &self.state.thread_id,
+                placement,
+            )?;
+            if let Some(life) = life {
+                if let Some(turn) = life.turn_id {
+                    item.turn_id = turn;
+                }
+                if let Some(order) = life.execution_order {
+                    item.ordinal = order;
+                }
+            }
+            return self.restore_tool_receipt(item).await.map(Some);
+        }
+        if let Some(call_id) = crate::studio::thread_projection::order::business_id("tool", item_id)
+            && let Some(saved) = self.tool_task(call_id).await?
+            && let Some(call) = &saved.task.invocation
+        {
+            let Some(connection) = self.reader().await? else {
+                return Ok(None);
+            };
+            let life = execution_lifecycle::read(&connection.db, item_id)
+                .await?
+                .context("tool task has no lifecycle placement")?;
+            let ordinal = life
+                .execution_order
+                .context("tool task execution order is unknown")?;
+            let created = life
+                .started_at
+                .context("tool task original start time is unknown")?;
+            let mut state = checkpoint::read_state_envelope(&connection.db, &self.state.thread_id)
+                .await?
+                .map(|saved| saved.state)
+                .unwrap_or_default();
+            state
+                .tasks
+                .insert(saved.task.id.clone(), saved.task.clone());
+            if let Some(delivery) = saved.delivery {
+                state.deliveries = vec![delivery].into();
+            }
+            let projected = crate::studio::thread_projection::tools::project_tool_call(
+                &self.state.thread_id,
+                &state,
+                &saved.task.turn_id,
+                call,
+                ordinal,
+                created,
+                life.last_write_seq,
+                life.finished_at.unwrap_or(created),
+            )?;
+            return match projected.into_iter().find(|item| item.id == item_id) {
+                Some(item) => self.restore_tool_receipt(item).await.map(Some),
+                None => Ok(None),
+            };
+        }
+        Ok(None)
+    }
+
+    /// 原件保持不变，执行恢复叠加该工具已经可靠接纳的最新问答回执。
+    async fn restore_tool_receipt(&self, mut item: ExecutionItem) -> Result<ExecutionItem> {
+        let Some(tool) = item.tool() else {
+            return Ok(item);
         };
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT payload FROM history_items WHERE item_id=?",
-                vec![item_id.to_owned().into()],
-            ))
-            .await?;
-        row.map(|row| {
-            let payload: String = row.try_get("", "payload")?;
-            Ok(serde_json::from_str(&payload)?)
-        })
-        .transpose()
+        let interaction =
+            pl_core::tool::opaque::tool_interaction_id(tool.invocation().tool_call_id());
+        let receipt_id =
+            crate::studio::thread_projection::order::receipt_id("interaction", &interaction);
+        if let Some(receipt) = self.latest_fact_receipt(&receipt_id).await? {
+            ensure!(
+                receipt.kind == "interaction",
+                "tool interaction receipt kind conflicts"
+            );
+            let record: pl_core::thread::interactions::InteractionRecord =
+                serde_json::from_str(&receipt.payload)?;
+            if let Some(user_input) = crate::studio::thread_projection::project_tool_user_input(
+                &self.state.thread_id,
+                &record,
+            )? {
+                crate::studio::thread_projection::attach_tool_user_input(&mut item, user_input)?;
+            }
+        }
+        if let Some(tool) = item.tool()
+            && tool.state().is_terminal()
+            && let Some(saved) = self.tool_task(tool.invocation().tool_call_id()).await?
+            && let Some(delivery) = saved.delivery
+        {
+            let references = delivery
+                .delivered_context
+                .iter()
+                .filter_map(|content| match content {
+                    pl_core::context::ContextContent::Resource { reference } => {
+                        Some(reference.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if !references.is_empty() {
+                item = crate::studio::thread_projection::tools::project_repaired_tool_call(
+                    &self.state.thread_id,
+                    &item,
+                    &references,
+                    item.updated_at,
+                )?
+                .into_iter()
+                .next()
+                .context("repaired tool projection is empty")?;
+            }
+        }
+        Ok(item)
     }
 }
 
@@ -2498,41 +2568,7 @@ async fn read_latest_turn_at(
     thread_id: &str,
     history_fence: u64,
 ) -> Result<Option<pl_protocol::Turn>> {
-    let fence = integer(history_fence)?;
-    ensure!(
-        applied_write_seq(tx).await? == fence,
-        "child history changed or does not cover the evaluation fence"
-    );
-    let latest = tx
-        .query_one_raw(statement(
-            "SELECT turn_id,last_write_seq FROM history_items WHERE kind='turn'
-             ORDER BY ordinal DESC LIMIT 1",
-            vec![],
-        ))
-        .await?;
-    let Some(latest) = latest else {
-        return Ok(None);
-    };
-    let turn_id: String = latest.try_get("", "turn_id")?;
-    let item_sequence: i64 = latest.try_get("", "last_write_seq")?;
-    let row = tx
-        .query_one_raw(statement(
-            "SELECT payload,last_write_seq FROM history_turns WHERE turn_id=?",
-            vec![turn_id.clone().into()],
-        ))
-        .await?
-        .context("latest Turn item has no committed Turn record")?;
-    let payload: String = row.try_get("", "payload")?;
-    let history: TimelineTurn = serde_json::from_str(&payload)?;
-    ensure!(
-        history.turn.id == turn_id
-            && history.turn.thread_id == thread_id
-            && integer(history.turn.revision)? == item_sequence
-            && item_sequence <= row.try_get::<i64>("", "last_write_seq")?
-            && row.try_get::<i64>("", "last_write_seq")? <= fence,
-        "latest Turn record does not match its committed identity or fence"
-    );
-    Ok(Some(history.turn))
+    turns::latest_at(tx, thread_id, history_fence).await
 }
 
 async fn connect(
@@ -2690,7 +2726,7 @@ async fn write_tool_task(
     write_seq: i64,
     task: &pl_core::thread::task::TaskRecord,
 ) -> Result<()> {
-    let payload = serde_json::to_string(task)?;
+    let mut task = task.clone();
     let existing = tx
         .query_one_raw(statement(
             "SELECT revision,task_payload FROM history_tool_tasks WHERE call_id=?",
@@ -2699,18 +2735,35 @@ async fn write_tool_task(
         .await?;
     if let Some(existing) = existing {
         let revision: i64 = existing.try_get("", "revision")?;
+        let old: pl_core::thread::task::TaskRecord =
+            serde_json::from_str(&existing.try_get::<String>("", "task_payload")?)?;
+        if let (Some(old), Some(new)) = (&old.invocation, &task.invocation) {
+            ensure!(old == new, "immutable tool invocation conflict");
+        }
+        task.invocation = old.invocation.clone().or(task.invocation);
         if revision >= integer(task.revision)? {
+            let supplements_invocation = old.invocation.is_none() && task.invocation.is_some();
             if revision == integer(task.revision)? {
-                let stored: String = existing.try_get("", "task_payload")?;
+                let mut prior = old.clone();
+                prior.invocation = task.invocation.clone();
                 ensure!(
-                    stored == payload,
+                    prior == task,
                     "tool task {} conflicts with committed revision",
                     task.id
                 );
             }
+            if supplements_invocation {
+                let mut prior = old;
+                prior.invocation = task.invocation;
+                tx.execute_raw(statement(
+                    "UPDATE history_tool_tasks SET task_payload=?,last_write_seq=MAX(last_write_seq,?) WHERE call_id=?",
+                    vec![serde_json::to_string(&prior)?.into(),write_seq.into(),prior.call_id.into()],
+                )).await?;
+            }
             return Ok(());
         }
     }
+    let payload = serde_json::to_string(&task)?;
     tx.execute_raw(statement(
         "INSERT INTO history_tool_tasks(call_id,revision,task_payload,delivery_payload,last_write_seq)
          VALUES(?,?,?,NULL,?) ON CONFLICT(call_id) DO UPDATE SET
@@ -2823,194 +2876,6 @@ async fn write_tool_delivery_repair(
 async fn connection_watermark(connection: &HistoryConnection) -> Result<u64> {
     u64::try_from(applied_write_seq(&connection.db).await?)
         .context("negative history write sequence")
-}
-
-/// Turn 页的续传位置。
-///
-/// `after_ordinal` 是本页最后返回的条目 ordinal，`end_ordinal` 是这条 Turn 的 durable 结尾；
-/// 两者相等表示这条 Turn 已完整返回，下一页从更旧的 Turn 继续。
-#[derive(Debug, Clone)]
-struct TurnPageResume {
-    turn_id: String,
-    after_ordinal: i64,
-    end_ordinal: i64,
-}
-
-/// 一条 Turn 在一个 Turn 页里的条目窗口。
-struct TurnPageEntry {
-    history: pl_protocol::ThreadTurnHistory,
-    /// 窗口内最后一条条目的 ordinal；窗口为空时等于 Turn 结尾。
-    after_ordinal: i64,
-    /// 这条 Turn 是否还有未返回的条目。
-    more: bool,
-    /// 本条 entry 计入整页预算的序列化字节（与 item 页同一计量方式）。
-    bytes: usize,
-}
-
-/// 构造 Turn 页的版本化游标：绑定 Thread、数据库身份、水位与 Turn 内的续传位置。
-///
-/// 复用 [`TimelineCursor`] 的自校验封装（ordinal 位置、`item_id` 位置存 Turn id），因此数据库
-/// 重建、跨 Thread 或水位回退的游标都会被拒绝，而不是被当成“附近某条”静默沿用。
-fn turn_page_cursor(
-    connection: &HistoryConnection,
-    thread_id: &str,
-    turn_id: &str,
-    after_ordinal: i64,
-    watermark: u64,
-) -> Result<String> {
-    Ok(TimelineCursor::new(
-        thread_id.to_owned(),
-        connection.database_id.clone(),
-        u64::try_from(after_ordinal)?,
-        turn_id.to_owned(),
-        watermark,
-    )
-    .encode())
-}
-
-/// 解析 Turn 页游标，返回它在本数据库内的续传位置。
-///
-/// 版本化 token 是唯一的合法输入：它逐项校验 Thread、数据库身份、水位，并要求游标落在该 Turn
-/// 自己的条目上。任何非版本化输入（例如旧版原始 `turn_id`）都无法在数据库被替换后绑定到本库的
-/// 身份与水位——同名 Turn 仍然存在时静默沿用等于把游标当成本库“附近某条”——因此显式失败，由调用
-/// 方重新加载窗口，而不是回退兼容或猜测位置。
-async fn turn_page_resume(
-    connection: &HistoryConnection,
-    thread_id: &str,
-    cursor: &str,
-    watermark: u64,
-) -> Result<TurnPageResume> {
-    let parsed = TimelineCursor::decode(cursor)
-        .context("Turn cursor is not a versioned history cursor; restart the page")?;
-    ensure!(
-        parsed.thread_id == thread_id,
-        "timeline cursor belongs to another Thread"
-    );
-    ensure!(
-        parsed.database_id == connection.database_id,
-        "timeline cursor belongs to a rebuilt history database; restart the page"
-    );
-    ensure!(
-        parsed.applied_write_sequence <= watermark,
-        "timeline cursor was read from a newer history than this database"
-    );
-    let row = connection
-        .db
-        .query_one_raw(statement(
-            "SELECT turn_id,last_ordinal FROM history_turns WHERE turn_id=?",
-            vec![parsed.item_id.clone().into()],
-        ))
-        .await?
-        .context("timeline cursor Turn no longer exists; restart the page")?;
-    let stored_turn: String = row.try_get("", "turn_id")?;
-    ensure!(
-        stored_turn == parsed.item_id,
-        "timeline cursor Turn identity changed; restart the page"
-    );
-    let end_ordinal: i64 = row.try_get("", "last_ordinal")?;
-    let after_ordinal = i64::try_from(parsed.ordinal).context("timeline cursor is out of range")?;
-    ensure!(
-        after_ordinal <= end_ordinal,
-        "timeline cursor is ahead of the durable Turn end; restart the page"
-    );
-    // 游标必须落在该 Turn 自己的条目上：位置被改写时明确失败，绝不猜一个相邻位置。
-    let anchor = connection
-        .db
-        .query_one_raw(statement(
-            "SELECT turn_id FROM history_items WHERE ordinal=?",
-            vec![after_ordinal.into()],
-        ))
-        .await?
-        .context("timeline cursor item no longer exists; restart the page")?;
-    let anchor_turn: String = anchor.try_get("", "turn_id")?;
-    ensure!(
-        anchor_turn == parsed.item_id,
-        "timeline cursor item identity changed; restart the page"
-    );
-    Ok(TurnPageResume {
-        turn_id: parsed.item_id,
-        after_ordinal,
-        end_ordinal,
-    })
-}
-
-/// 取一条 Turn 在 `after_ordinal` 之后的条目窗口。
-///
-/// 条目按 ordinal 升序、连续前缀返回，受 [`TURN_PAGE_ITEM_LIMIT`] 行与 `budget` 字节约束；
-/// 窗口为空时返回 `None`（这条 Turn 没有条目，通常意味着历史被外部改写）。至少返回一条条目，
-/// 否则超大条目的截断点无法让游标前进。
-async fn turn_page_entry(
-    connection: &HistoryConnection,
-    turn_id: &str,
-    after_ordinal: i64,
-    budget: usize,
-) -> Result<Option<TurnPageEntry>> {
-    let Some(row) = connection
-        .db
-        .query_one_raw(statement(
-            "SELECT last_ordinal,payload FROM history_turns WHERE turn_id=?",
-            vec![turn_id.into()],
-        ))
-        .await?
-    else {
-        return Ok(None);
-    };
-    let end_ordinal: i64 = row.try_get("", "last_ordinal")?;
-    let turn: TimelineTurn = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-    // 多取一行探测这条 Turn 是否还有更晚的条目。
-    let rows = query_items(
-        &connection.db,
-        "SELECT payload FROM history_items
-             WHERE turn_id=? AND ordinal > ? ORDER BY ordinal ASC LIMIT ?",
-        vec![
-            turn_id.into(),
-            after_ordinal.into(),
-            integer(TURN_PAGE_ITEM_LIMIT + 1)?.into(),
-        ],
-    )
-    .await?;
-    let mut more = rows.len() > TURN_PAGE_ITEM_LIMIT;
-    let mut used = serde_json::to_string(&turn)?.len();
-    let mut items = Vec::new();
-    for item in rows.into_iter().take(TURN_PAGE_ITEM_LIMIT) {
-        let size = serde_json::to_string(&item)?.len();
-        if !items.is_empty() && used.saturating_add(size) > budget {
-            more = true;
-            break;
-        }
-        used = used.saturating_add(size);
-        items.push(item);
-    }
-    let after_ordinal = match items.last() {
-        Some(item) => integer(item.ordinal)?,
-        // 这条 Turn 没有可返回的条目：直接标记为已完整返回，避免游标停在原地打转。
-        None => end_ordinal,
-    };
-    Ok(Some(TurnPageEntry {
-        history: pl_protocol::ThreadTurnHistory {
-            turn: turn.turn,
-            items,
-            context_disposition: turn.context_disposition,
-        },
-        after_ordinal,
-        more,
-        bytes: used,
-    }))
-}
-
-async fn query_items(
-    db: &impl ConnectionTrait,
-    sql: &str,
-    values: Vec<Value>,
-) -> Result<Vec<ThreadItem>> {
-    db.query_all_raw(statement(sql, values))
-        .await?
-        .into_iter()
-        .map(|row| {
-            let payload: String = row.try_get("", "payload")?;
-            Ok(serde_json::from_str(&payload)?)
-        })
-        .collect()
 }
 
 /// Creates or validates the schema and returns the owning database identity.
@@ -3270,24 +3135,29 @@ fn integer(value: impl TryInto<i64>) -> Result<i64> {
         .map_err(|_| anyhow::anyhow!("history integer exceeds SQLite range"))
 }
 
-fn kind_label(kind: ThreadItemKind) -> &'static str {
+#[cfg(test)]
+fn kind_label(kind: ExecutionKind) -> &'static str {
     match kind {
-        ThreadItemKind::Raw => "raw",
-        ThreadItemKind::Text => "text",
-        ThreadItemKind::Thinking => "thinking",
-        ThreadItemKind::Tool => "tool",
-        ThreadItemKind::Agent => "agent",
-        ThreadItemKind::Turn => "turn",
-        ThreadItemKind::Inference => "inference",
-        ThreadItemKind::Skill => "skill",
-        ThreadItemKind::File => "file",
-        ThreadItemKind::ContextCompaction => "contextCompaction",
+        ExecutionKind::Raw => "raw",
+        ExecutionKind::Text => "text",
+        ExecutionKind::Thinking => "thinking",
+        ExecutionKind::Tool => "tool",
+        ExecutionKind::Agent => "agent",
+        ExecutionKind::Turn => "turn",
+        ExecutionKind::Inference => "inference",
+        ExecutionKind::Skill => "skill",
+        ExecutionKind::File => "file",
+        ExecutionKind::ContextCompaction => "contextCompaction",
     }
 }
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
+    if schema::version(db).await? == 24 {
+        schema::empty_execution_fixture(db).await?;
+    }
     if matches!(schema::version(db).await?, 22..=23) {
+        schema::empty_execution_fixture(db).await?;
         // A current fixture may also contain an open Work with no immutable completion.
         // Prove every original/display collection empty before dropping any current display structure.
         for table in [
@@ -3444,13 +3314,96 @@ pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurr
 }
 
 #[cfg(test)]
+fn test_session(store: HistoryStore) -> pl_core::chat::Session {
+    pl_core::chat::Session::new(
+        store,
+        pl_core::chat::TimelineEpoch::new(crate::studio::new_id("test-timeline"))
+            .expect("generated epoch is nonempty"),
+    )
+}
+
+/// Test callers explicitly publish completions; execution-only fixture commits stay separate.
+#[cfg(test)]
+pub(crate) async fn persist_completed(
+    store: &HistoryStore,
+    sequence: u64,
+    items: &[ExecutionItem],
+) -> Result<Vec<std::sync::Arc<ChatItem>>> {
+    ensure!(
+        items.iter().all(|item| item.ordinal > 0),
+        "completed fixture must have a real execution order"
+    );
+    let database_id = store.writer().await?.database_id.clone();
+    let session = test_session(store.clone());
+    let drafts = items
+        .iter()
+        .map(|item| {
+            crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let completions = session
+        .publish_batch(drafts)
+        .await?
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    store
+        .commit_effect(
+            sequence,
+            EffectCommit {
+                current: &crate::studio::storage::history::test_current(sequence),
+                turns: &test_turns(sequence, items),
+                execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
+                completions: &completions,
+                rolled_back_turns: &Default::default(),
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            },
+        )
+        .await?;
+    Ok(completions)
+}
+
+#[cfg(test)]
+pub(in crate::studio) fn test_turns(effect: u64, items: &[ExecutionItem]) -> Vec<turns::TurnWrite> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let ExecutionShape::Turn(turn) = item.state() else {
+                return None;
+            };
+            Some(turns::TurnWrite {
+                turn: pl_protocol::Turn {
+                    id: item.turn_id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    input_id: turn.input_id().map(str::to_owned),
+                    revision: effect,
+                    state: turn.state().clone(),
+                    updated_at: item.updated_at,
+                },
+                turn_order: item.ordinal,
+                admitted_effect: None,
+                updated_effect: Some(effect),
+                terminal_effect: turn.state().is_terminal().then_some(effect),
+                context_disposition: Default::default(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
 mod agent_session_tests {
     use super::*;
     use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
     use tokio_util::sync::CancellationToken;
 
-    fn text(ordinal: u64, revision: u64, body: &str) -> ThreadItem {
-        ThreadItem::new(
+    fn text(ordinal: u64, revision: u64, body: &str) -> ExecutionItem {
+        ExecutionItem::new(
             format!("text-{ordinal}"),
             "agent".into(),
             "turn".into(),
@@ -3458,7 +3411,7 @@ mod agent_session_tests {
             revision,
             1,
             2,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 body.into(),
                 vec![],
@@ -3472,9 +3425,8 @@ mod agent_session_tests {
         let dir = tempfile::tempdir()?;
         let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
         let original = text(1, 1, "original");
-        history
-            .commit(1, std::slice::from_ref(&original), &[])
-            .await?;
+        persist_completed(&history, 1, std::slice::from_ref(&original)).await?;
+        let writing = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         let (release, release_rx) = tokio::sync::oneshot::channel();
         *history.state.agent_page_gate.lock().await = Some((entered_tx, release_rx));
@@ -3482,9 +3434,7 @@ mod agent_session_tests {
         let read = history.agent_page(false, true, None, None, None, 20, &cancellation);
         let write = async {
             entered.await?;
-            history
-                .commit(2, &[text(1, 2, "revised"), text(2, 1, "new")], &[])
-                .await?;
+            persist_completed(&writing, 2, &[text(2, 1, "new")]).await?;
             release
                 .send(())
                 .map_err(|_| anyhow::anyhow!("read disappeared"))?;
@@ -3496,7 +3446,8 @@ mod agent_session_tests {
         committed?;
         let (watermark, ceiling, items, more) = page?;
         assert_eq!((watermark, ceiling, more), (1, 1, false));
-        assert_eq!(items, vec![original]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].record_id, original.id);
         let (watermark, ceiling, items, _) = history
             .agent_page(false, true, None, None, None, 20, &cancellation)
             .await?;
@@ -3527,7 +3478,7 @@ mod agent_session_tests {
         assert!(history.state.reader.get().is_none());
         assert!(!path.exists());
         drop(initializing);
-        history.commit(1, &[text(1, 1, "saved")], &[]).await?;
+        persist_completed(&history, 1, &[text(1, 1, "saved")]).await?;
         let page = history
             .agent_page(
                 false,
@@ -3547,7 +3498,7 @@ mod agent_session_tests {
     async fn agent_page_cancelled_pool_wait_and_transaction_release_capacity() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        history.commit(1, &[text(1, 1, "saved")], &[]).await?;
+        persist_completed(&history, 1, &[text(1, 1, "saved")]).await?;
         let connection = history.reader().await?.context("reader")?;
         // The production read pool has one connection. Hold it to force an actual acquisition wait.
         let occupied = connection.db.begin().await?;
@@ -3610,7 +3561,7 @@ mod agent_session_tests {
             .await?;
         assert_eq!(page, (0, 0, vec![], false));
         assert!(!path.exists());
-        history.commit(7, &[], &[]).await?;
+        persist_completed(&history, 7, &[]).await?;
         let page = history
             .agent_page(false, false, None, None, None, 20, &cancellation)
             .await?;
@@ -3619,7 +3570,7 @@ mod agent_session_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("DROP TABLE history_items")
+            .execute_unprepared("DROP TABLE conversation_items")
             .await?;
         let error = history
             .agent_page(false, false, None, None, None, 20, &cancellation)
@@ -3633,21 +3584,19 @@ mod agent_session_tests {
     }
 
     #[tokio::test]
-    async fn agent_page_keyset_keeps_revised_rows_in_original_range() -> Result<()> {
+    async fn agent_page_keyset_keeps_immutable_rows_in_original_range() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        history
-            .commit(1, &[text(1, 1, "first"), text(2, 1, "second")], &[])
-            .await?;
+        persist_completed(&history, 1, &[text(1, 1, "first"), text(2, 1, "second")]).await?;
         let cancellation = CancellationToken::new();
         let (through, ceiling, first, more) = history
             .agent_page(false, true, None, None, None, 1, &cancellation)
             .await?;
-        assert_eq!((through, ceiling, first[0].ordinal, more), (1, 2, 1, true));
-        let revised = text(2, 2, "second revised after first page");
-        history
-            .commit(2, &[revised.clone(), text(3, 1, "outside ceiling")], &[])
-            .await?;
+        assert_eq!(
+            (through, ceiling, first[0].completion_seq, more),
+            (1, 2, 1, true)
+        );
+        persist_completed(&history, 2, &[text(3, 1, "outside ceiling")]).await?;
         let (durable, bound, second, more) = history
             .agent_page(
                 false,
@@ -3659,12 +3608,24 @@ mod agent_session_tests {
                 &cancellation,
             )
             .await?;
-        assert_eq!((durable, bound, more), (2, 2, false));
-        assert_eq!(
-            second,
-            vec![revised],
-            "new revision must not remove an original-range identity"
+        assert_eq!((durable, bound, more), (2, 2, true));
+        let (_, _, end, more) = history
+            .agent_page(
+                false,
+                true,
+                Some(2),
+                Some(ceiling),
+                Some(through),
+                1,
+                &cancellation,
+            )
+            .await?;
+        assert!(
+            end.is_empty() && !more,
+            "an exact full keyset page requires an empty EOF probe"
         );
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].record_id, "text-2");
         assert!(
             history
                 .agent_page(false, true, None, Some(2), Some(3), 1, &cancellation)
@@ -4031,7 +3992,8 @@ mod business_refs_tests {
                 checkpoint: &checkpoint,
                 effect: &effect,
                 history: EffectCommit {
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     completions: &[],
                     current: &prepared,
                     rolled_back_turns: &BTreeSet::new(),
@@ -4334,7 +4296,7 @@ mod future_size_tests {
                 future_size(|runtime: &'static StudioRuntime| {
                     runtime.open_conversation_feed(
                         "size",
-                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ChatScope::conversation(None),
                         pl_protocol::ReadDemand {
                             max_items: 1,
                             max_bytes: 16 * 1024,
@@ -4481,16 +4443,8 @@ mod storage_fault_tests {
                     Arc::<[u8]>::from(b"preserved completion".as_slice()),
                 );
                 draft.metadata = serde_json::to_vec(&atom)?.into();
-                draft.read_hint =
-                    crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
-                let record = ChatItem::complete(
-                    draft,
-                    1,
-                    Some(pl_core::chat::ChatRunPosition {
-                        start_seq: 1,
-                        ordinal: 1,
-                    }),
-                );
+
+                let record = ChatItem::complete(draft, 1);
                 conversation::append_records(db, [&record], true).await?;
             }
             let shape = || {
@@ -4817,62 +4771,13 @@ mod storage_fault_tests {
         Ok(())
     }
 
-    fn test_session(store: HistoryStore) -> pl_core::chat::Session {
-        pl_core::chat::Session::new(
-            store,
-            pl_core::chat::TimelineEpoch::new(crate::studio::new_id("test-timeline"))
-                .expect("generated epoch is nonempty"),
-        )
-    }
-
-    /// Test callers explicitly publish completions; execution-only fixture commits stay separate.
-    async fn persist_completed(
-        store: &HistoryStore,
-        sequence: u64,
-        items: &[ThreadItem],
-    ) -> Result<Vec<std::sync::Arc<ChatItem>>> {
-        let database_id = store.writer().await?.database_id.clone();
-        let session = test_session(store.clone());
-        let drafts = items
-            .iter()
-            .map(|item| {
-                crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let completions = session
-            .publish_batch(drafts)
-            .await?
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        store
-            .commit_effect(
-                sequence,
-                EffectCommit {
-                    current: &crate::studio::storage::history::test_current(sequence),
-                    items,
-                    completions: &completions,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-            )
-            .await?;
-        Ok(completions)
-    }
-
     #[tokio::test]
     async fn atomic_timeline_commits_with_checkpoint_facts_and_retries_atomically() -> Result<()> {
         use pl_core::thread::{ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot};
         let directory = tempfile::tempdir()?;
         let store =
             HistoryStore::open(&directory.path().join("history.sqlite"), "atomic-effect").await?;
-        let mut item = ThreadItem::completed_user_message(
+        let mut item = ExecutionItem::completed_user_message(
             "input".into(),
             "atomic-effect".into(),
             String::new(),
@@ -4962,13 +4867,14 @@ mod storage_fault_tests {
         };
         let rollback = std::collections::BTreeSet::new();
         fn commit<'a>(
-            items: &'a [ThreadItem],
+            items: &'a [ExecutionItem],
             completions: &'a [std::sync::Arc<ChatItem>],
             rollback: &'a std::collections::BTreeSet<String>,
             current: &'a conversation::current::PreparedCurrent,
         ) -> EffectCommit<'a> {
             EffectCommit {
-                items,
+                turns: &[],
+                execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
                 completions,
                 current,
                 rolled_back_turns: rollback,
@@ -4981,7 +4887,8 @@ mod storage_fault_tests {
                 attempt: None,
             }
         }
-        // Invalid execution ordinal fails after completion insertion in the same transaction.
+        store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_execution_head BEFORE UPDATE OF applied_write_seq ON history_meta BEGIN SELECT RAISE(ABORT,'injected execution head failure'); END").await?;
+        // Failure after original insertion must roll back the complete transaction.
         assert!(
             store
                 .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
@@ -5002,6 +4909,12 @@ mod storage_fault_tests {
         assert_eq!(store.watermark().await?, 0);
         assert!(store.checkpoint().await?.is_none());
         assert!(store.item(&item.id).await?.is_none());
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("DROP TRIGGER reject_execution_head")
+            .await?;
         item.ordinal = 41;
         // Fail after history, watermark and checkpoint writes: accounting must share their
         // transaction, not leave either completed content or an execution fence behind.
@@ -5293,7 +5206,7 @@ mod storage_fault_tests {
         let path = directory.path().join("history.sqlite");
         let thread = "retire-ordinals";
         let store = HistoryStore::open(&path, thread).await?;
-        let mut item = ThreadItem::completed_user_message(
+        let mut item = ExecutionItem::completed_user_message(
             "input-1".into(),
             thread.into(),
             "".into(),
@@ -5325,7 +5238,8 @@ mod storage_fault_tests {
                 history: EffectCommit {
                     current: &crate::studio::storage::history::test_current(effect.sequence),
                     completions: &[],
-                    items: std::slice::from_ref(&item),
+                    turns: &[],
+                    execution_order: item.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[MessageIdentityWrite {
@@ -5396,6 +5310,9 @@ mod storage_fault_tests {
             "the v8 fixture must start before immutable completions were populated"
         );
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
+        store
+            .seed_legacy_items(1, std::slice::from_ref(&item))
+            .await?;
         store.writer().await?.db.execute_unprepared(
             "DELETE FROM seaql_migrations WHERE version IN (
                  'm20261027_000001_history_retire_ordinals',
@@ -5501,6 +5418,13 @@ mod storage_fault_tests {
     /// Capture raw authority bytes, revisions, ordering and receipts, not reserialized DTOs.
     async fn history_facts(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         let mut facts = Vec::new();
+        let current = db
+            .query_one_raw(statement(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='history_items'",
+                vec![],
+            ))
+            .await?
+            .is_none();
         for query in [
             "SELECT json_array(database_id,thread_id,applied_write_seq) AS fact FROM history_meta ORDER BY id",
             "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal",
@@ -5513,7 +5437,20 @@ mod storage_fault_tests {
             "SELECT json_array(purpose,currency,amount) AS fact FROM session_costs ORDER BY purpose,currency",
             "SELECT json_array(call_id,revision,task_payload,delivery_payload,last_write_seq) AS fact FROM history_tool_tasks ORDER BY call_id",
         ] {
-            for row in db.query_all_raw(statement(query, vec![])).await? {
+            if current
+                && (query.contains("FROM history_items") || query.contains("FROM history_turns"))
+            {
+                continue;
+            }
+            let query = if current {
+                query.replace(
+                    "FROM history_fact_receipts ORDER",
+                    "FROM history_fact_receipts WHERE kind<>'legacy_execution_record' ORDER",
+                )
+            } else {
+                query.to_owned()
+            };
+            for row in db.query_all_raw(statement(&query, vec![])).await? {
                 facts.push(row.try_get("", "fact")?);
             }
         }
@@ -5624,7 +5561,7 @@ mod storage_fault_tests {
             // writer has archived these tables and cannot stand in for this old schema.
             let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
             schema::prepare_published17_fixture(&db, thread_id).await?;
-            let mut item = ThreadItem::completed_user_message(
+            let mut item = ExecutionItem::completed_user_message(
                 "preserved-input".into(),
                 thread_id.into(),
                 "preserved-turn".into(),
@@ -5711,7 +5648,7 @@ mod storage_fault_tests {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("history.sqlite");
             let store = HistoryStore::open(&path, "supported-v2").await?;
-            let mut item = ThreadItem::completed_user_message(
+            let mut item = ExecutionItem::completed_user_message(
                 "input-1".into(),
                 "supported-v2".into(),
                 "".into(),
@@ -5721,7 +5658,9 @@ mod storage_fault_tests {
             );
             item.ordinal = 19;
             item.revision = 1;
-            store.commit(1, std::slice::from_ref(&item), &[]).await?;
+            store
+                .commit_legacy_fixture(1, std::slice::from_ref(&item), &[])
+                .await?;
             let db = &store.writer().await?.db;
             discard_empty_demand_fixture(db).await?;
             db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE timeline_records; ALTER TABLE history_input_identities DROP COLUMN request_digest").await?;
@@ -5746,9 +5685,14 @@ mod storage_fault_tests {
             cold.prepare_history_access().await?;
             drop(cold);
             let prepared = HistoryStore::open(&path, "supported-v2").await?;
+            let restored = prepared
+                .execution_seeds([item.id.clone()])
+                .await?
+                .remove(&item.id)
+                .context("restored original")?;
             assert_eq!(
-                prepared.existing_items([item.id.clone()]).await?[&item.id],
-                item
+                (restored.id.as_str(), restored.ordinal, restored.state()),
+                (item.id.as_str(), item.ordinal, item.state())
             );
             assert_eq!(
                 prepared
@@ -5772,15 +5716,15 @@ mod storage_fault_tests {
         let store = HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
         assert_eq!(store.latest_terminal_report_sequence().await?, None);
         let terminal = |id: &str, ordinal: u64| {
-            ThreadItem::new(
-                format!("turn:{id}"),
+            ExecutionItem::new(
+                order::turn_id(id),
                 "child".into(),
                 id.into(),
                 ordinal,
                 1,
                 1,
                 1,
-                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
                     pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
                         Some(1),
                         1,
@@ -5789,164 +5733,31 @@ mod storage_fault_tests {
                 )),
             )
         };
-        store.commit(30, &[terminal("first", 1)], &[]).await?;
-        store
-            .commit(80, &[terminal("second", 2), terminal("third", 3)], &[])
-            .await?;
+        persist_completed(&store, 30, &[terminal("first", 1)]).await?;
+        persist_completed(&store, 80, &[terminal("second", 2), terminal("third", 3)]).await?;
         assert_eq!(store.latest_terminal_report_sequence().await?, Some(80));
-        assert_eq!(store.terminal_report_sequences(30).await?, vec![80, 80]);
+        assert_eq!(store.terminal_report_sequences(30).await?, vec![80]);
         assert!(store.terminal_report_sequences(80).await?.is_empty());
 
-        let first = store.items_for_turn("first").await?;
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].id, "turn:first");
-        let committed = store.items_for_turn("second").await?;
-        assert_eq!(committed.len(), 1);
-        assert_eq!(committed[0].revision, 1);
-        assert!(store.items_for_turn("missing").await?.is_empty());
+        let first = store
+            .execution_item(&order::turn_id("first"))
+            .await?
+            .context("first Turn")?;
+        assert_eq!(first.turn_id, "first");
+        let committed = store
+            .execution_item(&order::turn_id("second"))
+            .await?
+            .context("second Turn")?;
+        assert_eq!(committed.turn_id, "second");
+        assert!(
+            store
+                .execution_item(&order::turn_id("missing"))
+                .await?
+                .is_none()
+        );
         let mut revised = terminal("second", 2);
         revised.revision = 2;
-        assert!(store.commit(90, &[revised], &[]).await.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn turn_first_ordinal_tracks_late_earlier_members_without_revising_facts() -> Result<()> {
-        for bind_queued_input in [false, true] {
-            let directory = tempfile::tempdir()?;
-            let store =
-                HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
-            let message = |id: &str, ordinal: u64, turn_id: &str| {
-                let mut item = ThreadItem::completed_user_message(
-                    id.into(),
-                    "child".into(),
-                    turn_id.into(),
-                    id.into(),
-                    vec![],
-                    1,
-                );
-                item.ordinal = ordinal;
-                item.revision = 1;
-                item
-            };
-            let mut earlier = message("earlier", 1, if bind_queued_input { "" } else { "turn" });
-            let later = message("later", 2, "turn");
-            let turn_state =
-                pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                    Some(1),
-                    1,
-                    pl_protocol::TurnCompletion::Normal,
-                ));
-            let terminal = ThreadItem::new(
-                order::turn_id("turn"),
-                "child".into(),
-                "turn".into(),
-                3,
-                1,
-                1,
-                1,
-                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(turn_state.clone())),
-            );
-            // This low-level commit writes exactly the typed Turn aggregates supplied by its
-            // caller; unlike the production effect owner it does not derive them from items.
-            let aggregate = TimelineTurn {
-                turn: pl_protocol::Turn {
-                    input_id: None,
-                    id: "turn".into(),
-                    thread_id: "child".into(),
-                    revision: 1,
-                    state: turn_state,
-                    updated_at: terminal.updated_at,
-                },
-                last_item_id: terminal.id.clone(),
-                context_disposition: pl_protocol::ThreadContextDisposition::Active,
-            };
-            let mut initial = vec![later.clone(), terminal.clone()];
-            if bind_queued_input {
-                initial.push(earlier.clone());
-            }
-            store
-                .commit(1, &initial, std::slice::from_ref(&aggregate))
-                .await?;
-            let connection = store.reader().await?.context("current history")?;
-            let first = connection
-                .db
-                .query_one_raw(statement(
-                    "SELECT first_ordinal FROM history_turns WHERE turn_id='turn'",
-                    vec![],
-                ))
-                .await?
-                .context("initial Turn aggregate")?;
-            assert_eq!(first.try_get::<i64>("", "first_ordinal")?, 2);
-            if bind_queued_input {
-                earlier.turn_id = "turn".into();
-                earlier.revision += 1;
-            }
-            let before = store.existing_items([earlier.id.clone()]).await?;
-            let mut conflicting_later = later.clone();
-            conflicting_later.ordinal = 4;
-            conflicting_later.revision += 1;
-            let failure = store
-                .commit(
-                    2,
-                    &[earlier.clone(), conflicting_later],
-                    std::slice::from_ref(&aggregate),
-                )
-                .await
-                .unwrap_err();
-            assert!(format!("{failure:#}").contains("history item ordinal changed"));
-            let preserved = connection
-                .db
-                .query_one_raw(statement(
-                    "SELECT first_ordinal FROM history_turns WHERE turn_id='turn'",
-                    vec![],
-                ))
-                .await?
-                .context("rolled-back Turn aggregate")?;
-            assert_eq!(preserved.try_get::<i64>("", "first_ordinal")?, 2);
-            assert_eq!(store.watermark().await?, 1);
-            assert_eq!(store.existing_items([earlier.id.clone()]).await?, before);
-            store
-                .commit(
-                    2,
-                    std::slice::from_ref(&earlier),
-                    std::slice::from_ref(&aggregate),
-                )
-                .await?;
-            let saved_aggregate = connection
-                .db
-                .query_one_raw(statement(
-                    "SELECT first_ordinal,revision,payload FROM history_turns WHERE turn_id='turn'",
-                    vec![],
-                ))
-                .await?
-                .context("updated Turn aggregate")?;
-            assert_eq!(saved_aggregate.try_get::<i64>("", "first_ordinal")?, 1);
-            assert_eq!(saved_aggregate.try_get::<i64>("", "revision")?, 1);
-            assert_eq!(
-                saved_aggregate.try_get::<String>("", "payload")?,
-                serde_json::to_string(&aggregate)?,
-                "derived MIN changes must not revise the business Turn"
-            );
-            assert_eq!(
-                store.items_for_turn("turn").await?,
-                vec![earlier.clone(), later, terminal],
-                "late insertion/binding changes only the derived aggregate, not saved facts"
-            );
-            let mut changed = earlier.clone();
-            changed.ordinal = 4;
-            changed.revision += 1;
-            let failure = store
-                .commit(3, &[changed], std::slice::from_ref(&aggregate))
-                .await
-                .unwrap_err();
-            assert!(failure.to_string().contains("history item ordinal changed"));
-            assert_eq!(store.watermark().await?, 2);
-            assert_eq!(
-                store.existing_items([earlier.id.clone()]).await?[&earlier.id],
-                earlier
-            );
-        }
+        assert!(persist_completed(&store, 90, &[revised]).await.is_err());
         Ok(())
     }
 
@@ -6029,7 +5840,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: std::slice::from_ref(&plan_item),
+                    turns: &[],
+                    execution_order: plan_item.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &identities,
                     messages: &[],
@@ -6051,6 +5863,9 @@ mod storage_fault_tests {
         )
         .await?;
         discard_empty_demand_fixture(&db).await?;
+        store
+            .seed_legacy_items(1, std::slice::from_ref(&plan_item))
+            .await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
              DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=2",
@@ -6101,7 +5916,7 @@ mod storage_fault_tests {
                 .schema_version,
             HISTORY_SCHEMA_VERSION
         );
-        assert!(migrated.existing_items([id]).await?.is_empty());
+        assert!(migrated.execution_seeds([id]).await?.is_empty());
         assert_eq!(migrated.watermark().await?, 1);
         Ok(())
     }
@@ -6118,7 +5933,7 @@ mod storage_fault_tests {
             (5, "other", "unknown"),
         ] {
             let turn_id = format!("turn-{id}");
-            let mut item = ThreadItem::completed_user_message(
+            let mut item = ExecutionItem::completed_user_message(
                 id.into(),
                 "migration".into(),
                 turn_id.clone(),
@@ -6129,7 +5944,7 @@ mod storage_fault_tests {
             item.ordinal = ordinal;
             item.revision = 3;
             items.push(item);
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 crate::studio::thread_projection::order::turn_id(&turn_id),
                 "migration".into(),
                 turn_id,
@@ -6137,7 +5952,7 @@ mod storage_fault_tests {
                 1,
                 7,
                 8,
-                ThreadItemState::Turn(
+                ExecutionShape::Turn(
                     pl_protocol::ThreadTurnItem::new(pl_protocol::TurnState::Completed(
                         pl_protocol::CompletedTurnState::new(
                             Some(1),
@@ -6155,7 +5970,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(10),
                     completions: &[],
-                    items: &items,
+                    turns: &[],
+                    execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -6193,6 +6009,7 @@ mod storage_fault_tests {
         )
         .await?;
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
+        store.seed_legacy_items(10, &items).await?;
         store
             .writer()
             .await?
@@ -6204,16 +6021,29 @@ mod storage_fault_tests {
         drop(store);
         let migrated = HistoryStore::open(&path, "migration").await?;
         // Ordinary cold reads reject unprepared formats instead of interpreting legacy rows.
-        assert!(migrated.existing_items(["pending".into()]).await.is_err());
+        assert!(
+            migrated
+                .legacy_fixture_seeds(["pending".into()])
+                .await
+                .is_err()
+        );
         migrated.prepare_activation().await?;
         let saved = migrated
-            .existing_items(items.iter().map(|item| item.id.clone()))
+            .legacy_fixture_seeds(
+                items
+                    .iter()
+                    .filter(|item| !matches!(item.state(), ExecutionShape::Turn(_)))
+                    .map(|item| item.id.clone()),
+            )
             .await?;
         let mut expected = items[0].clone();
         expected.turn_id.clear();
         expected.revision += 1;
         assert_eq!(saved["pending"], expected);
-        for item in &items[1..] {
+        for item in items[1..]
+            .iter()
+            .filter(|item| !matches!(item.state(), ExecutionShape::Turn(_)))
+        {
             assert_eq!(&saved[&item.id], item);
         }
         assert_eq!(migrated.watermark().await?, 10);
@@ -6223,17 +6053,17 @@ mod storage_fault_tests {
             .context("migrated connection")?
             .db
             .query_one_raw(statement(
-                "SELECT first_ordinal FROM history_turns WHERE turn_id=?",
+                "SELECT turn_order FROM history_turns WHERE turn_id=?",
                 vec!["turn-pending".into()],
             ))
             .await?
             .context("migrated Turn")?
-            .try_get::<i64>("", "first_ordinal")?;
+            .try_get::<i64>("", "turn_order")?;
         assert_eq!(first, 2);
         assert!(migrated.input_identity("consumed").await?.is_some());
         migrated.prepare_activation().await?;
         assert_eq!(
-            migrated.existing_items(["pending".into()]).await?["pending"],
+            migrated.legacy_fixture_seeds(["pending".into()]).await?["pending"],
             expected
         );
         Ok(())
@@ -6244,7 +6074,7 @@ mod storage_fault_tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = HistoryStore::open(&path, "local-orders").await?;
-        let mut item = ThreadItem::completed_user_message(
+        let mut item = ExecutionItem::completed_user_message(
             "input-1".to_owned(),
             "local-orders".to_owned(),
             "turn-1".to_owned(),
@@ -6295,7 +6125,7 @@ mod storage_fault_tests {
             .await?
             .context("missing schema query")?;
         assert_eq!(row.try_get::<i64>("", "count")?, 0);
-        let mut missing_order = ThreadItem::completed_user_message(
+        let mut missing_order = ExecutionItem::completed_user_message(
             "missing-order".to_owned(),
             "local-orders".to_owned(),
             "turn-1".to_owned(),
@@ -6304,12 +6134,23 @@ mod storage_fault_tests {
             2,
         );
         missing_order.revision = 2;
-        assert!(store.commit(2, &[missing_order], &[]).await.is_err());
+        assert!(
+            persist_completed(&store, 2, &[missing_order])
+                .await
+                .is_err()
+        );
         assert_eq!(store.watermark().await?, 1);
-        let mut changed_order = store.item("input-1").await?.context("committed input")?;
+        let mut changed_order = store
+            .execution_item("input-1")
+            .await?
+            .context("committed input")?;
         changed_order.ordinal = 42;
         changed_order.revision = 2;
-        assert!(store.commit(2, &[changed_order], &[]).await.is_err());
+        assert!(
+            persist_completed(&store, 2, &[changed_order])
+                .await
+                .is_err()
+        );
         assert_eq!(store.watermark().await?, 1);
         second.id = "input-3".into();
         assert_eq!(
@@ -6354,7 +6195,7 @@ mod storage_fault_tests {
         let store = HistoryStore::open(&path, "paged-thread").await?;
         let items = (0..120)
             .map(|index| {
-                let mut item = ThreadItem::completed_user_message(
+                let mut item = ExecutionItem::completed_user_message(
                     format!("message-{index}"),
                     "paged-thread".into(),
                     "turn-1".into(),
@@ -6425,7 +6266,7 @@ mod storage_fault_tests {
         assert_eq!(older.items.last().unwrap().header.item_id, "message-87");
         assert!(older.before.is_some());
         let resumed = test_session(HistoryStore::open(&path, "paged-thread").await?);
-        let mut committed = ThreadItem::completed_user_message(
+        let mut committed = ExecutionItem::completed_user_message(
             "message-120".into(),
             "paged-thread".into(),
             "turn-1".into(),
@@ -6482,7 +6323,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(sequence),
                     completions: &[],
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -6544,7 +6386,7 @@ mod storage_fault_tests {
         let store = HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
         let budget = 64 * 1024;
         for sequence in 1..=5 {
-            let terminal = ThreadItem::new(
+            let terminal = ExecutionItem::new(
                 format!("turn:{sequence}"),
                 "child".into(),
                 sequence.to_string(),
@@ -6552,7 +6394,7 @@ mod storage_fault_tests {
                 1,
                 1,
                 1,
-                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
                     pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
                         Some(1),
                         1,
@@ -6592,7 +6434,11 @@ mod storage_fault_tests {
                     EffectCommit {
                         current: &test_current(sequence),
                         completions: &[],
-                        items: &[terminal],
+                        turns: &crate::studio::storage::history::test_turns(
+                            sequence,
+                            std::slice::from_ref(&terminal),
+                        ),
+                        execution_order: terminal.ordinal,
                         rolled_back_turns: &Default::default(),
                         identities: &[],
                         messages: &[],
@@ -6663,7 +6509,7 @@ mod storage_fault_tests {
             sequence: u64,
             message: &ThreadMessage,
         ) -> Result<()> {
-            let terminal = ThreadItem::new(
+            let terminal = ExecutionItem::new(
                 "turn:original".into(),
                 "child-报告".into(),
                 "original".into(),
@@ -6671,7 +6517,7 @@ mod storage_fault_tests {
                 1,
                 1,
                 1,
-                ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
                     pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
                         Some(1),
                         1,
@@ -6691,7 +6537,11 @@ mod storage_fault_tests {
                     EffectCommit {
                         current: &crate::studio::storage::history::test_current(sequence),
                         completions: &[],
-                        items: &[terminal],
+                        turns: &crate::studio::storage::history::test_turns(
+                            sequence,
+                            std::slice::from_ref(&terminal),
+                        ),
+                        execution_order: terminal.ordinal,
                         rolled_back_turns: &Default::default(),
                         identities: &[],
                         messages: &[],
@@ -6775,7 +6625,8 @@ mod storage_fault_tests {
                     EffectCommit {
                         current: &crate::studio::storage::history::test_current(sequence),
                         completions: &[],
-                        items: &[],
+                        turns: &[],
+                        execution_order: 0,
                         rolled_back_turns: &Default::default(),
                         identities: &[],
                         messages: &[],
@@ -6937,7 +6788,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     rolled_back_turns: &empty,
                     identities: &[],
                     messages: &[],
@@ -6966,7 +6818,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(2),
                     completions: &[],
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     rolled_back_turns: &empty,
                     identities: &[],
                     messages: &[],
@@ -7028,7 +6881,8 @@ mod storage_fault_tests {
             EffectCommit {
                 current,
                 completions: &[],
-                items: &[],
+                turns: &[],
+                execution_order: 0,
                 rolled_back_turns: empty,
                 identities: &[],
                 messages: &[],
@@ -7271,7 +7125,7 @@ mod storage_fault_tests {
         assert_eq!(
             after - before,
             137 * 4,
-            "each append only changes one context row, checkpoint, route head, and watermark; current is not persisted"
+            "each append only changes one context row, checkpoint, route head and combined watermark; current is not persisted"
         );
         let database_bytes = tokio::fs::metadata(directory.path().join("history.sqlite"))
             .await?
@@ -7328,7 +7182,7 @@ mod storage_fault_tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = HistoryStore::open(&path, "context-migration").await?;
-        let mut item = ThreadItem::completed_user_message(
+        let mut item = ExecutionItem::completed_user_message(
             "original-user".into(),
             "context-migration".into(),
             "original-turn".into(),
@@ -7344,7 +7198,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: &[item.clone()],
+                    turns: &[],
+                    execution_order: item.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -7470,6 +7325,9 @@ mod storage_fault_tests {
         ))
         .await?;
         discard_empty_demand_fixture(db).await?;
+        store
+            .seed_legacy_items(1, std::slice::from_ref(&item))
+            .await?;
         db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; DROP TABLE timeline_records; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
         drop(store);
         let failed = HistoryStore::open(&path, "context-migration").await?;
@@ -7537,9 +7395,14 @@ mod storage_fault_tests {
             state.last_attempt_usage
         );
         assert!(checkpoint.state.last_attempt_usage_origin.is_none());
+        let original = restored
+            .execution_seeds([item.id.clone()])
+            .await?
+            .remove(&item.id)
+            .context("restored source")?;
         assert_eq!(
-            restored.existing_items([item.id.clone()]).await?[&item.id],
-            item
+            (original.id.as_str(), original.ordinal, original.state()),
+            (item.id.as_str(), item.ordinal, item.state())
         );
         assert_eq!(restored.watermark().await?, 1);
         Ok(())
@@ -8128,8 +7991,8 @@ mod storage_fault_tests {
     }
 
     /// 一条已经提交过、但还没有问答投影的工具条目（旧历史的样子）。
-    fn question_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ThreadItem {
-        ThreadItem::new(
+    fn question_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ExecutionItem {
+        ExecutionItem::new(
             order::tool_id(call_id),
             thread_id.into(),
             "turn-qa".into(),
@@ -8137,7 +8000,7 @@ mod storage_fault_tests {
             3,
             111,
             222,
-            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                 pl_protocol::ThreadToolInvocation::new(
                     call_id.into(),
                     "request_user_input".into(),
@@ -8195,8 +8058,8 @@ mod storage_fault_tests {
     }
 
     /// `plan_submit` 的工具条目：调用已发起计划确认，旧历史里还没有 typed 计划回执。
-    fn plan_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ThreadItem {
-        ThreadItem::new(
+    fn plan_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ExecutionItem {
+        ExecutionItem::new(
             order::tool_id(call_id),
             thread_id.into(),
             "turn-plan".into(),
@@ -8204,7 +8067,7 @@ mod storage_fault_tests {
             3,
             111,
             222,
-            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                 pl_protocol::ThreadToolInvocation::new(
                     call_id.into(),
                     "plan_submit".into(),
@@ -8438,7 +8301,7 @@ mod storage_fault_tests {
         // live 投影只剩放置元数据占位（真实正文已被回收）时同样报告 identity，绝不静默丢弃权威问答。
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
         placeholder =
-            placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+            placeholder.with_state(ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
                 vec![],
                 "This item's body is no longer resident in the live preview cache.",
                 111,
@@ -8570,7 +8433,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: std::slice::from_ref(&saved),
+                    turns: &[],
+                    execution_order: saved.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -8585,6 +8449,9 @@ mod storage_fault_tests {
         // 旧库：条目里没有问答投影，schema 停在补齐之前。
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
+            .seed_legacy_items(1, std::slice::from_ref(&saved))
+            .await?;
+        store
             .writer()
             .await?
             .db
@@ -8596,7 +8463,7 @@ mod storage_fault_tests {
 
         let migrated = HistoryStore::open(&path, thread_id).await?;
         migrated.prepare_activation().await?;
-        let items = migrated.existing_items([saved.id.clone()]).await?;
+        let items = migrated.legacy_fixture_seeds([saved.id.clone()]).await?;
         let item = items.get(&saved.id).context("migrated tool item")?;
         assert_eq!(item.ordinal, 4);
         assert_eq!(item.created_at, 111);
@@ -8628,7 +8495,7 @@ mod storage_fault_tests {
         // 二次打开不再改变内容，也不会丢答案或重复推进版本。
         let reopened = HistoryStore::open(&path, thread_id).await?;
         reopened.prepare_activation().await?;
-        let again = reopened.existing_items([saved.id.clone()]).await?;
+        let again = reopened.legacy_fixture_seeds([saved.id.clone()]).await?;
         let item = again.get(&saved.id).context("reopened tool item")?;
         assert_eq!(item.revision, migrated_revision);
         assert_eq!(
@@ -8645,10 +8512,8 @@ mod storage_fault_tests {
     /// 若迁移自己推进了 revision，紧接着的内容变化就会撞上同一 revision 的不同载荷（history item
     /// revision conflict），或把真实内容版本挤到迁移伪造的版本域之下而被静默丢弃。
     #[tokio::test]
-    async fn migrated_qa_keeps_the_content_version_and_accepts_the_next_commit() -> Result<()> {
+    async fn migrated_qa_keeps_original_evidence_while_business_receipts_advance() -> Result<()> {
         use pl_core::thread::interactions::InteractionState;
-        use pl_protocol::{SucceededThreadTool, ThreadToolOutput, ThreadToolState};
-
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let thread_id = "qa-version";
@@ -8672,7 +8537,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: std::slice::from_ref(&saved),
+                    turns: &[],
+                    execution_order: saved.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -8686,6 +8552,9 @@ mod storage_fault_tests {
             .await?;
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
+            .seed_legacy_items(1, std::slice::from_ref(&saved))
+            .await?;
+        store
             .writer()
             .await?
             .db
@@ -8698,7 +8567,7 @@ mod storage_fault_tests {
         let migrated = HistoryStore::open(&path, thread_id).await?;
         migrated.prepare_activation().await?;
         let item = migrated
-            .existing_items([saved.id.clone()])
+            .legacy_fixture_seeds([saved.id.clone()])
             .await?
             .remove(&saved.id)
             .context("migrated tool item")?;
@@ -8716,37 +8585,25 @@ mod storage_fault_tests {
             .context("migrated Q&A")?;
         assert_eq!(user_input.answers()[0].answers(), ["anthropic\nline two"]);
 
-        // 正常的下一次内容提交：同一身份在原版本上推进一次（结果交付），必须落库成功。
-        let mut delivered = item.clone();
-        delivered.revision = 4;
-        delivered.updated_at = 700;
-        let tool = item.tool().context("tool item")?.clone();
-        delivered = delivered.with_state(ThreadItemState::Tool(
-            pl_protocol::ThreadToolItem::new(
-                tool.invocation().clone(),
-                ThreadToolState::Succeeded(SucceededThreadTool::new(
-                    700,
-                    ThreadToolOutput::new(
-                        "waiting for the user's response.".into(),
-                        vec![],
-                        vec![],
-                        None,
-                    ),
-                )),
-            )
-            .with_user_input(Some(user_input.clone())),
-        ));
+        let mut next = answered.clone();
+        next.revision += 1;
         migrated
             .commit_effect(
                 2,
                 EffectCommit {
-                    current: &crate::studio::storage::history::test_current(2),
+                    current: &test_current(2),
+                    turns: &[],
+                    execution_order: 0,
                     completions: &[],
-                    items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
-                    receipts: &[],
+                    receipts: &[FactReceiptWrite {
+                        item_id: order::receipt_id("interaction", &next.request.id),
+                        revision: next.revision,
+                        kind: "interaction",
+                        payload: serde_json::to_string(&next)?,
+                    }],
                     tasks: &[],
                     deliveries: &[],
                     delivery_repairs: &[],
@@ -8754,18 +8611,21 @@ mod storage_fault_tests {
                 },
             )
             .await?;
-        let reread = migrated
-            .existing_items([item.id.clone()])
+        let unchanged = migrated.legacy_fixture_seeds([saved.id.clone()]).await?;
+        assert_eq!(
+            unchanged[&saved.id], item,
+            "archived originals cannot be rewritten by later business effects"
+        );
+        let receipt = migrated
+            .latest_fact_receipt(&order::receipt_id("interaction", &next.request.id))
             .await?
-            .remove(&item.id)
-            .context("re-read tool item")?;
-        assert_eq!(reread.revision, 4);
-        let answers = reread
-            .tool()
-            .and_then(|tool| tool.user_input())
-            .context("kept Q&A after the next commit")?
-            .answers();
-        assert_eq!(answers[0].answers(), ["anthropic\nline two"]);
+            .context("next receipt")?;
+        assert_eq!(
+            serde_json::from_str::<pl_core::thread::interactions::InteractionRecord>(
+                &receipt.payload
+            )?,
+            next
+        );
         Ok(())
     }
 
@@ -8794,7 +8654,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: std::slice::from_ref(&saved),
+                    turns: &[],
+                    execution_order: saved.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -8808,6 +8669,9 @@ mod storage_fault_tests {
             .await?;
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
+            .seed_legacy_items(1, std::slice::from_ref(&saved))
+            .await?;
+        store
             .writer()
             .await?
             .db
@@ -8819,7 +8683,7 @@ mod storage_fault_tests {
 
         let migrated = HistoryStore::open(&path, thread_id).await?;
         migrated.prepare_activation().await?;
-        let items = migrated.existing_items([saved.id.clone()]).await?;
+        let items = migrated.legacy_fixture_seeds([saved.id.clone()]).await?;
         let user_input = items
             .get(&saved.id)
             .and_then(|item| item.tool())
@@ -8839,7 +8703,6 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn legacy_v7_history_gains_the_plan_decisions_in_place() -> Result<()> {
         use pl_core::thread::interactions::InteractionState;
-        use pl_protocol::{SucceededThreadTool, ThreadToolOutput, ThreadToolState};
 
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
@@ -8887,7 +8750,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: &[approved_item.clone(), cancelled_item.clone()],
+                    turns: &[],
+                    execution_order: approved_item.ordinal.max(cancelled_item.ordinal),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -8902,6 +8766,9 @@ mod storage_fault_tests {
         // 旧库：schema 停在计划历史补齐之前，条目里没有 typed 计划回执。
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
         store
+            .seed_legacy_items(1, &[approved_item.clone(), cancelled_item.clone()])
+            .await?;
+        store
             .writer()
             .await?
             .db
@@ -8914,7 +8781,7 @@ mod storage_fault_tests {
         let migrated = HistoryStore::open(&path, thread_id).await?;
         migrated.prepare_activation().await?;
         let items = migrated
-            .existing_items([approved_item.id.clone(), cancelled_item.id.clone()])
+            .legacy_fixture_seeds([approved_item.id.clone(), cancelled_item.id.clone()])
             .await?;
         let approved = items.get(&approved_item.id).context("approved Plan item")?;
         assert_eq!(approved.ordinal, 3);
@@ -8964,33 +8831,15 @@ mod storage_fault_tests {
             .context("Plan interaction receipt")?;
         assert!(receipt.payload.contains("Approve"));
 
-        // 正常的下一次内容提交（真正的工具结果交付）继续在迁移后的版本域上推进一次。
-        let tool = approved.tool().context("tool item")?.clone();
-        let mut delivered = approved.clone();
-        delivered.revision = approved.revision.checked_add(1).context("revision")?;
-        delivered.updated_at = 700;
-        delivered = delivered.with_state(ThreadItemState::Tool(
-            pl_protocol::ThreadToolItem::new(
-                tool.invocation().clone(),
-                ThreadToolState::Succeeded(SucceededThreadTool::new(
-                    700,
-                    ThreadToolOutput::new(
-                        "waiting for the user's response.".into(),
-                        vec![],
-                        vec![],
-                        None,
-                    ),
-                )),
-            )
-            .with_user_input(tool.user_input().cloned()),
-        ));
+        // 后续业务写入不会修改旧原件或将旧可变版本重新引入正常 writer。
         migrated
             .commit_effect(
                 2,
                 EffectCommit {
-                    current: &crate::studio::storage::history::test_current(2),
+                    current: &test_current(2),
+                    turns: &[],
+                    execution_order: 0,
                     completions: &[],
-                    items: std::slice::from_ref(&delivered),
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -9002,26 +8851,19 @@ mod storage_fault_tests {
                 },
             )
             .await?;
-        let reread = migrated
-            .existing_items([approved_item.id.clone()])
-            .await?
-            .remove(&approved_item.id)
-            .context("committed Plan item")?;
-        assert_eq!(reread.revision, delivered.revision);
-        assert_eq!(
-            reread
-                .tool()
-                .and_then(|tool| tool.user_input())
-                .map(|input| input.answers()[0].answers().to_vec()),
-            Some(vec!["Approve".to_string()])
-        );
-        let migrated_revision = reread.revision;
+        let unchanged = migrated
+            .legacy_fixture_seeds([approved_item.id.clone()])
+            .await?;
+        assert_eq!(unchanged[&approved_item.id], *approved);
+        let migrated_revision = approved.revision;
         drop(migrated);
 
         // 二次打开不再改变内容：幂等重开保留身份、顺序与版本。
         let reopened = HistoryStore::open(&path, thread_id).await?;
         reopened.prepare_activation().await?;
-        let again = reopened.existing_items([approved_item.id.clone()]).await?;
+        let again = reopened
+            .legacy_fixture_seeds([approved_item.id.clone()])
+            .await?;
         let item = again.get(&approved_item.id).context("reopened Plan item")?;
         assert_eq!(item.revision, migrated_revision);
         assert_eq!(item.ordinal, 3);
@@ -9065,7 +8907,8 @@ mod storage_fault_tests {
                 EffectCommit {
                     current: &crate::studio::storage::history::test_current(1),
                     completions: &[],
-                    items: std::slice::from_ref(&saved),
+                    turns: &[],
+                    execution_order: saved.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -9078,6 +8921,9 @@ mod storage_fault_tests {
             )
             .await?;
         discard_empty_demand_fixture(&store.writer().await?.db).await?;
+        store
+            .seed_legacy_items(1, std::slice::from_ref(&saved))
+            .await?;
         store
             .writer()
             .await?
@@ -9102,7 +8948,8 @@ mod storage_fault_tests {
             ))
             .await?
             .context("pre-migration item")?;
-        let unchanged: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        let unchanged: ExecutionItem =
+            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
         assert!(
             unchanged
                 .tool()
@@ -9129,7 +8976,7 @@ mod storage_fault_tests {
         let restored = HistoryStore::open(&path, thread_id).await?;
         restored.prepare_activation().await?;
         let migrated = restored
-            .existing_items([saved.id.clone()])
+            .legacy_fixture_seeds([saved.id.clone()])
             .await?
             .remove(&saved.id)
             .context("migrated Plan item")?;
@@ -9271,7 +9118,8 @@ mod storage_fault_tests {
                     EffectCommit {
                         current: &crate::studio::storage::history::test_current(1),
                         completions: &[],
-                        items: std::slice::from_ref(&saved),
+                        turns: &[],
+                        execution_order: saved.ordinal,
                         rolled_back_turns: &Default::default(),
                         identities: &[],
                         messages: &[],
@@ -9284,6 +9132,9 @@ mod storage_fault_tests {
                 )
                 .await?;
             discard_empty_demand_fixture(&store.writer().await?.db).await?;
+            store
+                .seed_legacy_items(1, std::slice::from_ref(&saved))
+                .await?;
             store
                 .writer()
                 .await?
@@ -9303,7 +9154,7 @@ mod storage_fault_tests {
                 "the diagnostic must not leak a private answer: {diagnostic}"
             );
             // 显式失败：条目仍是迁移前的样子，没有被伪造成已回答。
-            assert!(reopened.existing_items([saved.id.clone()]).await.is_err());
+            assert!(reopened.execution_seeds([saved.id.clone()]).await.is_err());
             let inspect = connect_read_only(&path).await?;
             let row = inspect
                 .query_one_raw(statement(
@@ -9312,7 +9163,7 @@ mod storage_fault_tests {
                 ))
                 .await?
                 .context("preserved Q&A item")?;
-            let unchanged: ThreadItem =
+            let unchanged: ExecutionItem =
                 serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
             assert!(
                 unchanged
@@ -9361,10 +9212,10 @@ mod storage_fault_tests {
 
         // A resolved interaction alone does not complete its running tool execution. Freeze this
         // fixture only after an explicit terminal tool result, as the production seal requires.
-        let ThreadItemState::Tool(tool) = item.state() else {
+        let ExecutionShape::Tool(tool) = item.state() else {
             anyhow::bail!("question fixture is not a tool");
         };
-        item = item.clone().with_state(ThreadItemState::Tool(
+        item = item.clone().with_state(ExecutionShape::Tool(
             pl_protocol::ThreadToolItem::new(
                 tool.invocation().clone(),
                 pl_protocol::ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
@@ -9423,7 +9274,14 @@ mod storage_fault_tests {
         .await?;
         assert_eq!(window.bytes.as_bytes(), long_answer.as_bytes());
         assert!(window.sealed);
-        assert_eq!(store.item(&item.id).await?, Some(item.clone()));
+        let restored = store
+            .execution_item(&item.id)
+            .await?
+            .context("restored original")?;
+        assert_eq!(
+            (restored.id.as_str(), restored.ordinal, restored.state()),
+            (item.id.as_str(), item.ordinal, item.state())
+        );
         let mut changed = complete.clone();
         changed.payload = std::sync::Arc::from(b"{\"changed\":true}".as_slice());
         changed.header.byte_length = changed.payload.len() as u64;

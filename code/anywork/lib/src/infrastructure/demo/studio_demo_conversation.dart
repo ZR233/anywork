@@ -77,7 +77,6 @@ enum _DemoPlanDecisionKind { approved, revisionRequested }
 
 typedef _DemoContent = ({
   _DemoContentKind kind,
-  MainPresentation mainPresentation,
   bool? contentPresent,
   ThreadTextChannel? textChannel,
   Map<String, Object?>? descriptor,
@@ -132,7 +131,6 @@ _DemoContent _demoText({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.text,
-    mainPresentation: MainPresentation.single,
     contentPresent: text.isNotEmpty || attachments.isNotEmpty,
     textChannel: channel,
     descriptor: outcome == null
@@ -169,7 +167,6 @@ _DemoContent _demoThinking({
   final outcome = _demoOutcome(lifecycle);
   return (
     kind: _DemoContentKind.thinking,
-    mainPresentation: MainPresentation.foregroundWork,
     contentPresent: null,
     textChannel: null,
     descriptor: outcome == null
@@ -201,7 +198,6 @@ _DemoContent _demoTool({
   String? result,
 }) => (
   kind: _DemoContentKind.tool,
-  mainPresentation: MainPresentation.foregroundWork,
   contentPresent: null,
   textChannel: null,
   descriptor: outcome == null
@@ -290,7 +286,6 @@ _DemoContent _demoTurn(StudioTurnState state, {String? inputId}) {
   }
   return (
     kind: _DemoContentKind.completed,
-    mainPresentation: MainPresentation.single,
     contentPresent: null,
     textChannel: null,
     descriptor: {
@@ -316,7 +311,6 @@ _DemoItem _demoPlanCompletion(
   updatedAt: completedAt,
   content: (
     kind: _DemoContentKind.completed,
-    mainPresentation: MainPresentation.single,
     contentPresent: null,
     textChannel: null,
     descriptor: {
@@ -409,12 +403,16 @@ void _demoDemand(ReadDemand d) {
   }
 }
 
-String _demoScopeKey(ChatScope scope) => switch (scope) {
-  MainChatScope() => 'main',
-  RunChatScope(:final reference) =>
-    'run:${reference.databaseId}:${reference.indexVersion}:${reference.startSeq}',
-  ChildrenChatScope(:final parentId) => 'children:$parentId',
-};
+String _demoScopeKey(ChatScope scope) => jsonEncode({
+  'queryClass': switch (scope.queryClass) {
+    ExactChatClass(:final value) => value,
+    AllChatClasses() => null,
+  },
+  'parentId': scope.parentId,
+});
+String? _demoTurnParent(String? turnId) =>
+    turnId == null ? null : '4:turn$turnId';
+bool _demoHasActivity(ChatScope scope) => scope.parentId == null;
 ChatAtom _demoCopy(
   ChatAtom atom, {
   PayloadData? payload,
@@ -534,7 +532,7 @@ final class _DemoFrozen {
   const _DemoFrozen(this.message, this.order, this.scope);
   final ChatAtom message;
   final int order;
-  final String scope;
+  final ChatScope scope;
 }
 
 final class _DemoHistory {
@@ -551,9 +549,7 @@ final class _DemoHistory {
   int displayLastOrder = 0;
   int displayReadyFrontier = 0;
   int get displayHead => displayReadyFrontier;
-  // Original completion consumers retain their own ordered envelopes and Run
-  // fixtures. GUI display positions and grouping are declared separately above.
-  final List<CompletedEntry> displayItems = [];
+  // 原件按真实业务过滤；展示分组仅由 displayBlocks 持有。
   final Map<String, CompletedEntry> completed = {};
   final String epoch = newStudioCorrelationId();
   final Map<String, ChatAtom> activeAtoms = {};
@@ -567,18 +563,11 @@ final class _DemoHistory {
       CompletedEntry(
         recordId: atom.completionItemId ?? atom.id,
         completionSeq: atom.completionSeq!,
-        run:
-            completed[atom.completionItemId ?? atom.id]?.run ??
-            CompletionRunPosition(startSeq: atom.completionSeq!, ordinal: 1),
-        mainPresentation:
-            completed[atom.completionItemId ?? atom.id]?.mainPresentation ??
-            MainPresentation.single,
         atom: atom,
       ),
   ];
   final List<_DemoFrozen> items = [];
   final Map<String, _DemoFrozen> byId = {};
-  final Map<String, List<_DemoFrozen>> _indices = {};
   final Map<String, Map<String, _DemoBody>> bodies = {};
   final Map<String, _DemoBody> payloads = {};
   final Map<(String, String, String), _DemoBody> currentBodies = {};
@@ -632,35 +621,32 @@ final class _DemoHistory {
     }
   }
 
-  List<_DemoFrozen> index(ChatScope scope) =>
-      _indices[_demoScopeKey(scope)] ?? const [];
+  Iterable<_DemoFrozen> index(ChatScope scope) => items.where(
+    (record) =>
+        (scope.queryClass is AllChatClasses ||
+            (record.scope.queryClass as ExactChatClass).value ==
+                (scope.queryClass as ExactChatClass).value) &&
+        (scope.parentId == null || record.scope.parentId == scope.parentId),
+  );
   void validateScope(ChatScope scope) {
-    if (scope case RunChatScope(:final reference)) {
-      if (reference.databaseId != epoch || reference.indexVersion != 1) {
-        throw _demoStale();
-      }
-      if (!completed.values.any(
-        (entry) => entry.run?.startSeq == reference.startSeq,
-      )) {
-        throw _demoMissing();
-      }
+    if (scope.queryClass case ExactChatClass(:final value)) {
+      if (value.isEmpty) throw _demoQueryFailure('Empty record class');
     }
   }
 
-  // Script fixtures explicitly choose their class and singleton Run. Demo does
-  // not implement Native's grouping/classification algorithm.
   CompletedEntry displayFixture(_DemoItem fixture, ChatAtom atom) =>
       CompletedEntry(
         recordId: atom.completionItemId!,
         completionSeq: atom.completionSeq!,
-        run: CompletionRunPosition(startSeq: atom.completionSeq!, ordinal: 1),
-        mainPresentation: fixture.content.mainPresentation,
         atom: atom,
       );
 
   bool accept(ChatAtom message, ChatScope scope) {
     validateScope(scope);
     if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
+    if (scope.queryClass is! ExactChatClass) {
+      throw _demoQueryFailure('Producer must declare the record class');
+    }
     final key = _demoScopeKey(scope);
     final old = byId[message.id];
     message = _demoCopy(
@@ -669,7 +655,7 @@ final class _DemoHistory {
       frozen: true,
     );
     if (old != null) {
-      if (old.scope != key ||
+      if (_demoScopeKey(old.scope) != key ||
           jsonEncode(chatAtomToJson(old.message)) !=
               jsonEncode(chatAtomToJson(message))) {
         throw const StudioFailure(
@@ -681,7 +667,7 @@ final class _DemoHistory {
       }
       return false;
     }
-    final record = _DemoFrozen(message, head + 1, key);
+    final record = _DemoFrozen(message, head + 1, scope);
     if (message.payload case InlinePayload(:final bytes)) {
       payloads[message.completionItemId ?? message.id] = _DemoBody()
         ..append(bytes)
@@ -689,19 +675,26 @@ final class _DemoHistory {
     }
     items.add(record);
     byId[message.id] = record;
-    (_indices[key] ??= []).add(record);
     return true;
   }
 
   bool acceptDisplay(CompletedEntry entry) {
-    if (completed.containsKey(entry.recordId) ||
-        entry.completionSeq <= (displayItems.lastOrNull?.completionSeq ?? 0)) {
+    if (completed.containsKey(entry.recordId) || entry.completionSeq <= head) {
       throw _demoQueryFailure('Duplicate or unordered completion fixture');
     }
     completed[entry.recordId] = entry;
     final atom = entry.atom;
     if (!byId.containsKey(atom.id)) {
-      final record = _DemoFrozen(atom, entry.completionSeq, 'main');
+      final record = _DemoFrozen(
+        atom,
+        entry.completionSeq,
+        ChatScope(
+          queryClass: ExactChatClass(
+            atom.kind == ChatAtomKind.inference ? 'execution' : 'conversation',
+          ),
+          parentId: _demoTurnParent(atom.turnId),
+        ),
+      );
       items.add(record);
       byId[atom.id] = record;
     }
@@ -709,9 +702,6 @@ final class _DemoHistory {
       payloads[entry.recordId] = _DemoBody()
         ..append(bytes)
         ..sealed = true;
-    }
-    if (entry.mainPresentation != MainPresentation.hidden) {
-      displayItems.add(entry);
     }
     return true;
   }
@@ -881,12 +871,13 @@ final class _DemoHistory {
         ),
       ),
     );
-    final memberScope = ChildrenChatScope(parentId: item.turnId ?? item.id);
+    final memberScope = ChatScope.conversation(
+      parentId: _demoTurnParent(item.turnId),
+    );
     if (!accept(message, memberScope)) return;
     final display = displayFixture(item, message);
     completed[display.recordId] = display;
     updateDisplayMember(item.id);
-    if (message.contentPresent != false) displayItems.add(display);
     final ended = <ChatSourceId>[
       if (active.source is! ForegroundTurnChatSource) active.source,
       if (type == 'turn' && item.turnId != null)
@@ -978,36 +969,14 @@ final class _DemoReader implements ConversationReader {
     );
   }
 
-  CompletedEntry fitEntry(
-    CompletedEntry entry,
-    int budget, {
-    bool main = false,
-  }) {
-    final atom = fit(
-      entry.atom,
-      main && entry.mainPresentation != MainPresentation.single ? 0 : budget,
-    );
-    return CompletedEntry(
-      recordId: entry.recordId,
-      completionSeq: entry.completionSeq,
-      run: entry.run,
-      mainPresentation: entry.mainPresentation,
-      atom: atom,
-    );
-  }
+  CompletedEntry fitEntry(CompletedEntry entry, int budget) => CompletedEntry(
+    recordId: entry.recordId,
+    completionSeq: entry.completionSeq,
+    atom: fit(entry.atom, budget),
+  );
 
-  List<CompletedEntry> source() {
-    if (scope is MainChatScope) return _history.displayItems;
-    if (scope case RunChatScope(:final reference)) {
-      return [
-        for (final entry in _history.completed.values)
-          if (entry.run?.startSeq == reference.startSeq) entry,
-      ];
-    }
-    return _history.entries(
-      _history.index(scope).map((record) => record.message),
-    );
-  }
+  List<CompletedEntry> source() =>
+      _history.entries(_history.index(scope).map((record) => record.message));
 
   ChatBatch page(ReadDemand demand, {String? before}) {
     _history.validateScope(scope);
@@ -1019,10 +988,8 @@ final class _DemoReader implements ConversationReader {
     for (var i = records.length - 1; i >= 0; i--) {
       final entry = records[i];
       if (entry.completionSeq >= end) continue;
-      final candidate = fitEntry(entry, 0, main: scope is MainChatScope);
-      final token = i == 0
-          ? null
-          : cursor('history', h0, entry.run?.startSeq ?? entry.completionSeq);
+      final candidate = fitEntry(entry, 0);
+      final token = i == 0 ? null : cursor('history', h0, entry.completionSeq);
       final trial = ChatBatch(
         placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
         entries: [candidate, ...selected],
@@ -1167,7 +1134,7 @@ final class _DemoReader implements ConversationReader {
           case ItemContentOwner(:final itemId):
             return _itemBodies(itemId)[key] ?? (throw _demoMissing());
           case CurrentContentOwner(:final domain, :final id, :final revision):
-            if (scope is! MainChatScope) throw _demoMissing();
+            if (!_demoHasActivity(scope)) throw _demoMissing();
             final workspace = _api._demoWorkspace(threadId);
             if (domain == 'plan' && id == threadId) {
               final plan = workspace.runtime.plan;
@@ -1226,7 +1193,7 @@ final class _DemoReader implements ConversationReader {
     required ReadDemand demand,
   }) => _read(() {
     _demoDemand(demand);
-    if (scope is! MainChatScope || reference.databaseId != _history.epoch) {
+    if (!_demoHasActivity(scope) || reference.databaseId != _history.epoch) {
       throw _demoMissing();
     }
     if (reference.collection != 'interactions' ||
@@ -1602,7 +1569,7 @@ class _DemoConversationFeed implements ConversationFeed {
         _initial = null;
         return;
       }
-      if (_phase == 1 && reader.scope is MainChatScope) {
+      if (_phase == 1 && _demoHasActivity(reader.scope)) {
         _phase = 2;
         _send(ConversationActivityEvent(snapshot: _activity()));
         return;
@@ -1616,11 +1583,7 @@ class _DemoConversationFeed implements ConversationFeed {
           if (entry.completionSeq <= _completed || entry.completionSeq > head) {
             continue;
           }
-          final candidate = reader.fitEntry(
-            entry,
-            0,
-            main: reader.scope is MainChatScope,
-          );
+          final candidate = reader.fitEntry(entry, 0);
           final trial = ChatBatch(
             placement: ChatPlacement.append,
             entries: [...selected, candidate],
@@ -1655,7 +1618,7 @@ class _DemoConversationFeed implements ConversationFeed {
         );
         return;
       }
-      if (reader.scope is MainChatScope &&
+      if (_demoHasActivity(reader.scope) &&
           (_pendingCurrent || _currentRevision != _history.revision)) {
         _pendingCurrent = false;
         _currentRevision = _history.revision;
@@ -1728,7 +1691,7 @@ final class _DemoConversationStateFeed implements ConversationStateFeed {
     _initialState = ConversationStateEvent(
       frame: ThreadSnapshotFrame(
         schemaVersion: threadSchemaVersion,
-        completedHistoryVersion: 1,
+        completedHistoryVersion: completedHistoryVersion,
         workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
       ),
     );
@@ -1809,7 +1772,7 @@ final class _DemoConversationStateFeed implements ConversationStateFeed {
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
               schemaVersion: threadSchemaVersion,
-              completedHistoryVersion: 1,
+              completedHistoryVersion: completedHistoryVersion,
               workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
             ),
           ),

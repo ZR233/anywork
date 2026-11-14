@@ -23,7 +23,7 @@ pub(crate) mod runtime;
 mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
-mod storage;
+pub(crate) mod storage;
 
 pub(crate) mod store;
 mod store_support;

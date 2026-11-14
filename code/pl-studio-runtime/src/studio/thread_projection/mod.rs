@@ -1,4 +1,6 @@
 //! Product timeline projections read core facts and never drive models, tools or persistence reducers.
+mod item;
+pub(crate) use item::{ExecutionItem, ExecutionKind, ExecutionShape};
 mod accounting;
 mod billing;
 pub(crate) use accounting::PreparedAccounting;
@@ -27,7 +29,7 @@ pub(in crate::studio) use current::{CurrentState, project_business_refs};
 pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
-mod live;
+pub(in crate::studio) mod live;
 pub(in crate::studio) mod presentation;
 pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
@@ -54,7 +56,7 @@ mod tool_media;
 pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
 mod inputs;
 mod responses;
-mod tools;
+pub(in crate::studio) mod tools;
 mod turns;
 mod user_input;
 mod wait;
@@ -67,22 +69,11 @@ pub(in crate::studio) use user_input::{
 pub(in crate::studio) fn prepared_terminal_turn(
     prepared: &PreparedEffect,
 ) -> Option<pl_protocol::Turn> {
-    prepared.items.iter().find_map(|item| {
-        let pl_protocol::ThreadItemState::Turn(turn) = item.state() else {
-            return None;
-        };
-        if !turn.state().is_terminal() {
-            return None;
-        }
-        Some(pl_protocol::Turn {
-            id: item.turn_id.clone(),
-            thread_id: item.thread_id.clone(),
-            input_id: turn.input_id().map(str::to_owned),
-            state: turn.state().clone(),
-            revision: prepared.sequence,
-            updated_at: item.updated_at,
-        })
-    })
+    prepared
+        .turns
+        .iter()
+        .find(|write| write.turn.state.is_terminal())
+        .map(|write| write.turn.clone())
 }
 
 /// Identity of one streaming channel item (`reasoning` or `text`) for an attempt.

@@ -1,6 +1,8 @@
 //! Named content upgrade; original payloads and reliable fact positions are immutable.
 use super::legacy_timeline_store as timeline;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 use pl_protocol::{ChatAtom, ChatAtomKind};
 
 pub(super) struct SourceClassification;
@@ -304,6 +306,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .collect()
@@ -346,17 +349,40 @@ mod tests {
         let mut result = Vec::new();
         for sql in [
             "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),json_remove(CAST(metadata AS TEXT),'$.kind')) AS value FROM conversation_items ORDER BY seq",
-            "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,hex(payload),last_write_seq) AS value FROM history_items ORDER BY ordinal",
-            "SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM conversation_contents ORDER BY owner_key,content_key",
-            "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset",
-            "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,CASE WHEN phase='legacySourceEnd' THEN CAST(metadata AS TEXT) ELSE json_remove(CAST(metadata AS TEXT),'$.kind') END) AS value FROM conversation_atom_facts ORDER BY atom_id,phase",
+            "SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key",
+            "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key,byte_offset",
         ] {
             result.extend(rows(db, sql).await?);
         }
+        result.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &[
+                    "ordinal",
+                    "item_id",
+                    "turn_id",
+                    "kind",
+                    "revision",
+                    "lifecycle",
+                    "created_at",
+                    "updated_at",
+                    "hex(payload)",
+                    "last_write_seq",
+                ],
+                false,
+            )
+            .await?
+            .into_iter()
+            .filter(|value| {
+                serde_json::from_str::<serde_json::Value>(value)
+                    .is_ok_and(|row| row[1] == "active-agent")
+            }),
+        );
         Ok(result)
     }
 
     async fn derived(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+        let current = version(db).await? == 24;
         let completed = completion_boundary::applied(db).await?;
         let mut result = Vec::new();
         for sql in [
@@ -375,13 +401,18 @@ mod tests {
             "SELECT hex(metadata) AS value FROM conversation_items ORDER BY seq",
             "SELECT hex(metadata) AS value FROM conversation_atom_facts ORDER BY atom_id,phase",
         ] {
+            let sql = if current && sql.contains("FROM conversation_atom_facts") {
+                "SELECT json_array(identity,kind,source_kind,source_identity,started_effect,started_suborder,ended_effect,ended_suborder,outcome,completion_item_id,last_write_seq) AS value FROM execution_lifecycle ORDER BY identity"
+            } else {
+                sql
+            };
             result.extend(rows(db, sql).await?);
         }
         Ok(result)
     }
 
-    fn agent(active: bool) -> ThreadItemState {
-        ThreadItemState::Agent(ThreadAgentItem::new(
+    fn agent(active: bool) -> ExecutionShape {
+        ExecutionShape::Agent(ThreadAgentItem::new(
             ThreadAgentIdentity::new(
                 "child".into(),
                 "root/child".into(),
@@ -419,12 +450,12 @@ mod tests {
         // More than one migration window, with real producer payloads and content chunks.
         for seq in 1..=133u64 {
             let state = match seq {
-                1 | 3 | 5 => ThreadItemState::Thinking(ThreadThinkingItem::new(
+                1 | 3 | 5 => ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![format!("摘要 {seq}")],
                     vec!["工作原文 🦀".into()],
                     ThreadContentLifecycle::completed(2),
                 )),
-                4 => ThreadItemState::Inference(ThreadInferenceItem::new(
+                4 => ExecutionShape::Inference(ThreadInferenceItem::new(
                     "call".into(),
                     "model".into(),
                     ThreadInferenceState::Completed(CompletedThreadInference::new(
@@ -433,7 +464,7 @@ mod tests {
                     )),
                 )),
                 6 => agent(false),
-                _ => ThreadItemState::Raw(if seq % 2 == 0 {
+                _ => ExecutionShape::Raw(if seq % 2 == 0 {
                     ThreadRawItem::runtime_control("framework control", 2)
                 } else {
                     ThreadRawItem::stored(
@@ -447,7 +478,7 @@ mod tests {
                     )
                 }),
             };
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 format!("atom-{seq}"),
                 THREAD.into(),
                 "turn".into(),
@@ -476,7 +507,7 @@ mod tests {
                 draft.payload = std::sync::Arc::from(&b"unsupported original bytes"[..]);
             }
             draft.metadata = serde_json::to_vec(&atom)?.into();
-            let completion = pl_core::chat::ChatItem::complete(draft, seq, None);
+            let completion = pl_core::chat::ChatItem::complete(draft, seq);
             conversation::migration::append_published(&db, &completion).await?;
             db.execute_raw(statement(
                 "UPDATE conversation_items SET metadata=?,query_class=? WHERE seq=?",
@@ -493,7 +524,7 @@ mod tests {
             ))
             .await?;
         }
-        let item = ThreadItem::new(
+        let item = ExecutionItem::new(
             "active-agent".into(),
             THREAD.into(),
             "turn".into(),
@@ -597,6 +628,7 @@ mod tests {
             IMMUTABLE_COMPLETION_RUNS,
             WORK_SNAPSHOTS,
             DISPLAY_BLOCK_ORDER,
+            EXECUTION_FACTS,
         ];
         assert_eq!(new_ledger.len(), old_ledger.len() + appended_steps.len());
         for step in appended_steps {
@@ -720,8 +752,8 @@ mod tests {
     #[tokio::test]
     async fn applied_source_upgrade_does_not_repair_missing_tables_or_recovery() -> Result<()> {
         for corruption in [
-            "DROP INDEX conversation_items_visible_seq",
-            "DROP INDEX conversation_items_by_run_seq",
+            "DROP INDEX conversation_items_by_parent",
+            "DROP INDEX conversation_items_tool",
         ] {
             let (_directory, path) = fixture().await?;
             let db = open(&path).await?;

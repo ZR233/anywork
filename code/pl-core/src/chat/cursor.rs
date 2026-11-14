@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub const MAX_READ_ITEMS: usize = 4096;
 pub const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 pub const CHAT_CURSOR_VERSION: u32 = 2;
-pub const CHAT_INDEX_VERSION: u32 = 1;
+pub const CHAT_INDEX_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineEpoch(String);
@@ -144,7 +144,7 @@ pub struct ChatCursor {
     pub epoch: TimelineEpoch,
     pub query: ChatQuery,
     pub ceiling: u64,
-    /// Exclusive before position; RunHeads uses the earliest returned run's start, not its head seq.
+    /// Exclusive before position in immutable completion order.
     pub append_seq: u64,
 }
 

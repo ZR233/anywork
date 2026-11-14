@@ -91,16 +91,7 @@ impl Stored {
         let mut remaining = request.demand;
         let mut items = Vec::new();
         let mut exhausted = true;
-        let heads = descending
-            && request
-                .query
-                .as_ref()
-                .is_some_and(|query| query.selection == ChatSelection::RunHeads);
-        let mut upper = request.ceiling;
         for record in iter {
-            if heads && record.header.append_seq > upper {
-                continue;
-            }
             if remaining.max_items == 0 || remaining.max_bytes == 0 {
                 exhausted = false;
                 break;
@@ -127,9 +118,6 @@ impl Stored {
                 header: record.header.clone(),
                 payload,
             });
-            if heads {
-                upper = record.header.run.unwrap().start_seq - 1;
-            }
         }
         if descending {
             items.reverse();
@@ -143,13 +131,6 @@ impl ChatHistory for Stored {
         let map = self.map.lock().unwrap();
         Ok(ChatPublicationSeed {
             head_seq: map.last_key_value().map_or(0, |(seq, _)| *seq),
-            last_visible: map.values().rev().find_map(|record| {
-                record.header.run.map(|position| ChatRunSeed {
-                    seq: record.header.append_seq,
-                    hint: record.header.read_hint.clone(),
-                    position,
-                })
-            }),
         })
     }
     async fn page(
@@ -484,7 +465,7 @@ pub fn record(seq: u64, text: &str) -> ChatItem {
     record_identified(&format!("item-{seq}"), seq, text)
 }
 pub fn record_identified(id: &str, seq: u64, text: &str) -> ChatItem {
-    ChatItem::complete(draft(id, text), seq, None)
+    ChatItem::complete(draft(id, text), seq)
 }
 pub fn sequences(items: &[ChatPageItem]) -> Vec<u64> {
     items.iter().map(|item| item.header.append_seq).collect()

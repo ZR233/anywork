@@ -47,7 +47,7 @@ ThreadNotificationFrame _progress(int revision) => ThreadNotificationFrame(
 ThreadSnapshotFrame _snapshot(int revision, {StudioTurnView? latestTurn}) =>
     ThreadSnapshotFrame(
       schemaVersion: threadSchemaVersion,
-      completedHistoryVersion: 1,
+      completedHistoryVersion: completedHistoryVersion,
       workspace: _workspace(revision, latestTurn: latestTurn),
     );
 
@@ -241,7 +241,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: threadSchemaVersion + 1,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(1),
         ),
       ),

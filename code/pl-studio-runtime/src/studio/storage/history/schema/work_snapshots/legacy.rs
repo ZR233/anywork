@@ -170,11 +170,11 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
             let run: i64 = row.try_get("", "display_run_start")?;
             let ordinal = u64::try_from(row.try_get::<i64>("", "display_run_ordinal")?)?;
             let is_work = matches!(
-                crate::studio::runtime::chat_item::native_read_hint_v1(
+                super::super::legacy_completion_types::native_read_hint_v1(
                     &row.try_get::<String>("", "query_class")?,
                     &atom
                 ),
-                pl_core::chat::ChatReadHint::Adjacent { .. }
+                super::super::legacy_completion_types::ChatReadHint::Adjacent { .. }
             );
             let atom = lightweight(atom, &database);
             if current.as_ref().is_none_or(|(start, _)| *start != run) {

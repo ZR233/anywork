@@ -1,16 +1,17 @@
 //! Tool timeline facts keep delivered text and producer-owned machine metadata separate.
 use super::{ProjectionError, content::text_content};
+use crate::{ExecutionItem, ExecutionShape};
 use pl_core::context::ResourceReference;
 use pl_core::thread::{
     ThreadSnapshot, ToolDelivery, ToolOutcome, permissions::PermissionState, task::TaskStatus,
 };
 use pl_protocol::{
-    FailedThreadTool, SucceededThreadTool, ThreadItem, ThreadItemState, ThreadToolInvocation,
-    ThreadToolItem, ThreadToolOutput, ThreadToolState,
+    FailedThreadTool, SucceededThreadTool, ThreadToolInvocation, ThreadToolItem, ThreadToolOutput,
+    ThreadToolState,
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn project_tool_call(
+pub(in crate::studio) fn project_tool_call(
     thread_id: &str,
     snapshot: &ThreadSnapshot,
     turn_id: &str,
@@ -19,7 +20,7 @@ pub(super) fn project_tool_call(
     created_at: i64,
     revision: u64,
     updated_at: i64,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let id = call.call_id.as_str();
     let invocation = ThreadToolInvocation::new(
         id.into(),
@@ -40,11 +41,11 @@ pub(super) fn project_tool_call(
 pub(super) fn project_saved_tool_call(
     thread_id: &str,
     snapshot: &ThreadSnapshot,
-    saved: &ThreadItem,
+    saved: &ExecutionItem,
     revision: u64,
     updated_at: i64,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
-    let ThreadItemState::Tool(tool) = saved.state() else {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    let ExecutionShape::Tool(tool) = saved.state() else {
         return Err(ProjectionError::DuplicateCall(saved.id.clone()));
     };
     let invocation = tool.invocation().clone();
@@ -76,13 +77,13 @@ pub(super) fn project_saved_tool_call(
 /// # Errors
 /// Rejects an identity that is not a committed terminal tool result, so a supplement can never turn
 /// a running or unrelated item into a repaired one.
-pub(super) fn project_repaired_tool_call(
+pub(in crate::studio) fn project_repaired_tool_call(
     thread_id: &str,
-    saved: &ThreadItem,
+    saved: &ExecutionItem,
     references: &[ResourceReference],
     updated_at: i64,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
-    let ThreadItemState::Tool(tool) = saved.state() else {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    let ExecutionShape::Tool(tool) = saved.state() else {
         return Err(ProjectionError::DuplicateCall(saved.id.clone()));
     };
     if saved.thread_id != thread_id {
@@ -107,7 +108,7 @@ pub(super) fn project_repaired_tool_call(
         }
         _ => return Err(ProjectionError::DuplicateCall(saved.id.clone())),
     };
-    Ok(vec![ThreadItem::new(
+    Ok(vec![ExecutionItem::new(
         saved.id.clone(),
         saved.thread_id.clone(),
         saved.turn_id.clone(),
@@ -115,7 +116,7 @@ pub(super) fn project_repaired_tool_call(
         saved.revision,
         saved.created_at,
         updated_at,
-        ThreadItemState::Tool(
+        ExecutionShape::Tool(
             ThreadToolItem::new(tool.invocation().clone(), state)
                 .with_user_input(tool.user_input().cloned())
                 .with_wait(tool.wait().cloned()),
@@ -153,7 +154,7 @@ fn project_invocation(
     created_at: i64,
     revision: u64,
     updated_at: i64,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let mut items = Vec::new();
     let id = invocation.tool_call_id().to_owned();
     let task = snapshot.tasks.values().find(|task| task.call_id == id);
@@ -200,7 +201,7 @@ fn project_invocation(
         )
     {
         activation.activated_at = updated_at;
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             super::order::skill_id(&id),
             thread_id.into(),
             turn_id.into(),
@@ -208,7 +209,7 @@ fn project_invocation(
             revision,
             updated_at,
             updated_at,
-            ThreadItemState::Skill(pl_protocol::ThreadSkillItem::new(activation)),
+            ExecutionShape::Skill(pl_protocol::ThreadSkillItem::new(activation)),
         ));
     }
     if let Some(task) = task {
@@ -220,7 +221,7 @@ fn project_invocation(
         invocation.arguments(),
         &state,
     );
-    items.push(ThreadItem::new(
+    items.push(ExecutionItem::new(
         super::order::tool_id(&id),
         thread_id.into(),
         turn_id.into(),
@@ -228,7 +229,7 @@ fn project_invocation(
         revision,
         created_at,
         updated_at,
-        ThreadItemState::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
+        ExecutionShape::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
     ));
     Ok(items)
 }

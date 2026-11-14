@@ -122,7 +122,8 @@ mod mode_migration_tests {
                 history: EffectCommit {
                     current: &crate::studio::storage::history::test_current(effect.sequence),
                     completions: &[],
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     rolled_back_turns: &empty,
                     identities: &[],
                     messages: &[],
@@ -1547,7 +1548,8 @@ mod mode_migration_tests {
                 history: EffectCommit {
                     current: &crate::studio::storage::history::test_current(effect.sequence),
                     completions: &[],
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     rolled_back_turns: &empty,
                     identities: &[],
                     messages: &[],
@@ -3178,7 +3180,7 @@ mod mode_migration_tests {
         for (child, path) in children.iter().skip(2) {
             assert!(HistoryStore::open(path, &child.id).await?.checkpoint().await.is_err());
             if child.id == "timeline-child" {
-                let mut feed = runtime.open_conversation_feed(&child.id, pl_protocol::ChatScope::Main,
+                let mut feed = runtime.open_conversation_feed(&child.id, pl_protocol::ChatScope::conversation(None),
                     pl_protocol::ReadDemand { max_items: 10, max_bytes: 64 * 1024 }).await?;
                 let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
                     anyhow::bail!("cold conversation did not publish its initial Chat");
@@ -4331,7 +4333,12 @@ mod mode_migration_tests {
                         _ => {
                             let history = HistoryStore::open(&path, "adoption").await?;
                             if generation == 0 {
-                                history.commit(1, &[], &[]).await?;
+                                crate::studio::storage::history::persist_completed(
+                                    &history,
+                                    1,
+                                    &[],
+                                )
+                                .await?;
                             } else {
                                 history.prepare_activation().await?;
                             }
@@ -4372,7 +4379,7 @@ mod mode_migration_tests {
                     db.execute_unprepared(match family {
                         "product" => "DROP TABLE seaql_migrations; DROP TABLE studio_objects",
                         "calls" => "DROP TABLE seaql_migrations; DROP TABLE call_usage_summary",
-                        _ => "DROP TABLE history_items",
+                        _ => "DROP TABLE execution_lifecycle",
                     })
                     .await?;
                 } else if fault == "checkpoint" {

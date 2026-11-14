@@ -1688,7 +1688,7 @@ mod tests {
         phase.set("open content");
         let mut content = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         phase.set("open State");
         let mut state = env.runtime.open_conversation_state_feed(id).await?;
@@ -2356,10 +2356,11 @@ mod tests {
             use ThreadRuntimeUsageState::{Authoritative, Live};
             let env = support::Environment::new(vec![], vec![]).await?;
             let result = async {
-        let thread = env
-            .runtime
-            .create_thread(&env.project.id, "State bounds")
-            .await?;
+        // Replacing the raw receiver below must not race initial source publication.
+        // The controlled owner is installed first and retained through all channel fault cases.
+        let mut harness = completed_runs::Harness::new(&env).await?;
+        harness.effect(vec![], vec![]).await?;
+        let thread = &harness.thread;
         for case in ["replacement-bytes", "pending-frames", "lagged", "closed"] {
             let mut feed = env
                 .runtime

@@ -21,6 +21,13 @@ pub(in crate::studio) fn tool_id(id: &str) -> String {
     format!("tool:{}:{id}", id.len())
 }
 
+/// 校验真实业务身份的长度前缀，不用数据库扫描反解身份。
+pub(in crate::studio) fn business_id<'a>(domain: &str, encoded: &'a str) -> Option<&'a str> {
+    let rest = encoded.strip_prefix(domain)?.strip_prefix(':')?;
+    let (length, id) = rest.split_once(':')?;
+    (length.parse::<usize>().ok()? == id.len() && !id.is_empty()).then_some(id)
+}
+
 /// 已实际返回的后台启动收据与该调用最终结果使用不同的稳定身份。
 pub(in crate::studio) fn tool_background_started_id(id: &str) -> String {
     format!("{}:background-started", tool_id(id))

@@ -6117,66 +6117,140 @@ pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWater
     })
 }
 
-/// Read the canonical persisted item type; invocation text is not tool execution.
+/// Bounded inspection of the committed canonical body; invocation text is not execution.
+async fn history_content_contains(
+    connection: &mut SqliteConnection,
+    owner: &str,
+    key: &str,
+    needle: &str,
+) -> Result<bool> {
+    let (manifest,): (Vec<u8>,) = sea_orm::sqlx::query_as(
+        "SELECT payload FROM conversation_contents WHERE owner_key=?1 AND content_key=?2",
+    )
+    .bind(owner)
+    .bind(key)
+    .fetch_one(&mut *connection)
+    .await?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest)?;
+    ensure!(
+        manifest["sealed"] == true,
+        "acceptance original body is not sealed"
+    );
+    let length = manifest["byteLength"]
+        .as_u64()
+        .context("body length missing")?;
+    let mut offset = 0u64;
+    let mut carry = Vec::new();
+    let mut found = false;
+    while offset < length {
+        let (at,data):(i64,Vec<u8>)=sea_orm::sqlx::query_as(
+            "SELECT byte_offset,data FROM conversation_content_chunks WHERE owner_key=?1 AND content_key=?2 AND byte_offset>=?3 ORDER BY byte_offset LIMIT 1")
+            .bind(owner).bind(key).bind(i64::try_from(offset)?).fetch_one(&mut *connection).await?;
+        ensure!(
+            u64::try_from(at)? == offset && !data.is_empty(),
+            "canonical body has a gap"
+        );
+        offset += data.len() as u64;
+        carry.extend_from_slice(&data);
+        found |= carry
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes());
+        let retained = needle.len().saturating_sub(1).min(carry.len());
+        carry.drain(..carry.len() - retained);
+    }
+    ensure!(offset == length, "canonical body exceeds manifest");
+    Ok(found)
+}
+
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        use pl_protocol::{
+            ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatTerminalOutcome,
+            ContentOwner, ContentTarget, ThreadTextChannel,
+        };
         let options = SqliteConnectOptions::new()
             .filename(database)
             .read_only(true)
             .create_if_missing(false);
         let mut connection = SqliteConnection::connect_with(&options).await?;
-        let rows: Vec<(String,)> = sea_orm::sqlx::query_as(
-            "SELECT payload FROM history_items WHERE payload LIKE ?1 OR payload LIKE ?2",
-        )
-        .bind(format!(
-            "%{}%",
-            pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER
-        ))
-        .bind(format!(
-            "%{}%",
-            pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER
-        ))
-        .fetch_all(&mut connection)
-        .await?;
+        let (thread_id,): (String,) =
+            sea_orm::sqlx::query_as("SELECT thread_id FROM history_meta WHERE id=1")
+                .fetch_one(&mut connection)
+                .await?;
+        let rows: Vec<(String, Vec<u8>)> =
+            sea_orm::sqlx::query_as("SELECT item_id,metadata FROM conversation_items ORDER BY seq")
+                .fetch_all(&mut connection)
+                .await?;
         let mut originals = HistoryFaultOriginals::default();
-        for (payload,) in rows {
-            let item: pl_protocol::ThreadItem =
-                serde_json::from_str(&payload).context("decode committed history-fault item")?;
-            let identity = |tool_call_id| HistoryFaultItemIdentity {
-                item_id: item.id.clone(),
-                thread_id: item.thread_id.clone(),
-                turn_id: item.turn_id.clone(),
-                tool_call_id,
+        for (record_id, metadata) in rows {
+            let atom: ChatAtom =
+                serde_json::from_slice(&metadata).context("decode committed canonical header")?;
+            if !matches!(
+                atom.lifecycle,
+                ChatAtomLifecycle::Terminal {
+                    outcome: ChatTerminalOutcome::Completed,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            let (needle, role, is_answer) = if atom.kind == ChatAtomKind::Text
+                && atom.text_channel == Some(ThreadTextChannel::Final)
+            {
+                (
+                    pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
+                    ChatContentRole::Body,
+                    true,
+                )
+            } else if atom.tool.as_ref().is_some_and(|tool| {
+                tool.call_id == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID
+            }) {
+                (
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                    ChatContentRole::ToolOutput,
+                    false,
+                )
+            } else {
+                continue;
             };
-            match item.state() {
-                pl_protocol::ThreadItemState::Text(text)
-                    if text.text() == pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER
-                        && text.channel() == pl_protocol::ThreadTextChannel::Final
-                        && matches!(
-                            text.lifecycle(),
-                            pl_protocol::ThreadContentLifecycle::Completed(_)
-                        ) =>
-                {
-                    originals.answers.push(identity(None));
+            let mut present = false;
+            for content in atom.contents.iter().filter(|content| content.role == role) {
+                let ContentTarget::Body {
+                    owner: ContentOwner::Item { item_id },
+                    key,
+                } = &content.reference.target
+                else {
+                    anyhow::bail!("canonical body has wrong owner");
+                };
+                ensure!(
+                    item_id == &record_id,
+                    "canonical body points to another original"
+                );
+                present |= history_content_contains(
+                    &mut connection,
+                    &format!("4:item{item_id}"),
+                    key,
+                    needle,
+                )
+                .await?;
+            }
+            if present {
+                let identity = HistoryFaultItemIdentity {
+                    item_id: record_id,
+                    thread_id: thread_id.clone(),
+                    turn_id: atom
+                        .turn_id
+                        .context("canonical original has no real Turn")?,
+                    tool_call_id: atom.tool.map(|tool| tool.call_id),
+                };
+                if is_answer {
+                    originals.answers.push(identity);
+                } else {
+                    originals.tools.push(identity);
                 }
-                pl_protocol::ThreadItemState::Tool(tool) => {
-                    if let pl_protocol::ThreadToolState::Succeeded(result) = tool.state()
-                        && tool.invocation().tool_call_id()
-                            == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID
-                        && result
-                            .output()
-                            .result()
-                            .contains(pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER)
-                    {
-                        originals
-                            .tools
-                            .push(identity(Some(tool.invocation().tool_call_id().to_owned())));
-                    }
-                }
-                _ => {}
             }
         }
         connection.close().await?;
@@ -6184,31 +6258,24 @@ fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
     })
 }
 
-/// Counts committed history items whose payload carries [needle].
+/// Counts canonical original bodies containing the exact fixture marker.
 fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
+    ensure!(!needle.is_empty(), "empty history marker");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let database = database.to_owned();
-    let display = database.clone();
-    let needle = needle.to_owned();
-    runtime.block_on(async move {
-        let options = SqliteConnectOptions::new()
-            .filename(&database)
-            .read_only(true);
-        let mut connection = SqliteConnection::connect_with(&options).await?;
-        let (count,): (i64,) =
-            sea_orm::sqlx::query_as("SELECT COUNT(*) FROM history_items WHERE payload LIKE ?1")
-                .bind(format!("%{needle}%"))
-                .fetch_one(&mut connection)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to count committed items matching {needle} from {}",
-                        display.display()
-                    )
-                })?;
-        Ok(count)
+    runtime.block_on(async {
+        let options=SqliteConnectOptions::new().filename(database).read_only(true);
+        let mut connection=SqliteConnection::connect_with(&options).await?;
+        let rows:Vec<(String,String,String)>=sea_orm::sqlx::query_as(
+            "SELECT i.item_id,c.owner_key,c.content_key FROM conversation_items i JOIN conversation_contents c ON c.owner_key='4:item'||i.item_id ORDER BY i.seq,c.content_key")
+            .fetch_all(&mut connection).await?;
+        let mut found=std::collections::BTreeSet::new();
+        for (item,owner,key) in rows {
+            if history_content_contains(&mut connection,&owner,&key,needle).await? { found.insert(item); }
+        }
+        connection.close().await?;
+        Ok(i64::try_from(found.len())?)
     })
 }
 
@@ -6594,65 +6661,113 @@ fn failure_reason(line: &str) -> Option<String> {
 mod history_fault_tests {
     use super::*;
     use pl_protocol::{
-        SucceededThreadTool, ThreadContentLifecycle, ThreadItem, ThreadItemState,
-        ThreadTextChannel, ThreadTextItem, ThreadToolInvocation, ThreadToolItem, ThreadToolOutput,
-        ThreadToolState,
+        ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle, ChatContentRole,
+        ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, ContentOwner,
+        ContentRef, ContentTarget, ThreadTextChannel,
     };
-
-    fn item(id: &str, turn: &str, state: ThreadItemState) -> ThreadItem {
-        ThreadItem::new(id.into(), "thread".into(), turn.into(), 1, 1, 1, 1, state)
-    }
-
-    fn answer(id: &str, channel: ThreadTextChannel) -> ThreadItem {
-        item(
+    fn answer(id: &str, channel: ThreadTextChannel) -> (String, ChatAtom, String, String) {
+        fixture(
             id,
             "fault-turn",
-            ThreadItemState::Text(ThreadTextItem::new(
-                channel,
-                pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER.into(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(1),
-            )),
+            ChatAtomKind::Text,
+            Some(channel),
+            None,
+            "body",
+            pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
         )
     }
-
-    fn tool(id: &str, turn: &str, result: &str) -> ThreadItem {
-        item(
+    fn tool(id: &str, turn: &str, result: &str) -> (String, ChatAtom, String, String) {
+        fixture(
             id,
             turn,
-            ThreadItemState::Tool(ThreadToolItem::new(
-                ThreadToolInvocation::new(
-                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID.into(),
-                    "exec".into(),
-                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER.into(),
-                ),
-                ThreadToolState::Succeeded(SucceededThreadTool::new(
-                    1,
-                    ThreadToolOutput::new(result.into(), Vec::new(), Vec::new(), Some(0)),
-                )),
-            )),
+            ChatAtomKind::ToolCall,
+            None,
+            Some(ChatToolIdentity {
+                call_id: pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID.into(),
+                name: "exec".into(),
+            }),
+            "tool.result",
+            result,
         )
     }
-
-    fn write_items(path: &Path, items: &[ThreadItem]) -> Result<()> {
+    fn fixture(
+        id: &str,
+        turn: &str,
+        kind: ChatAtomKind,
+        channel: Option<ThreadTextChannel>,
+        tool: Option<ChatToolIdentity>,
+        key: &str,
+        body: &str,
+    ) -> (String, ChatAtom, String, String) {
+        (
+            id.into(),
+            ChatAtom {
+                id: id.into(),
+                completion_item_id: Some(id.into()),
+                completion_seq: Some(1),
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: turn.into(),
+                },
+                source_state: None,
+                source_order: None,
+                kind,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Terminal {
+                    started: None,
+                    ended: None,
+                    outcome: ChatTerminalOutcome::Completed,
+                },
+                turn_id: Some(turn.into()),
+                attempt_id: None,
+                tool,
+                wait: None,
+                text_channel: channel,
+                started_at: None,
+                finished_at: None,
+                content_present: None,
+                contents: vec![ChatAtomContent {
+                    role: if key == "body" {
+                        ChatContentRole::Body
+                    } else {
+                        ChatContentRole::ToolOutput
+                    },
+                    reference: ContentRef {
+                        database_id: "fixture".into(),
+                        target: ContentTarget::Body {
+                            owner: ContentOwner::Item { item_id: id.into() },
+                            key: key.into(),
+                        },
+                    },
+                }],
+                payload: None,
+            },
+            key.into(),
+            body.into(),
+        )
+    }
+    fn write_items(path: &Path, items: &[(String, ChatAtom, String, String)]) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         runtime.block_on(async {
-        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
-        let mut connection = SqliteConnection::connect_with(&options).await?;
-        sea_orm::sqlx::query(
-            "CREATE TABLE IF NOT EXISTS history_items(item_id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
-        ).execute(&mut connection).await?;
-        sea_orm::sqlx::query("DELETE FROM history_items").execute(&mut connection).await?;
-        for item in items {
-            sea_orm::sqlx::query("INSERT INTO history_items(item_id,payload) VALUES(?1,?2)")
-                .bind(&item.id).bind(serde_json::to_string(item)?)
-                .execute(&mut connection).await?;
-        }
-        connection.close().await?;
-        Ok(())
-    })
+            let options=SqliteConnectOptions::new().filename(path).create_if_missing(true);
+            let mut connection=SqliteConnection::connect_with(&options).await?;
+            sea_orm::sqlx::raw_sql("CREATE TABLE IF NOT EXISTS history_meta(id INTEGER,thread_id TEXT); DELETE FROM history_meta; INSERT INTO history_meta VALUES(1,'thread');
+                CREATE TABLE IF NOT EXISTS conversation_items(seq INTEGER PRIMARY KEY,item_id TEXT,metadata BLOB);
+                CREATE TABLE IF NOT EXISTS conversation_contents(owner_key TEXT,content_key TEXT,payload BLOB);
+                CREATE TABLE IF NOT EXISTS conversation_content_chunks(owner_key TEXT,content_key TEXT,byte_offset INTEGER,data BLOB);
+                DELETE FROM conversation_items; DELETE FROM conversation_contents; DELETE FROM conversation_content_chunks;").execute(&mut connection).await?;
+            for (index,(id,atom,key,body)) in items.iter().enumerate() {
+                let owner=format!("4:item{id}");
+                sea_orm::sqlx::query("INSERT INTO conversation_items VALUES(?1,?2,?3)")
+                    .bind(i64::try_from(index+1)?).bind(id).bind(serde_json::to_vec(atom)?).execute(&mut connection).await?;
+                sea_orm::sqlx::query("INSERT INTO conversation_contents VALUES(?1,?2,?3)")
+                    .bind(&owner).bind(key).bind(serde_json::to_vec(&serde_json::json!({"sealed":true,"byteLength":body.len()}))?).execute(&mut connection).await?;
+                sea_orm::sqlx::query("INSERT INTO conversation_content_chunks VALUES(?1,?2,0,?3)")
+                    .bind(&owner).bind(key).bind(body.as_bytes()).execute(&mut connection).await?;
+            }
+            connection.close().await?; Ok(())
+        })
     }
 
     #[test]

@@ -83,13 +83,8 @@ ChatAtom _head({
   contents: contents,
 );
 
-CompletedEntry _entry(ChatAtom atom) => CompletedEntry(
-  recordId: 'completion',
-  completionSeq: 7,
-  run: null,
-  mainPresentation: MainPresentation.single,
-  atom: atom,
-);
+CompletedEntry _entry(ChatAtom atom) =>
+    CompletedEntry(recordId: 'completion', completionSeq: 7, atom: atom);
 
 InlinePayload _envelope(
   String type,
@@ -583,8 +578,7 @@ void main() {
           value = CompletedEntry(
             recordId: failure == 'record' ? 'other' : 'completion',
             completionSeq: failure == 'sequence' ? 8 : 7,
-            run: null,
-            mainPresentation: MainPresentation.single,
+
             atom: value.atom,
           );
         }

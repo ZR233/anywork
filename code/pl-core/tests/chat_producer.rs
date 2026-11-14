@@ -682,7 +682,7 @@ async fn byte_equivalent_text_and_binary_owners_are_idempotent_in_pending_durabl
             if commit {
                 // A durable adapter can reconstruct its BLOB as Bytes regardless of the producer.
                 let persisted =
-                    pl_core::chat::ChatItem::complete(sharing_body("first", binary()), 1, None);
+                    pl_core::chat::ChatItem::complete(sharing_body("first", binary()), 1);
                 stored.insert(persisted);
                 session.confirm_durable(1).unwrap();
             }

@@ -132,8 +132,7 @@ CompletedEntry chatMessage(
 }) => CompletedEntry(
   recordId: id,
   completionSeq: completionSeq,
-  run: CompletionRunPosition(startSeq: completionSeq, ordinal: 1),
-  mainPresentation: MainPresentation.single,
+
   atom: chatAtomMessage(id, body: body, completionSeq: completionSeq),
 );
 
@@ -141,8 +140,7 @@ CompletedEntry statusItem(ChatAtom atom, {int completionSeq = 1}) =>
     CompletedEntry(
       recordId: atom.completionItemId ?? atom.id,
       completionSeq: completionSeq,
-      run: CompletionRunPosition(startSeq: completionSeq, ordinal: 1),
-      mainPresentation: MainPresentation.single,
+
       atom: atom,
     );
 
@@ -151,15 +149,14 @@ CompletedEntry workItem(
   int count = 3,
   int? completionSeq,
   int startSeq = 1,
-  MainPresentation presentation = MainPresentation.foregroundWork,
+  bool isText = false,
   String databaseId = 'database',
 }) {
   final seq = completionSeq ?? startSeq + count - 1;
   return CompletedEntry(
     recordId: id,
     completionSeq: seq,
-    run: CompletionRunPosition(startSeq: startSeq, ordinal: count),
-    mainPresentation: presentation,
+
     atom: ChatAtom(
       id: id,
       completionItemId: id,

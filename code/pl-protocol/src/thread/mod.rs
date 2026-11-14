@@ -6,20 +6,10 @@ use utoipa::ToSchema;
 pub use crate::id::ThreadId;
 
 use crate::{
-    InteractionRequest, McpHealthSnapshot, RuntimeCostAmount, ThreadItem, ThreadModeId,
-    TodoListSnapshot, Turn,
+    InteractionRequest, McpHealthSnapshot, RuntimeCostAmount, ThreadModeId, TodoListSnapshot, Turn,
 };
 
 pub const THREAD_SCHEMA_VERSION: u32 = 17;
-
-/// Timeline 游标 token 的版本号。
-///
-/// 读取水位、数据库身份或 ordinal 语义发生变化时递增；客户端持有的旧版本游标会被
-/// 明确拒绝并要求回到数据库重新读取，而不是回落到猜测位置。
-pub const TIMELINE_CURSOR_VERSION: u32 = 1;
-
-/// Timeline 游标的 opaque 前缀；item identity 不会以它开头，因此解码是确定性的。
-const TIMELINE_CURSOR_PREFIX: &str = "tlc1.";
 
 /// 会话级工作区模式：Project 根目录，或从 Project Git 仓库 `HEAD` 派生的独立 checkout。
 ///
@@ -479,73 +469,8 @@ pub struct ThreadTurnPage {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTurnHistory {
     pub turn: Turn,
-    pub items: Vec<ThreadItem>,
+    pub items: Vec<crate::CompletedEntry>,
     #[serde(default)]
-    pub context_disposition: ThreadContextDisposition,
-}
-
-/// 版本化、自校验的 Turn durable 历史游标。
-///
-/// Turn 历史沿用这套 durable 游标：它绑定 Thread 身份、history 数据库身份、条目 ordinal、
-/// 条目 identity 与读取时的 applied write sequence。聊天完成记录则使用
-/// [`crate::ChatBatch::before`] 的不透明续页资格，不使用此执行历史游标，也不要求完成项已落盘。
-///
-/// 游标绑定 Thread 身份、history 数据库身份、条目 ordinal、条目 identity 与读取时的
-/// applied write sequence。任何一项在当前数据库上不成立（Thread 不符、数据库被重建、
-/// 水位回退）都必须拒绝，避免把游标当成"附近某条"的猜测位置。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TimelineCursor {
-    pub version: u32,
-    pub thread_id: String,
-    pub database_id: String,
-    pub ordinal: u64,
-    pub item_id: String,
-    pub applied_write_sequence: u64,
-}
-
-impl TimelineCursor {
-    /// 构造当前版本游标。
-    pub fn new(
-        thread_id: impl Into<String>,
-        database_id: impl Into<String>,
-        ordinal: u64,
-        item_id: impl Into<String>,
-        applied_write_sequence: u64,
-    ) -> Self {
-        Self {
-            version: TIMELINE_CURSOR_VERSION,
-            thread_id: thread_id.into(),
-            database_id: database_id.into(),
-            ordinal,
-            item_id: item_id.into(),
-            applied_write_sequence,
-        }
-    }
-
-    /// 编码为可跨 wire 传输的 opaque token。
-    ///
-    /// # Panics
-    /// 仅在内部 JSON 编码失败时 panic；字段均为可序列化的原始类型。
-    pub fn encode(&self) -> String {
-        let payload = serde_json::to_string(self).expect("timeline cursor is serializable");
-        format!("{TIMELINE_CURSOR_PREFIX}{payload}")
-    }
-
-    /// 解析 opaque token；非游标输入（例如原始 item identity）返回 `None`。
-    pub fn decode(token: &str) -> Option<Self> {
-        let payload = token.strip_prefix(TIMELINE_CURSOR_PREFIX)?;
-        let cursor: Self = serde_json::from_str(payload).ok()?;
-        (cursor.version == TIMELINE_CURSOR_VERSION).then_some(cursor)
-    }
-}
-
-/// Turn metadata is independent of whether its admission item is in this page.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TimelineTurn {
-    pub turn: Turn,
-    pub last_item_id: String,
     pub context_disposition: ThreadContextDisposition,
 }
 

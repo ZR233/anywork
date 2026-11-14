@@ -226,7 +226,7 @@ impl Observation<'_> {
             let (read, _) = self
                 .session
                 .http()?
-                .open_chat(child, ChatScope::Main, CHAT_DEMAND)
+                .open_chat(child, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
             completed_turn_from_children(&read, turn_id, None, true, &mut remaining, deadline).await
         })
@@ -263,7 +263,7 @@ impl Observation<'_> {
                 let (mut read, batch) = self
                     .session
                     .http()?
-                    .open_chat(parent, ChatScope::Main, CHAT_DEMAND)
+                    .open_chat(parent, ChatScope::conversation(None), CHAT_DEMAND)
                     .await?;
                 charge_chat_batch(&batch, &mut remaining)?;
                 for _ in 0..32 {

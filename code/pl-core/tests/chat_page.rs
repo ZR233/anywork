@@ -163,8 +163,6 @@ async fn deferred_uses_encoded_envelope_budget_does_not_read_full_payload_and_co
         append_seq: 2,
         query_class: "conversation".into(),
         parent_id: None,
-        read_hint: ChatReadHint::Hidden,
-        run: None,
         byte_length: 100_000,
         metadata: Arc::from([]),
     };
@@ -229,7 +227,7 @@ async fn opaque_metadata_is_header_only_and_counted_for_inline_deferred_and_byte
         let metadata: Arc<[u8]> = Arc::from([0xff, 0, 1, 2, 3, 4, 5, 6]);
         let mut newest = draft("new", "01234567890123456789");
         newest.metadata = metadata.clone();
-        let frozen = ChatItem::complete(newest.clone(), 2, None);
+        let frozen = ChatItem::complete(newest.clone(), 2);
         if durable {
             stored.insert(frozen.clone());
         }

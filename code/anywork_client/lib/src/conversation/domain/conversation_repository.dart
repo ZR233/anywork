@@ -17,18 +17,9 @@ abstract interface class ConversationRepository {
   Iterable<ThreadSessionState> get sessionStates;
   ValueObservation<String?> get visibleThreadId;
   void setVisibleThread(String? threadId);
-  Future<ConversationContent> openChildren({
+  Future<ConversationContent> openRecords({
     required String threadId,
-    required String parentId,
-    required ReadDemand demand,
-  });
-
-  /// Opens an independently owned member window for [reference].
-  ///
-  /// Its consumer, continuation and close lifecycle never replace Main state.
-  Future<ConversationContent> openRun({
-    required String threadId,
-    required CompletionRunRef reference,
+    required ChatScope scope,
     required ReadDemand demand,
   });
   Future<CloseReport> close({DateTime? deadline});

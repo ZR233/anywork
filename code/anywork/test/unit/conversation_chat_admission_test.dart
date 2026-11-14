@@ -334,13 +334,10 @@ void main() {
     'Children has independent consumer, scope and current ownership',
     () async {
       final h = _Harness(
-        scope: const ChildrenChatScope(parentId: 'turn:opaque'),
+        scope: const ChatScope.conversation(parentId: 'turn:opaque'),
       )..attach();
       final feed = await h.opened();
-      expect(
-        (h.transport.scopes.single as ChildrenChatScope).parentId,
-        'turn:opaque',
-      );
+      expect(h.transport.scopes.single.parentId, 'turn:opaque');
       feed.sendScenario(
         1,
         ConversationChatEvent(
@@ -538,7 +535,7 @@ void main() {
 }
 
 final class _Harness {
-  _Harness({ChatScope scope = const MainChatScope()}) {
+  _Harness({ChatScope scope = const ChatScope.conversation()}) {
     owner = ConversationContentImpl(
       threadId: 'thread',
       transport: transport,

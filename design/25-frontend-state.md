@@ -481,7 +481,7 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#266-业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，GUI 公开内容只由 Timeline 接纳，完成级消费者沿原 Chat 接纳。
 
-GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
+GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原件使用显式 Class／All 与真实 parent 的统一 Records 查询；其资格独立于展示分组。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
 工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，使用既有 block_order，不虚增历史前沿；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
 
@@ -493,7 +493,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
-历史展示块、确定回执、活动正文、成员窗口、原件 Run/Children 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。GUI 段卡稳定 key 来自 database_id/block_id，展开资格绑定显示代次；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
+历史展示块、确定回执、活动正文、成员窗口、原件 Records 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。GUI 段卡稳定 key 来自 database_id/block_id，展开资格绑定显示代次；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
 
 涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。局部状态由组件持有，跨组件呈现状态归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 `ExpansionTile`/`ExpansibleController`；实时块移入历史时，由原 display lease 按稳定 block_id 保存并恢复用户的展开意图，读取窗口沿同一资格继续。组件身份和资格真正改变时按 key/生命周期退役，不以补偿刷新、强制重置或备用数据维持显示。
 

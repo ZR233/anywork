@@ -293,10 +293,15 @@ wait
             },
             env: BTreeMap::new(),
         };
-        let launch = resolve_launch(&store, &generic, temp.path(), &CancellationToken::new())
-            .await
-            .ok()
-            .expect("generic launch independent of installation");
+        let launch = resolve_launch(
+            &store,
+            &generic,
+            temp.path(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .ok()
+        .expect("generic launch independent of installation");
         assert!(launch.expected_server_version.is_none());
         assert!(launch.template.is_none());
     }

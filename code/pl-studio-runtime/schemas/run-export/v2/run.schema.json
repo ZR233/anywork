@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://anywork.dev/schemas/run-export/v1/run.schema.json",
-  "title": "RunManifestV1",
+  "$id": "https://anywork.dev/schemas/run-export/v2/run.schema.json",
+  "title": "RunManifestV2",
   "description": "Immutable startup manifest written atomically to run.json before StudioRuntime initialization.",
   "type": "object",
   "additionalProperties": false,
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "runId": {
       "type": "string",
@@ -27,22 +27,22 @@
       "$ref": "#/$defs/utcTimestamp"
     },
     "build": {
-      "$ref": "#/$defs/BuildInfoV1"
+      "$ref": "#/$defs/BuildInfoV2"
     },
     "invocation": {
-      "$ref": "#/$defs/RunInvocationV1"
+      "$ref": "#/$defs/RunInvocationV2"
     },
     "skillSearch": {
-      "$ref": "#/$defs/SkillSearchManifestV1"
+      "$ref": "#/$defs/SkillSearchManifestV2"
     },
     "configInputs": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/ConfigInputEntryV1"
+        "$ref": "#/$defs/ConfigInputEntryV2"
       }
     },
     "exportSchema": {
-      "$ref": "#/$defs/ExportSchemaV1"
+      "$ref": "#/$defs/ExportSchemaV2"
     }
   },
   "$defs": {
@@ -54,7 +54,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "BuildInfoV1": {
+    "BuildInfoV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["version", "gitCommit", "target"],
@@ -70,7 +70,7 @@
         "target": { "type": "string", "minLength": 1 }
       }
     },
-    "RunInvocationV1": {
+    "RunInvocationV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -99,7 +99,7 @@
         "promptSha256": { "$ref": "#/$defs/sha256Hex" }
       }
     },
-    "SkillSearchManifestV1": {
+    "SkillSearchManifestV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -123,7 +123,7 @@
         "skillsEnabled": { "type": "boolean" }
       }
     },
-    "ConfigInputEntryV1": {
+    "ConfigInputEntryV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["logicalName", "present", "sha256", "redactedSummary"],
@@ -139,14 +139,14 @@
         "redactedSummary": {}
       }
     },
-    "ExportSchemaV1": {
+    "ExportSchemaV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["manifest", "events", "result", "contentAddressing"],
       "properties": {
-        "manifest": { "const": 1 },
-        "events": { "const": 1 },
-        "result": { "const": 1 },
+        "manifest": { "const": 2 },
+        "events": { "const": 2 },
+        "result": { "const": 2 },
         "contentAddressing": { "const": "sha256" }
       }
     }

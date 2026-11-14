@@ -1,6 +1,7 @@
 //! Published pre-schema-12 conversion and validation only. Normal history uses conversation.rs.
 
 use super::*;
+use crate::ExecutionItem;
 #[path = "timeline/codec.rs"]
 pub(super) mod codec;
 #[path = "timeline/descriptor.rs"]
@@ -294,7 +295,7 @@ pub(super) async fn migrate(db: &impl ConnectionTrait, thread_id: &str) -> Resul
             ordinal = Some(source_ordinal);
             let id: String = row.try_get("", "item_id")?;
             let payload: String = row.try_get("", "payload")?;
-            let item: ThreadItem = serde_json::from_str(&payload)?;
+            let item: ExecutionItem = schema::legacy_execution_item::decode(payload.as_bytes())?;
             ensure!(
                 item.thread_id == thread_id
                     && item.id == id

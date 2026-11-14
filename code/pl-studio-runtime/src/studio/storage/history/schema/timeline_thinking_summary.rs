@@ -2,6 +2,8 @@
 //! tool groups from original facts and explicit summary contents.
 use super::legacy_timeline_store as timeline;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct TimelineThinkingSummary;
 
@@ -70,6 +72,7 @@ mod tests {
                             | IMMUTABLE_COMPLETION_RUNS
                             | WORK_SNAPSHOTS
                             | DISPLAY_BLOCK_ORDER
+                            | EXECUTION_FACTS
                     )
                 })
                 .collect()
@@ -102,26 +105,26 @@ mod tests {
             ("background", 1, 7, 7, None),
         ] {
             let state = match text {
-                Some(text) => ThreadItemState::Thinking(ThreadThinkingItem::new(
+                Some(text) => ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![format!("{}\r\n{text}\r\n", "🦀".repeat(4096))],
                     vec!["不应作为摘要的正文".repeat(4096)],
                     ThreadContentLifecycle::completed(ended),
                 )),
-                None if id == "background" => ThreadItemState::Tool(ThreadToolItem::new(
+                None if id == "background" => ExecutionShape::Tool(ThreadToolItem::new(
                     ThreadToolInvocation::new("background-call".into(), "exec".into(), "{}".into()),
                     ThreadToolState::Succeeded(SucceededThreadTool::new(
                         ended,
                         ThreadToolOutput::new("后台结果".into(), vec![], vec![], Some(0)),
                     )),
                 )),
-                None => ThreadItemState::Text(ThreadTextItem::new(
+                None => ExecutionShape::Text(ThreadTextItem::new(
                     ThreadTextChannel::Final,
                     "结果".into(),
                     Vec::new(),
                     ThreadContentLifecycle::completed(ended),
                 )),
             };
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 id.into(),
                 THREAD.into(),
                 "turn".into(),
@@ -166,7 +169,7 @@ mod tests {
                 )).await?;
             }
             draft.metadata = terminal.into();
-            records.push(ChatItem::complete(draft, records.len() as u64 + 1, None));
+            records.push(ChatItem::complete(draft, records.len() as u64 + 1));
         }
         for record in &records {
             timeline::append_fixture(db, record).await?;

@@ -12,11 +12,11 @@ use pl_protocol::{
     TurnState, studio::StudioPromptInput,
 };
 use pl_studio_runtime::{
-    BuildInfoV1, ExecutionErrorStage, ExecutionErrorV1, ExecutionOutcome, RESULT_SCHEMA_VERSION,
-    ResultOutcome, ResultV1, RunExportOptions, RunExportReport, RunExporter,
+    BuildInfoV2, ExecutionErrorStage, ExecutionErrorV2, ExecutionOutcome, RESULT_SCHEMA_VERSION,
+    ResultOutcome, ResultV2, RunExportOptions, RunExportReport, RunExporter,
     StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
     StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
-    StudioSubmitPromptOptions, TimingReportV1, format_export_utc_rfc3339,
+    StudioSubmitPromptOptions, TimingReportV2, format_export_utc_rfc3339,
 };
 use std::future::Future;
 use std::time::{Instant, SystemTime};
@@ -58,7 +58,7 @@ pub struct ExecutionReport {
     pub error: Option<ExecutionError>,
     pub shutdown: StudioShutdownReport,
     pub export: Option<RunExportReport>,
-    pub export_error: Option<ExecutionErrorV1>,
+    pub export_error: Option<ExecutionErrorV2>,
 }
 
 impl ExecutionReport {
@@ -177,22 +177,22 @@ impl ExecutionReport {
         None
     }
 
-    fn native_execution_error(&self) -> Option<ExecutionErrorV1> {
+    fn native_execution_error(&self) -> Option<ExecutionErrorV2> {
         if let Some(error) = &self.error {
             return Some(match error {
-                ExecutionError::Input(err) => ExecutionErrorV1 {
+                ExecutionError::Input(err) => ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Startup,
                     code: "invalidInput".to_string(),
                     message: format!("{err:#}"),
                     turn_failure: None,
                 },
-                ExecutionError::Startup(err) => ExecutionErrorV1 {
+                ExecutionError::Startup(err) => ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Startup,
                     code: format!("{:?}", err.kind),
                     message: err.to_string(),
                     turn_failure: None,
                 },
-                ExecutionError::Runtime(err) => ExecutionErrorV1 {
+                ExecutionError::Runtime(err) => ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Turn,
                     code: "runtimeError".to_string(),
                     message: format!("{err:#}"),
@@ -204,7 +204,7 @@ impl ExecutionReport {
             && let TurnState::Failed(failed) = &turn.state
         {
             let failure = failed.failure();
-            return Some(ExecutionErrorV1 {
+            return Some(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Turn,
                 code: failure
                     .code
@@ -280,7 +280,7 @@ async fn execute_observed(
                     Some(exp)
                 }
                 Err(error) => {
-                    report.export_error = Some(ExecutionErrorV1 {
+                    report.export_error = Some(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportStartFailed".to_string(),
                         message: format!("{error:#}"),
@@ -452,7 +452,7 @@ async fn finalize_and_write_export_result(
     shutdown_wall_ms: Option<u64>,
 ) {
     let export_report = exporter.finish_report().await;
-    let timing = TimingReportV1 {
+    let timing = TimingReportV2 {
         total_wall_ms: run_start.elapsed().as_millis() as u64,
         initialize_wall_ms,
         agent_wall_ms,
@@ -468,7 +468,7 @@ async fn finalize_and_write_export_result(
         finished_at,
     );
     if let Err(err) = exporter.write_result(&result_v1) {
-        report.export_error = Some(ExecutionErrorV1 {
+        report.export_error = Some(ExecutionErrorV2 {
             stage: ExecutionErrorStage::Export,
             code: "resultWriteFailed".to_string(),
             message: format!("{err:#}"),
@@ -477,9 +477,9 @@ async fn finalize_and_write_export_result(
     }
 }
 
-fn shutdown_error_v1(shutdown: &StudioShutdownReport) -> ExecutionErrorV1 {
+fn shutdown_error_v2(shutdown: &StudioShutdownReport) -> ExecutionErrorV2 {
     if let Some(issue) = shutdown.issues.first() {
-        ExecutionErrorV1 {
+        ExecutionErrorV2 {
             stage: ExecutionErrorStage::Shutdown,
             code: issue.code.clone(),
             message: format!(
@@ -489,7 +489,7 @@ fn shutdown_error_v1(shutdown: &StudioShutdownReport) -> ExecutionErrorV1 {
             turn_failure: None,
         }
     } else {
-        ExecutionErrorV1 {
+        ExecutionErrorV2 {
             stage: ExecutionErrorStage::Shutdown,
             code: "pendingPersistenceNotDrained".to_string(),
             message: format!(
@@ -504,17 +504,17 @@ fn shutdown_error_v1(shutdown: &StudioShutdownReport) -> ExecutionErrorV1 {
 fn build_result_v1(
     report: &ExecutionReport,
     export_report: &RunExportReport,
-    timing: TimingReportV1,
+    timing: TimingReportV2,
     finished_at: String,
-) -> ResultV1 {
+) -> ResultV2 {
     let outcome = report.result_outcome();
     let execution_outcome = report.execution_outcome();
     let exit_code = i32::from(report.exit_code());
     let execution_error = report.native_execution_error();
     let error = match outcome {
-        ResultOutcome::ShutdownFailed => Some(shutdown_error_v1(&report.shutdown)),
+        ResultOutcome::ShutdownFailed => Some(shutdown_error_v2(&report.shutdown)),
         ResultOutcome::ExportFailed => export_report.failure.clone().or_else(|| {
-            Some(ExecutionErrorV1 {
+            Some(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportFailed".to_string(),
                 message: export_report
@@ -537,7 +537,7 @@ fn build_result_v1(
     } else {
         None
     };
-    ResultV1 {
+    ResultV2 {
         schema_version: RESULT_SCHEMA_VERSION,
         run_id: export_report.run_id.clone(),
         root_thread_id: report
@@ -550,7 +550,7 @@ fn build_result_v1(
         exit_code,
         started_at: export_report.started_at.clone(),
         finished_at,
-        build: BuildInfoV1::current(),
+        build: BuildInfoV2::current(),
         timing,
         final_text,
         trace_complete: export_report.trace_complete,
@@ -776,7 +776,7 @@ mod tests {
             persistence: StudioPendingPersistence::Drained,
         };
         let sample_export =
-            |sealed: bool, failure: Option<ExecutionErrorV1>, usage_complete: bool| {
+            |sealed: bool, failure: Option<ExecutionErrorV2>, usage_complete: bool| {
                 RunExportReport {
                     run_id: "run-1".into(),
                     started_at: "2026-11-13T15:00:00.000Z".into(),
@@ -785,7 +785,7 @@ mod tests {
                     trace_complete: sealed && failure.is_none(),
                     usage_complete,
                     cost_complete: usage_complete,
-                    trace: pl_studio_runtime::TraceSummaryV1 {
+                    trace: pl_studio_runtime::TraceSummaryV2 {
                         events_path: "events.jsonl".into(),
                         events_sha256: Some("b".repeat(64)),
                         event_count: 5,
@@ -826,7 +826,7 @@ mod tests {
         report.signal = Some(CancellationSignal::Terminate);
         report.export = Some(sample_export(
             false,
-            Some(ExecutionErrorV1 {
+            Some(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "writeFailed".into(),
                 message: "disk full".into(),
@@ -851,7 +851,7 @@ mod tests {
             error: None,
             shutdown: StudioShutdownReport::not_started(),
             export: None,
-            export_error: Some(ExecutionErrorV1 {
+            export_error: Some(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportStartFailed".into(),
                 message: "cannot write run.json".into(),

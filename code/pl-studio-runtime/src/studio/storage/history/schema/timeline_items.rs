@@ -3,6 +3,8 @@
 //! atomic facts and the saved current cut; no original fact is rewritten.
 use super::legacy_timeline_store as timeline;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct TimelineItems;
 impl MigrationName for TimelineItems {
@@ -107,6 +109,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -136,6 +139,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -162,6 +166,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .collect()
@@ -197,7 +202,7 @@ mod tests {
         let identity = database_id(db).await?;
         let store = HistoryStore::open(path, THREAD).await?;
         for part in 1..=2_u64 {
-            let member = ThreadItem::new(
+            let member = ExecutionItem::new(
                 format!("sealed-member-{part}"),
                 THREAD.into(),
                 "sealed-turn".into(),
@@ -205,7 +210,7 @@ mod tests {
                 1,
                 1,
                 2,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![],
                     vec![format!("历史成员正文 {part} 🦀")],
                     ThreadContentLifecycle::completed(2),
@@ -215,11 +220,10 @@ mod tests {
             let completion = pl_core::chat::ChatItem::complete(
                 crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity)?,
                 part,
-                None,
             );
             conversation::migration::append_published(db, &completion).await?;
         }
-        let sealed = ThreadItem::new(
+        let sealed = ExecutionItem::new(
             "sealed-text".into(),
             THREAD.into(),
             "sealed-turn".into(),
@@ -227,7 +231,7 @@ mod tests {
             1,
             1,
             3,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "封口正文 retained 🦀".into(),
                 vec![],
@@ -238,7 +242,6 @@ mod tests {
         let completion = pl_core::chat::ChatItem::complete(
             crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity)?,
             3,
-            None,
         );
         conversation::migration::append_published(db, &completion).await?;
 
@@ -257,7 +260,7 @@ mod tests {
                 .upsert_item(
                     db,
                     4,
-                    ThreadItem::new(
+                    ExecutionItem::new(
                         id.clone(),
                         THREAD.into(),
                         "active-turn".into(),
@@ -265,7 +268,7 @@ mod tests {
                         1,
                         1,
                         2,
-                        ThreadItemState::Thinking(ThreadThinkingItem::new(
+                        ExecutionShape::Thinking(ThreadThinkingItem::new(
                             vec![],
                             vec![text.clone()],
                             ThreadContentLifecycle::streaming(),
@@ -345,14 +348,12 @@ mod tests {
          FROM session_checkpoint ORDER BY id",
         "SELECT json_array(ordinal,record_id,hex(payload),payload_hash) AS fact
          FROM current_context ORDER BY ordinal",
-        "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,hex(payload),last_write_seq) AS fact
-         FROM history_items ORDER BY ordinal",
         "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),hex(metadata)) AS fact
          FROM conversation_items ORDER BY seq",
         "SELECT json_array(owner_key,content_key,hex(payload)) AS fact
-         FROM conversation_contents ORDER BY owner_key,content_key",
+         FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key",
         "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS fact
-         FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset",
+         FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key,byte_offset",
         if completed {
             "SELECT json_array(collection,position,entry_id,hex(payload)) AS fact
              FROM completion_boundary_archive_view_entries ORDER BY collection,position"
@@ -365,13 +366,37 @@ mod tests {
          FROM conversation_sources ORDER BY source_key",
     ] {
         let query = if completed {
-            query.replace("FROM conversation_contents ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
-                .replace("FROM conversation_content_chunks ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
+            query.replace("FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
+                .replace("FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
         } else { query.to_owned() };
         for row in db.query_all_raw(statement(&query, vec![])).await? {
             facts.push(row.try_get("", "fact")?);
         }
     }
+        facts.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &[
+                    "ordinal",
+                    "item_id",
+                    "turn_id",
+                    "kind",
+                    "revision",
+                    "lifecycle",
+                    "created_at",
+                    "updated_at",
+                    "hex(payload)",
+                    "last_write_seq",
+                ],
+                false,
+            )
+            .await?
+            .into_iter()
+            .filter(|value| {
+                serde_json::from_str::<serde_json::Value>(value)
+                    .is_ok_and(|row| row[1].as_str().is_some_and(|id| id.starts_with("live-")))
+            }),
+        );
         Ok(facts)
     }
 
@@ -389,6 +414,11 @@ mod tests {
     async fn derived_bytes(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         let completed = completion_boundary::applied(db).await?;
         let mut facts = Vec::new();
+        let lifecycle_query = if version(db).await? >= 24 {
+            "SELECT json_array(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_effect,started_suborder,started_at,ended_effect,ended_suborder,finished_at,outcome,completion_item_id,last_write_seq) AS fact FROM execution_lifecycle ORDER BY identity"
+        } else {
+            "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS fact FROM conversation_atom_facts ORDER BY effect_seq,suborder,fact_order,atom_id,phase"
+        };
         for query in [
         "SELECT json_array(item_id,kind,location,position,commit_seq,hex(metadata),projection_version) AS fact
          FROM timeline_items ORDER BY location,position,item_id",
@@ -396,8 +426,7 @@ mod tests {
          FROM timeline_item_members ORDER BY item_id,member_order",
         "SELECT json_array(projection_version,next_position,source_effect_seq,projection_generation,hex(recovery)) AS fact
          FROM timeline_projection_state ORDER BY singleton_id",
-        "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS fact
-         FROM conversation_atom_facts ORDER BY effect_seq,suborder,fact_order,atom_id,phase",
+        lifecycle_query,
     ] {
         let query = if completed {
             query.replace("FROM timeline_items ", "FROM completion_boundary_archive_timeline_items ")
@@ -491,6 +520,11 @@ mod tests {
 
     async fn install_output_rejections(db: &impl ConnectionTrait) -> Result<()> {
         let completed = completion_boundary::applied(db).await?;
+        let atom_table = if version(db).await? >= 24 {
+            "execution_lifecycle"
+        } else {
+            "conversation_atom_facts"
+        };
         let current_table = if completed {
             "completion_boundary_archive_view_state"
         } else {
@@ -512,11 +546,11 @@ mod tests {
             "timeline_projection_state"
         };
         db.execute_unprepared(
-        &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON conversation_atom_facts
+        &format!("CREATE TRIGGER reject_atom_insert BEFORE INSERT ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
-         CREATE TRIGGER reject_atom_update BEFORE UPDATE ON conversation_atom_facts
+         CREATE TRIGGER reject_atom_update BEFORE UPDATE ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
-         CREATE TRIGGER reject_atom_delete BEFORE DELETE ON conversation_atom_facts
+         CREATE TRIGGER reject_atom_delete BEFORE DELETE ON {atom_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote atom facts'); END;
          CREATE TRIGGER reject_item_insert BEFORE INSERT ON {item_table}
            BEGIN SELECT RAISE(ABORT,'Applied migration rewrote items'); END;
@@ -852,6 +886,7 @@ mod tests {
                 IMMUTABLE_COMPLETION_RUNS,
                 WORK_SNAPSHOTS,
                 DISPLAY_BLOCK_ORDER,
+                EXECUTION_FACTS,
             ];
             assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
             for step in appended_steps {
@@ -1102,12 +1137,12 @@ mod tests {
         let applied_ledger = migration_records(db).await?;
         assert_eq!(
             applied_ledger.len(),
-            original_ledger.len() + 8,
-            "content preparation appends the eight named content/display upgrades, not lifecycle migrations"
+            original_ledger.len() + 9,
+            "content preparation appends the nine named content/execution upgrades, not session lifecycle migrations"
         );
         let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1117,6 +1152,7 @@ mod tests {
                 IMMUTABLE_COMPLETION_RUNS.into(),
                 WORK_SNAPSHOTS.into(),
                 DISPLAY_BLOCK_ORDER.into(),
+                EXECUTION_FACTS.into(),
             ],
         ))
         .await?
@@ -1133,7 +1169,8 @@ mod tests {
                 TIMELINE_BACKGROUND_TAIL,
                 IMMUTABLE_COMPLETION_RUNS,
                 WORK_SNAPSHOTS,
-                DISPLAY_BLOCK_ORDER
+                DISPLAY_BLOCK_ORDER,
+                EXECUTION_FACTS
             ]
         );
         for record in &original_ledger {
