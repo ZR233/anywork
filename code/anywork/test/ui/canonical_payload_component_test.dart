@@ -198,7 +198,7 @@ void main() {
         displayBatch([
           DisplayBlock(
             id: 'image-input',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -315,7 +315,7 @@ void main() {
           displayBatch([
             DisplayBlock(
               id: 'invalid-image-input',
-              historyPos: 1,
+              blockOrder: 1,
               body: SingleDisplayBlock(
                 visibility: SingleVisibility.content,
                 record: DisplayRecord(
@@ -351,7 +351,7 @@ void main() {
         displayBatch([
           DisplayBlock(
             id: 'failed-image-input',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -402,7 +402,7 @@ void main() {
         displayBatch([
           DisplayBlock(
             id: 'single-block-not-record',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -598,7 +598,7 @@ void main() {
           displayBatch([
             DisplayBlock(
               id: 'block',
-              historyPos: 1,
+              blockOrder: 1,
               body: SingleDisplayBlock(
                 visibility: SingleVisibility.content,
                 record: DisplayRecord(
@@ -647,7 +647,7 @@ void main() {
         displayBatch([
           DisplayBlock(
             id: 'restricted-block',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(

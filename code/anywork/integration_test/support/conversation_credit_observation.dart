@@ -83,48 +83,48 @@ final class ConversationCreditObservation {
     final initial = sequence == 1;
     final validPlacement = initial
         ? batch.placement == ChatPlacement.set &&
-              batch.fromPos == null &&
+              batch.fromOrder == null &&
               batch.live != null
         : batch.placement == ChatPlacement.append &&
               batch.before == null &&
-              batch.fromPos == _through &&
-              (batch.throughPos > _through! ||
-                  (batch.throughPos == _through &&
+              batch.fromOrder == _through &&
+              (batch.throughOrder > _through! ||
+                  (batch.throughOrder == _through &&
                       batch.blocks.isEmpty &&
                       batch.live != null));
-    if (!validPlacement || batch.throughPos < 0) {
+    if (!validPlacement || batch.throughOrder < 0) {
       throw StateError(
         'Credit Timeline placement or history cut is discontinuous',
       );
     }
     final ids = <String>{};
-    var previous = batch.fromPos ?? 0;
+    var previous = batch.fromOrder ?? 0;
     var hasGap = false;
     for (final block in batch.blocks) {
       if (block.id.isEmpty ||
           !ids.add(block.id) ||
           _historyIds.contains(block.id) ||
-          block.historyPos <= previous ||
-          block.historyPos > batch.throughPos) {
+          block.blockOrder <= previous ||
+          block.blockOrder > batch.throughOrder) {
         throw StateError(
           'Credit Timeline blocks are duplicated or out of order',
         );
       }
-      if (!initial && block.historyPos != previous + 1) {
+      if (!initial && block.blockOrder != previous + 1) {
         hasGap = true;
       }
-      previous = block.historyPos;
+      previous = block.blockOrder;
     }
     if (hasGap) {
       throw StateError('Credit Timeline history positions contain a gap');
     }
-    if (!initial && previous != batch.throughPos) {
+    if (!initial && previous != batch.throughOrder) {
       throw StateError(
         'Credit Timeline history cut includes undelivered blocks',
       );
     }
     if (batch.live case final live?) {
-      if (live.historyThrough != batch.throughPos ||
+      if (live.readyFrontier != batch.throughOrder ||
           live.revision < (_liveRevision ?? 0)) {
         throw StateError('Credit Timeline live cut is discontinuous');
       }
@@ -144,7 +144,7 @@ final class ConversationCreditObservation {
       _liveRevision = live.revision;
     }
     _historyIds.addAll(ids);
-    _through = batch.throughPos;
+    _through = batch.throughOrder;
     if (initial) {
       _setItemIds = List.unmodifiable(ids);
       _setContentItemIds = List.unmodifiable([
@@ -166,11 +166,11 @@ final class ConversationCreditObservation {
       'itemIds': ids.toList(),
       'blocks': [
         for (final block in batch.blocks)
-          {'blockId': block.id, 'historyPos': block.historyPos},
+          {'blockId': block.id, 'blockOrder': block.blockOrder},
       ],
       'blockCount': batch.blocks.length,
-      'fromPos': batch.fromPos,
-      'throughPos': batch.throughPos,
+      'fromOrder': batch.fromOrder,
+      'throughOrder': batch.throughOrder,
       'liveRevision': batch.live?.revision,
     });
     _frames.add(Map.unmodifiable(observation));
@@ -227,7 +227,7 @@ final class ConversationCreditObservation {
 
   Future<void> queryCompletedText({
     required String blockId,
-    required int historyPos,
+    required int blockOrder,
     required SingleDisplayBlock single,
   }) async {
     final atom = single.record.atom;
@@ -237,7 +237,7 @@ final class ConversationCreditObservation {
         _acknowledged != 0 ||
         atom.kind != ChatAtomKind.text ||
         itemId == null ||
-        historyPos <= 0 ||
+        blockOrder <= 0 ||
         (atom.completionSeq ?? 0) <= 0 ||
         terminal is! TerminalChatAtom ||
         terminal.outcome != ChatTerminalOutcome.completed ||
@@ -283,7 +283,7 @@ final class ConversationCreditObservation {
     final query = <String, Object?>{
       'operation': 'query-completed-text',
       'blockId': blockId,
-      'historyPos': historyPos,
+      'blockOrder': blockOrder,
       'recordId': itemId,
       'contentItemId': itemId,
       'completionSeq': atom.completionSeq,
@@ -310,15 +310,15 @@ final class ConversationCreditObservation {
 
   Future<void> observeSuccessors({
     required String blockId,
-    required int historyPos,
+    required int blockOrder,
   }) async {
     final query = evidence['query'];
     if (_frames.length != 1 ||
         _acknowledged != 0 ||
         query is! Map ||
         query['blockId'] != blockId ||
-        query['historyPos'] != historyPos ||
-        historyPos <= _through!) {
+        query['blockOrder'] != blockOrder ||
+        blockOrder <= _through!) {
       throw StateError(
         'Credit target must be the original queried completed text',
       );
@@ -350,16 +350,16 @@ final class ConversationCreditObservation {
           .where((block) => block.id == blockId)
           .singleOrNull;
       if (target != null) {
-        if (target.historyPos != historyPos) {
+        if (target.blockOrder != blockOrder) {
           throw StateError(
             'Credit target block arrived at the wrong history position',
           );
         }
         evidence['targetDelivery'] = {
           'blockId': blockId,
-          'historyPos': historyPos,
+          'blockOrder': blockOrder,
           'deliverySequence': sequence + 1,
-          'throughPos': batch.throughPos,
+          'throughOrder': batch.throughOrder,
           'actualOrdinaryFrameCount': _frames.length,
           'acknowledgedThrough': _acknowledged,
           'outstandingSequence': sequence + 1,
@@ -367,7 +367,7 @@ final class ConversationCreditObservation {
         // Retain this actually received frame unacknowledged for close/join.
         return;
       }
-      if (batch.throughPos >= historyPos) {
+      if (batch.throughOrder >= blockOrder) {
         throw StateError(
           'Credit Timeline passed the target position without its block',
         );

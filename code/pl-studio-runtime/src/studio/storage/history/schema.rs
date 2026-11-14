@@ -5,6 +5,7 @@ mod background_results;
 pub(super) mod completion_boundary;
 mod conversion;
 mod demand_conversation;
+mod display_block_order;
 pub(in crate::studio::storage::history) mod immutable_completion_runs;
 pub(in crate::studio::storage::history) mod legacy_completion_projection;
 pub(in crate::studio::storage::history) mod legacy_content;
@@ -66,6 +67,7 @@ async fn write_published_checkpoint(
     Ok(())
 }
 
+const DISPLAY_BLOCK_ORDER: &str = "m20261113_000002_display_block_order";
 const WORK_SNAPSHOTS: &str = "m20261113_000001_work_snapshots";
 
 struct Migrator {
@@ -146,6 +148,7 @@ impl MigratorTraitSelf for Migrator {
                 "m20261112_000001_visible_tail_workgroups",
             )),
             Box::new(work_snapshots::WorkSnapshots),
+            Box::new(display_block_order::DisplayBlockOrder),
             Box::new(ProjectKind {
                 thread_id: self.thread_id.clone(),
             }),
@@ -397,8 +400,19 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         .get_pending_migrations_read_only(db)
         .await?
         .into_iter()
-        .filter(|step| !work_snapshots::is_legacy_marker(step.name()))
+        .filter(|step| {
+            !work_snapshots::is_legacy_marker(step.name()) && step.name() != DISPLAY_BLOCK_ORDER
+        })
         .collect::<Vec<_>>();
+    let order_pending = migrator
+        .get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .any(|step| step.name() == DISPLAY_BLOCK_ORDER);
+    ensure!(
+        order_pending == (version < 23),
+        "display format conflicts with migration record; original history preserved"
+    );
     let atomic_pending = pending.iter().any(|step| step.name() == ATOMIC_TIMELINE);
     let metering_pending = pending.iter().any(|step| step.name() == METERING_FACTS);
     let combined_pending = pending.iter().any(|step| step.name() == COMBINED_CONTENT);
@@ -428,7 +442,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         model_route_head_pending == (version < 13)
             && metadata_pending == (version < 14)
             && timeline_pending == (version < 15)
-            && (source_classification_pending || matches!(version, 15..=22))
+            && (source_classification_pending || matches!(version, 15..=23))
             && thinking_summary_pending == (version < 16)
             && background_tail_pending == (version < 17)
             && runs_pending == (version < 18)
@@ -444,7 +458,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                         && !combined_pending
                         && demand_pending
                 }
-                12..=22 => {
+                12..=23 => {
                     !retire_pending
                         && !atomic_pending
                         && !metering_pending
@@ -842,7 +856,7 @@ async fn validate_current_structure(db: &impl ConnectionTrait) -> Result<()> {
         version(db).await? == HISTORY_SCHEMA_VERSION,
         "history format is not current; existing data preserved"
     );
-    work_snapshots::validate(db).await
+    display_block_order::validate(db).await
 }
 
 async fn validate_schema16_structure(db: &impl ConnectionTrait) -> Result<()> {
@@ -1328,7 +1342,10 @@ impl MigrationTrait for CombinedContent {
                 .get_pending_migrations_read_only(db)
                 .await?
                 .iter()
-                .filter(|step| !work_snapshots::is_legacy_marker(step.name()))
+                .filter(|step| {
+                    !work_snapshots::is_legacy_marker(step.name())
+                        && step.name() != DISPLAY_BLOCK_ORDER
+                })
                 .any(|step| {
                     // Later content steps are still pending at the format-10 boundary.
                     !matches!(
@@ -1865,6 +1882,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {
@@ -1903,6 +1921,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {
@@ -1947,6 +1966,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {

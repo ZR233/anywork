@@ -38,7 +38,7 @@ enum LiveStatusSectionTarget { outputBar, timelineWork }
 final class LiveWindowCut {
   const LiveWindowCut({
     required this.revision,
-    required this.historyThrough,
+    required this.readyFrontier,
     required this.executionPresent,
     required this.attemptId,
     required this.isDisplayActive,
@@ -46,13 +46,13 @@ final class LiveWindowCut {
 
   const LiveWindowCut.inactive()
     : revision = null,
-      historyThrough = null,
+      readyFrontier = null,
       executionPresent = null,
       attemptId = null,
       isDisplayActive = false;
 
   final int? revision;
-  final int? historyThrough;
+  final int? readyFrontier;
   final bool? executionPresent;
   final Object? attemptId;
   final bool isDisplayActive;
@@ -61,7 +61,7 @@ final class LiveWindowCut {
 
   bool matchesWindow(LiveDisplayWindow window) =>
       revision == window.revision &&
-      historyThrough == window.historyThrough &&
+      readyFrontier == window.readyFrontier &&
       executionPresent == window.executionPresent;
 
   @override
@@ -69,7 +69,7 @@ final class LiveWindowCut {
       identical(this, other) ||
       other is LiveWindowCut &&
           revision == other.revision &&
-          historyThrough == other.historyThrough &&
+          readyFrontier == other.readyFrontier &&
           executionPresent == other.executionPresent &&
           attemptId == other.attemptId &&
           isDisplayActive == other.isDisplayActive;
@@ -77,7 +77,7 @@ final class LiveWindowCut {
   @override
   int get hashCode => Object.hash(
     revision,
-    historyThrough,
+    readyFrontier,
     executionPresent,
     attemptId,
     isDisplayActive,

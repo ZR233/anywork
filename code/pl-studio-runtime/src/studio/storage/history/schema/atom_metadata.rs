@@ -757,6 +757,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -1464,6 +1465,7 @@ mod background_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|step| !is_lifecycle_migration(step.name()))

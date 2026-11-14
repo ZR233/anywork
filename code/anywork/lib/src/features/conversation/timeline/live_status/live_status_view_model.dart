@@ -159,7 +159,7 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
     final cut = activeLease && live != null
         ? LiveWindowCut(
             revision: live.revision,
-            historyThrough: live.historyThrough,
+            readyFrontier: live.readyFrontier,
             executionPresent: live.executionPresent,
             attemptId: lease.content.currentAttemptId,
             isDisplayActive: true,

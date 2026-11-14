@@ -57,7 +57,7 @@ void main() {
       final previous = lease.live.value!;
       final live = LiveDisplayWindow(
         revision: previous.revision + 1,
-        historyThrough: previous.historyThrough,
+        readyFrontier: previous.readyFrontier,
         currentWorkId: null,
         executionPresent: true,
         blocks: const [],
@@ -66,8 +66,8 @@ void main() {
         displayBatch(
           const [],
           placement: ChatPlacement.append,
-          from: live.historyThrough,
-          through: live.historyThrough,
+          from: live.readyFrontier,
+          through: live.readyFrontier,
           live: live,
         ),
       );

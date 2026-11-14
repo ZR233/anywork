@@ -103,7 +103,7 @@ final class TimelineConceptImageInput {
       completedOriginalId((item.body as SingleDisplayBlock).record),
       isNotEmpty,
     );
-    expect(item.historyPos, greaterThan(0));
+    expect(item.blockOrder, greaterThan(0));
     expect(item.atom!.completionSeq, greaterThan(0));
     expect(attachments, hasLength(3));
     expect(attachments.map((item) => item.id).toSet(), hasLength(3));
@@ -123,7 +123,7 @@ final class TimelineConceptImageInput {
       'contentItemId': completedOriginalId(
         (item.body as SingleDisplayBlock).record,
       ),
-      'historyPos': item.historyPos,
+      'blockOrder': item.blockOrder,
       'completionSeq': item.atom!.completionSeq,
       'attachmentResourceIds': attachments.map((item) => item.id).toList(),
     };

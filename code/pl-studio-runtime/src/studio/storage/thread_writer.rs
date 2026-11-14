@@ -4309,7 +4309,7 @@ mod batch_tests {
         crate::studio::storage::history::conversation::display::verify(&db, &display_third).await?;
         assert_eq!(
             crate::studio::storage::history::conversation::display::watermarks(&db).await?,
-            (display_third.published_through, 3)
+            (display_third.ready_frontier, 3)
         );
         assert_eq!(
             channel

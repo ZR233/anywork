@@ -87,8 +87,8 @@ LiveDisplayWindow _liveDisplayWindowFromFrb(
   frb_presentation.BridgeLiveDisplayWindow value,
 ) => LiveDisplayWindow(
   revision: _exactTimelineInt(value.revision, 'live display revision'),
-  historyThrough: _exactTimelineInt(
-    value.historyThrough,
+  readyFrontier: _exactTimelineInt(
+    value.readyFrontier,
     'display history prefix',
   ),
   executionPresent: value.executionPresent,
@@ -134,13 +134,13 @@ TimelineBatch _timelineBatchFromFrb(
       for (final block in value.blocks)
         DisplayBlock(
           id: block.id,
-          historyPos: _exactTimelineInt(block.historyPos, 'display position'),
+          blockOrder: _exactTimelineInt(block.blockOrder, 'display position'),
           body: _displayBodyFromFrb(block.body),
         ),
     ],
     before: value.before,
-    fromPos: _exactNullableTimelineInt(value.fromPos, 'display prefix'),
-    throughPos: _exactTimelineInt(value.throughPos, 'display prefix'),
+    fromOrder: _exactNullableTimelineInt(value.fromOrder, 'display prefix'),
+    throughOrder: _exactTimelineInt(value.throughOrder, 'display prefix'),
     live: value.live == null ? null : _liveDisplayWindowFromFrb(value.live!),
   );
 }

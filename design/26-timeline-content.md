@@ -59,7 +59,7 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 原件 `item_id` 是稳定业务身份，`seq` 是完成发布顺序，范围为 `1..=i64::MAX`，由原 Session 在 RAM 分配，不是时间戳或开始顺序。原件历史始终按完成 seq，不反向改写。
 
-展示组不按来源分桶。唯一 open_work 接纳前台、后台与旧 Turn 的所有新 Work；关联键仍由 typed source、真实 atom/call/part ID 与责任阶段组成。当前组已有同键行则补真实终态并保留 member_key/位置/total；没有则新增 terminal-only 行，不查旧组、不补开始。原业务准入必须拒绝重复派发，不能因旧行已释放再次插入。段首 source/source_key 只作诊断；成员保留各自来源，捕获校验成员自己的来源、关联键和阶段，不要求等于组头来源。ID 不透明，既有已发布 ID、history_pos 不改。
+展示组不按来源分桶。唯一 open_work 接纳前台、后台与旧 Turn 的所有新 Work；关联键仍由 typed source、真实 atom/call/part ID 与责任阶段组成。当前组已有同键行则补真实终态并保留 member_key/位置/total；没有则新增 terminal-only 行，不查旧组、不补开始。原业务准入必须拒绝重复派发，不能因旧行已释放再次插入。段首 source/source_key 只作诊断；成员保留各自来源，捕获校验成员自己的来源、关联键和阶段，不要求等于组头来源。块和成员 ID 是稳定身份，不从其格式推断语义；既有 ID 不改，正常运行中的 block_order 一经创建不再移动。
 
 同一 Native Thread 维护唯一未封存 Work、仅指向该组的关联索引及统一有序待发布块。结束只查询当前组同关联身份的开始行：存在则补充该行结束引用，不存在则按本次结束事实创建新行；合法 terminal-only 来源不补造开始。封存立即撤销旧组可更新资格，后续 progress/terminal 不回查历史、不命中旧成员位置。事实幂等和矛盾检查仍在原接纳/PreparedEffect 层，不因新组无开始而重复显示结束。统一按块顺序推进 ready 前缀，不重排已发布块。
 
@@ -74,13 +74,13 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 | 曾可见 Text 权威终值为空 | 保留边界，显示 FinalEmptyAfterContent |
 | ACK、COMMIT、绘制、计时、批次 | 均不产生边界 |
 
-冻结条件是首次可靠可显示 Single 的边界；发布 history_pos 还须全局 blocks 创建顺序中更早段已完整交接。复用原 BTreeMap 作为唯一有序容器，不另建来源队列或全局顺序副本。未结束正文可以挡住后继历史位置，但不挡原件保存及 live 窗口呈现。冻结立即撤销组更新资格，不等未结束任务；边界材料先 fallible 准备再提交 fold，每批只索引一次终态位置，不能用未来终态免去边界前捕获。
+冻结条件是首次可靠可显示 Single 的边界；历史前沿只越过全部已冻结的创建位置。复用原 BTreeMap 作为唯一有序容器，不另建来源队列或全局顺序副本。未结束正文可以挡住后继历史位置，但不挡原件保存及 live 窗口呈现。冻结立即撤销组更新资格，不等未结束任务；边界材料先 fallible 准备再提交 fold，每批只索引一次终态位置，不能用未来终态免去边界前捕获。
 
 目标故事：A/R 开始进入 G1；空 Text Opened→空 Closed 不切 G1；后台 X 完成加入 G1；T 首次有内容冻结 G1 并建立 T；B 开始创建 G2，旧 A/R 与后台 Y 的迟到结束进入 G2；T 终态只更新 T，不再切 G2。全部暂时空闲、关闭及重开后仍为同 ID 的 G2；新用户输入受理才冻结 G2，下一条工作事实创建 G3。
 
-普通工具和后台结果都是 Work，不因终态、来源或工具文字成为 Single。前台 Transferred 与后台最终结果保留不同责任身份，不误合。明确文件展示由原 typed producer 赋予 Single 资格；读取图片仍属工作成员，不按 MIME 或客户端解析结果重新分类。真实独立 Plan/交互回执、公开失败/取消/中断回执按各自产品合同首次建立 Single。SourceEnded 仅保留业务事实，不进入 seal/drain 链，也不新增 ThreadSettled 展示事件。
+普通工具和后台结果都是 Work，不因终态、来源或工具文字成为 Single。前台 Transferred 与后台最终结果保留不同责任身份，不误合。明确文件展示由原 typed producer 赋予 Single 资格；读取图片仍属工作成员，不按 MIME 或客户端解析结果重新分类。真实独立 Plan/交互回执、公开失败/取消/中断回执按各自产品合同首次建立 Single。SourceEnded 仅保留业务事实，不进入 冻结链，也不新增 ThreadSettled 展示事件。
 
-既有已发布 Single 普通工具结果通过正式派生展示迁移转换为单成员 Work；只改变展示形态，保留原 block_id、history_pos、成员身份、原完成记录与原子事实。不将多个已发布块回溯合并，不重排或回填已封存前台组；独立文件展示等非目标记录保持原样。迁移须可安全重入，升级后重开与成员读取继续沿原身份工作。
+既有已发布 Single 普通工具结果通过正式派生展示迁移转换为单成员 Work；只改变展示形态，保留原块身份、既有显示顺序和成员身份、原完成记录与原子事实。不将多个已发布块回溯合并，不重排或回填已封存前台组；独立文件展示等非目标记录保持原样。迁移须可安全重入，升级后重开与成员读取继续沿原身份工作。
 
 ### 空正文与附件
 
@@ -92,11 +92,11 @@ Started、ContentAvailable 与 Completed 沿原可靠 producer/effect 通道接�
 
 ## 26.3 增量状态与保存交接
 
-稳定的 ConversationStore 持有唯一 PresentationState：一个 open_work、原 blocks 有序容器、当前组关联索引、仅含已可见正文的 open_texts、必要 pending 与 P/Dp。普通 progress 只更新当前仍拥有的成员，不将旧运行任务复制到每个新组。加入或结束成员只触及当前行和组小头；边界只捕获本组未结束观察，不遍历完成正文或无关 Plan/交互。
+稳定的 ConversationStore 持有唯一展示投影。块第一次可见时分配正整数 `BlockOrder`，冻结后位置不变，允许序号洞；完成原件的 seq 和业务 effect_seq 各自独立。`last_order` 是已接纳的最大创建位置，空库为 0；`unready` 只含未冻结块，`ready_frontier` 为其最小位置减一，无未冻结块时等于 last_order。前沿单调前进，越过大量已冻结块时不逐行发布、不重新编号或复制头。来源结束、空闲和页面关闭不冻结唯一可追加工作尾组。
 
-- H/D：原子完成发布上界及已保存连续前缀，原 Session pending 完整覆盖 `(D,H]`。
-- P/Dp：冻结展示发布上界及已确认持久前缀；待保存索引引用原 PreparedEffect 中同一冻结材料，覆盖 `(Dp,P]`，不是另一可靠队列。
-- PreparedDisplayDelta 绑定 effect_seq，只保存本次变化的块/成员冻结行及必要 RemoveEmpty；writer 不读取最新内存状态，也不查询原历史计算摘要。
+- H/D 仍表示完成原件的发布上界与已保存连续前缀，原 Session pending 完整覆盖 `(D,H]`。
+- 展示历史范围为 `block_order <= ready_frontier`，尾部为 `(ready_frontier,last_order]`；冻结且已耐久的等待块可立即回收，不能据前沿判断是否已耐久。
+- 展示增量只携该 effect 实际改变的头、成员、观察内容及同切面的 effect_seq、ready_frontier、last_order，不带逐块发布列表或普通删除空壳动作。writer 不读取后来变化的 Store 补字段。
 
 原 writer 在一个事务保存 effect、checkpoint/context、原件、内容、展示增量及水位，任一失败整批回滚。精确重放复用同冻结材料和原提交凭据；不允许 OR REPLACE、无条件旧头覆盖、OR IGNORE 吞冲突或异步修复队列。同一 writer 批次可合并同一小头中间写值，但保留所有成员和原业务增量。
 
@@ -124,33 +124,39 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 
 存储表和迁移归 [17](./17-studio-storage.md)。块小头保存种类、来源、boundary、计数、真实时间、有界概要和内容/成员引用，不保存全成员 ID 数组、全部 ChatAtom、正文、完整 payload 或 ThreadSnapshot。成员保存展示行身份、关联身份、顺序、可空开始/结束事实引用及类型化内容来源。完成原件使用真实 completion_id；未结束观察使用独立命名的 sealed 显示快照，不分配 completion ID 或 finished_at。冻结引用不得指向会变化的当前 atom，也不能仅存 generation/长度后再读最新前缀。
 
-历史 Main 只按冻结 history_pos 查询块头，不 JOIN 成员、不 COUNT、不读正文。短锁捕获 P/Dp 与必要 pending 共享引用；内存足页不查库，不足则在捕获后新建 SQLite 短读快照，只补 captured_Dp 前缀。continuation 绑定库、资格、初始 ceiling 与排他位置；坏 ref/换库/旧资格明确 stale/invalid，错误不推进 cursor。
+历史、尾部和成员页均按同方向、同键范围有界读取。短 Store 锁捕获数据库身份、修订、前沿、最大位置、目标组头及成员上界，并保留请求范围前 K 个驻留行的不可变 Arc；随后在锁外新建 SQLite 短快照，查询同范围前 K 行。按键归并至多 2K 个候选，捕获 Arc 始终覆盖同键数据库行，再以 K/字节预算截成完整行。数据库查询不先按 sealed 或 terminal 过滤，避免旧数据库状态改变候选集合；合并后才解释冻结状态。新增键由 captured last_order/next_member 排除，旧值由 captured Arc 保留。每个独立页形成新切面，不承诺跨页长快照。
+
+两个可丢弃的驻留下界分别证明块尾部和当前组成员尾部的完整覆盖。冷恢复从已知最大位置加一开始，回收位置 q 后下界只向 q+1 提升；溢出时放弃证明。DESC 足 K 行且候选均在完整范围内，或整个请求范围已覆盖时可零 SQL；ASC 必须从完整范围内开始。仅有 K 行驻留不足以跳过夹在其中的数据库行。不满足证明则执行一次有界查询，不补 COUNT、存在性查询、全历史检查或正文解码。
+
+游标绑定库、读取资格、展示版本、上界和排他位置，非空边界必须为正。分页按实际交付的最后键推进；已检查完的空洞和空页允许推进到目标上界，字节拆页不跳过未交付行。旧页可保守返回继续尝试的游标，正常空页确认结束。最小元数据仍超出预算时明确报错，不返回游标不动的空页。
 
 热 current 头和摘要直接读内存；成员轻量头按序页读。历史/冷成员从展示索引读取，不用原完成 seq 范围猜组。明确请求的成员正文、payload 与媒体才按 completion_id/ContentRef 走原 RAM 优先、SQLite 补齐及范围预算。
 
-冷打开直接恢复保存的小头、唯一 open_work、计数、下一位置和必要未结束关联，不加载所有已耐久终态成员、不扫描原历史或完整 checkpoint/context、不激活执行。全 Terminal 的开放尾组静态 Resting，不标未恢复；仅冷源且有未收束/不可用成员为 Unrestored。sealed 待发布块永不恢复更新资格。Core 的真实中断/恢复事实仍按唯一尾组接纳；无执行 owner 不造业务终态；经过时间仍按未封口组的开始时间计算。Applied 后坏结构或引用明确拒绝并保原件，不在线重建。
+冷打开只读取同一 SQLite 切面的元数据和所需历史／尾部页，不 hydrate 可变集合、不激活执行。执行附加前按开放头索引和未结束成员索引分块恢复全部可变行、唯一尾组、计数和必要关联；不加载已冻结等待块或长期尾组的已耐久终态成员。全 Terminal 的开放尾组静态 Resting，不标未恢复；仅冷源且有未收束/不可用成员为 Unrestored。sealed 待发布块永不恢复更新资格。Core 的真实中断/恢复事实仍按唯一尾组接纳；无执行 owner 不造业务终态；经过时间仍按未封口组的开始时间计算。Applied 后坏结构或引用明确拒绝并保原件，不在线重建。
 
 ## 26.5 展示协议与同切面交付
 
-公共展示协议为 presentation_version=5，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/history_pos/body。Work 仅持 WorkTiming（可空 startedAt、可空 finishedAt，均为 Unix 秒；旧组缺少可靠时间时保留 null）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
+冷只读窗口以已保存的展示 effect 初始化视图版本；执行附加沿用该基线，后续结构变化再递增，保证同一读取资格接续时版本不倒退。该基线只服务视图版本，不参与块、成员或完成原件的顺序判断。
+
+公共展示协议为 presentation_version=6，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/block_order/body。Work 仅持 WorkTiming（可空 startedAt、可空 finishedAt，均为 Unix 秒；旧组缺少可靠时间时保留 null）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
 
 
-LiveDisplayWindow 携 revision、history_through=P、execution_present、current_work_id、有界 blocks 和 older。current_work_id 由 Rust owner 唯一确定，规范最新窗口必须包含它指向的未 sealed Work；预算不足明确 InvalidDemand，不丢头让客户端猜。旧页只描述该页，不写回规范最新身份。更早窗口保留原读取资格与结构代次；token 不换代，stale 只刷新受影响 live 窗口。execution_present 只证明资源存在，不证明正在工作。
+LiveDisplayWindow 携 revision、ready_frontier=P、execution_present、current_work_id、有界 blocks 和 older。current_work_id 由 Rust owner 唯一确定，规范最新窗口必须包含它指向的未 sealed Work；预算不足明确 InvalidDemand，不丢头让客户端猜。旧页只描述该页，不写回规范最新身份。更早窗口保留原读取资格与结构代次；token 不换代，stale 只刷新受影响 live 窗口。execution_present 只证明资源存在，不证明正在工作。
 
 每个 LiveDisplayBlock 的可空 typed source 仍直接来自 DisplayHeader.source，保留作段首来源诊断；它不表示所有成员共同来源，不决定布局、当前组、活动资格或恢复多个 lane。不得从块 ID、来源、activeTurnId 是否非空、lastOrNull 或分页末项推断当前组。
 
-TimelineBatch 携 presentation_version、Set/Prepend/Append、blocks、before、from_pos、through_pos 及可空 live。GUI Timeline feed 仅交付 Timeline/Failure/Closed，不转发 State，也不同时交 Chat/Activity 让 Flutter 合并；状态沿独立 State feed。原 completedHistoryVersion=1、Thread State schema17 及原完成 feed 语义保留给完成级消费者。
+TimelineBatch 携 presentation_version、Set/Prepend/Append、blocks、before、from_order、through_order 及可空 live。GUI Timeline feed 仅交付 Timeline/Failure/Closed，不转发 State，也不同时交 Chat/Activity 让 Flutter 合并；状态沿独立 State feed。原 completedHistoryVersion=1、Thread State schema17 及原完成 feed 语义保留给完成级消费者。
 
 1. 先登记观察再捕获 `(P0,live0)`；首 Set 建立同切面历史页与 live。
 2. 后续固定目标 `(Pt,live_t)`，按预算追赶冻结头，不追逐无限变化目标。
 3. 每帧一次追加本帧历史 blocks，并按相同 block_id 退役对应实时块；未交付块保留。
 4. 未追至 Pt 的 live=None 表示保持剩余 live；只有追至 Pt 才替换完整 live_t。
-5. P 不变但 live 变化时发送空 blocks、from_pos=through_pos=P、live=Some 的 Append，不枚举/操作历史 controller。
+5. P 不变但 live 变化时发送空 blocks、from_order=through_order=P、live=Some 的 Append，不枚举/操作历史 controller。
 6. Prepend 不带 live、不推进订阅位置；独立查询不需要流 ACK。
 
 SDK 与 Flutter 将历史插入和 live 退役作为一次可观察接纳提交：两者完成后才发一次视图更新并 ACK，不能先清空再异步查历史，也不能一帧双显同 ID。Dart 接纳不等待 Flutter 绘制。
 
-watch 只保存最新切面并唤醒；漏中间通知不漏冻结头，后者在原 pending/SQLite。慢 GUI 只阻塞自身有限在途帧，不反压执行保存。query 短锁准入后锁外 IO，不等 events/credit；request_close 同步撤销准入并唤醒，close 汇合在途资源。旧成功、错误、finally 和 ACK 都复核原 lease，保护 A→B→A。
+watch 只保存最新切面并唤醒；漏中间通知不漏冻结头，后者在原 Store/SQLite。慢 GUI 只阻塞自身有限在途帧，不反压执行保存。query 短锁准入后锁外 IO，不等 events/credit；request_close 同步撤销准入并唤醒，close 汇合在途资源。旧成功、错误、finally 和 ACK 都复核原 lease，保护 A→B→A。
 
 ## 26.6 业务引用由 State 交付
 
@@ -170,7 +176,7 @@ listContents/readContent/readAttachment/watchContent/pageCurrent 沿原 reader�
 
 DisplayMemberWindow 为 Latest 或 Before{member_order}。DisplayMemberPage 携块引用、revision、sealed、有界轻量 entries 与 before。句柄首次 next 返回当前页，后续在该块成员结构/状态或封存资格改变时返回完整最新页；单个在途 next，接纳后再取。交付身份为 `(revision, sealed)`：封存若仅改变资格，可接同 revision 的封存页；若捕获改变了记录或内容引用，须推进 revision。普通重复、版本倒退及封存后新数据仍是错误。token 不触发成员列表重读；切换窗口替换观察，不拼不同 revision 的可变页。
 
-成员页的 sealed 只表示**本次有界观察的快照不再变化**，不同于 DisplayHeader.sealed 的业务块冻结事实，也不等于全部成员 terminal。冷 saved-only 源没有成员变化订阅，首次 next 在原短读事务内取得该窗口的一致切面，以 sealed 页交付，之后正常 EOF；不为读取明细激活执行、促 flush、封组或分配 history_pos。该切面在首次查询时形成，不承诺句柄创建时已固定全组，也不把多个 Before 窗口拼成跨 revision 的事务快照。原数据库身份、读取权限、source epoch、取消和资格复核仍适用；新执行源安装后，旧冷读取资格失效，不悄悄升级为热观察。
+成员页的 sealed 只表示**本次有界观察的快照不再变化**，不同于 DisplayHeader.sealed 的业务块冻结事实，也不等于全部成员 terminal。冷 saved-only 源没有成员变化订阅，首次 next 在原短读事务内取得该窗口的一致切面，以 sealed 页交付，之后正常 EOF；不为读取明细激活执行、促 flush、封组或分配第二展示位置。该切面在首次查询时形成，不承诺句柄创建时已固定全组，也不把多个 Before 窗口拼成跨 revision 的事务快照。同一 Store 的执行附加不替换读取身份，每页按当次模式捕获切面；原数据库身份、读取权限、source epoch、取消和资格复核仍适用，运行时重启或数据库身份变化明确使旧资格失效。
 
 热源中业务块仍开放时，即使全部成员已 terminal，也继续原成员订阅，后续工作仍可更新该窗口；真实业务边界冻结块后交付 sealed 页，即使其中有未终态的 FrozenObservation。正常 EOF 前必须交付一张 sealed 页；首页缺失、未固定的热观察意外结束和资格失效仍是错误，不能以任意 EOF 充当完成。固定页不保持无用 watch，页封存或 EOF 都不能反向改写业务块小头。
 
@@ -202,7 +208,7 @@ Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加�
 
 发送临时回显继续归原 Composer 提交 owner：同步冻结 inputId、正文和附件后立即交出当前草稿，区分发送中、已接纳等待同步、明确发送失败及发送结果待确认，精简呈现遵循 [19.11](19-studio-ui.md#1911-运行中发送消息与剪贴板粘贴)。明确失败保留内容及原因，并提供仅针对该失败项的重试与移除；未知结果不暴露普通重试，防止重复发送。内容与附件所有权按 [25.8](25-frontend-state.md#258-输入草稿与附件所有权账本) 结算，展示不能复制另一套提交状态。临时回显不是 canonical 输入或工作成员；原输入接纳后按 inputId 结算，不按正文去重、不因封组重复插入、不扫描历史或新增持久消息仓储。回显与正式正文共用现有 Markdown 展示能力。
 
-唯一当前尾组由 current_work_id 定位，不限前台或当前 Turn。Active 时进入实时状态栏；无真实活动为 Resting 静态尾卡；冷源确有未收束/不可用成员为 Unrestored；有可见边界为 Sealed。它们是原 State、sealed 和内容资格的派生呈现，不增加可写业务 owner。Resting 仍为 history_pos=NULL，不插入历史 controller 后撤回。当前尾卡只挂一处，同 ID 动静切换保留展开意图与原读取 owner，不因样式关闭共享资源。Plan/问答 dock 仅遮蔽，不删除尾组或重建审批资格。
+唯一当前尾组由 current_work_id 定位，不限前台或当前 Turn。Active 时进入实时状态栏；无真实活动为 Resting 静态尾卡；冷源确有未收束/不可用成员为 Unrestored；有可见边界为 Sealed。它们是原 State、sealed 和内容资格的派生呈现，不增加可写业务 owner。Resting 仍位于 ready_frontier 之后的可变尾部，不插入历史 controller 后撤回。当前尾卡只挂一处，同 ID 动静切换保留展开意图与原读取 owner，不因样式关闭共享资源。Plan/问答 dock 仅遮蔽，不删除尾组或重建审批资格。
 
 ### 折叠呈现与文案
 
@@ -248,7 +254,7 @@ Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加�
 
 ## 26.10 当前快照格式与旧数据边界
 
-当前快照为 history22、DisplayHeader v4、presentation v5。新库通过 m20261113_000001_work_snapshots 直接创建当前展示表、索引和水位，不经过旧快照聚合及转换链。组时间只保存开始、结束两个值；成员序号、未完成关联、内容引用与可靠封口位置保留原有读取和生命周期职责。
+当前展示格式沿正式迁移序列使用单一创建位置和独立历史前沿，公共协议为 presentation v6。旧已发布顺序仅在正式迁移中解码并转换，正常 reader 不接纳旧游标或第二位置。组时间只保存开始、结束两个值；成员序号、未完成关联、内容引用与可靠封口位置保留原有读取和生命周期职责。
 
 旧展示快照只在正式存储迁移边界解码升级，保留原块身份、成员与内容引用，并归档旧快照。历史中没有组创建或封口证据时，时间保持未知，界面不显示推算耗时。尚未生成展示快照的旧库按原完成顺序建立引用，不改写原件。迁移失败事务回滚，原件和已有备份保留；升级不是删除或清空用户数据的授权。其他账号、凭据和非展示存储的约定不因本次快照调整而改变。
 

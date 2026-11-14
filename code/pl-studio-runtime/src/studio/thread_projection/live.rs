@@ -1557,6 +1557,23 @@ impl LiveProjection {
     /// A frame while many final parts remain resident therefore still visits those report entries;
     /// the identity accumulator does not make the whole retention query constant-time.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        self.retained_without_display().saturating_add(
+            self.presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retained_bytes(),
+        )
+    }
+
+    pub(in crate::studio) fn retained_after_display(
+        &self,
+        plan: &super::presentation::PresentationPlan,
+    ) -> u64 {
+        self.retained_without_display()
+            .saturating_add(plan.retained_bytes())
+    }
+
+    fn retained_without_display(&self) -> u64 {
         let mut bytes = self
             .items_bytes
             .saturating_add(self.facts_bytes)
@@ -1567,12 +1584,6 @@ impl LiveProjection {
                     + RETAINED_ENTRY_OVERHEAD
             }))
             .saturating_add(self.current.retained_bytes());
-        bytes = bytes.saturating_add(
-            self.presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retained_bytes(),
-        );
         bytes = bytes
             .saturating_add(
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -3952,7 +3963,7 @@ mod completion_boundary_tests {
             );
             assert_eq!(chat.head_seq(), 0);
             let presentation = projection.presentation();
-            let cut = presentation.lock().unwrap().capture(None, 8, 0, 8);
+            let cut = presentation.lock().unwrap().capture(None, 8, Some(0), 8);
             assert_eq!(
                 cut.published, 0,
                 "reliable Started is not content availability"
@@ -4129,7 +4140,7 @@ mod completion_boundary_tests {
                 .context("frozen A")?;
             let block = frozen.block_id.clone();
             let page = history
-                .display_member_page(&database, &block, None, 8)
+                .display_member_page(&database, &block, None, 8, None)
                 .await?;
             let record = page
                 .entries
@@ -4208,7 +4219,7 @@ mod completion_boundary_tests {
             .into();
             publish(&mut projection, &history, &chat, &thread, &state, &terminal).await?;
             let unchanged = history
-                .display_member_page(&database, &block, None, 8)
+                .display_member_page(&database, &block, None, 8, None)
                 .await?;
             assert_eq!(
                 unchanged
@@ -4228,7 +4239,9 @@ mod completion_boundary_tests {
             drop(chat);
             let cold = HistoryStore::open(&path, &thread.id).await?;
             let cold_chat = Session::new(cold.clone(), TimelineEpoch::new("a07-cold")?);
-            let page = cold.display_member_page(&database, &block, None, 8).await?;
+            let page = cold
+                .display_member_page(&database, &block, None, 8, None)
+                .await?;
             let cold_record = &page
                 .entries
                 .iter()
@@ -4361,7 +4374,7 @@ mod completion_boundary_tests {
         let activity = projection.current.activity().context("summary activity")?;
         assert_eq!(activity.summary, "LAST_SUMMARY");
         assert_eq!(activity.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
-        let cut = projection.presentation.lock().unwrap().capture(None, 8, 0, 8);
+        let cut = projection.presentation.lock().unwrap().capture(None, 8, Some(0), 8);
         let work = cut.open.iter().find(|header| Some(&header.id) == cut.current_work_id.as_ref()).context("open Work")?;
         assert_eq!(work.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
         sender.edit_parts(|parts| {
@@ -4576,7 +4589,7 @@ mod completion_boundary_tests {
             .context("original tool start")?
             .clone();
         let owner = projection.presentation();
-        let first_cut = owner.lock().unwrap().capture(None, 1, 0, 1);
+        let first_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
         let block_id = first_cut.open[0].id.clone();
         let structure_revision = first_cut.revision;
         let mut previous_revision = first_cut.open[0].revision;
@@ -4648,7 +4661,7 @@ mod completion_boundary_tests {
             assert!(cut.header.revision > previous_revision);
             previous_revision = cut.header.revision;
             assert_eq!(
-                owner.lock().unwrap().capture(None, 1, 0, 1).revision,
+                owner.lock().unwrap().capture(None, 1, Some(0), 1).revision,
                 structure_revision
             );
             assert!(changes.has_changed()?);
@@ -4661,7 +4674,7 @@ mod completion_boundary_tests {
             assert!(matches!(cut.overlay[0].head.record.atom.lifecycle,
                 ChatAtomLifecycle::Active { status, .. } if status == expected));
             let saved = history
-                .display_member_page(&database, &block_id, None, 2)
+                .display_member_page(&database, &block_id, None, 2, None)
                 .await?;
             assert_eq!(saved.header.as_ref(), cut.header.as_ref());
             assert_eq!(saved.entries[0], *cut.overlay[0]);
@@ -4674,7 +4687,7 @@ mod completion_boundary_tests {
             );
         }
         let before_token = history
-            .display_member_page(&database, &block_id, None, 2)
+            .display_member_page(&database, &block_id, None, 2, None)
             .await?;
         let mut part = ObservedPart::new(started("preview-only").identity);
         for version in 1..=2 {
@@ -4694,7 +4707,7 @@ mod completion_boundary_tests {
         assert!(!changes.has_changed()?);
         assert_eq!(
             history
-                .display_member_page(&database, &block_id, None, 2)
+                .display_member_page(&database, &block_id, None, 2, None)
                 .await?
                 .entries,
             before_token.entries
@@ -4712,7 +4725,7 @@ mod completion_boundary_tests {
         boundary.model_member_starts = vec![text].into();
         publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
         let page = history
-            .display_member_page(&database, &block_id, None, 2)
+            .display_member_page(&database, &block_id, None, 2, None)
             .await?;
         let frozen = &page
             .entries
@@ -4830,7 +4843,7 @@ mod completion_boundary_tests {
         let presentation = projection.presentation();
         {
             let owner = presentation.lock().unwrap();
-            let cut = owner.capture(None, 8, 0, 8);
+            let cut = owner.capture(None, 8, Some(0), 8);
             assert_eq!(cut.published, 0);
             assert!(
                 matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
@@ -4852,7 +4865,7 @@ mod completion_boundary_tests {
         third.model_member_starts = vec![text].into();
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
         let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.published.is_some()).context("published Work")?;
+            .find(|block| block.header.sealed).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
             pl_protocol::DisplayBlockBody::Work { timing, .. }
             if timing.started_at == Some(first.committed_at) && timing.finished_at == Some(third.committed_at)));
@@ -4861,7 +4874,7 @@ mod completion_boundary_tests {
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
         assert_eq!(chat.head_seq(), h);
         assert!(prepared.completions.is_empty());
-        assert_eq!(prepared.display.as_ref().unwrap().published_through, 1);
+        assert_eq!(prepared.display.as_ref().unwrap().ready_frontier, 1);
         assert!(Arc::ptr_eq(
             prepared.display.as_ref().unwrap(),
             prepared.current.display.as_ref().unwrap()
@@ -4891,7 +4904,7 @@ mod completion_boundary_tests {
                         .unwrap()
                         .blocks
                         .iter()
-                        .find(|b| b.header.history_pos.is_none())
+                        .find(|b| !b.header.sealed)
                         .unwrap()
                         .header
                         .id,
@@ -4902,7 +4915,7 @@ mod completion_boundary_tests {
                 .complete
         );
         let completed_id = &prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.header.history_pos.is_some()).context("completed work")?.header.id;
+            .find(|block| block.header.sealed).context("completed work")?.header.id;
         assert!(presentation.lock().unwrap().member_cut(completed_id,None,8).context("retained completed member")?
             .overlay.iter().any(|member| member.terminal));
         presentation.lock().unwrap().begin_cost_observation();
@@ -4935,7 +4948,7 @@ mod completion_boundary_tests {
         }));
         projection.confirm_sources(3);
         assert_eq!(
-            presentation.lock().unwrap().capture(None, 8, 0, 8).durable,
+            presentation.lock().unwrap().capture(None, 8, Some(0), 8).published,
             1
         );
         super::restore_tests::save(&history, &third, &prepared).await?; // exact lost-ACK replay

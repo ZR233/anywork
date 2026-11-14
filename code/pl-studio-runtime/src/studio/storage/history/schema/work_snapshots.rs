@@ -2,6 +2,26 @@
 use super::*;
 use pl_protocol::DisplayBlockBody;
 mod legacy;
+use pl_protocol::{ChatFactPosition, ChatSourceId};
+use serde::{Deserialize, Serialize};
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct DisplayHeader {
+    pub version: u32,
+    pub id: String,
+    pub source: ChatSourceId,
+    pub block_order: u64,
+    pub history_pos: Option<u64>,
+    pub boundary: Option<ChatFactPosition>,
+    pub first_content_at: Option<ChatFactPosition>,
+    pub sealed: bool,
+    pub unfinished: u64,
+    pub next_member: u64,
+    pub revision: u64,
+    pub skip_display: bool,
+    #[serde(skip)]
+    pub thinking_summary: Option<String>,
+    pub body: DisplayBlockBody,
+}
 
 /// Published migration identities remain registered; conversion is owned by WorkSnapshots.
 pub(super) struct LegacyDisplayMarker(pub &'static str);
@@ -130,7 +150,7 @@ pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> 
             "display snapshot index missing; original history preserved"
         );
     }
-    let (published, effect) = conversation::display::watermarks(db).await?;
+    let (published, effect) = watermarks(db).await?;
     let meta = db
         .query_one_raw(statement(
             "SELECT applied_write_seq FROM history_meta WHERE id=1",
@@ -181,24 +201,23 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
     ensure!(db.query_one_raw(statement(
         "SELECT 1 FROM sqlite_schema WHERE type='index' AND name='conversation_display_current_work'", vec![],
     )).await?.is_some(), "unique display tail index is missing; original history preserved");
-    let (published, _) = conversation::display::watermarks(db).await?;
-    let last = conversation::display::history_heads(db, i64::MAX as u64, None, 1).await?;
-    ensure!(
-        last.first().map_or(0, |head| head.history_pos) == published,
-        "display published head is missing"
-    );
-    let recovery = conversation::display::recovery(db).await?;
-    let mut current = None;
-    for header in &recovery.open {
-        if !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. }) {
-            ensure!(
-                current.replace(header.block_order).is_none()
-                    && header.block_order == recovery.last_order,
-                "open Work is not the unique latest display block"
-            );
-        }
-    }
+    let (published, _) = watermarks(db).await?;
+    let _ = published;
     Ok(())
+}
+
+async fn watermarks(db: &impl ConnectionTrait) -> Result<(u64, u64)> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT display_published_through,display_applied_effect FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("schema22 display metadata missing")?;
+    Ok((
+        u64::try_from(row.try_get::<i64>("", "display_published_through")?)?,
+        u64::try_from(row.try_get::<i64>("", "display_applied_effect")?)?,
+    ))
 }
 
 #[cfg(test)]
@@ -207,6 +226,11 @@ pub(in crate::studio::storage::history) mod tests {
     use sea_orm::{Database, DatabaseConnection};
     use sea_orm_migration::MigratorTraitSelf;
 
+    pub(in crate::studio::storage::history) async fn initialize_current(
+        db: &DatabaseConnection,
+    ) -> Result<()> {
+        super::super::prepare(db, THREAD, Preparation::Schema, None).await
+    }
     const THREAD: &str = "display-snapshot-migration";
     struct Published18;
     impl MigratorTraitSelf for Published18 {
@@ -241,9 +265,9 @@ pub(in crate::studio::storage::history) mod tests {
     #[tokio::test]
     async fn fresh_store_initializes_current_snapshots_without_legacy_conversion() -> Result<()> {
         let (_dir, db) = fixture().await?;
-        super::initialize(&db).await?;
+        initialize_current(&db).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
-        super::validate(&db).await?;
+        super::super::display_block_order::validate(&db).await?;
         assert_eq!(conversation::display::watermarks(&db).await?, (0, 0));
         Ok(())
     }
@@ -312,8 +336,8 @@ pub(in crate::studio::storage::history) mod tests {
         db.execute_unprepared("UPDATE history_meta SET schema_version=21 WHERE id=1")
             .await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, 22);
-        super::validate(&db).await?;
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        super::super::display_block_order::validate(&db).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert!(
         db.query_one_raw(statement(

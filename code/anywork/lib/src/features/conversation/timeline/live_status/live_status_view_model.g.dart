@@ -71,7 +71,7 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'54443a1c68c8702f9d365b58024425133841f372';
+    r'8848c6741696d0a87b18f87b40452086893c57c5';
 
 /// 实时状态栏组件专属 ViewModel：
 /// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与

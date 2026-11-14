@@ -52,13 +52,13 @@ SingleDisplayBlock _single(String id) => SingleDisplayBlock(
 );
 
 DisplayBlock _block(String id, int pos) =>
-    DisplayBlock(id: id, historyPos: pos, body: _single(id));
+    DisplayBlock(id: id, blockOrder: pos, body: _single(id));
 
 LiveDisplayWindow _live(int through, {bool showTarget = false}) =>
     LiveDisplayWindow(
       currentWorkId: null,
       revision: through,
-      historyThrough: through,
+      readyFrontier: through,
       executionPresent: true,
       blocks: [
         if (showTarget)
@@ -82,8 +82,8 @@ ConversationTimelineEvent _append(
     presentationVersion: presentationVersion,
     placement: ChatPlacement.append,
     blocks: blocks,
-    fromPos: from,
-    throughPos: through,
+    fromOrder: from,
+    throughOrder: through,
     live: finalCut ? _live(through, showTarget: showTarget) : null,
   ),
 );
@@ -120,7 +120,7 @@ final class _Harness {
     await observation.holdInitialSet();
     await observation.queryCompletedText(
       blockId: _targetId,
-      historyPos: _targetPos,
+      blockOrder: _targetPos,
       single: _single(_targetId),
     );
     expect(feed.acks, isEmpty);
@@ -130,7 +130,7 @@ final class _Harness {
   }
 
   Future<void> observe() =>
-      observation.observeSuccessors(blockId: _targetId, historyPos: _targetPos);
+      observation.observeSuccessors(blockId: _targetId, blockOrder: _targetPos);
 }
 
 void main() {
@@ -156,9 +156,9 @@ void main() {
         expect(h.evidence['outstandingCount'], 1);
         expect(h.evidence['targetDelivery'], {
           'blockId': _targetId,
-          'historyPos': _targetPos,
+          'blockOrder': _targetPos,
           'deliverySequence': last,
-          'throughPos': 5,
+          'throughOrder': 5,
           'actualOrdinaryFrameCount': last,
           'acknowledgedThrough': last - 1,
           'outstandingSequence': last,
@@ -195,8 +195,8 @@ void main() {
       expect((h.evidence['targetDelivery'] as Map)['deliverySequence'], 4);
       final frames = h.evidence['frames'] as List;
       expect((frames[1] as Map)['blocks'], isEmpty);
-      expect((frames[1] as Map)['fromPos'], 3);
-      expect((frames[1] as Map)['throughPos'], 3);
+      expect((frames[1] as Map)['fromOrder'], 3);
+      expect((frames[1] as Map)['throughOrder'], 3);
       expect(h.evidence['outstandingSequence'], 4);
     },
   );
@@ -370,7 +370,7 @@ final class _Feed extends Fake implements TimelineFeed {
           presentationVersion: presentationVersion,
           placement: ChatPlacement.set,
           blocks: [for (var i = 1; i <= 3; i++) _block('seed-$i', i)],
-          throughPos: 3,
+          throughOrder: 3,
           live: _live(3),
         ),
       ),

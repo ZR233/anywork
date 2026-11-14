@@ -61,7 +61,7 @@ pub enum BridgeSingleVisibility {
 #[derive(Debug, Clone)]
 pub struct BridgeDisplayBlock {
     pub id: String,
-    pub history_pos: u64,
+    pub block_order: u64,
     pub body: BridgeDisplayBlockBody,
 }
 
@@ -79,7 +79,7 @@ pub struct BridgeLiveDisplayBlock {
 #[derive(Debug, Clone)]
 pub struct BridgeLiveDisplayWindow {
     pub revision: u64,
-    pub history_through: u64,
+    pub ready_frontier: u64,
     pub execution_present: bool,
     pub current_work_id: Option<String>,
     pub blocks: Vec<BridgeLiveDisplayBlock>,
@@ -92,8 +92,8 @@ pub struct BridgeTimelineBatch {
     pub placement: BridgeChatPlacement,
     pub blocks: Vec<BridgeDisplayBlock>,
     pub before: Option<String>,
-    pub from_pos: Option<u64>,
-    pub through_pos: u64,
+    pub from_order: Option<u64>,
+    pub through_order: u64,
     pub live: Option<BridgeLiveDisplayWindow>,
 }
 

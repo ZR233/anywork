@@ -22,7 +22,7 @@ pub(in crate::studio) enum ReadRequest<'a> {
         before: Option<u64>,
         limit: usize,
         after: Option<u64>,
-        pending: usize,
+        history_limit: usize,
     },
     Members {
         block: &'a str,
@@ -328,25 +328,49 @@ impl ConversationStore {
         LiveProjection::complete_prepared(&mut prepared, plan.records().clone(), display);
         prepared.current_state = None;
         let prepared = Arc::new(prepared);
-        channel.set_projection_retention(super::storage::thread_writer::ProjectionRetention {
+        let previous_retention = super::storage::thread_writer::ProjectionRetention {
             resident_bytes: retained
                 .projection
                 .retained_bytes()
                 .saturating_add(pending.extra_retained_bytes()),
             pending: Some(super::storage::thread_writer::PendingProjectionRetention {
-                sequence: prepared.sequence,
-                prepared_bytes: prepared.retained_bytes(),
+                sequence: pending.prepared.sequence,
+                prepared_bytes: pending.prepared.retained_bytes(),
             }),
-        })?;
-        channel.prepare_with(Some(&pending.write), prepared.clone(), || {
-            self.session.admit_prepared(plan, || {
-                retained.projection.apply_display(display_state);
-                if let Some(source) = source {
-                    self.publication.apply(source);
+        };
+        let handoff = (|| {
+            channel.set_projection_retention(
+                super::storage::thread_writer::ProjectionRetention {
+                    resident_bytes: retained
+                        .projection
+                        .retained_after_display(&display_state)
+                        .saturating_add(pending.extra_retained_bytes()),
+                    pending: Some(super::storage::thread_writer::PendingProjectionRetention {
+                        sequence: prepared.sequence,
+                        prepared_bytes: prepared.retained_bytes(),
+                    }),
+                },
+            )?;
+            channel.prepare_with(Some(&pending.write), prepared.clone(), || {
+                self.session.admit_prepared(plan, || {
+                    retained.projection.apply_display(display_state);
+                    if let Some(source) = source {
+                        self.publication.apply(source);
+                    }
+                })?;
+                Ok(())
+            })
+        })();
+        if let Err(error) = handoff {
+            // Publication did not run: the original Store rows and pending batch
+            // still own the material. Restore their charge before releasing admission.
+            return match channel.set_projection_retention(previous_retention) {
+                Ok(()) => Err(error),
+                Err(retention) => {
+                    Err(error.context(format!("restoring retained projection budget: {retention}")))
                 }
-            })?;
-            Ok(())
-        })?;
+            };
+        }
         for item in prepared.completions.iter() {
             channel
                 .order_index()
@@ -459,11 +483,17 @@ impl ConversationStore {
             self.session.confirm_durable(through)?;
         }
         if let Some(source) = self.publication.current() {
-            source
+            let mut presentation = source
                 .presentation
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .confirm(committed.effect());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((effect, frontier, last)) = committed.display() {
+                anyhow::ensure!(
+                    effect <= committed.effect(),
+                    "display commit exceeds its batch"
+                );
+                presentation.confirm_cut(effect, frontier, last)?;
+            }
         }
         self.database_id
             .get_or_init(|| committed.database_id().to_owned());
@@ -579,19 +609,11 @@ impl ConversationReadHandle {
                 before,
                 limit,
                 after,
-                pending,
-            } => {
-                let boundary = after.unwrap_or_else(|| {
-                    owner
-                        .capture(None, 0, 0, 0)
-                        .published
-                        .saturating_sub(*pending as u64)
-                });
-                (
-                    Some(owner.capture(*before, *limit, boundary, *pending)),
-                    None,
-                )
-            }
+                history_limit,
+            } => (
+                Some(owner.capture(*before, *limit, *after, *history_limit)),
+                None,
+            ),
             ReadRequest::Members {
                 block,
                 before,

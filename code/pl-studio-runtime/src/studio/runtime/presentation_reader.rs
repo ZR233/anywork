@@ -8,7 +8,7 @@ use super::{
     conversation_reader::{PresentationTokens, ReadObservation, cancelled, resync},
     presentation_feed::history_batch,
 };
-use crate::studio::thread_projection::presentation::DisplayHeader;
+use crate::studio::thread_projection::presentation::{BlockOrder, DisplayHeader, display_upper};
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
 use pl_protocol::DisplayBlockState;
@@ -21,12 +21,15 @@ use std::sync::Arc;
 
 pub(super) struct DisplayReadCut {
     pub published: u64,
-    pub durable: u64,
+    pub last_order: u64,
+    pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
     pub execution_present: bool,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
-    pub pending: Vec<Arc<DisplayBlock>>,
+    pub history: Vec<Arc<DisplayHeader>>,
+    // The requested bounded history page was selected in the cold metadata transaction.
+    history_from_snapshot: bool,
 }
 
 impl ConversationReader {
@@ -35,19 +38,21 @@ impl ConversationReader {
         &self,
         live_before: Option<u64>,
         live_limit: usize,
-        pending_after: Option<u64>,
-        pending_limit: usize,
+        history_after: Option<u64>,
+        history_limit: usize,
     ) -> Result<DisplayReadCut> {
+        display_upper(i64::MAX as u64, live_before)?;
         let permit = self.resources().await?;
         let resources = permit.as_ref().ok_or_else(cancelled)?;
         use crate::studio::conversation_store::{ReadCut, ReadRequest};
-        let cut = match resources
+        let mut cold_page = false;
+        let mut cut = match resources
             .conversation
             .capture(ReadRequest::Display {
                 before: live_before,
                 limit: live_limit,
-                after: pending_after,
-                pending: pending_limit,
+                after: history_after,
+                history_limit,
             })
             .await?
         {
@@ -57,7 +62,8 @@ impl ConversationReader {
                 ..
             } => DisplayReadCut {
                 published: cut.published,
-                durable: cut.durable,
+                last_order: cut.last_order,
+                resident_block_floor: cut.resident_block_floor,
                 revision: cut.revision,
                 execution_present: source.current.projection().execution_present,
                 current_work_id: live_before
@@ -65,39 +71,75 @@ impl ConversationReader {
                     .then_some(cut.current_work_id)
                     .flatten(),
                 open: cut.open,
-                pending: cut.pending,
+                history: cut.history,
+                history_from_snapshot: false,
             },
             ReadCut::Cold(Some(snapshot)) => {
+                cold_page = true;
                 let stored = snapshot
                     .display_cut(
                         resources.database_id.as_deref().ok_or_else(resync)?,
                         live_before,
                         live_limit,
+                        history_after,
+                        history_limit,
                     )
                     .await?;
                 DisplayReadCut {
                     published: stored.published,
-                    durable: stored.published,
+                    last_order: stored.last_order,
+                    resident_block_floor: None,
                     revision: stored.effect,
                     execution_present: false,
                     current_work_id: stored.current_work_id,
                     open: stored.open,
-                    pending: Vec::new(),
+                    history: stored.history,
+                    history_from_snapshot: true,
                 }
             }
             ReadCut::Cold(None) => DisplayReadCut {
                 published: 0,
-                durable: 0,
+                last_order: 0,
+                resident_block_floor: Some(BlockOrder::new(1)?),
                 revision: 0,
                 execution_present: false,
                 current_work_id: None,
                 open: Vec::new(),
-                pending: Vec::new(),
+                history: Vec::new(),
+                history_from_snapshot: true,
             },
             ReadCut::Ready { .. } => unreachable!("display request captures its display cut"),
         };
         self.ensure()?;
-        ensure!(cut.durable <= cut.published, resync());
+        ensure!(cut.published <= cut.last_order, resync());
+        let upper = cut
+            .last_order
+            .min(display_upper(cut.last_order, live_before)?);
+        if !cold_page && cut.published < upper && live_limit > 0 {
+            let keys = cut
+                .open
+                .iter()
+                .map(|h| h.block_order.get())
+                .collect::<Vec<_>>();
+            if !crate::studio::thread_projection::presentation::covered_desc(
+                cut.resident_block_floor.map(BlockOrder::get),
+                cut.published,
+                &keys,
+                live_limit,
+            ) {
+                let saved = resources
+                    .history
+                    .display_block_page(
+                        resources.database_id.as_deref().ok_or_else(resync)?,
+                        cut.published,
+                        upper,
+                        live_limit,
+                        false,
+                    )
+                    .await?;
+                cut.open = merge_headers(saved, cut.open, cut.published, upper, live_limit, false);
+            }
+        }
         Ok(cut)
     }
 
@@ -112,7 +154,7 @@ impl ConversationReader {
             .iter()
             .map(|header| LiveDisplayBlock {
                 id: header.id.clone(),
-                block_order: header.block_order,
+                block_order: header.block_order.get(),
                 source: Some(header.source.clone()),
                 body: header.body.clone(),
                 has_unfinished_members: header.unfinished > 0,
@@ -135,7 +177,7 @@ impl ConversationReader {
         )
     }
 
-    /// Fill only the captured durable prefix, using a new short SQLite snapshot after capture.
+    /// SQLite and RAM use exactly the same key range. Captured versions always win.
     async fn history_heads(
         &self,
         cut: &DisplayReadCut,
@@ -143,52 +185,68 @@ impl ConversationReader {
         before: Option<u64>,
         limit: usize,
     ) -> Result<Vec<DisplayBlock>> {
-        let mut heads = cut
-            .pending
+        let upper = display_upper(ceiling, before)?;
+        let heads = self
+            .merge_display_history(cut, 0, upper, limit, false)
+            .await?;
+        heads
+            .into_iter()
+            .map(|h| h.frozen().ok_or_else(resync))
+            .collect()
+    }
+
+    async fn merge_display_history(
+        &self,
+        cut: &DisplayReadCut,
+        lower: u64,
+        upper: u64,
+        limit: usize,
+        ascending: bool,
+    ) -> Result<Vec<Arc<DisplayHeader>>> {
+        if lower >= upper || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let overlay = cut
+            .history
             .iter()
-            .filter(|head| {
-                head.history_pos <= ceiling && before.is_none_or(|b| head.history_pos < b)
-            })
-            .rev()
-            .take(limit)
-            .map(|head| head.as_ref().clone())
+            .filter(|h| h.block_order.get() > lower && h.block_order.get() <= upper)
+            .cloned()
             .collect::<Vec<_>>();
-        heads.reverse();
-        let durable_ceiling = cut.durable.min(ceiling);
-        let durable_before = heads.first().map(|head| head.history_pos).or(before);
-        if heads.len() < limit && durable_ceiling > 0 && durable_before.is_none_or(|b| b > 1) {
+        let keys = overlay
+            .iter()
+            .map(|h| h.block_order.get())
+            .collect::<Vec<_>>();
+        let complete = if ascending {
+            cut.resident_block_floor
+                .is_some_and(|floor| lower >= floor.get() - 1)
+        } else {
+            crate::studio::thread_projection::presentation::covered_desc(
+                cut.resident_block_floor.map(BlockOrder::get),
+                lower,
+                &keys,
+                limit,
+            )
+        };
+        let saved = if cut.history_from_snapshot || complete {
+            Vec::new()
+        } else {
             let permit = self.resources().await?;
             let resources = permit.as_ref().ok_or_else(cancelled)?;
-            let mut durable = resources
+            resources
                 .history
-                .display_history_heads(
+                .display_block_page(
                     resources.database_id.as_deref().ok_or_else(resync)?,
-                    0,
-                    durable_ceiling,
-                    durable_before,
-                    limit - heads.len(),
-                    false,
+                    lower,
+                    upper,
+                    limit,
+                    ascending,
                 )
                 .await?
-                .into_iter()
-                .map(|head| head.as_ref().clone())
-                .collect::<Vec<_>>();
-            durable.append(&mut heads);
-            heads = durable;
-        }
+        };
         self.ensure()?;
-        let expected_end = ceiling.min(before.map_or(u64::MAX, |before| before - 1));
-        ensure!(
-            heads.last().map(|head| head.history_pos).unwrap_or(0) == expected_end,
-            resync()
-        );
-        for pair in heads.windows(2) {
-            ensure!(
-                pair[0].history_pos.checked_add(1) == Some(pair[1].history_pos),
-                resync()
-            );
-        }
-        Ok(heads)
+        Ok(merge_headers(
+            saved, overlay, lower, upper, limit, ascending,
+        ))
     }
 
     fn pack_history(
@@ -207,16 +265,16 @@ impl ConversationReader {
         loop {
             let before = heads
                 .get(start)
-                .filter(|head| head.history_pos > 1)
-                .map(|head| tokens.before(ceiling, head.history_pos))
+                .filter(|head| head.block_order > 1)
+                .map(|head| tokens.before(ceiling, head.block_order))
                 .transpose()?;
             let envelope = TimelineBatch {
                 presentation_version: pl_protocol::PRESENTATION_VERSION,
                 placement,
                 blocks: Vec::new(),
                 before: before.clone(),
-                from_pos: None,
-                through_pos: ceiling,
+                from_order: None,
+                through_order: ceiling,
                 live: None,
             };
             let count = heads.len() - start;
@@ -235,7 +293,7 @@ impl ConversationReader {
     pub(super) async fn initial_timeline(&self, demand: ReadDemand) -> Result<TimelineBatch> {
         demand.validate(1)?;
         let n = demand.max_items as usize;
-        let cut = self.capture_display(None, n + 1, None, n + 1).await?;
+        let cut = self.capture_display(None, n, None, n).await?;
         self.bind_presentation_ceiling(cut.published)?;
         let tokens = self.presentation_tokens().await?;
         let heads = self.history_heads(&cut, cut.published, None, n).await?;
@@ -246,11 +304,11 @@ impl ConversationReader {
             blocks: heads.last().cloned().into_iter().collect(),
             before: heads
                 .last()
-                .filter(|h| h.history_pos > 1)
-                .map(|h| tokens.before(cut.published, h.history_pos))
+                .filter(|h| h.block_order > 1)
+                .map(|h| tokens.before(cut.published, h.block_order))
                 .transpose()?,
-            from_pos: None,
-            through_pos: cut.published,
+            from_order: None,
+            through_order: cut.published,
             live: None,
         };
         let bytes = (demand.max_bytes as usize)
@@ -282,9 +340,7 @@ impl ConversationReader {
         demand.validate(1)?;
         let (ceiling, boundary) = self.display_boundary(before).await?;
         let n = demand.max_items as usize;
-        let cut = self
-            .capture_display(None, 0, Some(boundary.saturating_sub(n as u64 + 1)), n + 1)
-            .await?;
+        let cut = self.capture_display(Some(boundary), 0, None, n).await?;
         let heads = self.history_heads(&cut, ceiling, Some(boundary), n).await?;
         let tokens = self.presentation_tokens().await?;
         self.pack_history(
@@ -306,12 +362,7 @@ impl ConversationReader {
         let first = self.capture_display(None, 0, Some(u64::MAX), 0).await?;
         let boundary = self.live_display_boundary(before, first.revision).await?;
         let cut = self
-            .capture_display(
-                Some(boundary),
-                demand.max_items as usize + 1,
-                Some(u64::MAX),
-                0,
-            )
+            .capture_display(Some(boundary), demand.max_items as usize, Some(u64::MAX), 0)
             .await?;
         ensure!(cut.revision == first.revision, ChatError::StaleContent);
         let tokens = self.presentation_tokens().await?;
@@ -327,39 +378,16 @@ impl ConversationReader {
         demand: ReadDemand,
     ) -> Result<Vec<DisplayBlock>> {
         demand.validate(1)?;
-        let ceiling = from
-            .saturating_add(u64::from(demand.max_items))
-            .min(through);
         let cut = self
             .capture_display(None, 0, Some(from), demand.max_items as usize)
             .await?;
-        let mut heads = Vec::new();
-        if from < cut.durable.min(ceiling) {
-            let permit = self.resources().await?;
-            let resources = permit.as_ref().ok_or_else(cancelled)?;
-            heads = resources
-                .history
-                .display_history_heads(
-                    resources.database_id.as_deref().ok_or_else(resync)?,
-                    from,
-                    cut.durable.min(ceiling),
-                    None,
-                    (cut.durable.min(ceiling) - from) as usize,
-                    true,
-                )
-                .await?
-                .into_iter()
-                .map(|head| head.as_ref().clone())
-                .collect();
-        }
-        heads.extend(
-            cut.pending
-                .into_iter()
-                .filter(|head| head.history_pos > from && head.history_pos <= ceiling)
-                .map(|head| head.as_ref().clone()),
-        );
-        self.ensure()?;
-        Ok(heads)
+        let heads = self
+            .merge_display_history(&cut, from, through, demand.max_items as usize, true)
+            .await?;
+        heads
+            .into_iter()
+            .map(|h| h.frozen().ok_or_else(resync))
+            .collect()
     }
 
     pub async fn open_display_members(
@@ -419,7 +447,7 @@ impl ConversationReader {
             .capture(ReadRequest::Members {
                 block: &reference.block_id,
                 before,
-                limit: demand.max_items as usize + 1,
+                limit: demand.max_items as usize,
             })
             .await?
         {
@@ -468,7 +496,7 @@ impl ConversationReader {
                                 &reference.database_id,
                                 &reference.block_id,
                                 saved_before,
-                                demand.max_items as usize + 1,
+                                demand.max_items as usize,
                             )
                             .await?
                     }
@@ -479,7 +507,8 @@ impl ConversationReader {
                                 &reference.database_id,
                                 &reference.block_id,
                                 saved_before,
-                                demand.max_items as usize + 1,
+                                demand.max_items as usize,
+                                overlay.as_ref().map(|cut| cut.header.clone()),
                             )
                             .await?
                     }
@@ -522,6 +551,29 @@ impl ConversationReader {
         self.ensure()?;
         Ok(Some(page))
     }
+}
+
+fn merge_headers(
+    saved: Vec<Arc<DisplayHeader>>,
+    overlay: Vec<Arc<DisplayHeader>>,
+    lower: u64,
+    upper: u64,
+    limit: usize,
+    ascending: bool,
+) -> Vec<Arc<DisplayHeader>> {
+    let mut rows = std::collections::BTreeMap::new();
+    for header in saved.into_iter().chain(overlay) {
+        if header.block_order.get() > lower && header.block_order.get() <= upper {
+            rows.insert(header.block_order.get(), header);
+        }
+    }
+    let mut result = if ascending {
+        rows.into_values().take(limit).collect::<Vec<_>>()
+    } else {
+        rows.into_values().rev().take(limit).collect()
+    };
+    result.sort_by_key(|h| h.block_order.get());
+    result
 }
 
 #[cfg(test)]
@@ -617,7 +669,7 @@ fn too_small() -> anyhow::Error {
 /// `newest_first` must be a bounded range/index iterator, not a materialized full live list.
 pub(super) fn live_window<'a>(
     revision: u64,
-    history_through: u64,
+    ready_frontier: u64,
     execution_present: bool,
     current_work_id: Option<String>,
     newest_first: impl IntoIterator<Item = &'a LiveDisplayBlock>,
@@ -627,7 +679,7 @@ pub(super) fn live_window<'a>(
     demand.validate(1)?;
     let mut result = LiveDisplayWindow {
         revision,
-        history_through,
+        ready_frontier,
         execution_present,
         current_work_id: current_work_id.clone(),
         blocks: Vec::new(),
@@ -647,7 +699,7 @@ pub(super) fn live_window<'a>(
         // fit even when its intermediate continuation would be larger than the remaining heads.
         let envelope = LiveDisplayWindow {
             revision,
-            history_through,
+            ready_frontier,
             execution_present,
             current_work_id: current_work_id.clone(),
             blocks: Vec::new(),
@@ -671,10 +723,14 @@ pub(super) fn live_window<'a>(
         }
         bytes += item_bytes;
         result.blocks.push(head.clone());
-        result.older = heads
-            .peek()
-            .map(|_| continuation(head.block_order))
-            .transpose()?;
+        result.older = if heads.peek().is_some()
+            || (result.blocks.len() == demand.max_items as usize
+                && head.block_order > ready_frontier.saturating_add(1))
+        {
+            Some(continuation(head.block_order)?)
+        } else {
+            None
+        };
         if result.blocks.len() == demand.max_items as usize {
             break;
         }
@@ -682,7 +738,7 @@ pub(super) fn live_window<'a>(
     loop {
         let envelope = LiveDisplayWindow {
             revision,
-            history_through,
+            ready_frontier,
             execution_present,
             current_work_id: current_work_id.clone(),
             blocks: Vec::new(),
@@ -776,7 +832,9 @@ pub(super) fn member_page<'a>(
         }
         bytes += item_bytes;
         result.entries.push(head.clone());
-        result.before = heads.peek().map(|_| head.member_order);
+        result.before = (heads.peek().is_some()
+            || (result.entries.len() == demand.max_items as usize && head.member_order > 1))
+            .then_some(head.member_order);
         if result.entries.len() == demand.max_items as usize {
             break;
         }
@@ -1146,7 +1204,7 @@ mod tests {
         let mut feed = env.runtime.open_timeline_feed(&h.thread.id, demand(1)).await?;
         let reader = feed.reader().clone();
         let cut = reader.capture_display(None, 1, None, 0).await?;
-        assert_eq!((cut.published, cut.durable), (0, 0));
+        assert_eq!((cut.published, cut.last_order), (0, 1));
         assert_eq!(h.session.durable_seq(), 1);
         assert_eq!(cut.current_work_id.as_deref(), Some(reference.block_id.as_str()));
         let captured_revision = cut.open[0].revision;
@@ -1206,7 +1264,7 @@ mod tests {
             h.save(&newer).await?;
             h.projection.presentation().lock().unwrap().confirm(newer.sequence);
             drop(newer);
-            assert_eq!((cut.published, cut.durable), (0, 0));
+            assert_eq!((cut.published, cut.last_order), (0, 1));
             assert!(matches!(
                 &cut.open[0].body,
                 DisplayBlockBody::Work { timing: summary, .. } if summary.finished_at.is_none()

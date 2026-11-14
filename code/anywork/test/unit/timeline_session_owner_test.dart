@@ -52,7 +52,7 @@ void main() {
     final next = LiveDisplayWindow(
       currentWorkId: 'work',
       revision: 2,
-      historyThrough: 0,
+      readyFrontier: 0,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(
@@ -1045,7 +1045,7 @@ final class _Content extends Fake implements TimelineContent {
   }
 
   Future<void> deliver(TimelineBatch batch) async {
-    final next = batch.live ?? live.value ?? _emptyLive(batch.throughPos);
+    final next = batch.live ?? live.value ?? _emptyLive(batch.throughOrder);
     await consumer!.applyTimeline(batch, next);
     if (batch.placement != ChatPlacement.prepend) live.publish(next);
   }
@@ -1175,7 +1175,7 @@ TimelineBatch _batch(
 LiveDisplayWindow _emptyLive(int through) => LiveDisplayWindow(
   currentWorkId: null,
   revision: 1,
-  historyThrough: through,
+  readyFrontier: through,
   executionPresent: false,
   blocks: [],
 );

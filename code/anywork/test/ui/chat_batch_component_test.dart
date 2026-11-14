@@ -1474,15 +1474,15 @@ sdk.TimelineBatch _mainBatch({
     presentationVersion: sdk.presentationVersion,
     placement: placement,
     before: before,
-    fromPos: placement == sdk.ChatPlacement.append ? start - 1 : null,
-    throughPos: placement == sdk.ChatPlacement.prepend
+    fromOrder: placement == sdk.ChatPlacement.append ? start - 1 : null,
+    throughOrder: placement == sdk.ChatPlacement.prepend
         ? 10000
         : start + entries.length - 1,
     blocks: [
       for (final (i, entry) in entries.indexed)
         sdk.DisplayBlock(
           id: entry.recordId,
-          historyPos: start + i,
+          blockOrder: start + i,
           body: sdk.SingleDisplayBlock(
             visibility: sdk.SingleVisibility.content,
             record: sdk.DisplayRecord(

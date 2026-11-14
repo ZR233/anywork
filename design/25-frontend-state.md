@@ -483,7 +483,7 @@ Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged �
 
 GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
-工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，不冒领 history_pos；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
+工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，使用既有 block_order，不虚增历史前沿；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
@@ -505,7 +505,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 ### 25.15.1 唯一尾组的呈现与读取所有权
 
-Native presentation v5 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
+Native presentation v6 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配第二展示位置，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
 
 实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不为组件测试保留另一套归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。
 

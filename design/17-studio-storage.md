@@ -625,7 +625,7 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 原完成索引保留原记录两个可空 run 列及可见 seq/段 seq 索引，提示由原 typed metadata 经唯一 Native v1 分类还原。完成级 Main/Run 查询继续按这些索引读取；GUI 历史改读冻结展示头，见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
 
-普通工具结果的展示形态升级使用后续具名迁移，仅按 [26](./26-timeline-content.md) 将目标 Single 派生头转换为单成员 Work。迁移保留原 block_id、history_pos、成员 key、来源边界及原件引用，不修改完成原件、原子事实、内容和执行恢复状态；不通过重排或删除已发布块实现合组。独立文件展示等非目标内容保持不变，转换与迁移账本在同一事务提交，失败回滚并保源。
+普通工具结果的展示形态升级使用后续具名迁移，仅按 [26](./26-timeline-content.md) 将目标 Single 派生头转换为单成员 Work。迁移保留原块身份、既有显示顺序和成员 key、来源边界及原件引用，不修改完成原件、原子事实、内容和执行恢复状态；不通过重排或删除已发布块实现合组。独立文件展示等非目标内容保持不变，转换与迁移账本在同一事务提交，失败回滚并保源。
 
 普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
 
@@ -704,7 +704,7 @@ contents 的 owner_key 为带类型通用身份，content_key 不透明，目录
 
 执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-原轻量业务状态保留 active turn、Plan、交互、来源和必要集合引用，不承担展示组装。完成级 ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动；GUI 从 §17.19 读轻量块头和成员引用，execution_present=false。真正开放且无执行 owner 的块显示未恢复；已封存待发布段保持静态观察，不因 history_pos=NULL 显示恢复异常，两者都不伪装运行计时。待决业务状态仍可读和操作。PreparedEffect 同切面捕获可靠检查点、完成材料、边界派生观察及展示增量，唯一 writer 同事务保存，不新增保存队列或逐 token 保存活动正文。
+原轻量业务状态保留 active turn、Plan、交互、来源和必要集合引用，不承担展示组装。完成级 ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动；GUI 从 §17.19 读轻量块头和成员引用，execution_present=false。真正开放且无执行 owner 的块显示未恢复；已封存待发布段保持静态观察，不因 尚未进入 ready_frontier 的尾部 显示恢复异常，两者都不伪装运行计时。待决业务状态仍可读和操作。PreparedEffect 同切面捕获可靠检查点、完成材料、边界派生观察及展示增量，唯一 writer 同事务保存，不新增保存队列或逐 token 保存活动正文。
 
 ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立可读材料再发 State，冷源在同一短事务取得字段和引用。Plan 完整 sealed 文档与交互恢复事实仍由原 writer 保存，缺块/坏引用失败，不借全量 checkpoint 或历史卡片补正文。业务引用只含 Plan 与 interactions，旧 tools/members 活动集合退出业务交付；原输入/收件历史不因新封存入口补写猜测的旧完成项。本补充沿同一次未发布 schema18 迁移保全，不另建引用表或并行迁移。
 
@@ -727,13 +727,15 @@ CREATE TABLE conversation_display_blocks (
     block_id TEXT PRIMARY KEY,
     source_key TEXT NOT NULL,
     block_order INTEGER NOT NULL UNIQUE CHECK(block_order > 0),
-    history_pos INTEGER UNIQUE CHECK(history_pos IS NULL OR history_pos > 0),
     sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
     updated_effect INTEGER NOT NULL,
     header BLOB NOT NULL
 );
 CREATE INDEX conversation_display_open
-    ON conversation_display_blocks(block_order) WHERE history_pos IS NULL;
+    ON conversation_display_blocks(block_order) WHERE sealed=0;
+CREATE UNIQUE INDEX conversation_display_current_work
+    ON conversation_display_blocks((1))
+    WHERE sealed=0 AND json_extract(header,'$.body.kind')='work';
 CREATE TABLE conversation_display_members (
     block_id TEXT NOT NULL,
     member_order INTEGER NOT NULL CHECK(member_order > 0),
@@ -750,19 +752,21 @@ CREATE INDEX conversation_display_unfinished
     ON conversation_display_members(block_id,member_order) WHERE terminal=0;
 ```
 
-以上为当前目标结构；`member_key` 是组内展示记录身份，`association_key` 仅用于当前组关联，不全表唯一。开始/结束事实分别沿原 `conversation_atom_facts` 保存，成员 metadata 持可空双事实引用、轻量状态及类型化内容来源，不保存全组数组、正文、完整 payload 或 ThreadSnapshot。`sealed` 独立于 history_pos 和 terminal；已封存组拒绝一切成员、内容及头更新，允许初次发布 history_pos 与精确重放，不能仅以 terminal 行作写保护。原 history_meta 的 display_published_through/display_applied_effect 复用原库身份和账本，不建 Ready/generation/repair 表。
+以上为现役结构。`member_key` 是组内展示记录身份，`association_key` 仅用于当前组关联，不全表唯一。成员 metadata 保存轻量状态、开始／结束事实引用及类型化内容来源，不保存全组数组、正文或完整 payload。冻结组拒绝后来覆盖，冻结观察即使 terminal=0 也不恢复执行更新资格。`history_meta` 保存同切面的 `display_ready_frontier`、`display_last_order`、`display_applied_effect` 和原保存水位；不建另一张发布位置表。展示回执使用 `studio.display-delta:v3`，旧 v2 原字节保留，不用新头编码比较旧摘要。
 
-PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，后续发布只分配 history_pos。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
+PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，冻结后保持创建位置。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
 
-RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置的派生段，先删除本段成员再删除块；原完成项、来源事实、内容、检查点保留。该处置同 effect 保存和重放，不是 reader 清理，不推进展示历史位置。
+展示预算沿原可靠通道统一计算：当前行和观察内容持续由 Store 计费，准备批次只计自身容器及被替换后仍由原队列保留的未耐久旧版本，避免共享 Arc 重复计费。流式摘要替换产生的旧头计费保留在原 effect 的批次元数据中，随对应提交释放；耐久确认只减少 Store 计费，不为仍可变行临时新增未受理的预算。受理按准备完成后的 Store 规模核算，失败保留原义务，不依赖界面确认。
 
-### 工作组生命周期快照与 history22
+正常路径不删除已接纳块，也不使用 RemoveEmpty。始终空且无附件的正文不建块，曾可见的权威终值变空则保留既有边界并显示 FinalEmptyAfterContent。
 
-当前展示快照直接初始化为 history22、DisplayHeader v4；公共 presentation v5。Work 仅保存可空开始 startedAt、可空封口 finishedAt（Unix 秒）和成员引用，删除组级结果统计、累计活动区间及持久摘要。开始与封口沿原 effect 和唯一 writer 同事务保存，封口后不可变；未完成数与下一成员序号仅承担内部读取恢复职责。
+### 单一展示位置的保全迁移
+
+当前展示索引使用正的 BlockOrder 与独立历史前沿，公共 presentation v6。正式迁移在原事务内把旧已发布块按 history_pos 升序放在前面，再把其余块按旧 block_order 升序接在后面，逐页分配新位置。只重写展示头版本和位置；块／成员身份、关联键、完成 item_id/seq、来源事实和冻结观察字节保留。先复制到事务内临时输出表，再核对身份、原件引用及外键，依次替换 members 和 blocks；不关闭外键校验。元数据、格式版本和 SeaORM 迁移记录成功后一起提交，失败全部回滚。旧展示游标明确失效，原件游标不变，不保留运行时位置转换表。
 
 实时思考摘要是当前开放组的有界内存投影，封口释放，不写快照。实时经过时间为 now−startedAt，包含暂停、闲置、跨重开和隔夜间隔；封口历史为 finishedAt−startedAt。界面计时不写数据库、不触发成员读取或历史重建。
 
-新库直接创建当前表、索引和水位，不运行旧展示快照转换链；旧 history19–21 展示快照在官方迁移事务内升级，保留块、成员和内容引用，并归档原快照字节。旧迁移名称保留在迁移账本中，全部转换只在明确边界执行；缺失的组创建与封口时间保持未知，不从成员耗时推断。history18 及更早的受支持数据先完成原迁移，再按原始完成顺序建立展示引用。迁移失败回滚，不清空原始消息、工具结果或备份。其他原始业务事实和非展示配置仍归其原有所有者，版本及异常边界见 [26.10](./26-timeline-content.md#2610-当前快照格式与旧数据边界)。
+新库沿正式迁移序列建立当前表、索引和水位，空源不回放业务历史；旧 history19–21 展示快照在官方迁移事务内升级，保留块、成员和内容引用，并归档原快照字节。旧迁移名称保留在迁移账本中，全部转换只在明确边界执行；缺失的组创建与封口时间保持未知，不从成员耗时推断。history18 及更早的受支持数据先完成原迁移，再按原始完成顺序建立展示引用。迁移失败回滚，不清空原始消息、工具结果或备份。其他原始业务事实和非展示配置仍归其原有所有者，版本及异常边界见 [26.10](./26-timeline-content.md#2610-当前快照格式与旧数据边界)。
 
 ### 保存停滞阶段与只读隔离
 

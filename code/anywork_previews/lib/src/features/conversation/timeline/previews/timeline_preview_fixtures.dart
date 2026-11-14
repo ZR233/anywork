@@ -30,7 +30,7 @@ abstract final class TimelinePreviewFixtures {
     TimelineDisplayUnit(
       block: DisplayBlock(
         id: 'preview-user-deferred',
-        historyPos: 1,
+        blockOrder: 1,
         body: SingleDisplayBlock(
           visibility: SingleVisibility.content,
           record: DisplayRecord(
@@ -553,7 +553,7 @@ abstract final class TimelinePreviewFixtures {
       TimelineDisplayUnit(
         block: DisplayBlock(
           id: entry.recordId,
-          historyPos: entry.completionSeq,
+          blockOrder: entry.completionSeq,
           body: WorkDisplayBlock(
             timing: workTiming(),
             members: DisplayBlockRef(

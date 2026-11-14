@@ -398,7 +398,7 @@ final _statusDeclaredWindowItem = ChatItemPresentation.forUnit(
   TimelineDisplayUnit(
     block: DisplayBlock(
       id: 'preview-lsp-status-unit',
-      historyPos: 1,
+      blockOrder: 1,
       body: SingleDisplayBlock(
         visibility: SingleVisibility.content,
         record: DisplayRecord(

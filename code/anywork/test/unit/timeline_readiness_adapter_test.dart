@@ -173,7 +173,7 @@ final class _AckObservedFeed extends RecordingTimelineFeed {
         'placement': batch.placement.name,
         'entries': [
           for (final entry in batch.blocks)
-            {'blockId': entry.id, 'historyPos': entry.historyPos},
+            {'blockId': entry.id, 'blockOrder': entry.blockOrder},
         ],
       },
     });

@@ -4,17 +4,17 @@ WorkTiming displayTiming() => WorkTiming(startedAt: 0, finishedAt: null);
 
 DisplayBlock displayWork(String id, int pos) => DisplayBlock(
   id: id,
-  historyPos: pos,
+  blockOrder: pos,
   body: WorkDisplayBlock(
     timing: const WorkTiming(startedAt: 0, finishedAt: 1),
     members: DisplayBlockRef(databaseId: 'db', blockId: id),
   ),
 );
 
-DisplayBlock displaySingle(CompletedEntry entry, {int? historyPos}) =>
+DisplayBlock displaySingle(CompletedEntry entry, {int? blockOrder}) =>
     DisplayBlock(
       id: entry.recordId,
-      historyPos: historyPos ?? entry.completionSeq,
+      blockOrder: blockOrder ?? entry.completionSeq,
       body: SingleDisplayBlock(
         visibility: SingleVisibility.content,
         record: DisplayRecord(
@@ -35,8 +35,9 @@ TimelineBatch displayBatch(
   presentationVersion: presentationVersion,
   placement: placement,
   blocks: blocks,
-  fromPos: from,
-  throughPos: through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.historyPos),
+  fromOrder: from,
+  throughOrder:
+      through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
   before: before,
   live: live,
 );

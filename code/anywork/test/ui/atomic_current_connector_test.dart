@@ -243,7 +243,7 @@ final class _Harness {
   void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
     currentWorkId: null,
     revision: ++revision,
-    historyThrough: 0,
+    readyFrontier: 0,
     executionPresent: true,
     blocks: [
       for (final (index, entry) in entries.indexed)
@@ -274,7 +274,7 @@ final class _Harness {
                       ? const LiveWindowCut.inactive()
                       : LiveWindowCut(
                           revision: window.revision,
-                          historyThrough: window.historyThrough,
+                          readyFrontier: window.readyFrontier,
                           executionPresent: window.executionPresent,
                           attemptId: 1,
                           isDisplayActive: active,
@@ -362,14 +362,14 @@ void main() {
         final latest = LiveDisplayWindow(
           currentWorkId: 'tail',
           revision: 1,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: const [work],
         );
         final older = LiveDisplayWindow(
           currentWorkId: null,
           revision: 1,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: const [],
           older: 'next-older',
@@ -386,7 +386,7 @@ void main() {
                   window: older,
                   cut: const LiveWindowCut(
                     revision: 1,
-                    historyThrough: 0,
+                    readyFrontier: 0,
                     executionPresent: true,
                     attemptId: 1,
                     isDisplayActive: true,
@@ -606,7 +606,7 @@ void main() {
       h.live.value = LiveDisplayWindow(
         currentWorkId: null,
         revision: previous.revision + 1,
-        historyThrough: 0,
+        readyFrontier: 0,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -1139,7 +1139,7 @@ void main() {
             LiveDisplayWindow(
               currentWorkId: null,
               revision: revision,
-              historyThrough: through,
+              readyFrontier: through,
               executionPresent: true,
               blocks: [latestBlock],
               older: 'older-cursor',
@@ -1147,7 +1147,7 @@ void main() {
         final page = LiveDisplayWindow(
           currentWorkId: null,
           revision: 7,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: [
             LiveDisplayBlock(
