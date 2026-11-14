@@ -761,6 +761,89 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         bad_report.failure.as_ref().map(|f| f.code.as_str()),
         Some("effectRedeliveryConflict")
     );
+    // 3. The same inference in a later effect is a conflict even when native totals
+    // also counted it twice. Reconciliation alone must not legitimize duplicate billing.
+    for missing_events in [false, true] {
+        if missing_events && !cfg!(unix) {
+            continue;
+        }
+        let out_dir = dir.path().join(if missing_events {
+            "missing-events"
+        } else {
+            "cross-effect"
+        });
+        let exporter = RunExporter::start(RunExportOptions {
+            output_dir: out_dir.clone(),
+            run_id: uuid::Uuid::new_v4().to_string(),
+            cwd: dir.path().to_path_buf(),
+            studio_home: dir.path().join("home"),
+            account_id: None,
+            model_id: None,
+            reasoning_effort: None,
+            mode: None,
+            max_model_steps: None,
+            prompt_sha256: "a".repeat(64),
+            skill_search: Default::default(),
+            config: None,
+        })
+        .await?;
+        let coordinator = exporter.coordinator();
+        coordinator.enroll_root("t-idem");
+        coordinator.register_member(make_reg()).await;
+        coordinator
+            .admit_live_handoff("t-idem", &non_billing, &summary, &session, None)
+            .await;
+        coordinator
+            .admit_live_handoff("t-idem", &billing, &summary, &session, None)
+            .await;
+        let mut final_summary = summary.clone();
+        if missing_events {
+            // An open Unix file remains writable after unlink. Finalization must reject the
+            // missing archive path rather than claim success with a null event-file hash.
+            let events = out_dir.join("events.jsonl");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !events.exists() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            std::fs::remove_file(events)?;
+        } else {
+            let mut repeated = billing.clone();
+            repeated.sequence = 3;
+            repeated.fold_into(&mut final_summary);
+            coordinator
+                .admit_live_handoff("t-idem", &repeated, &final_summary, &session, None)
+                .await;
+        }
+        coordinator.record_thread_final_cut(RetiredThreadCut {
+            thread_id: "t-idem".into(),
+            through_effect_seq: final_summary.applied_sequence,
+            session: session.clone(),
+            summary: final_summary,
+            status: Some("closed".into()),
+            aborted: false,
+            error: None,
+        });
+        let report = coordinator
+            .finalize_internal(None, true, true, Some(0), None)
+            .await;
+        assert!(!report.trace_complete);
+        assert!(!report.trace.sealed);
+        let failure = report.failure.context("export must fail explicitly")?;
+        if missing_events {
+            assert_eq!(failure.code, "exportMeasureFailed");
+            assert!(
+                report.usage_complete,
+                "complete accounting survives a content-file failure"
+            );
+        } else {
+            assert!(
+                failure.message.contains("inference_id conflict"),
+                "{failure:?}"
+            );
+        }
+    }
     Ok(())
 }
 
