@@ -231,7 +231,8 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             checkpoint: &candidate.checkpoint,
             effect: &effect.write.effect,
             history: EffectCommit {
-                items: &effect.prepared.items,
+                turns: &effect.prepared.turns,
+                execution_order: effect.prepared.execution_order,
                 completions: &effect.prepared.completions,
                 current: &effect.prepared.current,
                 rolled_back_turns: &candidate.rolled_back,

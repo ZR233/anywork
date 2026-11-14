@@ -33,7 +33,7 @@ pub(crate) mod chat_item;
 mod chatgpt_auth;
 mod command_receipts;
 mod conversation_feed;
-mod conversation_reader;
+pub(in crate::studio) mod conversation_reader;
 mod conversation_state_feed;
 mod delegation_models;
 mod directory_observation;
@@ -989,51 +989,26 @@ mod timeline_backlog_tests {
     fn sql(text: &str, values: Vec<sea_orm::Value>) -> Statement {
         Statement::from_sql_and_values(DbBackend::Sqlite, text, values)
     }
-    async fn facts(
-        db: &DatabaseConnection,
-        through: u64,
-    ) -> Result<Vec<(String, String, Vec<u8>)>> {
-        db.query_all_raw(sql(
-            "SELECT atom_id,phase,metadata FROM conversation_atom_facts WHERE effect_seq<=?
-         ORDER BY effect_seq,suborder,fact_order,atom_id,phase",
-            vec![i64::try_from(through)?.into()],
-        ))
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                row.try_get("", "atom_id")?,
-                row.try_get("", "phase")?,
-                row.try_get("", "metadata")?,
-            ))
-        })
-        .collect()
+    async fn facts(db: &DatabaseConnection, through: u64) -> Result<Vec<(String, String, String)>> {
+        db.query_all_raw(sql("SELECT identity,'start' AS phase,json_array(kind,source_kind,source_identity,source_order,started_effect,started_suborder,started_at) AS fact
+            FROM execution_lifecycle WHERE started_effect<=?1
+            UNION ALL SELECT identity,'terminal',json_array(kind,source_kind,source_identity,ended_effect,ended_suborder,finished_at,outcome,completion_item_id)
+            FROM execution_lifecycle WHERE ended_effect<=?1 ORDER BY identity,phase",vec![i64::try_from(through)?.into()])).await?.into_iter()
+            .map(|row|Ok((row.try_get("","identity")?,row.try_get("","phase")?,row.try_get("","fact")?))).collect()
     }
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SavedCompletion {
         seq: u64,
         id: String,
+        class: String,
         parent: Option<String>,
         payload: Vec<u8>,
         metadata: Vec<u8>,
-        run: Option<CompletionRunPosition>,
     }
     async fn saved_items(db: &DatabaseConnection) -> Result<Vec<SavedCompletion>> {
-        db.query_all_raw(sql("SELECT seq,item_id,parent_id,payload,metadata,display_run_start,display_run_ordinal FROM conversation_items ORDER BY seq", vec![]))
-        .await?.into_iter().map(|row| {
-            let start: Option<i64> = row.try_get("", "display_run_start")?;
-            let ordinal: Option<i64> = row.try_get("", "display_run_ordinal")?;
-            Ok(SavedCompletion {
-                seq: u64::try_from(row.try_get::<i64>("", "seq")?)?,
-                id: row.try_get("", "item_id")?, parent: row.try_get("", "parent_id")?,
-                payload: row.try_get("", "payload")?, metadata: row.try_get("", "metadata")?,
-                run: match (start, ordinal) {
-                    (Some(start), Some(ordinal)) => Some(CompletionRunPosition { start_seq: u64::try_from(start)?, ordinal: u64::try_from(ordinal)? }),
-                    (None, None) => None,
-                    _ => bail!("half-written run position"),
-                },
-            })
-        }).collect()
+        db.query_all_raw(sql("SELECT seq,item_id,query_class,parent_id,payload,metadata FROM conversation_items ORDER BY seq",vec![])).await?.into_iter()
+            .map(|row|Ok(SavedCompletion { seq:u64::try_from(row.try_get::<i64>("","seq")?)?,id:row.try_get("","item_id")?,class:row.try_get("","query_class")?,
+                parent:row.try_get("","parent_id")?,payload:row.try_get("","payload")?,metadata:row.try_get("","metadata")? })).collect()
     }
     async fn saved_chunks(db: &DatabaseConnection) -> Result<Vec<(String, String, i64, Vec<u8>)>> {
         db.query_all_raw(sql("SELECT owner_key,content_key,byte_offset,data FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset", vec![]))
@@ -1069,10 +1044,11 @@ mod timeline_backlog_tests {
         runtime: &StudioRuntime,
         feeds: &mut Vec<ConversationFeed>,
         id: &str,
-        reference: CompletionRunRef,
+        start: u64,
+        end: u64,
         expected_bodies: &[String],
     ) -> Result<Vec<CompletedEntry>> {
-        let scope = ChatScope::Run { reference };
+        let scope = ChatScope::conversation(None);
         feeds.push(
             runtime
                 .open_conversation_feed(id, scope.clone(), demand())
@@ -1093,6 +1069,14 @@ mod timeline_backlog_tests {
                 page = feed.reader().load_older(&before, demand()).await?;
                 page.validate_for(&scope)?;
             }
+            let atoms = atoms
+                .into_iter()
+                .filter(|entry| {
+                    entry.completion_seq >= start
+                        && entry.completion_seq <= end
+                        && entry.atom.kind == ChatAtomKind::Reasoning
+                })
+                .collect::<Vec<_>>();
             assert_eq!(atoms.len(), expected_bodies.len());
             for (entry, text) in atoms.iter().zip(expected_bodies) {
                 let atom = &entry.atom;
@@ -1309,7 +1293,7 @@ mod timeline_backlog_tests {
                 .conversation_database_id()
                 .await?
                 .context("database identity")?;
-            phase = "original Main Set and T range";
+            phase = "original records Set and T range";
             feeds.push(
                 env.runtime
                     .open_conversation_feed(&id, ChatScope::conversation(None), demand())
@@ -1318,29 +1302,18 @@ mod timeline_backlog_tests {
             let initial = chat(&mut feeds[0], &ChatScope::conversation(None)).await?;
             assert_eq!(initial.placement, ChatPlacement::Set);
             assert_eq!(initial.through_seq, cut_head);
-            assert_eq!(
-                initial.entries.len(),
-                2,
-                "prefix work representative followed by completed T"
+            assert_eq!(initial.entries.len(), demand().max_items as usize);
+            assert!(
+                initial
+                    .entries
+                    .iter()
+                    .all(|entry| entry.atom.source_state.is_none())
             );
-            let prefix_head = initial.entries[0].clone();
-            assert_eq!(
-                prefix_head.main_presentation,
-                MainPresentation::ForegroundWork
-            );
-            assert_eq!(
-                prefix_head.run,
-                Some(CompletionRunPosition {
-                    start_seq: 1,
-                    ordinal: PREFIX_MEMBERS as u64
-                })
-            );
-            assert!(matches!(
-                prefix_head.atom.payload,
-                Some(PayloadData::Deferred { .. })
-            ));
-            let text = initial.entries[1].clone();
-            assert_eq!(text.main_presentation, MainPresentation::Single);
+            let text = initial
+                .entries
+                .last()
+                .context("latest completed T")?
+                .clone();
             assert_eq!(text.completion_seq, cut_head);
             check_text(feeds[0].reader(), &text).await?;
             let mut status = channel.subscribe();
@@ -1490,7 +1463,13 @@ mod timeline_backlog_tests {
                         .await?,
                 );
                 let set = chat(&mut feeds[pending_feed], &ChatScope::conversation(None)).await?;
-                let pending = set.entries.last().context("pending U representative")?;
+                let pending = set
+                    .entries
+                    .iter()
+                    .find(|entry| {
+                        entry.atom.kind == ChatAtomKind::Reasoning && entry.record_id.contains(U)
+                    })
+                    .context("pending U original")?;
                 assert!(pending.completion_seq > live.session.durable_seq());
                 let original = feeds[pending_feed]
                     .reader()
@@ -1527,7 +1506,6 @@ mod timeline_backlog_tests {
                     .await?;
                 assert_eq!(durable.record_id, original.record_id);
                 assert_eq!(durable.completion_seq, original.completion_seq);
-                assert_eq!(durable.run, original.run);
                 assert_eq!(durable.atom.payload, original.atom.payload);
                 assert_eq!(durable.atom.contents, original.atom.contents);
             }
@@ -1605,9 +1583,9 @@ mod timeline_backlog_tests {
             }
             let visible = saved
                 .iter()
-                .filter(|row| row.run.is_some())
+                .filter(|row| row.class == "conversation")
                 .collect::<Vec<_>>();
-            assert_eq!(visible.len(), PREFIX_MEMBERS + SUFFIX_MEMBERS + 3);
+            assert_eq!(visible.len(), PREFIX_MEMBERS + SUFFIX_MEMBERS + 4);
             let suffix = visible
                 .iter()
                 .filter(|row| row.seq > cut_head)
@@ -1620,26 +1598,18 @@ mod timeline_backlog_tests {
             assert_eq!(
                 delivered
                     .iter()
-                    .map(|entry| (&entry.record_id, entry.completion_seq, entry.run))
+                    .map(|entry| (&entry.record_id, entry.completion_seq))
                     .collect::<Vec<_>>(),
                 suffix
                     .iter()
-                    .map(|row| (&row.id, row.seq, row.run))
+                    .map(|row| (&row.id, row.seq))
                     .collect::<Vec<_>>()
             );
             // The emitter starts R before the prefix and U before the suffix. Neither
             // may move backwards in completed history when its terminal finally arrives.
             let suffix_start = cut_head + 1;
-            for (index, row) in suffix.iter().enumerate() {
-                assert_eq!(
-                    row.run,
-                    Some(CompletionRunPosition {
-                        start_seq: suffix_start,
-                        ordinal: index as u64 + 1
-                    })
-                );
-            }
-            phase = "real Run pages and original body ranges";
+            assert!(suffix.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+            phase = "real record pages and original body ranges";
             let prefix_bodies = (0..PREFIX_MEMBERS)
                 .map(|index| format!("prefix body {index}"))
                 .collect::<Vec<_>>();
@@ -1652,10 +1622,11 @@ mod timeline_backlog_tests {
                     &env.runtime,
                     &mut feeds,
                     &id,
-                    CompletionRunRef {
-                        database_id: database.clone(),
-                        index_version: COMPLETED_READ_INDEX_VERSION,
-                        start_seq: start,
+                    start,
+                    if start == 1 {
+                        cut_head - 1
+                    } else {
+                        latest.head
                     },
                     &expected_bodies,
                 )
@@ -1663,19 +1634,21 @@ mod timeline_backlog_tests {
                 assert_eq!(actual.len(), expected_bodies.len());
                 let expected = saved
                     .iter()
-                    .filter(|row| row.run.is_some_and(|run| run.start_seq == start))
+                    .filter(|row| {
+                        row.seq >= start
+                            && (start != 1 || row.seq < cut_head)
+                            && serde_json::from_slice::<ChatAtom>(&row.metadata)
+                                .is_ok_and(|atom| atom.kind == ChatAtomKind::Reasoning)
+                    })
                     .collect::<Vec<_>>();
                 for (entry, row) in actual.iter().zip(expected) {
-                    assert_eq!(
-                        (&entry.record_id, entry.completion_seq, entry.run),
-                        (&row.id, row.seq, row.run)
-                    );
+                    assert_eq!((&entry.record_id, entry.completion_seq), (&row.id, row.seq));
                     let atom: ChatAtom = serde_json::from_slice(&row.metadata)?;
                     assert_eq!(entry.atom.id, atom.id);
                     assert_eq!(entry.atom.contents, atom.contents);
                 }
             }
-            phase = "final Main representatives and real Hidden Children";
+            phase = "final bounded records and genuine Turn receipt";
             let final_feed = feeds.len();
             feeds.push(
                 env.runtime
@@ -1685,18 +1658,18 @@ mod timeline_backlog_tests {
             let set = chat(&mut feeds[final_feed], &ChatScope::conversation(None)).await?;
             assert_eq!(set.placement, ChatPlacement::Set);
             assert_eq!(set.through_seq, latest.head);
-            assert_eq!(set.entries.len(), 3);
-            assert_eq!(
+            assert_eq!(set.entries.len(), demand().max_items as usize);
+            assert!(
                 set.entries
-                    .iter()
-                    .map(|entry| entry.run.context("Main run").map(|run| run.start_seq))
-                    .collect::<Result<Vec<_>>>()?,
-                vec![1, cut_head, suffix_start]
+                    .windows(2)
+                    .all(|pair| pair[0].completion_seq < pair[1].completion_seq)
             );
-            let fresh_text = &set.entries[1];
-            assert_eq!(fresh_text.record_id, text.record_id);
+            let fresh_text = feeds[final_feed]
+                .reader()
+                .read_completed(&text.record_id, demand())
+                .await?;
             assert_eq!(fresh_text.atom.contents, text.atom.contents);
-            check_text(feeds[final_feed].reader(), fresh_text).await?;
+            check_text(feeds[final_feed].reader(), &fresh_text).await?;
             let hidden = saved
                 .iter()
                 .find(|row| {
@@ -1704,7 +1677,6 @@ mod timeline_backlog_tests {
                         .is_ok_and(|atom| atom.kind == ChatAtomKind::TurnReceipt)
                 })
                 .context("real successful Turn receipt")?;
-            assert!(hidden.run.is_none());
             let scope = ChatScope::conversation(Some(
                 hidden.parent.clone().context("real receipt parent")?,
             ));
@@ -1719,8 +1691,6 @@ mod timeline_backlog_tests {
             loop {
                 for entry in page.entries {
                     if entry.record_id == hidden.id {
-                        assert_eq!(entry.main_presentation, MainPresentation::Hidden);
-                        assert!(entry.run.is_none());
                         assert_eq!(entry.completion_seq, hidden.seq);
                         found = true;
                     }

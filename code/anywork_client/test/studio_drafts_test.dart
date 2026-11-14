@@ -353,8 +353,6 @@ final class _DraftConnection extends ScriptedConversationFeed {
     final entry = CompletedEntry(
       recordId: item.recordId,
       completionSeq: _completedThrough,
-      run: CompletionRunPosition(startSeq: _completedThrough, ordinal: 1),
-      mainPresentation: item.mainPresentation,
       atom: item.atom,
     );
     await deliver(

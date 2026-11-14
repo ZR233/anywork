@@ -1,5 +1,6 @@
 //! 执行事实在可靠完成或观察封存边界编码为规范 JSON 与显式内容所有权。
 
+use crate::{ExecutionItem, ExecutionShape};
 use anyhow::{Result, ensure};
 use pl_core::{
     chat::{
@@ -9,10 +10,10 @@ use pl_core::{
     model::ContentBlock,
 };
 use pl_protocol::{
-    ContentOwner, ContentRef, ContentTarget, ResolvedThreadToolUserInput, ThreadItem,
-    ThreadItemState, ThreadRawItem, ThreadRawPayload, ThreadTextItem, ThreadThinkingItem,
-    ThreadToolInvocation, ThreadToolItem, ThreadToolState, ThreadToolUserInput,
-    ThreadToolUserInputAnswer, ThreadToolUserInputState, UserQuestion,
+    ContentOwner, ContentRef, ContentTarget, ResolvedThreadToolUserInput, ThreadRawItem,
+    ThreadRawPayload, ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem,
+    ThreadToolState, ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState,
+    UserQuestion,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -21,10 +22,12 @@ mod atom;
 pub(in crate::studio) use accepted::{accepted_inbox_draft, accepted_input_draft};
 mod descriptor;
 mod payload;
+mod restore;
 pub(crate) use atom::atom;
 use descriptor::{
     PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,
 };
+pub(in crate::studio) use restore::{execution_item, execution_state};
 
 /// 仅用于执行投影的正文位置比较；不进入 Core、存储记录或产品 DTO。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,7 +82,7 @@ pub(crate) fn atom_content_role(key: &BodyKey) -> Option<pl_protocol::ChatConten
 /// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
 #[cfg(test)]
 pub(crate) fn completion_draft(
-    item: &ThreadItem,
+    item: &ExecutionItem,
     source_effect_seq: u64,
     database_id: &str,
 ) -> Result<ChatDraft> {
@@ -87,7 +90,7 @@ pub(crate) fn completion_draft(
 }
 
 pub(crate) fn completion_draft_reusing(
-    item: &ThreadItem,
+    item: &ExecutionItem,
     source_effect_seq: u64,
     database_id: &str,
     previous: &ChatContents,
@@ -131,14 +134,14 @@ pub(crate) fn completion_draft_reusing(
 }
 
 pub(crate) fn background_started_draft(
-    item: &ThreadItem,
+    item: &ExecutionItem,
     task_id: &str,
     receipt: &str,
     source_effect_seq: u64,
     started_at: i64,
     database_id: &str,
 ) -> Result<ChatDraft> {
-    let ThreadItemState::Tool(tool) = item.state() else {
+    let ExecutionShape::Tool(tool) = item.state() else {
         anyhow::bail!("background acknowledgement has no tool invocation");
     };
     let invocation = tool.invocation();
@@ -193,7 +196,7 @@ pub(in crate::studio) struct ObservationStamp<'a> {
 }
 
 pub(in crate::studio) fn validate_observation(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
     atom: &pl_protocol::ChatAtom,
     thread_id: &str,
 ) -> Result<()> {
@@ -210,7 +213,7 @@ pub(in crate::studio) fn validate_observation(
 }
 
 pub(in crate::studio) fn observation_payload(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
     atom: &pl_protocol::ChatAtom,
     contents: &[Arc<ChatContent>],
     stamp: ObservationStamp<'_>,
@@ -284,7 +287,7 @@ fn body_envelope(
 }
 
 fn payload_envelope(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
     descriptor: serde_json::Value,
     bodies: Vec<serde_json::Value>,
     source_effect_seq: u64,
@@ -297,7 +300,7 @@ fn payload_envelope(
         .get("data")
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("descriptor has no data"))?;
-    if let ThreadItemState::Tool(tool) = state
+    if let ExecutionShape::Tool(tool) = state
         && let Some(invocation) = data
             .get_mut("invocation")
             .and_then(serde_json::Value::as_object_mut)
@@ -312,7 +315,7 @@ fn payload_envelope(
 }
 
 fn freeze(
-    item: &ThreadItem,
+    item: &ExecutionItem,
     stamp: CompletionStamp<'_>,
     database_id: &str,
     descriptor: serde_json::Value,
@@ -404,7 +407,7 @@ fn freeze(
         .as_str()
         .expect("payload kind was validated");
     let mut atom = metadata.unwrap_or_else(|| atom(item));
-    if let ThreadItemState::Text(text) = item.state() {
+    if let ExecutionShape::Text(text) = item.state() {
         atom.content_present = Some(
             bodies.iter().any(|(key, block)| {
                 atom_content_role(key) == Some(pl_protocol::ChatContentRole::Body)
@@ -444,7 +447,12 @@ fn freeze(
         .collect();
     Ok(ChatDraft {
         item_id: id.into(),
-        query_class: "conversation".into(),
+        query_class: if atom.kind == pl_protocol::ChatAtomKind::Inference {
+            "execution"
+        } else {
+            "conversation"
+        }
+        .into(),
         parent_id,
         metadata: serde_json::to_vec(&atom)?.into(),
         payload: Arc::from(serde_json::to_vec(&envelope)?),
@@ -456,15 +464,15 @@ fn freeze(
 ///
 /// 超出 u32 的位置/数量返回 Overloaded；问答关联缺失明确失败，不静默丢弃答案。
 pub(crate) fn content_fields(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
 ) -> Result<BTreeMap<BodyKey, Arc<ContentBlock>>> {
     validate_counts(state)?;
     let mut fields = BTreeMap::new();
     match state {
-        ThreadItemState::Text(text) => {
+        ExecutionShape::Text(text) => {
             fields.insert(BodyKey::Body, ContentBlock::from_text(text.text()));
         }
-        ThreadItemState::Thinking(thinking) => {
+        ExecutionShape::Thinking(thinking) => {
             for (index, chunk) in thinking.summary().iter().enumerate() {
                 fields.insert(
                     BodyKey::Part(PresentationPart::SummaryText(count(index)?)),
@@ -478,7 +486,7 @@ pub(crate) fn content_fields(
                 );
             }
         }
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             fields.insert(
                 BodyKey::host(TOOL_ARGUMENTS_FIELD),
                 ContentBlock::from_text(tool.invocation().arguments()),
@@ -538,7 +546,7 @@ pub(crate) fn content_fields(
                 }
             }
         }
-        ThreadItemState::Raw(raw) => {
+        ExecutionShape::Raw(raw) => {
             // Original producer payloads are shown as正文, so they are one field each instead of a
             // static blob that bypasses every preview budget.
             for (index, payload) in raw.payloads.iter().enumerate() {
@@ -559,22 +567,22 @@ pub(crate) fn content_fields(
 /// （streaming→completed/failed/cancelled）都是载荷变化，必须递增内容版本，否则旧的保存回执
 /// 会张冠李戴地确认新载荷。读取 DTO 和内存 meta 不消费这里的空正文结构。
 ///
-/// 它**不含** `ThreadItem` 上会随每次投影变化的易变时间戳（`created_at`/`updated_at`），因此同一条目
+/// 它**不含** `ExecutionItem` 上会随每次投影变化的易变时间戳（`created_at`/`updated_at`），因此同一条目
 /// 重复投影不会无意义地抬高内容版本；但生命周期自带的 `completed_at`/`failed_at` 属于真实转移，保留。
-pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
+pub(crate) fn static_state(state: &ExecutionShape) -> ExecutionShape {
     match state {
-        ThreadItemState::Text(text) => ThreadItemState::Text(ThreadTextItem::new(
+        ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
             text.channel(),
             String::new(),
             text.attachments().to_vec(),
             text.lifecycle().clone(),
         )),
-        ThreadItemState::Thinking(thinking) => ThreadItemState::Thinking(ThreadThinkingItem::new(
+        ExecutionShape::Thinking(thinking) => ExecutionShape::Thinking(ThreadThinkingItem::new(
             Vec::new(),
             Vec::new(),
             thinking.lifecycle().clone(),
         )),
-        ThreadItemState::Tool(tool) => ThreadItemState::Tool(
+        ExecutionShape::Tool(tool) => ExecutionShape::Tool(
             ThreadToolItem::new(
                 clear_arguments(tool.invocation()),
                 clear_terminal_output(&clear_streamed_output(tool.state())),
@@ -582,7 +590,7 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
             .with_user_input(tool.user_input().map(clear_user_input))
             .with_wait(tool.wait().cloned()),
         ),
-        ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
+        ExecutionShape::Raw(raw) => ExecutionShape::Raw(ThreadRawItem {
             origin: raw.origin,
             payloads: raw
                 .payloads
@@ -810,23 +818,23 @@ mod tests {
     fn completion_rejects_active_text_thinking_and_tool_with_shared_observation_codec() {
         use pl_protocol::*;
         for state in [
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "active".into(),
                 vec![],
                 ThreadContentLifecycle::streaming(),
             )),
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 vec![],
                 vec![],
                 ThreadContentLifecycle::streaming(),
             )),
-            ThreadItemState::Tool(ThreadToolItem::new(
+            ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("call".into(), "exec".into(), "{}".into()),
                 ThreadToolState::Running(RunningThreadTool::new(String::new())),
             )),
         ] {
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 "active".into(),
                 "thread".into(),
                 "turn".into(),
@@ -857,14 +865,14 @@ mod tests {
                 ThreadToolState::Running(RunningThreadTool::new(String::new())),
             ),
         ] {
-            let state = ThreadItemState::Tool(ThreadToolItem::new(
+            let state = ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("call".into(), "exec".into(), String::new()),
                 state,
             ));
             let encoded =
                 serde_json::to_value(descriptor::observation_descriptor(&state, "thread")?)?;
             assert_eq!(encoded["data"]["state"]["kind"], kind);
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 "active".into(),
                 "thread".into(),
                 "turn".into(),
@@ -897,7 +905,7 @@ mod tests {
             None,
         );
         let tool_item = |state, wait| {
-            ThreadItem::new(
+            ExecutionItem::new(
                 "tool:4:call".into(),
                 "thread".into(),
                 "turn".into(),
@@ -905,7 +913,7 @@ mod tests {
                 1,
                 10,
                 11,
-                ThreadItemState::Tool(
+                ExecutionShape::Tool(
                     ThreadToolItem::new(
                         ThreadToolInvocation::new("call".into(), "wait".into(), "{}".into()),
                         state,
@@ -1003,7 +1011,7 @@ mod tests {
                 )
             };
             let tool_item = |state, user_input| {
-                ThreadItem::new(
+                ExecutionItem::new(
                     "tool:4:call".into(),
                     "thread".into(),
                     "turn".into(),
@@ -1011,7 +1019,7 @@ mod tests {
                     1,
                     10,
                     11,
-                    ThreadItemState::Tool(
+                    ExecutionShape::Tool(
                         ThreadToolItem::new(
                             ThreadToolInvocation::new("call".into(), name.into(), "{}".into()),
                             state,
@@ -1092,19 +1100,14 @@ mod tests {
                             ChatAtomLifecycle::Terminal { outcome, .. } if outcome == expected
                         )),
                     }
-                    if expected_outcome.is_some() {
-                        let class = native_read_class_v1("conversation", &projected_atom);
-                        assert_eq!(class.hint, pl_core::chat::ChatReadHint::Single);
-                        assert_eq!(class.main_presentation, MainPresentation::Single);
-                    }
                 }
             }
         }
         Ok(())
     }
 
-    fn text(id: &str, body: String) -> ThreadItem {
-        ThreadItem::new(
+    fn text(id: &str, body: String) -> ExecutionItem {
+        ExecutionItem::new(
             id.into(),
             "thread".into(),
             "turn:a:b".into(),
@@ -1112,7 +1115,7 @@ mod tests {
             1,
             10,
             11,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 body,
                 Vec::new(),
@@ -1189,7 +1192,7 @@ mod tests {
     #[test]
     fn background_handoff_keeps_member_identity_and_the_distinct_receipt_content_owner()
     -> Result<()> {
-        let item = ThreadItem::new(
+        let item = ExecutionItem::new(
             "tool:4:call".into(),
             "thread".into(),
             "turn".into(),
@@ -1197,7 +1200,7 @@ mod tests {
             1,
             10,
             11,
-            ThreadItemState::Tool(ThreadToolItem::new(
+            ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("call".into(), "arbitrary".into(), "{}".into()),
                 ThreadToolState::Running(pl_protocol::RunningThreadTool::new(String::new())),
             )),
@@ -1262,7 +1265,7 @@ mod tests {
             let invocation =
                 ThreadToolInvocation::new("call".into(), "same-name".into(), "{}".into())
                     .with_presentation_contract(contract.map(str::to_owned));
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 "tool".into(),
                 "thread".into(),
                 "turn".into(),
@@ -1270,7 +1273,7 @@ mod tests {
                 1,
                 10,
                 11,
-                ThreadItemState::Tool(ThreadToolItem::new(
+                ExecutionShape::Tool(ThreadToolItem::new(
                     invocation,
                     ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
                         11,
@@ -1291,7 +1294,7 @@ mod tests {
                 serde_json::to_value(contract)?
             );
             assert_eq!(draft.contents.len(), 2);
-            let ThreadItemState::Tool(shape) = static_state(item.state()) else {
+            let ExecutionShape::Tool(shape) = static_state(item.state()) else {
                 panic!("tool shape");
             };
             assert_eq!(shape.invocation().presentation_contract(), contract);
@@ -1338,7 +1341,7 @@ mod tests {
             height: None,
             byte_size: 1,
         };
-        let item = text("image-only", String::new()).with_state(ThreadItemState::Text(
+        let item = text("image-only", String::new()).with_state(ExecutionShape::Text(
             ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 String::new(),

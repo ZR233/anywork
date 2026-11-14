@@ -533,7 +533,7 @@ mod tests {
         assert!(source.read(None).await.unwrap().reports.is_empty());
         // The writer commits between the reader's empty query and its first wait.
         // A registered watch must retain that notification instead of requiring polling.
-        let item = pl_protocol::ThreadItem::new(
+        let item = crate::ExecutionItem::new(
             "turn:actual".into(),
             "child".into(),
             "actual".into(),
@@ -541,7 +541,7 @@ mod tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Turn(pl_protocol::ThreadTurnItem::new(
+            crate::ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
                 pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
                     Some(1),
                     1,
@@ -549,7 +549,9 @@ mod tests {
                 )),
             )),
         );
-        history.commit(12, &[item], &[]).await.unwrap();
+        crate::studio::storage::history::persist_completed(&history, 12, &[item])
+            .await
+            .unwrap();
         writer.send_modify(|status| status.committed_sequence = 12);
         tokio::time::timeout(Duration::from_millis(100), source.changed())
             .await

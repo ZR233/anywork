@@ -1,25 +1,10 @@
 part of 'studio_api.dart';
 
-frb_chat_types.BridgeCompletionRunRef _completionRunToFrb(
-  CompletionRunRef value,
-) => frb_chat_types.BridgeCompletionRunRef(
-  databaseId: value.databaseId,
-  indexVersion: value.indexVersion,
-  startSeq: BigInt.from(value.startSeq),
-);
-
 CompletedEntry _completedEntryFromFrb(
   frb_chat_types.BridgeCompletedEntry value,
 ) => CompletedEntry(
   recordId: value.recordId,
   completionSeq: _exactTimelineInt(value.completionSeq, 'completion sequence'),
-  run: value.run == null
-      ? null
-      : CompletionRunPosition(
-          startSeq: _exactTimelineInt(value.run!.startSeq, 'run start'),
-          ordinal: _exactTimelineInt(value.run!.ordinal, 'run ordinal'),
-        ),
-  mainPresentation: MainPresentation.values.byName(value.mainPresentation.name),
   atom: _chatAtomFromFrb(value.atom),
 );
 

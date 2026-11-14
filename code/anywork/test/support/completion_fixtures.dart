@@ -4,41 +4,34 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart' show ThreadTextChannel;
 
 /// Explicit producer fixtures. This helper does not classify atoms or combine
-/// records; every caller chooses its class, start and ordinal.
+/// records; callers choose the domain kind and immutable completion sequence.
 CompletedEntry completionEntry(
   String id,
   int seq, {
-  int? start,
-  int ordinal = 1,
-  MainPresentation presentation = MainPresentation.foregroundWork,
+  bool isText = false,
   String databaseId = 'database',
   String? text,
 }) => CompletedEntry(
   recordId: id,
   completionSeq: seq,
-  run: CompletionRunPosition(startSeq: start ?? seq, ordinal: ordinal),
-  mainPresentation: presentation,
+
   atom: ChatAtom(
     id: 'atom:$id',
     completionItemId: id,
     completionSeq: seq,
     source: const ForegroundTurnChatSource(turnId: 'turn'),
     sourceOrder: null,
-    kind: presentation == MainPresentation.single
-        ? ChatAtomKind.text
-        : ChatAtomKind.toolCall,
+    kind: isText ? ChatAtomKind.text : ChatAtomKind.toolCall,
     delivery: ChatDeliveryKind.foreground,
     lifecycle: const TerminalChatAtom(
       started: null,
       ended: null,
       outcome: ChatTerminalOutcome.completed,
     ),
-    textChannel: presentation == MainPresentation.single
-        ? ThreadTextChannel.finalAnswer
-        : null,
+    textChannel: isText ? ThreadTextChannel.finalAnswer : null,
     contentPresent: true,
     contents: const [],
-    payload: presentation == MainPresentation.single
+    payload: isText
         ? InlinePayload(
             bytes: utf8.encode(
               jsonEncode({

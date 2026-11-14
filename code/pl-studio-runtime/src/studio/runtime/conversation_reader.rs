@@ -23,7 +23,6 @@ pub(super) struct ReadLease {
     pub thread_id: String,
     pub scope: ChatScope,
     pub ceiling: u64,
-    pub effect_cut: u64,
     presentation_ceiling: OnceLock<u64>,
     pub slot: Arc<ObservationSlot>,
     cancel: CancellationToken,
@@ -89,6 +88,10 @@ struct Cursor {
 enum CursorKind {
     Before {
         boundary: u64,
+    },
+    LegacyEvidenceAfter {
+        evidence_id: String,
+        revision: u64,
     },
     Manifest {
         item: String,
@@ -213,7 +216,6 @@ impl ConversationReader {
         id: String,
         scope: ChatScope,
         ceiling: u64,
-        effect_cut: u64,
         slot: Arc<ObservationSlot>,
         runtime_closed: CancellationToken,
         resources: ReadResources,
@@ -224,7 +226,6 @@ impl ConversationReader {
                 id,
                 scope,
                 ceiling,
-                effect_cut,
                 presentation_ceiling: OnceLock::new(),
                 slot,
                 cancel: runtime_closed.child_token(),
@@ -555,6 +556,108 @@ impl ConversationReader {
         );
         Ok(batch)
     }
+    /// 旧证据仅通过显式 All 租约导出；不进入完成流或执行恢复。
+    pub async fn legacy_execution_evidence(
+        &self,
+        continuation: Option<&str>,
+        demand: ReadDemand,
+    ) -> Result<LegacyExecutionEvidencePage> {
+        core_demand(demand)?;
+        ensure!(
+            matches!(self.inner.scope.query_class, ChatClassFilter::All {}),
+            core::ChatError::InvalidArgument("legacy evidence export requires explicit All".into())
+        );
+        let guard = self.resources().await?;
+        let r = guard.as_ref().ok_or_else(cancelled)?;
+        let after = continuation
+            .map(|token| -> Result<_> {
+                match self.cursor(r, token)? {
+                    CursorKind::LegacyEvidenceAfter {
+                        evidence_id,
+                        revision,
+                    } => Ok((evidence_id, revision)),
+                    _ => Err(core::ChatError::InvalidArgument(
+                        "not a legacy evidence continuation".into(),
+                    )
+                    .into()),
+                }
+            })
+            .transpose()?;
+        let heads = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            heads = r.history.legacy_evidence_heads(after.as_ref().map(|(id,revision)| (id.as_str(),*revision)),demand.max_items as usize) => heads?,
+        };
+        let natural_end = heads.len() < demand.max_items as usize;
+        let count = heads.len();
+        let mut result = LegacyExecutionEvidencePage {
+            entries: vec![],
+            continuation: None,
+        };
+        let mut bytes = 0_usize;
+        for head in heads {
+            let next = self.token(
+                r,
+                CursorKind::LegacyEvidenceAfter {
+                    evidence_id: head.evidence_id.clone(),
+                    revision: head.revision,
+                },
+            )?;
+            let shell = serde_json::to_vec(&LegacyExecutionEvidencePage {
+                entries: vec![],
+                continuation: Some(next.clone()),
+            })?
+            .len();
+            let entry = serde_json::to_vec(&head)?
+                .len()
+                .saturating_add(usize::from(!result.entries.is_empty()));
+            if shell.saturating_add(bytes).saturating_add(entry) > demand.max_bytes as usize {
+                ensure!(
+                    !result.entries.is_empty(),
+                    core::ChatError::InvalidDemand(
+                        "legacy evidence header cannot fit demand".into()
+                    )
+                );
+                break;
+            }
+            bytes = bytes.saturating_add(entry);
+            result.entries.push(head);
+            result.continuation = Some(next);
+        }
+        if natural_end && result.entries.len() == count {
+            result.continuation = None;
+        }
+        ensure!(
+            serde_json::to_vec(&result)?.len() <= demand.max_bytes as usize,
+            core::ChatError::InvalidDemand("legacy evidence page exceeds demand".into())
+        );
+        self.ensure()?;
+        Ok(result)
+    }
+
+    pub async fn read_legacy_execution_evidence(
+        &self,
+        evidence_id: &str,
+        revision: u64,
+        range: ContentRange,
+    ) -> Result<ContentWindow> {
+        ensure!(
+            matches!(self.inner.scope.query_class, ChatClassFilter::All {}),
+            core::ChatError::InvalidArgument("legacy evidence export requires explicit All".into())
+        );
+        ensure!(
+            range.max_bytes > 0 && range.max_bytes <= CONTENT_WINDOW_MAX_BYTES,
+            core::ChatError::InvalidDemand("invalid legacy evidence range".into())
+        );
+        let guard = self.resources().await?;
+        let r = guard.as_ref().ok_or_else(cancelled)?;
+        let window = tokio::select! { biased;
+            _ = self.inner.cancel.cancelled() => return Err(cancelled()),
+            window = r.history.read_legacy_evidence(evidence_id,revision,range) => window?,
+        };
+        self.ensure()?;
+        Ok(window)
+    }
+
     pub async fn list_contents(
         &self,
         item_id: &str,
@@ -1047,7 +1150,7 @@ impl ReadObservation {
     }
 }
 
-pub(super) struct JsonBudget {
+pub(in crate::studio) struct JsonBudget {
     pub database_id: String,
     deferred_only: bool,
     fixed: usize,
@@ -1055,7 +1158,7 @@ pub(super) struct JsonBudget {
     manifest_cursor: Option<Cursor>,
 }
 impl JsonBudget {
-    pub(super) fn new(database_id: String, continuation: String) -> Self {
+    pub(in crate::studio) fn new(database_id: String, continuation: String) -> Self {
         let batch = ChatBatch {
             placement: ChatPlacement::Prepend,
             entries: Vec::new(),
@@ -1071,7 +1174,7 @@ impl JsonBudget {
             manifest_cursor: None,
         }
     }
-    pub(super) fn headers_only(mut self) -> Self {
+    pub(in crate::studio) fn headers_only(mut self) -> Self {
         self.deferred_only = true;
         self
     }
@@ -1138,7 +1241,7 @@ impl core::ChatBudget for JsonBudget {
         entry.saturating_add(continuation)
     }
 }
-pub(super) fn completed_entry(
+pub(in crate::studio) fn completed_entry(
     header: &core::ChatItemHeader,
     payload: PayloadData,
 ) -> Result<CompletedEntry> {
@@ -1164,7 +1267,7 @@ pub(super) fn completed_entry(
         atom,
     })
 }
-pub(super) fn entries(
+pub(in crate::studio) fn entries(
     items: Vec<core::ChatPageItem>,
     database_id: &str,
 ) -> Result<Vec<CompletedEntry>> {

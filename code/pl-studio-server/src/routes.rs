@@ -321,6 +321,8 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(conversation::manifest))
         .routes(routes!(conversation::read))
         .routes(routes!(conversation::current))
+        .routes(routes!(conversation::legacy_evidence))
+        .routes(routes!(conversation::legacy_evidence_content))
         .routes(routes!(sse::watch_content))
         .routes(routes!(submit_prompt))
         .routes(routes!(admit_attachment_drafts))

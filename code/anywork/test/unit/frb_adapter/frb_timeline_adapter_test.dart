@@ -55,20 +55,19 @@ void main() {
   }
   for (final placement in dto.BridgeChatPlacement.values) {
     test(
-      'FRB $placement preserves immutable records, Run positions, classification, bytes and credit',
+      'FRB $placement preserves immutable records, completion positions and bytes and credit',
       () async {
         final native = _GeneratedFeed();
         final feed = FrbConversationFeed(native);
         final iterator = StreamIterator(feed.events);
         final bytes = Uint8List.fromList(utf8.encode('中文 🐱 opaque JSON'));
         final entries = [
-          for (final presentation in dto.BridgeMainPresentation.values)
+          for (var index = 0; index < 4; index++)
             _completedEntry(
-              presentation.name,
+              'record-$index',
               dto.BridgePayloadData.inline(bytes: bytes),
-              completionSeq: presentation.index + 1,
-              sourceOrder: 20 - presentation.index,
-              presentation: presentation,
+              completionSeq: index + 1,
+              sourceOrder: 20 - index,
             ),
           _completedEntry(
             'deferred',
@@ -106,10 +105,10 @@ void main() {
         );
         expect(batch.throughSeq, 5);
         expect(batch.entries.map((entry) => entry.recordId), [
-          'hidden',
-          'single',
-          'foregroundWork',
-          'backgroundResults',
+          'record-0',
+          'record-1',
+          'record-2',
+          'record-3',
           'deferred',
         ]);
         expect(batch.entries.map((entry) => entry.completionSeq), [
@@ -119,10 +118,6 @@ void main() {
           4,
           5,
         ]);
-        expect(
-          batch.entries.take(4).map((entry) => entry.mainPresentation),
-          MainPresentation.values,
-        );
         // Source order deliberately decreases: the adapter must never sort or infer classes.
         expect(batch.entries.map((entry) => entry.atom.sourceOrder), [
           20,
@@ -134,8 +129,6 @@ void main() {
         for (var index = 0; index < batch.entries.length; index++) {
           final entry = batch.entries[index];
           final atom = entry.atom;
-          expect(entry.run?.startSeq, index + 1);
-          expect(entry.run?.ordinal, 1);
           expect(atom.id, '${entry.recordId}-member');
           expect(atom.completionItemId, entry.recordId);
           expect(atom.completionSeq, index + 1);
@@ -376,15 +369,9 @@ dto.BridgeCompletedEntry _completedEntry(
   dto.BridgePayloadData payload, {
   required int completionSeq,
   required int sourceOrder,
-  dto.BridgeMainPresentation presentation = dto.BridgeMainPresentation.single,
 }) => dto.BridgeCompletedEntry(
   recordId: completionItemId,
   completionSeq: BigInt.from(completionSeq),
-  run: dto.BridgeCompletionRunPosition(
-    startSeq: BigInt.from(completionSeq),
-    ordinal: BigInt.one,
-  ),
-  mainPresentation: presentation,
   atom: dto.BridgeChatAtom(
     id: '$completionItemId-member',
     completionItemId: completionItemId,

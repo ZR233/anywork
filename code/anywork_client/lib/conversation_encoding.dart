@@ -81,17 +81,15 @@ Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
 Map<String, Object?> completedEntryToJson(CompletedEntry entry) => {
   'recordId': entry.recordId,
   'completionSeq': entry.completionSeq,
-  'run': entry.run == null
-      ? null
-      : {'startSeq': entry.run!.startSeq, 'ordinal': entry.run!.ordinal},
-  'mainPresentation': entry.mainPresentation.name,
   'atom': chatAtomToJson(entry.atom),
 };
 
-Map<String, Object?> completionRunRefToJson(CompletionRunRef reference) => {
-  'databaseId': reference.databaseId,
-  'indexVersion': reference.indexVersion,
-  'startSeq': reference.startSeq,
+Map<String, Object?> chatScopeToJson(ChatScope scope) => {
+  'queryClass': switch (scope.queryClass) {
+    ExactChatClass(:final value) => {'kind': 'class', 'value': value},
+    AllChatClasses() => {'kind': 'all'},
+  },
+  'parentId': scope.parentId,
 };
 
 /// Counts the canonical UTF-8 entry, including the discriminant and envelope.

@@ -317,7 +317,6 @@ pub(super) fn convert(
     }
     Ok(ChatItem::complete(
         ChatDraft {
-            read_hint: pl_core::chat::ChatReadHint::Hidden,
             metadata: Arc::from([]),
             item_id: id.into(),
             query_class: class.into(),

@@ -7,6 +7,8 @@
 //! projection, so an ordinary commit neither parks this observer behind the owner's command queue
 //! nor waits for the disk. Durable history is read back once when the projection is installed on a
 //! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 mod billing;
 mod directory;
 pub(in crate::studio) mod publication;
@@ -775,16 +777,7 @@ impl ThreadObservations {
                             None => crate::thread_assembler::observation::DurableMessageIdentity::Unverifiable,
                         }));
                     }
-                    // 时间线已经提交这条消息、但索引没有它的记录：升级前的历史无法证明正文，
-                    // 必须 fail-closed，而不是重新投递成新消息。
-                    let item = crate::studio::thread_projection::order::message_id(&message_id);
-                    let committed = history
-                        .existing_items([item])
-                        .await
-                        .map_err(identity_error)?;
-                    Ok((!committed.is_empty()).then_some(
-                        crate::thread_assembler::observation::DurableMessageIdentity::Unverifiable,
-                    ))
+                    Ok(None)
                 })
             })),
             move |id, thread, purpose| {
@@ -2022,22 +2015,14 @@ impl LiveOwner {
             )
             .await?;
             let history = services.store.history(&self.thread.id).await?;
-            let mut items = history
-                .items_for_turn(&turn.turn_id)
-                .await?
-                .into_iter()
-                .map(|item| (item.id.clone(), item))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            for item in prepared
-                .items
-                .iter()
-                .filter(|item| item.turn_id == turn.turn_id)
-            {
-                items.insert(item.id.clone(), item.clone());
+            let mut result = history.turn_result(&turn.turn_id).await?;
+            for record in prepared.completions.iter() {
+                let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+                if atom.turn_id.as_deref() == Some(turn.turn_id.as_str()) {
+                    result.observe_completion(record, &self.thread.id)?;
+                }
             }
-            let mut items = items.into_values().collect::<Vec<_>>();
-            items.sort_by_key(|item| item.ordinal);
-            crate::studio::thread_projection::TurnResult::from_items(&items)
+            result
         };
         if result.finish.is_none() {
             await_history_durable(
@@ -2287,7 +2272,7 @@ async fn cold_seed(
     channel: &HistoryChannel,
     retained: &[Arc<pl_core::thread::ThreadEffectBatch>],
 ) -> Result<(
-    Vec<pl_protocol::ThreadItem>,
+    Vec<crate::ExecutionItem>,
     std::collections::BTreeSet<String>,
 )> {
     use std::collections::BTreeSet;
@@ -2306,6 +2291,18 @@ async fn cold_seed(
             input_ids.extend(turn.input_id.iter().cloned());
         }
         input_ids.extend(state.inputs.iter().map(|record| record.input.id.clone()));
+        item_ids.extend(
+            state
+                .tasks
+                .values()
+                .map(|task| crate::studio::thread_projection::order::tool_id(&task.call_id)),
+        );
+        item_ids.extend(
+            state
+                .permissions
+                .values()
+                .map(|record| crate::studio::thread_projection::order::tool_id(&record.call_id)),
+        );
         item_ids.extend(
             state.inbox.iter().map(|record| {
                 crate::studio::thread_projection::order::message_id(&record.message.id)
@@ -2375,18 +2372,12 @@ async fn cold_seed(
     }
     let history = store.history(&thread.id).await?;
     history.prepare_activation().await?;
-    let mut items = history.existing_items(item_ids).await?;
-    turn_ids.extend(
-        items
-            .values()
-            .filter(|item| !item.turn_id.is_empty())
-            .map(|item| item.turn_id.clone()),
+    item_ids.extend(
+        turn_ids
+            .iter()
+            .map(|id| crate::studio::thread_projection::order::turn_id(id)),
     );
-    for turn_id in turn_ids {
-        for item in history.items_for_turn(&turn_id).await? {
-            items.insert(item.id.clone(), item);
-        }
-    }
+    let items = history.execution_seeds(item_ids).await?;
     let hidden = history.hidden_input_identities(input_ids).await?;
     Ok((items.into_values().collect(), hidden))
 }
@@ -2741,15 +2732,12 @@ async fn turn_result(
         live.channel.handoff_ticket(),
     )
     .await?;
-    let items = services
+    services
         .store
         .history(&live.thread.id)
         .await?
-        .items_for_turn(turn_id)
-        .await?;
-    Ok(crate::studio::thread_projection::TurnResult::from_items(
-        &items,
-    ))
+        .turn_result(turn_id)
+        .await
 }
 
 /// Waits until the history writer's durable watermark covers the handoff ticket `sequence`.
@@ -3081,7 +3069,7 @@ mod storage_fault_tests {
             input::{InputChange, InputRecord, InputState, ThreadInput},
         },
     };
-    use pl_protocol::{ThreadItem, ThreadItemState};
+
     use std::time::Duration;
 
     #[tokio::test]
@@ -4316,8 +4304,11 @@ mod storage_fault_tests {
             .prepare(&thread, &write.effect, &write.checkpoint.state, true)
             .await?;
         projection.publish_prepared(&chat, &mut prepared).await?;
-        let original_items = prepared.items.clone();
-        let result = crate::studio::thread_projection::TurnResult::from_items(&original_items);
+        let original_completions = prepared.completions.clone();
+        let result = projection
+            .turn_result(&turn.turn_id)
+            .cloned()
+            .unwrap_or_default();
         let original_report =
             reports::terminal_message(&thread, &write.checkpoint.state, &turn, 1, &result)?;
         let mut prepared = prepared;
@@ -4337,7 +4328,10 @@ mod storage_fault_tests {
         // 1) 通道尚未受理该提交：交接被拒，批次与原报告原样保留，预算可见。
         assert!(pending.hand_over(&channel, &feed).is_err());
         assert_eq!(channel.handoff_ticket(), 0);
-        assert_eq!(pending.prepared.items, original_items);
+        assert!(Arc::ptr_eq(
+            &pending.prepared.completions,
+            &original_completions
+        ));
         assert!(pending.retained_bytes() > 0);
         // 2) 受理后同一批次交接：behind 即使带 changes 也不发实时帧，终态事实仍发布，
         //    报告原件随真实 writer 落盘。
@@ -5360,7 +5354,7 @@ mod storage_fault_tests {
             // The tool's existing body is fixture input; the question itself is introduced only by
             // the real owner advance below, then frozen, charged and handed to the real writer.
             live.retained.projection.seed(
-                vec![ThreadItem::new(
+                vec![ExecutionItem::new(
                     crate::studio::thread_projection::order::tool_id(call_id),
                     thread.id.clone(),
                     "state-pending-turn".into(),
@@ -5368,7 +5362,7 @@ mod storage_fault_tests {
                     1,
                     10,
                     10,
-                    ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+                    ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                         pl_protocol::ThreadToolInvocation::new(
                             call_id.into(),
                             "request_user_input".into(),
@@ -6035,7 +6029,7 @@ mod storage_fault_tests {
 
         // 1) 提问在重启之前就已落盘：工具条目（尚未带问答）+ pending 交互回执。
         let pending = qa_record(call_id, 1, InteractionState::Pending)?;
-        let question = ThreadItem::new(
+        let question = ExecutionItem::new(
             tool_id.clone(),
             thread.id.clone(),
             "turn-qa".into(),
@@ -6043,7 +6037,7 @@ mod storage_fault_tests {
             2,
             10,
             11,
-            ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                 pl_protocol::ThreadToolInvocation::new(
                     call_id.into(),
                     "request_user_input".into(),
@@ -6054,19 +6048,60 @@ mod storage_fault_tests {
                 )),
             )),
         );
-        let current = crate::studio::storage::history::conversation::current::PreparedCurrent::new(
-            crate::studio::thread_projection::FrozenCurrentProjection::new(
-                pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
-            ),
-            Arc::from([]),
-        );
+        let mut current =
+            crate::studio::storage::history::conversation::current::PreparedCurrent::new(
+                crate::studio::thread_projection::FrozenCurrentProjection::new(
+                    pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
+                ),
+                Arc::from([]),
+            );
+        let mut start = crate::studio::runtime::chat_item::atom(&question);
+        start.source_order = Some(question.ordinal);
+        start.started_at = Some(question.created_at);
+        start.lifecycle = pl_protocol::ChatAtomLifecycle::Active {
+            status: pl_protocol::ChatActiveStatus::Running,
+            started: Some(pl_protocol::ChatFactPosition {
+                effect_seq: 1,
+                suborder: 0,
+            }),
+        };
+        let mut life =
+            crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
+                &start, 1,
+            )?;
+        life.execution_order = Some(question.ordinal);
+        current.lifecycle = Arc::from([life]);
+        let task = pl_core::thread::task::TaskRecord {
+            id: format!("task:{call_id}"),
+            parent_call_id: None,
+            invocation: Some(pl_core::model::ModelToolCall {
+                call_id: call_id.into(),
+                tool_id: "request_user_input".into(),
+                arguments: pl_core::context::OpaquePayload::new(
+                    "fixture.qa-arguments",
+                    1,
+                    "{\"questions\":[]}",
+                )?,
+                presentation_contract: None,
+                rejection: None,
+            }),
+            call_id: call_id.into(),
+            tool_id: "request_user_input".into(),
+            turn_id: "turn-qa".into(),
+            revision: 1,
+            status: pl_core::thread::task::TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
         history
             .commit_effect(
                 1,
                 EffectCommit {
                     current: &current,
                     completions: &[],
-                    items: std::slice::from_ref(&question),
+                    turns: &[],
+                    execution_order: question.ordinal,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
@@ -6079,7 +6114,7 @@ mod storage_fault_tests {
                         kind: "interaction",
                         payload: serde_json::to_string(&pending)?,
                     }],
-                    tasks: &[],
+                    tasks: std::slice::from_ref(&task),
                     deliveries: &[],
                     delivery_repairs: &[],
                     attempt: None,
@@ -6154,7 +6189,7 @@ mod storage_fault_tests {
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
         let saved = history
-            .existing_items([tool_id.clone()])
+            .execution_seeds([tool_id.clone()])
             .await?
             .remove(&tool_id)
             .context("answered question item")?;
@@ -6267,17 +6302,26 @@ mod storage_fault_tests {
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
         let history = store.history(&thread.id).await?;
-        let items = history.items_for_turn("").await?;
-        assert_eq!(items.len(), 1);
-        let saved = &items[0];
+        let (_, _, items, _) = history
+            .agent_page(
+                false,
+                false,
+                None,
+                None,
+                None,
+                50,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
+        let saved = &items
+            .iter()
+            .find(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Compaction)
+            .context("saved operation original")?
+            .atom;
         assert!(
-            saved.turn_id.is_empty(),
+            saved.turn_id.is_none(),
             "an operation must not borrow the model receipt's Turn"
         );
-        assert!(matches!(
-            saved.state(),
-            ThreadItemState::ContextCompaction(_)
-        ));
         let checkpoint = history
             .checkpoint()
             .await?
@@ -6454,7 +6498,7 @@ mod storage_fault_tests {
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
         let history = store.history(&thread.id).await?;
         assert_eq!(history.watermark().await?, 2);
-        assert!(history.existing_items([input_id.into()]).await?.is_empty());
+        assert!(history.execution_seeds([input_id.into()]).await?.is_empty());
         assert!(
             history
                 .hidden_input_identities([input_id.into()])

@@ -939,9 +939,6 @@ mod tests {
         let mut completed_records = HashSet::new();
         for entry in &initial.entries {
             ensure!(completed_records.insert(entry.record_id.clone()));
-            if let Some(run) = entry.run {
-                ensure!(run.start_seq > 0 && run.ordinal > 0);
-            }
         }
         let mut historical = None;
         for entry in old.entries {

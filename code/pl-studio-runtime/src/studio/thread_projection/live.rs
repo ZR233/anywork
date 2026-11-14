@@ -17,6 +17,8 @@
 //! published into the completion session — and an identity that already sealed a completion is
 //! never re-published, not even by a later execution revision of the same identity.
 
+use crate::{ExecutionItem, ExecutionShape};
+use anyhow::Context as _;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -34,8 +36,8 @@ use pl_protocol::{
     InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
     SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
     ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
-    ThreadItem, ThreadItemState, ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem,
-    ThreadThinkingItem, ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
+    ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem,
+    ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
     TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
     UserQuestion, UserQuestionOption,
 };
@@ -50,13 +52,13 @@ use crate::studio::storage::thread_writer::{ExecutionMaterialization, RuntimeOrd
 ///
 /// Canonical payloads plus the identities read from durable history in this pass.
 /// Resolution performs no index allocation; the final metadata batch commits once.
-type ResolvedIdentities = (BTreeMap<String, ThreadItem>, BTreeSet<String>);
+type ResolvedIdentities = (BTreeMap<String, ExecutionItem>, BTreeSet<String>);
 
-fn completion_ready(item: &ThreadItem) -> bool {
+fn completion_ready(item: &ExecutionItem) -> bool {
     item.is_terminal()
         && !matches!(
             item.state(),
-            ThreadItemState::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
+            ExecutionShape::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
                 input.state(), pl_protocol::ThreadToolUserInputState::Pending
             ))
         )
@@ -74,7 +76,7 @@ pub(in crate::studio) const LIVE_ITEM_WINDOW: usize = 1024;
 /// The report's result is the committed final text, which is kept in full. A Turn that stopped
 /// without one is described by the tail of its visible commentary; this bound keeps that diagnostic
 /// from turning the report accumulator into the Turn's whole process log.
-const TURN_COMMENTARY_PARTS: usize = 16;
+pub(in crate::studio) const TURN_COMMENTARY_PARTS: usize = 16;
 
 /// Fixed per-identity charge of the retained-size estimate.
 ///
@@ -118,7 +120,7 @@ impl LiveEvent {
     /// identities and its state's diagnostics, an interaction's scope, purpose, questions,
     /// accepted answers, approval request, continuation and lifecycle reasons. It follows the same
     /// style as the free `retained_bytes` item estimate below: every body is walked in place,
-    /// nothing is serialized or cloned into a `ThreadItem`, every keyed entry pays a fixed
+    /// nothing is serialized or cloned into a `ExecutionItem`, every keyed entry pays a fixed
     /// [`RETAINED_ENTRY_OVERHEAD`] shell, and all arithmetic saturates. Content bodies are
     /// deliberately absent from this vocabulary (see [`LiveEvent`]), so no event charges bytes the
     /// content window owns, and the items a commit also produced are charged by
@@ -173,7 +175,7 @@ struct LivePreview {
     ///
     /// A preview never carries completion metadata: the terminal-only timeline meta belongs to
     /// sealed records, and this runtime shape is the preview's own structural fact.
-    shape: ThreadItemState,
+    shape: ExecutionShape,
     /// Newest **observation** version this identity delivered (model content version / tool
     /// accumulated length), used only for de-duplication; it is not the window item's content
     /// version, which [`LiveProjection::revisions`] owns.
@@ -318,12 +320,15 @@ pub(in crate::studio) struct PreparedEffect {
     /// Reliable effect-local changes of already admitted members, not new immutable phases.
     /// Publication consumes these into the original frozen display delta.
     display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
+    /// 仅待发布的展示事实，发布后立即释放；不交给可靠 writer。
+    display_facts: Arc<[pl_protocol::ChatAtom]>,
     display_text_visible: Arc<[super::presentation::TextVisible]>,
     display_observation_plan: Arc<super::presentation::ObservationPlan>,
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
     display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) items: Arc<[ThreadItem]>,
+    pub(in crate::studio) turns: Arc<[crate::studio::storage::history::turns::TurnWrite]>,
+    pub(in crate::studio) execution_order: u64,
     /// The frozen completion records this batch published atomically before the handoff.
     ///
     /// The completion session allocated their `append_seq` in one short critical section and keeps
@@ -342,6 +347,48 @@ pub(in crate::studio) struct PreparedEffect {
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
         Arc<[crate::thread_assembler::review_delivery::ReviewDeliveryFact]>,
+}
+
+fn prepared_turns(
+    items: &[ExecutionItem],
+    current: &crate::studio::storage::history::conversation::current::PreparedCurrent,
+    effect: u64,
+) -> Result<Vec<crate::studio::storage::history::turns::TurnWrite>, ProjectionError> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let ExecutionShape::Turn(turn) = item.state() else {
+                return None;
+            };
+            let admitted_effect =
+                current
+                    .source_changes
+                    .iter()
+                    .find_map(|source| match &source.source {
+                        pl_protocol::ChatSourceId::ForegroundTurn { turn_id }
+                            if *turn_id == item.turn_id =>
+                        {
+                            source.started.map(|at| at.effect_seq)
+                        }
+                        _ => None,
+                    });
+            Some(Ok(crate::studio::storage::history::turns::TurnWrite {
+                turn: pl_protocol::Turn {
+                    id: item.turn_id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    input_id: turn.input_id().map(str::to_owned),
+                    revision: effect,
+                    state: turn.state().clone(),
+                    updated_at: item.updated_at,
+                },
+                turn_order: item.ordinal,
+                admitted_effect,
+                updated_effect: Some(effect),
+                terminal_effect: turn.state().is_terminal().then_some(effect),
+                context_disposition: pl_protocol::ThreadContextDisposition::Active,
+            }))
+        })
+        .collect()
 }
 
 fn review_delivery_facts(
@@ -417,7 +464,11 @@ impl PreparedEffect {
                 .saturating_add(RETAINED_ITEM_OVERHEAD)
                 .saturating_add(record.header.metadata.len() as u64)
         });
-        retained_bytes(&self.items)
+        self.turns
+            .iter()
+            .fold(0_u64, |bytes, turn| {
+                bytes.saturating_add(turn.retained_bytes())
+            })
             .saturating_add(
                 self.display
                     .as_ref()
@@ -426,13 +477,15 @@ impl PreparedEffect {
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(self.current.projection_retained_bytes())
             .saturating_add(self.current.operation_bytes())
+            .saturating_add(self.current.lifecycle.iter().fold(0_u64, |bytes, fact| {
+                bytes.saturating_add(fact.retained_bytes())
+            }))
             .saturating_add(
-                serde_json::to_vec(self.current.atom_facts.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
-            )
-            .saturating_add(
-                serde_json::to_vec(self.display_atom_updates.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+                serde_json::to_vec(&(
+                    self.display_atom_updates.as_ref(),
+                    self.display_facts.as_ref(),
+                ))
+                .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
                 serde_json::to_vec(self.display_text_visible.as_ref())
@@ -497,35 +550,36 @@ fn completion_bytes(id: &str, payload: &[u8], contents: &pl_core::chat::ChatCont
 /// inference diagnostics, Skill and file facts — and every identity is charged a fixed overhead for
 /// its ordinals and payload shell. Nothing is serialized, so the estimate can be taken before the
 /// reliable queue's lock. An attachment's blob is not resident, so only its metadata is charged.
-pub(in crate::studio) fn retained_bytes(items: &[ThreadItem]) -> u64 {
+#[cfg(test)]
+pub(in crate::studio) fn retained_bytes(items: &[ExecutionItem]) -> u64 {
     items.iter().fold(0_u64, |total, item| {
         total.saturating_add(charged_item_bytes(item))
     })
 }
 
 /// Resident bytes one retained item holds, its fixed identity overhead included.
-fn charged_item_bytes(item: &ThreadItem) -> u64 {
+fn charged_item_bytes(item: &ExecutionItem) -> u64 {
     item_body_bytes(item).saturating_add(RETAINED_ITEM_OVERHEAD)
 }
 
 /// Sums every resident body of one item's category payload.
-fn item_body_bytes(item: &ThreadItem) -> u64 {
+fn item_body_bytes(item: &ExecutionItem) -> u64 {
     state_body_bytes(item.state())
 }
 
-fn state_body_bytes(state: &ThreadItemState) -> u64 {
+fn state_body_bytes(state: &ExecutionShape) -> u64 {
     match state {
-        ThreadItemState::Raw(raw) => raw
+        ExecutionShape::Raw(raw) => raw
             .payloads
             .iter()
             .fold(0_u64, |total, payload| {
                 total.saturating_add(payload.content.len() as u64)
             })
             .saturating_add(raw.notice.len() as u64),
-        ThreadItemState::Text(text) => (text.text().len() as u64)
+        ExecutionShape::Text(text) => (text.text().len() as u64)
             .saturating_add(attachments_bytes(text.attachments()))
             .saturating_add(lifecycle_bytes(text.lifecycle())),
-        ThreadItemState::Thinking(thinking) => thinking
+        ExecutionShape::Thinking(thinking) => thinking
             .summary()
             .iter()
             .chain(thinking.content())
@@ -533,15 +587,15 @@ fn state_body_bytes(state: &ThreadItemState) -> u64 {
                 total.saturating_add(chunk.len() as u64)
             })
             .saturating_add(lifecycle_bytes(thinking.lifecycle())),
-        ThreadItemState::Tool(tool) => tool_bytes(tool),
-        ThreadItemState::Agent(agent) => agent_bytes(agent),
-        ThreadItemState::Turn(turn) => optional_bytes(turn.input_id()),
-        ThreadItemState::Inference(inference) => inference_bytes(inference),
-        ThreadItemState::Skill(skill) => skill_bytes(skill),
-        ThreadItemState::File(file) => {
+        ExecutionShape::Tool(tool) => tool_bytes(tool),
+        ExecutionShape::Agent(agent) => agent_bytes(agent),
+        ExecutionShape::Turn(turn) => optional_bytes(turn.input_id()),
+        ExecutionShape::Inference(inference) => inference_bytes(inference),
+        ExecutionShape::Skill(skill) => skill_bytes(skill),
+        ExecutionShape::File(file) => {
             (file.path().len() as u64).saturating_add(optional_bytes(file.media_type()))
         }
-        ThreadItemState::ContextCompaction(_) => 0,
+        ExecutionShape::ContextCompaction(_) => 0,
     }
 }
 
@@ -1083,7 +1137,7 @@ impl TurnResult {
     }
 
     /// Adds one committed payload to the Turn's result facts.
-    fn observe(&mut self, item: &ThreadItem) {
+    fn observe(&mut self, item: &ExecutionItem) {
         if self.identities.insert(item.id.clone()) {
             self.identity_bytes = self
                 .identity_bytes
@@ -1124,8 +1178,63 @@ impl TurnResult {
         }
     }
 
+    pub(in crate::studio) fn observe_identity(&mut self, id: &str) {
+        if self.identities.insert(id.to_owned()) {
+            self.identity_bytes = self
+                .identity_bytes
+                .saturating_add(id.len() as u64)
+                .saturating_add(RETAINED_ENTRY_OVERHEAD);
+        }
+    }
+
+    pub(in crate::studio) fn observe_completion(
+        &mut self,
+        record: &ChatItem,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+        self.observe_identity(&atom.id);
+        if matches!(
+            atom.kind,
+            pl_protocol::ChatAtomKind::Text | pl_protocol::ChatAtomKind::ToolCall
+        ) {
+            let order = atom
+                .source_order
+                .context("report execution order is unknown")?;
+            match crate::studio::runtime::chat_item::execution_state(record)? {
+                ExecutionShape::Text(text) => {
+                    let key = (order, atom.id);
+                    match text.channel() {
+                        ThreadTextChannel::Final => {
+                            self.finals.insert(key, text.text().into());
+                        }
+                        ThreadTextChannel::Commentary => {
+                            self.commentary.insert(key, text.text().into());
+                            while self.commentary.len() > TURN_COMMENTARY_PARTS {
+                                self.commentary.pop_first();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                ExecutionShape::Tool(tool)
+                    if self
+                        .last_tool
+                        .as_ref()
+                        .is_none_or(|(last, _)| order >= *last) =>
+                {
+                    self.last_tool = Some((order, tool))
+                }
+                _ => {}
+            }
+        }
+        let _ = thread_id;
+        Ok(())
+    }
+
     /// Result facts of one durable Turn slice, used by the cold recovery paths.
-    pub(in crate::studio) fn from_items(items: &[ThreadItem]) -> Self {
+    #[cfg(test)]
+    pub(in crate::studio) fn from_items(items: &[ExecutionItem]) -> Self {
         let mut result = Self::default();
         for item in items {
             result.observe(item);
@@ -1153,8 +1262,8 @@ impl Fact {
     /// The projection only reads placement metadata and identity presence from it; a projection
     /// that needs the released body itself (re-projecting a pruned tool call) fails closed instead
     /// of inventing content.
-    fn placeholder(&self, id: &str, thread_id: &str) -> ThreadItem {
-        ThreadItem::new(
+    fn placeholder(&self, id: &str, thread_id: &str) -> ExecutionItem {
+        ExecutionItem::new(
             id.to_owned(),
             thread_id.to_owned(),
             self.turn_id.clone(),
@@ -1162,7 +1271,7 @@ impl Fact {
             self.revision,
             self.created_at,
             self.created_at,
-            ThreadItemState::Raw(ThreadRawItem::stored(
+            ExecutionShape::Raw(ThreadRawItem::stored(
                 Vec::new(),
                 "This item's body is no longer resident in the live window.",
                 self.created_at,
@@ -1185,7 +1294,7 @@ pub(in crate::studio) struct LiveProjection {
     /// re-projected by a late delivery, so their bodies stay. A terminal body that can no longer
     /// change is released: durable history and the frozen completion records own the presentation
     /// from then on.
-    items: BTreeMap<String, ThreadItem>,
+    items: BTreeMap<String, ExecutionItem>,
     /// Placement metadata of every identity inside the retained window.
     facts: BTreeMap<String, Fact>,
     /// Report facts of the newest Turn.
@@ -1228,7 +1337,7 @@ pub(in crate::studio) struct LiveProjection {
     /// Content version of every window item, owned by this projection and independent of the
     /// execution commit sequence.
     ///
-    /// It is the source of the execution `ThreadItem::revision`: it advances on first delivery and whenever the
+    /// It is the source of the execution `ExecutionItem::revision`: it advances on first delivery and whenever the
     /// body, structure or terminal state really changed, and otherwise keeps its old value. A
     /// streaming preview and its terminal commit therefore converge on one counter; the effect
     /// sequence stays only the commit / reliable-save watermark and no longer bounds the item
@@ -1462,7 +1571,7 @@ impl LiveProjection {
             .flat_map(|(id, preview)| {
                 let ordinal = self.facts.get(id).map_or(0, |fact| fact.ordinal);
                 let text_channel = match &preview.shape {
-                    ThreadItemState::Text(text) => Some(text.channel()),
+                    ExecutionShape::Text(text) => Some(text.channel()),
                     _ => None,
                 };
                 preview.fields.iter().map(move |(key, block)| {
@@ -1485,7 +1594,7 @@ impl LiveProjection {
     /// committed items plus the hidden dispositions of the Thread's inputs. Everything the hot path
     /// resolves afterwards comes from these tables, so a commit or a preview never waits on a
     /// history reader — including for a Thread re-activated in the middle of a Turn.
-    pub(in crate::studio) fn seed(&mut self, items: Vec<ThreadItem>, hidden: BTreeSet<String>) {
+    pub(in crate::studio) fn seed(&mut self, items: Vec<ExecutionItem>, hidden: BTreeSet<String>) {
         // The seeded bodies already carry the content version durable history stored, so they are
         // the baseline of this projection's counter: re-encountering the same identity must never
         // restart at 1, because a lower version would be rejected by the durable row's revision
@@ -1513,7 +1622,7 @@ impl LiveProjection {
     /// owner can project without a durable read.
     pub(in crate::studio) fn holds_terminal_tool(&self, id: &str) -> bool {
         self.items.get(id).is_some_and(|item| {
-            matches!(item.state(), ThreadItemState::Tool(tool) if tool.terminal_output().is_some())
+            matches!(item.state(), ExecutionShape::Tool(tool) if tool.terminal_output().is_some())
         })
     }
 
@@ -1670,7 +1779,18 @@ impl LiveProjection {
                 observation_inputs,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Arc::make_mut(&mut current).atom_facts = provenance.0.into();
+        Arc::make_mut(&mut current).lifecycle = provenance
+            .0
+            .iter()
+            .map(|atom| {
+                let mut fact=crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(atom,effect.sequence)?;
+                fact.execution_order=items.iter().find(|item|item.id==atom.id).map(|item|item.ordinal)
+                    .or_else(||self.order_index.as_ref().and_then(|index|index.assigned(&atom.id)));
+                Ok(fact)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(|error| ProjectionError::History(error.to_string()))?
+            .into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         // Admission, source ends and terminals are folded together only after
         // reliable retention/publication assigns the original completion seqs.
@@ -1682,10 +1802,22 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_facts: provenance.0.into(),
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items: items.into(),
+            turns: prepared_turns(&items, &current, effect.sequence)?.into(),
+            execution_order: items
+                .iter()
+                .map(|item| item.ordinal)
+                .chain(
+                    current
+                        .lifecycle
+                        .iter()
+                        .filter_map(|fact| fact.execution_order),
+                )
+                .max()
+                .unwrap_or(0),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
@@ -1750,7 +1882,18 @@ impl LiveProjection {
                 observation_inputs,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Arc::make_mut(&mut current).atom_facts = provenance.0.into();
+        Arc::make_mut(&mut current).lifecycle = provenance
+            .0
+            .iter()
+            .map(|atom| {
+                let mut fact=crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(atom,effect.sequence)?;
+                fact.execution_order=items.iter().find(|item|item.id==atom.id).map(|item|item.ordinal)
+                    .or_else(||self.order_index.as_ref().and_then(|index|index.assigned(&atom.id)));
+                Ok(fact)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map_err(|error| ProjectionError::History(error.to_string()))?
+            .into();
         Arc::make_mut(&mut current).source_changes = provenance.1.into();
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
@@ -1760,10 +1903,22 @@ impl LiveProjection {
             current_state: Some(current_state),
             display: None,
             display_atom_updates: provenance.2.into(),
+            display_facts: provenance.0.into(),
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items: items.into(),
+            turns: prepared_turns(&items, &current, effect.sequence)?.into(),
+            execution_order: items
+                .iter()
+                .map(|item| item.ordinal)
+                .chain(
+                    current
+                        .lifecycle
+                        .iter()
+                        .filter_map(|fact| fact.execution_order),
+                )
+                .max()
+                .unwrap_or(0),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
@@ -1796,7 +1951,7 @@ impl LiveProjection {
         state: &ThreadSnapshot,
     ) -> Result<
         (
-            Vec<ThreadItem>,
+            Vec<ExecutionItem>,
             Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
             Vec<ChatDraft>,
         ),
@@ -1887,7 +2042,7 @@ impl LiveProjection {
         let terminal_turns = provisional
             .items
             .iter()
-            .filter(|item| matches!(item.state(), ThreadItemState::Turn(_)) && item.is_terminal())
+            .filter(|item| matches!(item.state(), ExecutionShape::Turn(_)) && item.is_terminal())
             .map(|item| item.id.clone())
             .collect();
         let (mut existing, restored) = self
@@ -1939,14 +2094,14 @@ impl LiveProjection {
         items.retain(|item| {
             !(matches!(
                 item.state(),
-                ThreadItemState::Text(_) | ThreadItemState::Thinking(_)
+                ExecutionShape::Text(_) | ExecutionShape::Thinking(_)
             ) && index.is_sealed(&item.id)
                 && member_prefixes
                     .iter()
                     .any(|prefix| item.id.starts_with(prefix)))
         });
         for item in &mut items {
-            if let pl_protocol::ThreadItemState::Turn(turn) = item.state()
+            if let crate::ExecutionShape::Turn(turn) = item.state()
                 && let pl_protocol::TurnState::Failed(failed) = turn.state()
                 && let Some(failure) = turn_failures.get(&item.turn_id)
             {
@@ -1957,9 +2112,7 @@ impl LiveProjection {
                 ));
                 let turn = pl_protocol::ThreadTurnItem::new(state)
                     .with_input_id(turn.input_id().map(str::to_owned));
-                *item = item
-                    .clone()
-                    .with_state(pl_protocol::ThreadItemState::Turn(turn));
+                *item = item.clone().with_state(crate::ExecutionShape::Turn(turn));
             }
         }
         // 先在候选载荷上计算内容版本；整批身份预算通过之前不修改投影自己的版本表。
@@ -1991,7 +2144,7 @@ impl LiveProjection {
                 .filter(|previous| {
                     !changed
                         && previous.is_terminal()
-                        && matches!(previous.state(), ThreadItemState::Turn(_))
+                        && matches!(previous.state(), ExecutionShape::Turn(_))
                 });
             let mut current = stable_terminal.map_or_else(
                 || self.revisions.get(item.id.as_str()).copied().unwrap_or(0),
@@ -2097,7 +2250,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
-        items: &[ThreadItem],
+        items: &[ExecutionItem],
         background_ids: &[(String, String)],
     ) -> Result<Vec<ChatDraft>, ProjectionError> {
         let mut drafts = Vec::new();
@@ -2228,10 +2381,7 @@ impl LiveProjection {
             {
                 continue;
             }
-            if !completion_ready(item)
-                || self.order_index_of()?.is_sealed(&item.id)
-                || matches!(item.state(), ThreadItemState::Inference(_))
-            {
+            if !completion_ready(item) || self.order_index_of()?.is_sealed(&item.id) {
                 continue;
             }
             // A cold reliable-output repair may carry a new execution-item revision
@@ -2277,7 +2427,7 @@ impl LiveProjection {
             .display_atom_updates
             .iter()
             .filter(|atom| presentation.accepts_update(atom))
-            .chain(prepared.current.atom_facts.iter())
+            .chain(prepared.display_facts.iter())
             .cloned()
             .collect::<Vec<_>>();
         presentation.plan_visible(
@@ -2314,6 +2464,7 @@ impl LiveProjection {
         Arc::make_mut(&mut prepared.current).display = Some(display.clone());
         prepared.display = Some(display);
         prepared.display_atom_updates = Arc::from([]);
+        prepared.display_facts = Arc::from([]);
         prepared.display_text_visible = Arc::from([]);
         prepared.display_observation_plan = Arc::new(BTreeMap::new());
         prepared.display_observations = Arc::new(BTreeMap::new());
@@ -2358,7 +2509,7 @@ impl LiveProjection {
             .display_atom_updates
             .iter()
             .filter(|atom| presentation.accepts_update(atom))
-            .chain(prepared.current.atom_facts.iter())
+            .chain(prepared.display_facts.iter())
             .cloned()
             .collect::<Vec<_>>();
         let display = presentation
@@ -2386,6 +2537,7 @@ impl LiveProjection {
         Arc::make_mut(&mut prepared.current).display = Some(display.clone());
         prepared.display = Some(display);
         prepared.display_atom_updates = Arc::from([]);
+        prepared.display_facts = Arc::from([]);
         prepared.display_text_visible = Arc::from([]);
         prepared.display_observation_plan = Arc::new(BTreeMap::new());
         prepared.display_observations = Arc::new(BTreeMap::new());
@@ -2546,7 +2698,7 @@ impl LiveProjection {
                 .reserve_observed(&attempt.attempt_id, &id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             let created_at = self.created_at(&id, at);
-            let state = ThreadItemState::Text(ThreadTextItem::new(
+            let state = ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Commentary,
                 String::new(),
                 Vec::new(),
@@ -2715,7 +2867,7 @@ impl LiveProjection {
     /// accumulated string: an unchanged identity is recognized by version (and by pointer inside the
     /// block comparison), a changed one carries a new block, and a bounded window that rolled over
     /// arrives as a block the consumer's baseline no longer extends. No JSON is encoded and no
-    /// canonical `ThreadItem` is materialized per chunk.
+    /// canonical `ExecutionItem` is materialized per chunk.
     fn stream_tool_progress(&mut self, state: &ThreadSnapshot) -> Result<(), ProjectionError> {
         for (task_id, progress) in state.tool_progress.iter() {
             let Some(task) = state.tasks.get(task_id) else {
@@ -2794,7 +2946,7 @@ impl LiveProjection {
     /// own counter is the session's authoritative baseline, and re-applying an external version would
     /// only jump it into another version domain. The ordinary path therefore never re-reads storage;
     /// only a cold identity resolved from a placement fact is raised here.
-    fn adopt_revisions(&mut self, existing: &BTreeMap<String, ThreadItem>) {
+    fn adopt_revisions(&mut self, existing: &BTreeMap<String, ExecutionItem>) {
         for (id, item) in existing {
             if item.revision == 0 || self.items.contains_key(id) {
                 continue;
@@ -2841,15 +2993,15 @@ impl LiveProjection {
     /// dynamic fields ([`crate::studio::runtime::chat_item::content_fields`], compared by shared
     /// chain without materializing a body) plus the structure / terminal shape
     /// ([`crate::studio::runtime::chat_item::static_state`], covering kind, attachments, lifecycle and
-    /// tool state). None of them includes the `ThreadItem` timestamps that only this projection
+    /// tool state). None of them includes the `ExecutionItem` timestamps that only this projection
     /// restamps, so a repeated projection keeps its version — and with it a byte-identical payload —
     /// while a real transition (turn binding, terminal admission, tool state) always reads as a
     /// change.
     fn content_changed(
         &self,
         id: &str,
-        item: &ThreadItem,
-        existing: &BTreeMap<String, ThreadItem>,
+        item: &ExecutionItem,
+        existing: &BTreeMap<String, ExecutionItem>,
     ) -> Result<bool, ProjectionError> {
         let candidate_fields = crate::studio::runtime::chat_item::content_fields(item.state())
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -2925,7 +3077,7 @@ impl LiveProjection {
                 .as_ref()
                 .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
             if let Some(item) = history
-                .item(&id)
+                .execution_item(&id)
                 .await
                 .map_err(|error| ProjectionError::History(error.to_string()))?
             {
@@ -3013,7 +3165,7 @@ impl LiveProjection {
         thread_id: &str,
         attempt_id: &str,
         turn_id: &str,
-    ) -> Result<Vec<(String, ThreadItem)>, ProjectionError> {
+    ) -> Result<Vec<(String, ExecutionItem)>, ProjectionError> {
         self.provider_previews(attempt_id)
             .map(|(id, preview)| {
                 let fact = self.facts.get(id).ok_or_else(|| {
@@ -3030,14 +3182,14 @@ impl LiveProjection {
                         .unwrap_or_default()
                 };
                 let state = match &preview.shape {
-                    ThreadItemState::Text(value) => ThreadItemState::Text(ThreadTextItem::new(
+                    ExecutionShape::Text(value) => ExecutionShape::Text(ThreadTextItem::new(
                         value.channel(),
                         text(BodyKey::Body),
                         value.attachments().to_vec(),
                         value.lifecycle().clone(),
                     )),
-                    ThreadItemState::Thinking(value) => {
-                        ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    ExecutionShape::Thinking(value) => {
+                        ExecutionShape::Thinking(ThreadThinkingItem::new(
                             preview
                                 .fields
                                 .iter()
@@ -3068,7 +3220,7 @@ impl LiveProjection {
                 };
                 Ok((
                     id.clone(),
-                    ThreadItem::new(
+                    ExecutionItem::new(
                         id.clone(),
                         thread_id.to_owned(),
                         turn_id.to_owned(),
@@ -3220,7 +3372,7 @@ impl LiveProjection {
     /// commit the payload. Live frames, resubscription, the window and the durable writer therefore
     /// agree on one content version per identity, while the effect sequence stays only the commit /
     /// reliable-save watermark. A stale payload is ignored rather than renumbered.
-    fn record(&mut self, item: ThreadItem) -> Result<(), ProjectionError> {
+    fn record(&mut self, item: ExecutionItem) -> Result<(), ProjectionError> {
         if item.ordinal == 0 {
             return Err(ProjectionError::ItemOrder(item.id));
         }
@@ -3244,7 +3396,7 @@ impl LiveProjection {
     }
 
     /// Keeps the placement metadata of one identity that the projection may update later.
-    fn fact(&mut self, item: &ThreadItem) {
+    fn fact(&mut self, item: &ExecutionItem) {
         self.store_fact(
             item.id.clone(),
             Fact {
@@ -3257,7 +3409,7 @@ impl LiveProjection {
     }
 
     /// Retains one committed body while it can still change or be re-projected.
-    fn committed_body(&mut self, item: ThreadItem) {
+    fn committed_body(&mut self, item: ExecutionItem) {
         self.store_item(item);
     }
 
@@ -3265,7 +3417,7 @@ impl LiveProjection {
     ///
     /// Replacing a body charges the difference instead of double counting it, so the running total
     /// stays the exact value [`LiveProjection::retained_bytes`] would compute from the table.
-    fn store_item(&mut self, item: ThreadItem) {
+    fn store_item(&mut self, item: ExecutionItem) {
         let next = charged_item_bytes(&item);
         match self.items.insert(item.id.clone(), item) {
             Some(previous) => {
@@ -3386,7 +3538,7 @@ impl LiveProjection {
     }
 
     /// Adds one committed payload to the report facts of its Turn.
-    fn observe_result(&mut self, item: &ThreadItem) {
+    fn observe_result(&mut self, item: &ExecutionItem) {
         if item.turn_id.is_empty() {
             return;
         }
@@ -3504,7 +3656,7 @@ impl LiveProjection {
             // delivery, and everything else keeps placement metadata only.
             retained
                 && (!item.state().is_terminal()
-                    || item.kind() == pl_protocol::ThreadItemKind::Tool
+                    || item.kind() == crate::ExecutionKind::Tool
                     || referenced.contains(id))
         });
         // A Turn that opened more identities than the window is still bounded here: the oldest
@@ -3626,7 +3778,7 @@ pub(in crate::studio) async fn seed_repaired_targets(
             continue;
         }
         if let Some(item) = history
-            .item(&tool_id)
+            .execution_item(&tool_id)
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?
         {
@@ -3677,7 +3829,7 @@ pub(in crate::studio) async fn seed_interaction_targets(
             continue;
         }
         let item = history
-            .item(&tool_id)
+            .execution_item(&tool_id)
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?
             .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
@@ -3710,7 +3862,7 @@ fn aggregate_id(attempt_id: &str, generation: u32, channel: AggregateChannel) ->
 ///
 /// The identity comes from the observation's own stable fact — a request-level aggregate channel, or a
 /// provider item id plus part discriminator — never from the provider payload or a late output index.
-/// The returned `ThreadItemState` carries **no body**: it is the Runtime's static execution shape,
+/// The returned `ExecutionShape` carries **no body**: it is the Runtime's static execution shape,
 /// while the body is handed out by the caller straight from the observation's
 /// shared `Arc<ContentBlock>`, so the hot path never calls `part.text()`.
 ///
@@ -3724,7 +3876,7 @@ pub(super) fn observation_preview(
     generation: u32,
     part: &ObservedPart,
     lifecycle: &ThreadContentLifecycle,
-) -> Option<(String, BodyKey, ThreadItemState)> {
+) -> Option<(String, BodyKey, ExecutionShape)> {
     observation_start(attempt_id, generation, part.identity(), lifecycle)
 }
 
@@ -3733,7 +3885,7 @@ fn observation_start(
     generation: u32,
     identity: &ObservedPartIdentity,
     lifecycle: &ThreadContentLifecycle,
-) -> Option<(String, BodyKey, ThreadItemState)> {
+) -> Option<(String, BodyKey, ExecutionShape)> {
     Some(match identity {
         ObservedPartIdentity::Aggregate { channel } => {
             let id = aggregate_id(attempt_id, generation, *channel);
@@ -3741,7 +3893,7 @@ fn observation_start(
                 AggregateChannel::Text => (
                     id,
                     BodyKey::Body,
-                    ThreadItemState::Text(ThreadTextItem::new(
+                    ExecutionShape::Text(ThreadTextItem::new(
                         ThreadTextChannel::Commentary,
                         String::new(),
                         Vec::new(),
@@ -3751,7 +3903,7 @@ fn observation_start(
                 AggregateChannel::Reasoning => (
                     id,
                     BodyKey::Part(PresentationPart::ReasoningText(0)),
-                    ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    ExecutionShape::Thinking(ThreadThinkingItem::new(
                         Vec::new(),
                         vec![String::new()],
                         lifecycle.clone(),
@@ -3770,7 +3922,7 @@ fn observation_start(
                 (ObservedItemKind::Text(channel), ObservedPartKind::OutputText) => (
                     id,
                     BodyKey::Body,
-                    ThreadItemState::Text(ThreadTextItem::new(
+                    ExecutionShape::Text(ThreadTextItem::new(
                         trace_channel(channel),
                         String::new(),
                         Vec::new(),
@@ -3780,7 +3932,7 @@ fn observation_start(
                 (ObservedItemKind::Reasoning, ObservedPartKind::ReasoningText) => (
                     id,
                     BodyKey::Part(PresentationPart::ReasoningText(0)),
-                    ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    ExecutionShape::Thinking(ThreadThinkingItem::new(
                         Vec::new(),
                         vec![String::new()],
                         lifecycle.clone(),
@@ -3789,7 +3941,7 @@ fn observation_start(
                 (ObservedItemKind::Reasoning, ObservedPartKind::SummaryText) => (
                     id,
                     BodyKey::Part(PresentationPart::SummaryText(0)),
-                    ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    ExecutionShape::Thinking(ThreadThinkingItem::new(
                         vec![String::new()],
                         Vec::new(),
                         lifecycle.clone(),
@@ -3846,7 +3998,7 @@ mod completion_boundary_tests {
         },
         runtime::{ModelMemberReceipt, ModelMemberState},
     };
-    use pl_protocol::{ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
+    use pl_protocol::{ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
     use sea_orm::{ConnectionTrait, Database};
 
     fn started(id: &str) -> ModelStartedMember {
@@ -3958,7 +4110,7 @@ mod completion_boundary_tests {
             assert!(
                 prepared
                     .current
-                    .atom_facts
+                    .lifecycle
                     .iter()
                     .any(|atom| atom.kind == ChatAtomKind::Text)
             );
@@ -4101,11 +4253,11 @@ mod completion_boundary_tests {
                 publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
             let atom_id = prepared
                 .current
-                .atom_facts
+                .lifecycle
                 .iter()
                 .find(|atom| atom.kind == ChatAtomKind::Reasoning)
                 .context("reliable Core member start")?
-                .id
+                .identity
                 .clone();
             // No atom with a body is fabricated: the Core producer's watch and the real stream owner
             // supply the immutable part that the reliable Text Started boundary will capture.
@@ -4264,7 +4416,7 @@ mod completion_boundary_tests {
     #[tokio::test]
     async fn activity_token_cost_visits_only_active_parts_without_summary() -> Result<()> {
         use pl_core::model::ModelProgressSender;
-        use pl_protocol::{ThreadActivityKind, ThreadContentLifecycle, ThreadItem};
+        use pl_protocol::{ThreadActivityKind, ThreadContentLifecycle};
 
         const COMPLETED: usize = 4096;
         const UPDATES: usize = 3;
@@ -4294,7 +4446,7 @@ mod completion_boundary_tests {
                 "boundary-attempt", 0, &part, &ThreadContentLifecycle::completed(10),
             ).context("completed part shape")?;
             let order = index.reserve_observed("boundary-attempt", &id)?;
-            index.materialize(&ThreadItem::new(
+            index.materialize(&ExecutionItem::new(
                 id.clone(), thread.id.clone(), "boundary-turn".into(), order, 1, 9, 10, shape,
             ), 1)?;
             index.mark_completion(&id, true);
@@ -4430,14 +4582,23 @@ mod completion_boundary_tests {
         kind: ChatAtomKind,
         database: &str,
     ) -> Result<pl_protocol::ChatAtomContent> {
-        let atom = prepared
+        let fact = prepared
             .current
-            .atom_facts
+            .lifecycle
             .iter()
-            .find(|atom| {
-                atom.kind == kind && matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
-            })
+            .find(|fact| fact.kind == kind && fact.outcome.is_none())
             .context("reliable active start")?;
+        let atom = &prepared
+            .display
+            .as_ref()
+            .context("frozen display")?
+            .members
+            .iter()
+            .find(|member| member.head.record.atom.id == fact.identity)
+            .context("real allocated display member")?
+            .head
+            .record
+            .atom;
         assert_eq!(
             atom.contents.len(),
             1,
@@ -4584,7 +4745,7 @@ mod completion_boundary_tests {
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
         let tool_atom = prepared
             .current
-            .atom_facts
+            .lifecycle
             .iter()
             .find(|atom| atom.kind == ChatAtomKind::ToolCall)
             .context("original tool start")?
@@ -4598,15 +4759,15 @@ mod completion_boundary_tests {
         let start_row = || {
             sea_orm::Statement::from_sql_and_values(
                 sea_orm::DbBackend::Sqlite,
-                "SELECT metadata FROM conversation_atom_facts WHERE atom_id=? AND phase='start'",
-                vec![tool_atom.id.clone().into()],
+                "SELECT json_array(kind,source_kind,source_identity,source_order,started_effect,started_suborder,started_at) AS original FROM execution_lifecycle WHERE identity=?",
+                vec![tool_atom.identity.clone().into()],
             )
         };
-        let original_start: Vec<u8> = sql
+        let original_start: String = sql
             .query_one_raw(start_row())
             .await?
             .context("start row")?
-            .try_get("", "metadata")?;
+            .try_get("", "original")?;
 
         let mut permission = PermissionRecord {
             id: "approval".into(),
@@ -4647,9 +4808,9 @@ mod completion_boundary_tests {
             assert!(
                 !prepared
                     .current
-                    .atom_facts
+                    .lifecycle
                     .iter()
-                    .any(|atom| atom.id == tool_atom.id),
+                    .any(|fact| fact.identity == tool_atom.identity),
                 "a status transition is not a replacement start fact"
             );
             let cut = owner
@@ -4682,7 +4843,7 @@ mod completion_boundary_tests {
                 sql.query_one_raw(start_row())
                     .await?
                     .context("preserved start")?
-                    .try_get::<Vec<u8>>("", "metadata")?,
+                    .try_get::<String>("", "original")?,
                 original_start
             );
         }
@@ -4730,7 +4891,7 @@ mod completion_boundary_tests {
         let frozen = &page
             .entries
             .iter()
-            .find(|member| member.head.record.atom.id == tool_atom.id)
+            .find(|member| member.head.record.atom.id == tool_atom.identity)
             .context("real unfinished tool")?
             .head
             .record;
@@ -4963,136 +5124,279 @@ mod completion_boundary_tests {
     -> Result<()> {
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-        let thread = pl_protocol::Thread::from(env.runtime.create_thread(
-            &env.project.id, "completion boundary",
-        ).await?);
-        let path = env._temp.path().join("completion-boundary.sqlite");
-        let history = HistoryStore::open(&path, &thread.id).await?;
-        history.prepare_write().await?;
-        let database = history.conversation_database_id().await?.context("database")?;
-        let sql = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-        let chat = Session::new(history.clone(), TimelineEpoch::new("before-restart")?);
-        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history.clone())?;
-        projection.bind_conversation_identity(database.clone())?;
-        let turn = TurnRecord { turn_id:"boundary-turn".into(),input_id:None,
-            state:TurnState::Running,elapsed_ms:None,model_steps:1 };
-        let mut state = ThreadSnapshot { turns:vec![turn.clone()].into(),
-            attempts:vec![RequestAttempt::new("boundary-turn".into(),"boundary-attempt".into(),0,AttemptStatus::Running)].into(), ..Default::default() };
-        let effect = |sequence| ThreadEffectBatch { thread_id:thread.id.clone(),sequence,
-            committed_at:sequence as i64 + 10, ..Default::default() };
-        let mut first = effect(1);
-        first.turn = Some(turn);
-        first.model_member_starts = vec![started("A")].into();
-        publish(&mut projection,&history,&chat,&thread,&state,&first).await?;
-        let mut part = ObservedPart::new(started("A").identity);
-        for sequence in 2..=5 {
-            let prefix = "流式前缀".repeat(sequence as usize * 4096);
-            part = part.authorized(&prefix);
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id:"boundary-attempt".into(),
-                progress:ModelProgress::new(sequence,vec![part.clone()]),
+            let thread = pl_protocol::Thread::from(
+                env.runtime
+                    .create_thread(&env.project.id, "completion boundary")
+                    .await?,
+            );
+            let path = env._temp.path().join("completion-boundary.sqlite");
+            let history = HistoryStore::open(&path, &thread.id).await?;
+            history.prepare_write().await?;
+            let database = history
+                .conversation_database_id()
+                .await?
+                .context("database")?;
+            let sql = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+            let chat = Session::new(history.clone(), TimelineEpoch::new("before-restart")?);
+            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            let mut projection = LiveProjection::new();
+            projection.bind_execution_history(channel.order_index(), history.clone())?;
+            projection.bind_conversation_identity(database.clone())?;
+            let turn = TurnRecord {
+                turn_id: "boundary-turn".into(),
+                input_id: None,
+                state: TurnState::Running,
+                elapsed_ms: None,
+                model_steps: 1,
+            };
+            let mut state = ThreadSnapshot {
+                turns: vec![turn.clone()].into(),
+                attempts: vec![RequestAttempt::new(
+                    "boundary-turn".into(),
+                    "boundary-attempt".into(),
+                    0,
+                    AttemptStatus::Running,
+                )]
+                .into(),
+                ..Default::default()
+            };
+            let effect = |sequence| ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence,
+                committed_at: sequence as i64 + 10,
+                ..Default::default()
+            };
+            let mut first = effect(1);
+            first.turn = Some(turn);
+            first.model_member_starts = vec![started("A")].into();
+            publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
+            let mut part = ObservedPart::new(started("A").identity);
+            for sequence in 2..=5 {
+                let prefix = "流式前缀".repeat(sequence as usize * 4096);
+                part = part.authorized(&prefix);
+                state.model_progress = Some(ActiveModelProgress {
+                    attempt_id: "boundary-attempt".into(),
+                    progress: ModelProgress::new(sequence, vec![part.clone()]),
+                });
+                state.commit_sequence = sequence;
+                projection.stream(&chat, &thread, &state, sequence).await?;
+                let prepared = publish(
+                    &mut projection,
+                    &history,
+                    &chat,
+                    &thread,
+                    &state,
+                    &effect(sequence),
+                )
+                .await?;
+                assert!(
+                    prepared.current.contents.is_empty(),
+                    "progress prepared a body write"
+                );
+                let row = sql
+                    .query_one_raw(sea_orm::Statement::from_string(
+                        sea_orm::DbBackend::Sqlite,
+                        "SELECT (SELECT COUNT(*) FROM conversation_contents) AS bodies,
+                        (SELECT COUNT(*) FROM conversation_items) AS items"
+                            .to_owned(),
+                    ))
+                    .await?
+                    .context("counts")?;
+                assert_eq!(row.try_get::<i64>("", "bodies")?, 0);
+                assert_eq!(row.try_get::<i64>("", "items")?, 0);
+            }
+            let full = "完整思考".repeat(40_000);
+            let receipt = ModelMemberReceipt {
+                item: CompletionPresentationItem {
+                    provider_item_id: "A".into(),
+                    output_index: None,
+                    kind: CompletionPresentationItemKind::Reasoning,
+                    parts: vec![CompletionPresentationPart {
+                        content_index: 0,
+                        provider_part_id: None,
+                        text: full.clone(),
+                        kind: CompletionPresentationPartKind::ReasoningText,
+                    }],
+                },
+                state: ModelMemberState::Completed,
+            };
+            let mut complete = effect(6);
+            complete.model_members = vec![pl_core::model::ModelCompletedMember {
+                turn_id: "boundary-turn".into(),
+                attempt_id: "boundary-attempt".into(),
+                generation: 0,
+                member_id: "A".into(),
+                payload: OpaquePayload::new(
+                    "pl.model.completed-member",
+                    1,
+                    serde_json::to_string(&receipt)?,
+                )?,
+            }]
+            .into();
+            state.model_progress = None;
+            let saved =
+                publish(&mut projection, &history, &chat, &thread, &state, &complete).await?;
+            let record = saved
+                .completions
+                .iter()
+                .find(|record| {
+                    record
+                        .contents
+                        .values()
+                        .any(|content| content.descriptor.byte_length == full.len() as u64)
+                })
+                .context("A record")?;
+            let a_id = record.header.item_id.clone();
+            let content = record
+                .contents
+                .values()
+                .find(|content| content.descriptor.byte_length == full.len() as u64)
+                .context("A body")?;
+            let window = ChatHistory::read_content(
+                &history,
+                &ContentReadRequest {
+                    epoch: chat.epoch(),
+                    reference: pl_core::chat::ContentRef::Body(content.descriptor.key.clone()),
+                    offset: 0,
+                    max_bytes: 64 * 1024,
+                    generation: Some(content.descriptor.generation),
+                },
+            )
+            .await?;
+            assert!(window.sealed);
+            assert_eq!(window.available_through, full.len() as u64);
+            assert_eq!(window.bytes.as_bytes(), &full.as_bytes()[..64 * 1024]);
+            assert_eq!(
+                record.header.append_seq, 1,
+                "a completed member must publish immediately"
+            );
+            let mut second = effect(7);
+            second.model_member_starts = vec![started("B")].into();
+            publish(&mut projection, &history, &chat, &thread, &state, &second).await?;
+            drop(projection);
+            drop(chat);
+            drop(channel);
+            // A passive cold read does not manufacture an interruption or restore a preview.
+            let current = history
+                .conversation_current()
+                .await?
+                .context("cold current")?;
+            assert!(!current.execution_present);
+            assert!(current.previews.is_empty());
+            let restored_chat = Session::new(history.clone(), TimelineEpoch::new("after-restart")?);
+            let restored_channel =
+                HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            let mut restored = LiveProjection::new();
+            restored.bind_execution_history(restored_channel.order_index(), history.clone())?;
+            restored.bind_conversation_identity(database.clone())?;
+            state.attempts = vec![RequestAttempt::new(
+                "boundary-turn".into(),
+                "boundary-attempt".into(),
+                0,
+                AttemptStatus::Interrupted,
+            )]
+            .into();
+            restored
+                .restore_current(&restored_chat, &thread, &state)
+                .await?;
+            assert!(
+                restored
+                    .current_state()
+                    .context("restored current")?
+                    .contents()
+                    .is_empty()
+            );
+            let mut interrupted = effect(8);
+            interrupted.turn = Some(TurnRecord {
+                turn_id: "boundary-turn".into(),
+                input_id: None,
+                state: TurnState::Interrupted,
+                elapsed_ms: None,
+                model_steps: 1,
             });
-            state.commit_sequence = sequence;
-            projection.stream(&chat,&thread,&state,sequence).await?;
-            let prepared = publish(&mut projection,&history,&chat,&thread,&state,&effect(sequence)).await?;
-            assert!(prepared.current.contents.is_empty(), "progress prepared a body write");
-            let row=sql.query_one_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-                "SELECT (SELECT COUNT(*) FROM conversation_contents) AS bodies,
-                        (SELECT COUNT(*) FROM conversation_items) AS items".to_owned()))
-                .await?.context("counts")?;
-            assert_eq!(row.try_get::<i64>("","bodies")?,0);
-            assert_eq!(row.try_get::<i64>("","items")?,0);
+            interrupted.attempt = Some(pl_core::thread::journal::AttemptUpdate {
+                turn_id: "boundary-turn".into(),
+                attempt_id: "boundary-attempt".into(),
+                retry_of: None,
+                input_revision: 0,
+                request_metadata: None,
+                usage_binding: None,
+                tool_projection: None,
+                tools: Arc::from([]),
+                outcome: AttemptOutcome::Interrupted,
+                input_estimate: None,
+            });
+            state.turns = vec![interrupted.turn.clone().unwrap()].into();
+            state.commit_sequence = 8;
+            let settled = publish(
+                &mut restored,
+                &history,
+                &restored_chat,
+                &thread,
+                &state,
+                &interrupted,
+            )
+            .await?;
+            assert!(
+                settled
+                    .completions
+                    .iter()
+                    .all(|record| record.header.item_id != a_id)
+            );
+            assert!(settled.current.projection().atoms.is_empty());
+            let metadata = settled
+                .current
+                .lifecycle
+                .iter()
+                .find(|fact| fact.identity != a_id && fact.kind == ChatAtomKind::Reasoning)
+                .context("interrupted B fact")?;
+            let durable=sql.query_one_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Sqlite,
+                "SELECT ended_effect,outcome,completion_item_id FROM execution_lifecycle WHERE identity=?",vec![metadata.identity.clone().into()]))
+                .await?.context("saved interruption")?;
+            assert_eq!(durable.try_get::<Option<i64>>("","ended_effect")?,Some(8));
+            assert_eq!(durable.try_get::<String>("","outcome")?,serde_json::to_string(&ChatTerminalOutcome::Cancelled)?);
+            assert_eq!(durable.try_get::<Option<String>>("","completion_item_id")?,None);
+            assert_eq!(metadata.outcome, Some(ChatTerminalOutcome::Cancelled));
+            assert!(metadata.started.is_some());
+            let b_end = metadata.ended.context("real interrupted end")?;
+            assert_eq!(b_end.effect_seq, 8);
+            assert!(metadata.completion_item_id.is_none());
+            let source_end = settled
+                .current
+                .source_changes
+                .iter()
+                .find(|source| source.source == metadata.source)
+                .and_then(|source| source.ended)
+                .context("enclosing Turn source end")?;
+            let receipt_end = settled
+                .current
+                .lifecycle
+                .iter()
+                .find(|fact| fact.kind == ChatAtomKind::TurnReceipt)
+                .and_then(|fact| fact.ended)
+                .context("Turn closing receipt")?;
+            assert!(b_end < receipt_end && receipt_end < source_end);
+            let frozen_positions = (
+                settled.current.lifecycle.clone(),
+                settled.current.source_changes.clone(),
+            );
+            let mut replay = settled.clone();
+            restored
+                .publish_prepared(&restored_chat, &mut replay)
+                .await?;
+            super::restore_tests::save(&history, &interrupted, &replay).await?;
+            assert_eq!(
+                (
+                    replay.current.lifecycle.clone(),
+                    replay.current.source_changes.clone()
+                ),
+                frozen_positions
+            );
+            assert_eq!(replay.completions.len(), settled.completions.len());
+            assert!(history.recovery_atom_starts(None, 128).await?.is_empty());
+            Ok(())
         }
-        let full = "完整思考".repeat(40_000);
-        let receipt=ModelMemberReceipt { item:CompletionPresentationItem {
-            provider_item_id:"A".into(),output_index:None,kind:CompletionPresentationItemKind::Reasoning,
-            parts:vec![CompletionPresentationPart {content_index:0,provider_part_id:None,text:full.clone(),
-                kind:CompletionPresentationPartKind::ReasoningText}],
-        },state:ModelMemberState::Completed };
-        let mut complete=effect(6);
-        complete.model_members=vec![pl_core::model::ModelCompletedMember {
-            turn_id:"boundary-turn".into(),attempt_id:"boundary-attempt".into(),generation:0,
-            member_id:"A".into(),payload:OpaquePayload::new("pl.model.completed-member",1,
-                serde_json::to_string(&receipt)?)?,
-        }].into();
-        state.model_progress=None;
-        let saved=publish(&mut projection,&history,&chat,&thread,&state,&complete).await?;
-        let record=saved.completions.iter().find(|record| record.contents.values()
-            .any(|content| content.descriptor.byte_length==full.len() as u64)).context("A record")?;
-        let a_id=record.header.item_id.clone();
-        let content=record.contents.values().find(|content| content.descriptor.byte_length==full.len() as u64)
-            .context("A body")?;
-        let window=ChatHistory::read_content(&history,&ContentReadRequest {
-            epoch:chat.epoch(),reference:pl_core::chat::ContentRef::Body(content.descriptor.key.clone()),
-            offset:0,max_bytes:64*1024,generation:Some(content.descriptor.generation),
-        }).await?;
-        assert!(window.sealed);
-        assert_eq!(window.available_through,full.len() as u64);
-        assert_eq!(window.bytes.as_bytes(),&full.as_bytes()[..64*1024]);
-        assert_eq!(record.header.append_seq, 1, "a completed member must publish immediately");
-        let mut second=effect(7);
-        second.model_member_starts=vec![started("B")].into();
-        publish(&mut projection,&history,&chat,&thread,&state,&second).await?;
-        drop(projection);
-        drop(chat);
-        drop(channel);
-        // A passive cold read does not manufacture an interruption or restore a preview.
-        let current=history.conversation_current().await?.context("cold current")?;
-        assert!(!current.execution_present);
-        assert!(current.previews.is_empty());
-        let restored_chat=Session::new(history.clone(),TimelineEpoch::new("after-restart")?);
-        let restored_channel=HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let mut restored=LiveProjection::new();
-        restored.bind_execution_history(restored_channel.order_index(),history.clone())?;
-        restored.bind_conversation_identity(database.clone())?;
-        state.attempts=vec![RequestAttempt::new("boundary-turn".into(),"boundary-attempt".into(),
-            0,AttemptStatus::Interrupted)].into();
-        restored.restore_current(&restored_chat,&thread,&state).await?;
-        assert!(restored.current_state().context("restored current")?.contents().is_empty());
-        let mut interrupted=effect(8);
-        interrupted.turn=Some(TurnRecord {turn_id:"boundary-turn".into(),input_id:None,
-            state:TurnState::Interrupted,elapsed_ms:None,model_steps:1});
-        interrupted.attempt=Some(pl_core::thread::journal::AttemptUpdate {
-            turn_id:"boundary-turn".into(),attempt_id:"boundary-attempt".into(),retry_of:None,
-            input_revision:0,request_metadata:None,usage_binding:None,tool_projection:None,
-            tools:Arc::from([]),outcome:AttemptOutcome::Interrupted,input_estimate:None,
-        });
-        state.turns=vec![interrupted.turn.clone().unwrap()].into();
-        state.commit_sequence=8;
-        let settled=publish(&mut restored,&history,&restored_chat,&thread,&state,&interrupted).await?;
-        assert!(settled.completions.iter().all(|record| record.header.item_id!=a_id));
-        assert!(settled.current.projection().atoms.is_empty());
-        let members=sql.query_all_raw(sea_orm::Statement::from_string(sea_orm::DbBackend::Sqlite,
-            "SELECT atom_id,phase,metadata FROM conversation_atom_facts WHERE phase='terminal'".to_owned())).await?;
-        let metadata=members.iter().find_map(|row| {
-            let atom:ChatAtom=serde_json::from_slice(&row.try_get::<Vec<u8>>("","metadata").ok()?).ok()?;
-            (atom.id != a_id && atom.kind==ChatAtomKind::Reasoning).then_some(atom)
-        }).context("interrupted B fact")?;
-        assert!(matches!(metadata.lifecycle,ChatAtomLifecycle::Terminal {outcome:ChatTerminalOutcome::Cancelled,
-            started:Some(_),ended:Some(at)} if at.effect_seq==8));
-        assert!(metadata.completion_item_id.is_none() && metadata.completion_seq.is_none()
-            && metadata.payload.is_none() && metadata.contents.is_empty());
-        let source_end = settled.current.source_changes.iter().find(|source| source.source == metadata.source)
-            .and_then(|source| source.ended).context("enclosing Turn source end")?;
-        let b_end = match metadata.lifecycle { ChatAtomLifecycle::Terminal { ended: Some(at), .. } => at, _ => unreachable!() };
-        assert!(b_end < source_end, "restart cancellation must precede its Turn's enclosure");
-        let receipt_end = settled.current.atom_facts.iter().find(|atom| atom.kind == ChatAtomKind::TurnReceipt)
-            .and_then(|atom| match atom.lifecycle { ChatAtomLifecycle::Terminal { ended, .. } => ended, _ => None })
-            .context("Turn closing receipt")?;
-        assert!(b_end < receipt_end && receipt_end < source_end);
-        let frozen_positions = serde_json::to_vec(&(settled.current.atom_facts.as_ref(),
-            settled.current.source_changes.as_ref()))?;
-        let mut replay = settled.clone();
-        restored.publish_prepared(&restored_chat, &mut replay).await?;
-        super::restore_tests::save(&history, &interrupted, &replay).await?;
-        assert_eq!(serde_json::to_vec(&(replay.current.atom_facts.as_ref(),
-            replay.current.source_changes.as_ref()))?, frozen_positions);
-        assert_eq!(replay.completions.len(),settled.completions.len());
-        assert!(history.recovery_atom_starts(None,128).await?.is_empty());
-        Ok(())
-    }.await;
+        .await;
         env.finish(result).await
     }
 
@@ -5193,11 +5497,11 @@ mod completion_boundary_tests {
             let (_, mut prepared) = projection.prepare(&thread, &second, &state, false).await?;
             let ended = prepared
                 .current
-                .atom_facts
+                .lifecycle
                 .iter()
                 .find(|atom| atom.kind == ChatAtomKind::Reasoning)
                 .unwrap();
-            let a_id = ended.id.clone();
+            let a_id = ended.identity.clone();
             assert!(
                 prepared
                     .current_state
@@ -5220,7 +5524,7 @@ mod completion_boundary_tests {
                         BodyKey::Part(PresentationPart::ReasoningText(0)),
                         ContentBlock::from_text("LATEST_WRONG"),
                     )]),
-                    shape: ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    shape: ExecutionShape::Thinking(ThreadThinkingItem::new(
                         Vec::new(),
                         Vec::new(),
                         ThreadContentLifecycle::streaming(),
@@ -5365,11 +5669,17 @@ mod completion_boundary_tests {
             let prepared =
                 publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
             let id = super::super::order::tool_id(&call.call_id);
-            let item = prepared
-                .items
-                .iter()
-                .find(|item| item.id == id)
-                .context("nested start item")?;
+            assert!(prepared.current.lifecycle.iter().any(|fact| {
+                fact.identity == id
+                    && fact
+                        .tool
+                        .as_ref()
+                        .is_some_and(|tool| tool.call_id == call.call_id)
+            }));
+            let item = history
+                .execution_item(&id)
+                .await?
+                .context("saved nested start")?;
             assert_eq!(
                 item.tool().context("tool")?.invocation().arguments(),
                 call.arguments.content()
@@ -5404,7 +5714,10 @@ mod completion_boundary_tests {
             drop(chat);
             drop(history);
             let cold = HistoryStore::open(&path, &thread.id).await?;
-            let item = cold.item(&id).await?.context("cold nested item")?;
+            let item = cold
+                .execution_item(&id)
+                .await?
+                .context("cold nested item")?;
             let tool = item.tool().context("cold tool")?;
             assert_eq!(tool.invocation().name(), "exec_command");
             assert_eq!(
@@ -5444,15 +5757,16 @@ mod restore_tests {
             .commit_effect(
                 effect.sequence,
                 EffectCommit {
-                    items: &prepared.items,
+                    turns: &prepared.turns,
+                    execution_order: prepared.execution_order,
                     completions: &prepared.completions,
                     current: &prepared.current,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
                     receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
+                    tasks: &effect.tasks,
+                    deliveries: &effect.deliveries,
                     delivery_repairs: &[],
                     attempt: effect.attempt.as_ref(),
                 },
@@ -5549,7 +5863,7 @@ mod restore_tests {
                 let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
                 projection.publish_prepared(&session, &mut prepared).await?;
                 assert_eq!(session.head_seq(), 0);
-                assert!(prepared.items.is_empty() && prepared.completions.is_empty());
+                assert!(prepared.turns.is_empty() && prepared.completions.is_empty());
                 let active = prepared
                     .current
                     .projection()
@@ -6011,8 +6325,8 @@ mod completion_tests {
         bytes
     }
 
-    fn result_item(id: &str, ordinal: u64, revision: u64, state: ThreadItemState) -> ThreadItem {
-        ThreadItem::new(
+    fn result_item(id: &str, ordinal: u64, revision: u64, state: ExecutionShape) -> ExecutionItem {
+        ExecutionItem::new(
             id.into(),
             "thread".into(),
             "turn".into(),
@@ -6027,7 +6341,7 @@ mod completion_tests {
     #[test]
     fn turn_result_identity_charge_matches_original_sum_across_revisions_and_restore() {
         let text = |channel, body: &str| {
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 body.into(),
                 Vec::new(),
@@ -6039,7 +6353,7 @@ mod completion_tests {
                 "reasoning-a",
                 1,
                 1,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     vec!["first reasoning".into()],
                     ThreadContentLifecycle::completed(10),
@@ -6049,7 +6363,7 @@ mod completion_tests {
                 "reasoning-b",
                 2,
                 1,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     vec!["second reasoning".into()],
                     ThreadContentLifecycle::completed(10),
@@ -6116,7 +6430,7 @@ mod completion_tests {
     fn store_retention_entry(projection: &mut LiveProjection, ordinal: usize, revision: u64) {
         let id = format!("part-{ordinal:04}");
         let body = format!("body {ordinal}, revision {revision}");
-        let shape = ThreadItemState::Text(ThreadTextItem::new(
+        let shape = ExecutionShape::Text(ThreadTextItem::new(
             ThreadTextChannel::Final,
             body.clone(),
             Vec::new(),
@@ -6301,7 +6615,7 @@ mod completion_tests {
                     ContentBlock::from_text("received reasoning prefix"),
                 )]),
                 observed: None,
-                shape: ThreadItemState::Thinking(ThreadThinkingItem::new(
+                shape: ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     Vec::new(),
                     ThreadContentLifecycle::streaming(),
@@ -6315,7 +6629,7 @@ mod completion_tests {
         let (actual_id, item) = &items[0];
         assert_eq!(actual_id, &id);
         assert_eq!((item.ordinal, item.revision, item.created_at), (42, 9, 10));
-        let ThreadItemState::Thinking(thinking) = item.state() else {
+        let ExecutionShape::Thinking(thinking) = item.state() else {
             anyhow::bail!("thinking preview lost its execution kind");
         };
         assert_eq!(thinking.content(), ["received reasoning prefix"]);
@@ -6340,7 +6654,7 @@ mod completion_tests {
             Vec::new(),
             pl_protocol::ThreadToolUserInputState::Pending,
         )));
-        let item = ThreadItem::new(
+        let item = ExecutionItem::new(
             "tool:4:call".into(),
             "thread".into(),
             "turn".into(),
@@ -6348,7 +6662,7 @@ mod completion_tests {
             1,
             10,
             10,
-            ThreadItemState::Tool(tool),
+            ExecutionShape::Tool(tool),
         );
         assert!(!completion_ready(&item));
         let mut projection = LiveProjection::new();
@@ -6359,10 +6673,10 @@ mod completion_tests {
                 .as_ref()
                 .is_some_and(|index| index.is_sealed(&item.id))
         );
-        let ThreadItemState::Tool(tool) = item.state() else {
+        let ExecutionShape::Tool(tool) = item.state() else {
             unreachable!()
         };
-        let answered = item.clone().with_state(ThreadItemState::Tool(
+        let answered = item.clone().with_state(ExecutionShape::Tool(
             ThreadToolItem::new(tool.invocation().clone(), tool.state().clone()).with_user_input(
                 Some(pl_protocol::ThreadToolUserInput::new(
                     "interaction".into(),

@@ -17,8 +17,9 @@ pub(in super::super) async fn apply(
         ensure!(write.sealed, "independent documents must be complete");
         super::content::write_content(db, &write.content, true).await?;
     }
-    super::sources::apply(db, effect, &prepared.source_changes).await?;
-    super::facts::apply(db, &prepared.atom_facts, effect).await?;
+    crate::studio::storage::history::execution_sources::apply(db, effect, &prepared.source_changes)
+        .await?;
+    crate::studio::storage::history::execution_lifecycle::apply(db, &prepared.lifecycle).await?;
     if let Some(display) = &prepared.display {
         ensure!(
             display.effect_seq == effect,
@@ -33,13 +34,13 @@ pub(in super::super) async fn verify(
     db: &impl ConnectionTrait,
     prepared: &PreparedCurrent,
 ) -> Result<()> {
-    super::sources::verify(
+    crate::studio::storage::history::execution_sources::verify(
         db,
         prepared.projection().source_effect_seq,
         &prepared.source_changes,
     )
     .await?;
-    super::facts::verify(db, &prepared.atom_facts).await?;
+    crate::studio::storage::history::execution_lifecycle::verify(db, &prepared.lifecycle).await?;
     if let Some(display) = &prepared.display {
         super::display::verify(db, display).await?;
     }

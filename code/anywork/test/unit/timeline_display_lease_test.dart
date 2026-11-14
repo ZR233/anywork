@@ -68,9 +68,9 @@ void main() {
     final mainLease = owner.lease('thread')!;
     final mainCurrent = mainLease.live.value;
     expect(mainCurrent, isNotNull);
-    final children = await client.conversations.openChildren(
+    final children = await client.conversations.openRecords(
       threadId: 'thread',
-      parentId: 'parent',
+      scope: const ChatScope.conversation(parentId: 'parent'),
       demand: chatDemand,
     );
     final controller = InMemoryChatController();
@@ -96,11 +96,7 @@ void main() {
     expect(children.activity.value, isNull);
     expect(
       transport.scopes.last,
-      isA<ChildrenChatScope>().having(
-        (scope) => scope.parentId,
-        'parentId',
-        'parent',
-      ),
+      isA<ChatScope>().having((scope) => scope.parentId, 'parentId', 'parent'),
     );
     transport.childReader.failClose = true;
     consumer.cancel();
@@ -544,7 +540,7 @@ final class _ScopedTransport extends Fake
     required ReadDemand demand,
   }) async {
     scopes.add(scope);
-    expect(scope, isA<ChildrenChatScope>());
+    expect(scope, isA<ChatScope>());
     return child;
   }
 }

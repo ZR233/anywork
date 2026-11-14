@@ -536,8 +536,7 @@ final class _Scope extends Fake implements ConversationQueryScope {
 CompletedEntry _completedReasoning(String text) => CompletedEntry(
   recordId: 'R',
   completionSeq: 71,
-  run: null,
-  mainPresentation: MainPresentation.foregroundWork,
+
   atom: _reasoning(payload: _message('R', text).payload),
 );
 

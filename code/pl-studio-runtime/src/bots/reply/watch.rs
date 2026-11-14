@@ -553,8 +553,8 @@ mod tests {
     use crate::bots::commands::archive_tests::Fixture;
     use pl_protocol::{
         ActivitySnapshot, ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle,
-        ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, CompletedEntry, CompletionRunPosition,
-        ContentOwner, ContentRef, ContentTarget, MainPresentation, PayloadData, ThreadTextChannel,
+        ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, CompletedEntry, ContentOwner,
+        ContentRef, ContentTarget, PayloadData, ThreadTextChannel,
     };
     use std::time::Duration;
 
@@ -592,11 +592,7 @@ mod tests {
         CompletedEntry {
             record_id: id.into(),
             completion_seq: 1,
-            run: Some(CompletionRunPosition {
-                start_seq: 1,
-                ordinal: 1,
-            }),
-            main_presentation: MainPresentation::Single,
+
             atom: ChatAtom {
                 id: id.into(),
                 completion_item_id: Some(id.into()),
@@ -653,10 +649,6 @@ mod tests {
             let seq = from + index as u64 + 1;
             entry.completion_seq = seq;
             entry.atom.completion_seq = Some(seq);
-            entry.run = Some(CompletionRunPosition {
-                start_seq: seq,
-                ordinal: 1,
-            });
         }
         ChatBatch {
             placement,

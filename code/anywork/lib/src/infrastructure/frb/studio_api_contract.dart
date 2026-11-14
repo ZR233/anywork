@@ -2711,14 +2711,13 @@ class FrbStudioTransport
     () async => _FrbNativeConversation.conversation(
       await frb_chat.openConversationFeed(
         threadId: threadId,
-        scope: switch (scope) {
-          MainChatScope() => const frb_chat_types.BridgeChatScope.main(),
-          RunChatScope(:final reference) => frb_chat_types.BridgeChatScope.run(
-            reference: _completionRunToFrb(reference),
-          ),
-          ChildrenChatScope(:final parentId) =>
-            frb_chat_types.BridgeChatScope.children(parentId: parentId),
-        },
+        scope: frb_chat_types.BridgeChatScope(
+          queryClass: switch (scope.queryClass) {
+            ExactChatClass(:final value) => frb_chat_types.BridgeChatClassFilter.class_(value: value),
+            AllChatClasses() => const frb_chat_types.BridgeChatClassFilter.all(),
+          },
+          parentId: scope.parentId,
+        ),
         demand: _readDemandToFrb(demand),
       ),
     ),

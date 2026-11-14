@@ -1,12 +1,13 @@
 //! The sole v9 execution-item → immutable-completion migration boundary.
 
 use super::*;
+use crate::{ExecutionItem, ExecutionShape};
 
-pub(crate) fn legacy_completion_drafts(item: &ThreadItem) -> Result<Vec<ChatDraft>> {
+pub(crate) fn legacy_completion_drafts(item: &ExecutionItem) -> Result<Vec<ChatDraft>> {
     if !item.is_terminal()
         || matches!(
             item.state(),
-            ThreadItemState::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
+            ExecutionShape::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
                 input.state(), ThreadToolUserInputState::Pending
             ))
         )
@@ -15,7 +16,7 @@ pub(crate) fn legacy_completion_drafts(item: &ThreadItem) -> Result<Vec<ChatDraf
     }
     let mut parts = Vec::new();
     match item.state() {
-        ThreadItemState::Thinking(thinking)
+        ExecutionShape::Thinking(thinking)
             if thinking.summary().len() + thinking.content().len() > 1 =>
         {
             for (kind, chunks) in [
@@ -23,7 +24,7 @@ pub(crate) fn legacy_completion_drafts(item: &ThreadItem) -> Result<Vec<ChatDraf
                 ("reasoning", thinking.content()),
             ] {
                 for (index, chunk) in chunks.iter().enumerate() {
-                    let state = ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    let state = ExecutionShape::Thinking(ThreadThinkingItem::new(
                         if kind == "summary" {
                             vec![chunk.clone()]
                         } else {
@@ -42,11 +43,11 @@ pub(crate) fn legacy_completion_drafts(item: &ThreadItem) -> Result<Vec<ChatDraf
                 }
             }
         }
-        ThreadItemState::Raw(raw) if raw.payloads.len() > 1 => {
+        ExecutionShape::Raw(raw) if raw.payloads.len() > 1 => {
             for (index, payload) in raw.payloads.iter().enumerate() {
                 let mut value = raw.clone();
                 value.payloads = vec![payload.clone()];
-                let mut part = item.clone().with_state(ThreadItemState::Raw(value));
+                let mut part = item.clone().with_state(ExecutionShape::Raw(value));
                 part.id = part_id(&item.id, "payload", index);
                 parts.push(part);
             }

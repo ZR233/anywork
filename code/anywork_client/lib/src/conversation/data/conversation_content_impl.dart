@@ -17,7 +17,7 @@ final class ConversationContentImpl implements ConversationContent {
   ConversationContentImpl({
     required this.threadId,
     required ConversationTransport transport,
-    this.scope = const MainChatScope(),
+    this.scope = const ChatScope.conversation(),
     this.initialDemand,
   }) : _transport = transport,
        _state = LatestValue(ChatIdle<bool>(threadId));
@@ -387,15 +387,7 @@ final class ConversationContentImpl implements ConversationContent {
           (entry.atom.completionSeq == null ||
               entry.atom.completionSeq == entry.completionSeq);
       previous = entry.completionSeq;
-      if (scope is MainChatScope) {
-        valid =
-            valid &&
-            entry.run != null &&
-            entry.mainPresentation != MainPresentation.hidden;
-      }
-      if (scope case RunChatScope(:final reference)) {
-        valid = valid && entry.run?.startSeq == reference.startSeq;
-      }
+      valid = valid && entry.atom.sourceState == null;
     }
     if (!valid) {
       throw const ConversationContinuityError('invalid completion batch');

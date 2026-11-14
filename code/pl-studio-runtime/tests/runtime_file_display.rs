@@ -4,7 +4,7 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_core::context::ContextContent;
 use pl_protocol::{
-    ChatScope, ContentRange, MainPresentation, PayloadData, ReadDemand, ThreadWorkspaceMode,
+    ChatScope, ContentRange, PayloadData, ReadDemand, ThreadWorkspaceMode,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
@@ -42,9 +42,6 @@ async fn public_artifact(
             "fixture unexpectedly requires paging"
         );
         for entry in batch.entries {
-            if entry.main_presentation != MainPresentation::Single {
-                continue;
-            }
             let atom = entry.atom;
             let bytes = match atom.payload.context("sealed atom")? {
                 PayloadData::Inline { bytes } => bytes,
@@ -74,10 +71,6 @@ async fn public_artifact(
                 continue;
             }
             ensure!(atom.turn_id.as_deref() == Some(turn));
-            ensure!(
-                entry.main_presentation == MainPresentation::Single,
-                "explicit file display must not be hidden in a collapsed work run"
-            );
             ensure!(value["data"]["invocation"]["presentationContract"] == "builtin.show_files@1");
             let manifest = feed
                 .reader()

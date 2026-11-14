@@ -3,6 +3,8 @@
 //! atomic facts and the saved current cut; no original fact is rewritten.
 use super::legacy_timeline_store as timeline;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct TimelineItems;
 impl MigrationName for TimelineItems {
@@ -107,6 +109,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -136,6 +139,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -162,6 +166,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .collect()
@@ -197,7 +202,7 @@ mod tests {
         let identity = database_id(db).await?;
         let store = HistoryStore::open(path, THREAD).await?;
         for part in 1..=2_u64 {
-            let member = ThreadItem::new(
+            let member = ExecutionItem::new(
                 format!("sealed-member-{part}"),
                 THREAD.into(),
                 "sealed-turn".into(),
@@ -205,7 +210,7 @@ mod tests {
                 1,
                 1,
                 2,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![],
                     vec![format!("历史成员正文 {part} 🦀")],
                     ThreadContentLifecycle::completed(2),
@@ -218,7 +223,7 @@ mod tests {
             );
             conversation::migration::append_published(db, &completion).await?;
         }
-        let sealed = ThreadItem::new(
+        let sealed = ExecutionItem::new(
             "sealed-text".into(),
             THREAD.into(),
             "sealed-turn".into(),
@@ -226,7 +231,7 @@ mod tests {
             1,
             1,
             3,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "封口正文 retained 🦀".into(),
                 vec![],
@@ -255,7 +260,7 @@ mod tests {
                 .upsert_item(
                     db,
                     4,
-                    ThreadItem::new(
+                    ExecutionItem::new(
                         id.clone(),
                         THREAD.into(),
                         "active-turn".into(),
@@ -263,7 +268,7 @@ mod tests {
                         1,
                         1,
                         2,
-                        ThreadItemState::Thinking(ThreadThinkingItem::new(
+                        ExecutionShape::Thinking(ThreadThinkingItem::new(
                             vec![],
                             vec![text.clone()],
                             ThreadContentLifecycle::streaming(),
@@ -343,14 +348,12 @@ mod tests {
          FROM session_checkpoint ORDER BY id",
         "SELECT json_array(ordinal,record_id,hex(payload),payload_hash) AS fact
          FROM current_context ORDER BY ordinal",
-        "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,hex(payload),last_write_seq) AS fact
-         FROM history_items ORDER BY ordinal",
         "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),hex(metadata)) AS fact
          FROM conversation_items ORDER BY seq",
         "SELECT json_array(owner_key,content_key,hex(payload)) AS fact
-         FROM conversation_contents ORDER BY owner_key,content_key",
+         FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key",
         "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS fact
-         FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset",
+         FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY owner_key,content_key,byte_offset",
         if completed {
             "SELECT json_array(collection,position,entry_id,hex(payload)) AS fact
              FROM completion_boundary_archive_view_entries ORDER BY collection,position"
@@ -363,13 +366,32 @@ mod tests {
          FROM conversation_sources ORDER BY source_key",
     ] {
         let query = if completed {
-            query.replace("FROM conversation_contents ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
-                .replace("FROM conversation_content_chunks ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
+            query.replace("FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
+                .replace("FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
         } else { query.to_owned() };
         for row in db.query_all_raw(statement(&query, vec![])).await? {
             facts.push(row.try_get("", "fact")?);
         }
     }
+        facts.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &[
+                    "ordinal",
+                    "item_id",
+                    "turn_id",
+                    "kind",
+                    "revision",
+                    "lifecycle",
+                    "created_at",
+                    "updated_at",
+                    "hex(payload)",
+                    "last_write_seq",
+                ],
+                false,
+            )
+            .await?,
+        );
         Ok(facts)
     }
 
@@ -850,6 +872,7 @@ mod tests {
                 IMMUTABLE_COMPLETION_RUNS,
                 WORK_SNAPSHOTS,
                 DISPLAY_BLOCK_ORDER,
+                EXECUTION_FACTS,
             ];
             assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
             for step in appended_steps {
@@ -1115,6 +1138,7 @@ mod tests {
                 IMMUTABLE_COMPLETION_RUNS.into(),
                 WORK_SNAPSHOTS.into(),
                 DISPLAY_BLOCK_ORDER.into(),
+                EXECUTION_FACTS.into(),
             ],
         ))
         .await?

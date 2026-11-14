@@ -24,7 +24,7 @@ void main() {
       // completion feed, whose delivery credit must be acknowledged.
       final feed = await transport.openConversationFeed(
         'thread-main',
-        scope: const MainChatScope(),
+        scope: const ChatScope.conversation(),
         demand: chatDemand,
       );
       final events = StreamIterator(feed.events);

@@ -7,8 +7,8 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
     ChatAtomKind, ChatPlacement, ChatScope, CompletedEntry, ContentOwner, ContentRange, ContentRef,
-    ContentTarget, MainPresentation, ObservedResourceKind, PayloadData, ReadDemand,
-    ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    ContentTarget, ObservedResourceKind, PayloadData, ReadDemand, ThreadSubscriptionUpdate,
+    ThreadWorkspaceMode,
     studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
@@ -89,17 +89,7 @@ async fn public_history(
             let mut page = Vec::new();
             for mut item in batch.entries {
                 let mut bodies = Vec::new();
-                let envelope = if matches!(
-                    item.main_presentation,
-                    MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
-                ) {
-                    ensure!(
-                        matches!(item.atom.payload, Some(PayloadData::Deferred { .. }))
-                            && item.run.is_some(),
-                        "Main work representative did not stay Deferred"
-                    );
-                    None
-                } else {
+                let envelope = {
                     let owner = item.record_id.as_str();
                     let raw = match item
                         .atom

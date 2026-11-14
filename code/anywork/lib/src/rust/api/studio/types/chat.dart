@@ -16,7 +16,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 enum BridgeChatActiveStatus { running, waiting }
 
@@ -198,6 +198,15 @@ class BridgeChatBatch {
           throughSeq == other.throughSeq;
 }
 
+@freezed
+sealed class BridgeChatClassFilter with _$BridgeChatClassFilter {
+  const BridgeChatClassFilter._();
+
+  const factory BridgeChatClassFilter.class_({required String value}) =
+      BridgeChatClassFilter_Class;
+  const factory BridgeChatClassFilter.all() = BridgeChatClassFilter_All;
+}
+
 enum BridgeChatContentRole { body, reasoningSummary, toolArguments, toolOutput }
 
 enum BridgeChatDeliveryKind { foreground, backgroundHandoff, independent }
@@ -225,16 +234,22 @@ class BridgeChatFactPosition {
 
 enum BridgeChatPlacement { set_, prepend, append }
 
-@freezed
-sealed class BridgeChatScope with _$BridgeChatScope {
-  const BridgeChatScope._();
+class BridgeChatScope {
+  final BridgeChatClassFilter queryClass;
+  final String? parentId;
 
-  const factory BridgeChatScope.main() = BridgeChatScope_Main;
-  const factory BridgeChatScope.run({
-    required BridgeCompletionRunRef reference,
-  }) = BridgeChatScope_Run;
-  const factory BridgeChatScope.children({required String parentId}) =
-      BridgeChatScope_Children;
+  const BridgeChatScope({required this.queryClass, this.parentId});
+
+  @override
+  int get hashCode => queryClass.hashCode ^ parentId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeChatScope &&
+          runtimeType == other.runtimeType &&
+          queryClass == other.queryClass &&
+          parentId == other.parentId;
 }
 
 @freezed
@@ -322,25 +337,17 @@ class BridgeChatToolIdentity {
 class BridgeCompletedEntry {
   final String recordId;
   final BigInt completionSeq;
-  final BridgeCompletionRunPosition? run;
-  final BridgeMainPresentation mainPresentation;
   final BridgeChatAtom atom;
 
   const BridgeCompletedEntry({
     required this.recordId,
     required this.completionSeq,
-    this.run,
-    required this.mainPresentation,
     required this.atom,
   });
 
   @override
   int get hashCode =>
-      recordId.hashCode ^
-      completionSeq.hashCode ^
-      run.hashCode ^
-      mainPresentation.hashCode ^
-      atom.hashCode;
+      recordId.hashCode ^ completionSeq.hashCode ^ atom.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -349,55 +356,7 @@ class BridgeCompletedEntry {
           runtimeType == other.runtimeType &&
           recordId == other.recordId &&
           completionSeq == other.completionSeq &&
-          run == other.run &&
-          mainPresentation == other.mainPresentation &&
           atom == other.atom;
-}
-
-class BridgeCompletionRunPosition {
-  final BigInt startSeq;
-  final BigInt ordinal;
-
-  const BridgeCompletionRunPosition({
-    required this.startSeq,
-    required this.ordinal,
-  });
-
-  @override
-  int get hashCode => startSeq.hashCode ^ ordinal.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeCompletionRunPosition &&
-          runtimeType == other.runtimeType &&
-          startSeq == other.startSeq &&
-          ordinal == other.ordinal;
-}
-
-class BridgeCompletionRunRef {
-  final String databaseId;
-  final int indexVersion;
-  final BigInt startSeq;
-
-  const BridgeCompletionRunRef({
-    required this.databaseId,
-    required this.indexVersion,
-    required this.startSeq,
-  });
-
-  @override
-  int get hashCode =>
-      databaseId.hashCode ^ indexVersion.hashCode ^ startSeq.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeCompletionRunRef &&
-          runtimeType == other.runtimeType &&
-          databaseId == other.databaseId &&
-          indexVersion == other.indexVersion &&
-          startSeq == other.startSeq;
 }
 
 class BridgeContentManifestEntry {
@@ -687,13 +646,6 @@ class BridgeCurrentPlanHead {
           revision == other.revision &&
           phase == other.phase &&
           document == other.document;
-}
-
-enum BridgeMainPresentation {
-  hidden,
-  single,
-  foregroundWork,
-  backgroundResults,
 }
 
 @freezed

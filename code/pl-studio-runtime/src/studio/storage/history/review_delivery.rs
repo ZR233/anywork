@@ -35,9 +35,12 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(0);
         };
+        let parent = pl_core::chat::ChatKey::new("turn", turn)?;
         let row = connection.db.query_one_raw(statement(
-            "SELECT COALESCE((SELECT length(CAST(payload AS BLOB)) FROM history_items WHERE turn_id=? AND kind='tool' ORDER BY ordinal DESC LIMIT 1),0)+COALESCE((SELECT MAX(length(CAST(delivery_payload AS BLOB))) FROM history_tool_tasks WHERE json_extract(task_payload,'$.turnId')=? AND json_extract(task_payload,'$.toolId')=?),0) AS bytes",
-            vec![turn.to_owned().into(), turn.to_owned().into(), pl_tool::finish_turn::TOOL_FINISH_TURN.to_owned().into()],
+            "SELECT length(c.payload)+length(c.metadata)+COALESCE(length(CAST(t.task_payload AS BLOB)),0)+COALESCE(length(CAST(t.delivery_payload AS BLOB)),0) AS bytes
+             FROM conversation_items c LEFT JOIN history_tool_tasks t ON t.call_id=json_extract(c.metadata,'$.tool.callId')
+             WHERE c.parent_id=? AND json_extract(c.metadata,'$.tool.name')=? ORDER BY c.seq DESC LIMIT 1",
+            vec![parent.as_str().into(),pl_tool::finish_turn::TOOL_FINISH_TURN.into()],
         )).await?;
         row.map(|row| Ok(u64::try_from(row.try_get::<i64>("", "bytes")?)?))
             .unwrap_or(Ok(0))
@@ -48,30 +51,27 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
+        let parent = pl_core::chat::ChatKey::new("turn", turn)?;
         let Some(row) = connection.db.query_one_raw(statement(
-            "SELECT payload FROM history_items WHERE turn_id=? AND kind='tool' ORDER BY ordinal DESC LIMIT 1",
-            vec![turn.to_owned().into()],
-        )).await? else { return Ok(None); };
-        let item: pl_protocol::ThreadItem =
-            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            "SELECT metadata FROM conversation_items WHERE parent_id=? AND json_extract(metadata,'$.tool.name')=? ORDER BY seq DESC LIMIT 1",
+            vec![parent.as_str().into(),pl_tool::finish_turn::TOOL_FINISH_TURN.into()],
+        )).await? else { return Ok(None) };
+        let atom: pl_protocol::ChatAtom =
+            serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
         ensure!(
-            item.turn_id == turn,
+            atom.turn_id.as_deref() == Some(turn)
+                && matches!(
+                    atom.lifecycle,
+                    pl_protocol::ChatAtomLifecycle::Terminal { .. }
+                ),
             crate::thread_assembler::review_dispatch::TerminalIntegrityError(
-                "review finish item belongs to another Turn"
+                "review finish original provenance mismatch"
             )
         );
-        let pl_protocol::ThreadItemState::Tool(tool) = item.state() else {
-            anyhow::bail!(
-                crate::thread_assembler::review_dispatch::TerminalIntegrityError(
-                    "review finish item kind mismatch"
-                )
-            );
-        };
-        Ok(
-            (tool.invocation().name() == pl_tool::finish_turn::TOOL_FINISH_TURN
-                && tool.terminal_output().is_some())
-            .then(|| tool.invocation().tool_call_id().to_owned()),
-        )
+        Ok(atom
+            .tool
+            .filter(|tool| tool.name == pl_tool::finish_turn::TOOL_FINISH_TURN)
+            .map(|tool| tool.call_id))
     }
 
     pub(crate) async fn review_delivery_exception(

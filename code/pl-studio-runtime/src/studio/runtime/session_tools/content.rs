@@ -345,7 +345,6 @@ impl ReadOwners {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReadInput {
     session_id: String,
-    #[schemars(with = "Option<serde_json::Value>")]
     scope: Option<ChatScope>,
     read_scope: Option<String>,
     before: Option<String>,
@@ -370,24 +369,9 @@ pub(super) fn read_schema() -> serde_json::Value {
         "maxItems":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_READ_MAX_ITEMS},
         "maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
     schema["properties"]["reference"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy the canonical ContentRef from the Chat envelope or manifest unchanged."},{"type":"null"}]});
-    schema["properties"]["scope"] = serde_json::json!({
-        "description": "Select only when opening a scope; omit for Main. Copy a returned run reference unchanged. Children requires a real encoded business parentId, not a display run.",
-        "anyOf": [
-            {"type":"object","required":["kind"],"additionalProperties":false,
-             "properties":{"kind":{"type":"string","enum":["main"]}}},
-            {"type":"object","required":["kind","reference"],"additionalProperties":false,
-             "properties":{"kind":{"type":"string","enum":["run"]},
-                "reference":{"type":"object","required":["databaseId","indexVersion","startSeq"],
-                    "additionalProperties":false,"properties":{
-                        "databaseId":{"type":"string","minLength":1},
-                        "indexVersion":{"type":"integer","enum":[pl_protocol::COMPLETED_READ_INDEX_VERSION]},
-                        "startSeq":{"type":"integer","minimum":1,"maximum":i64::MAX}}}}},
-            {"type":"object","required":["kind","parentId"],"additionalProperties":false,
-             "properties":{"kind":{"type":"string","enum":["children"]},
-                "parentId":{"type":"string","minLength":1}}},
-            {"type":"null"}
-        ]
-    });
+    schema["properties"]["scope"]["description"] = serde_json::json!(
+        "Required for a new original read: explicitly select queryClass Class or All, and optional real encoded parentId. Continue an existing readScope without repeating scope. Display group IDs are not business parents."
+    );
     schema["properties"]["collection"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a canonical CurrentCollectionRef unchanged; demand and continuation select a bounded page."},{"type":"null"}]});
     schema["properties"]["readBusinessRefs"]["description"] = serde_json::json!(
         "Read the current Plan and interaction resource heads on this readScope; no demand or content cursor is required."
@@ -489,7 +473,7 @@ pub(super) async fn get(
                 };
                 serde_json::json!({"id":entry.record_id,"kind":atom.kind,"turnId":atom.turn_id,
                 "startedAt":atom.started_at,"finishedAt":atom.finished_at,"outcome":outcome,
-                "mainPresentation":entry.main_presentation,"tool":atom.tool})
+                "tool":atom.tool})
             })
             .collect::<Vec<_>>();
         let plan = references
@@ -621,7 +605,9 @@ pub(super) async fn read(
             .open_scoped(
                 runtime,
                 &args.session_id,
-                args.scope.unwrap_or(ChatScope::conversation(None)),
+                args.scope.context(
+                    "scope with an explicit Class or All filter is required for a new read",
+                )?,
                 page_demand,
                 None,
                 None,
@@ -752,17 +738,6 @@ struct Cursor {
     read_scope_id: Option<String>,
     before: Option<String>,
     pending: Option<PendingText>,
-    #[serde(default)]
-    run: Option<RunCursor>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RunCursor {
-    read_scope_id: String,
-    before: Option<String>,
-    next_main_before: Option<String>,
-    end_of_session: bool,
-    through_seq: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -824,12 +799,7 @@ pub(super) async fn search(
             ..Default::default()
         },
     };
-    let borrowed = cursor
-        .read_scope_id
-        .iter()
-        .chain(cursor.run.iter().map(|run| &run.read_scope_id))
-        .cloned()
-        .collect::<Vec<_>>();
+    let borrowed = cursor.read_scope_id.iter().cloned().collect::<Vec<_>>();
     let mut opened = Vec::new();
     let operation = async {
         let needle = args.query.to_lowercase();
@@ -870,7 +840,7 @@ pub(super) async fn search(
                 .session_id
                 .clone()
                 .context("search session missing")?;
-            let (mut reader, initial) = match cursor.read_scope_id.as_deref() {
+            let (reader, initial) = match cursor.read_scope_id.as_deref() {
                 Some(id) => (
                     owners
                         .get(id, &session_id, Some(&cursor.fingerprint))
@@ -901,14 +871,6 @@ pub(super) async fn search(
                     (reader, Some(page))
                 }
             };
-            let initial = if let Some(run) = &cursor.run {
-                reader = owners
-                    .get(&run.read_scope_id, &session_id, Some(&cursor.fingerprint))
-                    .await?;
-                None
-            } else {
-                initial
-            };
             #[cfg(test)]
             search_read(cancel, async {
                 owners
@@ -918,75 +880,16 @@ pub(super) async fn search(
             })
             .await?;
             if cursor.pending.is_none() {
-                let before = cursor
-                    .run
-                    .as_ref()
-                    .and_then(|run| run.before.as_deref())
-                    .or(cursor.before.as_deref());
-                let mut page = if let Some(page) = initial {
+                let before = cursor.before.as_deref();
+                let page = if let Some(page) = initial {
                     page
                 } else if let Some(before) = before {
                     search_read(cancel, reader.load_older(before, demand(1)?)).await?
                 } else {
                     anyhow::bail!("search lost its original exclusive boundary");
                 };
-                if cursor.run.is_none()
-                    && let Some(entry) = page.entries.first()
-                    && matches!(
-                        entry.main_presentation,
-                        pl_protocol::MainPresentation::ForegroundWork
-                            | pl_protocol::MainPresentation::BackgroundResults
-                    )
-                {
-                    let Some(pl_protocol::PayloadData::Deferred { reference, .. }) =
-                        &entry.atom.payload
-                    else {
-                        anyhow::bail!("work representative has no canonical database reference");
-                    };
-                    let run = entry.run.context("work representative has no run index")?;
-                    let (run_reader, first) = owners
-                        .open_scoped(
-                            runtime,
-                            &session_id,
-                            ChatScope::Run {
-                                reference: pl_protocol::CompletionRunRef {
-                                    database_id: reference.database_id.clone(),
-                                    index_version: pl_protocol::COMPLETED_READ_INDEX_VERSION,
-                                    start_seq: run.start_seq,
-                                },
-                            },
-                            demand(1)?,
-                            Some(&cursor.fingerprint),
-                            Some(cancel),
-                        )
-                        .await?;
-                    let id = run_reader.subscription_id().to_owned();
-                    opened.push(id.clone());
-                    let resource = owners
-                        .readers
-                        .lock()
-                        .await
-                        .get(&id)
-                        .cloned()
-                        .ok_or_else(stale_scope)?;
-                    search_read(cancel, initial_activity(&resource, first.through_seq)).await?;
-                    cursor.run = Some(RunCursor {
-                        read_scope_id: id,
-                        before: None,
-                        next_main_before: page.before.clone(),
-                        end_of_session: page.before.is_none(),
-                        through_seq: page.through_seq,
-                    });
-                    reader = run_reader;
-                    page = first;
-                }
                 let end = page.before.is_none();
-                let Some(item) = page.entries.first().filter(|entry| {
-                    cursor
-                        .run
-                        .as_ref()
-                        .is_none_or(|run| entry.completion_seq <= run.through_seq)
-                }) else {
+                let Some(item) = page.entries.first() else {
                     advance(&mut cursor, page.before, end);
                     continue;
                 };
@@ -1134,11 +1037,7 @@ pub(super) async fn search(
     };
     // Result encoding has succeeded. Commit retirement without cancelling joins. An input cursor
     // is borrowed until this boundary; new scopes belong to this call until its output is returned.
-    let keep = cursor
-        .read_scope_id
-        .iter()
-        .chain(cursor.run.iter().map(|run| &run.read_scope_id))
-        .collect::<Vec<_>>();
+    let keep = cursor.read_scope_id.iter().collect::<Vec<_>>();
     let retired = opened
         .iter()
         .filter(|id| !keep.contains(id))
@@ -1180,15 +1079,6 @@ async fn close_scopes(owners: &ReadOwners, ids: &[String]) -> Result<()> {
 
 fn advance(cursor: &mut Cursor, before: Option<String>, end: bool) {
     cursor.pending = None;
-    if let Some(run) = &mut cursor.run {
-        run.before = before;
-        if !end {
-            return;
-        }
-        let run = cursor.run.take().expect("owned run cursor");
-        advance(cursor, run.next_main_before, run.end_of_session);
-        return;
-    }
     cursor.before = before;
     if end {
         cursor.session_id = None;
@@ -1218,37 +1108,17 @@ mod tests {
 
     /// Build the required fields of the advertised scope branch, then let the
     /// production argument decoder and real reader prove that it is callable.
-    fn advertised_scope(kind: &str, values: serde_json::Value) -> Result<serde_json::Value> {
+    fn advertised_scope(parent: Option<String>) -> Result<serde_json::Value> {
         let schema = read_schema();
-        let branch = schema["properties"]["scope"]["anyOf"]
-            .as_array()
-            .context("scope alternatives")?
-            .iter()
-            .find(|branch| {
-                branch["properties"]["kind"]["enum"]
-                    .as_array()
-                    .is_some_and(|variants| variants.iter().any(|value| value == kind))
-            })
-            .context("advertised scope kind")?;
-        let mut scope = serde_json::json!({"kind":kind});
-        for key in branch["required"]
-            .as_array()
-            .context("scope required fields")?
-        {
-            let key = key.as_str().context("required field name")?;
-            if key != "kind" {
-                scope[key] = values
-                    .get(key)
-                    .with_context(|| format!("missing advertised field {key}"))?
-                    .clone();
-            }
-        }
-        Ok(scope)
+        ensure!(
+            schema["$defs"]["ChatScope"]["properties"]["queryClass"].is_object(),
+            "record filter not advertised"
+        );
+        Ok(serde_json::to_value(ChatScope::conversation(parent))?)
     }
 
     #[tokio::test]
-    async fn run_read_and_search_cover_nonrepresentative_members_and_release_scopes() -> Result<()>
-    {
+    async fn records_and_search_cover_all_members_and_release_scopes() -> Result<()> {
         use pl_provider_fixture::Reply;
         use serde_json::json;
         let mut events = vec![
@@ -1293,141 +1163,140 @@ mod tests {
         )
         .await?;
         let result = async {
-        let thread = env
-            .start(
-                pl_protocol::ThreadWorkspaceMode::Local,
-                "search-run-members",
-            )
-            .await?;
-        let session = &thread.thread.id;
-        let completed = support::completed_prompt(&env.runtime, session, "search-run-members").await?;
-        env.runtime.synchronize_thread_observation(session).await?;
-        let owners = ReadOwners::default();
-        let main = read(&env.runtime, &owners, pl_agent_tool::typed::decode_json(&json!({
-            "sessionId":session,"scope":advertised_scope("main", json!({}))?,
-            "demand":{"maxItems":16,"maxBytes":131072}
-        }).to_string())?).await?;
-        let main: serde_json::Value = serde_json::from_str(main.payload().content())?;
-        let main_id = main["readScope"].as_str().context("Main read scope")?;
-        let page: ChatBatch = serde_json::from_value(main["chat"].clone())?;
-        let representative = page
-            .entries
-            .iter()
-            .find(|entry| entry.main_presentation == pl_protocol::MainPresentation::ForegroundWork)
-            .context("reasoning run representative")?;
-        let Some(pl_protocol::PayloadData::Deferred { reference, .. }) =
-            &representative.atom.payload
-        else {
-            anyhow::bail!("work representative eagerly included its payload");
-        };
-        let scope = advertised_scope("run", json!({
-            "reference": pl_protocol::CompletionRunRef {
-                database_id: reference.database_id.clone(),
-                index_version: pl_protocol::COMPLETED_READ_INDEX_VERSION,
-                start_seq: representative.run.context("run position")?.start_seq,
-            },
-        }))?;
-        let opened = read(
-            &env.runtime,
-            &owners,
-            pl_agent_tool::typed::decode_json(&json!({
-                "sessionId":session,"scope":scope,"demand":{"maxItems":1,"maxBytes":131072}
-            }).to_string())?,
-        )
-        .await?;
-        let opened: serde_json::Value = serde_json::from_str(opened.payload().content())?;
-        assert!(opened["activity"].is_object());
-        let run_id = opened["readScope"].as_str().context("run read scope")?;
-        let run_reader = owners.get(run_id, session, None).await?;
-        let mut page: ChatBatch = serde_json::from_value(opened["chat"].clone())?;
-        let mut members = std::collections::BTreeSet::new();
-        loop {
-            for entry in page.entries {
-                assert_eq!(entry.atom.kind, pl_protocol::ChatAtomKind::Reasoning);
-                assert!(members.insert(entry.record_id));
-            }
-            let Some(before) = page.before else { break };
-            page = run_reader.load_older(&before, demand(1)?).await?;
-        }
-        assert_eq!(members.len(), 40);
-        owners.close(run_id).await?;
-        owners.close(main_id).await?;
-        let parent = pl_core::chat::ChatKey::new("turn", &completed.id)?;
-        let children = read(&env.runtime, &owners, pl_agent_tool::typed::decode_json(&json!({
-            "sessionId":session,"scope":advertised_scope("children", json!({"parentId":parent.as_str()}))?,
-            "demand":{"maxItems":100,"maxBytes":131072}
-        }).to_string())?).await?;
-        let children: serde_json::Value = serde_json::from_str(children.payload().content())?;
-        let child_id = children["readScope"].as_str().context("Children read scope")?;
-        let child_reader = owners.get(child_id, session, None).await?;
-        let mut page: ChatBatch = serde_json::from_value(children["chat"].clone())?;
-        let mut child_members = std::collections::BTreeSet::new();
-        let mut terminal_receipt = false;
-        for _ in 0..64 {
-            for entry in &page.entries {
-                if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
-                    assert!(child_members.insert(entry.record_id.clone()));
-                }
-                terminal_receipt |= entry.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt;
-            }
-            let Some(before) = page.before.as_deref() else { break };
-            page = child_reader.load_older(before, demand(100)?).await?;
-        }
-        assert!(page.before.is_none(), "Children pagination did not terminate");
-        assert_eq!(child_members, members);
-        assert!(terminal_receipt, "Children omitted the real hidden Turn receipt");
-        owners.close(child_id).await?;
-        let cancel = CancellationToken::new();
-        let mut token: Option<String> = None;
-        let mut found = Vec::new();
-        let mut complete = false;
-        for _ in 0..8 {
-            let result = search(
+            let thread = env
+                .start(
+                    pl_protocol::ThreadWorkspaceMode::Local,
+                    "search-run-members",
+                )
+                .await?;
+            let session = &thread.thread.id;
+            let completed =
+                support::completed_prompt(&env.runtime, session, "search-run-members").await?;
+            env.runtime.synchronize_thread_observation(session).await?;
+            let owners = ReadOwners::default();
+            let main = read(
                 &env.runtime,
                 &owners,
-                serde_json::from_value(json!({
-                    "sessionId":session,"query":"only-inside-member","cursor":token
-                }))?,
-                &cancel,
+                pl_agent_tool::typed::decode_json(
+                    &json!({
+                        "sessionId":session,"scope":advertised_scope(None)?,
+                        "demand":{"maxItems":16,"maxBytes":131072}
+                    })
+                    .to_string(),
+                )?,
             )
             .await?;
-            let result: serde_json::Value = serde_json::from_str(result.payload().content())?;
-            found.extend(
-                result["matches"]
-                    .as_array()
-                    .context("search matches")?
-                    .iter()
-                    .cloned(),
-            );
-            complete = result["complete"] == true;
-            token = result["cursor"].as_str().map(str::to_owned);
-            if complete {
-                break;
+            let main: serde_json::Value = serde_json::from_str(main.payload().content())?;
+            let main_id = main["readScope"].as_str().context("Main read scope")?;
+            let page: ChatBatch = serde_json::from_value(main["chat"].clone())?;
+            let run_reader = owners.get(main_id, session, None).await?;
+            let mut page = page;
+            let mut members = std::collections::BTreeSet::new();
+            loop {
+                for entry in page.entries {
+                    if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                        assert!(members.insert(entry.record_id));
+                    }
+                }
+                let Some(before) = page.before else { break };
+                page = run_reader.load_older(&before, demand(1)?).await?;
             }
-            assert!(token.is_some());
-            assert!(owners.readers.lock().await.len() <= MAX_READ_SCOPES);
-        }
-        assert!(complete, "bounded search never completed its run");
-        assert_eq!(found.len(), 1);
-        assert!(
-            members.contains(
-                found[0]["itemId"]
-                    .as_str()
-                    .context("member match identity")?
+            assert_eq!(members.len(), 40);
+            owners.close(main_id).await?;
+            let parent = pl_core::chat::ChatKey::new("turn", &completed.id)?;
+            let children = read(
+                &env.runtime,
+                &owners,
+                pl_agent_tool::typed::decode_json(
+                    &json!({
+                        "sessionId":session,"scope":advertised_scope(Some(parent.as_str().into()))?,
+                        "demand":{"maxItems":100,"maxBytes":131072}
+                    })
+                    .to_string(),
+                )?,
             )
-        );
-        assert!(
-            found[0]["snippet"]
+            .await?;
+            let children: serde_json::Value = serde_json::from_str(children.payload().content())?;
+            let child_id = children["readScope"]
                 .as_str()
-                .unwrap()
-                .contains("only-inside-member")
-        );
-        assert!(owners.readers.lock().await.is_empty());
-        assert_eq!(owners.permits.available_permits(), MAX_READ_SCOPES);
-        owners.close_all().await?;
-        Ok(())
-    }
-    .await;
+                .context("Children read scope")?;
+            let child_reader = owners.get(child_id, session, None).await?;
+            let mut page: ChatBatch = serde_json::from_value(children["chat"].clone())?;
+            let mut child_members = std::collections::BTreeSet::new();
+            let mut terminal_receipt = false;
+            for _ in 0..64 {
+                for entry in &page.entries {
+                    if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                        assert!(child_members.insert(entry.record_id.clone()));
+                    }
+                    terminal_receipt |= entry.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt;
+                }
+                let Some(before) = page.before.as_deref() else {
+                    break;
+                };
+                page = child_reader.load_older(before, demand(100)?).await?;
+            }
+            assert!(
+                page.before.is_none(),
+                "Children pagination did not terminate"
+            );
+            assert_eq!(child_members, members);
+            assert!(
+                terminal_receipt,
+                "Children omitted the real hidden Turn receipt"
+            );
+            owners.close(child_id).await?;
+            let cancel = CancellationToken::new();
+            let mut token: Option<String> = None;
+            let mut found = Vec::new();
+            let mut complete = false;
+            for _ in 0..8 {
+                let result = search(
+                    &env.runtime,
+                    &owners,
+                    serde_json::from_value(json!({
+                        "sessionId":session,"query":"only-inside-member","cursor":token
+                    }))?,
+                    &cancel,
+                )
+                .await?;
+                let result: serde_json::Value = serde_json::from_str(result.payload().content())?;
+                found.extend(
+                    result["matches"]
+                        .as_array()
+                        .context("search matches")?
+                        .iter()
+                        .cloned(),
+                );
+                complete = result["complete"] == true;
+                token = result["cursor"].as_str().map(str::to_owned);
+                if complete {
+                    break;
+                }
+                assert!(token.is_some());
+                assert!(owners.readers.lock().await.len() <= MAX_READ_SCOPES);
+            }
+            assert!(complete, "bounded search never completed its run");
+            assert_eq!(found.len(), 1);
+            assert!(
+                members.contains(
+                    found[0]["itemId"]
+                        .as_str()
+                        .context("member match identity")?
+                )
+            );
+            assert!(
+                found[0]["snippet"]
+                    .as_str()
+                    .unwrap()
+                    .contains("only-inside-member")
+            );
+            assert!(owners.readers.lock().await.is_empty());
+            assert_eq!(owners.permits.available_permits(), MAX_READ_SCOPES);
+            owners.close_all().await?;
+            Ok(())
+        }
+        .await;
         env.finish(result).await
     }
 
@@ -1546,7 +1415,7 @@ mod tests {
                 &env.runtime,
                 &owners,
                 serde_json::from_value(json!({
-                    "sessionId":id,"demand":{"maxItems":16,"maxBytes":131072}
+                    "sessionId":id,"scope":advertised_scope(None)?,"demand":{"maxItems":16,"maxBytes":131072}
                 }))?,
             )
             .await?;
@@ -1994,7 +1863,7 @@ mod tests {
             let (reader, _) = owners.open(&env.runtime, session, demand(1)?, None, None).await?;
             occupied.push(reader.subscription_id().to_owned());
         }
-        let error = search(&env.runtime, &owners, input(Some(token))?, &CancellationToken::new())
+        let error = search(&env.runtime, &owners, input(Some(token))?, &tokio_util::sync::CancellationToken::new())
             .await.err().context("cross-session scan exceeded the quota")?;
         assert!(matches!(error.downcast_ref::<pl_core::chat::ChatError>(), Some(pl_core::chat::ChatError::Overloaded(_))));
         assert_eq!(owners.readers.lock().await.len(), MAX_READ_SCOPES);
@@ -2102,7 +1971,7 @@ mod tests {
         let owners = ReadOwners::default();
         let other = ReadOwners::default();
         let input =
-            serde_json::json!({"sessionId":session,"demand":{"maxItems":100,"maxBytes":131072}});
+            serde_json::json!({"sessionId":session,"scope":advertised_scope(None)?,"demand":{"maxItems":100,"maxBytes":131072}});
         let output = read(&env.runtime, &owners, serde_json::from_value(input)?).await?;
         let page: serde_json::Value = serde_json::from_str(output.payload().content())?;
         assert!(

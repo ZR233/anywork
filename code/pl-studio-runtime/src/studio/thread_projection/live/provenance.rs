@@ -1,5 +1,6 @@
 //! Actual lifecycle folded by the existing projection owner. No display ranges or group state.
 use super::*;
+use crate::{ExecutionItem, ExecutionShape};
 use pl_protocol::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
@@ -119,7 +120,7 @@ impl LiveProjection {
             .await
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         // Original accepted facts include independent operations which have no
-        // ThreadItem (e.g. compaction). Restore them without any presentation fold.
+        // ExecutionItem (e.g. compaction). Restore them without any presentation fold.
         let mut after = None;
         loop {
             let atoms = history
@@ -360,7 +361,7 @@ impl LiveProjection {
                 .order_index_of()?
                 .reserve_observed(&start.attempt_id, &id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 id.clone(),
                 effect.thread_id.clone(),
                 start.turn_id.clone(),
@@ -443,7 +444,7 @@ impl LiveProjection {
     pub(super) async fn complete_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
-        items: &[ThreadItem],
+        items: &[ExecutionItem],
         drafts: &mut [ChatDraft],
         changes: &mut Changes,
     ) -> Result<(), ProjectionError> {
@@ -451,10 +452,10 @@ impl LiveProjection {
             !completion_ready(item)
                 && !matches!(
                     item.state(),
-                    ThreadItemState::Inference(_) | ThreadItemState::Turn(_)
+                    ExecutionShape::Inference(_) | ExecutionShape::Turn(_)
                 )
         }) {
-            if let ThreadItemState::Tool(tool) = item.state() {
+            if let ExecutionShape::Tool(tool) = item.state() {
                 if tool.invocation().task_id().is_some()
                     && self
                         .completion_exists(&super::super::order::tool_background_started_id(
@@ -489,7 +490,7 @@ impl LiveProjection {
             atom.attempt_id = old.and_then(|old| old.attempt_id.clone());
             atom.contents = old.map_or_else(Vec::new, |old| old.contents.clone());
             let actual_start = match item.state() {
-                ThreadItemState::Tool(tool) => {
+                ExecutionShape::Tool(tool) => {
                     let call = tool.invocation().tool_call_id();
                     effect.tasks.iter().any(|task| {
                         task.call_id == call && task.started_sequence == Some(effect.sequence)
@@ -522,7 +523,7 @@ impl LiveProjection {
             };
             atom.lifecycle = ChatAtomLifecycle::Active {
                 started,
-                status: if matches!(item.state(), ThreadItemState::Tool(tool)
+                status: if matches!(item.state(), ExecutionShape::Tool(tool)
                     if matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
                     || tool.user_input().is_some_and(|input|
                         matches!(input.state(), pl_protocol::ThreadToolUserInputState::Pending)))
@@ -679,7 +680,7 @@ impl LiveProjection {
                 atom.kind = pl_protocol::ChatAtomKind::Input;
             }
             for (inbox_index, record) in effect.inbox.iter().enumerate() {
-                let background_tool = matches!(item.state(), ThreadItemState::Tool(tool)
+                let background_tool = matches!(item.state(), ExecutionShape::Tool(tool)
                     if tool.invocation().task_id() == Some(record.message.source_id.as_str()));
                 if atom.id == super::super::order::message_id(&record.message.id) || background_tool
                 {
@@ -746,8 +747,6 @@ impl LiveProjection {
             draft.metadata = serde_json::to_vec(&atom)
                 .map_err(|error| ProjectionError::History(error.to_string()))?
                 .into();
-            draft.read_hint =
-                crate::studio::runtime::chat_item::native_read_hint_v1(&draft.query_class, &atom);
         }
         for (index, id) in interrupted_ids.into_iter().enumerate() {
             let mut atom = self

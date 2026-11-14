@@ -351,7 +351,7 @@ as BridgeChatTerminalOutcome,
 }
 
 /// @nodoc
-mixin _$BridgeChatScope {
+mixin _$BridgeChatClassFilter {
 
 
 
@@ -359,7 +359,7 @@ mixin _$BridgeChatScope {
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatClassFilter);
 }
 
 
@@ -368,20 +368,20 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-    return 'BridgeChatScope()';
+    return 'BridgeChatClassFilter()';
 }
 
 
 }
 
 /// @nodoc
-class $BridgeChatScopeCopyWith<$Res>  {
-$BridgeChatScopeCopyWith(BridgeChatScope _, $Res Function(BridgeChatScope) __);
+class $BridgeChatClassFilterCopyWith<$Res>  {
+$BridgeChatClassFilterCopyWith(BridgeChatClassFilter _, $Res Function(BridgeChatClassFilter) __);
 }
 
 
-/// Adds pattern-matching-related methods to [BridgeChatScope].
-extension BridgeChatScopePatterns on BridgeChatScope {
+/// Adds pattern-matching-related methods to [BridgeChatClassFilter].
+extension BridgeChatClassFilterPatterns on BridgeChatClassFilter {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -394,13 +394,12 @@ extension BridgeChatScopePatterns on BridgeChatScope {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatScope_Main value)?  main,TResult Function( BridgeChatScope_Run value)?  run,TResult Function( BridgeChatScope_Children value)?  children,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeChatClassFilter_Class value)?  class_,TResult Function( BridgeChatClassFilter_All value)?  all,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeChatScope_Main() when main != null:
-return main(_that);case BridgeChatScope_Run() when run != null:
-return run(_that);case BridgeChatScope_Children() when children != null:
-return children(_that);case _:
+case BridgeChatClassFilter_Class() when class_ != null:
+return class_(_that);case BridgeChatClassFilter_All() when all != null:
+return all(_that);case _:
   return orElse();
 
 }
@@ -418,13 +417,12 @@ return children(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatScope_Main value)  main,required TResult Function( BridgeChatScope_Run value)  run,required TResult Function( BridgeChatScope_Children value)  children,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeChatClassFilter_Class value)  class_,required TResult Function( BridgeChatClassFilter_All value)  all,}){
 final _that = this;
 switch (_that) {
-case BridgeChatScope_Main():
-return main(_that);case BridgeChatScope_Run():
-return run(_that);case BridgeChatScope_Children():
-return children(_that);}
+case BridgeChatClassFilter_Class():
+return class_(_that);case BridgeChatClassFilter_All():
+return all(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -438,13 +436,12 @@ return children(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatScope_Main value)?  main,TResult? Function( BridgeChatScope_Run value)?  run,TResult? Function( BridgeChatScope_Children value)?  children,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeChatClassFilter_Class value)?  class_,TResult? Function( BridgeChatClassFilter_All value)?  all,}){
 final _that = this;
 switch (_that) {
-case BridgeChatScope_Main() when main != null:
-return main(_that);case BridgeChatScope_Run() when run != null:
-return run(_that);case BridgeChatScope_Children() when children != null:
-return children(_that);case _:
+case BridgeChatClassFilter_Class() when class_ != null:
+return class_(_that);case BridgeChatClassFilter_All() when all != null:
+return all(_that);case _:
   return null;
 
 }
@@ -461,12 +458,11 @@ return children(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  main,TResult Function( BridgeCompletionRunRef reference)?  run,TResult Function( String parentId)?  children,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  class_,TResult Function()?  all,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeChatScope_Main() when main != null:
-return main();case BridgeChatScope_Run() when run != null:
-return run(_that.reference);case BridgeChatScope_Children() when children != null:
-return children(_that.parentId);case _:
+case BridgeChatClassFilter_Class() when class_ != null:
+return class_(_that.value);case BridgeChatClassFilter_All() when all != null:
+return all();case _:
   return orElse();
 
 }
@@ -484,12 +480,11 @@ return children(_that.parentId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  main,required TResult Function( BridgeCompletionRunRef reference)  run,required TResult Function( String parentId)  children,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  class_,required TResult Function()  all,}) {final _that = this;
 switch (_that) {
-case BridgeChatScope_Main():
-return main();case BridgeChatScope_Run():
-return run(_that.reference);case BridgeChatScope_Children():
-return children(_that.parentId);}
+case BridgeChatClassFilter_Class():
+return class_(_that.value);case BridgeChatClassFilter_All():
+return all();}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -503,12 +498,11 @@ return children(_that.parentId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  main,TResult? Function( BridgeCompletionRunRef reference)?  run,TResult? Function( String parentId)?  children,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  class_,TResult? Function()?  all,}) {final _that = this;
 switch (_that) {
-case BridgeChatScope_Main() when main != null:
-return main();case BridgeChatScope_Run() when run != null:
-return run(_that.reference);case BridgeChatScope_Children() when children != null:
-return children(_that.parentId);case _:
+case BridgeChatClassFilter_Class() when class_ != null:
+return class_(_that.value);case BridgeChatClassFilter_All() when all != null:
+return all();case _:
   return null;
 
 }
@@ -519,8 +513,76 @@ return children(_that.parentId);case _:
 /// @nodoc
 
 
-class BridgeChatScope_Main extends BridgeChatScope {
-  const BridgeChatScope_Main(): super._();
+class BridgeChatClassFilter_Class extends BridgeChatClassFilter {
+  const BridgeChatClassFilter_Class({required this.value}): super._();
+
+
+ final  String value;
+
+/// Create a copy of BridgeChatClassFilter
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeChatClassFilter_ClassCopyWith<BridgeChatClassFilter_Class> get copyWith => _$BridgeChatClassFilter_ClassCopyWithImpl<BridgeChatClassFilter_Class>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatClassFilter_Class&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'BridgeChatClassFilter.class_(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeChatClassFilter_ClassCopyWith<$Res> implements $BridgeChatClassFilterCopyWith<$Res> {
+  factory $BridgeChatClassFilter_ClassCopyWith(BridgeChatClassFilter_Class value, $Res Function(BridgeChatClassFilter_Class) _then) = _$BridgeChatClassFilter_ClassCopyWithImpl;
+@useResult
+$Res call({
+ String value
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeChatClassFilter_ClassCopyWithImpl<$Res>
+    implements $BridgeChatClassFilter_ClassCopyWith<$Res> {
+  _$BridgeChatClassFilter_ClassCopyWithImpl(this._self, this._then);
+
+  final BridgeChatClassFilter_Class _self;
+  final $Res Function(BridgeChatClassFilter_Class) _then;
+
+/// Create a copy of BridgeChatClassFilter
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(BridgeChatClassFilter_Class(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeChatClassFilter_All extends BridgeChatClassFilter {
+  const BridgeChatClassFilter_All(): super._();
 
 
 
@@ -530,7 +592,7 @@ class BridgeChatScope_Main extends BridgeChatScope {
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope_Main);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatClassFilter_All);
 }
 
 
@@ -539,7 +601,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-    return 'BridgeChatScope.main()';
+    return 'BridgeChatClassFilter.all()';
 }
 
 
@@ -547,142 +609,6 @@ String toString() {
 
 
 
-
-/// @nodoc
-
-
-class BridgeChatScope_Run extends BridgeChatScope {
-  const BridgeChatScope_Run({required this.reference}): super._();
-
-
- final  BridgeCompletionRunRef reference;
-
-/// Create a copy of BridgeChatScope
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatScope_RunCopyWith<BridgeChatScope_Run> get copyWith => _$BridgeChatScope_RunCopyWithImpl<BridgeChatScope_Run>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope_Run&&(identical(other.reference, reference) || other.reference == reference));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,reference);
-}
-
-@override
-String toString() {
-    return 'BridgeChatScope.run(reference: $reference)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatScope_RunCopyWith<$Res> implements $BridgeChatScopeCopyWith<$Res> {
-  factory $BridgeChatScope_RunCopyWith(BridgeChatScope_Run value, $Res Function(BridgeChatScope_Run) _then) = _$BridgeChatScope_RunCopyWithImpl;
-@useResult
-$Res call({
- BridgeCompletionRunRef reference
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatScope_RunCopyWithImpl<$Res>
-    implements $BridgeChatScope_RunCopyWith<$Res> {
-  _$BridgeChatScope_RunCopyWithImpl(this._self, this._then);
-
-  final BridgeChatScope_Run _self;
-  final $Res Function(BridgeChatScope_Run) _then;
-
-/// Create a copy of BridgeChatScope
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? reference = null,}) {
-  return _then(BridgeChatScope_Run(
-reference: null == reference ? _self.reference : reference // ignore: cast_nullable_to_non_nullable
-as BridgeCompletionRunRef,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeChatScope_Children extends BridgeChatScope {
-  const BridgeChatScope_Children({required this.parentId}): super._();
-
-
- final  String parentId;
-
-/// Create a copy of BridgeChatScope
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeChatScope_ChildrenCopyWith<BridgeChatScope_Children> get copyWith => _$BridgeChatScope_ChildrenCopyWithImpl<BridgeChatScope_Children>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeChatScope_Children&&(identical(other.parentId, parentId) || other.parentId == parentId));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,parentId);
-}
-
-@override
-String toString() {
-    return 'BridgeChatScope.children(parentId: $parentId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeChatScope_ChildrenCopyWith<$Res> implements $BridgeChatScopeCopyWith<$Res> {
-  factory $BridgeChatScope_ChildrenCopyWith(BridgeChatScope_Children value, $Res Function(BridgeChatScope_Children) _then) = _$BridgeChatScope_ChildrenCopyWithImpl;
-@useResult
-$Res call({
- String parentId
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeChatScope_ChildrenCopyWithImpl<$Res>
-    implements $BridgeChatScope_ChildrenCopyWith<$Res> {
-  _$BridgeChatScope_ChildrenCopyWithImpl(this._self, this._then);
-
-  final BridgeChatScope_Children _self;
-  final $Res Function(BridgeChatScope_Children) _then;
-
-/// Create a copy of BridgeChatScope
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? parentId = null,}) {
-  return _then(BridgeChatScope_Children(
-parentId: null == parentId ? _self.parentId : parentId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
 
 /// @nodoc
 mixin _$BridgeChatSourceId {

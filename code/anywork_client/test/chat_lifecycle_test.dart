@@ -74,9 +74,9 @@ void main() {
     final details = <ConversationContent>[];
     final feeds = <TestConversationFeed>[];
     for (var index = 0; index < 4; index++) {
-      final content = await fixture.repository.openChildren(
+      final content = await fixture.repository.openRecords(
         threadId: 'thread',
-        parentId: 'parent-$index',
+        scope: ChatScope.conversation(parentId: 'parent-$index'),
         demand: _demand,
       );
       details.add(content);

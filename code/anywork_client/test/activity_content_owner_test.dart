@@ -9,9 +9,9 @@ import 'support/timeline_transport.dart';
 const _demand = ReadDemand(maxItems: 1, maxBytes: 16384);
 
 void main() {
-  for (final run in [false, true]) {
+  for (final all in [false, true]) {
     test(
-      '${run ? 'Run' : 'Children'} has independent demand, cursor and ownership',
+      '${all ? 'All' : 'Class'} records have independent demand, cursor and ownership',
       () async {
         final fixture = ConversationFixture();
         final main = await fixture.open(
@@ -25,32 +25,24 @@ void main() {
           entries: [],
         );
         await main.deliver(ConversationActivityEvent(snapshot: activity));
-        const reference = CompletionRunRef(
-          databaseId: 'db',
-          indexVersion: 1,
-          startSeq: 1,
+        final scope = ChatScope(
+          queryClass: all
+              ? const AllChatClasses()
+              : const ExactChatClass('conversation'),
+          parentId: 'parent',
         );
-        final detail = run
-            ? await fixture.repository.openRun(
-                threadId: 'thread',
-                reference: reference,
-                demand: _demand,
-              )
-            : await fixture.repository.openChildren(
-                threadId: 'thread',
-                parentId: 'parent',
-                demand: _demand,
-              );
+        final detail = await fixture.repository.openRecords(
+          threadId: 'thread',
+          scope: scope,
+          demand: _demand,
+        );
         final consumer = ControlledBatchConsumer();
         detail.attachConsumer(consumer, demand: _demand);
         await fixture.transport.opened(1);
         final opening = fixture.transport.opens[1];
         expect(opening.demand, same(_demand));
-        if (run) {
-          expect((opening.scope as RunChatScope).reference, same(reference));
-        } else {
-          expect((opening.scope as ChildrenChatScope).parentId, 'parent');
-        }
+        expect(opening.scope, same(scope));
+        expect(opening.scope.parentId, 'parent');
         final feed = TestConversationFeed(subscriptionId: 'detail');
         opening.result.complete(feed);
         final entry = completedFixture('real-member');

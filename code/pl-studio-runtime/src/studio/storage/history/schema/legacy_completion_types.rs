@@ -36,19 +36,6 @@ pub(super) struct ChatPublicationSeed {
 }
 
 impl ChatPublicationSeed {
-    pub fn validate(&self) -> Result<(), ChatError> {
-        if self.head_seq > i64::MAX as u64 {
-            return Err(ChatError::SeqExhausted);
-        }
-        if let Some(last) = &self.last_visible {
-            validate_run(last.seq, &last.hint, Some(last.position))?;
-            if last.seq > self.head_seq {
-                return Err(ChatError::Conflict("visible seed exceeds head".into()));
-            }
-        }
-        Ok(())
-    }
-
     /// Checked allocation shared by publication and host migrations. Failure leaves the seed intact.
     pub fn advance(
         &mut self,
@@ -93,33 +80,6 @@ impl ChatPublicationSeed {
         }
         self.head_seq = seq;
         Ok((seq, run))
-    }
-}
-
-fn validate_run(
-    seq: u64,
-    hint: &ChatReadHint,
-    run: Option<ChatRunPosition>,
-) -> Result<(), ChatError> {
-    let valid = seq > 0
-        && seq <= i64::MAX as u64
-        && match (hint, run) {
-            (ChatReadHint::Hidden, None) => true,
-            (ChatReadHint::Single, Some(position)) => {
-                position.start_seq == seq && position.ordinal == 1
-            }
-            (ChatReadHint::Adjacent { .. }, Some(position)) => {
-                position.start_seq > 0
-                    && position.start_seq <= seq
-                    && position.ordinal > 0
-                    && position.ordinal <= seq - position.start_seq + 1
-            }
-            _ => false,
-        };
-    if valid {
-        Ok(())
-    } else {
-        Err(ChatError::Conflict("invalid completion run".into()))
     }
 }
 

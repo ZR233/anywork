@@ -18,28 +18,19 @@ import 'timeline_media_connector.dart';
 class TimelineChildrenConnector extends StatefulWidget {
   const TimelineChildrenConnector({
     super.key,
-    this.repository,
+    required this.repository,
     required this.threadId,
     required this.parentId,
-    this.runReference,
-    this.openRun,
     this.monotonicMicros,
     this.onContentLayout,
     this.readAttachment,
     this.registerDisplay,
     this.isParentActive,
     this.parentRetirement,
-  }) : assert(
-         runReference == null
-             ? repository != null && openRun == null
-             : repository == null && openRun != null,
-       );
-  final ConversationRepository? repository;
+  });
+  final ConversationRepository repository;
   final String threadId;
   final String parentId;
-  final CompletionRunRef? runReference;
-  final Future<ConversationContent> Function(CompletionRunRef, ReadDemand)?
-  openRun;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
   final Future<Uint8List> Function(String id)? readAttachment;
@@ -85,14 +76,12 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   late final ValueListenable<bool>? _parentRetirement;
   late final String _originalThreadId;
   late final String _originalParentId;
-  late final CompletionRunRef? _originalRunReference;
   VoidCallback? _unregisterDisplay;
   final Set<TimelineMemberDisplay> _members = {};
 
   bool get _parentActive =>
       widget.threadId == _originalThreadId &&
       widget.parentId == _originalParentId &&
-      widget.runReference == _originalRunReference &&
       identical(widget.parentRetirement, _parentRetirement) &&
       !(_parentRetirement?.value ?? false) &&
       (_isParentActive?.call() ?? true);
@@ -185,7 +174,6 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
     super.initState();
     _originalThreadId = widget.threadId;
     _originalParentId = widget.parentId;
-    _originalRunReference = widget.runReference;
     // Borrow only the original parent lease; widget rebuilds never transfer this
     // State or an old callback into a newly selected lease.
     _registerDisplay = widget.registerDisplay;
@@ -231,14 +219,11 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
 
   Future<void> _open() async {
     try {
-      final reference = _originalRunReference;
-      final content = reference == null
-          ? await widget.repository!.openChildren(
-              threadId: _originalThreadId,
-              parentId: _originalParentId,
-              demand: _demand,
-            )
-          : await widget.openRun!(reference, _demand);
+      final content = await widget.repository.openRecords(
+        threadId: _originalThreadId,
+        scope: ChatScope.conversation(parentId: _originalParentId),
+        demand: _demand,
+      );
       _content = content;
       if (_retired || !_parentActive) {
         _retireOwner();

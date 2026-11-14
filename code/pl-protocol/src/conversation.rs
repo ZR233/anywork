@@ -47,14 +47,14 @@ impl ReadDemand {
 }
 
 /// 原件过滤必填，All 必须显式请求；读取权限始终由原租约核验。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ChatClassFilter {
     Class { value: String },
     All {},
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatScope {
     pub query_class: ChatClassFilter,

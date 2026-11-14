@@ -6,10 +6,10 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{
-    ActivitySnapshot, COMPLETED_READ_INDEX_VERSION, ChatAtomContent, ChatAtomLifecycle, ChatBatch,
-    ChatPlacement, ChatScope, ChatSourceId, CompletedEntry, CompletionRunRef, ContentOwner,
-    ContentRange, ContentRef, ContentTarget, MainPresentation, PayloadData, ReadDemand,
-    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
+    ActivitySnapshot, ChatAtomContent, ChatAtomLifecycle, ChatBatch, ChatPlacement, ChatScope,
+    ChatSourceId, CompletedEntry, ContentOwner, ContentRange, ContentRef, ContentTarget,
+    PayloadData, ReadDemand, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    TurnState,
     studio::{StudioPromptInput, SubmitPromptRequest},
 };
 use pl_provider_fixture::{ReplyStage, responses_text};
@@ -198,16 +198,7 @@ fn items(entries: Vec<CompletedEntry>) -> Result<Vec<CompletedEntry>> {
             entry.atom.lifecycle,
             ChatAtomLifecycle::Terminal { .. }
         ));
-        ensure!(entry.run.is_some() && entry.main_presentation != MainPresentation::Hidden);
-        if matches!(
-            entry.main_presentation,
-            MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
-        ) {
-            ensure!(
-                matches!(entry.atom.payload, Some(PayloadData::Deferred { .. })),
-                "Main work representative read or inlined its member body"
-            );
-        }
+        ensure!(entry.atom.source_state.is_none());
     }
     Ok(entries)
 }
@@ -321,7 +312,7 @@ async fn accepted_input(
         "accepted input {input_id} was missing or published more than once"
     );
     let input = inputs[0];
-    ensure!(input.record_id == input_id && input.main_presentation == MainPresentation::Single);
+    ensure!(input.record_id == input_id);
     ensure!(input.atom.completion_item_id.as_deref() == Some(input_id));
     ensure!(input.atom.completion_seq == Some(input.completion_seq));
     let bytes = payload_bytes(reader, input.atom.payload.as_ref(), input_id).await?;
@@ -384,59 +375,13 @@ async fn pages(
 }
 
 async fn history(
-    env: &Environment,
-    thread_id: &str,
+    _env: &Environment,
+    _thread_id: &str,
     reader: &ConversationReader,
     first: ChatBatch,
     read_demand: ReadDemand,
 ) -> Result<Vec<CompletedEntry>> {
-    let heads = items(pages(reader, &ChatScope::conversation(None), first, read_demand).await?)?;
-    let mut messages = Vec::new();
-    for head in heads {
-        let run = head.run.context("Main run position")?;
-        if head.main_presentation == MainPresentation::Single {
-            messages.push(head);
-            continue;
-        }
-        let PayloadData::Deferred { reference, .. } =
-            head.atom.payload.as_ref().context("work payload")?
-        else {
-            anyhow::bail!("Main work must remain deferred");
-        };
-        let scope = ChatScope::Run {
-            reference: CompletionRunRef {
-                database_id: reference.database_id.clone(),
-                index_version: COMPLETED_READ_INDEX_VERSION,
-                start_seq: run.start_seq,
-            },
-        };
-        let mut feed = env
-            .runtime
-            .open_observed_feed(thread_id, scope.clone(), read_demand)
-            .await?;
-        let read = async {
-            let first = chat(&mut feed).await?;
-            // A separately opened Run may already include newer completions. The
-            // Main representative's immutable seq/ordinal defines this inventory.
-            let members = pages(feed.reader(), &scope, first, read_demand)
-                .await?
-                .into_iter()
-                .filter(|entry| entry.completion_seq <= head.completion_seq)
-                .collect::<Vec<_>>();
-            ensure!(members.len() as u64 == run.ordinal);
-            for (index, member) in members.iter().enumerate() {
-                ensure!(
-                    member
-                        .run
-                        .is_some_and(|position| position.start_seq == run.start_seq
-                            && position.ordinal == index as u64 + 1)
-                );
-            }
-            Ok(members)
-        }
-        .await;
-        messages.extend(finish_feed(&mut feed, read).await?);
-    }
+    let messages = items(pages(reader, &ChatScope::conversation(None), first, read_demand).await?)?;
     let ids: HashSet<_> = messages.iter().map(|message| &message.record_id).collect();
     ensure!(
         ids.len() == messages.len(),
@@ -736,7 +681,6 @@ async fn websocket_output(
                 entry.completion_seq,
                 entry.atom.kind,
                 entry.atom.content_present,
-                entry.run,
             ))
             .collect::<Vec<_>>()
     );
@@ -845,7 +789,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
             );
             let (input, bytes) =
                 accepted_input(&reader, &old, "input-feed-next", "feed-next").await?;
-            ensure!(input.completion_seq == accepted.completion_seq && input.run == accepted.run);
+            ensure!(input.completion_seq == accepted.completion_seq);
             ensure!(
                 bytes == accepted_bytes,
                 "input transition changed its frozen bytes"
@@ -931,7 +875,7 @@ async fn nonempty_feed_keeps_its_open_cut_and_delivers_activity_after_completion
             }
             feed.close().await?;
             let input = reader.read_completed("input-feed-next", demand(1)).await?;
-            ensure!(input.completion_seq == accepted.completion_seq && input.run == accepted.run);
+            ensure!(input.completion_seq == accepted.completion_seq);
             ensure!(
                 payload_bytes(&reader, input.atom.payload.as_ref(), &input.record_id).await?
                     == accepted_bytes,
@@ -1130,36 +1074,23 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                 let snapshot = env.runtime.thread_snapshot(id).await?;
                 let turn = snapshot.active_turn.context("real Turn still running")?;
                 ensure!(matches!(turn.state, TurnState::Running(_)));
-                let run = reasoning[0].run.context("first reasoning run")?;
-                ensure!(
-                    run.ordinal == 1
-                        && reasoning[1]
-                            .run
-                            .is_some_and(|position| position.start_seq == run.start_seq
-                                && position.ordinal == 2)
-                );
-                let PayloadData::Deferred { reference, .. } = reasoning[0]
-                    .atom
-                    .payload
-                    .as_ref()
-                    .context("deferred Main work")?
-                else {
-                    anyhow::bail!("Main inlined reasoning");
-                };
-                let scope = ChatScope::Run {
-                    reference: CompletionRunRef {
-                        database_id: reference.database_id.clone(),
-                        index_version: COMPLETED_READ_INDEX_VERSION,
-                        start_seq: run.start_seq,
-                    },
-                };
+                ensure!(reasoning[0].completion_seq < reasoning[1].completion_seq);
+                let scope = ChatScope::conversation(Some(
+                    pl_core::chat::ChatKey::new("turn", &turn.id)?
+                        .as_str()
+                        .into(),
+                ));
                 let mut members = env
                     .runtime
                     .open_observed_feed(id, scope.clone(), demand(1))
                     .await?;
                 let read = async {
                     let set = chat(&mut members).await?;
-                    let queried = pages(members.reader(), &scope, set, demand(1)).await?;
+                    let queried = pages(members.reader(), &scope, set, demand(1))
+                        .await?
+                        .into_iter()
+                        .filter(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning)
+                        .collect::<Vec<_>>();
                     ensure!(queried.len() == 2);
                     ensure!(
                         queried
@@ -1172,9 +1103,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                             .reader()
                             .read_completed(&entry.record_id, demand(1))
                             .await?;
-                        ensure!(
-                            point.completion_seq == entry.completion_seq && point.run == entry.run
-                        );
+                        ensure!(point.completion_seq == entry.completion_seq);
                         let value = envelope(
                             members.reader(),
                             point.atom.payload.as_ref(),
@@ -1340,10 +1269,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
                     "feed-restart",
                 )
                 .await?;
-                ensure!(
-                    input.completion_seq == original_input.completion_seq
-                        && input.run == original_input.run
-                );
+                ensure!(input.completion_seq == original_input.completion_seq);
                 ensure!(
                     bytes == input_bytes,
                     "restart re-sealed or changed the accepted input"
@@ -1359,8 +1285,6 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
                         .context("restart lost a published identity")?;
                     ensure!(
                         saved.completion_seq == item.completion_seq
-                            && saved.run == item.run
-                            && saved.main_presentation == item.main_presentation
                             && saved.atom.source == item.atom.source
                             && saved.atom.kind == item.atom.kind
                             && saved.atom.contents == item.atom.contents,

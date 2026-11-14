@@ -24,8 +24,6 @@ CompletedEntry completedFixture(String id, {int seq = 1, ChatAtom? atom}) =>
     CompletedEntry(
       recordId: id,
       completionSeq: seq,
-      run: CompletionRunPosition(startSeq: seq, ordinal: 1),
-      mainPresentation: MainPresentation.single,
       atom: atom ?? fixtureMember(id),
     );
 

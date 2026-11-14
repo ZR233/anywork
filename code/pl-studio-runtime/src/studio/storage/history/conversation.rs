@@ -15,13 +15,10 @@ pub(in crate::studio::storage::history) mod content;
 #[path = "conversation/current.rs"]
 pub(in crate::studio) mod current;
 pub(in crate::studio) mod display;
-mod facts;
 #[path = "conversation/migration.rs"]
 pub(super) mod migration;
 #[path = "conversation/range.rs"]
 mod range;
-
-pub(in super::super) mod sources;
 
 pub(super) use content::{list_contents, read_contents, write_contents};
 pub(super) use range::read_content;
@@ -234,6 +231,16 @@ pub(super) async fn page(
     budget: &dyn ChatBudget,
     ascending: bool,
 ) -> Result<ChatHistoryPage> {
+    page_filtered(db, request, budget, ascending, false).await
+}
+
+pub(super) async fn page_filtered(
+    db: &impl ConnectionTrait,
+    request: &ChatHistoryRequest,
+    budget: &dyn ChatBudget,
+    ascending: bool,
+    text_only: bool,
+) -> Result<ChatHistoryPage> {
     request.demand.validate()?;
     integer(request.ceiling)?;
     integer(request.after)?;
@@ -259,6 +266,9 @@ pub(super) async fn page(
             sql.push_str(" AND parent_id=?");
             values.push(parent.as_str().into());
         }
+    }
+    if text_only {
+        sql.push_str(" AND json_extract(metadata,'$.kind') IN ('text','input')");
     }
     sql.push_str(if ascending {
         " ORDER BY seq ASC LIMIT ?"
@@ -364,7 +374,7 @@ async fn materialize(
 }
 
 #[cfg(test)]
-mod run_read_tests {
+mod record_read_tests {
     use super::*;
     use pl_core::chat::{ChatDraft, ChatQuery, ReadDemand};
     use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
@@ -380,27 +390,20 @@ mod run_read_tests {
         atom
     }
 
-    fn record(seq: u64, atom: ChatAtom, run: Option<(u64, u64)>) -> ChatItem {
+    fn record(seq: u64, atom: ChatAtom) -> ChatItem {
         let mut draft = ChatDraft::new(
             &atom.id,
             "conversation",
             Arc::from(&b"{\"original\":true}"[..]),
         );
         draft.parent_id = Some(ChatKey::new("turn", "real-parent").unwrap());
-        draft.read_hint =
-            crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
+
         draft.metadata = serde_json::to_vec(&atom).unwrap().into();
         ChatItem::complete(draft, seq)
     }
 
-    fn request(
-        selection: ChatSelection,
-        ceiling: u64,
-        before: Option<u64>,
-        max_items: usize,
-    ) -> ChatHistoryRequest {
-        let mut query = ChatQuery::new("conversation", None);
-        query.selection = selection;
+    fn request(ceiling: u64, before: Option<u64>, max_items: usize) -> ChatHistoryRequest {
+        let query = ChatQuery::new("conversation", None);
         ChatHistoryRequest {
             query: Some(query),
             after: 0,
@@ -411,107 +414,53 @@ mod run_read_tests {
     }
 
     #[tokio::test]
-    async fn heads_skip_hidden_and_whole_runs_at_fixed_cut_and_children_keep_real_parent()
-    -> Result<()> {
+    async fn records_keep_every_kind_and_respect_real_parent_and_fixed_completion_cut() -> Result<()>
+    {
         let (_dir, db) = super::tests::fixture().await?;
-        let records = [
-            record(1, atom("one", ChatAtomKind::ToolCall, "F"), Some((1, 1))),
-            record(2, atom("hidden", ChatAtomKind::Inference, "F"), None),
-            record(3, atom("three", ChatAtomKind::Reasoning, "F"), Some((1, 2))),
-            record(4, atom("text", ChatAtomKind::Text, "F"), Some((4, 1))),
-            record(5, atom("five", ChatAtomKind::ToolCall, "F"), Some((5, 1))),
-            record(6, atom("six", ChatAtomKind::Skill, "F"), Some((5, 2))),
+        let mut records = vec![
+            record(1, atom("one", ChatAtomKind::ToolCall, "F")),
+            record(2, atom("hidden", ChatAtomKind::Inference, "F")),
+            record(3, atom("text", ChatAtomKind::Text, "F")),
         ];
+        records[1].header.query_class = "execution".into();
         append_records(&db, records.iter(), true).await?;
-        let heads = page(
-            &db,
-            &request(ChatSelection::RunHeads, 5, None, 2),
-            &super::tests::Budget,
-            false,
-        )
-        .await?;
+        let mut query = request(2, None, 2);
+        query.query.as_mut().unwrap().query_class = None;
+        query.query.as_mut().unwrap().parent_id = Some(ChatKey::new("turn", "real-parent")?);
+        let page = page(&db, &query, &super::tests::Budget, false).await?;
         assert_eq!(
-            heads
-                .items
+            page.items
                 .iter()
-                .map(|i| i.header.append_seq)
+                .map(|item| item.header.append_seq)
                 .collect::<Vec<_>>(),
-            [4, 5]
+            [1, 2]
         );
-        assert!(matches!(
-            heads.items[1].payload,
-            PayloadData::Deferred { .. }
-        ));
-        assert!(matches!(heads.items[0].payload, PayloadData::Inline(_)));
-        let older = page(
-            &db,
-            &request(ChatSelection::RunHeads, 5, Some(4), 2),
-            &super::tests::Budget,
-            false,
-        )
-        .await?;
-        assert_eq!(older.items.len(), 1);
-        assert_eq!(older.items[0].header.append_seq, 3);
-        assert_eq!(
-            older.items[0].header.run,
-            Some(ChatRunPosition {
-                start_seq: 1,
-                ordinal: 2
-            })
-        );
-        let members = page(
-            &db,
-            &request(ChatSelection::Run { start_seq: 1 }, 6, None, 8),
-            &super::tests::Budget,
-            false,
-        )
-        .await?;
-        assert_eq!(
-            members
-                .items
-                .iter()
-                .map(|i| i.header.append_seq)
-                .collect::<Vec<_>>(),
-            [1, 3]
-        );
+        assert_eq!(publication_seed(&db).await?.head_seq, 3);
+        query.query.as_mut().unwrap().parent_id = Some(ChatKey::new("turn", "other")?);
         assert!(
-            members
+            super::page(&db, &query, &super::tests::Budget, false)
+                .await?
                 .items
-                .iter()
-                .all(|i| matches!(i.payload, PayloadData::Inline(_)))
-        );
-        let mut children = request(ChatSelection::Records, 6, None, 8);
-        children.query.as_mut().unwrap().parent_id = Some(ChatKey::new("turn", "real-parent")?);
-        let children = page(&db, &children, &super::tests::Budget, false).await?;
-        assert_eq!(children.items.len(), 6);
-        assert_eq!(children.items[1].header.read_hint, ChatReadHint::Hidden);
-        let seed = publication_seed(&db).await?;
-        assert_eq!(seed.head_seq, 6);
-        assert_eq!(
-            seed.last_visible.unwrap().position,
-            ChatRunPosition {
-                start_seq: 5,
-                ordinal: 2
-            }
+                .is_empty()
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn lost_ack_replay_compares_run_hint_and_bytes_and_transaction_failure_rolls_back()
+    async fn lost_ack_replay_compares_identity_and_bytes_and_transaction_failure_rolls_back()
     -> Result<()> {
         let (_dir, db) = super::tests::fixture().await?;
-        let one = record(1, atom("one", ChatAtomKind::ToolCall, "F"), Some((1, 1)));
+        let one = record(1, atom("one", ChatAtomKind::ToolCall, "F"));
         append_records(&db, [&one], true).await?;
         append_records(&db, [&one], false).await?;
         let mut conflict = one.clone();
-        conflict.header.run.as_mut().unwrap().ordinal = 2;
+        conflict.header.parent_id = Some(ChatKey::new("turn", "changed-parent")?);
         assert!(append_records(&db, [&conflict], false).await.is_err());
         conflict = one.clone();
         conflict.payload = Arc::from(&b"{\"changed!\":true}"[..]);
         assert!(append_records(&db, [&conflict], false).await.is_err());
-        let two = record(2, atom("two", ChatAtomKind::Skill, "F"), Some((1, 2)));
-        let three = record(3, atom("three", ChatAtomKind::Text, "F"), Some((3, 1)));
+        let two = record(2, atom("two", ChatAtomKind::Skill, "F"));
+        let three = record(3, atom("three", ChatAtomKind::Text, "F"));
         db.execute_unprepared(
             "CREATE TRIGGER fail_three BEFORE INSERT ON conversation_items
         WHEN NEW.seq=3 BEGIN SELECT RAISE(ABORT,'injected middle failure'); END;",
@@ -527,149 +476,57 @@ mod run_read_tests {
     }
 
     #[tokio::test]
-    async fn hundred_thousand_members_use_index_seeks_and_never_inline_work_payload() -> Result<()>
-    {
-        let init_started = std::time::Instant::now();
+    async fn hundred_thousand_records_use_index_seeks_without_loading_bodies() -> Result<()> {
         let (_dir, db) = super::tests::fixture().await?;
-        let init_us = init_started.elapsed().as_micros();
-        let seed_started = std::time::Instant::now();
-        // Nineteen distinct single-member WORK runs, plus one long work run at seq=20.
-        // All are Adjacent/ForegroundWork, including ordinal=1: none is a Native Single which
-        // would legitimately be allowed to inline its own small payload.
-        let seeds = (1..=20)
-            .map(|seq| {
-                record(
-                    seq,
-                    atom(
-                        &format!("work-{seq}"),
-                        ChatAtomKind::ToolCall,
-                        &format!("foreground-{seq}"),
-                    ),
-                    Some((seq, 1)),
-                )
-            })
-            .collect::<Vec<_>>();
-        append_records(&db, seeds.iter(), true).await?;
-        let seed_us = seed_started.elapsed().as_micros();
-        let mut previous_size = 1u64;
+        let seed = record(1, atom("record-1", ChatAtomKind::ToolCall, "F"));
+        append_records(&db, [&seed], true).await?;
         let mut baseline = None;
-        for size in [1u64, 100, 10_000, 100_000] {
-            let setup_started = std::time::Instant::now();
-            let inserted = if size == 1 { 20 } else { size - previous_size };
-            if size > previous_size {
-                db.execute_raw(statement(
-                "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
-                 INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal)
-                 SELECT i,'work-'||i,query_class,parent_id,payload,
-                        CAST(json_set(metadata,'$.id','work-'||i,'$.completionItemId','work-'||i) AS BLOB),
-                        20,i-19
-                 FROM n CROSS JOIN conversation_items WHERE seq=20",
-                vec![integer(previous_size + 20)?.into(), integer(size + 19)?.into()],
-            )).await?;
-            }
-            previous_size = size;
-            let total = size + 19;
-            let count = db
-                .query_one_raw(statement(
-                    "SELECT COUNT(*) AS records FROM conversation_items",
-                    vec![],
-                ))
-                .await?
-                .context("scale fixture record count")?
-                .try_get::<i64>("", "records")?;
-            assert_eq!(u64::try_from(count)?, total);
-            let setup_us =
-                setup_started.elapsed().as_micros() + if size == 1 { seed_us } else { 0 };
-            let request = request(ChatSelection::RunHeads, total, None, 20);
+        for size in [20u64, 100, 10_000, 100_000] {
+            db.execute_raw(statement("WITH RECURSIVE n(i) AS (SELECT (SELECT MAX(seq)+1 FROM conversation_items) UNION ALL SELECT i+1 FROM n WHERE i<?)
+                INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata)
+                SELECT i,'record-'||i,query_class,parent_id,payload,
+                CAST(json_set(metadata,'$.id','record-'||i,'$.completionItemId','record-'||i) AS BLOB)
+                FROM n CROSS JOIN conversation_items WHERE seq=1",vec![integer(size)?.into()])).await?;
             let sampler = sqlite_work::Sampler::install(&db).await?;
-            let outcome = page(&db, &request, &super::tests::Budget, false).await;
-            // Always join/unregister the native callbacks, including a failed production query,
-            // before propagating the original query result or checking any assertions.
+            let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
+                "fixture".into(),
+                String::new(),
+            )
+            .headers_only();
+            let result = page(&db, &request(size, None, 20), &budget, false).await;
             let work = sampler.finish(&db).await?;
-            let heads = outcome?;
-            assert_eq!(heads.items.len(), 20);
+            let page = result?;
+            assert_eq!(page.items.len(), 20);
             assert_eq!(work.candidates, 20);
+            assert!(work.head_vm_steps > 0);
+            assert_eq!(work.statements, 1);
+            assert_eq!(work.reference_rows, 0);
+            assert_eq!(work.denied_reads, 0);
             assert!(
-                heads
-                    .items
+                page.items
                     .iter()
-                    .all(|item| matches!(item.header.read_hint, ChatReadHint::Adjacent { .. }))
+                    .all(|item| matches!(item.payload, PayloadData::Deferred { .. }))
             );
-            assert_eq!(
-                heads.items[19].header.run,
-                Some(ChatRunPosition {
-                    start_seq: 20,
-                    ordinal: size
-                })
-            );
-            let payload_bytes: usize = heads
-                .items
-                .iter()
-                .map(|item| match &item.payload {
-                    PayloadData::Inline(bytes) => bytes.len(),
-                    PayloadData::Deferred { .. } => 0,
-                })
-                .sum();
-            assert_eq!(payload_bytes, 0);
-            assert_eq!(
-                work.denied_reads, 0,
-                "Main tried to read a protected body/media column"
-            );
-            assert_eq!(work.reference_rows, u64::from(size > 1));
-            assert_eq!(work.statements, 1 + u64::from(size > 1));
-            if let Some((vm, scan)) = baseline {
-                assert!(work.vm_steps <= vm + 256, "{work:?}");
-                assert!(work.head_fullscan_steps <= scan + 20, "{work:?}");
+            if let Some((steps, scans)) = baseline {
+                assert!(work.vm_steps <= steps + 64, "{work:?}");
+                assert!(work.head_fullscan_steps <= scans + 20, "{work:?}");
             } else {
                 baseline = Some((work.vm_steps, work.head_fullscan_steps));
             }
             eprintln!(
-                "I15 {}",
-                serde_json::json!({
-                    "members":size, "total_records":total, "candidates":work.candidates,
-                    "returned":heads.items.len(), "inline_payload_bytes":payload_bytes,
-                    "statements":work.statements, "reference_rows":work.reference_rows,
-                    "vm_steps":work.vm_steps, "run_heads_vm_steps":work.head_vm_steps,
-                    "fullscan_steps":work.fullscan_steps, "run_heads_fullscan_steps":work.head_fullscan_steps,
-                    "payload_length_column_authorizations":work.payload_column_authorizations,
-                    "denied_main_body_reads":work.denied_reads,
-                    "init_us":init_us, "setup_inserted_rows":inserted, "setup_us":setup_us,
-                })
+                "Records size={size} candidates={} statements={} vm_steps={} inline_bytes=0",
+                work.candidates, work.statements, work.vm_steps
             );
         }
-        let plan = db
-            .query_all_raw(statement(
-                &format!("EXPLAIN QUERY PLAN {}", run_read::RUN_HEADS_SQL),
-                vec![100_019i64.into(), 20i64.into(), 0i64.into()],
-            ))
-            .await?;
-        let plan = plan
-            .iter()
-            .map(|row| row.try_get::<String>("", "detail"))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .join("\n");
-        assert!(
-            plan.contains("conversation_items_visible_seq") && plan.contains("seq<?"),
-            "{plan}"
-        );
-        assert!(!plan.contains("SCAN conversation_items"), "{plan}");
-        assert!(!plan.contains("(rowid>?)"), "{plan}");
-        assert!(!plan.contains("GROUP BY"), "{plan}");
-        eprintln!("RunHeads EXPLAIN QUERY PLAN:\n{plan}");
-
-        // A production admission error still takes the explicit locked cleanup path.
         let sampler = sqlite_work::Sampler::install(&db).await?;
         let lifetime = sampler.lifetime();
-        let mut rejected = request(ChatSelection::RunHeads, 100_019, None, 20);
-        rejected.query.as_mut().unwrap().parent_id = Some(ChatKey::new("turn", "invalid-on-main")?);
-        let outcome = page(&db, &rejected, &super::tests::Budget, false).await;
+        let mut invalid = request(100_000, None, 20);
+        invalid.demand.max_items = 0;
+        let result = page(&db, &invalid, &super::tests::Budget, false).await;
         let work = sampler.finish(&db).await?;
-        assert!(outcome.is_err());
+        assert!(result.is_err());
         assert_eq!(work.statements, 0);
         assert!(!lifetime.is_alive());
-
-        // Cancel a suspended sampling scope after native registration. Its Rust observer drops,
-        // but the driver's ownership keeps the context live until every hook/connection is closed.
         let sampler = sqlite_work::Sampler::install(&db).await?;
         let lifetime = sampler.lifetime();
         let mut cancelled = Box::pin(async move {
@@ -685,16 +542,13 @@ mod run_read_tests {
         assert!(lifetime.is_alive());
         db.close().await?;
         assert!(!lifetime.is_alive());
-        eprintln!(
-            "I15 sampler lifecycle: normal/error unregistered; cancelled context retained until connection close; released=true"
-        );
         Ok(())
     }
 
     #[tokio::test]
     async fn explicit_item_detail_obeys_cut_and_budget_without_reading_contents() -> Result<()> {
         let (_dir, db) = super::tests::fixture().await?;
-        let one = record(1, atom("one", ChatAtomKind::ToolCall, "F"), Some((1, 1)));
+        let one = record(1, atom("one", ChatAtomKind::ToolCall, "F"));
         append_records(&db, [&one], true).await?;
         // The publication-only item port would fail here: a detail read must not load a manifest.
         db.execute_unprepared(
@@ -761,13 +615,26 @@ mod run_read_tests {
         let mut c = a.clone();
         c.id = "c".into();
         let connection = store.writer().await?;
-        facts::apply(&connection.db, &[a.clone(), b.clone(), c.clone()], 1).await?;
+        super::super::execution_lifecycle::apply(
+            &connection.db,
+            &[a.clone(), b.clone(), c.clone()]
+                .iter()
+                .map(|atom| {
+                    super::super::execution_lifecycle::ExecutionLifecycle::from_atom(atom, 1)
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )
+        .await?;
         a.lifecycle = ChatAtomLifecycle::Terminal {
             started: None,
             ended: None,
             outcome: ChatTerminalOutcome::Completed,
         };
-        facts::apply(&connection.db, &[a], 2).await?;
+        super::super::execution_lifecycle::apply(
+            &connection.db,
+            &[super::super::execution_lifecycle::ExecutionLifecycle::from_atom(&a, 2)?],
+        )
+        .await?;
         let first = store.recovery_atom_starts(None, 1).await?;
         assert_eq!(first, [b.clone()]);
         assert_eq!(store.recovery_atom_starts(Some(&b.id), 1).await?, [c]);
@@ -1052,7 +919,15 @@ mod run_read_tests {
                 }
                 return Kind::Unexpected;
             }
-            if sql == run_read::RUN_HEADS_SQL.as_bytes().trim_ascii() {
+            if sql.starts_with(
+                b"SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length",
+            ) && contains(sql, b"FROM conversation_items WHERE seq<=? AND seq>?")
+                && sql
+                    .windows(b"payload".len())
+                    .filter(|w| *w == b"payload")
+                    .count()
+                    == 1
+            {
                 Kind::Heads
             } else if sql.starts_with(b"SELECT ")
                 && sql.ends_with(b"FROM conversation_items WHERE seq=?")
@@ -1199,7 +1074,7 @@ pub(in crate::studio::storage::history) mod tests {
     };
     use sea_orm::{Database, DatabaseConnection};
 
-    pub(super) struct Budget;
+    pub(in crate::studio::storage::history) struct Budget;
     impl ChatBudget for Budget {
         fn fixed_bytes(&self) -> usize {
             0
@@ -1217,39 +1092,17 @@ pub(in crate::studio::storage::history) mod tests {
 
     pub(super) async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let mut options =
-            sea_orm::ConnectOptions::new(format!("sqlite://{}?mode=rwc", path.display()));
-        options
-            .max_connections(1)
-            .min_connections(1)
-            .sqlx_logging(false);
-        let db = Database::connect(options).await?;
-        db.execute_unprepared(
-            "CREATE TABLE history_meta(id INTEGER PRIMARY KEY,applied_write_seq INTEGER NOT NULL);
-         INSERT INTO history_meta VALUES(1,0);",
-        )
-        .await?;
-        db.execute_unprepared(migration::CREATE_SCHEMA).await?;
-        db.execute_unprepared(
-            "ALTER TABLE conversation_items ADD COLUMN metadata BLOB NOT NULL DEFAULT X''",
-        )
-        .await?;
-        db.execute_unprepared(sources::CREATE_SCHEMA).await?;
-        db.execute_unprepared(super::super::schema::immutable_completion_runs::CREATE)
-            .await?;
+        let store =
+            super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "record-fixture")
+                .await?;
+        store.prepare_write().await?;
+        let db = store.writer().await?.db.clone();
         Ok((dir, db))
     }
 
     fn item(seq: u64, class: &str, payload: &[u8]) -> ChatItem {
         let mut draft = ChatDraft::new(format!("item:{seq}"), class, Arc::from(payload));
         draft.metadata = metadata(&draft.item_id);
-        let atom = serde_json::from_slice(&draft.metadata).unwrap();
-        draft.read_hint = crate::studio::runtime::chat_item::native_read_hint_v1(class, &atom);
-        let run = (draft.read_hint != ChatReadHint::Hidden).then_some(ChatRunPosition {
-            start_seq: seq,
-            ordinal: 1,
-        });
         ChatItem::complete(draft, seq)
     }
 
@@ -1428,7 +1281,8 @@ pub(in crate::studio::storage::history) mod tests {
             .commit_effect(
                 1,
                 super::super::EffectCommit {
-                    items: &[],
+                    turns: &[],
+                    execution_order: 0,
                     completions: std::slice::from_ref(&record),
                     current: &current,
                     rolled_back_turns: &Default::default(),
@@ -1442,8 +1296,7 @@ pub(in crate::studio::storage::history) mod tests {
                 },
             )
             .await?;
-        let mut query = ChatQuery::new("conversation", None);
-        query.selection = ChatSelection::RunHeads;
+        let query = ChatQuery::new("conversation", None);
         let exact = store
             .cold_conversation(query.clone(), ReadDemand::new(1, 64), &Budget)
             .await?

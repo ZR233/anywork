@@ -781,10 +781,6 @@ mod production {
                 .read_completed(&completion.header.item_id, demand(1))
                 .await?;
             assert_eq!(entry.atom.content_present, Some(false));
-            assert_eq!(
-                entry.main_presentation,
-                pl_protocol::MainPresentation::Hidden
-            );
             let body = entry
                 .atom
                 .contents

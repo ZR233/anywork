@@ -267,7 +267,7 @@ pub(in crate::studio::storage::history) mod tests {
         let (_dir, db) = fixture().await?;
         initialize_current(&db).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
-        super::super::display_block_order::validate(&db).await?;
+        super::super::execution_facts::validate(&db).await?;
         assert_eq!(conversation::display::watermarks(&db).await?, (0, 0));
         Ok(())
     }
@@ -337,7 +337,7 @@ pub(in crate::studio::storage::history) mod tests {
             .await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
-        super::super::display_block_order::validate(&db).await?;
+        super::super::execution_facts::validate(&db).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert!(
         db.query_one_raw(statement(

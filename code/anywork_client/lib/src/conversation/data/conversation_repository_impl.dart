@@ -64,26 +64,11 @@ final class ConversationRepositoryImpl
   }
 
   @override
-  Future<ConversationContent> openChildren({
+  Future<ConversationContent> openRecords({
     required String threadId,
-    required String parentId,
+    required ChatScope scope,
     required ReadDemand demand,
-  }) => _openMemberContent(
-    threadId: threadId,
-    scope: ChildrenChatScope(parentId: parentId),
-    demand: demand,
-  );
-
-  @override
-  Future<ConversationContent> openRun({
-    required String threadId,
-    required CompletionRunRef reference,
-    required ReadDemand demand,
-  }) => _openMemberContent(
-    threadId: threadId,
-    scope: RunChatScope(reference: reference),
-    demand: demand,
-  );
+  }) => _openMemberContent(threadId: threadId, scope: scope, demand: demand);
 
   Future<ConversationContent> _openMemberContent({
     required String threadId,

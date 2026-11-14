@@ -723,7 +723,7 @@ impl super::super::ConversationSnapshot {
 #[cfg(test)]
 mod cost_tests {
     //! Actual production display SQL, sampled only after fixture setup finishes.
-    use super::super::run_read_tests::sqlite_work::{Sampler, Work};
+    use super::super::record_read_tests::sqlite_work::{Sampler, Work};
     use super::*;
     use crate::studio::thread_projection::presentation::PresentationState;
     use pl_protocol::{
@@ -1461,8 +1461,7 @@ mod tests {
             Arc::<[u8]>::from(b"{}".as_slice()),
         );
         draft.metadata = serde_json::to_vec(&ended)?.into();
-        draft.read_hint =
-            crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
+
         let original = Arc::new(ChatItem::complete(draft, 1));
         let finish = owner.prepare(2, 20, &[ended], &[], std::slice::from_ref(&original))?;
         assert!(finish.blocks.iter().all(|block| block.header.sealed));
@@ -1543,8 +1542,7 @@ mod tests {
             Arc::<[u8]>::from(b"saved original".as_slice()),
         );
         draft.metadata = serde_json::to_vec(&atom)?.into();
-        draft.read_hint =
-            crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &atom);
+
         let item = Arc::new(ChatItem::complete(draft, 1));
         let ended = pl_protocol::ChatSourceState {
             source: atom.source.clone(),

@@ -1,5 +1,6 @@
 //! Effect-owned immutable inputs, borrowed before a terminal can retire its live owner.
 use super::*;
+use crate::ExecutionShape;
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
 use pl_protocol::{ChatAtom, ChatAtomLifecycle, ContentTarget};
@@ -14,7 +15,7 @@ enum CapturedBody {
 pub(super) struct Observation {
     atom: ChatAtom,
     thread_id: String,
-    shape: Option<ThreadItemState>,
+    shape: Option<ExecutionShape>,
     bodies: BTreeMap<String, CapturedBody>,
 }
 

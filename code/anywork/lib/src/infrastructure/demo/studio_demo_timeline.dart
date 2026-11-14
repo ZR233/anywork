@@ -715,7 +715,12 @@ final class _DemoTimelineReader implements TimelineReader {
     String threadId,
     _DemoHistory history,
     this._demand,
-  ) : reader = _DemoReader(_api, threadId, history, const MainChatScope()),
+  ) : reader = _DemoReader(
+        _api,
+        threadId,
+        history,
+        const ChatScope.conversation(),
+      ),
       metadata = OpenTimeline(
         readerId: newStudioCorrelationId(),
         presentationVersion: presentationVersion,

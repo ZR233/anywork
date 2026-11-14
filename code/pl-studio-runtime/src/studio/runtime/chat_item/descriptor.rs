@@ -1,11 +1,12 @@
-//! 唯一的产品元数据编码：头部与不含流式正文的描述，不接受旧 ThreadItem 内存外壳。
+//! 唯一的产品元数据编码：头部与不含流式正文的描述，不接受旧 ExecutionItem 内存外壳。
 
+use crate::{ExecutionItem, ExecutionShape};
 use anyhow::Result;
 use pl_core::chat::ChatError;
 use pl_protocol::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ThreadAgentState, ThreadContentLifecycle,
-    ThreadInferenceState, ThreadItem, ThreadItemState, ThreadToolOutput, ThreadToolState,
-    ThreadToolUserInput, ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
+    ThreadInferenceState, ThreadToolOutput, ThreadToolState, ThreadToolUserInput,
+    ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
 };
 
 use super::payload::{
@@ -32,8 +33,8 @@ pub(super) struct PlanCompletion {
 }
 
 /// Extract only facts belonging to this completed interaction, never the current Plan.
-pub(super) fn plan_completion(item: &ThreadItem) -> Result<Option<PlanCompletion>> {
-    let ThreadItemState::Tool(tool) = item.state() else {
+pub(super) fn plan_completion(item: &ExecutionItem) -> Result<Option<PlanCompletion>> {
+    let ExecutionShape::Tool(tool) = item.state() else {
         return Ok(None);
     };
     if tool.invocation().name() != TOOL_PLAN_SUBMIT {
@@ -119,7 +120,7 @@ pub(super) fn plan_completion(item: &ThreadItem) -> Result<Option<PlanCompletion
     }))
 }
 
-pub(super) fn item_descriptor(item: &ThreadItem) -> Result<ItemDescriptor> {
+pub(super) fn item_descriptor(item: &ExecutionItem) -> Result<ItemDescriptor> {
     if !item.is_terminal() {
         return Err(nonterminal());
     }
@@ -131,7 +132,7 @@ pub(super) fn item_descriptor(item: &ThreadItem) -> Result<ItemDescriptor> {
 }
 
 pub(super) fn observation_descriptor(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
     thread_id: &str,
 ) -> Result<ItemDescriptor> {
     if state.is_terminal() {
@@ -148,16 +149,16 @@ pub(super) fn count(value: usize) -> Result<u32> {
 
 /// 所有带位置的字段都必须能由 wire 的 u32 无损寻址。
 /// 同时验证问答关联，避免一个未关联答案在拆分时被静默丢弃。
-pub(super) fn validate_counts(state: &ThreadItemState) -> Result<()> {
+pub(super) fn validate_counts(state: &ExecutionShape) -> Result<()> {
     match state {
-        ThreadItemState::Thinking(thinking) => {
+        ExecutionShape::Thinking(thinking) => {
             count(thinking.summary().len())?;
             count(thinking.content().len())?;
         }
-        ThreadItemState::Raw(raw) => {
+        ExecutionShape::Raw(raw) => {
             count(raw.payloads.len())?;
         }
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             if let Some(input) = tool.user_input() {
                 count(input.questions().len())?;
                 for question in input.questions() {
@@ -185,17 +186,17 @@ pub(super) fn validate_counts(state: &ThreadItemState) -> Result<()> {
     Ok(())
 }
 
-fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor> {
+fn descriptor(state: &ExecutionShape, thread_id: &str) -> Result<ItemDescriptor> {
     Ok(match state {
-        ThreadItemState::Text(text) => ItemDescriptor::Text(TextDescriptor {
+        ExecutionShape::Text(text) => ItemDescriptor::Text(TextDescriptor {
             channel: text.channel(),
             attachments: text.attachments().to_vec(),
             outcome: content_outcome(text.lifecycle())?,
         }),
-        ThreadItemState::Thinking(thinking) => ItemDescriptor::Thinking(ThinkingDescriptor {
+        ExecutionShape::Thinking(thinking) => ItemDescriptor::Thinking(ThinkingDescriptor {
             outcome: content_outcome(thinking.lifecycle())?,
         }),
-        ThreadItemState::Raw(raw) => ItemDescriptor::Raw(RawDescriptor {
+        ExecutionShape::Raw(raw) => ItemDescriptor::Raw(RawDescriptor {
             origin: raw.origin,
             payloads: raw
                 .payloads
@@ -208,7 +209,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
             notice: raw.notice.clone(),
             recorded_at: raw.recorded_at,
         }),
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             let invocation = tool.invocation();
             ItemDescriptor::Tool(ToolDescriptor {
                 invocation: ToolInvocation {
@@ -227,7 +228,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
                 wait: tool.wait().cloned().map(Box::new),
             })
         }
-        ThreadItemState::Agent(value) => ItemDescriptor::Agent(AgentDescriptor {
+        ExecutionShape::Agent(value) => ItemDescriptor::Agent(AgentDescriptor {
             identity: value.identity().clone(),
             outcome: match value.state() {
                 ThreadAgentState::Queued(v) => AgentOutcome::Queued(*v),
@@ -238,7 +239,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
                 ThreadAgentState::Failed(v) => AgentOutcome::Failed(v.clone()),
             },
         }),
-        ThreadItemState::Turn(value) => ItemDescriptor::Turn(TurnDescriptor {
+        ExecutionShape::Turn(value) => ItemDescriptor::Turn(TurnDescriptor {
             input_id: value.input_id().map(str::to_owned),
             outcome: match value.state() {
                 TurnState::Queued(v) => TurnOutcome::Queued(v.clone()),
@@ -249,7 +250,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
                 TurnState::BudgetLimited(v) => TurnOutcome::BudgetLimited(v.clone()),
             },
         }),
-        ThreadItemState::Inference(value) => ItemDescriptor::Inference(InferenceDescriptor {
+        ExecutionShape::Inference(value) => ItemDescriptor::Inference(InferenceDescriptor {
             inference_id: value.inference_id().to_owned(),
             model: value.model().to_owned(),
             outcome: match value.state() {
@@ -259,9 +260,9 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<ItemDescriptor
                 ThreadInferenceState::Cancelled(v) => InferenceOutcome::Cancelled(v.clone()),
             },
         }),
-        ThreadItemState::Skill(value) => ItemDescriptor::Skill(value.clone()),
-        ThreadItemState::File(value) => ItemDescriptor::File(value.clone()),
-        ThreadItemState::ContextCompaction(value) => {
+        ExecutionShape::Skill(value) => ItemDescriptor::Skill(value.clone()),
+        ExecutionShape::File(value) => ItemDescriptor::File(value.clone()),
+        ExecutionShape::ContextCompaction(value) => {
             ItemDescriptor::ContextCompaction(value.clone())
         }
     })
@@ -380,7 +381,7 @@ mod tests {
         ThreadToolInvocation, ThreadToolItem, ThreadToolUserInputAnswer, UserQuestion,
     };
 
-    fn plan(state: ThreadToolUserInputState, secret: bool, hash: &str) -> ThreadItem {
+    fn plan(state: ThreadToolUserInputState, secret: bool, hash: &str) -> ExecutionItem {
         let question = UserQuestion {
             id: AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
             header: "Plan".into(),
@@ -399,7 +400,7 @@ mod tests {
             ThreadToolState::Interrupted(InterruptedThreadTool::new(1, "finished".into())),
         )
         .with_user_input(Some(input));
-        ThreadItem::new(
+        ExecutionItem::new(
             "id".into(),
             "thread".into(),
             "turn".into(),
@@ -407,7 +408,7 @@ mod tests {
             1,
             1,
             1,
-            ThreadItemState::Tool(tool),
+            ExecutionShape::Tool(tool),
         )
     }
 

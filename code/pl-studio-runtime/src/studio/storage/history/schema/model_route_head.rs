@@ -127,6 +127,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| {
@@ -225,7 +226,6 @@ mod tests {
         for sql in [
             "SELECT json_array(database_id,thread_id,applied_write_seq) AS fact FROM history_meta",
             "SELECT json_array(ordinal,record_id,payload,payload_hash) AS fact FROM current_context ORDER BY ordinal",
-            "SELECT json_array(ordinal,item_id,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal",
             "SELECT json_array(append_seq,record_id,payload) AS fact FROM timeline_records ORDER BY append_seq",
             "SELECT json_array(seq,item_id,typeof(payload),hex(payload)) AS fact FROM conversation_items ORDER BY seq",
         ] {
@@ -233,6 +233,14 @@ mod tests {
                 facts.push(row.try_get("", "fact")?);
             }
         }
+        facts.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &["ordinal", "item_id", "payload", "last_write_seq"],
+                false,
+            )
+            .await?,
+        );
         Ok(facts)
     }
 
@@ -241,7 +249,7 @@ mod tests {
         let (dir, db) = source().await?;
         seed(&db).await?;
         let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-        let mut item = pl_protocol::ThreadItem::completed_user_message(
+        let mut item = crate::ExecutionItem::completed_user_message(
             "original-message".into(),
             THREAD.into(),
             String::new(),

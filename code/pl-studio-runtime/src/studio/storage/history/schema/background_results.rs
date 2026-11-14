@@ -4,6 +4,8 @@ use super::legacy_completion_projection::lightweight;
 use super::legacy_timeline_store as timeline;
 use super::*;
 use crate::studio::thread_projection::order;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 use pl_protocol::{ChatAtom, ChatDeliveryKind, ChatSourceId};
 use serde::Deserialize;
 
@@ -274,6 +276,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| {
@@ -325,7 +328,7 @@ mod tests {
                 .upsert_item(
                     &db,
                     7,
-                    ThreadItem::new(
+                    ExecutionItem::new(
                         item.clone(),
                         THREAD.into(),
                         "synthetic-turn".into(),
@@ -333,7 +336,7 @@ mod tests {
                         1,
                         10,
                         12,
-                        ThreadItemState::Tool(ThreadToolItem::new(
+                        ExecutionShape::Tool(ThreadToolItem::new(
                             ThreadToolInvocation::new(CALL.into(), "exec".into(), "{}".into()),
                             ThreadToolState::Succeeded(SucceededThreadTool::new(
                                 12,
@@ -405,14 +408,21 @@ mod tests {
     async fn originals(db: &DatabaseConnection, completions: bool) -> Result<Vec<String>> {
         let mut values = Vec::new();
         for sql in [
-            "SELECT json_array(ordinal,item_id,payload,last_write_seq) AS original FROM history_items ORDER BY ordinal",
-            "SELECT json_array(call_id,revision,task_payload,delivery_payload,last_write_seq) AS original FROM history_tool_tasks ORDER BY call_id",
+            "SELECT json_array(call_id,revision,json_remove(task_payload,'$.invocation'),delivery_payload,last_write_seq) AS original FROM history_tool_tasks ORDER BY call_id",
             "SELECT json_array(message_id,item_id,sequence,digest,last_write_seq) AS original FROM history_message_identities ORDER BY message_id",
         ] {
             for row in db.query_all_raw(statement(sql, vec![])).await? {
                 values.push(row.try_get("", "original")?);
             }
         }
+        values.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &["ordinal", "item_id", "payload", "last_write_seq"],
+                false,
+            )
+            .await?,
+        );
         if completions {
             // query_class is derived and the published 13→14 step legitimately reclassifies it.
             for row in db.query_all_raw(statement(
@@ -472,15 +482,7 @@ mod tests {
                 assert_eq!(handoff.delivery, ChatDeliveryKind::BackgroundHandoff);
             }
             assert_eq!(originals(&db, format >= 13).await?, before);
-            let run = db.query_one_raw(statement(
-            "SELECT seq,display_run_start,display_run_ordinal FROM conversation_items WHERE item_id=?",
-            vec![order::tool_id(CALL).into()],
-        )).await?.context("background completion")?;
-            assert_eq!(
-                run.try_get::<i64>("", "display_run_start")?,
-                run.try_get::<i64>("", "seq")?
-            );
-            assert_eq!(run.try_get::<i64>("", "display_run_ordinal")?, 1);
+            assert!(db.query_one_raw(statement("SELECT 1 FROM pragma_table_info('conversation_items') WHERE name LIKE 'display_run_%'",vec![])).await?.is_none());
             db.close().await?;
         }
         Ok(())
@@ -489,6 +491,7 @@ mod tests {
     async fn snapshot(db: &impl ConnectionTrait) -> Result<Vec<String>> {
         let completed = completion_boundary::applied(db).await?;
         let mut values = Vec::new();
+        let current = version(db).await? == 24;
         for sql in [
             "SELECT json_array(seq,item_id,hex(metadata)) AS value FROM conversation_items ORDER BY seq",
             "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS value FROM conversation_atom_facts ORDER BY atom_id,phase",
@@ -498,6 +501,9 @@ mod tests {
             "SELECT hex(payload) AS value FROM conversation_view_state",
             "SELECT json_array(version,applied_at) AS value FROM seaql_migrations ORDER BY version",
         ] {
+            if current && sql.contains("FROM conversation_atom_facts") {
+                continue;
+            }
             let sql = if completed {
                 sql.replace("kind,location,position", "kind,'history',position")
                     .replace(

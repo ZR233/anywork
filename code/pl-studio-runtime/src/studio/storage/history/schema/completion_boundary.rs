@@ -2,6 +2,8 @@
 use super::super::conversation;
 use super::legacy_timeline_store as timeline;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct CompletionBoundary;
 impl MigrationName for CompletionBoundary {
@@ -77,6 +79,10 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
 
 pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> {
     super::validate_tables(db).await?;
+    validate_originals(db).await
+}
+
+pub(super) async fn validate_originals(db: &impl ConnectionTrait) -> Result<()> {
     for sql in [
         "SELECT seq,item_id,query_class,parent_id,payload,metadata FROM conversation_items LIMIT 0",
         "SELECT owner_key,content_key,payload FROM conversation_contents LIMIT 0",
@@ -368,6 +374,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .collect()
@@ -406,7 +413,7 @@ mod tests {
             .await?
             .context("database")?
             .try_get("", "database_id")?;
-        let item = ThreadItem::new(
+        let item = ExecutionItem::new(
             "A".into(),
             THREAD.into(),
             "turn".into(),
@@ -414,7 +421,7 @@ mod tests {
             1,
             1,
             2,
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 vec!["完整摘要".into()],
                 vec!["完整正文".into()],
                 ThreadContentLifecycle::completed(2),
@@ -457,7 +464,7 @@ mod tests {
                 serde_json::to_vec(atom)?.into()],
         )).await?;
         }
-        conversation::sources::apply(
+        crate::studio::storage::history::execution_sources::apply(
             db,
             1,
             &[ChatSourceState {
@@ -591,15 +598,14 @@ mod tests {
             "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),hex(metadata)) AS value FROM conversation_items ORDER BY seq",
             "SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM conversation_contents ORDER BY owner_key,content_key",
             "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM conversation_content_chunks ORDER BY owner_key,content_key,byte_offset",
-            "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS value FROM conversation_atom_facts ORDER BY effect_seq,suborder,atom_id,phase",
             "SELECT json_array(source_key,started_effect,started_suborder,ended_effect,ended_suborder,active_observed,ended_observed,outcome) AS value FROM conversation_sources ORDER BY source_key",
             "SELECT json_array(revision,context_revision,context_count,payload,payload_hash) AS value FROM session_checkpoint",
             "SELECT json_array(ordinal,record_id,payload,payload_hash) AS value FROM current_context ORDER BY ordinal",
             "SELECT json_array(thread_id,database_id,applied_write_seq) AS value FROM history_meta",
         ] {
             let sql = if completed {
-                sql.replace("FROM conversation_contents ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
-                .replace("FROM conversation_content_chunks ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
+                sql.replace("FROM conversation_contents ORDER BY", "FROM (SELECT * FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
+                .replace("FROM conversation_content_chunks ORDER BY", "FROM (SELECT * FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
             } else {
                 sql.to_owned()
             };
@@ -879,8 +885,8 @@ mod tests {
         let store = HistoryStore::open(&path, THREAD).await?;
         let arguments = format!("{{\"value\":\"{}\"}}", "工具参数".repeat(30_000));
         let id = crate::studio::thread_projection::order::tool_id("old-call");
-        let item = ThreadItem::new(id.clone(),THREAD.into(),"tool-turn".into(),2,1,3,3,
-            ThreadItemState::Tool(ThreadToolItem::new(
+        let item = ExecutionItem::new(id.clone(),THREAD.into(),"tool-turn".into(),2,1,3,3,
+            ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("old-call".into(),"side_effect".into(),arguments.clone()),
                 ThreadToolState::Running(RunningThreadTool::new(String::new())),
             )),
@@ -938,7 +944,7 @@ mod tests {
             let (_,mut prepared)=projection.prepare(&thread,effect,&settled,false).await?;
             projection.publish_prepared(&chat,&mut prepared).await?;
             store.commit_effect(effect.sequence,EffectCommit {
-                items:&prepared.items,completions:&prepared.completions,current:&prepared.current,
+                turns:&prepared.turns,execution_order:prepared.execution_order,completions:&prepared.completions,current:&prepared.current,
                 rolled_back_turns:&Default::default(),identities:&[],messages:&[],receipts:&[],
                 tasks:&[],deliveries:&[],delivery_repairs:&[],attempt:effect.attempt.as_ref(),
             }).await?;

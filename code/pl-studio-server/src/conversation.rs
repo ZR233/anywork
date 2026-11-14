@@ -8,7 +8,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use pl_protocol::{
     ChatBatch, CompletedEntry, ContentManifestPage, ContentRange, ContentRef, ContentWindow,
-    CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
+    CurrentCollectionPage, CurrentCollectionRef, LegacyExecutionEvidencePage, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineReader};
@@ -379,6 +379,67 @@ pub(crate) struct CurrentRequest {
     pub reference: CurrentCollectionRef,
     pub continuation: Option<String>,
     pub demand: ReadDemand,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LegacyEvidenceRequest {
+    pub continuation: Option<String>,
+    pub demand: ReadDemand,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LegacyEvidenceContentRequest {
+    pub evidence_id: String,
+    pub revision: u64,
+    pub range: ContentRange,
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/legacy-execution-evidence",
+    operation_id = "thread.listLegacyExecutionEvidence",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = LegacyEvidenceRequest,
+    responses(StudioApiErrors, (status = 200, body = LegacyExecutionEvidencePage)))]
+pub(crate) async fn legacy_evidence(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<LegacyEvidenceRequest>,
+) -> Result<Json<LegacyExecutionEvidencePage>, ApiError> {
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    Ok(Json(
+        lease
+            .owner
+            .reader
+            .legacy_execution_evidence(request.continuation.as_deref(), request.demand)
+            .await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/legacy-execution-evidence/read",
+    operation_id = "thread.readLegacyExecutionEvidence",
+    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
+    request_body = LegacyEvidenceContentRequest,
+    responses(StudioApiErrors, (status = 200, body = ContentWindow)))]
+pub(crate) async fn legacy_evidence_content(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<LegacyEvidenceContentRequest>,
+) -> Result<Json<ContentWindow>, ApiError> {
+    let lease = state
+        .conversations
+        .borrow(&thread_id, &headers, &state.shutdown)?;
+    Ok(Json(
+        lease
+            .owner
+            .reader
+            .read_legacy_execution_evidence(&request.evidence_id, request.revision, request.range)
+            .await?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/chat/older",
@@ -772,10 +833,9 @@ mod tests {
         use axum::response::IntoResponse;
         use futures::{Stream, StreamExt};
         use pl_protocol::{
-            ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, CompletionRunRef,
-            ContentManifestPage, ContentOwner, ContentTarget, ContentWindow, PayloadData,
-            ReadDemand, ThreadItemKind, ThreadNotification, ThreadSubscriptionUpdate,
-            ThreadWorkspaceMode, Turn, TurnState,
+            ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentManifestPage,
+            ContentOwner, ContentTarget, ContentWindow, PayloadData, ReadDemand,
+            ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
             studio::{
                 CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
                 SubmitPromptRequest,
@@ -809,7 +869,7 @@ mod tests {
             }
         }
 
-        /// `ChatScope::Children.parent_id` carries Core's encoded `ChatKey("turn", id)`.
+        /// 原件查询的真实 parent carries Core's encoded `ChatKey("turn", id)`.
         fn turn_parent_key(turn_id: &str) -> String {
             format!("{}:turn{turn_id}", "turn".len())
         }
@@ -968,22 +1028,6 @@ mod tests {
                 self.open_scope(thread, scope, items).await
             }
 
-            async fn open_run(
-                &self,
-                thread: &str,
-                reference: &CompletionRunRef,
-                items: u32,
-            ) -> Result<(String, SseBody)> {
-                self.open_scope(
-                    thread,
-                    ChatScope::Run {
-                        reference: reference.clone(),
-                    },
-                    items,
-                )
-                .await
-            }
-
             async fn open_scope(
                 &self,
                 thread: &str,
@@ -996,19 +1040,9 @@ mod tests {
                     let mut query = url.query_pairs_mut();
                     query.append_pair("maxItems", &items.to_string());
                     query.append_pair("maxBytes", &demand(items).max_bytes.to_string());
-                    match scope {
-                        ChatScope::conversation(None) => {}
-                        ChatScope::conversation(Some(parent_id)) => {
-                            query.append_pair("parentId", &parent_id);
-                        }
-                        ChatScope::Run { reference } => {
-                            query.append_pair("runDatabaseId", &reference.database_id);
-                            query.append_pair(
-                                "runIndexVersion",
-                                &reference.index_version.to_string(),
-                            );
-                            query.append_pair("runStartSeq", &reference.start_seq.to_string());
-                        }
+                    query.append_pair("queryClass", &serde_json::to_string(&scope.query_class)?);
+                    if let Some(parent) = scope.parent_id {
+                        query.append_pair("parentId", &parent);
                     }
                 }
                 let request = self
@@ -1443,9 +1477,9 @@ mod tests {
                     {
                         matched_turns += 1;
                         for item in &history.items {
-                            match item.kind() {
-                                ThreadItemKind::Thinking => thinking += 1,
-                                ThreadItemKind::Inference => inference += 1,
+                            match item.atom.kind {
+                                ChatAtomKind::Reasoning => thinking += 1,
+                                ChatAtomKind::Inference => inference += 1,
                                 _ => {}
                             }
                         }
@@ -1617,55 +1651,10 @@ mod tests {
             "older never returned real completed history"
         );
         let mut completed_body = None;
-        let mut run_record_ids = HashSet::new();
-        let mut run_completion_ids = HashSet::new();
-        let mut observed_run = None;
         let mut main_thinking = 0;
         let mut main_inference = 0;
         for message in &history {
-            ensure!(
-                message.atom.kind != ChatAtomKind::TurnReceipt,
-                "successful Turn completion fabricated a Main receipt record"
-            );
-            if matches!(
-                message.main_presentation,
-                pl_protocol::MainPresentation::ForegroundWork
-                    | pl_protocol::MainPresentation::BackgroundResults
-            ) {
-                ensure!(!matches!(message.atom.payload, Some(PayloadData::Inline { .. })));
-                let run = message.run.context("work representative omitted run position")?;
-                let database_id = match message.atom.payload.as_ref() {
-                    Some(PayloadData::Deferred { reference, .. }) => reference.database_id.clone(),
-                    _ => message.atom.contents.first()
-                        .context("work representative omitted deferred payload/content reference")?
-                        .reference.database_id.clone(),
-                };
-                let reference = CompletionRunRef {
-                    database_id,
-                    index_version: pl_protocol::COMPLETED_READ_INDEX_VERSION,
-                    start_seq: run.start_seq,
-                };
-                observed_run.get_or_insert_with(|| reference.clone());
-                let (group_cap, mut group) = env.open_run(&thread, &reference, 1).await?;
-                let set = group.chat().await?;
-                set.validate_for(&ChatScope::Run { reference: reference.clone() })?;
-                let members = all_history(&env, &thread, &group_cap, set).await?;
-                ensure!(!members.is_empty());
-                ensure!(
-                    members.last().and_then(|member| member.run).is_some_and(|position|
-                        position.start_seq == run.start_seq && position.ordinal == run.ordinal),
-                    "Run read does not terminate at its representative completion"
-                );
-                for member in &members {
-                    run_record_ids.insert(member.record_id.clone());
-                    if let Some(id) = &member.atom.completion_item_id {
-                        run_completion_ids.insert(id.clone());
-                    }
-                    if member.atom.kind == ChatAtomKind::Reasoning { main_thinking += 1; }
-                    ensure!(member.atom.kind != ChatAtomKind::Unknown);
-                }
-                continue;
-            }
+            ensure!(message.atom.source_state.is_none());
             let value = item_payload(&env, &thread, &capability, message).await?;
             match value["type"].as_str() {
                 Some("thinking") => main_thinking += 1,
@@ -1727,11 +1716,11 @@ mod tests {
             "Children omitted this Turn's real Main-member subset"
         );
         let main_member_ids = history.iter().map(|item| item.record_id.clone())
-            .chain(run_record_ids)
+
             .collect::<HashSet<_>>();
         let main_ids = history.iter().map(|item| item.record_id.clone()).collect::<HashSet<_>>();
         let main_completion_ids = history.iter().filter_map(|item| item.atom.completion_item_id.clone())
-            .chain(run_completion_ids)
+
             .collect::<HashSet<_>>();
         let mut thinking = 0;
         let mut inferences = 0;
@@ -1982,11 +1971,6 @@ mod tests {
             .find(|item| item.record_id == active_id)
             .context("reopened completed response record")?;
         ensure!(
-            restored_text.main_presentation == pl_protocol::MainPresentation::Single,
-            "reopened response presentation changed: {:?}",
-            restored_text.main_presentation
-        );
-        ensure!(
             restored_text.atom.kind == ChatAtomKind::Text,
             "reopened response kind changed: {:?}",
             restored_text.atom.kind
@@ -2000,12 +1984,6 @@ mod tests {
             restored_text.atom.turn_id.as_deref() == Some(next_turn),
             "reopened response Turn identity changed: {:?}",
             restored_text.atom.turn_id
-        );
-        ensure!(
-            restored_text.run.is_some_and(|run| run.start_seq == restored_text.completion_seq
-                && run.ordinal == 1),
-            "reopened response run position changed: {:?}",
-            restored_text.run
         );
         let pl_protocol::ChatAtomLifecycle::Terminal {
             started: Some(started),
@@ -2150,25 +2128,6 @@ mod tests {
         tokio::time::timeout(DEADLINE, next_lease.owner.cancel.cancelled()).await?;
         drop(next_lease);
         drop(latest);
-        // Typed stale content, rather than a fabricated empty window.
-        let mut stale = observed_run.context("Main did not expose a Run reference")?;
-        stale.database_id.push_str(":stale");
-        let mut stale_url =
-            url::Url::parse(&format!("{}/api/v1/threads/{thread}/events", env.base))?;
-        stale_url.query_pairs_mut().extend_pairs([
-            ("maxItems", "4".to_owned()),
-            ("maxBytes", demand(4).max_bytes.to_string()),
-            ("runDatabaseId", stale.database_id),
-            ("runIndexVersion", stale.index_version.to_string()),
-            ("runStartSeq", stale.start_seq.to_string()),
-        ]);
-        let error = tokio::time::timeout(
-            DEADLINE,
-            env.client.get(stale_url).send(),
-        )
-        .await??;
-        ensure!(error.status() == reqwest::StatusCode::CONFLICT);
-        ensure!(error.json::<StudioError>().await?.reason() == Some("staleContent"));
         let cross = env
             .post("different-thread", &capability, "contents/read", &request)
             .await?;

@@ -86,8 +86,7 @@ ChatAtom _head({
 CompletedEntry _entry(ChatAtom atom) => CompletedEntry(
   recordId: 'completion',
   completionSeq: 7,
-  run: null,
-  mainPresentation: MainPresentation.single,
+
   atom: atom,
 );
 
@@ -583,8 +582,7 @@ void main() {
           value = CompletedEntry(
             recordId: failure == 'record' ? 'other' : 'completion',
             completionSeq: failure == 'sequence' ? 8 : 7,
-            run: null,
-            mainPresentation: MainPresentation.single,
+
             atom: value.atom,
           );
         }
