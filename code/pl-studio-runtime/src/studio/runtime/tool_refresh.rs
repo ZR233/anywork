@@ -5,7 +5,7 @@ use super::{
 };
 use crate::protocol::StudioProductEventKind;
 use anyhow::Context;
-use pl_core::thread::{ThreadHandle, ThreadLifecycle, ToolOutcome};
+use pl_core::thread::{ThreadHandle, ThreadLifecycle, task::TaskStatus};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
@@ -241,7 +241,9 @@ impl StudioRuntime {
                     let runtime = runtime.clone();
                     let stopping = stopping.clone();
                     tasks.spawn(async move {
-                        let Ok((_, lifetime)) = runtime.thread_factory.tool_operation(&id) else { return; };
+                        let Ok((_, lifetime)) = runtime.thread_factory.tool_operation(&id) else {
+                            return;
+                        };
                         let mut snapshots = thread.subscribe();
                         let mut attempted = BTreeMap::new();
                         loop {
@@ -259,12 +261,17 @@ impl StudioRuntime {
                                     &receiver,
                                 )
                                 .await;
-                            if cleanup_was_pending && thread.snapshot().tool_cleanup.pending == 0 { continue; }
+                            if cleanup_was_pending && thread.snapshot().tool_cleanup.pending == 0 {
+                                continue;
+                            }
                             tokio::select! {
                                 () = stopping.cancelled() => break,
                                 () = lifetime.cancelled() => break,
                                 changed = receiver.changed() => if changed.is_err() { break; },
-                                _ = snapshots.next(), if thread.snapshot().tool_cleanup.pending > 0 => {},
+                                // Command writes do not pass through the file backend's LSP
+                                // notification. Observe their deliveries even without pending
+                                // cleanup; the fingerprint below filters unrelated snapshots.
+                                snapshot = snapshots.next() => if snapshot.is_none() { break; },
                             }
                         }
                     });
@@ -583,28 +590,27 @@ fn catalog_fingerprint(
     sources: &CatalogSources,
     snapshot: &pl_core::thread::ThreadSnapshot,
 ) -> String {
+    // Completed deliveries are handed to history before snapshots are published.
+    // Their bounded terminal task identities remain observable without retaining
+    // tool output bodies or depending on an intermediate snapshot.
     let mutation = snapshot
-        .deliveries
+        .terminal_tasks
         .iter()
         .rev()
-        .find(|delivery| {
-            delivery.tool_id == "skill_manage"
-                && delivery.output.payload().format() == "pl.tool.skill-mutation"
-                && matches!(delivery.outcome, ToolOutcome::Succeeded)
-        })
-        .map(|delivery| &delivery.call_id);
+        .find(|task| task.tool_id == "skill_manage" && task.status == TaskStatus::Succeeded)
+        .map(|task| &task.call_id);
     // Commands can write configuration without going through the filesystem backend.
     // Their completed delivery is a safe opportunity to re-scan the bound workspace;
     // unchanged content does not restart a language server.
     let workspace_mutation = snapshot
-        .deliveries
+        .terminal_tasks
         .iter()
         .rev()
-        .find(|delivery| {
+        .find(|task| {
             matches!(
-                delivery.tool_id.as_str(),
-                "exec"
-                    | "wait"
+                task.tool_id.as_str(),
+                "exec_command"
+                    | "write_stdin"
                     | "write_file"
                     | "apply_patch"
                     | "copy_path"
@@ -612,7 +618,7 @@ fn catalog_fingerprint(
                     | "delete_path"
             )
         })
-        .map(|delivery| &delivery.call_id);
+        .map(|task| &task.call_id);
     crate::hash::canonical_json_hash(&serde_json::json!({
         "sources": sources.0,
         "skillMutation": mutation,

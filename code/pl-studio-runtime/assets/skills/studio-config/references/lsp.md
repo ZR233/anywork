@@ -156,7 +156,12 @@ Project browsing and Settings do not keep servers alive or start them; an explic
 probe holds only a temporary lease and releases it when the probe completes.
 
 Configuration changes in a leased directory trigger background loading and
-initialization; the GUI also provides explicit reload. Servers initialize
+initialization. File tools notify the registry directly; completed command and
+stdin tool results also cause the active Thread to check its configuration, so
+documents written by shell scripts do not require another turn or an unrelated
+service update. Unchanged documents do not restart healthy servers. The started
+items menu observes this Thread's server rows, including loading and failure
+states; opening it does not start servers. The GUI also provides explicit reload. Servers initialize
 concurrently. The read-only status
 operation reports published state; it does not scan, start or wait for a server.
 
