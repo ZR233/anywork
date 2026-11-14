@@ -62,7 +62,7 @@ pub struct TailSnapshot {
     deny_unknown_fields
 )]
 pub enum TailUpdate {
-    Keep,
+    Keep {},
     Replace {
         snapshot: TailSnapshot,
     },

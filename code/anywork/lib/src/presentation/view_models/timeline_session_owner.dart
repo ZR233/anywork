@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
@@ -539,7 +540,18 @@ final class TimelineSessionOwner {
       identical(_observedSession, session);
 
   Future<void> _serialize(Future<void> Function() commit) {
-    final result = _commits.then((_) => commit());
+    final queued = Stopwatch()..start();
+    final result = _commits.then((_) {
+      developer.Timeline.instantSync(
+        'conversation.admission',
+        arguments: {
+          'owner': 'timeline',
+          'threadId': _observedSession?.threadId ?? '',
+          'queueWaitMicros': queued.elapsedMicroseconds,
+        },
+      );
+      return commit();
+    });
     // A failed frame remains visible to its consumer. It does not poison a later
     // independent reset/page commit or discard the real in-flight operation.
     _commits = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});

@@ -159,7 +159,7 @@ pub(crate) fn view_update(value: protocol::ViewUpdate) -> BridgeViewUpdate {
             before: value.history.before,
         },
         tail: match value.tail {
-            protocol::TailUpdate::Keep => BridgeTailUpdate::Keep,
+            protocol::TailUpdate::Keep {} => BridgeTailUpdate::Keep,
             protocol::TailUpdate::Replace { snapshot } => BridgeTailUpdate::Replace {
                 snapshot: tail_snapshot(snapshot),
             },
@@ -226,7 +226,7 @@ mod tests {
                     body: work(),
                 }],
             },
-            tail: protocol::TailUpdate::Keep,
+            tail: protocol::TailUpdate::Keep {},
         });
         assert_eq!(mapped.after, "C0");
         assert_eq!(mapped.next, "C1");

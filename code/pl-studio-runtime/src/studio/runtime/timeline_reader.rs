@@ -353,7 +353,8 @@ impl TimelineReader {
                     .then(|| tokens.before(cut.published, cut.published + 1))
                     .transpose()?;
                 ensure!(fits(&response, self.demand)?, invalid_demand());
-                let tail_bytes = encoded_size(&response.tail)? - encoded_size(&TailUpdate::Keep)?;
+                let tail_bytes =
+                    encoded_size(&response.tail)? - encoded_size(&TailUpdate::Keep {})?;
                 let mut bytes = 0;
                 for head in heads.into_iter().rev() {
                     if response.history.blocks.len() + tail.blocks.len() == n {
@@ -370,7 +371,7 @@ impl TimelineReader {
                             response.history.from_order,
                             response.history.through_order,
                         ),
-                        TailUpdate::Keep,
+                        TailUpdate::Keep {},
                     );
                     shell.history.before = before.clone();
                     let new_bytes = bytes
@@ -460,7 +461,7 @@ impl TimelineReader {
                     after,
                     next,
                     history(HistoryPlacement::Append, Some(through), through),
-                    TailUpdate::Keep,
+                    TailUpdate::Keep {},
                 );
                 let mut bytes = 0;
                 for head in heads {
@@ -501,7 +502,7 @@ impl TimelineReader {
                         position.tail = Some(target);
                         position.target = None;
                     } else {
-                        response.tail = TailUpdate::Keep;
+                        response.tail = TailUpdate::Keep {};
                     }
                 }
                 ensure!(fits(&response, self.demand)?, invalid_demand());
@@ -777,7 +778,7 @@ mod tests {
             single(&mut h, "single-3").await?;
             h.effect(vec![start("target-work", true)], vec![]).await?;
             let mut page = reader.next(first.next).await?;
-            assert!(matches!(page.tail, TailUpdate::Keep));
+            assert!(matches!(page.tail, TailUpdate::Keep {}));
             let old_target = reader
                 .state
                 .lock()
