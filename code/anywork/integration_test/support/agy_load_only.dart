@@ -173,6 +173,7 @@ Future<void> runAgyLoadOnly({
   );
   Object? primary;
   StackTrace? primaryStack;
+  var finalReportSaveFailed = false;
   void sample() => samples.request();
 
   Future<void> save() => File(p.join(artifacts.path, 'agy-load-report.json'))
@@ -180,8 +181,8 @@ Future<void> runAgyLoadOnly({
         const JsonEncoder.withIndent('  ').convert(report),
         flush: true,
       );
-  Future<void> checkpoint(String stage) async {
-    report['stage'] = stage;
+  Future<void> checkpoint(String stage, {bool cleaningUp = false}) async {
+    report[cleaningUp ? 'cleanupStage' : 'stage'] = stage;
     report['sampling'] = samples.diagnostics;
     await save();
   }
@@ -199,7 +200,7 @@ Future<void> runAgyLoadOnly({
 
   Future<void> cleanup(String stage, Future<void> Function() action) async {
     try {
-      await checkpoint('$stage-before');
+      await checkpoint('$stage-before', cleaningUp: true);
     } catch (error) {
       errors.add({'stage': '$stage-checkpoint-before', ..._error(error)});
     }
@@ -209,7 +210,7 @@ Future<void> runAgyLoadOnly({
       errors.add({'stage': stage, ..._error(error)});
     }
     try {
-      await checkpoint('$stage-after');
+      await checkpoint('$stage-after', cleaningUp: true);
     } catch (error) {
       errors.add({'stage': '$stage-checkpoint-after', ..._error(error)});
     }
@@ -361,6 +362,7 @@ Future<void> runAgyLoadOnly({
   } catch (error, stack) {
     primary = error;
     primaryStack = stack;
+    report['primaryFailureStage'] = report['stage'];
     report['failure'] = _error(error);
   } finally {
     timer?.cancel();
@@ -417,11 +419,27 @@ Future<void> runAgyLoadOnly({
     report['verdict'] = primary == null && errors.isEmpty
         ? 'load-evidence-available'
         : 'failed';
-    await save();
+    try {
+      await save();
+    } catch (error, stack) {
+      finalReportSaveFailed = true;
+      errors.add({'stage': 'final-report-save', ..._error(error)});
+      // Diagnostic persistence must not replace an already captured failure.
+      if (primary == null) {
+        primary = error;
+        primaryStack = stack;
+        report['primaryFailureStage'] = 'final-report-save';
+        report['failure'] = _error(error);
+      }
+    }
   }
   if (primary != null) {
     Error.throwWithStackTrace(
-      StateError('Load-only failed; see redacted agy-load-report.json'),
+      StateError(
+        finalReportSaveFailed
+            ? 'Load-only failed; final report unavailable'
+            : 'Load-only failed; see redacted agy-load-report.json',
+      ),
       primaryStack!,
     );
   }
