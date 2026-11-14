@@ -20,7 +20,7 @@ TimelineDisplayUnit _single({
 }) => TimelineDisplayUnit(
   block: DisplayBlock(
     id: blockId,
-    historyPos: 2,
+    blockOrder: 2,
     body: SingleDisplayBlock(
       visibility: SingleVisibility.content,
       record: DisplayRecord(
@@ -71,7 +71,7 @@ void main() {
       await adapter.applyTimeline(
         displayBatch([
           displayWork('unrelated-work', 1),
-          DisplayBlock(id: single.id, historyPos: 2, body: single.body),
+          DisplayBlock(id: single.id, blockOrder: 2, body: single.body),
         ]),
       );
       final main = controller.messages

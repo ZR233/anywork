@@ -34,7 +34,7 @@ ChatAtom _tool(ChatSourceId source) => ChatAtom(
 
 DisplayBlock _single(ChatSourceId source) => DisplayBlock(
   id: 'single',
-  historyPos: 2,
+  blockOrder: 2,
   body: SingleDisplayBlock(
     visibility: SingleVisibility.content,
     record: DisplayRecord(
@@ -95,7 +95,7 @@ final class _Fixture {
       live: LiveDisplayWindow(
         currentWorkId: null,
         revision: 1,
-        historyThrough: blocks.isEmpty ? 0 : blocks.last.historyPos,
+        readyFrontier: blocks.isEmpty ? 0 : blocks.last.blockOrder,
         executionPresent: false,
         blocks: [],
       ),
@@ -152,7 +152,7 @@ void main() {
     f.lease.live.value = LiveDisplayWindow(
       currentWorkId: null,
       revision: 2,
-      historyThrough: 0,
+      readyFrontier: 0,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(
@@ -222,7 +222,7 @@ void main() {
     f.lease.live.value = LiveDisplayWindow(
       currentWorkId: null,
       revision: 9,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(

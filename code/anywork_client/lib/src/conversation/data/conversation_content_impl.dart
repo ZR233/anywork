@@ -431,36 +431,36 @@ final class ConversationContentImpl implements TimelineContent {
     final query = queryScope != null;
     final validPlacement = switch (batch.placement) {
       ChatPlacement.set =>
-        !query && !a.hasSet && batch.fromPos == null && batch.live != null,
+        !query && !a.hasSet && batch.fromOrder == null && batch.live != null,
       ChatPlacement.prepend =>
-        query && a.hasSet && batch.fromPos == null && batch.live == null,
+        query && a.hasSet && batch.fromOrder == null && batch.live == null,
       ChatPlacement.append =>
         !query &&
             a.hasSet &&
             batch.before == null &&
-            batch.fromPos == a.through &&
-            (batch.throughPos > a.through ||
-                (batch.throughPos == a.through &&
+            batch.fromOrder == a.through &&
+            (batch.throughOrder > a.through ||
+                (batch.throughOrder == a.through &&
                     batch.blocks.isEmpty &&
                     batch.live != null)),
     };
-    var previous = batch.fromPos ?? 0;
+    var previous = batch.fromOrder ?? 0;
     final ids = <String>{};
-    var valid = validPlacement && batch.throughPos >= 0;
+    var valid = validPlacement && batch.throughOrder >= 0;
     for (final block in batch.blocks) {
       valid =
           valid &&
           block.id.isNotEmpty &&
           ids.add(block.id) &&
-          block.historyPos > previous &&
-          block.historyPos <= batch.throughPos;
-      previous = block.historyPos;
+          block.blockOrder > previous &&
+          block.blockOrder <= batch.throughOrder;
+      previous = block.blockOrder;
     }
     final incoming = batch.live;
     if (incoming != null) {
       valid =
           valid &&
-          incoming.historyThrough == batch.throughPos &&
+          incoming.readyFrontier == batch.throughOrder &&
           incoming.revision >= 0 &&
           (batch.placement == ChatPlacement.set ||
               incoming.revision >= (a.live?.revision ?? -1));
@@ -492,9 +492,9 @@ final class ConversationContentImpl implements TimelineContent {
         : incoming ??
               LiveDisplayWindow(
                 revision: previousLive!.revision,
-                historyThrough: batch.placement == ChatPlacement.prepend
-                    ? previousLive.historyThrough
-                    : batch.throughPos,
+                readyFrontier: batch.placement == ChatPlacement.prepend
+                    ? previousLive.readyFrontier
+                    : batch.throughOrder,
                 executionPresent: previousLive.executionPresent,
                 currentWorkId: ids.contains(previousLive.currentWorkId)
                     ? null
@@ -509,7 +509,7 @@ final class ConversationContentImpl implements TimelineContent {
     await consumer.applyTimeline(batch, next);
     if (!eligible()) return;
     if (batch.placement != ChatPlacement.prepend) {
-      a.through = batch.throughPos;
+      a.through = batch.throughOrder;
       a.hasSet = true;
       a.live = next;
       _liveWindow.publish(next);

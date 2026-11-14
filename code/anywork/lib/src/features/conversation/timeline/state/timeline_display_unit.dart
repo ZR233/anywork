@@ -93,7 +93,7 @@ final class TimelineDisplayUnit {
     required DisplayBlock block,
     TimelineExpansionIntent? expansion,
   }) : id = block.id,
-       historyPos = block.historyPos,
+       blockOrder = block.blockOrder,
        body = block.body,
        state = DisplayBlockState.sealed,
        executionPresent = false,
@@ -106,14 +106,14 @@ final class TimelineDisplayUnit {
     required this.executionPresent,
     required this.expansion,
   }) : id = block.id,
-       historyPos = null,
+       blockOrder = null,
        body = block.body,
        state = block.state,
        hasUnfinishedMembers = block.hasUnfinishedMembers,
        thinkingSummary = block.thinkingSummary;
 
   final String id;
-  final int? historyPos;
+  final int? blockOrder;
   final DisplayBlockBody body;
   final DisplayBlockState state;
   final bool executionPresent;

@@ -3018,7 +3018,7 @@ pub(super) mod tests {
             let display = prepared.display.as_ref().context("frozen display delta")?;
             let digest = display.digest()?;
             let owner = h.projection.presentation();
-            let before = owner.lock().unwrap().capture(None, 8, 0, 8);
+            let before = owner.lock().unwrap().capture(None, 8, Some(0), 8);
             let source = h
                 .source
                 .current_conversation()
@@ -3040,14 +3040,14 @@ pub(super) mod tests {
                 display,
             ));
             assert!(Arc::ptr_eq(&replay.completions, &prepared.completions));
-            let after = owner.lock().unwrap().capture(None, 8, 0, 8);
+            let after = owner.lock().unwrap().capture(None, 8, Some(0), 8);
             assert_eq!(
-                (after.published, after.durable, after.revision),
-                (before.published, before.durable, before.revision),
+                (after.published, after.last_order, after.revision),
+                (before.published, before.last_order, before.revision),
                 "redelivery must not allocate another presentation position or revision",
             );
             assert_eq!(after.open, before.open);
-            assert_eq!(after.pending, before.pending);
+            assert_eq!(after.history, before.history);
             // admit already exercised the original source publication. LiveOwner consumes that
             // current_state publication right once; retrying its frozen handoff creates no Activity.
             assert!(Arc::ptr_eq(

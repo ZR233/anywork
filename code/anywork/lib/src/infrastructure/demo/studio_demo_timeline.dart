@@ -238,7 +238,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     displayBlocks.add(
       DisplayBlock(
         id: id,
-        historyPos: displayHead + 1,
+        blockOrder: displayHead + 1,
         body: scriptBody(script),
       ),
     );
@@ -310,7 +310,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     }
 
     for (final block in blocks) {
-      if (block.historyPos <= through || !ids.add(block.id)) {
+      if (block.blockOrder <= through || !ids.add(block.id)) {
         throw _demoQueryFailure('Duplicate or unordered display fixture');
       }
       validateIdentity(block.id, block.body);
@@ -319,10 +319,10 @@ extension _DemoDisplayHistory on _DemoHistory {
           throw _demoStale();
         }
       }
-      through = block.historyPos;
+      through = block.blockOrder;
     }
     if (live != null &&
-        (live.historyThrough != through ||
+        (live.readyFrontier != through ||
             live.blocks.any((block) => ids.contains(block.id)))) {
       throw _demoQueryFailure('Invalid display live/history cut');
     }
@@ -465,7 +465,7 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
 };
 Object _liveJson(LiveDisplayWindow live) => {
   'revision': live.revision,
-  'historyThrough': live.historyThrough,
+  'readyFrontier': live.readyFrontier,
   'executionPresent': live.executionPresent,
   'currentWorkId': live.currentWorkId,
   'older': live.older,
@@ -486,14 +486,14 @@ int _timelineBytes(TimelineBatch batch) => _demoEncoded({
   'presentationVersion': batch.presentationVersion,
   'placement': batch.placement.name,
   'before': batch.before,
-  'fromPos': batch.fromPos,
-  'throughPos': batch.throughPos,
+  'fromOrder': batch.fromOrder,
+  'throughOrder': batch.throughOrder,
   'live': batch.live == null ? null : _liveJson(batch.live!),
   'blocks': [
     for (final b in batch.blocks)
       {
         'id': b.id,
-        'historyPos': b.historyPos,
+        'blockOrder': b.blockOrder,
         'body': _displayBodyJson(b.body),
       },
   ],
@@ -526,7 +526,7 @@ extension _DemoTimelineReader on _DemoReader {
     LiveDisplayWindow page() => LiveDisplayWindow(
       currentWorkId: history.displayCurrentWorkId,
       revision: revision,
-      historyThrough: history.displayHead,
+      readyFrontier: history.displayHead,
       executionPresent:
           history.displayLiveSeed?.executionPresent ??
           (_api._demoWorkspace(threadId).runtime.execution != null),
@@ -548,7 +548,7 @@ extension _DemoTimelineReader on _DemoReader {
       final trial = LiveDisplayWindow(
         currentWorkId: history.displayCurrentWorkId,
         revision: revision,
-        historyThrough: history.displayHead,
+        readyFrontier: history.displayHead,
         executionPresent: page().executionPresent,
         blocks: [candidate, ...selected],
         older: next,
@@ -599,16 +599,16 @@ extension _DemoTimelineReader on _DemoReader {
         ? h0 + 1
         : boundary(before, 'display-history', h0);
     final records = _history.displayBlocks
-        .where((b) => b.historyPos < end)
+        .where((b) => b.blockOrder < end)
         .toList();
     DisplayBlock fitted(DisplayBlock b) => DisplayBlock(
       id: b.id,
-      historyPos: b.historyPos,
+      blockOrder: b.blockOrder,
       body: fitDisplay(b.body),
     );
     String? historyCursor(int index) {
       if (index == 0) return null;
-      final token = cursor('display-history', h0, records[index].historyPos);
+      final token = cursor('display-history', h0, records[index].blockOrder);
       _cursors['h0:$token'] = ('display-h0', 0, h0);
       return token;
     }
@@ -620,7 +620,7 @@ extension _DemoTimelineReader on _DemoReader {
       placement: ChatPlacement.set,
       blocks: records.isEmpty ? [] : [fitted(records.last)],
       before: records.isEmpty ? null : historyCursor(records.length - 1),
-      throughPos: h0,
+      throughOrder: h0,
     );
     final live = initial
         ? livePage(
@@ -637,7 +637,7 @@ extension _DemoTimelineReader on _DemoReader {
       placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
       blocks: selected,
       before: next,
-      throughPos: h0,
+      throughOrder: h0,
       live: live,
     );
     for (var i = records.length - 1; i >= 0; i--) {
@@ -648,7 +648,7 @@ extension _DemoTimelineReader on _DemoReader {
         placement: batch().placement,
         blocks: [candidate, ...selected],
         before: token,
-        throughPos: h0,
+        throughOrder: h0,
         live: live,
       );
       if (_timelineBytes(trial) > demand.maxBytes) {
@@ -675,8 +675,8 @@ extension _DemoTimelineReader on _DemoReader {
       presentationVersion: presentationVersion,
       placement: ChatPlacement.append,
       blocks: [],
-      fromPos: through,
-      throughPos: through,
+      fromOrder: through,
+      throughOrder: through,
     );
     return livePage(
       ReadDemand(
@@ -692,22 +692,22 @@ extension _DemoTimelineReader on _DemoReader {
     LiveDisplayWindow target,
   ) {
     final records = _history.displayBlocks.where(
-      (b) => b.historyPos > from && b.historyPos <= target.historyThrough,
+      (b) => b.blockOrder > from && b.blockOrder <= target.readyFrontier,
     );
     final selected = <DisplayBlock>[];
     var through = from;
     for (final b in records) {
       final candidate = DisplayBlock(
         id: b.id,
-        historyPos: b.historyPos,
+        blockOrder: b.blockOrder,
         body: fitDisplay(b.body),
       );
       final trial = TimelineBatch(
         presentationVersion: presentationVersion,
         placement: ChatPlacement.append,
         blocks: [...selected, candidate],
-        fromPos: from,
-        throughPos: b.historyPos,
+        fromOrder: from,
+        throughOrder: b.blockOrder,
       );
       if (selected.length == demand.maxItems ||
           _timelineBytes(trial) > demand.maxBytes) {
@@ -719,18 +719,18 @@ extension _DemoTimelineReader on _DemoReader {
         break;
       }
       selected.add(candidate);
-      through = b.historyPos;
+      through = b.blockOrder;
     }
     // A partial append carries no live replacement: it cannot retire an ID
     // before the matching sealed block reaches the consumer.
     LiveDisplayWindow? live;
-    if (through == target.historyThrough) {
+    if (through == target.readyFrontier) {
       final combined = TimelineBatch(
         presentationVersion: presentationVersion,
         placement: ChatPlacement.append,
         blocks: selected,
-        fromPos: from,
-        throughPos: through,
+        fromOrder: from,
+        throughOrder: through,
         live: target,
       );
       if (_timelineBytes(combined) <= demand.maxBytes) {
@@ -745,8 +745,8 @@ extension _DemoTimelineReader on _DemoReader {
       presentationVersion: presentationVersion,
       placement: ChatPlacement.append,
       blocks: selected,
-      fromPos: from,
-      throughPos: through,
+      fromOrder: from,
+      throughOrder: through,
       live: live,
     );
   }

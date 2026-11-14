@@ -148,13 +148,13 @@ void main() {
         await tester.pumpAndSettle();
         final feed = transport.timelineFeeds.last;
         final filePosition =
-            graph.timeline.lease('thread-main')!.live.value!.historyThrough + 1;
+            graph.timeline.lease('thread-main')!.live.value!.readyFrontier + 1;
         feed.emitTimeline(
           displayBatch(
             [
               displaySingle(
                 statusItem(_markdownFile(), completionSeq: 5),
-                historyPos: filePosition,
+                blockOrder: filePosition,
               ),
             ],
             placement: ChatPlacement.append,
@@ -221,7 +221,7 @@ void main() {
                     (index) => 'Later paragraph $index',
                   ).join('\n\n'),
                 ),
-                historyPos: filePosition + 1,
+                blockOrder: filePosition + 1,
               ),
             ],
             placement: ChatPlacement.append,

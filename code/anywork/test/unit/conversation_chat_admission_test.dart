@@ -176,7 +176,7 @@ void main() {
         LiveDisplayWindow(
           currentWorkId: reference.blockId,
           revision: revision,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: [
             LiveDisplayBlock(
@@ -225,7 +225,7 @@ void main() {
     }
     final frozen = DisplayBlock(
       id: reference.blockId,
-      historyPos: 1,
+      blockOrder: 1,
       body: body(2, 2),
     );
     feed.sendScenario(
@@ -238,7 +238,7 @@ void main() {
           live: LiveDisplayWindow(
             currentWorkId: null,
             revision: 4,
-            historyThrough: 1,
+            readyFrontier: 1,
             executionPresent: false,
             blocks: const [],
           ),
@@ -287,7 +287,7 @@ void main() {
     final live = LiveDisplayWindow(
       currentWorkId: null,
       revision: 1,
-      historyThrough: 1,
+      readyFrontier: 1,
       executionPresent: true,
       blocks: [work],
     );
@@ -321,7 +321,7 @@ void main() {
           live: LiveDisplayWindow(
             currentWorkId: null,
             revision: 2,
-            historyThrough: 2,
+            readyFrontier: 2,
             executionPresent: false,
             blocks: const [],
           ),

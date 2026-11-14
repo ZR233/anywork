@@ -470,7 +470,7 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
       channel: atom?.textChannel?.name,
       timeline: {
         'blockId': unit.id,
-        'historyPos': unit.historyPos,
+        'blockOrder': unit.blockOrder,
         'members': switch (unit.memberReference) {
           final reference? => {
             'databaseId': reference.databaseId,

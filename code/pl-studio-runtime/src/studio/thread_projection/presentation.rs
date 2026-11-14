@@ -24,6 +24,34 @@ type PresentationMap<K, V> = BTreeMap<K, V>;
 
 pub(in crate::studio) type PresentationHandle = Arc<Mutex<PresentationState>>;
 
+/// Positive creation position, independent of completion and effect sequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub(in crate::studio) struct BlockOrder(u64);
+impl BlockOrder {
+    pub fn new(value: u64) -> Result<Self> {
+        ensure!(
+            (1..=i64::MAX as u64).contains(&value),
+            "invalid display block order"
+        );
+        Ok(Self(value))
+    }
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+impl TryFrom<u64> for BlockOrder {
+    type Error = anyhow::Error;
+    fn try_from(value: u64) -> Result<Self> {
+        Self::new(value)
+    }
+}
+impl From<BlockOrder> for u64 {
+    fn from(value: BlockOrder) -> Self {
+        value.get()
+    }
+}
+
 /// Persisted small header, never an array of member identities or bodies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::studio) struct DisplayHeader {
@@ -31,14 +59,12 @@ pub(in crate::studio) struct DisplayHeader {
     pub id: String,
     pub source: ChatSourceId,
     pub block_order: u64,
-    pub history_pos: Option<u64>,
     pub boundary: Option<ChatFactPosition>,
     pub first_content_at: Option<ChatFactPosition>,
     pub sealed: bool,
     pub unfinished: u64,
     pub next_member: u64,
     pub revision: u64,
-    pub skip_display: bool,
     #[serde(skip)]
     pub thinking_summary: Option<String>,
     pub body: DisplayBlockBody,
@@ -46,9 +72,9 @@ pub(in crate::studio) struct DisplayHeader {
 
 impl DisplayHeader {
     pub fn frozen(&self) -> Option<DisplayBlock> {
-        Some(DisplayBlock {
+        self.sealed.then(|| DisplayBlock {
             id: self.id.clone(),
-            history_pos: self.history_pos?,
+            block_order: self.block_order,
             body: self.body.clone(),
         })
     }
@@ -98,8 +124,6 @@ impl ObservationInput {
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::studio) struct DisplayBlockWrite {
     pub header: Arc<DisplayHeader>,
-    /// This very Arc is also indexed by the owner's pending prefix.
-    pub published: Option<Arc<DisplayBlock>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,8 +131,8 @@ pub(in crate::studio) struct PreparedDisplayDelta {
     pub effect_seq: u64,
     pub blocks: Vec<DisplayBlockWrite>,
     pub members: Vec<Arc<DisplayMemberWrite>>,
-    pub remove_empty: Vec<Arc<DisplayHeader>>,
-    pub published_through: u64,
+    pub ready_frontier: u64,
+    pub last_order: u64,
     #[serde(skip)]
     pub contents: Vec<Arc<ChatContent>>,
     #[serde(skip)]
@@ -159,11 +183,12 @@ pub(in crate::studio) struct DisplayInput<'a> {
 /// An explicitly bounded capture from one short owner lock.
 pub(in crate::studio) struct PresentationCut {
     pub published: u64,
-    pub durable: u64,
+    pub last_order: u64,
+    pub resident_block_floor: Option<u64>,
     pub revision: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
-    pub pending: Vec<Arc<DisplayBlock>>,
+    pub history: Vec<Arc<DisplayHeader>>,
 }
 
 pub(in crate::studio) struct DisplayMemberCut {
@@ -172,14 +197,17 @@ pub(in crate::studio) struct DisplayMemberCut {
     pub complete: bool,
 }
 
-#[derive(Default)]
 pub(in crate::studio) struct PresentationState {
     database: String,
     open_work: Option<u64>,
     blocks: PresentationMap<u64, Arc<DisplayHeader>>,
-    frozen_headers: PresentationMap<u64, Arc<DisplayHeader>>,
-    sparse: BTreeSet<u64>,
-    retired: BTreeMap<u64, (u64, u64)>, // history_pos -> (effect, block_order)
+    unready: BTreeSet<BlockOrder>,
+    block_versions: BTreeMap<u64, u64>,
+    member_versions: BTreeMap<(u64, u64), u64>,
+    block_batches: BTreeMap<u64, Vec<u64>>,
+    member_batches: BTreeMap<u64, Vec<(u64, u64)>>,
+    resident_block_floor: Option<u64>,
+    resident_member_floor: HashMap<u64, Option<u64>>,
     by_id: HashMap<String, u64>,
     members: PresentationMap<(u64, u64), Arc<DisplayMemberWrite>>,
     current_work_rows: HashMap<String, (u64, u64)>,
@@ -187,8 +215,6 @@ pub(in crate::studio) struct PresentationState {
     unfinished_members: BTreeSet<(u64, u64)>,
     observations: BTreeMap<ChatContentKey, (u64, Arc<ChatContent>)>,
     observation_batches: BTreeMap<u64, Vec<ChatContentKey>>,
-    terminal_batches: BTreeMap<u64, Vec<(u64, u64)>>,
-    pending: BTreeMap<u64, Arc<DisplayBlock>>,
     published: u64,
     durable: u64,
     revision: u64,
@@ -197,6 +223,58 @@ pub(in crate::studio) struct PresentationState {
     applied_effect: u64,
     changes: Option<tokio::sync::watch::Sender<u64>>,
     retained: u64,
+}
+
+impl Default for PresentationState {
+    fn default() -> Self {
+        Self {
+            database: Default::default(),
+            open_work: Default::default(),
+            blocks: Default::default(),
+            unready: Default::default(),
+            block_versions: Default::default(),
+            member_versions: Default::default(),
+            block_batches: Default::default(),
+            member_batches: Default::default(),
+            resident_block_floor: Some(1),
+            resident_member_floor: Default::default(),
+            by_id: Default::default(),
+            members: Default::default(),
+            current_work_rows: Default::default(),
+            open_texts: Default::default(),
+            unfinished_members: Default::default(),
+            observations: Default::default(),
+            observation_batches: Default::default(),
+            published: Default::default(),
+            durable: Default::default(),
+            revision: Default::default(),
+            member_change: Default::default(),
+            next_order: Default::default(),
+            applied_effect: Default::default(),
+            changes: Default::default(),
+            retained: Default::default(),
+        }
+    }
+}
+
+pub(in crate::studio) fn successor(order: u64) -> Option<u64> {
+    order.checked_add(1).filter(|next| *next <= i64::MAX as u64)
+}
+fn advance_floor(floor: &mut Option<u64>, removed: u64) {
+    if let Some(old) = *floor {
+        *floor = successor(removed).map(|next| old.max(next));
+    }
+}
+pub(in crate::studio) fn covered_desc(
+    floor: Option<u64>,
+    lower: u64,
+    candidates: &[u64],
+    limit: usize,
+) -> bool {
+    floor.is_some_and(|floor| {
+        lower >= floor - 1
+            || (candidates.len() >= limit && candidates.iter().all(|key| *key >= floor))
+    })
 }
 
 /// 本 effect 的展示计划只携带受影响行、必要冻结观察和可发布前缀。
@@ -455,15 +533,21 @@ impl PresentationState {
         limit: usize,
     ) -> Option<DisplayMemberCut> {
         let order = *self.by_id.get(block_id)?;
-        let header = self
-            .blocks
-            .get(&order)
-            .or_else(|| self.frozen_headers.get(&order))?
-            .clone();
+        let header = self.blocks.get(&order)?.clone();
+        let overlay = self.member_heads(block_id, before, limit);
+        let complete = covered_desc(
+            self.resident_member_floor.get(&order).copied().flatten(),
+            0,
+            &overlay
+                .iter()
+                .map(|m| m.head.member_order)
+                .collect::<Vec<_>>(),
+            limit,
+        );
         Some(DisplayMemberCut {
             header,
-            overlay: self.member_heads(block_id, before, limit),
-            complete: !self.sparse.contains(&order),
+            overlay,
+            complete,
         })
     }
 
@@ -471,32 +555,53 @@ impl PresentationState {
         &self,
         before_order: Option<u64>,
         live_limit: usize,
-        after_pos: u64,
-        pending_limit: usize,
+        after_order: Option<u64>,
+        history_limit: usize,
     ) -> PresentationCut {
         let mut open = self
             .blocks
-            .range(..before_order.unwrap_or(u64::MAX))
+            .range((
+                std::ops::Bound::Excluded(self.published),
+                std::ops::Bound::Excluded(
+                    before_order
+                        .unwrap_or(u64::MAX)
+                        .max(self.published.saturating_add(1)),
+                ),
+            ))
             .rev()
             .take(live_limit)
             .map(|(_, h)| h.clone())
             .collect::<Vec<_>>();
         open.reverse();
+        let lower = after_order.unwrap_or(0);
+        let upper = self
+            .published
+            .min(before_order.map_or(self.published, |before| before.saturating_sub(1)));
+        let mut history = Vec::new();
+        if lower < upper && history_limit > 0 {
+            let range = self.blocks.range((
+                std::ops::Bound::Excluded(lower),
+                std::ops::Bound::Included(upper),
+            ));
+            history = if after_order.is_some() {
+                range.take(history_limit).map(|(_, h)| h.clone()).collect()
+            } else {
+                range
+                    .rev()
+                    .take(history_limit)
+                    .map(|(_, h)| h.clone())
+                    .collect()
+            };
+            history.sort_by_key(|h| h.block_order);
+        }
         PresentationCut {
             published: self.published,
-            durable: self.durable,
+            last_order: self.next_order,
+            resident_block_floor: self.resident_block_floor,
             revision: self.revision,
             current_work_id: self.open_work.map(|order| self.blocks[&order].id.clone()),
             open,
-            pending: self
-                .pending
-                .range((
-                    std::ops::Bound::Excluded(after_pos),
-                    std::ops::Bound::Unbounded,
-                ))
-                .take(pending_limit)
-                .map(|(_, h)| h.clone())
-                .collect(),
+            history,
         }
     }
 
@@ -540,9 +645,10 @@ impl PresentationState {
         self.durable = published;
         self.next_order = next_order;
         self.applied_effect = effect;
+        self.resident_block_floor = successor(next_order);
         for header in headers {
             ensure!(
-                header.history_pos.is_none() && header.version == 4,
+                !header.sealed && header.version == 5,
                 "invalid open display header"
             );
             if !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. }) {
@@ -553,7 +659,9 @@ impl PresentationState {
                 );
             }
             self.retained += header_bytes(&header)?;
-            self.sparse.insert(header.block_order);
+            self.unready.insert(BlockOrder::new(header.block_order)?);
+            self.resident_member_floor
+                .insert(header.block_order, successor(header.next_member));
             self.by_id.insert(header.id.clone(), header.block_order);
             self.blocks.insert(header.block_order, Arc::new(header));
         }
@@ -602,6 +710,20 @@ impl PresentationState {
         Ok(())
     }
 
+    pub fn confirm_cut(&mut self, effect: u64, frontier: u64, last: u64) -> Result<()> {
+        ensure!(
+            effect <= self.applied_effect
+                && frontier <= self.published
+                && last <= self.next_order
+                && frontier <= last,
+            "display confirmation exceeds its admitted cut"
+        );
+        ensure!(frontier >= self.durable, "display confirmation regressed");
+        self.confirm(effect);
+        self.durable = frontier;
+        Ok(())
+    }
+
     pub fn confirm(&mut self, effect: u64) {
         while self
             .observation_batches
@@ -621,57 +743,65 @@ impl PresentationState {
             }
         }
         while self
-            .terminal_batches
+            .member_batches
             .first_key_value()
             .is_some_and(|(at, _)| *at <= effect)
         {
-            let (_, positions) = self.terminal_batches.pop_first().expect("confirmed batch");
+            let (_, positions) = self
+                .member_batches
+                .pop_first()
+                .expect("confirmed member batch");
             for position in positions {
-                if let Some(member) = self.members.remove(&position) {
-                    debug_assert!(member.terminal);
-                    if self.current_work_rows.get(&member.association_key) == Some(&position) {
-                        self.current_work_rows.remove(&member.association_key);
-                    }
-                    if self.open_texts.get(&member.association_key) == Some(&position) {
-                        self.open_texts.remove(&member.association_key);
-                    }
-                    self.sparse.insert(position.0);
-                    self.retained = self
-                        .retained
-                        .saturating_sub(bytes(member.as_ref()).unwrap_or(u64::MAX));
+                let Some(member) = self.members.get(&position) else {
+                    continue;
+                };
+                if self.member_versions[&position] > effect
+                    || (!member.terminal && self.unready.contains(&BlockOrder(position.0)))
+                {
+                    continue;
                 }
+                let member = self.members.remove(&position).expect("captured member");
+                self.member_versions.remove(&position);
+                self.unfinished_members.remove(&position);
+                if self.current_work_rows.get(&member.association_key) == Some(&position) {
+                    self.current_work_rows.remove(&member.association_key);
+                }
+                if self.open_texts.get(&member.association_key) == Some(&position) {
+                    self.open_texts.remove(&member.association_key);
+                }
+                if let Some(floor) = self.resident_member_floor.get_mut(&position.0) {
+                    advance_floor(floor, position.1);
+                }
+                self.retained = self
+                    .retained
+                    .saturating_sub(bytes(member.as_ref()).expect("validated member size"));
             }
         }
-        while let Some((&pos, &(at, order))) = self.retired.first_key_value() {
-            if at > effect {
-                break;
-            }
-            self.retired.remove(&pos);
-            self.frozen_headers.remove(&order);
-            self.sparse.remove(&order);
-            if let Some(block) = self.pending.remove(&pos) {
-                self.by_id.remove(&block.id);
-            }
-            let keys = self
-                .members
-                .range((order, 0)..=(order, u64::MAX))
-                .map(|(key, _)| *key)
-                .collect::<Vec<_>>();
-            for key in keys {
-                self.unfinished_members.remove(&key);
-                if let Some(member) = self.members.remove(&key) {
-                    if self.current_work_rows.get(&member.association_key) == Some(&key) {
-                        self.current_work_rows.remove(&member.association_key);
-                    }
-                    if self.open_texts.get(&member.association_key) == Some(&key) {
-                        self.open_texts.remove(&member.association_key);
-                    }
-                    self.retained = self
-                        .retained
-                        .saturating_sub(bytes(member.as_ref()).unwrap_or(u64::MAX));
+        while self
+            .block_batches
+            .first_key_value()
+            .is_some_and(|(at, _)| *at <= effect)
+        {
+            let (_, orders) = self
+                .block_batches
+                .pop_first()
+                .expect("confirmed block batch");
+            for order in orders {
+                let Some(header) = self.blocks.get(&order) else {
+                    continue;
+                };
+                if self.block_versions[&order] > effect || !header.sealed {
+                    continue;
                 }
+                let header = self.blocks.remove(&order).expect("captured block");
+                self.block_versions.remove(&order);
+                self.by_id.remove(&header.id);
+                self.resident_member_floor.remove(&order);
+                advance_floor(&mut self.resident_block_floor, order);
+                self.retained = self
+                    .retained
+                    .saturating_sub(header_bytes(&header).expect("validated header size"));
             }
-            self.durable = pos;
         }
     }
 
@@ -927,6 +1057,7 @@ impl PresentationState {
             next_order: self.next_order,
             applied_effect: self.applied_effect,
             retained: self.retained,
+            resident_block_floor: self.resident_block_floor,
             ..Default::default()
         };
         let mut keys = BTreeSet::new();
@@ -974,19 +1105,22 @@ impl PresentationState {
                 next.open_texts.insert(key.clone(), *position);
             }
         }
-        // 只有真正能够在本次变化后排出的前缀需要进入计划。
-        // 第一个不会被本批改变的开放块仍阻挡后缀，不能为准备复制整个列表。
-        for (order, header) in self.blocks.range(..) {
-            next.blocks.insert(*order, header.clone());
-            next.by_id.insert(header.id.clone(), *order);
-            if !header.sealed && !orders.contains(order) {
-                break;
-            }
+        // Only touched rows enter the private plan. The first untouched unready key
+        // is sufficient to compute the new frontier; no frozen prefix is copied.
+        if let Some(order) = self
+            .unready
+            .iter()
+            .find(|order| !orders.contains(&order.get()))
+        {
+            next.unready.insert(*order);
         }
         for order in orders {
             if let Some(header) = self.blocks.get(&order) {
                 next.blocks.insert(order, header.clone());
                 next.by_id.insert(header.id.clone(), order);
+                if !header.sealed {
+                    next.unready.insert(BlockOrder::new(order)?);
+                }
             }
         }
         let delta = next.fold_visible(
@@ -1033,40 +1167,32 @@ impl PresentationState {
         self.current_work_rows.extend(next.current_work_rows);
         self.open_texts.extend(next.open_texts);
         self.unfinished_members.extend(next.unfinished_members);
+        let mut orders = Vec::new();
         for block in &delta.blocks {
             let order = block.header.block_order;
             self.by_id.insert(block.header.id.clone(), order);
-            if block.published.is_some() {
-                self.blocks.remove(&order);
+            if block.header.sealed {
+                self.unready.remove(&BlockOrder(order));
             } else {
-                self.blocks.insert(order, block.header.clone());
+                self.unready.insert(BlockOrder(order));
             }
+            self.blocks.insert(order, block.header.clone());
+            self.block_versions.insert(order, delta.effect_seq);
+            self.resident_member_floor.entry(order).or_insert(Some(1));
+            orders.push(order);
         }
-        for header in &delta.remove_empty {
-            self.blocks.remove(&header.block_order);
-            self.by_id.remove(&header.id);
-            let positions = self
-                .members
-                .range((header.block_order, 0)..=(header.block_order, u64::MAX))
-                .map(|(position, _)| *position)
-                .collect::<Vec<_>>();
-            for position in positions {
-                self.members.remove(&position);
-            }
-        }
+        self.block_batches.insert(delta.effect_seq, orders);
+        let mut changed = Vec::new();
         for member in &delta.members {
             let order = self.by_id[&member.block_id];
-            self.members
-                .insert((order, member.head.member_order), member.clone());
+            let position = (order, member.head.member_order);
+            self.members.insert(position, member.clone());
+            self.member_versions.insert(position, delta.effect_seq);
+            changed.push(position);
         }
-        for (order, header) in next.frozen_headers.range(..) {
-            self.frozen_headers.insert(*order, header.clone());
-        }
-        self.retired.extend(next.retired);
-        self.pending.extend(next.pending);
+        self.member_batches.insert(delta.effect_seq, changed);
         self.observations.extend(next.observations);
         self.observation_batches.extend(next.observation_batches);
-        self.terminal_batches.extend(next.terminal_batches);
         self.open_work = next.open_work;
         self.published = next.published;
         self.revision = next.revision;
@@ -1189,8 +1315,6 @@ impl PresentationState {
         }
         let mut touched = BTreeSet::new();
         let mut changed_members = BTreeMap::new();
-        let mut remove_empty = Vec::new();
-        let mut published = BTreeMap::new();
         let mut contents = Vec::new();
         let mut seen_singles = BTreeSet::new();
         for operation in operations(&atoms, visible) {
@@ -1341,44 +1465,27 @@ impl PresentationState {
                 changed_members.insert(position, member);
                 self.replace_header(header, &mut touched)?;
             }
-            self.drain(
-                (effect, committed_at),
-                &mut touched,
-                &mut published,
-                &mut remove_empty,
-            )?;
         }
-        self.terminal_batches.insert(
-            effect,
-            changed_members
-                .iter()
-                .filter_map(|(position, member)| member.terminal.then_some(*position))
-                .collect(),
+        let frontier = self
+            .unready
+            .first()
+            .map_or(self.next_order, |order| order.get() - 1);
+        ensure!(
+            frontier >= self.published,
+            "display ready frontier regressed"
         );
-        let mut blocks = Vec::with_capacity(touched.len());
-        for order in touched {
-            if let Some(header) = self.blocks.get(&order) {
-                blocks.push(DisplayBlockWrite {
-                    header: header.clone(),
-                    published: None,
-                });
-            } else if let Some((header, block)) = published.remove(&order) {
-                blocks.push(DisplayBlockWrite {
-                    header,
-                    published: Some(block),
-                });
-            }
-        }
-        let removed = remove_empty.iter().map(|h| &h.id).collect::<BTreeSet<_>>();
+        self.published = frontier;
         let mut delta = PreparedDisplayDelta {
             effect_seq: effect,
-            blocks,
-            members: changed_members
-                .into_values()
-                .filter(|m| !removed.contains(&m.block_id))
+            blocks: touched
+                .into_iter()
+                .map(|order| DisplayBlockWrite {
+                    header: self.blocks[&order].clone(),
+                })
                 .collect(),
-            remove_empty,
-            published_through: self.published,
+            members: changed_members.into_values().collect(),
+            ready_frontier: self.published,
+            last_order: self.next_order,
             contents,
             retained_bytes: 0,
         };
@@ -1394,6 +1501,22 @@ impl PresentationState {
     }
 
     fn replace_header(&mut self, header: DisplayHeader, touched: &mut BTreeSet<u64>) -> Result<()> {
+        if header.sealed
+            && self
+                .blocks
+                .get(&header.block_order)
+                .is_some_and(|old| !old.sealed)
+        {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .context("display structure revision exhausted")?;
+        }
+        if header.sealed {
+            self.unready.remove(&BlockOrder(header.block_order));
+        } else {
+            self.unready.insert(BlockOrder::new(header.block_order)?);
+        }
         if let Some(old) = self
             .blocks
             .insert(header.block_order, Arc::new(header.clone()))
@@ -1436,18 +1559,16 @@ impl PresentationState {
             self.open_work = Some(order);
         }
         let header = DisplayHeader {
-            version: 4,
+            version: 5,
             id: id.clone(),
             source: atom.source.clone(),
             block_order: order,
-            history_pos: None,
             boundary: None,
             first_content_at: None,
             sealed: false,
             unfinished: 0,
             next_member: 0,
             revision: 0,
-            skip_display: false,
             thinking_summary: None,
             body: if is_work {
                 DisplayBlockBody::Work {
@@ -1551,64 +1672,6 @@ impl PresentationState {
         }
         Ok(())
     }
-
-    fn drain(
-        &mut self,
-        (effect, _committed_at): (u64, i64),
-        touched: &mut BTreeSet<u64>,
-        published: &mut BTreeMap<u64, (Arc<DisplayHeader>, Arc<DisplayBlock>)>,
-        remove_empty: &mut Vec<Arc<DisplayHeader>>,
-    ) -> Result<()> {
-        loop {
-            let order = self.blocks.range(..).next().map(|(order, _)| *order);
-            let Some(order) = order else { break };
-            let header = &self.blocks[&order];
-            if !header.sealed {
-                break;
-            }
-            let mut header = header.as_ref().clone();
-            self.blocks.remove(&order);
-            self.retained = self.retained.saturating_sub(header_bytes(&header)?);
-            if header.skip_display {
-                ensure!(
-                    matches!(&header.body, DisplayBlockBody::Single { record, .. }
-                    if record.atom.content_present == Some(false) && record.atom.kind == ChatAtomKind::Text),
-                    "only proven empty text may be removed"
-                );
-                self.by_id.remove(&header.id);
-                let keys = self
-                    .members
-                    .range((order, 0)..=(order, u64::MAX))
-                    .map(|(p, _)| *p)
-                    .collect::<Vec<_>>();
-                for key in keys {
-                    let member = self.members.remove(&key).expect("captured member");
-                    self.open_texts.remove(&member.association_key);
-                    self.retained = self.retained.saturating_sub(bytes(member.as_ref())?);
-                }
-                remove_empty.push(Arc::new(header));
-            } else {
-                self.published = self
-                    .published
-                    .checked_add(1)
-                    .filter(|value| *value <= i64::MAX as u64)
-                    .context("display history exhausted")?;
-                header.history_pos = Some(self.published);
-                let block = Arc::new(header.frozen().expect("assigned display position"));
-                self.pending.insert(self.published, block.clone());
-                self.retired.insert(self.published, (effect, order));
-                let header = Arc::new(header);
-                self.frozen_headers.insert(order, header.clone());
-                published.insert(order, (header, block));
-                touched.insert(order);
-            }
-            self.revision = self
-                .revision
-                .checked_add(1)
-                .context("display revision exhausted")?;
-        }
-        Ok(())
-    }
 }
 
 fn content_tail_summary(content: &ChatContent) -> Result<Option<String>> {
@@ -1708,7 +1771,6 @@ fn update_member_counts(
         if terminal {
             header.boundary = evidence(atom);
             header.sealed = true;
-            header.skip_display = false;
         }
         return Ok(());
     };
@@ -1879,16 +1941,10 @@ mod cost {
         pub(in crate::studio) fn begin_cost_observation(&self) {
             self.members.begin();
             self.blocks.begin();
-            self.frozen_headers.begin();
         }
         pub(in crate::studio) fn finish_cost_observation(&self) -> Visits {
             let members = self.members.finish();
-            let mut heads = self.blocks.finish();
-            let frozen = self.frozen_headers.finish();
-            heads.reads += frozen.reads;
-            heads.writes += frozen.writes;
-            heads.misses += frozen.misses;
-            heads.keys.extend(frozen.keys);
+            let heads = self.blocks.finish();
             Visits { members, heads }
         }
         pub(in crate::studio) fn resident_member_count(&self) -> usize {
@@ -1922,7 +1978,7 @@ mod tests {
         let work = delta
             .blocks
             .iter()
-            .find(|block| block.published.is_some())
+            .find(|block| block.header.sealed)
             .unwrap();
         assert_eq!(timing(&work.header).started_at, Some(10));
         assert_eq!(timing(&work.header).finished_at, Some(135));
@@ -2139,10 +2195,10 @@ mod tests {
             },
         )?;
         assert_eq!(
-            cut.published_through, 1,
+            cut.ready_frontier, 1,
             "unfinished members do not delay freezing"
         );
-        let frozen = s.pending[&1].clone();
+        let frozen = s.blocks[&1].clone();
         let member = s.member_heads(&block, None, 8)[0].clone();
         assert_eq!(member.head.member_key, old_key);
         assert_eq!(member.head.record.end_fact, None);
@@ -2205,7 +2261,7 @@ mod tests {
             .started_at,
             Some(99)
         );
-        assert_eq!(*s.pending[&1], *frozen);
+        assert_eq!(*s.blocks[&1], *frozen);
         assert_eq!(s.member_heads(&block, None, 8)[0].head, member.head);
         Ok(())
     }
@@ -2262,7 +2318,7 @@ mod tests {
         assert_eq!(s.applied_effect, 1);
         assert_eq!(s.blocks[&1], before);
         let retry = s.prepare(2, 20, &[atom("body", ChatAtomKind::Text, false)], &[], &[])?;
-        assert_eq!(retry.published_through, 1);
+        assert_eq!(retry.ready_frontier, 1);
         Ok(())
     }
     fn at(effect_seq: u64) -> ChatFactPosition {
@@ -2340,7 +2396,7 @@ mod tests {
         };
         s.prepare(3, 30, &[input], &[], &[])?;
         assert_eq!(
-            s.pending[&1].id, tail,
+            s.blocks[&1].id, tail,
             "a cross-source Single must freeze the tail"
         );
         Ok(())
@@ -2508,11 +2564,8 @@ mod tests {
                 assert_eq!(result_member.head.record.end_fact, Some(at(2)));
                 if name == pl_tool::file_display::TOOL_SHOW_FILES {
                     assert_eq!(s.published, 2);
-                    assert_eq!(s.pending[&1].id, foreground.id);
-                    assert!(matches!(
-                        s.pending[&2].body,
-                        DisplayBlockBody::Single { .. }
-                    ));
+                    assert_eq!(s.blocks[&1].id, foreground.id);
+                    assert!(matches!(s.blocks[&2].body, DisplayBlockBody::Single { .. }));
                 } else {
                     assert_eq!(s.published, 0);
                     assert_eq!(s.blocks.len(), 1);
@@ -2580,28 +2633,22 @@ mod tests {
         assert_eq!(timing(s.blocks.values().next().unwrap()).finished_at, None);
         assert_eq!(s.published, 0);
         let delta = s.prepare(5, 1200, &[atom("T", ChatAtomKind::Text, false)], &[], &[])?;
-        assert_eq!(delta.published_through, 1);
-        let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
+        assert_eq!(delta.ready_frontier, 1);
+        let frozen = delta.blocks.iter().find(|b| b.header.sealed).unwrap();
         assert_eq!(timing(&frozen.header).started_at, Some(10));
         assert_eq!(timing(&frozen.header).finished_at, Some(1200));
-        assert_eq!(
-            delta
-                .blocks
-                .iter()
-                .filter(|w| w.published.is_some())
-                .count(),
-            1
-        );
-        assert_eq!(s.capture(None, 8, 0, 8).open.len(), 1);
+        assert_eq!(delta.blocks.iter().filter(|w| w.header.sealed).count(), 1);
+        assert_eq!(s.capture(None, 8, Some(0), 8).open.len(), 1);
         assert!(Arc::ptr_eq(
             delta
                 .blocks
                 .iter()
-                .find_map(|w| w.published.as_ref())
+                .find(|w| w.header.sealed)
+                .map(|w| &w.header)
                 .unwrap(),
-            &s.pending[&1]
+            &s.blocks[&1]
         ));
-        s.confirm(5);
+        s.confirm_cut(5, 1, 2)?;
         assert_eq!(s.durable, 1);
         s.prepare(6, 1300, &[atom("T", ChatAtomKind::Text, true)], &[], &[])?;
         assert_eq!(timing(&frozen.header).finished_at, Some(1200));
@@ -2626,7 +2673,7 @@ mod tests {
                 &[],
                 &[],
             )?;
-            let frozen = delta.blocks.iter().find(|b| b.published.is_some()).unwrap();
+            let frozen = delta.blocks.iter().find(|b| b.header.sealed).unwrap();
             assert_eq!(timing(&frozen.header).started_at, Some(created));
             assert_eq!(timing(&frozen.header).finished_at, Some(observed));
         }
@@ -2651,7 +2698,7 @@ mod tests {
             s.published, 1,
             "first visible content freezes unfinished R/A immediately"
         );
-        let first = s.pending[&1].clone();
+        let first = s.blocks[&1].clone();
         s.prepare(
             3,
             30,
@@ -2692,11 +2739,11 @@ mod tests {
         assert!(s.blocks.is_empty());
         let DisplayBlockBody::Work {
             timing: summary, ..
-        } = &s.pending[&3].body
+        } = &s.blocks[&3].body
         else {
             panic!("Work")
         };
-        assert_eq!(s.frozen_headers[&s.retired[&3].1].next_member, 2);
+        assert_eq!(s.blocks[&3].next_member, 2);
         assert_eq!(summary.started_at, Some(40));
         assert_eq!(summary.finished_at, Some(50));
         let ended = s.prepare(
@@ -2713,23 +2760,21 @@ mod tests {
             delta
                 .blocks
                 .iter()
-                .filter_map(|w| w.header.history_pos)
+                .filter(|w| w.header.sealed)
+                .map(|w| w.header.block_order)
                 .collect::<Vec<_>>(),
             vec![5]
         );
         assert_eq!(
-            *s.pending[&1], *first,
+            *s.blocks[&1], *first,
             "late terminals never rewrite the boundary cut"
         );
-        assert!(matches!(s.pending[&5].body, DisplayBlockBody::Work { .. }));
+        assert!(matches!(s.blocks[&5].body, DisplayBlockBody::Work { .. }));
         assert!(
-            matches!(&s.pending[&5].body, DisplayBlockBody::Work { timing: summary, .. }
+            matches!(&s.blocks[&5].body, DisplayBlockBody::Work { timing: summary, .. }
         if summary.started_at == Some(60) && summary.finished_at == Some(70))
         );
-        assert!(matches!(
-            s.pending[&2].body,
-            DisplayBlockBody::Single { .. }
-        ));
+        assert!(matches!(s.blocks[&2].body, DisplayBlockBody::Single { .. }));
         Ok(())
     }
 
@@ -2761,7 +2806,7 @@ mod tests {
         let mut empty = atom("empty", ChatAtomKind::Text, true);
         empty.content_present = Some(false);
         let delta = s.prepare(4, 40, &[at_effect(empty, 4)], &[], &[])?;
-        assert!(delta.remove_empty.is_empty());
+        assert!(delta.blocks.iter().all(|block| block.header.version == 5));
         assert_eq!(s.published, 0);
         assert_eq!(s.blocks[&1].next_member, 2);
         s.prepare(
@@ -2953,7 +2998,7 @@ mod tests {
             assert!(s.current_work_rows.is_empty());
         }
         assert_eq!(s.members.len(), 0);
-        let cut = s.capture(None, 1, 0, 1);
+        let cut = s.capture(None, 1, Some(0), 1);
         assert_eq!(cut.open.len(), 1);
         assert_eq!(cut.open[0].next_member, member_count);
         assert!(s.retained_bytes() < 4096);
@@ -2993,7 +3038,7 @@ mod tests {
         );
         assert_eq!(delta.members.len(), 1); // No fold/rewrite of saved member heads.
         assert_eq!(delta.blocks.len(), 2);
-        assert_eq!(delta.published_through, 1);
+        assert_eq!(delta.ready_frontier, 1);
         s.confirm(member_count + 2);
         assert_eq!(s.members.len(), 1);
         eprintln!(

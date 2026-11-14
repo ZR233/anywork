@@ -18,7 +18,7 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 22;
+const HISTORY_SCHEMA_VERSION: i64 = 23;
 use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
@@ -3308,7 +3308,7 @@ pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTra
         db.execute_unprepared(
             "DROP TABLE conversation_display_members;
              DROP TABLE conversation_display_blocks;
-             ALTER TABLE history_meta DROP COLUMN display_published_through;
+             ALTER TABLE history_meta DROP COLUMN display_ready_frontier;
              ALTER TABLE history_meta DROP COLUMN display_applied_effect;
              DELETE FROM seaql_migrations
              WHERE version IN ('m20261113_000001_work_snapshots');

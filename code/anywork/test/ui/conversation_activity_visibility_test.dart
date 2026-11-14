@@ -38,7 +38,7 @@ const _status = ThreadActivityView(
 final _live = LiveDisplayWindow(
   currentWorkId: null,
   revision: 1,
-  historyThrough: 0,
+  readyFrontier: 0,
   executionPresent: true,
   blocks: const [],
 );
@@ -97,7 +97,7 @@ LiveStatusAggregate _observe({
           ? const LiveWindowCut.inactive()
           : LiveWindowCut(
               revision: live.revision,
-              historyThrough: live.historyThrough,
+              readyFrontier: live.readyFrontier,
               executionPresent: live.executionPresent,
               attemptId: 1,
               isDisplayActive: true,
@@ -237,7 +237,7 @@ void main() {
       final live = LiveDisplayWindow(
         currentWorkId: 'background-tail',
         revision: 1,
-        historyThrough: 0,
+        readyFrontier: 0,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -285,7 +285,7 @@ void main() {
       final latest = LiveDisplayWindow(
         currentWorkId: 'tail',
         revision: 10,
-        historyThrough: 2,
+        readyFrontier: 2,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -302,7 +302,7 @@ void main() {
       final older = LiveDisplayWindow(
         currentWorkId: null,
         revision: 10,
-        historyThrough: 2,
+        readyFrontier: 2,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -352,7 +352,7 @@ void main() {
         LiveDisplayWindow(
           currentWorkId: null,
           revision: 2,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: blocks,
         );
@@ -452,7 +452,7 @@ void main() {
         final live = LiveDisplayWindow(
           currentWorkId: 'opaque-block',
           revision: 3,
-          historyThrough: 0,
+          readyFrontier: 0,
           executionPresent: true,
           blocks: [
             LiveDisplayBlock(
@@ -510,14 +510,14 @@ void main() {
             LiveDisplayWindow(
               currentWorkId: 'opaque-block',
               revision: 4,
-              historyThrough: 0,
+              readyFrontier: 0,
               executionPresent: false,
               blocks: live.blocks,
             ),
             LiveDisplayWindow(
               currentWorkId: null,
               revision: 4,
-              historyThrough: 0,
+              readyFrontier: 0,
               executionPresent: true,
               blocks: [
                 LiveDisplayBlock(
@@ -532,7 +532,7 @@ void main() {
             LiveDisplayWindow(
               currentWorkId: null,
               revision: 4,
-              historyThrough: 0,
+              readyFrontier: 0,
               executionPresent: true,
               blocks: [work],
             ),
@@ -563,7 +563,7 @@ void main() {
       final live = LiveDisplayWindow(
         currentWorkId: 'work',
         revision: 4,
-        historyThrough: 0,
+        readyFrontier: 0,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -641,7 +641,7 @@ void main() {
     final live = LiveDisplayWindow(
       currentWorkId: null,
       revision: 4,
-      historyThrough: 3,
+      readyFrontier: 3,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(
@@ -702,7 +702,7 @@ void main() {
       final coldWorkWindow = LiveDisplayWindow(
         currentWorkId: 'work',
         revision: 4,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: false,
         blocks: [
           LiveDisplayBlock(
@@ -729,7 +729,7 @@ void main() {
       final coldSingleWindow = LiveDisplayWindow(
         currentWorkId: null,
         revision: 5,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: false,
         blocks: [
           LiveDisplayBlock(
@@ -874,7 +874,7 @@ void main() {
           final live = LiveDisplayWindow(
             currentWorkId: currentWorkId,
             revision: previous.revision + 1,
-            historyThrough: previous.historyThrough,
+            readyFrontier: previous.readyFrontier,
             executionPresent: executionPresent,
             blocks: blocks,
             older: olderSource == null ? null : 'older-page',
@@ -883,8 +883,8 @@ void main() {
             displayBatch(
               const [],
               placement: ChatPlacement.append,
-              from: live.historyThrough,
-              through: live.historyThrough,
+              from: live.readyFrontier,
+              through: live.readyFrontier,
               live: live,
             ),
           );
@@ -1046,7 +1046,7 @@ void main() {
           transport.olderPage = LiveDisplayWindow(
             currentWorkId: null,
             revision: live.revision,
-            historyThrough: live.historyThrough,
+            readyFrontier: live.readyFrontier,
             executionPresent: live.executionPresent,
             blocks: [
               LiveDisplayBlock(
@@ -1326,7 +1326,7 @@ void main() {
     final live = LiveDisplayWindow(
       currentWorkId: 'background-work',
       revision: 1,
-      historyThrough: 0,
+      readyFrontier: 0,
       executionPresent: true,
       blocks: [work],
     );
@@ -1442,7 +1442,7 @@ void main() {
   test('state machine transitions older window paging, handles failure/return, and resets on cut change while deduplicating driver effects', () {
     const cut1 = LiveWindowCut(
       revision: 10,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       attemptId: 1,
       isDisplayActive: true,
@@ -1450,7 +1450,7 @@ void main() {
     final latest = LiveDisplayWindow(
       currentWorkId: null,
       revision: 10,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       blocks: const [],
       older: 'cursor-1',
@@ -1458,7 +1458,7 @@ void main() {
     final olderPage = LiveDisplayWindow(
       currentWorkId: null,
       revision: 10,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(
@@ -1546,7 +1546,7 @@ void main() {
     // 切面（revision）推进后自动归零分页，丢弃旧实时页。
     const cut2 = LiveWindowCut(
       revision: 11,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       attemptId: 1,
       isDisplayActive: true,
@@ -1554,7 +1554,7 @@ void main() {
     final latest2 = LiveDisplayWindow(
       currentWorkId: null,
       revision: 11,
-      historyThrough: 2,
+      readyFrontier: 2,
       executionPresent: true,
       blocks: const [],
     );

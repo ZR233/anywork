@@ -17303,7 +17303,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return BridgeDisplayBlock(
       id: dco_decode_String(arr[0]),
-      historyPos: dco_decode_u_64(arr[1]),
+      blockOrder: dco_decode_u_64(arr[1]),
       body: dco_decode_bridge_display_block_body(arr[2]),
     );
   }
@@ -17778,7 +17778,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeLiveDisplayWindow(
       revision: dco_decode_u_64(arr[0]),
-      historyThrough: dco_decode_u_64(arr[1]),
+      readyFrontier: dco_decode_u_64(arr[1]),
       executionPresent: dco_decode_bool(arr[2]),
       currentWorkId: dco_decode_opt_String(arr[3]),
       blocks: dco_decode_list_bridge_live_display_block(arr[4]),
@@ -21450,8 +21450,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       placement: dco_decode_bridge_chat_placement(arr[1]),
       blocks: dco_decode_list_bridge_display_block(arr[2]),
       before: dco_decode_opt_String(arr[3]),
-      fromPos: dco_decode_opt_box_autoadd_u_64(arr[4]),
-      throughPos: dco_decode_u_64(arr[5]),
+      fromOrder: dco_decode_opt_box_autoadd_u_64(arr[4]),
+      throughOrder: dco_decode_u_64(arr[5]),
       live: dco_decode_opt_box_autoadd_bridge_live_display_window(arr[6]),
     );
   }
@@ -33889,11 +33889,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_String(deserializer);
-    var var_historyPos = sse_decode_u_64(deserializer);
+    var var_blockOrder = sse_decode_u_64(deserializer);
     var var_body = sse_decode_bridge_display_block_body(deserializer);
     return BridgeDisplayBlock(
       id: var_id,
-      historyPos: var_historyPos,
+      blockOrder: var_blockOrder,
       body: var_body,
     );
   }
@@ -34470,14 +34470,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_revision = sse_decode_u_64(deserializer);
-    var var_historyThrough = sse_decode_u_64(deserializer);
+    var var_readyFrontier = sse_decode_u_64(deserializer);
     var var_executionPresent = sse_decode_bool(deserializer);
     var var_currentWorkId = sse_decode_opt_String(deserializer);
     var var_blocks = sse_decode_list_bridge_live_display_block(deserializer);
     var var_older = sse_decode_opt_String(deserializer);
     return BridgeLiveDisplayWindow(
       revision: var_revision,
-      historyThrough: var_historyThrough,
+      readyFrontier: var_readyFrontier,
       executionPresent: var_executionPresent,
       currentWorkId: var_currentWorkId,
       blocks: var_blocks,
@@ -39203,8 +39203,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_placement = sse_decode_bridge_chat_placement(deserializer);
     var var_blocks = sse_decode_list_bridge_display_block(deserializer);
     var var_before = sse_decode_opt_String(deserializer);
-    var var_fromPos = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_throughPos = sse_decode_u_64(deserializer);
+    var var_fromOrder = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_throughOrder = sse_decode_u_64(deserializer);
     var var_live = sse_decode_opt_box_autoadd_bridge_live_display_window(
       deserializer,
     );
@@ -39213,8 +39213,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       placement: var_placement,
       blocks: var_blocks,
       before: var_before,
-      fromPos: var_fromPos,
-      throughPos: var_throughPos,
+      fromOrder: var_fromOrder,
+      throughOrder: var_throughOrder,
       live: var_live,
     );
   }
@@ -52114,7 +52114,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.id, serializer);
-    sse_encode_u_64(self.historyPos, serializer);
+    sse_encode_u_64(self.blockOrder, serializer);
     sse_encode_bridge_display_block_body(self.body, serializer);
   }
 
@@ -52571,7 +52571,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.revision, serializer);
-    sse_encode_u_64(self.historyThrough, serializer);
+    sse_encode_u_64(self.readyFrontier, serializer);
     sse_encode_bool(self.executionPresent, serializer);
     sse_encode_opt_String(self.currentWorkId, serializer);
     sse_encode_list_bridge_live_display_block(self.blocks, serializer);
@@ -56169,8 +56169,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_chat_placement(self.placement, serializer);
     sse_encode_list_bridge_display_block(self.blocks, serializer);
     sse_encode_opt_String(self.before, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.fromPos, serializer);
-    sse_encode_u_64(self.throughPos, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.fromOrder, serializer);
+    sse_encode_u_64(self.throughOrder, serializer);
     sse_encode_opt_box_autoadd_bridge_live_display_window(
       self.live,
       serializer,

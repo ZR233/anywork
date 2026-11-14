@@ -887,7 +887,7 @@ final class _RealtimeScene {
         .singleWhere((member) => member.id == reasoning.id);
     expect(currentReasoning.source, source);
     expect(currentReasoning.lifecycle, isA<ActiveChatAtom>());
-    expect(observed.unitForBlock(prepared.reference).historyPos, isNull);
+    expect(observed.unitForBlock(prepared.reference).blockOrder, isNull);
     expect(lease.live.value!.executionPresent, isTrue);
     evidence.addAll({
       'stage': 'native result and active foreground content verified',
@@ -1030,7 +1030,7 @@ final class _RealtimeScene {
     );
     final unit = (await observed.workForSource(source)).single;
     expect(
-      unit.historyPos,
+      unit.blockOrder,
       isNull,
       reason: 'A terminal member without a boundary stays live',
     );
@@ -1191,7 +1191,7 @@ final class _RealtimeScene {
       same(prepared.memberController),
       reason: 'The display lease, not a parent Widget, owns member demand',
     );
-    if (unit.historyPos == null) {
+    if (unit.blockOrder == null) {
       expect(unit.expansion.bodyGeneration, same(prepared.bodyGeneration));
     }
     expect(unit.memberReference, prepared.reference);
@@ -1553,7 +1553,7 @@ final class _RealtimeScene {
       if (metadata is! TimelineDisplayUnit) {
         fail('The original Main Message must own TimelineDisplayUnit metadata');
       }
-      expect(metadata.historyPos!, greaterThan(0));
+      expect(metadata.blockOrder!, greaterThan(0));
       expect(metadata, same(single));
       final DisplayRecord record;
       if (head == null) {
@@ -1851,7 +1851,7 @@ final class _RealtimeScene {
             'completed': true,
             'id': metadata.id,
             'itemId': metadata.id,
-            'hasPosition': metadata.historyPos! > 0,
+            'hasPosition': metadata.blockOrder! > 0,
             'contentItemId': switch (metadata.body) {
               SingleDisplayBlock(:final record) => completedOriginalId(record),
               WorkDisplayBlock() => null,
@@ -2659,7 +2659,7 @@ final class _RealtimeScene {
       await observed.revealSingle(item, timeout: remaining());
       final unit = observed.unit(item.id);
       expect(unit, same(item));
-      expect(unit.historyPos!, greaterThan(0));
+      expect(unit.blockOrder!, greaterThan(0));
       final row = observed.itemRow(item.id);
       final originalScrollable = Scrollable.maybeOf(tester.element(row));
       final text = find
@@ -3315,7 +3315,7 @@ final class _RealtimeScene {
         final groupIds = units.map((unit) => unit.id).toSet();
         if (preparedObserver != null) {
           expect(units.single.id, preparedObserver.display.unitId);
-          expect(units.single.historyPos, isNull);
+          expect(units.single.blockOrder, isNull);
           expect(lease.live.value!.executionPresent, isTrue);
           expect(observed.liveWork.map((unit) => unit.id).toList(), [
             preparedObserver.display.unitId,

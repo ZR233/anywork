@@ -96,7 +96,7 @@ void main() {
       expect(find.text('更早成员'), findsOneWidget);
       final demand = intent.members;
       final history = TimelineDisplayUnit(
-        block: DisplayBlock(id: 'work', historyPos: 1, body: body),
+        block: DisplayBlock(id: 'work', blockOrder: 1, body: body),
         expansion: intent,
       );
       await tester.pumpWidget(host(history, 'history'));

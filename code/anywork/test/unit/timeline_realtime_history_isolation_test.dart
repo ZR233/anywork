@@ -86,7 +86,7 @@ void main() {
     final live = LiveDisplayWindow(
       currentWorkId: null,
       revision: (lease.live.value?.revision ?? 0) + 1,
-      historyThrough: feed.historyThrough,
+      readyFrontier: feed.readyFrontier,
       executionPresent: true,
       blocks: [
         LiveDisplayBlock(
@@ -122,8 +122,8 @@ void main() {
         batch: displayBatch(
           [],
           placement: ChatPlacement.append,
-          from: feed.historyThrough,
-          through: feed.historyThrough,
+          from: feed.readyFrontier,
+          through: feed.readyFrontier,
           live: live,
         ),
       ),
@@ -136,8 +136,8 @@ void main() {
         batch: displayBatch(
           [],
           placement: ChatPlacement.append,
-          from: feed.historyThrough,
-          through: feed.historyThrough,
+          from: feed.readyFrontier,
+          through: feed.readyFrontier,
           live: live,
         ),
       ),
@@ -261,11 +261,11 @@ void main() {
           [
             displaySingle(
               chatMessage('isolation-completed', completionSeq: 200),
-              historyPos: feed.historyThrough + 1,
+              blockOrder: feed.readyFrontier + 1,
             ),
           ],
           placement: ChatPlacement.append,
-          from: feed.historyThrough,
+          from: feed.readyFrontier,
         ),
       ),
     );
@@ -282,12 +282,12 @@ void main() {
         batch: displayBatch(
           [],
           placement: ChatPlacement.append,
-          from: feed.historyThrough,
-          through: feed.historyThrough,
+          from: feed.readyFrontier,
+          through: feed.readyFrontier,
           live: LiveDisplayWindow(
             currentWorkId: null,
             revision: live.revision + 1,
-            historyThrough: feed.historyThrough,
+            readyFrontier: feed.readyFrontier,
             executionPresent: false,
             blocks: const [],
           ),
@@ -373,7 +373,7 @@ final class _InjectingFeed implements TimelineFeed {
 
   final acknowledgements = <int>[];
   int deliveredFrames = 0;
-  int historyThrough = 0;
+  int readyFrontier = 0;
   bool _closed = false;
   bool _claimed = false;
   int _sequence = 0;
@@ -412,7 +412,7 @@ final class _InjectingFeed implements TimelineFeed {
       (frame) {
         if (_closed) return;
         if (frame.event case ConversationTimelineEvent(:final batch)) {
-          historyThrough = batch.throughPos;
+          readyFrontier = batch.throughOrder;
         }
         final terminal =
             frame.event is ConversationClosedEvent ||
@@ -442,7 +442,7 @@ final class _InjectingFeed implements TimelineFeed {
   Future<void> emitAndWait(ConversationEvent event) {
     if (_closed) return Future.error(StateError('Injecting feed is closed'));
     if (event case ConversationTimelineEvent(:final batch)) {
-      historyThrough = batch.throughPos;
+      readyFrontier = batch.throughOrder;
     }
     final accepted = Completer<void>();
     final sequence = ++_sequence;

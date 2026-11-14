@@ -381,7 +381,7 @@ class _LiveHarness {
     live.value = LiveDisplayWindow(
       currentWorkId: currentWorkId,
       revision: ++revision,
-      historyThrough: 0,
+      readyFrontier: 0,
       executionPresent: executionPresent,
       blocks: blocks,
     );

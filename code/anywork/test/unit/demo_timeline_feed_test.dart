@@ -28,9 +28,9 @@ void main() {
     // State still owns its credit; Timeline Set and queries do not wait for it.
     final batch = await _nextTimeline(events, 1);
     expect(batch.placement, ChatPlacement.set);
-    expect(batch.blocks.map((b) => b.historyPos), [1, 2, 3]);
-    expect(batch.throughPos, 3);
-    expect(batch.live!.historyThrough, 3);
+    expect(batch.blocks.map((b) => b.blockOrder), [1, 2, 3]);
+    expect(batch.throughOrder, 3);
+    expect(batch.live!.readyFrontier, 3);
     expect(batch.live!.blocks, isEmpty);
     final work = batch.blocks[1].body as WorkDisplayBlock;
     expect(work.timing.finishedAt, isNotNull);
@@ -51,7 +51,7 @@ void main() {
       demand: chatDemand,
     );
     expect(finalOriginal.completionSeq, 4);
-    expect(batch.blocks.last.historyPos, 3);
+    expect(batch.blocks.last.blockOrder, 3);
     await members.close();
     await feed.close();
     await state.close();
@@ -63,7 +63,7 @@ void main() {
     api.seedTimelineItems(_thread, [entry]);
     var feed = await api.openTimelineFeed(_thread, demand: chatDemand);
     var events = StreamIterator(feed.events);
-    expect((await _nextTimeline(events, 1)).throughPos, 3);
+    expect((await _nextTimeline(events, 1)).throughOrder, 3);
     await feed.close();
     await events.cancel();
 
@@ -76,10 +76,10 @@ void main() {
       blocks: [
         DisplayBlock(
           id: ref.blockId,
-          historyPos: 4,
+          blockOrder: 4,
           body: WorkDisplayBlock(timing: displayTiming(), members: ref),
         ),
-        displaySingle(entry, historyPos: 5),
+        displaySingle(entry, blockOrder: 5),
       ],
       members: {
         ref: [
@@ -99,8 +99,8 @@ void main() {
     events = StreamIterator(feed.events);
     addTearDown(events.cancel);
     final batch = await _nextTimeline(events, 1);
-    expect(batch.blocks.single.historyPos, 5);
-    expect(batch.throughPos, 5);
+    expect(batch.blocks.single.blockOrder, 5);
+    expect(batch.throughOrder, 5);
     // No ACK of Set: all three query paths are independent of producer credit.
     final older = await feed.loadTimelineOlder(
       before: batch.before!,
@@ -108,12 +108,12 @@ void main() {
     );
     expect(older.placement, ChatPlacement.prepend);
     expect(older.blocks.single.id, ref.blockId);
-    expect(older.throughPos, 5);
+    expect(older.throughOrder, 5);
     final oldest = await feed.loadTimelineOlder(
       before: older.before!,
       demand: chatDemand,
     );
-    expect(oldest.blocks.map((b) => b.historyPos), [1, 2, 3]);
+    expect(oldest.blocks.map((b) => b.blockOrder), [1, 2, 3]);
     expect(oldest.before, isNull);
     expect(
       (await feed.reader.readCompleted(
@@ -151,7 +151,7 @@ void main() {
       live: LiveDisplayWindow(
         currentWorkId: null,
         revision: 1,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: false,
         blocks: [
           for (var i = 1; i <= 3; i++)
@@ -191,7 +191,7 @@ void main() {
       live: LiveDisplayWindow(
         currentWorkId: null,
         revision: 2,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: false,
         blocks: [],
       ),
@@ -445,7 +445,7 @@ void main() {
       live: LiveDisplayWindow(
         currentWorkId: null,
         revision: 1,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: true,
         blocks: [
           for (var i = 1; i <= 2; i++)
@@ -473,26 +473,26 @@ void main() {
       threadId: _thread,
       blocks: [
         for (var i = 1; i <= 2; i++)
-          displaySingle(chatMessage('handoff-$i'), historyPos: 3 + i),
+          displaySingle(chatMessage('handoff-$i'), blockOrder: 3 + i),
       ],
       live: LiveDisplayWindow(
         currentWorkId: null,
         revision: 2,
-        historyThrough: 5,
+        readyFrontier: 5,
         executionPresent: false,
         blocks: [],
       ),
     );
     await feed.acknowledge(events.current.deliverySequence);
     final first = await _nextTimeline(events, 2);
-    expect(first.fromPos, 3);
-    expect(first.throughPos, 4);
+    expect(first.fromOrder, 3);
+    expect(first.throughOrder, 4);
     expect(first.blocks.single.id, 'handoff-1');
     expect(first.live, isNull);
     await feed.acknowledge(events.current.deliverySequence);
     final second = await _nextTimeline(events, 3);
-    expect(second.fromPos, 4);
-    expect(second.throughPos, 5);
+    expect(second.fromOrder, 4);
+    expect(second.throughOrder, 5);
     expect(second.blocks.single.id, 'handoff-2');
     expect(second.live!.blocks, isEmpty);
     await feed.close();
@@ -505,12 +505,12 @@ void main() {
       final feed = await api.openTimelineFeed(_thread, demand: _one);
       final events = StreamIterator(feed.events);
       addTearDown(events.cancel);
-      expect((await _nextTimeline(events, 1)).throughPos, 3);
+      expect((await _nextTimeline(events, 1)).throughOrder, 3);
 
       LiveDisplayWindow live(int through, String id) => LiveDisplayWindow(
         currentWorkId: null,
         revision: through,
-        historyThrough: through,
+        readyFrontier: through,
         executionPresent: true,
         blocks: [
           LiveDisplayBlock(
@@ -530,41 +530,41 @@ void main() {
       api.seedDisplayBlocks(
         threadId: _thread,
         blocks: [
-          displaySingle(chatMessage('fixed-4'), historyPos: 4),
-          displaySingle(chatMessage('fixed-5'), historyPos: 5),
+          displaySingle(chatMessage('fixed-4'), blockOrder: 4),
+          displaySingle(chatMessage('fixed-5'), blockOrder: 5),
         ],
         live: live(5, 'live-at-five'),
       );
       await feed.acknowledge(events.current.deliverySequence);
       final first = await _nextTimeline(events, 2);
-      expect(first.fromPos, 3);
-      expect(first.throughPos, 4);
+      expect(first.fromOrder, 3);
+      expect(first.throughOrder, 4);
       expect(first.live, isNull);
 
       api.seedDisplayBlocks(
         threadId: _thread,
-        blocks: [displaySingle(chatMessage('newer-6'), historyPos: 6)],
+        blocks: [displaySingle(chatMessage('newer-6'), blockOrder: 6)],
         live: live(6, 'live-at-six'),
       );
       await feed.acknowledge(events.current.deliverySequence);
       final target = await _nextTimeline(events, 3);
-      expect(target.fromPos, 4);
-      expect(target.throughPos, 5);
+      expect(target.fromOrder, 4);
+      expect(target.throughOrder, 5);
       expect(target.blocks.single.id, 'fixed-5');
       expect(
         target.live,
         isNotNull,
         reason: 'The captured P=5 target owns its live cut',
       );
-      expect(target.live!.historyThrough, 5);
+      expect(target.live!.readyFrontier, 5);
       expect(target.live!.blocks.single.id, 'live-at-five');
 
       await feed.acknowledge(events.current.deliverySequence);
       final newer = await _nextTimeline(events, 4);
-      expect(newer.fromPos, 5);
-      expect(newer.throughPos, 6);
+      expect(newer.fromOrder, 5);
+      expect(newer.throughOrder, 6);
       expect(newer.blocks.single.id, 'newer-6');
-      expect(newer.live!.historyThrough, 6);
+      expect(newer.live!.readyFrontier, 6);
       expect(newer.live!.blocks.single.id, 'live-at-six');
       expect(newer.live!.revision, greaterThan(target.live!.revision));
       await feed.close();
@@ -594,7 +594,7 @@ void main() {
         live: LiveDisplayWindow(
           currentWorkId: null,
           revision: 1,
-          historyThrough: 3,
+          readyFrontier: 3,
           executionPresent: false,
           blocks: [
             LiveDisplayBlock(
@@ -620,11 +620,11 @@ void main() {
       final waiting = members.next();
       api.seedDisplayBlocks(
         threadId: _thread,
-        blocks: [DisplayBlock(id: ref.blockId, historyPos: 4, body: body)],
+        blocks: [DisplayBlock(id: ref.blockId, blockOrder: 4, body: body)],
         live: LiveDisplayWindow(
           currentWorkId: null,
           revision: 2,
-          historyThrough: 4,
+          readyFrontier: 4,
           executionPresent: false,
           blocks: [],
         ),
@@ -705,7 +705,7 @@ void main() {
         live: LiveDisplayWindow(
           currentWorkId: null,
           revision: 1,
-          historyThrough: 3,
+          readyFrontier: 3,
           executionPresent: false,
           blocks: [
             LiveDisplayBlock(
@@ -743,14 +743,14 @@ void main() {
           blocks: [
             displaySingle(
               chatMessage('must-not-install-$conflict'),
-              historyPos: 4,
+              blockOrder: 4,
             ),
-            DisplayBlock(id: ref.blockId, historyPos: 5, body: replacement),
+            DisplayBlock(id: ref.blockId, blockOrder: 5, body: replacement),
           ],
           live: LiveDisplayWindow(
             currentWorkId: null,
             revision: 2,
-            historyThrough: 5,
+            readyFrontier: 5,
             executionPresent: false,
             blocks: [],
           ),
@@ -777,7 +777,7 @@ void main() {
       final afterEvents = StreamIterator(afterFeed.events);
       addTearDown(afterEvents.cancel);
       final after = await _nextTimeline(afterEvents, 1);
-      expect(after.throughPos, before.throughPos, reason: conflict);
+      expect(after.throughOrder, before.throughOrder, reason: conflict);
       expect(after.blocks.map((b) => b.id), before.blocks.map((b) => b.id));
       expect(after.live!.revision, before.live!.revision);
       expect(after.live!.blocks.single.id, ref.blockId);
@@ -801,19 +801,19 @@ void main() {
       // A valid retry still owns the next position after the rejected prefix.
       api.seedDisplayBlocks(
         threadId: _thread,
-        blocks: [DisplayBlock(id: ref.blockId, historyPos: 4, body: original)],
+        blocks: [DisplayBlock(id: ref.blockId, blockOrder: 4, body: original)],
         live: LiveDisplayWindow(
           currentWorkId: null,
           revision: 2,
-          historyThrough: 4,
+          readyFrontier: 4,
           executionPresent: false,
           blocks: [],
         ),
       );
       await afterFeed.acknowledge(afterEvents.current.deliverySequence);
       final valid = await _nextTimeline(afterEvents, 2);
-      expect(valid.fromPos, 3);
-      expect(valid.throughPos, 4);
+      expect(valid.fromOrder, 3);
+      expect(valid.throughOrder, 4);
       expect(valid.blocks.single.id, ref.blockId);
       await afterFeed.close();
       await feed.close();
@@ -856,7 +856,7 @@ void main() {
       live: LiveDisplayWindow(
         currentWorkId: ref.blockId,
         revision: 1,
-        historyThrough: 3,
+        readyFrontier: 3,
         executionPresent: false,
         blocks: [
           LiveDisplayBlock(

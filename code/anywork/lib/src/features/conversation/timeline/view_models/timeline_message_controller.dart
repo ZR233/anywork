@@ -56,21 +56,21 @@ final class TimelineMessageController {
       );
     }
     final validCut = switch (batch.placement) {
-      ChatPlacement.set => batch.fromPos == null,
+      ChatPlacement.set => batch.fromOrder == null,
       ChatPlacement.prepend =>
         _through != null &&
-            batch.fromPos == null &&
+            batch.fromOrder == null &&
             batch.live == null &&
-            batch.throughPos <= _through!,
+            batch.throughOrder <= _through!,
       ChatPlacement.append =>
         _through != null &&
-            batch.fromPos == _through &&
-            batch.throughPos >= _through! &&
+            batch.fromOrder == _through &&
+            batch.throughOrder >= _through! &&
             batch.before == null,
     };
-    var previous = batch.fromPos ?? 0;
+    var previous = batch.fromOrder ?? 0;
     final ids = <String>{};
-    var valid = validCut && batch.throughPos >= 0;
+    var valid = validCut && batch.throughOrder >= 0;
     for (final block in batch.blocks) {
       valid =
           valid &&
@@ -78,16 +78,16 @@ final class TimelineMessageController {
           ids.add(block.id) &&
           (batch.placement == ChatPlacement.set ||
               !_loadedIds.contains(block.id)) &&
-          block.historyPos > previous &&
-          block.historyPos <= batch.throughPos;
-      previous = block.historyPos;
+          block.blockOrder > previous &&
+          block.blockOrder <= batch.throughOrder;
+      previous = block.blockOrder;
     }
     if (!valid) {
       throw const ConversationContinuityError('Invalid display block page');
     }
     // Pure live frames do not even inspect the existing Main collection.
     if (batch.placement == ChatPlacement.append && batch.blocks.isEmpty) {
-      if (batch.throughPos != _through) {
+      if (batch.throughOrder != _through) {
         throw const ConversationContinuityError(
           'Pure live frame advanced history',
         );
@@ -97,7 +97,7 @@ final class TimelineMessageController {
     if (batch.placement == ChatPlacement.prepend &&
         batch.blocks.isNotEmpty &&
         _firstPosition != null &&
-        batch.blocks.last.historyPos >= _firstPosition!) {
+        batch.blocks.last.blockOrder >= _firstPosition!) {
       throw const ConversationContinuityError('Display pages overlap');
     }
     final messages = [for (final block in batch.blocks) _message(block)];
@@ -133,14 +133,14 @@ final class TimelineMessageController {
       }
       if (batch.placement == ChatPlacement.set) {
         _loadedIds.clear();
-        _firstPosition = batch.blocks.firstOrNull?.historyPos;
+        _firstPosition = batch.blocks.firstOrNull?.blockOrder;
       } else if (batch.blocks.isNotEmpty) {
         _firstPosition = batch.placement == ChatPlacement.prepend
-            ? batch.blocks.first.historyPos
-            : _firstPosition ?? batch.blocks.first.historyPos;
+            ? batch.blocks.first.blockOrder
+            : _firstPosition ?? batch.blocks.first.blockOrder;
       }
       _loadedIds.addAll(ids);
-      if (batch.placement != ChatPlacement.prepend) _through = batch.throughPos;
+      if (batch.placement != ChatPlacement.prepend) _through = batch.throughOrder;
       for (final message in messages) {
         final unit = _unitOf(message);
         unit.expansion.current = unit;

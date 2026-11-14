@@ -7,6 +7,7 @@ pub(in crate::studio) struct CommittedBatch {
     database_id: String,
     effect: u64,
     append_seq: Option<u64>,
+    display: Option<(u64, u64, u64)>,
 }
 
 impl CommittedBatch {
@@ -15,6 +16,9 @@ impl CommittedBatch {
     }
     pub(in crate::studio) fn effect(&self) -> u64 {
         self.effect
+    }
+    pub(in crate::studio) fn display(&self) -> Option<(u64, u64, u64)> {
+        self.display
     }
     pub(in crate::studio) fn append_seq(&self) -> Option<u64> {
         self.append_seq
@@ -315,6 +319,11 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
         database_id,
         effect: effects.last().expect("nonempty batch").sequence,
         append_seq,
+        display: effects
+            .iter()
+            .rev()
+            .find_map(|effect| effect.prepared.display.as_ref())
+            .map(|delta| (delta.effect_seq, delta.ready_frontier, delta.last_order)),
     })?;
     for ((effect, candidate), accounting) in effects.iter().zip(candidates).zip(accounting) {
         super::super::state::clear_checkpoint_recovery(&inner.thread.id);

@@ -1145,7 +1145,7 @@ mod run_read_tests {
         fn kind(sql: &[u8], scope: Scope) -> Kind {
             let sql = sql.trim_ascii();
             if !matches!(scope, Scope::CompletionHeads) {
-                if sql.starts_with(b"SELECT block_id,source_key,block_order,history_pos,sealed,updated_effect,header FROM conversation_display_blocks WHERE ") {
+                if sql.starts_with(b"SELECT block_id,source_key,block_order,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE ") {
             return Kind::Heads;
         }
                 if matches!(scope, Scope::DisplayMembers) {

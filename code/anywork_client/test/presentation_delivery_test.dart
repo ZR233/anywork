@@ -16,7 +16,7 @@ DisplayBlockBody _body(String id) => SingleDisplayBlock(
   ),
 );
 DisplayBlock _block(String id, int pos) =>
-    DisplayBlock(id: id, historyPos: pos, body: _body(id));
+    DisplayBlock(id: id, blockOrder: pos, body: _body(id));
 LiveDisplayBlock _work(
   String id,
   int order, {
@@ -34,7 +34,7 @@ LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
     LiveDisplayWindow(
       currentWorkId: null,
       revision: revision,
-      historyThrough: pos,
+      readyFrontier: pos,
       executionPresent: true,
       blocks: [
         for (var i = 0; i < ids.length; i++)
@@ -53,7 +53,7 @@ TimelineBatch _set({
   presentationVersion: version,
   placement: ChatPlacement.set,
   blocks: [],
-  throughPos: 0,
+  throughOrder: 0,
   live: _live(live),
 );
 TimelineBatch _append(String id, int pos, {LiveDisplayWindow? live}) =>
@@ -61,8 +61,8 @@ TimelineBatch _append(String id, int pos, {LiveDisplayWindow? live}) =>
       presentationVersion: presentationVersion,
       placement: ChatPlacement.append,
       blocks: [_block(id, pos)],
-      fromPos: pos - 1,
-      throughPos: pos,
+      fromOrder: pos - 1,
+      throughOrder: pos,
       live: live,
     );
 
@@ -191,7 +191,7 @@ void main() {
     }) => LiveDisplayWindow(
       currentWorkId: 'work',
       revision: revision,
-      historyThrough: pos,
+      readyFrontier: pos,
       executionPresent: true,
       blocks: [
         if (prefix)
@@ -218,7 +218,7 @@ void main() {
           presentationVersion: presentationVersion,
           placement: ChatPlacement.set,
           blocks: [],
-          throughPos: 0,
+          throughOrder: 0,
           live: tail(prefix: true),
         ),
       ),
@@ -232,7 +232,7 @@ void main() {
     final olderPage = LiveDisplayWindow(
       currentWorkId: null,
       revision: 1,
-      historyThrough: 1,
+      readyFrontier: 1,
       executionPresent: true,
       blocks: [_work('work', 2)],
     );
@@ -249,8 +249,8 @@ void main() {
           presentationVersion: presentationVersion,
           placement: ChatPlacement.append,
           blocks: [],
-          fromPos: 1,
-          throughPos: 1,
+          fromOrder: 1,
+          throughOrder: 1,
           live: updated,
         ),
       ),
@@ -258,7 +258,7 @@ void main() {
     expect(h.content.live.value, same(updated));
     expect(h.content.live.value!.currentWorkId, 'work');
     expect(h.consumer.values.last.$1.blocks, isEmpty);
-    expect(h.consumer.values.last.$1.throughPos, 1);
+    expect(h.consumer.values.last.$1.throughOrder, 1);
     expect(feed.acknowledgements, [1, 2, 3]);
   });
 
@@ -288,7 +288,7 @@ void main() {
           final live = LiveDisplayWindow(
             currentWorkId: kind.startsWith('null-') ? null : 'invalid',
             revision: 1,
-            historyThrough: 0,
+            readyFrontier: 0,
             executionPresent: true,
             blocks: [
               if (kind == 'sealed')
@@ -315,8 +315,8 @@ void main() {
                 presentationVersion: presentationVersion,
                 placement: placement,
                 blocks: [],
-                fromPos: placement == ChatPlacement.append ? 0 : null,
-                throughPos: 0,
+                fromOrder: placement == ChatPlacement.append ? 0 : null,
+                throughOrder: 0,
                 live: live,
               ),
             ),
@@ -344,11 +344,11 @@ void main() {
             presentationVersion: presentationVersion,
             placement: ChatPlacement.set,
             blocks: [],
-            throughPos: 0,
+            throughOrder: 0,
             live: LiveDisplayWindow(
               currentWorkId: 'restored',
               revision: 1,
-              historyThrough: 0,
+              readyFrontier: 0,
               executionPresent: true,
               blocks: [_work('restored', 1)],
             ),
@@ -664,7 +664,7 @@ void main() {
       ['text'],
       [],
     ]);
-    expect(h.content.live.value!.historyThrough, 2);
+    expect(h.content.live.value!.readyFrontier, 2);
   });
 
   test('pure live Append keeps P and Prepend shares the serial gate but not credit', () async {
@@ -681,8 +681,8 @@ void main() {
           presentationVersion: presentationVersion,
           placement: ChatPlacement.append,
           blocks: [],
-          fromPos: 0,
-          throughPos: 0,
+          fromOrder: 0,
+          throughOrder: 0,
           live: updated,
         ),
       ),
@@ -695,7 +695,7 @@ void main() {
         presentationVersion: presentationVersion,
         placement: ChatPlacement.prepend,
         blocks: [],
-        throughPos: 0,
+        throughOrder: 0,
       );
     };
     final scope = h.content.openScope(generation: 1);

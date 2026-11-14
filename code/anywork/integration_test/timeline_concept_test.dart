@@ -675,7 +675,7 @@ final class _ConceptScene {
           ? null
           : {
               'revision': snapshot.revision,
-              'historyThrough': snapshot.historyThrough,
+              'readyFrontier': snapshot.readyFrontier,
               'executionPresent': snapshot.executionPresent,
               'blockCount': snapshot.blocks.length,
               'blocks': [
@@ -738,7 +738,7 @@ final class _ConceptScene {
           {
             'id': unit.id,
             'blockId': unit.id,
-            'historyPos': unit.historyPos,
+            'blockOrder': unit.blockOrder,
             'presentation': unit.body is WorkDisplayBlock ? 'work' : 'single',
             'memberBlockId': unit.memberReference?.blockId,
             'mountedMemberIds': [
@@ -801,9 +801,9 @@ final class _ConceptScene {
 
     if (streamingAtomId == null) {
       expect(work.state, DisplayBlockState.open);
-      expect(work.historyPos, isNull);
+      expect(work.blockOrder, isNull);
     } else {
-      expect(work.historyPos, greaterThan(0));
+      expect(work.blockOrder, greaterThan(0));
       expect(work.state, DisplayBlockState.sealed);
       final text = observed.liveBlocks.singleWhere(
         (block) =>
@@ -911,7 +911,7 @@ final class _ConceptScene {
           .map((message) => message.id)
           .toList(),
       'structureRevision': window.revision,
-      'historyThrough': window.historyThrough,
+      'readyFrontier': window.readyFrontier,
       'liveBlocks': [
         for (final block in window.blocks)
           {
@@ -1911,7 +1911,7 @@ final class _ConceptScene {
             as List<Map<String, Object?>>;
     inventories.add({
       'itemId': unit.id,
-      'historyPos': unit.historyPos,
+      'blockOrder': unit.blockOrder,
       'currentPageCount': display.atoms.length,
       'inventorySource': 'explicit finite fixture queries, not UI accumulation',
       'displayIdentity': identityHashCode(display),
@@ -2207,7 +2207,7 @@ final class _ConceptScene {
     final a = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
     _expectCurrentTextSurface(a, _textA);
     final frozenFirst = observed.unit(g1);
-    expect(frozenFirst.historyPos, greaterThan(0));
+    expect(frozenFirst.blockOrder, greaterThan(0));
     expect(frozenFirst.memberReference, firstWork.memberReference);
     expect(observed.liveBlocks.any((block) => block.id == g1), isFalse);
     expect(a.lifecycle, isA<ActiveChatAtom>());
@@ -2281,7 +2281,7 @@ final class _ConceptScene {
     );
     final b = live.singleWhere((atom) => atom.kind == ChatAtomKind.text);
     _expectCurrentTextSurface(b, _textB);
-    expect(observed.unit(g2).historyPos, greaterThan(aEntry.historyPos!));
+    expect(observed.unit(g2).blockOrder, greaterThan(aEntry.blockOrder!));
     expect(observed.unit(g2).memberReference, secondWork.memberReference);
     await release('second-text');
     await reach(
@@ -2298,17 +2298,17 @@ final class _ConceptScene {
       orderedEquals([g1, aEntry.id, g2, completedTextB.id]),
     );
     for (var i = 1; i < core.length; i++) {
-      expect(core[i].historyPos!, greaterThan(core[i - 1].historyPos!));
+      expect(core[i].blockOrder!, greaterThan(core[i - 1].blockOrder!));
     }
     await _creditAsync(() async {
       await credit.queryCompletedText(
         blockId: completedTextB.id,
-        historyPos: completedTextB.historyPos!,
+        blockOrder: completedTextB.blockOrder!,
         single: completedTextB.body as SingleDisplayBlock,
       );
       await credit.observeSuccessors(
         blockId: completedTextB.id,
-        historyPos: completedTextB.historyPos!,
+        blockOrder: completedTextB.blockOrder!,
       );
       await credit.verifyClosed(
         completedOriginalId(
@@ -2645,7 +2645,7 @@ final class _ConceptScene {
         'recordId': completedOriginalId(
           (entry.body as SingleDisplayBlock).record,
         ),
-        'historyPos': entry.historyPos,
+        'blockOrder': entry.blockOrder,
         'completionSeq': entry.atom!.completionSeq,
         'atomId': entry.atom!.id,
         'mainPayloadType': entry.atom!.payload.runtimeType.toString(),
@@ -2762,7 +2762,7 @@ final class _ConceptScene {
                 'recordId': completedOriginalId(
                   (entry.body as SingleDisplayBlock).record,
                 ),
-                'historyPos': entry.historyPos,
+                'blockOrder': entry.blockOrder,
                 'completionSeq': entry.atom!.completionSeq,
                 'atomId': entry.atom!.id,
                 'payloadType': entry.atom!.payload.runtimeType.toString(),
@@ -2970,7 +2970,7 @@ final class _ConceptScene {
     TimelineDisplayUnit work,
   ) async {
     expect(work.state, DisplayBlockState.sealed);
-    expect(work.historyPos, greaterThan(0));
+    expect(work.blockOrder, greaterThan(0));
     final page = await observed.readMemberPage(
       work.memberReference!,
       demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
@@ -2998,7 +2998,7 @@ final class _ConceptScene {
     expect(bodies.last, contains(_overlapEarlyReasoning));
     return {
       'rowId': work.id,
-      'historyPos': work.historyPos,
+      'blockOrder': work.blockOrder,
       'state': work.state.name,
       'members': {
         'databaseId': work.memberReference!.databaseId,
@@ -3120,7 +3120,7 @@ final class _ConceptScene {
     );
     await unchanged();
     final completedText = items.singleWhere((unit) => unit.atom!.id == text.id);
-    expect(frozen.historyPos!, lessThan(completedText.historyPos!));
+    expect(frozen.blockOrder!, lessThan(completedText.blockOrder!));
     expect(
       observed.liveBlocks.any((block) => block.id == textBlock.id),
       isFalse,
@@ -3181,7 +3181,7 @@ final class _ConceptScene {
         final id = lateEnd.unit.id;
         Map<String, Object?> unitCut(TimelineDisplayUnit unit) => {
           'id': unit.id,
-          'historyPos': unit.historyPos,
+          'blockOrder': unit.blockOrder,
           'memberBlockId': unit.memberReference?.blockId,
           'memberDatabaseId': unit.memberReference?.databaseId,
         };
@@ -3302,7 +3302,7 @@ final class _ConceptScene {
     await idle(expectedTurnId: source.turnId);
     await unchanged();
     final endUnit = observed.unit(lateEnd.unit.id);
-    expect(endUnit.historyPos, isNull);
+    expect(endUnit.blockOrder, isNull);
     expect(lease.live.value!.currentWorkId, endUnit.id);
     expect(main.where((unit) => unit.id == endUnit.id), isEmpty);
 
@@ -3361,9 +3361,9 @@ final class _ConceptScene {
         'same durable resting tail after reopening',
       );
       expect(main.where((unit) => unit.id == endId), isEmpty);
-      expect(observed.unit(endId).historyPos, isNull);
+      expect(observed.unit(endId).blockOrder, isNull);
     } else {
-      expect(observed.unit(endId).historyPos, isNotNull);
+      expect(observed.unit(endId).blockOrder, isNotNull);
     }
     final old = observed.unit(oldId);
     expect(await _overlapFrozenCut(old), saved['frozenCut']);
@@ -4292,7 +4292,7 @@ final class _ConceptScene {
       completedOriginalId((item.body as SingleDisplayBlock).record),
       input['contentItemId'],
     );
-    expect(item.historyPos, input['historyPos']);
+    expect(item.blockOrder, input['blockOrder']);
     expect(item.atom!.completionSeq, input['completionSeq']);
     expect(item.body, isA<SingleDisplayBlock>());
     expect(item.atom!.kind, ChatAtomKind.input);
@@ -4368,7 +4368,7 @@ final class _ConceptScene {
       await showUnit(id);
       expect(items.where((item) => item.id == id), hasLength(1));
       expect(
-        items.singleWhere((item) => item.id == id).historyPos,
+        items.singleWhere((item) => item.id == id).blockOrder,
         greaterThan(0),
       );
     }

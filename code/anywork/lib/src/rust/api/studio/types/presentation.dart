@@ -16,17 +16,17 @@ part 'presentation.freezed.dart';
 
 class BridgeDisplayBlock {
   final String id;
-  final BigInt historyPos;
+  final BigInt blockOrder;
   final BridgeDisplayBlockBody body;
 
   const BridgeDisplayBlock({
     required this.id,
-    required this.historyPos,
+    required this.blockOrder,
     required this.body,
   });
 
   @override
-  int get hashCode => id.hashCode ^ historyPos.hashCode ^ body.hashCode;
+  int get hashCode => id.hashCode ^ blockOrder.hashCode ^ body.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -34,7 +34,7 @@ class BridgeDisplayBlock {
       other is BridgeDisplayBlock &&
           runtimeType == other.runtimeType &&
           id == other.id &&
-          historyPos == other.historyPos &&
+          blockOrder == other.blockOrder &&
           body == other.body;
 }
 
@@ -237,7 +237,7 @@ class BridgeLiveDisplayBlock {
 
 class BridgeLiveDisplayWindow {
   final BigInt revision;
-  final BigInt historyThrough;
+  final BigInt readyFrontier;
   final bool executionPresent;
   final String? currentWorkId;
   final List<BridgeLiveDisplayBlock> blocks;
@@ -245,7 +245,7 @@ class BridgeLiveDisplayWindow {
 
   const BridgeLiveDisplayWindow({
     required this.revision,
-    required this.historyThrough,
+    required this.readyFrontier,
     required this.executionPresent,
     this.currentWorkId,
     required this.blocks,
@@ -255,7 +255,7 @@ class BridgeLiveDisplayWindow {
   @override
   int get hashCode =>
       revision.hashCode ^
-      historyThrough.hashCode ^
+      readyFrontier.hashCode ^
       executionPresent.hashCode ^
       currentWorkId.hashCode ^
       blocks.hashCode ^
@@ -267,7 +267,7 @@ class BridgeLiveDisplayWindow {
       other is BridgeLiveDisplayWindow &&
           runtimeType == other.runtimeType &&
           revision == other.revision &&
-          historyThrough == other.historyThrough &&
+          readyFrontier == other.readyFrontier &&
           executionPresent == other.executionPresent &&
           currentWorkId == other.currentWorkId &&
           blocks == other.blocks &&
@@ -281,8 +281,8 @@ class BridgeTimelineBatch {
   final BridgeChatPlacement placement;
   final List<BridgeDisplayBlock> blocks;
   final String? before;
-  final BigInt? fromPos;
-  final BigInt throughPos;
+  final BigInt? fromOrder;
+  final BigInt throughOrder;
   final BridgeLiveDisplayWindow? live;
 
   const BridgeTimelineBatch({
@@ -290,8 +290,8 @@ class BridgeTimelineBatch {
     required this.placement,
     required this.blocks,
     this.before,
-    this.fromPos,
-    required this.throughPos,
+    this.fromOrder,
+    required this.throughOrder,
     this.live,
   });
 
@@ -301,8 +301,8 @@ class BridgeTimelineBatch {
       placement.hashCode ^
       blocks.hashCode ^
       before.hashCode ^
-      fromPos.hashCode ^
-      throughPos.hashCode ^
+      fromOrder.hashCode ^
+      throughOrder.hashCode ^
       live.hashCode;
 
   @override
@@ -314,8 +314,8 @@ class BridgeTimelineBatch {
           placement == other.placement &&
           blocks == other.blocks &&
           before == other.before &&
-          fromPos == other.fromPos &&
-          throughPos == other.throughPos &&
+          fromOrder == other.fromOrder &&
+          throughOrder == other.throughOrder &&
           live == other.live;
 }
 

@@ -459,11 +459,17 @@ impl ConversationStore {
             self.session.confirm_durable(through)?;
         }
         if let Some(source) = self.publication.current() {
-            source
+            let mut presentation = source
                 .presentation
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .confirm(committed.effect());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((effect, frontier, last)) = committed.display() {
+                anyhow::ensure!(
+                    effect <= committed.effect(),
+                    "display commit exceeds its batch"
+                );
+                presentation.confirm_cut(effect, frontier, last)?;
+            }
         }
         self.database_id
             .get_or_init(|| committed.database_id().to_owned());
@@ -580,18 +586,7 @@ impl ConversationReadHandle {
                 limit,
                 after,
                 pending,
-            } => {
-                let boundary = after.unwrap_or_else(|| {
-                    owner
-                        .capture(None, 0, 0, 0)
-                        .published
-                        .saturating_sub(*pending as u64)
-                });
-                (
-                    Some(owner.capture(*before, *limit, boundary, *pending)),
-                    None,
-                )
-            }
+            } => (Some(owner.capture(*before, *limit, *after, *pending)), None),
             ReadRequest::Members {
                 block,
                 before,
