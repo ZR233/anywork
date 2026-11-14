@@ -5,7 +5,7 @@ import 'dart:ui' as ui;
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
@@ -937,11 +937,12 @@ void main() {
           ),
         ),
       );
-      LiveDisplayWindow window(
+      TailSnapshot window(
         List<LiveDisplayBlock> blocks, {
         bool executionPresent = true,
-      }) => LiveDisplayWindow(
+      }) => TailSnapshot(
         revision: 1,
+        layoutRevision: 1,
         readyFrontier: 0,
         executionPresent: executionPresent,
         currentWorkId: null,
@@ -959,8 +960,8 @@ void main() {
           errorMessage: errorMessage,
         ),
       );
-      bool owns(LiveDisplayWindow? live, {ExecutionLiveNotice? activity}) =>
-          LiveStatusStateMachine.hasCurrentOutputRenderer(
+      bool owns(TailSnapshot? live, {ExecutionLiveNotice? activity}) =>
+          LiveStatusProjection.hasCurrentOutputRenderer(
             live: live,
             activeTurnId: 'turn-1',
             notice: activity ?? notice(),
@@ -1790,7 +1791,7 @@ class _ZeroJitterContent extends Fake implements ConversationContent {
 
 class _ZeroJitterHarness {
   final content = _ZeroJitterContent();
-  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  final live = ValueNotifier<TailSnapshot?>(null);
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = const [];
@@ -1799,32 +1800,33 @@ class _ZeroJitterHarness {
   int revision = 0;
 
   Widget build() {
-    final window = LiveDisplayWindow(
+    final window = TailSnapshot(
       currentWorkId: currentWorkId,
       revision: ++revision,
+      layoutRevision: revision,
       readyFrontier: 0,
       executionPresent: true,
       blocks: blocks,
     );
     live.value = window;
-    final aggregate = LiveStatusStateMachine.transition(
-      LiveStatusAggregate.initial('thread'),
-      LiveStatusObserved(
-        LiveStatusObservation(
-          cut: LiveWindowCut(
-            revision: window.revision,
-            readyFrontier: window.readyFrontier,
-            executionPresent: window.executionPresent,
-            attemptId: 1,
-            isDisplayActive: true,
-          ),
-          activeTurnId: 'turn-1',
-          activity: status,
-          latestLive: window,
-          hasContentOwner: true,
+    final aggregate = LiveStatusProjection.project(
+      threadId: 'thread',
+      observation: LiveStatusInputs(
+        cut: LiveWindowCut(
+          revision: window.layoutRevision,
+          readyFrontier: window.readyFrontier,
+          executionPresent: window.executionPresent,
+          attemptId: 1,
+          isDisplayActive: true,
         ),
+        activeTurnId: 'turn-1',
+        activity: status,
+        latestLive: window,
+        hasContentOwner: true,
       ),
-    ).state;
+      outputPaging: const LatestLiveWindow(),
+      timelineWorkPaging: const LatestLiveWindow(),
+    );
     final presenting = aggregate.barState as LiveStatusPresenting;
     Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
       section: s,

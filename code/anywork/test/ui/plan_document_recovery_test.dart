@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -25,7 +27,10 @@ void main() {
     await h.mount();
     final element = tester.element(find.byType(PlanDetailConnector));
     final panel = tester.state(find.byType(PlanDetailView));
-    expect(h.session.content.state.value, isA<ChatOpening<bool>>());
+    expect(
+      h.graph.timeline.source.value!.connection,
+      TimelineConnectionPhase.opening,
+    );
     expect(h.transport.reads, isEmpty);
     expect(h.session.content.activity.value, isNull);
     initialGate.complete();
@@ -46,17 +51,22 @@ void main() {
       ),
       findsOneWidget,
     );
-    final firstAttempt = h.session.content.currentAttemptId;
+    final firstAttempt = h.graph.timeline
+        .lease('thread-main')!
+        .reader
+        .metadata
+        .readerId;
     final window = h.document.window;
     final lease = h.graph.timeline.lease('thread-main')!;
     final main = lease.controller;
     final history = main.messages.toList();
     expect(history, isNotEmpty);
-    final feed = h.transport.timelineFeeds.single;
+    final feed = h.transport.timelineReaders.single;
     for (var update = 0; update < 5; update++) {
       final previous = lease.live.value!;
-      final live = LiveDisplayWindow(
+      final live = TailSnapshot(
         revision: previous.revision + 1,
+        layoutRevision: previous.revision + 1,
         readyFrontier: previous.readyFrontier,
         currentWorkId: null,
         executionPresent: true,
@@ -78,7 +88,10 @@ void main() {
       );
       expect(h.document.window, same(window));
       expect(h.transport.reads, hasLength(1));
-      expect(h.session.content.currentAttemptId, firstAttempt);
+      expect(
+        h.graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+        firstAttempt,
+      );
       expect(h.graph.timeline.lease('thread-main'), same(lease));
       expect(lease.controller, same(main));
       expect(main.messages, hasLength(history.length));
@@ -92,7 +105,10 @@ void main() {
     expect(find.byKey(StudioDriverKeys.planDetailsMarkdown), findsNothing);
     h.graph.setConversationPageVisible(true);
     await h.body('First plan body');
-    expect(h.session.content.currentAttemptId, isNot(firstAttempt));
+    expect(
+      h.graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+      isNot(firstAttempt),
+    );
     expect(h.transport.reads, hasLength(2));
     expect(tester.element(find.byType(PlanDetailConnector)), same(element));
     expect(tester.state(find.byType(PlanDetailView)), same(panel));
@@ -108,7 +124,7 @@ void main() {
     await h.body('First plan body');
     expect(h.transport.reads, hasLength(3));
 
-    h.session.content.refresh();
+    h.graph.timeline.refresh('thread-main');
     await h.body('First plan body');
     expect(h.transport.reads, hasLength(4));
     // An unrelated state publication with the same reference is not a read.
@@ -116,17 +132,16 @@ void main() {
     await tester.pump();
     expect(h.transport.reads, hasLength(4));
 
-    h.transport.failNextInitial = StateError('temporary connection loss');
-    h.session.content.refresh();
-    await pumpClientUntil(
-      tester,
-      () => h.session.content.state.value is ChatReconnecting<bool>,
-      'reconnecting',
+    h.transport.failNextInitial = const StudioFailure(
+      code: StudioFailureCode.unavailable,
+      message: 'temporary connection loss',
+      retryable: true,
+      correlationId: 'plan-retry',
     );
-    expect(h.document.error, isNull, reason: '重连期间显示等待，而非局部失败');
-    expect(h.document.window, isNull);
-    await tester.pump(const Duration(seconds: 1));
+    h.graph.timeline.refresh('thread-main');
     await h.body('First plan body');
+    expect(h.document.error, isNull);
+    expect(h.transport.timelineReaders.last.initialCalls, 2);
     expect(h.transport.reads, hasLength(5));
     await h.close();
   });
@@ -142,7 +157,7 @@ void main() {
 
     final newGate = Completer<void>();
     h.transport.nextReadGate = newGate;
-    h.session.content.refresh();
+    h.graph.timeline.refresh('thread-main');
     await h.reads(2);
     oldGate.complete();
     await pumpClientUntil(tester, () => oldRead.delivered, 'late old success');
@@ -200,14 +215,14 @@ void main() {
     expect(h.transport.businessReads, 0);
     expect(h.transport.completedReads, completedReads);
     expect(h.transport.olderReads, olderReads);
-    final feeds = h.transport.timelineFeeds.length;
+    final feeds = h.transport.timelineReaders.length;
     final reads = h.transport.reads.length;
     await tester.pump(const Duration(seconds: 2));
     expect(h.transport.reads, hasLength(reads), reason: '没有自动重试循环');
     await tester.tap(find.byKey(const ValueKey('plan-document-retry')));
     await h.body('Retry version body');
     expect(h.transport.reads, hasLength(reads + 1));
-    expect(h.transport.timelineFeeds, hasLength(feeds), reason: '局部失败不重开连接');
+    expect(h.transport.timelineReaders, hasLength(feeds), reason: '局部失败不重开连接');
 
     final disposedGate = Completer<void>();
     h.transport
@@ -249,10 +264,10 @@ void main() {
     );
     expect(find.textContaining('plan connection rejected'), findsOneWidget);
     expect(h.transport.reads, isEmpty);
-    final feeds = h.transport.timelineFeeds.length;
+    final feeds = h.transport.timelineReaders.length;
     await tester.tap(find.byKey(const ValueKey('plan-document-retry')));
     await h.body('Recovered connection body');
-    expect(h.transport.timelineFeeds, hasLength(feeds + 1));
+    expect(h.transport.timelineReaders, hasLength(feeds + 1));
     await h.close();
   });
 

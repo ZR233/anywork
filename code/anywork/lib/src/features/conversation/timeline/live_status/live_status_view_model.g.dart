@@ -8,24 +8,15 @@ part of 'live_status_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// 实时状态栏组件专属 ViewModel：
-/// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-/// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-/// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 
 @ProviderFor(LiveStatusViewModel)
 final liveStatusViewModelProvider = LiveStatusViewModelFamily._();
 
-/// 实时状态栏组件专属 ViewModel：
-/// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-/// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-/// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 final class LiveStatusViewModelProvider
-    extends $NotifierProvider<LiveStatusViewModel, LiveStatusAggregate?> {
-  /// 实时状态栏组件专属 ViewModel：
-  /// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-  /// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-  /// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+    extends $NotifierProvider<LiveStatusViewModel, LiveStatusView?> {
+  /// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
   LiveStatusViewModelProvider._({
     required LiveStatusViewModelFamily super.from,
     required String super.argument,
@@ -52,10 +43,10 @@ final class LiveStatusViewModelProvider
   LiveStatusViewModel create() => LiveStatusViewModel();
 
   /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(LiveStatusAggregate? value) {
+  Override overrideWithValue(LiveStatusView? value) {
     return $ProviderOverride(
       origin: this,
-      providerOverride: $SyncValueProvider<LiveStatusAggregate?>(value),
+      providerOverride: $SyncValueProvider<LiveStatusView?>(value),
     );
   }
 
@@ -71,20 +62,17 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'8848c6741696d0a87b18f87b40452086893c57c5';
+    r'd8f09286ae1e0eca4cdf0433dc818e20b06e7e98';
 
-/// 实时状态栏组件专属 ViewModel：
-/// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-/// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-/// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 
 final class LiveStatusViewModelFamily extends $Family
     with
         $ClassFamilyOverride<
           LiveStatusViewModel,
-          LiveStatusAggregate?,
-          LiveStatusAggregate?,
-          LiveStatusAggregate?,
+          LiveStatusView?,
+          LiveStatusView?,
+          LiveStatusView?,
           String
         > {
   LiveStatusViewModelFamily._()
@@ -96,10 +84,7 @@ final class LiveStatusViewModelFamily extends $Family
         isAutoDispose: true,
       );
 
-  /// 实时状态栏组件专属 ViewModel：
-  /// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-  /// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-  /// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+  /// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 
   LiveStatusViewModelProvider call(String threadId) =>
       LiveStatusViewModelProvider._(argument: threadId, from: this);
@@ -108,25 +93,22 @@ final class LiveStatusViewModelFamily extends $Family
   String toString() => r'liveStatusViewModelProvider';
 }
 
-/// 实时状态栏组件专属 ViewModel：
-/// 在组件内部统一观察 FRB 驱动的会话状态流（`threadSessionStoreProvider`）与
-/// 时间线实时展示窗口流（`TimelineDisplayLease.live`），驱动纯领域状态机并执行外部副作用，
-/// 使外壳页脚与时间线连接器不再承担外围数据拼装与业务判断。
+/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 
-abstract class _$LiveStatusViewModel extends $Notifier<LiveStatusAggregate?> {
+abstract class _$LiveStatusViewModel extends $Notifier<LiveStatusView?> {
   late final _$args = ref.$arg as String;
   String get threadId => _$args;
 
-  LiveStatusAggregate? build(String threadId);
+  LiveStatusView? build(String threadId);
   @$mustCallSuper
   @override
   WhenComplete runBuild() {
-    final ref = this.ref as $Ref<LiveStatusAggregate?, LiveStatusAggregate?>;
+    final ref = this.ref as $Ref<LiveStatusView?, LiveStatusView?>;
     final element =
         ref.element
             as $ClassProviderElement<
-              AnyNotifier<LiveStatusAggregate?, LiveStatusAggregate?>,
-              LiveStatusAggregate?,
+              AnyNotifier<LiveStatusView?, LiveStatusView?>,
+              LiveStatusView?,
               Object?,
               Object?
             >;

@@ -7,7 +7,6 @@ import '../../../frb_generated.dart';
 import '../types/chat.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
-import '../types/presentation.dart';
 import '../types/runtime.dart';
 import '../types/thread_activity.dart';
 import '../types/thread_stream.dart';

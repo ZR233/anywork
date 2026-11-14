@@ -8,7 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/completion
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
@@ -237,12 +237,14 @@ final class _Harness {
   TimelineCurrentDisplay? display;
   int revision = 0;
   bool active = true;
-  final live = ValueNotifier<LiveDisplayWindow?>(null);
+  final live = ValueNotifier<TailSnapshot?>(null);
   ValueChanged<String>? onLoadOlder;
-  LiveStatusAggregate presentation = LiveStatusAggregate.initial('thread');
-  void accept(List<ActivityEntry> entries) => live.value = LiveDisplayWindow(
+  LiveStatusView? presentation;
+  LiveWindowPagingState outputPaging = const LatestLiveWindow();
+  void accept(List<ActivityEntry> entries) => live.value = TailSnapshot(
     currentWorkId: null,
     revision: ++revision,
+    layoutRevision: revision,
     readyFrontier: 0,
     executionPresent: true,
     blocks: [
@@ -263,28 +265,33 @@ final class _Harness {
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
-        ValueListenableBuilder<LiveDisplayWindow?>(
+        ValueListenableBuilder<TailSnapshot?>(
           valueListenable: live,
           builder: (_, window, _) {
-            presentation = LiveStatusStateMachine.transition(
-              presentation,
-              LiveStatusObserved(
-                LiveStatusObservation(
-                  cut: window == null
-                      ? const LiveWindowCut.inactive()
-                      : LiveWindowCut(
-                          revision: window.revision,
-                          readyFrontier: window.readyFrontier,
-                          executionPresent: window.executionPresent,
-                          attemptId: 1,
-                          isDisplayActive: active,
-                        ),
-                  latestLive: window,
-                  hasContentOwner: true,
-                ),
+            if (presentation != null &&
+                window != null &&
+                !presentation!.cut.matchesWindow(window)) {
+              outputPaging = const LatestLiveWindow();
+            }
+            presentation = LiveStatusProjection.project(
+              threadId: 'thread',
+              observation: LiveStatusInputs(
+                cut: window == null
+                    ? const LiveWindowCut.inactive()
+                    : LiveWindowCut(
+                        revision: window.layoutRevision,
+                        readyFrontier: window.readyFrontier,
+                        executionPresent: window.executionPresent,
+                        attemptId: 1,
+                        isDisplayActive: active,
+                      ),
+                latestLive: window,
+                hasContentOwner: true,
               ),
-            ).state;
-            final state = presentation.barState;
+              outputPaging: outputPaging,
+              timelineWorkPaging: const LatestLiveWindow(),
+            );
+            final state = presentation!.barState;
             return ConversationCurrentConnector(
               section: ConversationLiveSection.output,
               key: ObjectKey(content),
@@ -359,22 +366,24 @@ void main() {
             timing: WorkTiming(startedAt: 1000, finishedAt: null),
           ),
         );
-        final latest = LiveDisplayWindow(
+        final latest = TailSnapshot(
           currentWorkId: 'tail',
           revision: 1,
+          layoutRevision: 1,
           readyFrontier: 0,
           executionPresent: true,
           blocks: const [work],
         );
-        final older = LiveDisplayWindow(
+        final older = TailSnapshot(
           currentWorkId: null,
           revision: 1,
+          layoutRevision: 1,
           readyFrontier: 0,
           executionPresent: true,
           blocks: const [],
           older: 'next-older',
         );
-        final live = ValueNotifier<LiveDisplayWindow?>(latest);
+        final live = ValueNotifier<TailSnapshot?>(latest);
         addTearDown(live.dispose);
         TimelineCurrentDisplay? display;
         final pagingRequests = <String>[];
@@ -394,39 +403,38 @@ void main() {
                 )
               : const LatestLiveWindow();
           final window = showLeading ? older : latest;
-          final projected =
-              LiveStatusStateMachine.projectSurfaceAndTimelineWork(
-                latestWindow: latest,
-                effectiveOutputWindow: window,
-                effectiveTimelineWindow: latest,
-                activeTurnId: null,
-                outputPaging: paging,
-                rawNotices: [
-                  if (active)
-                    const ExecutionLiveNotice(
-                      ConversationActivityView(
-                        identity: 'real-activity',
-                        kind: ConversationActivityKind.thinking,
-                      ),
-                    ),
-                  if (showLeading) ...[
-                    const ExecutionLiveNotice(
-                      ConversationActivityView(
-                        identity: 'stopping',
-                        kind: ConversationActivityKind.stopping,
-                        summary: '等待执行收束',
-                      ),
-                    ),
-                    const ExecutionLiveNotice(
-                      ConversationActivityView(
-                        identity: 'storage',
-                        kind: ConversationActivityKind.storageBlocked,
-                        errorMessage: '保存已暂停',
-                      ),
-                    ),
-                  ],
-                ],
-              );
+          final projected = LiveStatusProjection.projectSurfaceAndTimelineWork(
+            latestWindow: latest,
+            effectiveOutputWindow: window,
+            effectiveTimelineWindow: latest,
+            activeTurnId: null,
+            outputPaging: paging,
+            rawNotices: [
+              if (active)
+                const ExecutionLiveNotice(
+                  ConversationActivityView(
+                    identity: 'real-activity',
+                    kind: ConversationActivityKind.thinking,
+                  ),
+                ),
+              if (showLeading) ...[
+                const ExecutionLiveNotice(
+                  ConversationActivityView(
+                    identity: 'stopping',
+                    kind: ConversationActivityKind.stopping,
+                    summary: '等待执行收束',
+                  ),
+                ),
+                const ExecutionLiveNotice(
+                  ConversationActivityView(
+                    identity: 'storage',
+                    kind: ConversationActivityKind.storageBlocked,
+                    errorMessage: '保存已暂停',
+                  ),
+                ),
+              ],
+            ],
+          );
           final connector = ConversationCurrentConnector(
             section: ConversationLiveSection.output,
             threadId: 'thread',
@@ -603,9 +611,10 @@ void main() {
       await _flush(tester);
       final scope = h.content.scopes.single;
       final previous = h.live.value!;
-      h.live.value = LiveDisplayWindow(
+      h.live.value = TailSnapshot(
         currentWorkId: null,
         revision: previous.revision + 1,
+        layoutRevision: previous.revision + 1,
         readyFrontier: 0,
         executionPresent: true,
         blocks: [
@@ -1135,18 +1144,20 @@ void main() {
             ),
           ),
         );
-        LiveDisplayWindow latest({int revision = 7, int through = 0}) =>
-            LiveDisplayWindow(
+        TailSnapshot latest({int revision = 7, int through = 0}) =>
+            TailSnapshot(
               currentWorkId: null,
               revision: revision,
+              layoutRevision: revision,
               readyFrontier: through,
               executionPresent: true,
               blocks: [latestBlock],
               older: 'older-cursor',
             );
-        final page = LiveDisplayWindow(
+        final page = TailSnapshot(
           currentWorkId: null,
           revision: 7,
+          layoutRevision: 7,
           readyFrontier: 0,
           executionPresent: true,
           blocks: [
@@ -1174,22 +1185,11 @@ void main() {
         await tester.tap(find.widgetWithText(TextButton, '更早实时片段'));
         expect(reads, 1);
         // Supply the ViewModel result explicitly; the component owns no query or reducer.
-        final requested = LiveStatusStateMachine.transition(
-          h.presentation,
-          const LiveStatusLoadOlderRequested(
-            target: LiveStatusSectionTarget.outputBar,
-            before: 'older-cursor',
-          ),
-        ).state;
-        h.presentation = LiveStatusStateMachine.transition(
-          requested,
-          LiveStatusOlderLoaded(
-            target: LiveStatusSectionTarget.outputBar,
-            before: 'older-cursor',
-            window: page,
-            cut: requested.cut,
-          ),
-        ).state;
+        h.outputPaging = ViewingOlderLiveWindow(
+          before: 'older-cursor',
+          window: page,
+          cut: h.presentation!.cut,
+        );
         await tester.pumpWidget(h.host());
         await _flush(tester);
         final scope = h.content.scopes.last;

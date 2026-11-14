@@ -1,6 +1,6 @@
 //! Mechanical FRB projection of the product presentation protocol.
 
-use super::{BridgeChatAtom, BridgeChatFactPosition, BridgeChatPlacement, BridgeChatSourceId};
+use super::{BridgeChatAtom, BridgeChatFactPosition, BridgeChatSourceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeDisplayBlockState {
@@ -76,27 +76,6 @@ pub struct BridgeLiveDisplayBlock {
     pub thinking_summary: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct BridgeLiveDisplayWindow {
-    pub revision: u64,
-    pub ready_frontier: u64,
-    pub execution_present: bool,
-    pub current_work_id: Option<String>,
-    pub blocks: Vec<BridgeLiveDisplayBlock>,
-    pub older: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeTimelineBatch {
-    pub presentation_version: u32,
-    pub placement: BridgeChatPlacement,
-    pub blocks: Vec<BridgeDisplayBlock>,
-    pub before: Option<String>,
-    pub from_order: Option<u64>,
-    pub through_order: u64,
-    pub live: Option<BridgeLiveDisplayWindow>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeDisplayMemberWindow {
     Latest,
@@ -117,4 +96,71 @@ pub struct BridgeDisplayMemberPage {
     pub sealed: bool,
     pub entries: Vec<BridgeDisplayMemberHead>,
     pub before: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeOpenTimeline {
+    pub reader_id: String,
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub initial_cursor: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeHistoryPlacement {
+    Set,
+    Append,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeHistoryDelta {
+    pub placement: BridgeHistoryPlacement,
+    pub from_order: Option<u64>,
+    pub through_order: u64,
+    pub blocks: Vec<BridgeDisplayBlock>,
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeTailSnapshot {
+    pub revision: u64,
+    pub layout_revision: u64,
+    pub ready_frontier: u64,
+    pub execution_present: bool,
+    pub current_work_id: Option<String>,
+    pub blocks: Vec<BridgeLiveDisplayBlock>,
+    pub older: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeTailUpdate {
+    Keep,
+    Replace {
+        snapshot: BridgeTailSnapshot,
+    },
+    Status {
+        base_layout_revision: u64,
+        revision: u64,
+        current_work_id: Option<String>,
+        thinking_summary: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeViewUpdate {
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub after: String,
+    pub next: String,
+    pub history: BridgeHistoryDelta,
+    pub tail: BridgeTailUpdate,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeTimelinePage {
+    pub presentation_version: u32,
+    pub database_id: String,
+    pub ceiling: u64,
+    pub blocks: Vec<BridgeDisplayBlock>,
+    pub before: Option<String>,
 }

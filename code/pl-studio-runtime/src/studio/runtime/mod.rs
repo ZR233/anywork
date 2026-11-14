@@ -45,7 +45,6 @@ mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;
-pub(super) mod presentation_feed;
 pub(super) mod presentation_reader;
 mod product_subscription;
 mod prompt_runner;
@@ -69,7 +68,7 @@ pub use conversation_feed::{ConversationEvent, ConversationFeed};
 pub use conversation_reader::{ContentWatch, ConversationReader};
 pub use conversation_state_feed::ConversationStateFeed;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
-pub use presentation_feed::{TimelineEvent, TimelineFeed};
+mod timeline_reader;
 pub use presentation_reader::DisplayMembers;
 pub use product_subscription::StudioProductTopicSubscription;
 pub use run_export::{
@@ -85,6 +84,7 @@ pub use run_export::{
     prepare_output_dir as prepare_export_output_dir, sha256_hex as export_sha256_hex,
     validate_output_dir_preflight as validate_export_output_dir_preflight,
 };
+pub use timeline_reader::TimelineReader;
 pub(crate) mod thread_observation;
 mod thread_title;
 mod updater;

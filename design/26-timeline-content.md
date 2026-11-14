@@ -141,22 +141,24 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 公共展示协议为 presentation_version=6，严格匹配，错误版本明确拒绝，不双轨解码。DisplayBlockRef 绑定 database_id/block_id；DisplayBlock 携稳定 id/block_order/body。Work 仅持 WorkTiming（可空 startedAt、可空 finishedAt，均为 Unix 秒；旧组缺少可靠时间时保留 null）和成员引用；Single 持 DisplayRecord 与 SingleVisibility。LiveDisplayBlock 额外交付当前组的 hasUnfinishedMembers 和有界 thinkingSummary；后者由原工作组投影接收流式及完成摘要，仅驻留内存，封口后释放，不写历史快照，Flutter 不再读取另一份活动摘要作为组标题兜底。未完成资格直接由原 owner 的结构计数派生，不再交付或保存组级结果统计。
 
 
-LiveDisplayWindow 携 revision、ready_frontier=P、execution_present、current_work_id、有界 blocks 和 older。current_work_id 由 Rust owner 唯一确定，规范最新窗口必须包含它指向的未 sealed Work；预算不足明确 InvalidDemand，不丢头让客户端猜。旧页只描述该页，不写回规范最新身份。更早窗口保留原读取资格与结构代次；token 不换代，stale 只刷新受影响 live 窗口。execution_present 只证明资源存在，不证明正在工作。
+`TailSnapshot` 携带 `revision`、`layout_revision`、`ready_frontier`、`execution_present`、`current_work_id`、有界 `blocks` 和 `older`。Rust 所有者唯一确定当前工作组；规范最新窗口必须包含它指向的开放 Work，预算不足返回 `InvalidDemand`。成员增减、终态、当前组或执行在场变化推进结构修订；短摘要只推进展示修订，不使结构游标失效。旧页保留规范当前组的资格信息，但不能覆盖最新窗口或推断当前组。段首 `source` 只表示原始来源，不决定分组、活动或布局。
 
-每个 LiveDisplayBlock 的可空 typed source 仍直接来自 DisplayHeader.source，保留作段首来源诊断；它不表示所有成员共同来源，不决定布局、当前组、活动资格或恢复多个 lane。不得从块 ID、来源、activeTurnId 是否非空、lastOrNull 或分页末项推断当前组。
+主时间线使用 `OpenTimeline` 与 `ViewUpdate` 拉取协议。打开时显式提交展示和读取协议版本，响应回显两个版本、`reader_id` 与初始 `ViewCursor`；不支持的版本明确拒绝。游标是读取器内的随机不透明身份，不编码展示顺序或保存位置。主读取需求在打开时固定，先登记通知再捕获首次切面。
 
-TimelineBatch 携 presentation_version、Set/Prepend/Append、blocks、before、from_order、through_order 及可空 live。GUI Timeline feed 仅交付 Timeline/Failure/Closed，不转发 State，也不同时交 Chat/Activity 让 Flutter 合并；状态沿独立 State feed。原 completedHistoryVersion=1、Thread State schema17 及原完成 feed 语义保留给完成级消费者。
+每个读取器只允许一个在途 `next(after)`，并仅保留一份待确认响应。相同 `after` 重发相同逻辑响应、`next` 和切面；以已返回的 `next` 请求才确认该响应。旧游标、伪造游标或另一读取器的游标返回 `StaleViewCursor`，重叠领取返回 `ConcurrentNext`。安装响应前取消不推进候选位置，安装后丢包可重发；确认上一响应后取消保留已确认进度。没有展示事件生产者、信用窗口或绘制确认。
 
-1. 先登记观察再捕获 `(P0,live0)`；首 Set 建立同切面历史页与 live。
-2. 后续固定目标 `(Pt,live_t)`，按预算追赶冻结头，不追逐无限变化目标。
-3. 每帧一次追加本帧历史 blocks，并按相同 block_id 退役对应实时块；未交付块保留。
-4. 未追至 Pt 的 live=None 表示保持剩余 live；只有追至 Pt 才替换完整 live_t。
-5. P 不变但 live 变化时发送空 blocks、from_order=through_order=P、live=Some 的 Append，不枚举/操作历史 controller。
-6. Prepend 不带 live、不推进订阅位置；独立查询不需要流 ACK。
+`ViewUpdate` 包含两个版本、`after`、`next`、`HistoryDelta` 与封闭的 `TailUpdate`：
 
-SDK 与 Flutter 将历史插入和 live 退役作为一次可观察接纳提交：两者完成后才发一次视图更新并 ACK，不能先清空再异步查历史，也不能一帧双显同 ID。Dart 接纳不等待 Flutter 绘制。
+1. 首次历史为 `Set`，同时交付同一捕获切面的尾部 `Replace`。优先为必要尾组分配预算，历史为空时仍保留正确的上翻资格。
+2. 后继历史为 `Append`，以 `from_order`、`through_order` 表达已查询的冻结前沿。位置允许有洞；恰好取满条数不能证明耗尽，也不为证明耗尽多查一条，后继空页正常确认剩余范围。
+3. 追赶目标固定为捕获时的历史前沿及尾部值。持续写入不能替换尚未交完的目标。`Keep` 仅按实际收到的历史块 ID 退役实时块，保留其他尾部及旧结构资格；追至目标后才 `Replace`。最后历史块与尾部合计超预算时拆为历史 `Keep` 和后继空历史 `Replace`。
+4. 已交完目标且结构不变时，可交付只含短摘要的 `Status`，绑定 `base_layout_revision` 与当前组。它不查询历史或枚举成员，不携第二份尾窗，也不操作主列表。
 
-watch 只保存最新切面并唤醒；漏中间通知不漏冻结头，后者在原 Store/SQLite。慢 GUI 只阻塞自身有限在途帧，不反压执行保存。query 短锁准入后锁外 IO，不等 events/credit；request_close 同步撤销准入并唤醒，close 汇合在途资源。旧成功、错误、finally 和 ACK 都复核原 lease，保护 A→B→A。
+完整响应信封、历史头、尾部和引用共同受 `ReadDemand` 的条数与 JSON 字节限制。单次最多 4096 个头、256 KiB；无法容纳必要信封或当前工作组时明确失败，不静默扩大预算或丢弃当前组。
+
+历史上翻纯返回 `TimelinePage { presentation_version, database_id, ceiling, blocks, before }`，不包含应用位置、尾部或主游标。实时上翻返回有界 `TailSnapshot`，资格绑定原读取器、数据库和结构修订；摘要变化保留旧页，结构改变使其失效。成员和正文仍是独立的原能力查询，挂起的主读取不持有它们所需的长锁。
+
+通知只保留最新来源并唤醒。冻结头仍在原 Store／SQLite，慢界面不会阻塞执行或保存。关闭先同步撤销资格并唤醒，再等待所属读取与子观察；旧成功、错误及收尾始终复核原读取器和显示代次，保护 A→B→A。HTTP 的长轮询、失联与配额约定见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。
 
 ## 26.6 业务引用由 State 交付
 
@@ -164,7 +166,7 @@ ThreadBusinessRefs 只含 `plan: Option<CurrentPlanHead>` 与 `interactions: Opt
 
 引用由原 Plan/交互 owner 在同一切面先建立可读内容后发布，只有真实领域变化才换代；token、查询、保存 ACK 和 GUI 组交接不推动它。冷读以同一短事务取得领域字段、Plan 引用和交互集合，不把无执行 owner 当成无业务引用。
 
-状态与内容使用独立 Frame 身份、投递序号及有界信用，交付和关闭规则见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。状态通道交付 State、Failure、Closed，完成级内容通道交付 Chat、Activity、Failure、Closed，GUI 展示通道交付 Timeline、Failure、Closed；首个 State 声明 completedHistoryVersion=1，不支持时明确 ProtocolVersionMismatch，不双解码。各通道 ACK 在实际接纳完成且原资格有效后推进，不等布局、query、详情或 SQLite，也不等待另一通道消费。低层已读位置不冒充外层 ACK；内容连续性丢失关闭原内容资格，新内容句柄以 Set 重同步，状态失连续只重建状态基线。
+状态与完成原件分别使用独立 Frame 身份、投递序号及有界信用，状态交付 State／Failure／Closed，完成通道交付 Chat／Activity／Failure／Closed；确认只推进该通道实际接纳的连续前缀，见 [07](./07-streaming.md#710-会话推送交付确认与关闭)。主时间线独立使用上述游标读取器。状态缺口只重建状态基线，完成通道或主读取器的失败也不回退有效业务状态；版本不支持时明确拒绝，不双解码。
 
 plan=None 为真无计划；Some/document=None 为有计划无文档。interactions=None 为未建立资源，已初始化空集合可有有效引用，不能吞失败为空。交互集合的 interaction_collection_revision 随原 Core checkpoint 保存，描述 permissions/interactions 联合集合，不用剩余单项最大 revision 或无关 effect 序号代替。transfer 与 resident 剪裁实际改变集合时分别 checked 推进，重复剪裁不推进；旧 schema6 缺字段只初始化 0，不猜过去代次或重写原件。
 
@@ -204,7 +206,11 @@ DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始/�
 
 ## 26.8 Flutter 状态栏与唯一组件集合
 
-Main 每个 DisplayBlock 对应一个 Message.custom，metadata 唯一持已加载块。Set 一次 setMessages，Prepend 批量前插完整旧块，Append 批量追加冻结块；没有历史尾组 merge/update 或“隐藏最后组”。纯 live/token 帧不枚举 Main。布局补载沿块页继续，无总页数上限，ACK 不等布局或用户展开。
+Flutter 的时间线会话所有者持唯一应用队列、读取器、显示代次、已应用主游标和历史前沿。真实 `ChatController` 独占已加载历史集合，每个冻结块对应一条 `Message.custom`；另外只保留一个有界规范尾部。SDK 机械转发读取能力，不维护另一份展示队列、接纳位置、确认账本或尾部。
+
+`Set` 一次替换组件集合，历史上翻批量前插，`Append` 批量追加，均关闭逐项动画。空历史更新不枚举组件消息。组件操作成功后重新检查原读取器及代次，再共同公开尾部和主游标；输入回显按实际接纳的 `input_id` 交接。组件 Future 失败可能已发生部分修改，因此废弃原读取器，以新读取器的 `Set` 重建，不重试该 Append。重同步保留旧显示直到新 Set 成功；旧代次成功、失败或收尾不能覆盖新显示。
+
+状态栏直接从规范尾部、独立业务状态和两处局部分页意图计算实际视图，不再保存观察镜像、聚合状态、事件转移和副作用路由。分页使用原租约、结构切面和局部请求身份，Latest→Before→Latest 后迟到结果不回写。诊断只借用实际视图结果，不建立第二份活动账本。
 
 发送临时回显继续归原 Composer 提交 owner：同步冻结 inputId、正文和附件后立即交出当前草稿，区分发送中、已接纳等待同步、明确发送失败及发送结果待确认，精简呈现遵循 [19.11](19-studio-ui.md#1911-运行中发送消息与剪贴板粘贴)。明确失败保留内容及原因，并提供仅针对该失败项的重试与移除；未知结果不暴露普通重试，防止重复发送。内容与附件所有权按 [25.8](25-frontend-state.md#258-输入草稿与附件所有权账本) 结算，展示不能复制另一套提交状态。临时回显不是 canonical 输入或工作成员；原输入接纳后按 inputId 结算，不按正文去重、不因封组重复插入、不扫描历史或新增持久消息仓储。回显与正式正文共用现有 Markdown 展示能力。
 

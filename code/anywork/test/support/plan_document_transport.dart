@@ -20,15 +20,22 @@ class PlanDocumentTransport extends RecordingDemoTransport {
       <(CurrentCollectionRef, String?, Completer<CurrentCollectionPage>)>[];
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     final gate = nextInitialGate;
     nextInitialGate = null;
-    final feed = await super.openTimelineFeed(threadId, demand: demand);
-    (feed as RecordingTimelineFeed).initialGate = gate;
-    return MappedTimelineFeed(feed, reader: _PlanReader(feed.reader, this));
+    final feed = await super.openTimelineReader(
+      threadId,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: timelineReaderProtocolVersion,
+      demand: demand,
+    );
+    (feed as RecordingTimelineReader).initialGate = gate;
+    return MappedTimelineReader(feed, reader: _PlanReader(feed.reader, this));
   }
 }
 

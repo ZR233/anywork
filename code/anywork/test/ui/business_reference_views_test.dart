@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/views/composer_dock_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
@@ -11,7 +13,6 @@ import 'package:anywork/src/features/conversation/interactions/state/interaction
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:anywork_client/src/conversation/data/conversation_read_scope.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
@@ -890,7 +891,12 @@ void main() {
           PlanDocumentTransport()..controlInteractionPages = true,
         );
         await h.publish(3, '保留的计划窗口');
-        final content = h.session.content;
+        await pumpClientUntil(
+          tester,
+          () => h.graph.timeline.lease('thread-main') != null,
+          'original GUI reader ready',
+        );
+        final content = h.graph.timeline.lease('thread-main')!;
         Future<void> publishInteraction(int revision) async {
           final previous = h.session.state.businessRefs?.interactions;
           h.transport.seedConversationState(
@@ -952,7 +958,7 @@ void main() {
         await h.body('保留的计划窗口');
         final window = h.document.window;
         final reads = h.transport.reads.length;
-        final attempt = h.session.content.currentAttemptId;
+        final attempt = content.reader.metadata.readerId;
         await _frames(tester);
         expect(
           tester
@@ -960,7 +966,7 @@ void main() {
                 find.byType(InteractionDetailsConnector),
               )
               .content,
-          same(h.session.content),
+          same(content),
         );
         expect(h.transport.interactionPages, isEmpty);
         await tester.tap(find.text(_l10n(tester).interactionDetailsTitle));
@@ -1037,10 +1043,13 @@ void main() {
         );
         expect(h.document.window, same(window));
         expect(h.transport.reads, hasLength(reads));
-        expect(h.session.content.currentAttemptId, attempt);
-        expect(h.session.content, same(content));
-        expect(content.isClosed, isFalse);
-        expect(content.state.value, isA<ChatReady<bool>>());
+        expect(content.reader.metadata.readerId, attempt);
+        expect(h.graph.timeline.lease('thread-main'), same(content));
+        expect(content.isRetired, isFalse);
+        expect(
+          h.graph.timeline.source.value!.connection,
+          TimelineConnectionPhase.ready,
+        );
         expect(h.transport.interactionPages, hasLength(3));
         expect(h.transport.businessReads, 0);
         await h.close();

@@ -194,7 +194,7 @@ void main() {
         return _png;
       };
       const ids = ['image-a', 'image-b', 'image-c'];
-      await h.controls.adapter.applyTimeline(
+      await h.controls.adapter.applyFixtureUpdate(
         displayBatch([
           DisplayBlock(
             id: 'image-input',
@@ -311,7 +311,7 @@ void main() {
       (tester) async {
         final h = _Harness();
         h.content.read = (_, _) async => _entry(_atom(_imageInput(ids)));
-        await h.controls.adapter.applyTimeline(
+        await h.controls.adapter.applyFixtureUpdate(
           displayBatch([
             DisplayBlock(
               id: 'invalid-image-input',
@@ -347,7 +347,7 @@ void main() {
     (tester) async {
       final h = _Harness();
       h.content.read = (_, _) async => throw StateError('PRIVATE read failure');
-      await h.controls.adapter.applyTimeline(
+      await h.controls.adapter.applyFixtureUpdate(
         displayBatch([
           DisplayBlock(
             id: 'failed-image-input',
@@ -398,7 +398,7 @@ void main() {
       final original = _entry(_atom(_input()));
       final gate = Completer<CompletedEntry>();
       h.content.read = (_, _) => gate.future;
-      await h.controls.adapter.applyTimeline(
+      await h.controls.adapter.applyFixtureUpdate(
         displayBatch([
           DisplayBlock(
             id: 'single-block-not-record',
@@ -484,7 +484,7 @@ void main() {
       final members = _Members(head);
       intent.openDisplayMembers = (_, _, _) async => members;
       h.groupIntent = intent;
-      await h.controls.adapter.applyTimeline(
+      await h.controls.adapter.applyFixtureUpdate(
         displayBatch([displayWork('work', 1)]),
       );
       await tester.pumpWidget(h.host());
@@ -529,7 +529,7 @@ void main() {
         intent.openDisplayMembers = (_, _, _) async =>
             _Members(_head(kind: ChatAtomKind.toolCall));
         h.groupIntent = intent;
-        await h.controls.adapter.applyTimeline(
+        await h.controls.adapter.applyFixtureUpdate(
           displayBatch([displayWork('work', 1)]),
         );
         await tester.pumpWidget(h.host());
@@ -594,7 +594,7 @@ void main() {
           );
         }
         h.content.read = (_, _) async => value;
-        await h.controls.adapter.applyTimeline(
+        await h.controls.adapter.applyFixtureUpdate(
           displayBatch([
             DisplayBlock(
               id: 'block',
@@ -643,7 +643,7 @@ void main() {
       final h = _Harness();
       final head = _head(contents: const []);
       h.content.read = (_, _) async => _entry(head);
-      await h.controls.adapter.applyTimeline(
+      await h.controls.adapter.applyFixtureUpdate(
         displayBatch([
           DisplayBlock(
             id: 'restricted-block',

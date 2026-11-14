@@ -4,11 +4,111 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    ChatAtom, ChatFactPosition, ChatPlacement, ChatSourceId,
+    ChatAtom, ChatFactPosition, ChatSourceId,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
 pub const PRESENTATION_VERSION: u32 = 6;
+pub const TIMELINE_READER_PROTOCOL_VERSION: u32 = 1;
+
+/// A capability-local position, unrelated to persisted block or completion order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct ViewCursor(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenTimeline {
+    pub reader_id: String,
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub initial_cursor: ViewCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryPlacement {
+    Set,
+    Append,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryDelta {
+    pub placement: HistoryPlacement,
+    pub from_order: Option<u64>,
+    pub through_order: u64,
+    pub blocks: Vec<DisplayBlock>,
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TailSnapshot {
+    pub revision: u64,
+    pub layout_revision: u64,
+    pub ready_frontier: u64,
+    pub execution_present: bool,
+    pub current_work_id: Option<String>,
+    pub blocks: Vec<LiveDisplayBlock>,
+    pub older: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TailUpdate {
+    Keep {},
+    Replace {
+        snapshot: TailSnapshot,
+    },
+    Status {
+        base_layout_revision: u64,
+        revision: u64,
+        current_work_id: Option<String>,
+        thinking_summary: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ViewUpdate {
+    pub presentation_version: u32,
+    pub reader_protocol_version: u32,
+    pub after: ViewCursor,
+    pub next: ViewCursor,
+    pub history: HistoryDelta,
+    pub tail: TailUpdate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelinePage {
+    pub presentation_version: u32,
+    pub database_id: String,
+    pub ceiling: u64,
+    pub blocks: Vec<DisplayBlock>,
+    pub before: Option<String>,
+}
+
+pub fn validate_timeline_versions(presentation: u32, reader: u32) -> Result<(), StudioError> {
+    if presentation == PRESENTATION_VERSION && reader == TIMELINE_READER_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(StudioError::new(
+        StudioErrorCode::Protocol,
+        "Unsupported timeline reader protocol",
+        false,
+    )
+    .with_reason(
+        StudioErrorReason::ProtocolVersionMismatch,
+        serde_json::Value::Null,
+    ))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -105,94 +205,6 @@ pub struct LiveDisplayBlock {
     pub thinking_summary: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LiveDisplayWindow {
-    pub revision: u64,
-    pub ready_frontier: u64,
-    pub execution_present: bool,
-    pub current_work_id: Option<String>,
-    pub blocks: Vec<LiveDisplayBlock>,
-    pub older: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TimelineBatch {
-    pub presentation_version: u32,
-    pub placement: ChatPlacement,
-    pub blocks: Vec<DisplayBlock>,
-    pub before: Option<String>,
-    pub from_order: Option<u64>,
-    pub through_order: u64,
-    /// None preserves the remaining live blocks during a split handoff.
-    pub live: Option<LiveDisplayWindow>,
-}
-
-impl TimelineBatch {
-    /// Validate one delivery cut without inferring membership or execution state.
-    pub fn validate(&self) -> Result<(), StudioError> {
-        if self.presentation_version != PRESENTATION_VERSION {
-            return Err(StudioError::new(
-                StudioErrorCode::Protocol,
-                "Unsupported timeline presentation version",
-                false,
-            )
-            .with_reason(
-                StudioErrorReason::ProtocolVersionMismatch,
-                serde_json::Value::Null,
-            ));
-        }
-        let placement_valid = match self.placement {
-            ChatPlacement::Set => self.from_order.is_none() && self.live.is_some(),
-            ChatPlacement::Prepend => self.from_order.is_none() && self.live.is_none(),
-            ChatPlacement::Append => {
-                self.before.is_none()
-                    && self.from_order.is_some_and(|from| {
-                        from < self.through_order
-                            || (from == self.through_order
-                                && self.blocks.is_empty()
-                                && self.live.is_some())
-                    })
-            }
-        };
-        let mut previous = self.from_order.unwrap_or(0);
-        let mut identities = std::collections::HashSet::new();
-        let blocks_valid = self.blocks.iter().all(|block| {
-            let ordered = block.block_order > previous && block.block_order <= self.through_order;
-            previous = block.block_order;
-            ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
-        });
-        let live_valid = self.live.as_ref().is_none_or(|live| {
-            let mut order = 0;
-            let mut current = live.blocks.iter().filter(|block| {
-                block.state == DisplayBlockState::Open
-                    && matches!(block.body, DisplayBlockBody::Work { .. })
-            });
-            let current_id = current.next().map(|block| block.id.as_str());
-            live.ready_frontier == self.through_order
-                && live.blocks.iter().all(|block| {
-                    let ordered = block.block_order > order
-                        && block.block_order > live.ready_frontier
-                        && block.block_order <= i64::MAX as u64;
-                    order = block.block_order;
-                    ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
-                })
-                && live.current_work_id.as_deref() == current_id
-                && current.next().is_none()
-        });
-        if !placement_valid || !blocks_valid || !live_valid || self.through_order > i64::MAX as u64
-        {
-            return Err(StudioError::new(
-                StudioErrorCode::InvalidArgument,
-                "Invalid timeline delivery cut",
-                false,
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(
     tag = "kind",
@@ -226,16 +238,6 @@ pub struct DisplayMemberPage {
 mod tests {
     use super::*;
 
-    fn work(id: &str) -> DisplayBlockBody {
-        DisplayBlockBody::Work {
-            timing: WorkTiming::default(),
-            members: DisplayBlockRef {
-                database_id: "db".into(),
-                block_id: id.into(),
-            },
-        }
-    }
-
     #[test]
     fn work_heads_do_not_reserve_an_inline_single_atom() {
         assert!(
@@ -245,108 +247,53 @@ mod tests {
     }
 
     #[test]
-    fn split_handoff_and_live_only_keep_distinct_delivery_cuts() {
-        let mut batch = TimelineBatch {
-            presentation_version: PRESENTATION_VERSION,
-            placement: ChatPlacement::Append,
-            blocks: vec![DisplayBlock {
-                id: "g1".into(),
-                block_order: 1,
-                body: work("g1"),
-            }],
-            before: None,
-            from_order: Some(0),
-            through_order: 1,
-            live: None,
-        };
-        assert!(batch.validate().is_ok());
-        batch.blocks.clear();
-        batch.from_order = Some(1);
-        assert!(batch.validate().is_err());
-        batch.live = Some(LiveDisplayWindow {
-            revision: 2,
-            ready_frontier: 1,
-            execution_present: true,
-            current_work_id: None,
-            blocks: vec![],
-            older: None,
-        });
-        assert!(batch.validate().is_ok());
-        batch.live.as_mut().unwrap().ready_frontier = 2;
-        assert!(batch.validate().is_err());
+    fn versions_are_explicit_and_old_clients_are_rejected() {
+        assert!(validate_timeline_versions(6, 1).is_ok());
+        for (presentation, reader) in [(5, 1), (6, 0), (6, 2)] {
+            assert_eq!(
+                validate_timeline_versions(presentation, reader)
+                    .unwrap_err()
+                    .reason(),
+                Some("protocolVersionMismatch")
+            );
+        }
+        assert!(
+            serde_json::from_value::<OpenTimeline>(serde_json::json!({
+                "readerId": "reader", "presentationVersion": 6, "initialCursor": "C0"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
-    fn published_identity_cannot_reappear_in_live_same_frame() {
-        let batch = TimelineBatch {
-            presentation_version: PRESENTATION_VERSION,
-            placement: ChatPlacement::Set,
-            blocks: vec![DisplayBlock {
-                id: "g1".into(),
-                block_order: 1,
-                body: work("g1"),
-            }],
-            before: None,
-            from_order: None,
-            through_order: 1,
-            live: Some(LiveDisplayWindow {
-                revision: 2,
-                ready_frontier: 1,
-                execution_present: true,
-                current_work_id: None,
-                blocks: vec![LiveDisplayBlock {
-                    has_unfinished_members: false,
-                    thinking_summary: None,
-                    id: "g1".into(),
-                    block_order: 1,
-                    source: None,
-                    body: work("g1"),
-                    state: DisplayBlockState::Sealed,
-                }],
-                older: None,
-            }),
+    fn keep_and_status_cannot_carry_a_second_tail_window() {
+        let keep = serde_json::json!({"kind": "keep"});
+        assert_eq!(
+            serde_json::from_value::<TailUpdate>(keep.clone()).unwrap(),
+            TailUpdate::Keep {}
+        );
+        assert_eq!(serde_json::to_value(TailUpdate::Keep {}).unwrap(), keep);
+        assert!(
+            serde_json::from_value::<TailUpdate>(serde_json::json!({
+                "kind": "keep", "snapshot": {}
+            }))
+            .is_err()
+        );
+        let update = TailUpdate::Status {
+            base_layout_revision: 9,
+            revision: 10,
+            current_work_id: Some("work".into()),
+            thinking_summary: Some("标题".into()),
         };
-        assert!(batch.validate().is_err());
-    }
-
-    #[test]
-    fn canonical_current_work_requires_one_matching_open_work_and_current_version() {
-        let mut batch = TimelineBatch {
-            presentation_version: PRESENTATION_VERSION,
-            placement: ChatPlacement::Set,
-            blocks: vec![],
-            before: None,
-            from_order: None,
-            through_order: 0,
-            live: Some(LiveDisplayWindow {
-                revision: 1,
-                ready_frontier: 0,
-                execution_present: false,
-                current_work_id: Some("tail".into()),
-                older: None,
-                blocks: vec![LiveDisplayBlock {
-                    has_unfinished_members: false,
-                    thinking_summary: None,
-                    id: "tail".into(),
-                    block_order: 1,
-                    source: None,
-                    body: work("tail"),
-                    state: DisplayBlockState::Open,
-                }],
-            }),
-        };
-        assert!(batch.validate().is_ok());
-        batch.presentation_version = 2;
-        assert!(batch.validate().is_err());
-        batch.presentation_version = PRESENTATION_VERSION;
-        batch.live.as_mut().unwrap().current_work_id = None;
-        assert!(batch.validate().is_err());
-        batch.live.as_mut().unwrap().current_work_id = Some("another".into());
-        assert!(batch.validate().is_err());
-        batch.live.as_mut().unwrap().current_work_id = Some("tail".into());
-        batch.live.as_mut().unwrap().blocks[0].state = DisplayBlockState::Sealed;
-        assert!(batch.validate().is_err());
-        batch.live.as_mut().unwrap().current_work_id = None;
-        assert!(batch.validate().is_ok());
+        assert_eq!(
+            serde_json::from_slice::<TailUpdate>(&serde_json::to_vec(&update).unwrap()).unwrap(),
+            update
+        );
+        let mut unknown = serde_json::to_value(&update).unwrap();
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("snapshot".into(), serde_json::json!({}));
+        assert!(serde_json::from_value::<TailUpdate>(unknown).is_err());
     }
 }

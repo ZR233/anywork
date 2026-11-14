@@ -23,9 +23,6 @@ final class TimelineMessageController {
   final TimelineExpansionIntent Function(String)? expansionForBlock;
   bool _disposed = false;
   bool _retired = false;
-  int? _through;
-  int? _firstPosition;
-  final Set<String> _loadedIds = {};
   int get length => controller.messages.length;
 
   TimelineDisplayUnit _unitOf(Message message) =>
@@ -48,64 +45,17 @@ final class TimelineMessageController {
     );
   }
 
-  Future<void> applyTimeline(TimelineBatch batch) {
+  Future<void> applyBlocks(List<DisplayBlock> blocks, ChatPlacement placement) {
     if (_disposed || _retired) throw const StaleConversationScope();
-    if (batch.presentationVersion != presentationVersion) {
-      throw const ConversationContinuityError(
-        'Unsupported presentation version',
-      );
-    }
-    final validCut = switch (batch.placement) {
-      ChatPlacement.set => batch.fromOrder == null,
-      ChatPlacement.prepend =>
-        _through != null &&
-            batch.fromOrder == null &&
-            batch.live == null &&
-            batch.throughOrder <= _through!,
-      ChatPlacement.append =>
-        _through != null &&
-            batch.fromOrder == _through &&
-            batch.throughOrder >= _through! &&
-            batch.before == null,
-    };
-    var previous = batch.fromOrder ?? 0;
-    final ids = <String>{};
-    var valid = validCut && batch.throughOrder >= 0;
-    for (final block in batch.blocks) {
-      valid =
-          valid &&
-          block.id.isNotEmpty &&
-          ids.add(block.id) &&
-          (batch.placement == ChatPlacement.set ||
-              !_loadedIds.contains(block.id)) &&
-          block.blockOrder > previous &&
-          block.blockOrder <= batch.throughOrder;
-      previous = block.blockOrder;
-    }
-    if (!valid) {
-      throw const ConversationContinuityError('Invalid display block page');
-    }
-    // Pure live frames do not even inspect the existing Main collection.
-    if (batch.placement == ChatPlacement.append && batch.blocks.isEmpty) {
-      if (batch.throughOrder != _through) {
-        throw const ConversationContinuityError(
-          'Pure live frame advanced history',
-        );
-      }
+    if (placement == ChatPlacement.append && blocks.isEmpty) {
       return Future.value();
     }
-    if (batch.placement == ChatPlacement.prepend &&
-        batch.blocks.isNotEmpty &&
-        _firstPosition != null &&
-        batch.blocks.last.blockOrder >= _firstPosition!) {
-      throw const ConversationContinuityError('Display pages overlap');
-    }
-    final messages = [for (final block in batch.blocks) _message(block)];
-    final previousUnits = batch.placement == ChatPlacement.set
+    final messages = [for (final block in blocks) _message(block)];
+    final previousUnits = placement == ChatPlacement.set
         ? [for (final message in controller.messages) _unitOf(message)]
         : const <TimelineDisplayUnit>[];
     final Future<void> applied;
-    switch (batch.placement) {
+    switch (placement) {
       case ChatPlacement.set:
         applied = controller.setMessages(messages, animated: false);
       case ChatPlacement.prepend:
@@ -113,7 +63,7 @@ final class TimelineMessageController {
         if (messages.isNotEmpty) {
           applied = controller.insertAllMessages(
             messages,
-            index: batch.placement == ChatPlacement.prepend ? 0 : null,
+            index: placement == ChatPlacement.prepend ? 0 : null,
             animated: false,
           );
         } else {
@@ -131,18 +81,6 @@ final class TimelineMessageController {
       for (final unit in previousUnits) {
         _retire(unit);
       }
-      if (batch.placement == ChatPlacement.set) {
-        _loadedIds.clear();
-        _firstPosition = batch.blocks.firstOrNull?.blockOrder;
-      } else if (batch.blocks.isNotEmpty) {
-        _firstPosition = batch.placement == ChatPlacement.prepend
-            ? batch.blocks.first.blockOrder
-            : _firstPosition ?? batch.blocks.first.blockOrder;
-      }
-      _loadedIds.addAll(ids);
-      if (batch.placement != ChatPlacement.prepend) {
-        _through = batch.throughOrder;
-      }
       for (final message in messages) {
         final unit = _unitOf(message);
         unit.expansion.current = unit;
@@ -152,8 +90,8 @@ final class TimelineMessageController {
         'conversation.applied',
         arguments: {
           'generation': generation,
-          'placement': batch.placement.name,
-          'acceptedBlocks': batch.blocks.length,
+          'placement': placement.name,
+          'acceptedBlocks': blocks.length,
           'controllerMessages': length,
         },
       );

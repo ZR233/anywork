@@ -114,8 +114,8 @@ class _WorkspaceReadingState extends ConsumerState<_WorkspaceReading> {
           if (!request.isActive()) return;
           final conversations = ref.read(anyworkClientProvider).conversations;
           final session = conversations.existingSession(threadId);
-          final content = session?.content;
-          final attempt = content?.currentAttemptId;
+          final timeline = ref.read(appGraphProvider).timeline;
+          final content = timeline.lease(threadId);
           setState(() {
             // A document is a shell-local demand, not a borrow from a virtual
             // timeline row. Scrolling that row away must not retire the panel.
@@ -133,8 +133,8 @@ class _WorkspaceReadingState extends ConsumerState<_WorkspaceReading> {
                       session,
                     ) &&
                     content != null &&
-                    !content.isClosed &&
-                    content.currentAttemptId == attempt,
+                    !content.isRetired &&
+                    identical(timeline.lease(threadId), content),
               ),
             );
           });

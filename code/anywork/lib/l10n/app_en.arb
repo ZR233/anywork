@@ -1,4 +1,7 @@
 {
+  "studioFailureConversationResyncRequired": "Conversation content needs to be synchronized again. Please retry.",
+  "studioFailureStaleViewCursor": "The current reading position has expired. Reopen the conversation.",
+  "studioFailureConcurrentNext": "Conversation content is being read. Wait for the current read to finish.",
   "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",
   "acpHistoryButton": "External sessions",
   "acpHistoryOpenPanel": "View external sessions",

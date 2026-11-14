@@ -1,4 +1,7 @@
 {
+  "studioFailureConversationResyncRequired": "会话内容需要重新同步，请重试。",
+  "studioFailureStaleViewCursor": "当前阅读位置已失效，请重新打开会话。",
+  "studioFailureConcurrentNext": "正在读取会话内容，请等待当前读取完成。",
   "conversationDirectoryUnavailable": "无法获取会话信息。请重试。",
   "acpHistoryButton": "外部会话",
   "acpHistoryOpenPanel": "查看外部会话",

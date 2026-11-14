@@ -13,15 +13,15 @@ final class TimelineOutputConsumption {
     required this.conversations,
     required this.turnId,
     required this.executionId,
-  }) : _attempt = lease.content.currentAttemptId,
-       _scope = lease.content.openScope(generation: lease.generation);
+  }) : _readerId = lease.reader.metadata.readerId,
+       _scope = lease.openScope(generation: lease.generation);
 
   final TimelineDisplayLease lease;
   final ConversationSession session;
   final ConversationRepository conversations;
   final String turnId;
   final String executionId;
-  final AttemptId? _attempt;
+  final String _readerId;
   final ConversationQueryScope _scope;
   final _clock = Stopwatch()..start();
   final _outputs = <String>{};
@@ -57,8 +57,7 @@ final class TimelineOutputConsumption {
     expectSync(lease.isMounted, isTrue);
     expectSync(lease.isRetired, isFalse);
     expectSync(lease.threadId, session.threadId);
-    expectSync(lease.content.currentAttemptId, _attempt);
-    expectSync(lease.content.state.value, isA<ChatReady<bool>>());
+    expectSync(lease.reader.metadata.readerId, _readerId);
     expectSync(_scope.isActive, isTrue);
   }
 
@@ -175,7 +174,7 @@ final class TimelineOutputConsumption {
       'threadId': lease.threadId,
       'turnId': turnId,
       'executionId': executionId,
-      'attemptId': _attempt?.value,
+      'readerId': _readerId,
       'items': _outputs.length,
       'bytes': _bytes,
       'actualReads': _reads,

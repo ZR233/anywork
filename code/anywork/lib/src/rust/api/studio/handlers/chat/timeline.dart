@@ -5,11 +5,8 @@
 
 import '../../../../frb_generated.dart';
 import '../../types/chat.dart';
-import '../../types/delegation.dart';
 import '../../types/error.dart';
 import '../../types/presentation.dart';
-import '../../types/runtime.dart';
-import '../../types/thread_activity.dart';
 import '../../types/thread_stream.dart';
 import '../../types/thread_stream/item.dart';
 
@@ -17,11 +14,15 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
-Future<BridgeTimelineFeed> openTimelineFeed({
+Future<BridgeTimelineReader> openTimelineReader({
   required String threadId,
+  required int presentationVersion,
+  required int readerProtocolVersion,
   required BridgeReadDemand initialDemand,
-}) => RustLib.instance.api.crateApiStudioHandlersChatTimelineOpenTimelineFeed(
+}) => RustLib.instance.api.crateApiStudioHandlersChatTimelineOpenTimelineReader(
   threadId: threadId,
+  presentationVersion: presentationVersion,
+  readerProtocolVersion: readerProtocolVersion,
   initialDemand: initialDemand,
 );
 
@@ -34,18 +35,11 @@ abstract class BridgeDisplayMembers implements RustOpaqueInterface {
   void requestClose();
 }
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimelineFeed>>
-abstract class BridgeTimelineFeed implements RustOpaqueInterface {
-  void acknowledge({
-    required String subscriptionId,
-    required BigInt deliverySequence,
-  });
-
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimelineReader>>
+abstract class BridgeTimelineReader implements RustOpaqueInterface {
   Future<void> close();
 
   Future<void> closeContentWatch({required String watchId});
-
-  Stream<BridgeConversationFrame> events();
 
   Future<BridgeContentManifestPage> listContents({
     required String itemId,
@@ -59,15 +53,19 @@ abstract class BridgeTimelineFeed implements RustOpaqueInterface {
     required BridgeReadDemand demand,
   });
 
-  Future<BridgeLiveDisplayWindow> loadLiveOlder({
+  Future<BridgeTailSnapshot> loadLiveOlder({
     required String before,
     required BridgeReadDemand demand,
   });
 
-  Future<BridgeTimelineBatch> loadOlder({
+  Future<BridgeTimelinePage> loadOlder({
     required String before,
     required BridgeReadDemand demand,
   });
+
+  BridgeOpenTimeline metadata();
+
+  Future<BridgeViewUpdate> next({required String after});
 
   Future<BridgeContentWindow?> nextContentWindow({required String watchId});
 
@@ -103,8 +101,6 @@ abstract class BridgeTimelineFeed implements RustOpaqueInterface {
   void requestClose();
 
   void requestCloseContentWatch({required String watchId});
-
-  String subscriptionId();
 
   String threadId();
 }

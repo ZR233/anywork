@@ -370,18 +370,11 @@ void main() {
       );
       await pumpClientUntil(
         tester,
-        () =>
-            graph.client.conversations
-                .existingSession('thread-main')!
-                .content
-                .state
-                .value
-                .snapshot !=
-            null,
+        () => graph.timeline.lease('thread-main') != null,
         'Client delivers the initial content baseline',
       );
       await tester.pumpAndSettle();
-      final openedWindows = transport.feeds.length;
+      final openedWindows = transport.timelineReaders.length;
       await pumpClientFuture(
         tester,
         graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
@@ -391,9 +384,9 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(transport.feeds, hasLength(openedWindows));
+      expect(transport.timelineReaders, hasLength(openedWindows));
       expect(
-        transport.feeds.every((entry) => entry.joined.isCompleted),
+        transport.timelineReaders.every((entry) => entry.joined.isCompleted),
         isTrue,
       );
     },

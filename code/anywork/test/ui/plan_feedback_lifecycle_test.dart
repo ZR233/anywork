@@ -600,7 +600,7 @@ Future<void> _publishPlanDocument(
   String markdown,
 ) async {
   final session = graph.client.conversations.session(threadId);
-  await session.content.ready;
+  await timelineReady(graph.timeline, session.threadId);
   transport.seedConversationState(
     threadId,
     ThreadRuntimeUpdate(

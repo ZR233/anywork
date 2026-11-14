@@ -47,6 +47,23 @@ final class ConversationRepositoryImpl
   );
 
   @override
+  Future<TimelineReader> openTimelineReader(
+    String threadId, {
+    required ReadDemand demand,
+  }) {
+    if (_closed) throw StateError('Conversation repository is closed');
+    final native = transport;
+    if (native is! TimelineTransport)
+      throw StateError('Timeline transport is unavailable');
+    return (native as TimelineTransport).openTimelineReader(
+      threadId,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: timelineReaderProtocolVersion,
+      demand: demand,
+    );
+  }
+
+  @override
   Future<ConversationContent> openChildren({
     required String threadId,
     required String parentId,

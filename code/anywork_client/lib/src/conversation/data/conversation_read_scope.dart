@@ -15,12 +15,10 @@ final class ConversationReadScope implements TimelineQueryScope {
     required this.generation,
     required ConversationReader reader,
     required bool Function() isEligible,
-    required Future<void> Function(ChatBatch) applyOlder,
-    TimelineFeed? timeline,
-    Future<void> Function(TimelineBatch)? applyTimelineOlder,
+    Future<void> Function(ChatBatch)? applyOlder,
+    TimelineReader? timeline,
   }) : _reader = reader,
        _timeline = timeline,
-       _applyTimelineOlder = applyTimelineOlder,
        _isEligible = isEligible,
        _applyOlder = applyOlder;
 
@@ -30,36 +28,39 @@ final class ConversationReadScope implements TimelineQueryScope {
   final int generation;
   final ConversationReader _reader;
   final bool Function() _isEligible;
-  final Future<void> Function(ChatBatch) _applyOlder;
-  final TimelineFeed? _timeline;
-  final Future<void> Function(TimelineBatch)? _applyTimelineOlder;
+  final Future<void> Function(ChatBatch)? _applyOlder;
+  final TimelineReader? _timeline;
   final Set<_ScopedDisplayMembers> _members = {};
   final Set<Future<void>> _pending = {};
   final Set<_ContentWatch> _watches = {};
   final Set<_ResourceRead> _resourceReads = {};
   bool _retired = false;
   Future<ChatBatch>? _older;
-  Future<TimelineBatch>? _timelineOlder;
+  Future<TimelinePage>? _timelineOlder;
 
   @override
   bool get isActive => !_retired && _isEligible();
   @override
   int get pendingQueries => _pending.length;
   bool get isSettled =>
-      _retired && _pending.isEmpty && _watches.isEmpty && _members.isEmpty;
+      _retired &&
+      _pending.isEmpty &&
+      _watches.isEmpty &&
+      _members.isEmpty &&
+      _resourceReads.isEmpty;
 
-  TimelineFeed get _timelineFeed =>
+  TimelineReader get _timelineFeed =>
       _timeline ?? (throw StateError('Not a Timeline read scope'));
 
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
     if (!isActive) return Future.error(const StaleConversationScope());
     final existing = _timelineOlder;
     if (existing != null) return existing;
-    final completion = Completer<TimelineBatch>();
+    final completion = Completer<TimelinePage>();
     _timelineOlder = completion.future;
     completion.complete(
       _run(() async {
@@ -67,8 +68,6 @@ final class ConversationReadScope implements TimelineQueryScope {
           before: before,
           demand: demand,
         );
-        if (!isActive) throw const StaleConversationScope();
-        await _applyTimelineOlder!(batch);
         if (!isActive) throw const StaleConversationScope();
         return batch;
       }),
@@ -83,7 +82,7 @@ final class ConversationReadScope implements TimelineQueryScope {
   }
 
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   }) => _run(() => _timelineFeed.loadLiveOlder(before: before, demand: demand));
@@ -134,7 +133,7 @@ final class ConversationReadScope implements TimelineQueryScope {
         // Start native IO outside the serial component admission queue.
         final batch = await _reader.loadOlder(before: before, demand: demand);
         if (!isActive) throw const StaleConversationScope();
-        await _applyOlder(batch);
+        await _applyOlder?.call(batch);
         if (!isActive) throw const StaleConversationScope();
         return batch;
       }),

@@ -18,18 +18,23 @@ abstract interface class ConversationTransport {
 }
 
 abstract interface class TimelineTransport {
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   });
 }
 
-abstract interface class TimelineFeed implements ConversationFeed {
-  Future<TimelineBatch> loadTimelineOlder({
+abstract interface class TimelineReader {
+  OpenTimeline get metadata;
+  ConversationReader get reader;
+  Future<ViewUpdate> next({required ViewCursor after});
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   });
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   });
@@ -38,6 +43,8 @@ abstract interface class TimelineFeed implements ConversationFeed {
     required DisplayMemberWindow window,
     required ReadDemand demand,
   });
+  void requestClose();
+  Future<void> close();
 }
 
 /// One bounded state subscription. It carries only state, failure and close
@@ -101,8 +108,7 @@ abstract interface class ConversationFeed {
   String get subscriptionId;
   ConversationReader get reader;
 
-  /// Content-only events: completion feeds carry Chat/Activity, while Timeline
-  /// feeds carry Timeline. Both may report Failure or Closed, never State.
+  /// Completion-only Chat/Activity, Failure or Closed; never State or GUI presentation.
   Stream<ConversationFrame> get events;
   Future<void> acknowledge(int deliverySequence);
   void requestClose();
@@ -134,11 +140,6 @@ final class ConversationStateEvent extends ConversationEvent {
 final class ConversationChatEvent extends ConversationEvent {
   const ConversationChatEvent({required this.batch});
   final ChatBatch batch;
-}
-
-final class ConversationTimelineEvent extends ConversationEvent {
-  const ConversationTimelineEvent({required this.batch});
-  final TimelineBatch batch;
 }
 
 final class ConversationActivityEvent extends ConversationEvent {

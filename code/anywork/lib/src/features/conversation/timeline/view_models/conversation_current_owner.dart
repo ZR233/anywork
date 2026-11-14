@@ -29,28 +29,15 @@ final class TimelineMemberDisclosure {
 /// Only bounded windows and resource handles live here, never chat messages or
 /// a text-delta accumulator.
 final class ConversationCurrentOwner extends ChangeNotifier {
-  ConversationCurrentOwner(this.content, {this.frozen = false}) {
-    _attempt = content.currentAttemptId;
-    _connection = content.state.watch((state) {
-      if (_closed) return;
-      final attemptChanged = _attempt != content.currentAttemptId;
-      if (attemptChanged || state is! ChatReady<bool>) {
-        _attempt = content.currentAttemptId;
-        if (attemptChanged) {
-          _explicitSources = const [];
-          _offsets.clear();
-        }
-        _retireScope();
-      }
-      if (state is ChatReady<bool>) _reconcile();
-      _notify();
-    });
-  }
+  ConversationCurrentOwner(
+    this.content, {
+    required this.isActive,
+    this.frozen = false,
+  });
 
-  final ConversationContent content;
+  final ConversationQueries content;
+  final bool Function() isActive;
   final bool frozen;
-  Observation? _connection;
-  Object? _attempt;
   List<CurrentWindowSource> _explicitSources = const [];
   ConversationQueryScope? _scope;
   final Map<Object, CurrentWindowObservation> _windows = {};
@@ -64,11 +51,7 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   Object? cleanupError;
   String? invalidationNotice;
 
-  bool get isCurrent =>
-      !_closed &&
-      !content.isClosed &&
-      _attempt == content.currentAttemptId &&
-      content.state.value is ChatReady<bool>;
+  bool get isCurrent => !_closed && isActive();
   Iterable<CurrentWindowObservation> get windows =>
       isCurrent ? _windows.values : const [];
   bool get expanded => _expanded;
@@ -208,7 +191,7 @@ final class ConversationCurrentOwner extends ChangeNotifier {
       scope.isActive &&
       identical(_scope, scope) &&
       identical(_windows[key], observation) &&
-      _attempt == content.currentAttemptId;
+      isActive();
 
   void nextWindow(CurrentWindowObservation observation) {
     final window = observation.window;
@@ -318,8 +301,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   Future<void> close() {
     if (!_closed) {
       _closed = true;
-      _connection?.cancel();
-      _connection = null;
       _explicitSources = const [];
       _offsets.clear();
       _retireScope();

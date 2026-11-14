@@ -18,7 +18,7 @@ void main() {
     () async {
       final stock = InMemoryChatController();
       final adapter = TimelineMessageController(stock, generation: 7);
-      await adapter.applyTimeline(
+      await adapter.applyFixtureUpdate(
         displayBatch([
           displaySingle(
             completionEntry(
@@ -82,12 +82,12 @@ void main() {
   test('retirement rejects admission and leaves the component lifetime with its owner', () async {
     final stock = InMemoryChatController();
     final adapter = TimelineMessageController(stock, generation: 7);
-    await adapter.applyTimeline(
+    await adapter.applyFixtureUpdate(
       displayBatch([displaySingle(completionEntry('loaded', 1))]),
     );
     adapter.retireDisplays();
     await expectLater(
-      () => adapter.applyTimeline(displayBatch([])),
+      () => adapter.applyFixtureUpdate(displayBatch([])),
       throwsA(isA<StaleConversationScope>()),
     );
     adapter.dispose();

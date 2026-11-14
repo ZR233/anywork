@@ -44,7 +44,7 @@ class ConversationCurrentConnector extends StatefulWidget {
   final String? turnId;
   final String? activityId;
   final ConversationLiveSection section;
-  final ConversationContent content;
+  final ConversationQueries content;
   final TimelineDisplayUnit Function(LiveDisplayBlock, bool) liveUnit;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String) readAttachment;

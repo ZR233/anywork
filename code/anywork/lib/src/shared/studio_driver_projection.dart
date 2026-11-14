@@ -166,6 +166,10 @@ StudioDriverFacts queryStudioDriverFacts(
 
   return StudioDriverFacts(
     timeline: _timelineFacts(timeline, presentationThreadId),
+    conversationActivity: timeline
+        .lease(presentationThreadId ?? '')
+        ?.liveStatus
+        ?.primaryActivity,
     timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)

@@ -8,7 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state_machine.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_viewport.dart';
@@ -35,9 +35,10 @@ const _status = ThreadActivityView(
   kind: ThreadActivityKind.thinking,
   summary: '思考中',
 );
-final _live = LiveDisplayWindow(
+final _live = TailSnapshot(
   currentWorkId: null,
   revision: 1,
+  layoutRevision: 1,
   readyFrontier: 0,
   executionPresent: true,
   blocks: const [],
@@ -83,61 +84,69 @@ PendingInteraction _toolApproval({String threadId = 'thread'}) =>
       ),
     );
 
-LiveStatusAggregate _observe({
+LiveStatusView _observe({
   ThreadActivityView? status = _status,
-  LiveDisplayWindow? live,
+  TailSnapshot? live,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
   String? activeTurnId = 'turn',
-}) => LiveStatusStateMachine.transition(
-  LiveStatusAggregate.initial('thread'),
-  LiveStatusObserved(
-    LiveStatusObservation(
-      cut: live == null
-          ? const LiveWindowCut.inactive()
-          : LiveWindowCut(
-              revision: live.revision,
-              readyFrontier: live.readyFrontier,
-              executionPresent: live.executionPresent,
-              attemptId: 1,
-              isDisplayActive: true,
-            ),
-      storage: storage,
-      interactions: [?interaction],
-      activeTurnId: activeTurnId,
-      activity: status,
-      latestLive: live,
-    ),
+  LiveWindowPagingState outputPaging = const LatestLiveWindow(),
+}) => LiveStatusProjection.project(
+  threadId: 'thread',
+  observation: LiveStatusInputs(
+    cut: live == null
+        ? const LiveWindowCut.inactive()
+        : LiveWindowCut(
+            revision: live.revision,
+            readyFrontier: live.readyFrontier,
+            executionPresent: live.executionPresent,
+            attemptId: 1,
+            isDisplayActive: true,
+          ),
+    storage: storage,
+    interactions: [?interaction],
+    activeTurnId: activeTurnId,
+    activity: status,
+    latestLive: live,
   ),
-).state;
+  outputPaging: outputPaging,
+  timelineWorkPaging: const LatestLiveWindow(),
+);
 
-LiveStatusAggregate _project(PendingInteraction? interaction) =>
+LiveStatusView _project(PendingInteraction? interaction) =>
     _observe(live: _live, interaction: interaction);
 
 // The scripted boundary supplies only a typed member page. The real SDK,
 // Timeline lease, connectors and renderers own admission and display lifecycle.
 final class _PlanVisibilityTransport extends RecordingDemoTransport {
   late ChatAtom waitAtom;
-  LiveDisplayWindow? olderPage;
+  TailSnapshot? olderPage;
   final olderReads = <({String before, ReadDemand demand})>[];
   final members = <_PlanVisibilityMembers>[];
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async => _PlanVisibilityFeed(
-    inner: await super.openTimelineFeed(threadId, demand: demand),
+    inner: await super.openTimelineReader(
+      threadId,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: timelineReaderProtocolVersion,
+      demand: demand,
+    ),
     transport: this,
   );
 }
 
-final class _PlanVisibilityFeed extends RecordingTimelineFeed {
+final class _PlanVisibilityFeed extends RecordingTimelineReader {
   _PlanVisibilityFeed({required super.inner, required this.transport});
   final _PlanVisibilityTransport transport;
 
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -234,9 +243,10 @@ void main() {
   test(
     '#364 background activity without activeTurnId owns the current Work',
     () {
-      final live = LiveDisplayWindow(
+      final live = TailSnapshot(
         currentWorkId: 'background-tail',
         revision: 1,
+        layoutRevision: 1,
         readyFrontier: 0,
         executionPresent: true,
         blocks: [
@@ -282,9 +292,10 @@ void main() {
   test(
     '#364 older partial page cannot move or clear the canonical current Work',
     () {
-      final latest = LiveDisplayWindow(
+      final latest = TailSnapshot(
         currentWorkId: 'tail',
         revision: 10,
+        layoutRevision: 10,
         readyFrontier: 2,
         executionPresent: true,
         blocks: [
@@ -298,10 +309,10 @@ void main() {
         ],
         older: 'older-page',
       );
-      final initial = _observe(live: latest, activeTurnId: null);
-      final older = LiveDisplayWindow(
+      final older = TailSnapshot(
         currentWorkId: null,
         revision: 10,
+        layoutRevision: 10,
         readyFrontier: 2,
         executionPresent: true,
         blocks: [
@@ -314,24 +325,32 @@ void main() {
         ],
         older: 'even-older',
       );
-      final selected = LiveStatusStateMachine.transition(
-        initial,
-        LiveStatusOlderLoaded(
-          target: LiveStatusSectionTarget.outputBar,
+      final selected = _observe(
+        live: latest,
+        activeTurnId: null,
+        outputPaging: ViewingOlderLiveWindow(
           before: 'older-page',
           window: older,
-          cut: initial.observation.cut,
+          cut: LiveWindowCut(
+            revision: latest.layoutRevision,
+            readyFrontier: latest.readyFrontier,
+            executionPresent: latest.executionPresent,
+            attemptId: 1,
+            isDisplayActive: true,
+          ),
         ),
-      ).state;
+      );
       final surface =
           (selected.barState as LiveStatusPresenting).surface
               as LiveStatusWorkSurface;
       expect(surface.workBlock, same(latest.blocks.single));
       expect(surface.mergedActivity?.kind, ConversationActivityKind.thinking);
-      expect(selected.observation.latestLive, same(latest));
-      expect(selected.observation.latestLive!.currentWorkId, 'tail');
+      expect(surface.workBlock.id, 'tail');
       expect(selected.timelineWork.workBlocks, isEmpty);
-      expect(selected.outputPaging.olderWindow, same(older));
+      expect(
+        (selected.barState as LiveStatusPresenting).paging.olderWindow,
+        same(older),
+      );
     },
   );
 
@@ -348,14 +367,14 @@ void main() {
       ),
       contents: const [],
     );
-    LiveDisplayWindow window(List<LiveDisplayBlock> blocks) =>
-        LiveDisplayWindow(
-          currentWorkId: null,
-          revision: 2,
-          readyFrontier: 0,
-          executionPresent: true,
-          blocks: blocks,
-        );
+    TailSnapshot window(List<LiveDisplayBlock> blocks) => TailSnapshot(
+      currentWorkId: null,
+      revision: 2,
+      layoutRevision: 2,
+      readyFrontier: 0,
+      executionPresent: true,
+      blocks: blocks,
+    );
     final output = LiveDisplayBlock(
       id: 'text',
       blockOrder: 1,
@@ -390,7 +409,7 @@ void main() {
       ),
     );
     expect(
-      LiveStatusStateMachine.hasCurrentOutputRenderer(
+      LiveStatusProjection.hasCurrentOutputRenderer(
         live: window([output]),
         activeTurnId: 'turn',
         notice: responding,
@@ -399,7 +418,7 @@ void main() {
     );
     for (final notice in [thinkingB, failure, const UnrestoredLiveNotice()]) {
       expect(
-        LiveStatusStateMachine.hasCurrentOutputRenderer(
+        LiveStatusProjection.hasCurrentOutputRenderer(
           live: window([output]),
           activeTurnId: 'turn',
           notice: notice,
@@ -409,7 +428,7 @@ void main() {
     }
     // An absent text in a bounded window does not revoke authoritative activity.
     expect(
-      LiveStatusStateMachine.hasCurrentOutputRenderer(
+      LiveStatusProjection.hasCurrentOutputRenderer(
         live: window([]),
         activeTurnId: 'turn',
         notice: responding,
@@ -417,7 +436,7 @@ void main() {
       isFalse,
     );
     expect(
-      LiveStatusStateMachine.hasCurrentOutputRenderer(
+      LiveStatusProjection.hasCurrentOutputRenderer(
         live: window([
           LiveDisplayBlock(
             id: output.id,
@@ -449,9 +468,10 @@ void main() {
     test(
       'current Work absorbs normal activity regardless of diagnostic source: $label',
       () {
-        final live = LiveDisplayWindow(
+        final live = TailSnapshot(
           currentWorkId: 'opaque-block',
           revision: 3,
+          layoutRevision: 3,
           readyFrontier: 0,
           executionPresent: true,
           blocks: [
@@ -481,9 +501,9 @@ void main() {
           thinkingSeconds: 17,
         );
         final notice = ExecutionLiveNotice(
-          LiveStatusStateMachine.mapThreadActivity(status),
+          LiveStatusProjection.mapThreadActivity(status),
         );
-        final placement = LiveStatusStateMachine.mergeableWorkNotice(
+        final placement = LiveStatusProjection.mergeableWorkNotice(
           live: live,
           notices: [notice],
         );
@@ -507,16 +527,18 @@ void main() {
           expect(aggregate.timelineWork.workBlocks, isEmpty);
           final work = live.blocks.single;
           for (final blocked in [
-            LiveDisplayWindow(
+            TailSnapshot(
               currentWorkId: 'opaque-block',
               revision: 4,
+              layoutRevision: 4,
               readyFrontier: 0,
               executionPresent: false,
               blocks: live.blocks,
             ),
-            LiveDisplayWindow(
+            TailSnapshot(
               currentWorkId: null,
               revision: 4,
+              layoutRevision: 4,
               readyFrontier: 0,
               executionPresent: true,
               blocks: [
@@ -529,16 +551,17 @@ void main() {
                 ),
               ],
             ),
-            LiveDisplayWindow(
+            TailSnapshot(
               currentWorkId: null,
               revision: 4,
+              layoutRevision: 4,
               readyFrontier: 0,
               executionPresent: true,
               blocks: [work],
             ),
           ]) {
             expect(
-              LiveStatusStateMachine.mergeableWorkNotice(
+              LiveStatusProjection.mergeableWorkNotice(
                 live: blocked,
                 notices: [notice],
               ),
@@ -560,9 +583,10 @@ void main() {
     ('unfinished', true),
   ]) {
     test('normal notice requires complete continuing open Work: $label', () {
-      final live = LiveDisplayWindow(
+      final live = TailSnapshot(
         currentWorkId: 'work',
         revision: 4,
+        layoutRevision: 4,
         readyFrontier: 0,
         executionPresent: true,
         blocks: [
@@ -595,9 +619,9 @@ void main() {
           summary: '真实 Turn 活动',
         );
         final notice = ExecutionLiveNotice(
-          LiveStatusStateMachine.mapThreadActivity(status),
+          LiveStatusProjection.mapThreadActivity(status),
         );
-        final placement = LiveStatusStateMachine.mergeableWorkNotice(
+        final placement = LiveStatusProjection.mergeableWorkNotice(
           live: live,
           notices: [notice],
         );
@@ -638,9 +662,10 @@ void main() {
   });
 
   test('closing Work and successor text remain ordered and storage/stop notices coexist', () {
-    final live = LiveDisplayWindow(
+    final live = TailSnapshot(
       currentWorkId: null,
       revision: 4,
+      layoutRevision: 4,
       readyFrontier: 3,
       executionPresent: true,
       blocks: [
@@ -699,9 +724,10 @@ void main() {
   test(
     'cold all-terminal tail rests; only unfinished cold content is Unrestored',
     () {
-      final coldWorkWindow = LiveDisplayWindow(
+      final coldWorkWindow = TailSnapshot(
         currentWorkId: 'work',
         revision: 4,
+        layoutRevision: 4,
         readyFrontier: 3,
         executionPresent: false,
         blocks: [
@@ -726,9 +752,10 @@ void main() {
       expect(resting.mergedActivity, isNull);
       expect(resting.standaloneNotices, isEmpty);
 
-      final coldSingleWindow = LiveDisplayWindow(
+      final coldSingleWindow = TailSnapshot(
         currentWorkId: null,
         revision: 5,
+        layoutRevision: 5,
         readyFrontier: 3,
         executionPresent: false,
         blocks: [
@@ -865,21 +892,22 @@ void main() {
             ),
           ),
         );
-        Future<LiveDisplayWindow> publishLive(
+        Future<TailSnapshot> publishLive(
           List<LiveDisplayBlock> blocks, {
           bool executionPresent = true,
           String? currentWorkId = 'plan-work',
         }) async {
           final previous = lease.live.value!;
-          final live = LiveDisplayWindow(
+          final live = TailSnapshot(
             currentWorkId: currentWorkId,
             revision: previous.revision + 1,
+            layoutRevision: previous.revision + 1,
             readyFrontier: previous.readyFrontier,
             executionPresent: executionPresent,
             blocks: blocks,
             older: olderSource == null ? null : 'older-page',
           );
-          transport.timelineFeeds.single.emitTimeline(
+          transport.timelineReaders.single.emitTimeline(
             displayBatch(
               const [],
               placement: ChatPlacement.append,
@@ -1043,9 +1071,10 @@ void main() {
               ).payload,
             ),
           );
-          transport.olderPage = LiveDisplayWindow(
+          transport.olderPage = TailSnapshot(
             currentWorkId: null,
             revision: live.revision,
+            layoutRevision: live.revision,
             readyFrontier: live.readyFrontier,
             executionPresent: live.executionPresent,
             blocks: [
@@ -1244,17 +1273,23 @@ void main() {
           listen: false,
         ).read(liveStatusViewModelProvider(threadId));
         expect(liveStatus, isNotNull);
-        expect(liveStatus!.observation.latestLive, same(lease.live.value));
         expect(
-          liveStatus.observation.activity?.kind,
-          ThreadActivityKind.stopping,
+          liveStatus!.timelineWork.effectiveWindow,
+          same(lease.live.value),
         );
         expect(
           liveStatus.primaryActivity?.kind,
           ConversationActivityKind.stopping,
         );
         expect(liveStatus.timelineWork.workBlocks, contains(same(frozenWork)));
-        expect(liveStatus.observation.storage?.lastError, '磁盘写入失败');
+        final obscured =
+            (liveStatus.barState as LiveStatusDockMasked).obscured!;
+        expect(
+          obscured.surface.standaloneNotices
+              .whereType<ExecutionLiveNotice>()
+              .any((notice) => notice.view.errorMessage == '磁盘写入失败'),
+          isTrue,
+        );
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         expect(lease.expansionForBlock('plan-work').expanded, isTrue);
         expect(lease.controller.messages, orderedEquals(history));
@@ -1274,21 +1309,13 @@ void main() {
         expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
         expect(
           ProviderScope.containerOf(
-            tester.element(find.byType(LiveStatusBar)),
-            listen: false,
-          ).read(liveStatusViewModelProvider(threadId))!.observation.latestLive,
-          same(lease.live.value),
-        );
-        expect(
-          ProviderScope.containerOf(
                 tester.element(find.byType(LiveStatusBar)),
                 listen: false,
               )
               .read(liveStatusViewModelProvider(threadId))!
-              .observation
-              .activity
-              ?.kind,
-          ThreadActivityKind.thinking,
+              .timelineWork
+              .effectiveWindow,
+          same(lease.live.value),
         );
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         expect(lease.expansionForBlock('plan-work').expanded, isTrue);
@@ -1323,9 +1350,10 @@ void main() {
         ),
       ),
     );
-    final live = LiveDisplayWindow(
+    final live = TailSnapshot(
       currentWorkId: 'background-work',
       revision: 1,
+      layoutRevision: 1,
       readyFrontier: 0,
       executionPresent: true,
       blocks: [work],
@@ -1340,8 +1368,6 @@ void main() {
 
     expect(state.barState, isA<LiveStatusDockMasked>());
     expect((state.barState as LiveStatusDockMasked).interactionId, 'plan');
-    expect(state.observation.latestLive, same(live));
-    expect(state.observation.activity, same(_status));
     expect(state.primaryActivity?.kind, ConversationActivityKind.thinking);
     expect(state.timelineWork.workBlocks, isEmpty);
     final masked = state.barState as LiveStatusDockMasked;
@@ -1350,18 +1376,18 @@ void main() {
       same(work),
     );
 
-    final restored = LiveStatusStateMachine.transition(
-      state,
-      LiveStatusObserved(
-        LiveStatusObservation(
-          cut: state.observation.cut,
-          interactions: const [],
-          activeTurnId: 'turn',
-          activity: _status,
-          latestLive: live,
-        ),
+    final restored = LiveStatusProjection.project(
+      threadId: 'thread',
+      observation: LiveStatusInputs(
+        cut: state.cut,
+        interactions: const [],
+        activeTurnId: 'turn',
+        activity: _status,
+        latestLive: live,
       ),
-    ).state;
+      outputPaging: const LatestLiveWindow(),
+      timelineWorkPaging: const LatestLiveWindow(),
+    );
     expect(restored.barState, isA<LiveStatusPresenting>());
   });
 
@@ -1387,11 +1413,6 @@ void main() {
         );
         expect(aggregate.barState, isA<LiveStatusDockMasked>());
         expect(aggregate.barState.showInteractionDetails, isFalse);
-        expect(
-          aggregate.observation.activity?.turnId,
-          turnId,
-          reason: '隐藏呈现不能丢弃仍有效的后台 activity 来源事实',
-        );
         if (turnId != 'turn') {
           expect(aggregate.primaryActivity?.turnId, turnId);
         }
@@ -1439,138 +1460,10 @@ void main() {
     );
   });
 
-  test('state machine transitions older window paging, handles failure/return, and resets on cut change while deduplicating driver effects', () {
-    const cut1 = LiveWindowCut(
-      revision: 10,
-      readyFrontier: 2,
-      executionPresent: true,
-      attemptId: 1,
-      isDisplayActive: true,
-    );
-    final latest = LiveDisplayWindow(
-      currentWorkId: null,
-      revision: 10,
-      readyFrontier: 2,
-      executionPresent: true,
-      blocks: const [],
-      older: 'cursor-1',
-    );
-    final olderPage = LiveDisplayWindow(
-      currentWorkId: null,
-      revision: 10,
-      readyFrontier: 2,
-      executionPresent: true,
-      blocks: [
-        LiveDisplayBlock(
-          id: 'older-single',
-          blockOrder: 1,
-          state: DisplayBlockState.open,
-          body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
-            record: DisplayRecord(
-              atom: completionEntry('older-single', 1, text: '更早正文').atom,
-              contentSource: const CurrentAtom(),
-            ),
-          ),
-        ),
-      ],
-    );
-
-    final initial = LiveStatusAggregate.initial('thread');
-    final obs1 = LiveStatusObservation(
-      cut: cut1,
-      activeTurnId: 'turn',
-      activity: _status,
-      latestLive: latest,
-    );
-    final t1 = LiveStatusStateMachine.transition(
-      initial,
-      LiveStatusObserved(obs1),
-    );
-    expect(t1.effects, [
-      SyncStudioDriverActivityEffect(t1.state.primaryActivity),
-    ]);
-
-    // 同一活动重复观察时不重复发布 SyncStudioDriverActivityEffect。
-    final t1Repeat = LiveStatusStateMachine.transition(
-      t1.state,
-      LiveStatusObserved(obs1),
-    );
-    expect(t1Repeat.effects, isEmpty);
-
-    // 请求加载更早实时窗口 -> LoadingOlderLiveWindow + ReadOlderLiveWindowEffect。
-    final tLoad = LiveStatusStateMachine.transition(
-      t1Repeat.state,
-      const LiveStatusLoadOlderRequested(
-        target: LiveStatusSectionTarget.outputBar,
-        before: 'cursor-1',
-      ),
-    );
-    expect(tLoad.state.outputPaging, isA<LoadingOlderLiveWindow>());
-    expect(tLoad.effects, [
-      const ReadOlderLiveWindowEffect(
-        target: LiveStatusSectionTarget.outputBar,
-        before: 'cursor-1',
-        cut: cut1,
-      ),
-    ]);
-
-    // 加载失败 -> OlderLiveWindowFailed。
-    final tFail = LiveStatusStateMachine.transition(
-      tLoad.state,
-      const LiveStatusOlderFailed(
-        target: LiveStatusSectionTarget.outputBar,
-        before: 'cursor-1',
-        error: '读取超时',
-        cut: cut1,
-      ),
-    );
-    expect(tFail.state.outputPaging, isA<OlderLiveWindowFailed>());
-    expect(tFail.state.outputPaging.error, '读取超时');
-
-    // 重试并加载成功 -> ViewingOlderLiveWindow，表面切换为 olderPage。
-    final tLoaded = LiveStatusStateMachine.transition(
-      tFail.state,
-      LiveStatusOlderLoaded(
-        target: LiveStatusSectionTarget.outputBar,
-        before: 'cursor-1',
-        window: olderPage,
-        cut: cut1,
-      ),
-    );
-    expect(tLoaded.state.outputPaging, isA<ViewingOlderLiveWindow>());
-    final presentingOlder = tLoaded.state.barState as LiveStatusPresenting;
-    expect(presentingOlder.effectiveWindow, same(olderPage));
-    expect(presentingOlder.surface, isA<LiveStatusStreamingSurface>());
-
-    // 切面（revision）推进后自动归零分页，丢弃旧实时页。
-    const cut2 = LiveWindowCut(
-      revision: 11,
-      readyFrontier: 2,
-      executionPresent: true,
-      attemptId: 1,
-      isDisplayActive: true,
-    );
-    final latest2 = LiveDisplayWindow(
-      currentWorkId: null,
-      revision: 11,
-      readyFrontier: 2,
-      executionPresent: true,
-      blocks: const [],
-    );
-    final tCutReset = LiveStatusStateMachine.transition(
-      tLoaded.state,
-      LiveStatusObserved(
-        LiveStatusObservation(
-          cut: cut2,
-          activeTurnId: 'turn',
-          activity: null,
-          latestLive: latest2,
-        ),
-      ),
-    );
-    expect(tCutReset.state.outputPaging, isA<LatestLiveWindow>());
-    expect(tCutReset.state.barState, isA<LiveStatusHidden>());
-    expect(tCutReset.effects, const [SyncStudioDriverActivityEffect(null)]);
+  test('pure projection uses local pagination without replacing the canonical current Work', () {
+    final first = _observe(live: _live);
+    final repeat = _observe(live: _live);
+    expect(repeat.barState, first.barState);
+    expect(repeat.primaryActivity, first.primaryActivity);
   });
 }

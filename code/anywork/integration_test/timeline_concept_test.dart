@@ -42,7 +42,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-import 'support/conversation_credit_observation.dart';
+import 'support/timeline_reader_observation.dart';
 import 'support/fixture_gate.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_concept_images.dart';
@@ -657,9 +657,8 @@ final class _ConceptScene {
         'retired': target?.isRetired,
         'released': target?.isReleased,
         'appliedSets': target?.appliedSets,
-        'contentState': target?.content.state.value.runtimeType.toString(),
-        'sameSessionContent':
-            session != null && identical(session.content, target?.content),
+        'readerId': target?.reader.metadata.readerId,
+        'sameThread': session != null && session.threadId == target?.threadId,
         'currentDisplays': [
           for (final current in currentDisplays)
             {
@@ -709,7 +708,7 @@ final class _ConceptScene {
             connectors,
           ))
             {
-              'sameContent': identical(widget.content, target?.content),
+              'sameContent': identical(widget.content, target),
               'displayActive': widget.isDisplayActive(),
               'section': widget.section.name,
               'surface': widget.presenting?.surface.runtimeType.toString(),
@@ -1189,7 +1188,7 @@ final class _ConceptScene {
       'appliedAppends': target.appliedAppends,
       'batchCounterMeaning': 'Main admitted batches, not IO page counts',
       'residentMainMessages': target.controller.messages.length,
-      'residentLiveItems': target.content.activity.value?.entries.length ?? 0,
+      'residentLiveItems': target.live.value?.blocks.length ?? 0,
       'residentMountedMembers': target.groupDisplays.fold<int>(
         0,
         (count, display) => count + display.atoms.length,
@@ -2001,9 +2000,9 @@ final class _ConceptScene {
   Future<void> journey(String project) async {
     await expectEmptyConversation();
     final evidence = <String, Object?>{};
-    report['conversationCredit'] = evidence;
-    Future<TimelineFeed>? opening;
-    ConversationCreditObservation? credit;
+    report['timelineReader'] = evidence;
+    Future<TimelineReader>? opening;
+    TimelineReaderObservation? credit;
     Object? primaryFailure;
     try {
       await submit(_prompt);
@@ -2020,7 +2019,7 @@ final class _ConceptScene {
       expect(find.byType(TimelineDisplayUnitView), findsNothing);
       await capture('thinking');
       await _journeyWithCredit(project, () async {
-        // Exercise ordinary withheld credit across one new completed text,
+        // Exercise an unconfirmed response across one new completed text,
         // not cold-source replacement or full-story retention pressure.
         // This observation is opened exactly once, before text B starts.
         evidence['openedAtGate'] = 'second-group-idle';
@@ -2031,14 +2030,16 @@ final class _ConceptScene {
             ?.turnId;
         await _creditAsync(() async {
           opening = (graph.client.transport as TimelineTransport)
-              .openTimelineFeed(
+              .openTimelineReader(
                 lease.threadId,
+                presentationVersion: presentationVersion,
+                readerProtocolVersion: timelineReaderProtocolVersion,
                 demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
               );
           final feed = await opening!.timeout(
-            ConversationCreditObservation.deadline,
+            TimelineReaderObservation.deadline,
           );
-          credit = ConversationCreditObservation(feed, evidence);
+          credit = TimelineReaderObservation(feed, evidence);
           await credit!.holdInitialSet();
         });
         return credit!;
@@ -2056,17 +2057,17 @@ final class _ConceptScene {
           // late handle must still close; the timeout is not cancellation.
           Future<void> cleanup() async {
             final feed = await opening!;
-            credit ??= ConversationCreditObservation(feed, evidence);
+            credit ??= TimelineReaderObservation(feed, evidence);
             await credit!.close();
           }
 
-          await cleanup().timeout(ConversationCreditObservation.deadline);
+          await cleanup().timeout(TimelineReaderObservation.deadline);
         });
       } catch (error, stack) {
         evidence['cleanupFailure'] = error.toString();
         evidence['cleanupStack'] = stack.toString();
         if (primaryFailure == null) rethrow;
-        debugPrint('CREDIT_CLEANUP_ERROR\n$error\n$stack');
+        debugPrint('READER_CLEANUP_ERROR\n$error\n$stack');
       }
     }
   }
@@ -2092,7 +2093,7 @@ final class _ConceptScene {
 
   Future<void> _journeyWithCredit(
     String project,
-    Future<ConversationCreditObservation> Function() openCredit,
+    Future<TimelineReaderObservation> Function() openCredit,
   ) async {
     await release('thinking');
     await reach(
@@ -2653,7 +2654,7 @@ final class _ConceptScene {
       phase = 'completed body';
       var readableAtom = entry.atom!;
       if (entry.atom!.payload is DeferredPayload) {
-        final scope = owner.content.openScope(generation: owner.generation);
+        final scope = owner.openScope(generation: owner.generation);
         try {
           final readable = await scope
               .readCompleted(
@@ -2810,7 +2811,7 @@ final class _ConceptScene {
     final connector = find.byWidgetPredicate(
       (widget) =>
           widget is ConversationCurrentConnector &&
-          identical(widget.content, owner.content),
+          identical(widget.content, owner),
     );
     final hover = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await hover.addPointer(
@@ -2924,7 +2925,7 @@ final class _ConceptScene {
     expect(heads.first.memberKey, isNot(heads.last.memberKey));
     expect(heads.first.record.startFact, isNull);
     expect(heads.first.record.endFact, isNotNull);
-    final scope = lease.content.openScope(generation: lease.generation);
+    final scope = lease.openScope(generation: lease.generation);
     try {
       final originals = <CompletedEntry>[];
       for (final head in heads) {
@@ -3244,7 +3245,7 @@ final class _ConceptScene {
                       (widget) =>
                           widget is ConversationCurrentConnector &&
                           widget.section == ConversationLiveSection.work &&
-                          identical(widget.content, lease.content),
+                          identical(widget.content, lease),
                       skipOffstage: false,
                     )
                     .evaluate())

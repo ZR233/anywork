@@ -1,6 +1,6 @@
 use super::super::*;
 use super::record;
-use pl_protocol::{ChatAtomKind, ChatSourceId};
+use pl_protocol::{ChatAtomKind, ChatPlacement, ChatSourceId};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,

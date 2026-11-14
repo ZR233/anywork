@@ -8,6 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../state/content_reference_identity.dart';
+import 'timeline_view_model.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
+import '../../../../domain/models/timeline_commands.dart';
 
 final planDocumentViewModelProvider = NotifierProvider.autoDispose
     .family<PlanDocumentViewModel, PlanDocumentState, String>(
@@ -35,7 +38,8 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
   late ConversationRepository _conversations;
   ConversationSession? _session;
   Observation? _sessionObservation;
-  Observation? _contentObservation;
+  late TimelineSessionOwner _timeline;
+  Observation? _timelineObservation;
   ConversationQueryScope? _scope;
   Object? _source;
   int _generation = 0;
@@ -46,11 +50,13 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
   @override
   PlanDocumentState build() {
     _conversations = ref.read(anyworkClientProvider).conversations;
+    _timeline = ref.read(timelineSessionOwnerProvider);
+    _timelineObservation = _timeline.source.watch((_) => _sync());
     observeClient(ref, _conversations.visibleThreadId, (_) => _sync());
     ref.onDispose(() {
       _disposed = true;
       _sessionObservation?.cancel();
-      _contentObservation?.cancel();
+      _timelineObservation?.cancel();
       _retire();
     });
     // Defer IO until the provider has published its initial presentation.
@@ -60,21 +66,21 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
 
   Object? _currentSource() {
     final session = _conversations.existingSession(threadId);
-    final content = session?.content;
+    final content = _timeline.lease(threadId);
     final document = session?.state.businessRefs?.plan?.document;
     if (_conversations.visibleThreadId.value != threadId ||
         session == null ||
         content == null ||
         document == null ||
-        content.isClosed ||
-        content.state.value is! ChatReady<bool> ||
-        content.currentAttemptId == null) {
+        session.isClosed ||
+        content.isRetired ||
+        _timeline.source.value?.connection != TimelineConnectionPhase.ready) {
       return null;
     }
     return (
       session,
       content,
-      content.currentAttemptId,
+      content.reader.metadata.readerId,
       contentReferenceIdentity(document),
     );
   }
@@ -84,12 +90,8 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
     final session = _conversations.existingSession(threadId);
     if (!identical(session, _session)) {
       _sessionObservation?.cancel();
-      _contentObservation?.cancel();
       _session = session;
       _sessionObservation = session?.source
-          .watchLatest((_) => _sync())
-          .observation;
-      _contentObservation = session?.content.state
           .watchLatest((_) => _sync())
           .observation;
     }
@@ -99,11 +101,11 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
     _source = source;
     _offset = 0;
     if (source == null) {
-      final connection = session?.content.state.value;
+      final connection = _timeline.source.value;
       final error =
           _conversations.visibleThreadId.value == threadId &&
-              connection is ChatFailed<bool>
-          ? connection.error
+              connection?.connection == TimelineConnectionPhase.failed
+          ? connection?.connectionError
           : null;
       state = PlanDocumentState(error: error);
       return;
@@ -118,7 +120,7 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
     final scope = _scope;
     _scope = null;
     scope?.retire();
-    // Failed cleanup remains owned by the original SDK content owner.
+    // Failed cleanup remains owned by the original display lease.
     if (scope != null) unawaited(scope.close());
   }
 
@@ -132,7 +134,7 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
     }
     final request = ++_request;
     _offset = offset;
-    final content = _session!.content;
+    final content = _timeline.lease(threadId)!;
     final document = _session!.state.businessRefs!.plan!.document!;
     bool current() =>
         !_disposed &&
@@ -166,9 +168,8 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
   void retry() {
     if (_disposed || state.loading || state.error == null) return;
     if (_conversations.visibleThreadId.value != threadId) return;
-    final content = _session?.content;
-    if (content?.state.value is ChatFailed<bool>) {
-      content!.refresh();
+    if (_timeline.source.value?.connection == TimelineConnectionPhase.failed) {
+      _timeline.refresh(threadId);
     } else {
       unawaited(_load(_offset));
     }

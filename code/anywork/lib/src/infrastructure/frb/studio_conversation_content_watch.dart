@@ -18,7 +18,7 @@ final class _FrbContentWatch implements ConversationContentWatch {
     );
   }
 
-  final FrbConversationFeed feed;
+  final _FrbContentOwner feed;
   final ContentRef reference;
   final ContentRange range;
   late final StreamController<ContentWindow> output;

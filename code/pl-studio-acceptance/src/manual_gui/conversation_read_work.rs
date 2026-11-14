@@ -13,13 +13,12 @@ use pl_protocol::studio::{
     CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
 };
 use pl_protocol::{
-    CHAT_BATCH_MAX_BYTES, CHAT_READ_MAX_ITEMS, ChatPlacement, ChatScope, ReadDemand,
+    CHAT_BATCH_MAX_BYTES, CHAT_READ_MAX_ITEMS, ChatScope, HistoryPlacement, ReadDemand,
     ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     ConversationEvent, ConversationStateFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
-    TimelineEvent,
     config::{ConfigPaths, ConfigStore},
 };
 use serde::Serialize;
@@ -426,28 +425,31 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         max_items: 32,
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
-    let mut feed = runtime.open_timeline_feed(thread_id, demand).await?;
-    let TimelineEvent::Timeline { batch } = feed.receive().await?;
+    let reader = runtime
+        .open_timeline_reader(
+            thread_id,
+            pl_protocol::PRESENTATION_VERSION,
+            pl_protocol::TIMELINE_READER_PROTOCOL_VERSION,
+            demand,
+        )
+        .await?;
+    let update = reader.next(reader.metadata().initial_cursor).await?;
     ensure!(
-        batch.placement == ChatPlacement::Set,
-        "timeline feed did not begin with a cold Set"
+        update.history.placement == HistoryPlacement::Set,
+        "timeline did not begin with a cold Set"
     );
-    let mut batch = *batch;
-    let reader = feed.reader().clone();
-    let count_items = |batch: &pl_protocol::TimelineBatch| -> Result<usize> {
-        batch.validate()?;
-        Ok(batch.blocks.len())
-    };
-    let mut total = count_items(&batch)?;
-    while let Some(before) = batch.before {
-        batch = reader.load_timeline_older(&before, demand).await?;
+    let mut total = update.history.blocks.len();
+    let mut before = update.history.before;
+    while let Some(cursor) = before {
+        let page = reader.load_older(&cursor, demand).await?;
         ensure!(
-            batch.before.as_deref() != Some(before.as_str()),
-            "Main item continuation did not advance"
+            page.before.as_deref() != Some(cursor.as_str()),
+            "Main continuation did not advance"
         );
-        total += count_items(&batch)?;
+        total += page.blocks.len();
+        before = page.before;
     }
-    feed.close().await?;
+    reader.close().await?;
     ensure!(
         total < CHAT_READ_MAX_ITEMS as usize,
         "seeded conversation exceeded the public read item ceiling"

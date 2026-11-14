@@ -2459,7 +2459,8 @@ impl LiveProjection {
             self.presentation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .observe_thinking_summary(summary);
+                .observe_thinking_summary(summary)
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
         Ok(())
     }
@@ -4595,7 +4596,7 @@ mod completion_boundary_tests {
         let owner = projection.presentation();
         let first_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
         let block_id = first_cut.open[0].id.clone();
-        let structure_revision = first_cut.revision;
+        let structure_revision = (first_cut.revision, first_cut.layout_revision);
         let mut previous_revision = first_cut.open[0].revision;
         let mut changes = owner.lock().unwrap().subscribe_members();
         let start_row = || {
@@ -4664,10 +4665,9 @@ mod completion_boundary_tests {
             assert_eq!(cut.header.unfinished, 1);
             assert!(cut.header.revision > previous_revision);
             previous_revision = cut.header.revision;
-            assert_eq!(
-                owner.lock().unwrap().capture(None, 1, Some(0), 1).revision,
-                structure_revision
-            );
+            let main_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
+            assert_eq!((main_cut.revision, main_cut.layout_revision), structure_revision,
+                "member waiting status is not a main tail layout change");
             assert!(changes.has_changed()?);
             changes.borrow_and_update();
             let expected = if waiting == 1 {

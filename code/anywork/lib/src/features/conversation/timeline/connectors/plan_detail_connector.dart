@@ -9,6 +9,7 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/plan_document_view_model.dart';
+import '../view_models/timeline_view_model.dart';
 import '../views/plan_detail_view.dart';
 export '../views/plan_detail_view.dart'
     show PlanDetailStatus, planDetailStatusFromRuntime;
@@ -37,7 +38,8 @@ class PlanDetailConnector extends ConsumerWidget {
     final state = ref.watch(threadSessionStoreProvider(threadId));
     final conversations = ref.read(anyworkClientProvider).conversations;
     final session = conversations.existingSession(threadId);
-    final content = session?.content;
+    final timeline = ref.read(timelineSessionOwnerProvider);
+    final content = timeline.lease(threadId);
     final documentState = ref.watch(planDocumentViewModelProvider(threadId));
     final documentModel = ref.read(
       planDocumentViewModelProvider(threadId).notifier,
@@ -46,6 +48,8 @@ class PlanDetailConnector extends ConsumerWidget {
     final document = plan?.document;
     bool current() =>
         content != null &&
+        !content.isRetired &&
+        identical(timeline.lease(threadId), content) &&
         session != null &&
         identical(conversations.existingSession(threadId), session) &&
         conversations.visibleThreadId.value == threadId &&

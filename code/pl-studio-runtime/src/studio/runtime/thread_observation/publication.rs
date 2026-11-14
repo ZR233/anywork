@@ -117,12 +117,17 @@ impl ConversationPublication {
             serde_json::to_vec(activity.as_ref())?.len() <= CURRENT_FRAME_BYTES,
             "activity snapshot exceeds bounded publication budget"
         );
+        let presentation = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ensure_publication_capacity()?;
         let source = Arc::new(ConversationSource {
-            presentation: self
-                .presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            presentation,
             serial,
             session: session.clone(),
             head,
@@ -168,6 +173,12 @@ impl ConversationPublication {
     }
 
     pub(in crate::studio) fn apply(&self, source: Arc<ConversationSource>) {
+        source
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observe_execution(source.current.projection().execution_present)
+            .expect("pre-admission display plan reserved publication and retirement revisions");
         let serial = source.serial;
         *self
             .latest

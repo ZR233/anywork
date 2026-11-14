@@ -13,17 +13,17 @@ use axum::{
 };
 use futures::Stream;
 use pl_protocol::{
-    DisplayBlockRef, DisplayMemberWindow, LiveDisplayWindow, ReadDemand, TimelineBatch,
-    studio::{StudioError, StudioErrorCode},
+    DisplayBlockRef, DisplayMemberWindow, OpenTimeline, ReadDemand, TailSnapshot, TimelinePage,
+    ViewCursor, ViewUpdate,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use utoipa::ToSchema;
 
 use crate::{
     AppState,
-    conversation::{CONVERSATION_HEADER, NativeFeed, OlderRequest, stale_scope},
+    conversation::{CONVERSATION_HEADER, OlderRequest, ReadOwner, stale_scope},
     error::ApiError,
     routes::{ApiJson, StudioApiErrors},
 };
@@ -31,21 +31,19 @@ use crate::{
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OpenRequest {
+    presentation_version: u32,
+    reader_protocol_version: u32,
     demand: ReadDemand,
 }
 
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OpenResponse {
-    subscription_id: String,
-    presentation_version: u32,
-}
+const NEXT_WAIT: Duration = Duration::from_secs(25);
+const IDLE_READER_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/open",
     operation_id = "thread.openTimeline",
     params(("thread_id" = String, Path)),
     request_body = OpenRequest,
-    responses(StudioApiErrors, (status = 200, body = OpenResponse)))]
+    responses(StudioApiErrors, (status = 200, body = OpenTimeline)))]
 pub(crate) async fn open(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -56,99 +54,134 @@ pub(crate) async fn open(
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::overloaded())?;
-    let feed = state
+    let reader = state
         .runtime
-        .open_timeline_feed(&thread_id, request.demand)
+        .open_timeline_reader(
+            &thread_id,
+            request.presentation_version,
+            request.reader_protocol_version,
+            request.demand,
+        )
         .await?;
-    let id = crate::sse::register_conversation(
-        &state,
-        thread_id,
-        NativeFeed::Timeline(Box::new(feed)),
-        permit,
-        None,
-    )
-    .await?;
-    Ok((
-        [(CONVERSATION_HEADER, id.clone())],
-        Json(OpenResponse {
-            subscription_id: id,
-            presentation_version: pl_protocol::PRESENTATION_VERSION,
-        }),
-    ))
+    let metadata = reader.metadata();
+    let id = metadata.reader_id.clone();
+    let owner = Arc::new(ReadOwner::with_timeline(thread_id, reader, permit));
+    let registered = {
+        let mut owners = state
+            .conversations
+            .0
+            .lock()
+            .expect("conversation owners poisoned");
+        owners.readers.insert(id.clone(), owner.clone());
+        if owners.closed || state.shutdown.is_cancelled() {
+            false
+        } else {
+            while let Some(result) = owners.tasks.try_join_next() {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "timeline owner task failed");
+                }
+            }
+            let task_state = state.clone();
+            let task_id = id.clone();
+            let task_owner = owner.clone();
+            owners.tasks.spawn(async move {
+                tokio::select! { biased;
+                    _ = task_state.shutdown.cancelled() => {},
+                    _ = task_owner.cancel.cancelled() => {},
+                    _ = task_owner.wait_idle(IDLE_READER_TIMEOUT) => {},
+                }
+                task_owner.request_close();
+                let result = crate::sse::close_conversation(&task_owner).await;
+                task_owner.completed.send_replace(Some(result.clone()));
+                if result.is_ok() {
+                    task_state.conversations.forget(&task_id);
+                }
+            });
+            true
+        }
+    };
+    if !registered {
+        owner.request_close();
+        crate::sse::close_conversation(&owner)
+            .await
+            .map_err(ApiError)?;
+        state.conversations.forget(&id);
+        return Err(stale_scope());
+    }
+    Ok(([(CONVERSATION_HEADER, id)], Json(metadata)))
 }
 
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/timeline/events",
-    operation_id = "thread.timelineEvents",
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NextRequest {
+    after: ViewCursor,
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/next",
+    operation_id = "thread.nextTimeline",
     params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    responses(StudioApiErrors, (status = 200, body = String, content_type = "text/event-stream")))]
-pub(crate) async fn events(
+    request_body = NextRequest,
+    responses(StudioApiErrors, (status = 200, body = ViewUpdate), (status = 204)))]
+pub(crate) async fn next(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    ApiJson(request): ApiJson<NextRequest>,
+) -> Result<axum::response::Response, ApiError> {
     let lease = state
         .conversations
-        .borrow(&thread_id, &headers, &state.shutdown)?;
-    let (sender, receiver) = mpsc::channel(1);
-    let start = lease
-        .owner
-        .events
-        .lock()
-        .expect("conversation start poisoned")
-        .take()
-        .ok_or_else(|| {
-            ApiError(StudioError::new(
-                StudioErrorCode::Conflict,
-                "Timeline events can only be attached once to the original open",
-                false,
-            ))
-        })?;
-    start.send(sender).map_err(|_| stale_scope())?;
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+        .borrow_next(&thread_id, &headers, &state.shutdown)?;
+    let reader = lease.owner.timeline.as_ref().ok_or_else(stale_scope)?;
+    match tokio::time::timeout(NEXT_WAIT, reader.next(request.after)).await {
+        Ok(result) => Ok(Json(result?).into_response()),
+        Err(_) => Ok(axum::http::StatusCode::NO_CONTENT.into_response()),
+    }
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/older",
     operation_id = "thread.loadTimelineOlder",
     params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
     request_body = OlderRequest,
-    responses(StudioApiErrors, (status = 200, body = TimelineBatch)))]
+    responses(StudioApiErrors, (status = 200, body = TimelinePage)))]
 pub(crate) async fn older(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<OlderRequest>,
-) -> Result<Json<TimelineBatch>, ApiError> {
+) -> Result<Json<TimelinePage>, ApiError> {
     let lease = state
         .conversations
         .borrow(&thread_id, &headers, &state.shutdown)?;
-    let batch = lease
+    let page = lease
         .owner
-        .reader
-        .load_timeline_older(&request.before, request.demand)
+        .timeline
+        .as_ref()
+        .ok_or_else(stale_scope)?
+        .load_older(&request.before, request.demand)
         .await?;
-    batch.validate().map_err(ApiError)?;
-    Ok(Json(batch))
+    Ok(Json(page))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/timeline/live-older",
     operation_id = "thread.loadLiveOlder",
     params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
     request_body = OlderRequest,
-    responses(StudioApiErrors, (status = 200, body = LiveDisplayWindow)))]
+    responses(StudioApiErrors, (status = 200, body = TailSnapshot)))]
 pub(crate) async fn live_older(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<OlderRequest>,
-) -> Result<Json<LiveDisplayWindow>, ApiError> {
+) -> Result<Json<TailSnapshot>, ApiError> {
     let lease = state
         .conversations
         .borrow(&thread_id, &headers, &state.shutdown)?;
     Ok(Json(
         lease
             .owner
-            .reader
+            .timeline
+            .as_ref()
+            .ok_or_else(stale_scope)?
             .load_live_older(&request.before, request.demand)
             .await?,
     ))
@@ -166,13 +199,6 @@ pub(crate) async fn close(
     // Do not hold a read permit while waiting for that owner's reads to drain.
     let (id, owner) = state.conversations.closing_owner(&thread_id, &headers)?;
     owner.request_close();
-    let mut completed = owner.completed.subscribe();
-    loop {
-        if completed.borrow_and_update().is_some() {
-            break;
-        }
-        completed.changed().await.map_err(|_| stale_scope())?;
-    }
     // Retrying a failed close uses the same retained native slot, never a new feed.
     crate::sse::close_conversation(&owner)
         .await

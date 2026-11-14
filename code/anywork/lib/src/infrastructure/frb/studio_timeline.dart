@@ -1,14 +1,100 @@
 part of 'studio_api.dart';
 
-final class FrbTimelineFeed extends FrbConversationFeed
-    implements TimelineFeed {
-  FrbTimelineFeed(this._timeline)
-    : super._(_FrbNativeConversation.timeline(_timeline));
-
-  final frb_timeline.BridgeTimelineFeed _timeline;
+final class FrbTimelineReader implements TimelineReader, _FrbContentOwner {
+  FrbTimelineReader(this._timeline)
+    : _native = _FrbNativeReader.timeline(_timeline),
+      metadata = _openTimelineFromFrb(_timeline.metadata());
+  final frb_timeline.BridgeTimelineReader _timeline;
+  @override
+  final _FrbNativeReader _native;
+  @override
+  final OpenTimeline metadata;
+  @override
+  late final ConversationReader reader = _FrbConversationReader(this);
+  @override
+  String get threadId => _native.threadId();
+  @override
+  final Set<_FrbContentWatch> _contentWatches = {};
+  final Set<_FrbDisplayMembers> _memberWatches = {};
+  _DartSubscription? _registration;
+  bool _closed = false;
+  bool _disposed = false;
+  Future<void>? _closing;
+  Future<void>? _nativeClosing;
+  @override
+  bool get _admissionsClosed =>
+      _closed || (_registration?.cancelRequested ?? false);
 
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<ViewUpdate> next({required ViewCursor after}) =>
+      FrbStudioTransport._bridgeCall(() async {
+        if (_admissionsClosed) throw _conversationClosedFailure;
+        final value = await _timeline.next(after: after.value);
+        if (_admissionsClosed) throw _conversationClosedFailure;
+        return _viewUpdateFromFrb(value);
+      });
+
+  @override
+  void requestClose() {
+    _closed = true;
+    _timeline.requestClose();
+    for (final watch in List.of(_contentWatches)) {
+      watch.requestClose();
+    }
+    for (final watch in List.of(_memberWatches)) {
+      watch.requestClose();
+    }
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    final existing = _closing;
+    if (existing != null) return existing;
+    final work = _registration?.beginCancel() ?? _releaseNative();
+    _closing = work;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (identical(_closing, work)) _closing = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<void> _releaseNative() {
+    requestClose();
+    final existing = _nativeClosing;
+    if (existing != null) return existing;
+    final work = _joinNative();
+    _nativeClosing = work;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (identical(_nativeClosing, work)) _nativeClosing = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<void> _joinNative() async {
+    await Future.wait<void>([
+      FrbStudioTransport._bridgeCall(_timeline.close),
+      for (final watch in List.of(_contentWatches)) watch.close(),
+      for (final watch in List.of(_memberWatches)) watch.close(),
+    ]);
+    if (!_disposed) {
+      _timeline.dispose();
+      _disposed = true;
+    }
+  }
+
+  @override
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -19,12 +105,12 @@ final class FrbTimelineFeed extends FrbConversationFeed
         demand: _readDemandToFrb(demand),
       );
       if (_admissionsClosed) throw _conversationClosedFailure;
-      return _timelineBatchFromFrb(batch);
+      return _timelinePageFromFrb(batch);
     });
   }
 
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
   }) {
@@ -35,7 +121,7 @@ final class FrbTimelineFeed extends FrbConversationFeed
         demand: _readDemandToFrb(demand),
       );
       if (_admissionsClosed) throw _conversationClosedFailure;
-      return _liveDisplayWindowFromFrb(window);
+      return _tailSnapshotFromFrb(window);
     });
   }
 
@@ -77,7 +163,7 @@ final class FrbTimelineFeed extends FrbConversationFeed
 
 final class _FrbDisplayMembers implements DisplayMembers {
   _FrbDisplayMembers(this._feed);
-  final FrbTimelineFeed _feed;
+  final FrbTimelineReader _feed;
   late final Future<frb_timeline.BridgeDisplayMembers> _opening;
   frb_timeline.BridgeDisplayMembers? _handle;
   Future<void>? _closing;

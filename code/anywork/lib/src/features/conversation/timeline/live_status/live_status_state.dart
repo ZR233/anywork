@@ -59,8 +59,8 @@ final class LiveWindowCut {
 
   bool get hasWindow => isDisplayActive && revision != null;
 
-  bool matchesWindow(LiveDisplayWindow window) =>
-      revision == window.revision &&
+  bool matchesWindow(TailSnapshot window) =>
+      revision == window.layoutRevision &&
       readyFrontier == window.readyFrontier &&
       executionPresent == window.executionPresent;
 
@@ -89,7 +89,7 @@ final class LiveWindowCut {
 sealed class LiveWindowPagingState {
   const LiveWindowPagingState();
 
-  LiveDisplayWindow? get olderWindow => switch (this) {
+  TailSnapshot? get olderWindow => switch (this) {
     ViewingOlderLiveWindow(:final window) => window,
     LatestLiveWindow() ||
     LoadingOlderLiveWindow() ||
@@ -137,10 +137,10 @@ final class LoadingOlderLiveWindow extends LiveWindowPagingState {
 
   final String before;
   final LiveWindowCut cut;
-  final LiveDisplayWindow? previousOlder;
+  final TailSnapshot? previousOlder;
 
   @override
-  LiveDisplayWindow? get olderWindow => previousOlder;
+  TailSnapshot? get olderWindow => previousOlder;
 
   @override
   bool get isViewingOlder => previousOlder != null;
@@ -165,7 +165,7 @@ final class ViewingOlderLiveWindow extends LiveWindowPagingState {
   });
 
   final String before;
-  final LiveDisplayWindow window;
+  final TailSnapshot window;
   final LiveWindowCut cut;
 
   @override
@@ -192,10 +192,10 @@ final class OlderLiveWindowFailed extends LiveWindowPagingState {
   @override
   final Object error;
   final LiveWindowCut cut;
-  final LiveDisplayWindow? previousOlder;
+  final TailSnapshot? previousOlder;
 
   @override
-  LiveDisplayWindow? get olderWindow => previousOlder;
+  TailSnapshot? get olderWindow => previousOlder;
 
   @override
   bool get isViewingOlder => previousOlder != null;
@@ -414,7 +414,7 @@ final class LiveStatusPresenting extends LiveStatusMachineState {
   });
 
   final LiveStatusPrimarySurface surface;
-  final LiveDisplayWindow? effectiveWindow;
+  final TailSnapshot? effectiveWindow;
   final LiveWindowPagingState paging;
   @override
   final bool showInteractionDetails;
@@ -446,7 +446,7 @@ final class LiveStatusTimelineWorkSlice {
   static final empty = LiveStatusTimelineWorkSlice();
 
   final List<LiveDisplayBlock> workBlocks;
-  final LiveDisplayWindow? effectiveWindow;
+  final TailSnapshot? effectiveWindow;
   final LiveWindowPagingState paging;
 
   bool get hasVisibleContent =>
@@ -470,8 +470,8 @@ final class LiveStatusTimelineWorkSlice {
 
 /// 状态机纯输入快照：仅保存客户端已归约的不可变领域值，不持有原生流或可变句柄。
 @immutable
-final class LiveStatusObservation {
-  LiveStatusObservation({
+final class LiveStatusInputs {
+  LiveStatusInputs({
     required this.cut,
     this.storage,
     List<PendingInteraction> interactions = const [],
@@ -482,7 +482,7 @@ final class LiveStatusObservation {
     this.hasContentOwner = false,
   }) : interactions = List.unmodifiable(interactions);
 
-  const LiveStatusObservation.empty()
+  const LiveStatusInputs.empty()
     : cut = const LiveWindowCut.inactive(),
       storage = null,
       interactions = const [],
@@ -498,13 +498,13 @@ final class LiveStatusObservation {
   final ThreadBusinessRefs? businessRefs;
   final String? activeTurnId;
   final ThreadActivityView? activity;
-  final LiveDisplayWindow? latestLive;
+  final TailSnapshot? latestLive;
   final bool hasContentOwner;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStatusObservation &&
+      other is LiveStatusInputs &&
           cut == other.cut &&
           storage == other.storage &&
           listEquals(interactions, other.interactions) &&
@@ -527,178 +527,21 @@ final class LiveStatusObservation {
   );
 }
 
-/// 实时状态栏状态机聚合根（`design/05-conventions.md` §5.3）。
+/// 当前组件实际使用的只读展示结果；只含派生表面，不保存业务输入镜像或诊断发布账本。
 @immutable
-final class LiveStatusAggregate {
-  const LiveStatusAggregate({
+final class LiveStatusView {
+  const LiveStatusView({
     required this.threadId,
-    required this.observation,
+    required this.cut,
     required this.barState,
     required this.timelineWork,
-    required this.outputPaging,
-    required this.timelineWorkPaging,
     this.primaryActivity,
-    this.publishedDriverActivity,
-    this.hasPublishedDriver = false,
   });
-
-  factory LiveStatusAggregate.initial(String threadId) => LiveStatusAggregate(
-    threadId: threadId,
-    observation: const LiveStatusObservation.empty(),
-    barState: const LiveStatusHidden(),
-    timelineWork: LiveStatusTimelineWorkSlice.empty,
-    outputPaging: const LatestLiveWindow(),
-    timelineWorkPaging: const LatestLiveWindow(),
-  );
-
   final String threadId;
-  final LiveStatusObservation observation;
+  final LiveWindowCut cut;
   final LiveStatusMachineState barState;
   final LiveStatusTimelineWorkSlice timelineWork;
-  final LiveWindowPagingState outputPaging;
-  final LiveWindowPagingState timelineWorkPaging;
   final ConversationActivityView? primaryActivity;
-  final ConversationActivityView? publishedDriverActivity;
-  final bool hasPublishedDriver;
-
-  LiveWindowCut get cut => observation.cut;
-
-  /// 是否存在任何底部状态栏或时间线实时区可见内容（用于纯实时失效测试判别）。
   bool get hasAnyRealtimeRegion =>
       barState is! LiveStatusHidden || timelineWork.workBlocks.isNotEmpty;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusAggregate &&
-          threadId == other.threadId &&
-          observation == other.observation &&
-          barState == other.barState &&
-          timelineWork == other.timelineWork &&
-          outputPaging == other.outputPaging &&
-          timelineWorkPaging == other.timelineWorkPaging &&
-          primaryActivity == other.primaryActivity &&
-          publishedDriverActivity == other.publishedDriverActivity &&
-          hasPublishedDriver == other.hasPublishedDriver;
-
-  @override
-  int get hashCode => Object.hash(
-    threadId,
-    observation,
-    barState,
-    timelineWork,
-    outputPaging,
-    timelineWorkPaging,
-    primaryActivity,
-    publishedDriverActivity,
-    hasPublishedDriver,
-  );
-}
-
-/// 输入给纯状态机的领域事件。
-@immutable
-sealed class LiveStatusEvent {
-  const LiveStatusEvent();
-}
-
-final class LiveStatusObserved extends LiveStatusEvent {
-  const LiveStatusObserved(this.observation);
-  final LiveStatusObservation observation;
-}
-
-final class LiveStatusLoadOlderRequested extends LiveStatusEvent {
-  const LiveStatusLoadOlderRequested({
-    required this.target,
-    required this.before,
-  });
-
-  final LiveStatusSectionTarget target;
-  final String before;
-}
-
-final class LiveStatusOlderLoaded extends LiveStatusEvent {
-  const LiveStatusOlderLoaded({
-    required this.target,
-    required this.before,
-    required this.window,
-    required this.cut,
-  });
-
-  final LiveStatusSectionTarget target;
-  final String before;
-  final LiveDisplayWindow window;
-  final LiveWindowCut cut;
-}
-
-final class LiveStatusOlderFailed extends LiveStatusEvent {
-  const LiveStatusOlderFailed({
-    required this.target,
-    required this.before,
-    required this.error,
-    required this.cut,
-  });
-
-  final LiveStatusSectionTarget target;
-  final String before;
-  final Object error;
-  final LiveWindowCut cut;
-}
-
-final class LiveStatusReturnToLatestRequested extends LiveStatusEvent {
-  const LiveStatusReturnToLatestRequested({required this.target});
-  final LiveStatusSectionTarget target;
-}
-
-/// 纯状态机输出的外部副作用声明，由 `LiveStatusViewModel` 统一执行。
-@immutable
-sealed class LiveStatusEffect {
-  const LiveStatusEffect();
-}
-
-final class SyncStudioDriverActivityEffect extends LiveStatusEffect {
-  const SyncStudioDriverActivityEffect(this.view);
-
-  final ConversationActivityView? view;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SyncStudioDriverActivityEffect && view == other.view;
-
-  @override
-  int get hashCode => view.hashCode;
-}
-
-final class ReadOlderLiveWindowEffect extends LiveStatusEffect {
-  const ReadOlderLiveWindowEffect({
-    required this.target,
-    required this.before,
-    required this.cut,
-  });
-
-  final LiveStatusSectionTarget target;
-  final String before;
-  final LiveWindowCut cut;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ReadOlderLiveWindowEffect &&
-          target == other.target &&
-          before == other.before &&
-          cut == other.cut;
-
-  @override
-  int get hashCode => Object.hash(target, before, cut);
-}
-
-@immutable
-final class LiveStatusTransition {
-  LiveStatusTransition({
-    required this.state,
-    List<LiveStatusEffect> effects = const [],
-  }) : effects = List.unmodifiable(effects);
-
-  final LiveStatusAggregate state;
-  final List<LiveStatusEffect> effects;
 }

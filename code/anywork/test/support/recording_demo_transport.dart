@@ -3,6 +3,11 @@ import 'dart:async';
 import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 
+import 'mapped_conversation_feed.dart';
+
+import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends DemoStudioTransport {
   final List<RecordingConversationFeed> feeds = [];
@@ -80,22 +85,28 @@ class RecordingDemoTransport extends DemoStudioTransport {
     return feed;
   }
 
-  final List<RecordingTimelineFeed> timelineFeeds = [];
+  final List<RecordingTimelineReader> timelineReaders = [];
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     final failure = failNextInitial;
     failNextInitial = null;
-    final feed = RecordingTimelineFeed(
-      inner: await super.openTimelineFeed(threadId, demand: demand),
+    final reader = RecordingTimelineReader(
+      inner: await super.openTimelineReader(
+        threadId,
+        presentationVersion: presentationVersion,
+        readerProtocolVersion: readerProtocolVersion,
+        demand: demand,
+      ),
       initialFailure: failure,
     );
-    timelineFeeds.add(feed);
-    feeds.add(feed);
-    return feed;
+    timelineReaders.add(reader);
+    return reader;
   }
 }
 
@@ -183,10 +194,6 @@ class RecordingConversationFeed implements ConversationFeed {
     if (switch (event) {
       ConversationChatEvent(batch: ChatBatch(placement: ChatPlacement.set)) =>
         true,
-      ConversationTimelineEvent(
-        batch: TimelineBatch(placement: ChatPlacement.set),
-      ) =>
-        true,
       _ => false,
     }) {
       initialCalls++;
@@ -204,10 +211,6 @@ class RecordingConversationFeed implements ConversationFeed {
         switch (event) {
           ConversationChatEvent(
             batch: ChatBatch(placement: ChatPlacement.append),
-          ) =>
-            true,
-          ConversationTimelineEvent(
-            batch: TimelineBatch(placement: ChatPlacement.append),
           ) =>
             true,
           _ => false,
@@ -270,18 +273,6 @@ class RecordingConversationFeed implements ConversationFeed {
     if (!_closed) _events.addError(error);
   }
 
-  void emitTimeline(TimelineBatch batch) {
-    if (_closed) return;
-    _events.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: ++_sequence,
-        event: ConversationTimelineEvent(batch: batch),
-      ),
-    );
-  }
-
   @override
   Future<void> acknowledge(int deliverySequence) async {
     acknowledgements.add(deliverySequence);
@@ -321,26 +312,105 @@ class RecordingConversationFeed implements ConversationFeed {
   }
 }
 
-class RecordingTimelineFeed extends RecordingConversationFeed
-    implements TimelineFeed {
-  RecordingTimelineFeed({required TimelineFeed inner, super.initialFailure})
-    : super(inner: inner);
-  TimelineFeed get timeline => inner as TimelineFeed;
+class RecordingTimelineReader extends MappedTimelineReader {
+  RecordingTimelineReader({required TimelineReader inner, this.initialFailure})
+    : super(inner);
+  Object? initialFailure;
+  Completer<void>? initialGate;
+  final initialEntered = Completer<void>();
+  final nextEntered = Completer<void>();
+  final joined = Completer<void>();
+  final requestCursors = <ViewCursor>[];
+  final acceptedCursors = <ViewCursor>[];
+  final _accepted = <int, Completer<void>>{};
+  Future<void> waitForAccepted(int response) =>
+      acceptedCursors.length >= response
+      ? Future.value()
+      : (_accepted[response] ??= Completer<void>()).future;
+
+  int initialCalls = 0, nextCalls = 0, pageCalls = 0, detailCalls = 0;
+  int requestCloseCalls = 0, closeCalls = 0;
+  int get deliveredFrames => _sequence;
+  bool scriptFrames = false;
+  bool _closed = false;
+  int _sequence = 0;
+  ViewUpdate? _pending;
+  final _injected = StreamController<ViewUpdate>();
+  late final _iterator = StreamIterator(_injected.stream);
+  Future<ViewUpdate>? _injectedRead;
+  Future<void>? _closing;
+  void Function()? onClosed;
+  void emitTimeline(ViewUpdate update) => _injected.add(update);
+  void emitError(Object error) => _injected.addError(error);
+  Future<ViewUpdate> _readInjected() async {
+    if (!await _iterator.moveNext()) throw const StaleConversationScope();
+    return _iterator.current;
+  }
 
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<ViewUpdate> next({required ViewCursor after}) async {
+    if (_closed) throw const StaleConversationScope();
+    requestCursors.add(after);
+    final previous = _pending;
+    if (previous != null && after == previous.after) return previous;
+    if (previous != null && after == previous.next) {
+      acceptedCursors.add(after);
+      _pending = null;
+      _accepted.remove(acceptedCursors.length)?.complete();
+    }
+    final first = _sequence == 0;
+    if (first) {
+      initialCalls++;
+      if (!initialEntered.isCompleted) initialEntered.complete();
+      await initialGate?.future;
+      if (_closed) throw const StaleConversationScope();
+      if (initialFailure case final error?) {
+        initialFailure = null;
+        throw error;
+      }
+    }
+    ViewUpdate response;
+    if (first || !scriptFrames) {
+      final injected = _injectedRead ??= _readInjected();
+      var wasInjected = false;
+      response = await Future.any([
+        inner.next(after: after),
+        injected.then((value) {
+          wasInjected = true;
+          return value;
+        }),
+      ]);
+      if (wasInjected) {
+        scriptFrames = true;
+        _injectedRead = null;
+      }
+    } else {
+      response = await (_injectedRead ?? _readInjected());
+      _injectedRead = null;
+    }
+    _sequence++;
+    nextCalls++;
+    if (!nextEntered.isCompleted) nextEntered.complete();
+    return _pending = scriptFrames
+        ? ViewUpdate(
+            presentationVersion: response.presentationVersion,
+            readerProtocolVersion: response.readerProtocolVersion,
+            after: after,
+            next: ViewCursor('${metadata.readerId}-script-$_sequence'),
+            history: response.history,
+            tail: response.tail,
+          )
+        : response;
+  }
+
+  @override
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
     pageCalls++;
-    return timeline.loadTimelineOlder(before: before, demand: demand);
+    return super.loadTimelineOlder(before: before, demand: demand);
   }
-
-  @override
-  Future<LiveDisplayWindow> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => timeline.loadLiveOlder(before: before, demand: demand);
 
   @override
   Future<DisplayMembers> openDisplayMembers({
@@ -349,11 +419,40 @@ class RecordingTimelineFeed extends RecordingConversationFeed
     required ReadDemand demand,
   }) {
     detailCalls++;
-    return timeline.openDisplayMembers(
+    return super.openDisplayMembers(
       reference: reference,
       window: window,
       demand: demand,
     );
+  }
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+    if (_closed) return;
+    _closed = true;
+    onClosed?.call();
+    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
+    unawaited(_injected.close());
+    super.requestClose();
+  }
+
+  @override
+  Future<void> close() {
+    requestClose();
+    return _closing ??= _join();
+  }
+
+  Future<void> _join() async {
+    closeCalls++;
+    try {
+      await super.close();
+      await _iterator.cancel();
+      if (!joined.isCompleted) joined.complete();
+    } catch (_) {
+      _closing = null;
+      rethrow;
+    }
   }
 }
 
@@ -523,5 +622,18 @@ class RecordingConversationStateFeed implements ConversationStateFeed {
       _closing = null;
       rethrow;
     }
+  }
+}
+
+/// Await the actual GUI application boundary, independently of completion consumers.
+Future<void> timelineReady(TimelineSessionOwner owner, String threadId) async {
+  final state = await owner.source.waitFor(
+    (value) =>
+        value?.threadId == threadId &&
+        (value?.connection == TimelineConnectionPhase.ready ||
+            value?.connection == TimelineConnectionPhase.failed),
+  );
+  if (state?.connection == TimelineConnectionPhase.failed) {
+    throw state!.connectionError!;
   }
 }

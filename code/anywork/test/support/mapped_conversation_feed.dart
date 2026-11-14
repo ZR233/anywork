@@ -26,31 +26,44 @@ class MappedConversationFeed implements ConversationFeed {
   Future<void> close() => inner.close();
 }
 
-/// Preserves the display query capability while overriding the reader.
-final class MappedTimelineFeed extends MappedConversationFeed
-    implements TimelineFeed {
-  MappedTimelineFeed(TimelineFeed super.inner, {super.reader});
-  TimelineFeed get timeline => inner as TimelineFeed;
+/// Overrides only query delivery; the original cursor and close remain owned by the reader.
+class MappedTimelineReader implements TimelineReader {
+  MappedTimelineReader(this.inner, {ConversationReader? reader})
+    : reader = reader ?? inner.reader;
+  final TimelineReader inner;
+  String get threadId => reader.threadId;
+  String get subscriptionId => metadata.readerId;
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  final ConversationReader reader;
+  @override
+  OpenTimeline get metadata => inner.metadata;
+  @override
+  Future<ViewUpdate> next({required ViewCursor after}) =>
+      inner.next(after: after);
+  @override
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
-  }) => timeline.loadTimelineOlder(before: before, demand: demand);
+  }) => inner.loadTimelineOlder(before: before, demand: demand);
   @override
-  Future<LiveDisplayWindow> loadLiveOlder({
+  Future<TailSnapshot> loadLiveOlder({
     required String before,
     required ReadDemand demand,
-  }) => timeline.loadLiveOlder(before: before, demand: demand);
+  }) => inner.loadLiveOlder(before: before, demand: demand);
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
     required DisplayMemberWindow window,
     required ReadDemand demand,
-  }) => timeline.openDisplayMembers(
+  }) => inner.openDisplayMembers(
     reference: reference,
     window: window,
     demand: demand,
   );
+  @override
+  void requestClose() => inner.requestClose();
+  @override
+  Future<void> close() => inner.close();
 }
 
 /// 脚本化权威发送端。只发布显式事实，SDK 才是归约者；没有 pull 循环。
@@ -174,51 +187,66 @@ class ScriptedConversationFeed implements ConversationFeed {
   }
 }
 
-/// Explicit Timeline frames, sharing only the scripted credit/lifecycle harness.
-final class ScriptedTimelineFeed extends ScriptedConversationFeed
-    implements TimelineFeed {
-  ScriptedTimelineFeed({
-    required this.queries,
-    required TimelineBatch Function() initial,
-  }) : super._(
-         threadId: queries.threadId,
-         subscriptionId: queries.subscriptionId,
-         reader: queries.reader,
-         initial: () => ConversationTimelineEvent(batch: initial()),
-       );
-  final TimelineFeed queries;
-  void emitTimeline(TimelineBatch batch) =>
-      publish(ConversationTimelineEvent(batch: batch));
+/// A controlled peer: fixtures declare responses; the real UI owns application and cursors.
+class ScriptedTimelineReader extends MappedTimelineReader {
+  ScriptedTimelineReader({required this.queries, required this._initial})
+    : super(queries);
+  final TimelineReader queries;
+  final ViewUpdate Function() _initial;
+  final _updates = StreamController<ViewUpdate>();
+  late final _iterator = StreamIterator(_updates.stream);
+  final List<ViewCursor> acceptedCursors = [];
+  final _acceptance = <int, Completer<void>>{};
+  int get deliveredFrames => _sequence;
+  ViewUpdate? _pending;
+  int _sequence = 0;
+  bool closed = false;
+  Future<void> accepted(int response) => acceptedCursors.length >= response
+      ? Future.value()
+      : (_acceptance[response] ??= Completer<void>()).future;
+  void emitTimeline(ViewUpdate update) => _updates.add(update);
+  void emitError(Object error) => _updates.addError(error);
   @override
-  Future<TimelineBatch> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => queries.loadTimelineOlder(before: before, demand: demand);
-  @override
-  Future<LiveDisplayWindow> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => queries.loadLiveOlder(before: before, demand: demand);
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
-  }) => queries.openDisplayMembers(
-    reference: reference,
-    window: window,
-    demand: demand,
-  );
+  Future<ViewUpdate> next({required ViewCursor after}) async {
+    if (closed) throw const StaleConversationScope();
+    final pending = _pending;
+    if (pending != null && after == pending.after) return pending;
+    if (pending != null) {
+      if (after != pending.next) throw StateError('stale fixture cursor');
+      acceptedCursors.add(after);
+      _pending = null;
+      _acceptance.remove(acceptedCursors.length)?.complete();
+    }
+    final ViewUpdate declared;
+    if (_sequence == 0) {
+      declared = _initial();
+    } else {
+      if (!await _iterator.moveNext()) throw const StaleConversationScope();
+      declared = _iterator.current;
+    }
+    return _pending = ViewUpdate(
+      presentationVersion: declared.presentationVersion,
+      readerProtocolVersion: declared.readerProtocolVersion,
+      after: after,
+      next: ViewCursor('${metadata.readerId}-${++_sequence}'),
+      history: declared.history,
+      tail: declared.tail,
+    );
+  }
+
   @override
   void requestClose() {
+    if (closed) return;
+    closed = true;
+    unawaited(_updates.close());
     super.requestClose();
-    queries.requestClose();
   }
 
   @override
   Future<void> close() async {
+    requestClose();
     await super.close();
-    await queries.close();
+    await _iterator.cancel();
   }
 }
 
@@ -280,9 +308,7 @@ class ScriptedConversationStateFeed implements ConversationStateFeed {
       if (terminal) return;
       throw StateError('Data after the terminal frame');
     }
-    if (event is ConversationChatEvent ||
-        event is ConversationTimelineEvent ||
-        event is ConversationActivityEvent) {
+    if (event is ConversationChatEvent || event is ConversationActivityEvent) {
       throw StateError('Content never flows on the state feed');
     }
     if (terminal) _terminalSent = true;

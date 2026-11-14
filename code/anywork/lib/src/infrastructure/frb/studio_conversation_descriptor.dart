@@ -299,7 +299,7 @@ ContentWindow _contentWindowFromFrb(frb_chat_types.BridgeContentWindow value) =>
 /// lease, independently of events/ACK and its producer receive lock.
 final class _FrbConversationReader implements ConversationReader {
   _FrbConversationReader(this._feed);
-  final FrbConversationFeed _feed;
+  final _FrbContentOwner _feed;
   @override
   String get threadId => _feed.threadId;
   void _checkOpen() {

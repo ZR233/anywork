@@ -13,6 +13,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
+import '../support/mapped_conversation_feed.dart';
+import '../support/pump_client_future.dart';
 
 void main() {
   testWidgets(
@@ -173,6 +175,7 @@ void main() {
       ),
     ]);
     await _frames(tester);
+    h.owner.refresh('a');
     await h.content.deliver(
       _timelineBatch([statusItem(atom, completionSeq: 2)]),
     );
@@ -525,6 +528,7 @@ void main() {
       final oldLease = h.lease;
       final oldEndReached = h.initialEndReached!;
       final oldRequest = h.requests.single;
+      h.owner.refresh('a');
       await h.content.deliver(
         _timelineBatch([
           for (var i = 0; i < 18; i++)
@@ -565,7 +569,7 @@ Future<void> _frames(WidgetTester tester) async {
   }
 }
 
-TimelineBatch _timelineBatch(
+ViewUpdate _timelineBatch(
   List<CompletedEntry> entries, {
   ChatPlacement placement = ChatPlacement.set,
   String? before,
@@ -580,9 +584,10 @@ TimelineBatch _timelineBatch(
     through: through,
     live: placement == ChatPlacement.prepend
         ? null
-        : LiveDisplayWindow(
+        : TailSnapshot(
             currentWorkId: null,
             revision: 0,
+            layoutRevision: 0,
             readyFrontier: through,
             executionPresent: false,
             blocks: const [],
@@ -600,7 +605,7 @@ final class _Harness {
   }) : summaryHeight = ValueNotifier(summaryHeight),
        outerOffstage = ValueNotifier(hidden) {
     owner = TimelineSessionOwner(
-      client: _Client(_Repository(_Session(content)), composer),
+      client: _Client(_Repository(_Session(content), content), composer),
     );
     owner.updateReadDemand(chatDemand);
     owner.select('a');
@@ -775,9 +780,18 @@ final class _Harness {
     final closing = owner.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 500)),
     );
-    await tester.pump(const Duration(seconds: 1));
-    final report = await closing;
-    expect(report.unresolved, isEmpty);
+    final report = await pumpClientFuture(
+      tester,
+      closing,
+      'timeline reader and component close',
+    );
+    expect(
+      report.unresolved,
+      isEmpty,
+      reason: report.unresolved
+          .map((e) => '${e.owner}: ${e.reason}')
+          .join('\n'),
+    );
     summaryHeight.dispose();
     outerOffstage.dispose();
     expect(tester.takeException(), isNull);
@@ -833,106 +847,105 @@ final class _SubmissionOwner extends Fake implements ComposerDraftOwner {
 }
 
 final class _Repository extends Fake implements ConversationRepository {
-  _Repository(this.value);
+  _Repository(this.value, this.content);
   final ConversationSession value;
+  final _Content content;
   @override
   ConversationSession? existingSession(String threadId) => value;
+  @override
+  Future<TimelineReader> openTimelineReader(
+    String threadId, {
+    required ReadDemand demand,
+  }) => content.open();
 }
 
 final class _Session extends Fake implements ConversationSession {
-  _Session(this.content);
+  _Session(this.port);
+  final _Content port;
   @override
   String get threadId => 'a';
-  @override
-  final TimelineContent content;
 }
 
-final class _Content extends Fake implements TimelineContent {
-  @override
-  String get threadId => 'a';
-  @override
-  final state = LatestValue<ChatUiState<bool>>(const ChatReady('a', true));
-  @override
-  final LatestValue<LiveDisplayWindow?> live = LatestValue(null);
-  TimelineBatchConsumer? consumer;
+final class _OpenSlot {
+  final initial = Completer<ViewUpdate>();
+  final reader = Completer<ScriptedTimelineReader>();
+}
+
+/// Only transport responses are declared here; the GUI owns all acceptance and pagination.
+final class _Content {
   final scopes = <_Scope>[];
-
-  @override
-  Observation attachTimelineConsumer(
-    TimelineBatchConsumer consumer, {
-    required ReadDemand demand,
-  }) {
-    this.consumer = consumer;
-    return _Observation(() => this.consumer = null);
+  _OpenSlot? _opening;
+  ScriptedTimelineReader? _current;
+  Future<TimelineReader> open() async {
+    final slot = _OpenSlot();
+    _opening = slot;
+    final initial = await slot.initial.future;
+    final queries = _Scope('page-reader-${scopes.length}');
+    scopes.add(queries);
+    final peer = ScriptedTimelineReader(
+      queries: queries,
+      initial: () => initial,
+    );
+    _current = peer;
+    slot.reader.complete(peer);
+    return peer;
   }
 
-  Future<void> deliver(TimelineBatch batch) async {
-    final acceptedLive = batch.live ?? live.value!;
-    await consumer!.applyTimeline(batch, acceptedLive);
-    if (batch.placement != ChatPlacement.prepend) live.publish(acceptedLive);
+  Future<void> deliver(ViewUpdate update) async {
+    if (update.history.placement == HistoryPlacement.set) {
+      final opening = _opening!;
+      opening.initial.complete(update);
+      final peer = await opening.reader.future;
+      await peer.accepted(1);
+    } else {
+      final peer = _current!;
+      final response = peer.deliveredFrames + 1;
+      peer.emitTimeline(update);
+      await peer.accepted(response);
+    }
   }
-
-  @override
-  TimelineQueryScope openScope({required int generation}) {
-    final scope = _Scope(this, consumer!, generation);
-    scopes.add(scope);
-    return scope;
-  }
-}
-
-final class _Observation extends Fake implements Observation {
-  _Observation(this.onCancel);
-  final VoidCallback onCancel;
-  @override
-  void cancel() => onCancel();
 }
 
 final class _PageRequest {
   _PageRequest(this.before, this.demand);
   final String before;
   final ReadDemand demand;
-  final reply = Completer<TimelineBatch>();
+  final reply = Completer<ViewUpdate>();
   final finished = Completer<void>();
 }
 
-// Only transport and admission barriers are doubled. All pagination, cursor,
-// error, single-flight, projection and layout behavior belongs to production.
-final class _Scope extends Fake implements TimelineQueryScope {
-  _Scope(this.content, this.consumer, this.generation);
-  final _Content content;
-  final TimelineBatchConsumer consumer;
+// This is an I/O barrier, never a second consumer or page application queue.
+final class _Scope extends Fake implements TimelineReader {
+  _Scope(String id)
+    : metadata = OpenTimeline(
+        readerId: id,
+        presentationVersion: 6,
+        readerProtocolVersion: 1,
+        initialCursor: ViewCursor('$id-C0'),
+      );
   @override
-  final int generation;
+  final OpenTimeline metadata;
   @override
-  String get threadId => 'a';
-  @override
-  bool isActive = true;
+  final ConversationReader reader = _UnusedReader();
   final requests = <_PageRequest>[];
-
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) async {
     final request = _PageRequest(before, demand);
     requests.add(request);
     try {
-      final batch = await request.reply.future;
-      if (isActive) await consumer.applyTimeline(batch, content.live.value!);
-      return batch;
+      return historyFixturePage(await request.reply.future);
     } finally {
       request.finished.complete();
     }
   }
 
   @override
-  void retire() => isActive = false;
+  void requestClose() {}
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
-    retire();
-    await Future.wait([
-      for (final request in requests) request.finished.future,
-    ]);
-    return CloseReport();
-  }
+  Future<void> close() async {}
 }
+
+final class _UnusedReader extends Fake implements ConversationReader {}

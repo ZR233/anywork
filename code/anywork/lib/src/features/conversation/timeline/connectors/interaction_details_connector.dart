@@ -20,7 +20,7 @@ class InteractionDetailsConnector extends StatefulWidget {
     required this.isCurrent,
     super.key,
   });
-  final ConversationContent content;
+  final ConversationQueries content;
   final CurrentCollectionRef reference;
   final bool Function() isCurrent;
   @override
@@ -57,7 +57,6 @@ class _InteractionDetailsState extends State<InteractionDetailsConnector> {
               key: ValueKey((
                 generation,
                 content,
-                content.currentAttemptId,
                 currentCollectionIdentity(reference),
               )),
               content: widget.content,
@@ -84,7 +83,7 @@ class _InteractionPageReader extends StatefulWidget {
     required this.registerRetirement,
     super.key,
   });
-  final ConversationContent content;
+  final ConversationQueries content;
   final CurrentCollectionRef reference;
   final bool Function() isCurrent;
   final ValueChanged<VoidCallback> registerRetirement;
@@ -247,7 +246,7 @@ class _DeferredInteractionDetails extends StatefulWidget {
     super.key,
   });
   final String id;
-  final ConversationContent content;
+  final ConversationQueries content;
   final ContentRef reference;
   final int byteLength;
   final bool Function() isCurrent;

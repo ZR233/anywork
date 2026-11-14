@@ -404,7 +404,7 @@ final class TimelineObservation {
           widget is TimelineMemberAtom &&
           widget.displayId == head.displayId &&
           widget.record == head.record &&
-          identical(widget.content, lease.content) &&
+          identical(widget.content, lease) &&
           widget.isActive(),
     );
     final block = liveBlocks.singleWhere((block) => block.id == head.blockId);
@@ -552,7 +552,7 @@ final class TimelineObservation {
       block,
       expectedCount: expectedCount,
     );
-    final scope = lease.content.openScope(generation: lease.generation);
+    final scope = lease.openScope(generation: lease.generation);
     try {
       final atoms = <ChatAtom>[];
       for (final head in heads) {

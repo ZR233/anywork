@@ -101,6 +101,24 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @studioFailureConversationResyncRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversation content needs to be synchronized again. Please retry.'**
+  String get studioFailureConversationResyncRequired;
+
+  /// No description provided for @studioFailureStaleViewCursor.
+  ///
+  /// In en, this message translates to:
+  /// **'The current reading position has expired. Reopen the conversation.'**
+  String get studioFailureStaleViewCursor;
+
+  /// No description provided for @studioFailureConcurrentNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversation content is being read. Wait for the current read to finish.'**
+  String get studioFailureConcurrentNext;
+
   /// No description provided for @conversationDirectoryUnavailable.
   ///
   /// In en, this message translates to:

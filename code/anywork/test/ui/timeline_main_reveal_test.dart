@@ -27,7 +27,7 @@ void main() {
             threadId: 'pending-main-renderer',
             generation: 11,
             demand: chatDemand,
-            content: content,
+            reader: content,
           ),
         ))!..bind();
         final projection = TimelineMessageController(
@@ -35,7 +35,7 @@ void main() {
           generation: lease.generation,
         );
         const id = 'canonical:pending-renderer';
-        await projection.applyTimeline(
+        await projection.applyFixtureUpdate(
           displayBatch([
             if (work)
               displayWork(id, 1)
@@ -190,7 +190,7 @@ void main() {
           threadId: 'main-reveal',
           generation: 7,
           demand: chatDemand,
-          content: content,
+          reader: content,
         ),
       ))!..bind();
       final controller = lease.controller;
@@ -209,7 +209,7 @@ void main() {
       final ids = [
         for (var i = 0; i < 32; i++) 'main:${(i * 17 + 13) % 37}:opaque',
       ];
-      await projection.applyTimeline(
+      await projection.applyFixtureUpdate(
         displayBatch([
           for (var i = 0; i < ids.length; i++)
             if (i == ids.length - 1)
@@ -614,7 +614,7 @@ final class _FrameDelayedRendererState extends State<_FrameDelayedRenderer> {
   }
 }
 
-final class _NoQueries extends Fake implements ConversationContent {
+final class _NoQueries extends Fake implements TimelineReader {
   int calls = 0;
 
   @override

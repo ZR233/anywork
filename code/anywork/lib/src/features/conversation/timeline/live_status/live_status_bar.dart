@@ -14,7 +14,7 @@ import 'live_status_view_model.dart';
 
 /// 自包含的会话底部实时状态栏组件唯一挂载入口：
 /// 外层外壳只需传入 `threadId`，所有 FRB 源状态监听、状态机转换、分页与驱动状态同步
-/// 均收敛于组件专属 `LiveStatusViewModel` 与 `LiveStatusStateMachine` 内部。
+/// 均收敛于组件专属 `LiveStatusViewModel` 与 `LiveStatusProjection` 内部。
 class LiveStatusBar extends ConsumerWidget {
   const LiveStatusBar({required this.threadId, super.key});
 
@@ -31,8 +31,7 @@ class LiveStatusBar extends ConsumerWidget {
     final client = ref.read(anyworkClientProvider);
     final conversations = client.conversations;
     final session = conversations.existingSession(threadId);
-    final content = session?.content;
-    if (content == null) return const SizedBox.shrink();
+    if (session == null) return const SizedBox.shrink();
 
     final sessionState = ref.watch(threadSessionStoreProvider(threadId));
     final children = <Widget>[];
@@ -46,7 +45,7 @@ class LiveStatusBar extends ConsumerWidget {
     if (presenting != null) {
       final timeline = ref.read(timelineSessionOwnerProvider);
       final lease = timeline.lease(threadId);
-      if (lease != null && identical(lease.content, content)) {
+      if (lease != null) {
         final notifier = ref.read(
           liveStatusViewModelProvider(threadId).notifier,
         );
@@ -57,14 +56,14 @@ class LiveStatusBar extends ConsumerWidget {
               enabled: !masked,
               child: ConversationCurrentConnector(
                 section: ConversationLiveSection.output,
-                key: ValueKey((threadId, content, lease.generation)),
+                key: ValueKey((threadId, lease.reader, lease.generation)),
                 presenting: presenting,
                 onLoadOlder: notifier.loadOlderOutput,
                 onReturnToLatest: notifier.returnToLatestOutput,
                 threadId: threadId,
                 turnId: sessionState.activeTurn?.turnId,
                 activityId: sessionState.activity?.identity,
-                content: content,
+                content: lease,
                 liveUnit: lease.liveUnit,
                 onExpandedChanged: StudioDriverState.publishActivityExpanded,
                 registerDisplay: lease.registerCurrentDisplay,
@@ -73,8 +72,7 @@ class LiveStatusBar extends ConsumerWidget {
                     client.readAttachmentBytes(threadId, id),
                 isDisplayActive: () =>
                     !lease.retirement.value &&
-                    identical(timeline.lease(threadId), lease) &&
-                    identical(lease.content, content),
+                    identical(timeline.lease(threadId), lease),
               ),
             ),
           ),
@@ -93,20 +91,28 @@ class LiveStatusBar extends ConsumerWidget {
     }
 
     final reference = sessionState.businessRefs?.interactions;
-    if (barState.showInteractionDetails && reference != null) {
+    final detailLease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    if (barState.showInteractionDetails &&
+        reference != null &&
+        detailLease != null) {
       children.add(
         InteractionDetailsConnector(
           key: ValueKey((
             'interaction-details',
-            content,
-            content.currentAttemptId,
+            detailLease,
+            detailLease.generation,
           )),
-          content: content,
+          content: detailLease,
           reference: reference,
           isCurrent: () =>
               identical(conversations.existingSession(threadId), session) &&
               conversations.visibleThreadId.value == threadId &&
-              session?.state.businessRefs?.interactions == reference,
+              session.state.businessRefs?.interactions == reference &&
+              !detailLease.isRetired &&
+              identical(
+                ref.read(timelineSessionOwnerProvider).lease(threadId),
+                detailLease,
+              ),
         ),
       );
     }

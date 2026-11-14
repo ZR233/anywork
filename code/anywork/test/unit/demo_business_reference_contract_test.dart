@@ -1,3 +1,5 @@
+import '../support/recording_demo_transport.dart' show timelineReady;
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -115,7 +117,9 @@ void main() {
     await session.source.waitFor(
       (state) => state.businessRefs?.interactions != previous,
     );
-    final scope = session.content.openScope(generation: 102);
+    final scope = graph.timeline
+        .lease('thread-main')!
+        .openScope(generation: 102);
     try {
       final page = await scope.pageCurrent(
         reference: session.state.businessRefs!.interactions!,
@@ -149,7 +153,9 @@ void main() {
     final session = graph.client.conversations.session('thread-main');
     final lease = graph.timeline.lease('thread-main')!;
     final firstMessage = lease.controller.messages.first;
-    final scope = session.content.openScope(generation: 100);
+    final scope = graph.timeline
+        .lease('thread-main')!
+        .openScope(generation: 100);
     addTearDown(() async => expect((await scope.close()).complete, isTrue));
     final runtime = session.state.runtime!;
     final route = session.state.modelRoute;
@@ -277,7 +283,9 @@ void main() {
     final single = item.displayUnit!.body as SingleDisplayBlock;
     expect(single.record.atom, same(item.atom));
     final original = single.record.contentSource as CompletedOriginal;
-    final scope = session.content.openScope(generation: 101);
+    final scope = graph.timeline
+        .lease('thread-main')!
+        .openScope(generation: 101);
     try {
       final completed = await scope.readCompleted(
         recordId: original.completionId,
@@ -315,7 +323,7 @@ Future<(AppGraph, DemoStudioTransport)> _open() async {
   graph.setConversationPageVisible(true);
   await graph.client.directoryCommands.selectThread('thread-main');
   final session = graph.client.conversations.session('thread-main');
-  await session.content.ready;
+  await timelineReady(graph.timeline, session.threadId);
   await session.source
       .waitFor((state) => state.hasSnapshot)
       .timeout(const Duration(seconds: 3));

@@ -129,7 +129,7 @@ extension _MediaHandoffScene on _ConceptScene {
     ChatAtom head,
     String completionId,
   ) async {
-    final scope = lease.content.openScope(generation: lease.generation);
+    final scope = lease.openScope(generation: lease.generation);
     try {
       final completed = await scope.readCompleted(
         recordId: completionId,

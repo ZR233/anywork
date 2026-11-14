@@ -237,7 +237,7 @@ void main() {
       ),
     );
 
-    await stage('初始 content.ready', session.content.ready);
+    await stage('初始时间线接纳', timelineReady(graph.timeline, threadId));
     final workspace = session.state.workspace!;
     await stage(
       '初始 workspace revision=4 ACK',

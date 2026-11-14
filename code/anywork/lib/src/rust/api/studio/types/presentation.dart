@@ -12,7 +12,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeDisplayBlock {
   final String id;
@@ -192,6 +192,43 @@ class BridgeDisplayRecord {
           contentSource == other.contentSource;
 }
 
+class BridgeHistoryDelta {
+  final BridgeHistoryPlacement placement;
+  final BigInt? fromOrder;
+  final BigInt throughOrder;
+  final List<BridgeDisplayBlock> blocks;
+  final String? before;
+
+  const BridgeHistoryDelta({
+    required this.placement,
+    this.fromOrder,
+    required this.throughOrder,
+    required this.blocks,
+    this.before,
+  });
+
+  @override
+  int get hashCode =>
+      placement.hashCode ^
+      fromOrder.hashCode ^
+      throughOrder.hashCode ^
+      blocks.hashCode ^
+      before.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryDelta &&
+          runtimeType == other.runtimeType &&
+          placement == other.placement &&
+          fromOrder == other.fromOrder &&
+          throughOrder == other.throughOrder &&
+          blocks == other.blocks &&
+          before == other.before;
+}
+
+enum BridgeHistoryPlacement { set_, append }
+
 class BridgeLiveDisplayBlock {
   final String id;
   final BigInt blockOrder;
@@ -235,16 +272,51 @@ class BridgeLiveDisplayBlock {
           thinkingSummary == other.thinkingSummary;
 }
 
-class BridgeLiveDisplayWindow {
+class BridgeOpenTimeline {
+  final String readerId;
+  final int presentationVersion;
+  final int readerProtocolVersion;
+  final String initialCursor;
+
+  const BridgeOpenTimeline({
+    required this.readerId,
+    required this.presentationVersion,
+    required this.readerProtocolVersion,
+    required this.initialCursor,
+  });
+
+  @override
+  int get hashCode =>
+      readerId.hashCode ^
+      presentationVersion.hashCode ^
+      readerProtocolVersion.hashCode ^
+      initialCursor.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeOpenTimeline &&
+          runtimeType == other.runtimeType &&
+          readerId == other.readerId &&
+          presentationVersion == other.presentationVersion &&
+          readerProtocolVersion == other.readerProtocolVersion &&
+          initialCursor == other.initialCursor;
+}
+
+enum BridgeSingleVisibility { content, finalEmptyAfterContent }
+
+class BridgeTailSnapshot {
   final BigInt revision;
+  final BigInt layoutRevision;
   final BigInt readyFrontier;
   final bool executionPresent;
   final String? currentWorkId;
   final List<BridgeLiveDisplayBlock> blocks;
   final String? older;
 
-  const BridgeLiveDisplayWindow({
+  const BridgeTailSnapshot({
     required this.revision,
+    required this.layoutRevision,
     required this.readyFrontier,
     required this.executionPresent,
     this.currentWorkId,
@@ -255,6 +327,7 @@ class BridgeLiveDisplayWindow {
   @override
   int get hashCode =>
       revision.hashCode ^
+      layoutRevision.hashCode ^
       readyFrontier.hashCode ^
       executionPresent.hashCode ^
       currentWorkId.hashCode ^
@@ -264,9 +337,10 @@ class BridgeLiveDisplayWindow {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeLiveDisplayWindow &&
+      other is BridgeTailSnapshot &&
           runtimeType == other.runtimeType &&
           revision == other.revision &&
+          layoutRevision == other.layoutRevision &&
           readyFrontier == other.readyFrontier &&
           executionPresent == other.executionPresent &&
           currentWorkId == other.currentWorkId &&
@@ -274,49 +348,94 @@ class BridgeLiveDisplayWindow {
           older == other.older;
 }
 
-enum BridgeSingleVisibility { content, finalEmptyAfterContent }
+@freezed
+sealed class BridgeTailUpdate with _$BridgeTailUpdate {
+  const BridgeTailUpdate._();
 
-class BridgeTimelineBatch {
+  const factory BridgeTailUpdate.keep() = BridgeTailUpdate_Keep;
+  const factory BridgeTailUpdate.replace({
+    required BridgeTailSnapshot snapshot,
+  }) = BridgeTailUpdate_Replace;
+  const factory BridgeTailUpdate.status({
+    required BigInt baseLayoutRevision,
+    required BigInt revision,
+    String? currentWorkId,
+    String? thinkingSummary,
+  }) = BridgeTailUpdate_Status;
+}
+
+class BridgeTimelinePage {
   final int presentationVersion;
-  final BridgeChatPlacement placement;
+  final String databaseId;
+  final BigInt ceiling;
   final List<BridgeDisplayBlock> blocks;
   final String? before;
-  final BigInt? fromOrder;
-  final BigInt throughOrder;
-  final BridgeLiveDisplayWindow? live;
 
-  const BridgeTimelineBatch({
+  const BridgeTimelinePage({
     required this.presentationVersion,
-    required this.placement,
+    required this.databaseId,
+    required this.ceiling,
     required this.blocks,
     this.before,
-    this.fromOrder,
-    required this.throughOrder,
-    this.live,
   });
 
   @override
   int get hashCode =>
       presentationVersion.hashCode ^
-      placement.hashCode ^
+      databaseId.hashCode ^
+      ceiling.hashCode ^
       blocks.hashCode ^
-      before.hashCode ^
-      fromOrder.hashCode ^
-      throughOrder.hashCode ^
-      live.hashCode;
+      before.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeTimelineBatch &&
+      other is BridgeTimelinePage &&
           runtimeType == other.runtimeType &&
           presentationVersion == other.presentationVersion &&
-          placement == other.placement &&
+          databaseId == other.databaseId &&
+          ceiling == other.ceiling &&
           blocks == other.blocks &&
-          before == other.before &&
-          fromOrder == other.fromOrder &&
-          throughOrder == other.throughOrder &&
-          live == other.live;
+          before == other.before;
+}
+
+class BridgeViewUpdate {
+  final int presentationVersion;
+  final int readerProtocolVersion;
+  final String after;
+  final String next;
+  final BridgeHistoryDelta history;
+  final BridgeTailUpdate tail;
+
+  const BridgeViewUpdate({
+    required this.presentationVersion,
+    required this.readerProtocolVersion,
+    required this.after,
+    required this.next,
+    required this.history,
+    required this.tail,
+  });
+
+  @override
+  int get hashCode =>
+      presentationVersion.hashCode ^
+      readerProtocolVersion.hashCode ^
+      after.hashCode ^
+      next.hashCode ^
+      history.hashCode ^
+      tail.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeViewUpdate &&
+          runtimeType == other.runtimeType &&
+          presentationVersion == other.presentationVersion &&
+          readerProtocolVersion == other.readerProtocolVersion &&
+          after == other.after &&
+          next == other.next &&
+          history == other.history &&
+          tail == other.tail;
 }
 
 class BridgeWorkTiming {

@@ -265,6 +265,7 @@ final class StudioDriverFacts {
   StudioDriverFacts({
     this.timeline,
     this.timelineScroll,
+    this.conversationActivity,
     Map<String, ThreadWorkspace> workspacesByThread = const {},
     List<SessionDirectoryRow> rootRows = const [],
     this.directoryHasMore = false,
@@ -320,6 +321,7 @@ final class StudioDriverFacts {
   /// 没有挂载代次时为 null；不保留上一代几何，也没有任何通知发布的快照可读
   /// （design/26 §26.9）。
   final TimelineScrollDiagnostic? timelineScroll;
+  final ConversationActivityView? conversationActivity;
   final Map<String, ThreadWorkspace> workspacesByThread;
   final List<SessionDirectoryRow> rootRows;
   final bool directoryHasMore;
@@ -518,7 +520,6 @@ abstract final class StudioDriverState {
   static int _exitRequests = 0;
   static String? _startupFailureCode;
   static String? _startupFailureCorrelationId;
-  static ConversationActivityView? _conversationActivity;
   static bool _activityExpanded = false;
 
   /// Application assembly lends a query; binding never creates an observer or
@@ -530,10 +531,6 @@ abstract final class StudioDriverState {
   /// 没有装配 query 时没有任何 canonical 观察：明确标记未加载。
   static StudioDriverFacts readFacts() =>
       _query?.call() ?? StudioDriverFacts(acpAuthLoaded: false);
-
-  static void publishConversationActivity(ConversationActivityView? view) {
-    _conversationActivity = view;
-  }
 
   /// 固定活动条的**实际展开态**（用户此刻是否展开详情）。
   ///
@@ -1060,16 +1057,16 @@ abstract final class StudioDriverState {
           ? null
           : _planJson(workspace!.runtime.plan!),
       // 固定活动条投影：阶段/摘要/并行工具数/完整详情身份。
-      'conversationActivity': _conversationActivity == null
+      'conversationActivity': facts.conversationActivity == null
           ? null
           : {
-              'identity': _conversationActivity!.identity,
-              'kind': _conversationActivity!.kind.name,
-              'turnId': _conversationActivity!.turnId,
-              'executionId': _conversationActivity!.executionId,
-              'summary': _conversationActivity!.summary,
+              'identity': facts.conversationActivity!.identity,
+              'kind': facts.conversationActivity!.kind.name,
+              'turnId': facts.conversationActivity!.turnId,
+              'executionId': facts.conversationActivity!.executionId,
+              'summary': facts.conversationActivity!.summary,
               'reasoningParts': [
-                for (final part in _conversationActivity!.reasoningParts)
+                for (final part in facts.conversationActivity!.reasoningParts)
                   {
                     'itemId': part.itemId,
                     'complete': part.complete,
@@ -1077,12 +1074,12 @@ abstract final class StudioDriverState {
                     'byteLength': utf8.encode(part.text).length,
                   },
               ],
-              'reasoningBytes': _conversationActivity!.reasoningParts.fold(
+              'reasoningBytes': facts.conversationActivity!.reasoningParts.fold(
                 0,
                 (total, part) => total + utf8.encode(part.text).length,
               ),
               'responseParts': [
-                for (final part in _conversationActivity!.responseParts)
+                for (final part in facts.conversationActivity!.responseParts)
                   {
                     'itemId': part.itemId,
                     'complete': part.complete,
@@ -1090,18 +1087,19 @@ abstract final class StudioDriverState {
                     'byteLength': utf8.encode(part.text).length,
                   },
               ],
-              'responseBytes': _conversationActivity!.responseParts.fold(
+              'responseBytes': facts.conversationActivity!.responseParts.fold(
                 0,
                 (total, part) => total + utf8.encode(part.text).length,
               ),
-              'activeToolCount': _conversationActivity!.activeToolCount,
-              'backgroundToolCount': _conversationActivity!.backgroundToolCount,
-              'errorMessage': _conversationActivity!.errorMessage,
-              'expandable': _conversationActivity!.expandable,
+              'activeToolCount': facts.conversationActivity!.activeToolCount,
+              'backgroundToolCount':
+                  facts.conversationActivity!.backgroundToolCount,
+              'errorMessage': facts.conversationActivity!.errorMessage,
+              'expandable': facts.conversationActivity!.expandable,
               // `expandable` 是能力；`expanded` 是用户此刻的实际展开态。
               'expanded': _activityExpanded,
               'toolDetails': [
-                for (final tool in _conversationActivity!.toolDetails)
+                for (final tool in facts.conversationActivity!.toolDetails)
                   {
                     'callId': tool.callId,
                     'taskId': tool.taskId,
@@ -1122,7 +1120,7 @@ abstract final class StudioDriverState {
                   },
               ],
               'details': [
-                for (final detail in _conversationActivity!.details)
+                for (final detail in facts.conversationActivity!.details)
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
               ],
             },

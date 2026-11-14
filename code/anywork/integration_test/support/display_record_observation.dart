@@ -76,7 +76,7 @@ Future<ChatItemPresentation> readDisplayRecord(
   DisplayRecord record, {
   String? displayId,
 }) async {
-  final scope = lease.content.openScope(generation: lease.generation);
+  final scope = lease.openScope(generation: lease.generation);
   try {
     final source = record.contentSource;
     if (source is CompletedOriginal) {
@@ -148,7 +148,7 @@ Future<List<String>> displayBodyTexts(
   TimelineDisplayLease lease,
   ChatItemPresentation item,
 ) async {
-  final scope = lease.content.openScope(generation: lease.generation);
+  final scope = lease.openScope(generation: lease.generation);
   try {
     final texts = <String>[];
     for (final body in item.bodies) {

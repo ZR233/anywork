@@ -532,7 +532,7 @@ Future<Map<String, Object?>> _verifyStateInteractionDetails(
   final connector = find.byWidgetPredicate(
     (widget) =>
         widget is InteractionDetailsConnector &&
-        identical(widget.content, session.content) &&
+        identical(widget.content, graph.timeline.lease(threadId)) &&
         widget.reference == reference,
   );
   await _until(

@@ -146,6 +146,52 @@ void main() {
     },
   );
 
+  test('Latest to Before to Latest rejects the first Latest late failure with the same page generation', () async {
+    final firstOpen = Completer<DisplayMembers>();
+    final before = _Handle();
+    final latest = _Handle();
+    final windows = <DisplayMemberWindow>[];
+    final controller = DisplayMemberController(
+      reference: _ref,
+      demand: _demand,
+      open: (_, window, _) {
+        windows.add(window);
+        return switch (windows.length) {
+          1 => firstOpen.future,
+          2 => Future.value(before),
+          _ => Future.value(latest),
+        };
+      },
+    );
+    await Future<void>.delayed(Duration.zero);
+    controller.select(const BeforeDisplayMembers(memberOrder: 50));
+    await before.pulling.future;
+    controller.select(const LatestDisplayMembers());
+    await latest.pulling.future;
+    final page = DisplayMemberPage(
+      block: _ref,
+      revision: 7,
+      sealed: false,
+      entries: [],
+    );
+    latest.reply.complete(page);
+    await Future<void>.delayed(Duration.zero);
+    expect(windows, [
+      isA<LatestDisplayMembers>(),
+      isA<BeforeDisplayMembers>(),
+      isA<LatestDisplayMembers>(),
+    ]);
+    expect(before.requested, isTrue);
+    expect(controller.page, same(page));
+    firstOpen.completeError(StateError('obsolete first Latest'));
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.page, same(page));
+    expect(controller.error, isNull);
+    expect(controller.loading, isFalse);
+    await controller.close();
+    controller.dispose();
+  });
+
   test('retry retains cleanup failure until the same handle really closes, then accepts a clean page', () async {
     final failure = StateError('first close failed');
     final old = _Handle()..closeFailure = failure;

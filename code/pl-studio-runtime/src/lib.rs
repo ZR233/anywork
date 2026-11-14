@@ -106,7 +106,7 @@ pub use studio::{
     StudioUpdateActivity, StudioUpdatePreparationResult, StudioUpdateStateSnapshot,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    ThreadsObservation, TimelineEvent, TimelineFeed, WorkspaceRecord,
+    ThreadsObservation, TimelineReader, WorkspaceRecord,
 };
 pub use studio::{
     BuildInfoV1, ChatItemHeaderExportV1, ChatReadHintExportV1, ChatRunPositionExportV1,

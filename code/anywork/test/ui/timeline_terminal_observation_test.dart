@@ -70,7 +70,7 @@ final class _Fixture {
       threadId: 'thread',
       generation: generation,
       demand: const ReadDemand(maxItems: 32, maxBytes: 256 * 1024),
-      content: content,
+      reader: content,
     );
     adapter = TimelineMessageController(
       lease.controller as InMemoryChatController,
@@ -89,12 +89,13 @@ final class _Fixture {
   late final TimelineDisplayLease lease;
   late final TimelineMessageController adapter;
   late final TimelineObservation observed;
-  Future<void> set(List<DisplayBlock> blocks) => adapter.applyTimeline(
+  Future<void> set(List<DisplayBlock> blocks) => adapter.applyFixtureUpdate(
     displayBatch(
       blocks,
-      live: LiveDisplayWindow(
+      live: TailSnapshot(
         currentWorkId: null,
         revision: 1,
+        layoutRevision: 1,
         readyFrontier: blocks.isEmpty ? 0 : blocks.last.blockOrder,
         executionPresent: false,
         blocks: [],
@@ -149,9 +150,10 @@ void main() {
   ) async {
     final f = _Fixture(tester);
     await f.set([]);
-    f.lease.live.value = LiveDisplayWindow(
+    f.lease.live.value = TailSnapshot(
       currentWorkId: null,
       revision: 2,
+      layoutRevision: 2,
       readyFrontier: 0,
       executionPresent: true,
       blocks: [
@@ -219,9 +221,10 @@ void main() {
   ) async {
     final f = _Fixture(tester);
     await f.set([displayWork('work', 1), _single(_source)]);
-    f.lease.live.value = LiveDisplayWindow(
+    f.lease.live.value = TailSnapshot(
       currentWorkId: null,
       revision: 9,
+      layoutRevision: 9,
       readyFrontier: 2,
       executionPresent: true,
       blocks: [
@@ -271,13 +274,23 @@ void main() {
   });
 }
 
-final class _Content extends Fake implements ConversationContent {
+final class _Content extends Fake implements TimelineReader {
   final scope = _Scope();
   int opened = 0;
   @override
-  ConversationQueryScope openScope({required int generation}) {
+  ConversationReader get reader => _UnusedReader();
+  @override
+  Future<DisplayMembers> openDisplayMembers({
+    required DisplayBlockRef reference,
+    required DisplayMemberWindow window,
+    required ReadDemand demand,
+  }) {
     opened++;
-    return scope;
+    return scope.openDisplayMembers(
+      reference: reference,
+      window: window,
+      demand: demand,
+    );
   }
 }
 
@@ -333,3 +346,5 @@ final class _Members implements DisplayMembers {
   @override
   Future<void> close() async => closed = true;
 }
+
+final class _UnusedReader extends Fake implements ConversationReader {}

@@ -44,7 +44,9 @@ void main() {
           );
         }
 
-        await adapter.applyTimeline(displayBatch([displayWork('first', 1)]));
+        await adapter.applyFixtureUpdate(
+          displayBatch([displayWork('first', 1)]),
+        );
         await tester.pumpWidget(display());
         expect(find.text(_runTitle(tester, 1)), findsOneWidget);
         expect(find.byType(TimelineActivityIndicator), findsNothing);
@@ -60,7 +62,7 @@ void main() {
             controller.messages.first.metadata![timelineDisplayUnitKey]
                 as TimelineDisplayUnit;
         final token = unit.expansion.bodyGeneration;
-        await adapter.applyTimeline(
+        await adapter.applyFixtureUpdate(
           displayBatch(
             [displayWork('second', 2)],
             placement: ChatPlacement.append,
@@ -92,7 +94,9 @@ void main() {
       (tester) async {
         final controller = InMemoryChatController();
         final adapter = TimelineMessageController(controller, generation: 1);
-        await adapter.applyTimeline(displayBatch([displayWork('large', 1)]));
+        await adapter.applyFixtureUpdate(
+          displayBatch([displayWork('large', 1)]),
+        );
         var reads = 0;
         await tester.pumpWidget(
           MaterialApp(

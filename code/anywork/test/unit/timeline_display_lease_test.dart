@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
 import '../support/mapped_conversation_feed.dart';
+import '../support/recording_demo_transport.dart' show timelineReady;
 
 // The real SDK and presentation owner admit batches into the real component.
 // The transport supplies only explicit facts and I/O barriers.
@@ -63,8 +64,6 @@ void main() {
       ..updateReadDemand(chatDemand);
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
-    final session = client.conversations.session('thread');
-    await session.content.ready;
     await transport.main.accepted(1);
     final mainLease = owner.lease('thread')!;
     final mainCurrent = mainLease.live.value;
@@ -262,7 +261,7 @@ void main() {
     },
   );
 
-  test('native reader close failure belongs to SDK and remains retryable after UI release', () async {
+  test('native GUI reader close failure stays with its original UI owner after display release', () async {
     final h = _Harness([
       chatMessage('c', completionSeq: 1000),
     ], before: 'older');
@@ -271,16 +270,16 @@ void main() {
     final scope = lease.openDetailQueries()!;
     h.transport.reader.failClose = true;
     h.client.conversations.setVisibleThread(null);
-    expect((await h.owner.close()).complete, isTrue);
+    expect((await h.owner.close()).complete, isFalse);
     expect(scope.isActive, isFalse);
     expect(lease.isReleased, isTrue);
     final report = await h.client.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 30)),
     );
-    expect(report.complete, isFalse);
+    expect(report.complete, isTrue);
     expect(h.transport.reader.closeCalls, greaterThanOrEqualTo(1));
     h.transport.reader.failClose = false;
-    expect((await h.client.retryCleanup()).complete, isTrue);
+    expect((await h.owner.close()).complete, isTrue);
     expect(h.transport.reader.closeCalls, greaterThanOrEqualTo(2));
   });
 
@@ -329,9 +328,8 @@ void main() {
     final resource = old.imageResources.borrow('image');
     final oldKey = old.chatKey;
     h.transport.initial = _mainBatch([chatMessage('reset')]);
-    final content = h.client.conversations.session('thread').content;
-    content.refresh();
-    await content.ready;
+    h.owner.refresh('thread');
+    await timelineReady(h.owner, 'thread');
     await h.transport.feed.accepted(1);
     final next = h.lease;
     expect(next.chatKey, isNot(oldKey));
@@ -410,15 +408,15 @@ final class _Harness {
   Future<void> open() async {
     client.conversations.setVisibleThread('thread');
     owner.select('thread');
-    await client.conversations.session('thread').content.ready;
     await transport.feed.accepted(1);
   }
 
   Future<void> append(List<CompletedEntry> messages) async {
+    final response = transport.feed.deliveredFrames + 1;
     transport.feed.emitTimeline(
       _mainBatch(messages, placement: ChatPlacement.append),
     );
-    await transport.feed.accepted(transport.feed.deliveredFrames);
+    await transport.feed.accepted(response);
   }
 }
 
@@ -427,15 +425,15 @@ final class _LeaseTransport extends Fake
   _LeaseTransport(this.initial) {
     _createFeed();
   }
-  TimelineBatch initial;
+  ViewUpdate initial;
   void _createFeed() {
-    feed = ScriptedTimelineFeed(
+    feed = ScriptedTimelineReader(
       queries: _TimelineQueries(reader, 'lease'),
       initial: () => initial,
     );
   }
 
-  late ScriptedTimelineFeed feed;
+  late ScriptedTimelineReader feed;
   _Reader reader = _Reader();
   int opens = 0;
 
@@ -455,8 +453,10 @@ final class _LeaseTransport extends Fake
   );
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async {
     if (opens > 0) {
@@ -471,20 +471,20 @@ final class _LeaseTransport extends Fake
 final class _Reader extends Fake implements ConversationReader {
   @override
   String get threadId => 'thread';
-  final reply = Completer<TimelineBatch>();
+  final reply = Completer<ViewUpdate>();
   final entered = Completer<void>();
   final boundaries = <String>[];
   final demands = <ReadDemand>[];
   bool failClose = false;
   int closeCalls = 0;
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) {
     boundaries.add(before);
     demands.add(demand);
     if (!entered.isCompleted) entered.complete();
-    return reply.future;
+    return reply.future.then(historyFixturePage);
   }
 
   @override
@@ -500,7 +500,7 @@ final class _ScopedTransport extends Fake
     implements StudioTransport, TimelineTransport {
   final mainReader = _Reader();
   final childReader = _Reader();
-  late final main = ScriptedTimelineFeed(
+  late final main = ScriptedTimelineReader(
     queries: _TimelineQueries(mainReader, 'main'),
     initial: () => _mainBatch([chatMessage('main')]),
   );
@@ -531,8 +531,10 @@ final class _ScopedTransport extends Fake
   );
 
   @override
-  Future<TimelineFeed> openTimelineFeed(
+  Future<TimelineReader> openTimelineReader(
     String threadId, {
+    required int presentationVersion,
+    required int readerProtocolVersion,
     required ReadDemand demand,
   }) async => main;
   @override
@@ -547,7 +549,7 @@ final class _ScopedTransport extends Fake
   }
 }
 
-TimelineBatch _mainBatch(
+ViewUpdate _mainBatch(
   List<CompletedEntry> entries, {
   ChatPlacement placement = ChatPlacement.set,
   String? before,
@@ -562,9 +564,10 @@ TimelineBatch _mainBatch(
         : null,
     through: through,
     live: placement == ChatPlacement.set
-        ? LiveDisplayWindow(
+        ? TailSnapshot(
             currentWorkId: null,
             revision: 1,
+            layoutRevision: 1,
             readyFrontier: through,
             executionPresent: false,
             blocks: const [],
@@ -573,21 +576,26 @@ TimelineBatch _mainBatch(
   );
 }
 
-final class _TimelineQueries extends Fake implements TimelineFeed {
+final class _TimelineQueries extends Fake implements TimelineReader {
   _TimelineQueries(this.reader, this.subscriptionId);
   @override
+  OpenTimeline get metadata => OpenTimeline(
+    readerId: subscriptionId,
+    presentationVersion: 6,
+    readerProtocolVersion: 1,
+    initialCursor: ViewCursor('$subscriptionId-C0'),
+  );
+  @override
   final _Reader reader;
-  @override
   String get threadId => 'thread';
-  @override
   final String subscriptionId;
   @override
-  Future<TimelineBatch> loadTimelineOlder({
+  Future<TimelinePage> loadTimelineOlder({
     required String before,
     required ReadDemand demand,
   }) => reader.loadTimelineOlder(before: before, demand: demand);
   @override
-  void requestClose() {}
+  void requestClose() => reader.requestClose();
   @override
-  Future<void> close() async {}
+  Future<void> close() => reader.close();
 }

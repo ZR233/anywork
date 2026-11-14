@@ -80,6 +80,21 @@ pub(in crate::studio) struct DisplayHeader {
 }
 
 impl DisplayHeader {
+    // A member's mutable detail revision does not invalidate the main tail page.
+    // Membership, terminal counts and actual head/content qualification do.
+    fn same_layout(&self, next: &Self) -> bool {
+        self.version == next.version
+            && self.id == next.id
+            && self.source == next.source
+            && self.block_order == next.block_order
+            && self.boundary == next.boundary
+            && self.first_content_at == next.first_content_at
+            && self.sealed == next.sealed
+            && self.unfinished == next.unfinished
+            && self.next_member == next.next_member
+            && self.body == next.body
+    }
+
     pub fn frozen(&self) -> Option<DisplayBlock> {
         self.sealed.then(|| DisplayBlock {
             id: self.id.clone(),
@@ -195,6 +210,7 @@ pub(in crate::studio) struct PresentationCut {
     pub last_order: u64,
     pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
+    pub layout_revision: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
     pub history: Vec<Arc<DisplayHeader>>,
@@ -227,6 +243,8 @@ pub(in crate::studio) struct PresentationState {
     published: u64,
     durable: u64,
     revision: u64,
+    layout_revision: u64,
+    execution_present: bool,
     member_change: u64,
     next_order: u64,
     applied_effect: u64,
@@ -262,6 +280,8 @@ impl Default for PresentationState {
             published: Default::default(),
             durable: Default::default(),
             revision: Default::default(),
+            layout_revision: 0,
+            execution_present: false,
             member_change: Default::default(),
             next_order: Default::default(),
             applied_effect: Default::default(),
@@ -499,14 +519,67 @@ fn header_bytes(header: &DisplayHeader) -> Result<u64> {
 }
 
 impl PresentationState {
+    fn advance_layout(&mut self) -> Result<()> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .context("display view revision exhausted")?;
+        let layout = self
+            .layout_revision
+            .checked_add(1)
+            .context("display layout revision exhausted")?;
+        self.revision = revision;
+        self.layout_revision = layout;
+        Ok(())
+    }
+
+    /// Publication and subsequent execution retirement each need at most one revision.
+    /// Check before admission so the synchronous publication cannot fail after commit.
+    pub(in crate::studio) fn ensure_publication_capacity(&self) -> Result<()> {
+        self.revision
+            .checked_add(2)
+            .context("display view revision exhausted")?;
+        self.layout_revision
+            .checked_add(2)
+            .context("display layout revision exhausted")?;
+        Ok(())
+    }
+
+    pub(in crate::studio) fn observe_execution(&mut self, present: bool) -> Result<()> {
+        if self.execution_present != present {
+            self.advance_layout()?;
+            self.execution_present = present;
+        }
+        Ok(())
+    }
+
+    /// Constant-size summary read: no member iteration, body decoding or database access.
+    pub(in crate::studio) fn view_status(&self) -> (u64, u64, u64, Option<String>, Option<String>) {
+        let work = self.open_work.map(|order| &self.blocks[&order]);
+        (
+            self.revision,
+            self.layout_revision,
+            self.published,
+            work.map(|h| h.id.clone()),
+            work.and_then(|h| h.thinking_summary.clone()),
+        )
+    }
+
     /// Streaming replaces only the open group's bounded in-memory title. No member
     /// read, durable delta or persisted header revision is produced by progress.
-    pub(super) fn observe_thinking_summary(&mut self, summary: &str) {
-        let Some(order) = self.open_work else { return };
+    pub(super) fn observe_thinking_summary(&mut self, summary: &str) -> Result<()> {
+        let Some(order) = self.open_work else {
+            return Ok(());
+        };
         let header = self.blocks.get(&order).expect("open Work header");
         if header.thinking_summary.as_deref() == Some(summary) {
-            return;
+            return Ok(());
         }
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .filter(|revision| *revision < u64::MAX)
+            .context("display view revision exhausted")?;
         let previous = header.thinking_summary.as_ref().map_or(0, String::len);
         // A queued version detached by streaming still needs one charge until its
         // original effect commits. Keep that charge in the existing batch metadata;
@@ -533,6 +606,7 @@ impl PresentationState {
             .retained
             .saturating_sub(previous as u64)
             .saturating_add(summary.len() as u64);
+        Ok(())
     }
 
     fn admitted(&self, atom: &ChatAtom) -> bool {
@@ -656,6 +730,7 @@ impl PresentationState {
             last_order: self.next_order,
             resident_block_floor: self.resident_block_floor,
             revision: self.revision,
+            layout_revision: self.layout_revision,
             current_work_id: self.open_work.map(|order| self.blocks[&order].id.clone()),
             open,
             history,
@@ -709,6 +784,7 @@ impl PresentationState {
         // Passive windows use this saved effect as their view revision. Keep the
         // same baseline when execution attaches to the existing read lease.
         self.revision = effect;
+        self.layout_revision = effect;
         self.resident_block_floor = successor(next_order).map(BlockOrder);
         for header in headers {
             ensure!(
@@ -1134,6 +1210,8 @@ impl PresentationState {
             published: self.published,
             durable: self.durable,
             revision: self.revision,
+            layout_revision: self.layout_revision,
+            execution_present: self.execution_present,
             member_change: self.member_change,
             next_order: self.next_order,
             applied_effect: self.applied_effect,
@@ -1239,6 +1317,7 @@ impl PresentationState {
         }
         let owned = Arc::get_mut(&mut delta).expect("unpublished display delta");
         owned.retained_bytes = owned.retained_bytes.saturating_add(replaced);
+        next.ensure_publication_capacity()?;
         Ok((
             PresentationPlan {
                 next,
@@ -1309,6 +1388,7 @@ impl PresentationState {
         self.open_work = next.open_work;
         self.published = next.published;
         self.revision = next.revision;
+        self.layout_revision = next.layout_revision;
         self.member_change = next.member_change;
         self.next_order = next.next_order;
         self.applied_effect = next.applied_effect;
@@ -1619,16 +1699,17 @@ impl PresentationState {
         header: DisplayHeader,
         touched: &mut BTreeSet<BlockOrder>,
     ) -> Result<()> {
-        if header.sealed
-            && self
-                .blocks
-                .get(&header.block_order)
-                .is_some_and(|old| !old.sealed)
-        {
+        let previous = self.blocks.get(&header.block_order);
+        let layout_changed = previous.is_none_or(|old| !old.same_layout(&header));
+        let summary_changed =
+            previous.is_some_and(|old| old.thinking_summary != header.thinking_summary);
+        if layout_changed {
+            self.advance_layout()?;
+        } else if summary_changed {
             self.revision = self
                 .revision
                 .checked_add(1)
-                .context("display structure revision exhausted")?;
+                .context("display view revision exhausted")?;
         }
         if header.sealed {
             self.unready.remove(&header.block_order);
@@ -1658,10 +1739,7 @@ impl PresentationState {
         committed_at: i64,
         touched: &mut BTreeSet<BlockOrder>,
     ) -> Result<BlockOrder> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("display structure revision exhausted")?;
+        self.advance_layout()?;
         self.next_order = self
             .next_order
             .checked_add(1)
@@ -2484,7 +2562,7 @@ mod tests {
 
         let mut streaming = state();
         let first = streaming.prepare(1, 10, &[started], &[], &[])?;
-        streaming.observe_thinking_summary("streamed title");
+        streaming.observe_thinking_summary("streamed title")?;
         let before = streaming.retained_bytes();
         streaming.confirm_cut(1, 0, 1)?;
         assert!(
@@ -3107,6 +3185,7 @@ mod tests {
         };
         s.prepare(1, 10, &[waiting.clone()], &[], &[])?;
         let revision = s.revision;
+        let layout_revision = s.layout_revision;
         let mut watch = s.subscribe_members();
         s.prepare(2, 20, &[waiting], &[], &[])?;
         assert_eq!(s.revision, revision);
@@ -3114,9 +3193,10 @@ mod tests {
         assert_eq!(s.blocks.values().next().unwrap().unfinished, 1);
         let terminal = atom("q", ChatAtomKind::ToolCall, true);
         s.prepare(3, 30, std::slice::from_ref(&terminal), &[], &[])?;
-        assert_eq!(
-            s.revision, revision,
-            "terminal/summary changes do not stale live older"
+        assert!(s.revision > revision);
+        assert!(
+            s.layout_revision > layout_revision,
+            "terminal changes revoke the old live page qualification"
         );
         assert!(watch.has_changed()?);
         watch.borrow_and_update();
@@ -3379,8 +3459,8 @@ mod tests {
         let persisted = serde_json::to_value(&s.blocks[&BlockOrder(1)])?;
         let revision = s.blocks[&BlockOrder(1)].revision;
         s.members.begin();
-        s.observe_thinking_summary("流式 **摘要**");
-        s.observe_thinking_summary("最新流式 **摘要**");
+        s.observe_thinking_summary("流式 **摘要**")?;
+        s.observe_thinking_summary("最新流式 **摘要**")?;
         let accesses = s.members.finish();
         assert_eq!(
             (accesses.reads, accesses.writes, accesses.misses),
