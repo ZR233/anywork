@@ -470,12 +470,23 @@ jobs:
           source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
           workspace: ${{ needs.linux-inputs.outputs.workspace }}
           environment: ${{ needs.linux-inputs.outputs.environment }}
+      - name: Install pinned code generators with authenticated downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tools="$GITHUB_WORKSPACE/output/ci-codegen-tools"
+          mkdir -p "$tools"
+          # Keep the read-only token in the installer container, away from source execution.
+          docker run --rm --init --pull=never --user "$(id -u):$(id -g)" \
+            --env GITHUB_TOKEN --workdir /opt/anywork-toolchain \
+            --mount "type=bind,src=$tools,dst=/tools" \
+            "$LINUX_BUILD_IMAGE" \
+            cargo binstall --root /tools --no-confirm --force --disable-strategies compile \
+              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
       - name: Check generated sources once without repeating Rust quality or UI tests
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            cargo binstall --root "$HOME/.quality-tools" --no-confirm --force --disable-strategies compile \
-              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
-            export PATH="$HOME/.quality-tools/bin:$PATH"
+            export PATH="$PWD/output/ci-codegen-tools/bin:$PATH"
             "$1" check-gui-generated
           ' -- "$PR_QUALITY_XTASK"
 
