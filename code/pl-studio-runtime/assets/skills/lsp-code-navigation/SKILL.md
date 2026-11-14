@@ -10,6 +10,12 @@ Use this workflow for code questions as well as edits, without waiting for the
 user to mention LSP. Language skills provide project/build context; this skill
 owns the common workflow, while `studio-config` owns anywork's configuration format.
 
+A completed setup needs a loadable project, an initialized server, discovered
+query tools and a meaningful semantic result. **After the server becomes ready,
+discover tools using the ID fragment `lsp` again**, even if an earlier discovery
+already exposed `lsp_status`. Searches for operation names such as `definition`,
+`hover` or `diagnostics` do not check whether the LSP query tool is available.
+
 Prefer semantic queries when the answer depends on symbol resolution, inferred
 types or cross-file relationships. Choose the useful steps below rather than
 turning every file read into a setup exercise. An empty server list means setup
@@ -98,12 +104,10 @@ Configuration, initialization, tool discovery and a meaningful result are
 separate evidence. While a server initializes, continue independent reading
 rather than repeatedly restarting it.
 
-After readiness, discover tools by the LSP family ID fragment `lsp`, then inspect
-the returned capability/query schemas. Discovery matches tool IDs, not operation
-names: definition, hover and references may be operations within one query tool.
-An empty search for `definition`, `hover`, `rust` or `dart` does not establish that
-queries are unavailable. Use the actual advertised operation, path, position and
-result-limit fields; native and MCP tools may use different coordinates.
+Inspect the capability/query schemas returned by the post-readiness `lsp`
+discovery. Definition, hover and references may be operations within one query
+tool. Use the actual advertised operation, path, position and result-limit fields;
+native and MCP tools may use different coordinates.
 
 The current model request's catalog may lag behind server readiness. If discovery
 still shows only status, finish useful independent work and rediscover on a later
@@ -133,6 +137,11 @@ For example, a cross-file method query should reach its declaring source and
 identify its signature/type. A conditional Rust call should resolve to the branch
 selected by the intended platform/features. Do not count textual inference as a
 semantic result, or navigation as proof of runtime behavior or passing tests.
+
+When demonstrating diagnostic refresh, query the original error before repairing
+the probe, then observe its disappearance after the edit. If query tools remain
+unavailable, preserve the probe for later verification rather than fixing it
+without the requested before/after evidence.
 
 Initial indexing can produce transient empty results or `ContentModified` even
 without a source edit. Preserve the response, wait for progress through bounded
