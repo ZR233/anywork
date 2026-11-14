@@ -1,7 +1,7 @@
 use super::{Observation, config, http, saved, sqlite, wire};
 use crate::support::{
     CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
-    completed_turn_from_children, completion_run_entries, content_bytes,
+    completed_turn_from_children, completed_turn_records, content_bytes,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
@@ -10,7 +10,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ChatAtomKind, ChatScope, ContentRef, MainPresentation, ThreadStatus, TurnState};
+use pl_protocol::{ChatAtomKind, ChatScope, ContentRef, ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -964,92 +964,63 @@ impl Observation<'_> {
                 );
                 break turn.id;
             };
-            let (main_read, mut page) = self
+            let (read, _) = self
                 .session
                 .http()?
                 .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
-            let mut seen = std::collections::HashSet::new();
-            let mut representatives = Vec::new();
-            for _ in 0..256 {
-                charge_chat_batch(&page, &mut remaining)?;
-                representatives.extend(
-                    page.entries
-                        .iter()
-                        .filter(|entry| {
-                            entry.main_presentation == MainPresentation::ForegroundWork
-                                && entry.atom.turn_id.as_deref() == Some(target_turn.as_str())
-                        })
-                        .cloned(),
-                );
-                let Some(before) = page.before.take() else {
-                    break;
-                };
-                ensure!(
-                    seen.insert(before.clone()),
-                    "Main continuation did not advance"
-                );
-                ensure!(seen.len() < 256, "Main Chat exceeded bounded page budget");
-                page = main_read.load_older(&before, CHAT_DEMAND).await?;
-            }
+            let (records_read, entries) =
+                completed_turn_records(&read, &target_turn, &mut remaining, deadline).await?;
             let mut found_tool = false;
-            for representative in representatives {
-                let (run_read, entries) =
-                    completion_run_entries(&main_read, &representative, &mut remaining, deadline)
-                        .await?;
-                for entry in entries {
-                    let Some(payload) =
-                        completed_entry_payload(&run_read, &entry, &mut remaining, deadline)
-                            .await?
-                    else {
-                        continue;
-                    };
-                    if payload["type"] != "tool" {
-                        continue;
-                    }
-                    let call_id = payload["data"]["invocation"]["toolCallId"]
-                        .as_str()
-                        .context("completed tool omitted call identity")?;
-                    if call_id != phase.action_call() {
-                        continue;
-                    }
-                    let state = payload["data"]["state"]["kind"]
-                        .as_str()
-                        .context("completed tool omitted state")?;
-                    ensure!(
-                        matches!(state, "failed" | "denied"),
-                        "forbidden spawn was not rejected: {state}"
-                    );
-                    let metadata = &payload["data"]["state"];
-                    if state == "failed" {
-                        metadata["failedAt"]
-                            .as_i64()
-                            .context("failed spawn omitted failedAt")?;
-                        serde_json::from_value::<pl_protocol::ThreadToolFailure>(
-                            metadata
-                                .get("failure")
-                                .context("failed spawn omitted failure")?
-                                .clone(),
-                        )
-                        .context("failed spawn had invalid failure metadata")?;
-                    } else {
-                        metadata["deniedAt"]
-                            .as_i64()
-                            .context("denied spawn omitted deniedAt")?;
-                        metadata["reason"]
-                            .as_str()
-                            .context("denied spawn omitted reason")?;
-                    }
-                    found_tool = true;
-                    break;
+            for entry in entries {
+                let Some(payload) =
+                    completed_entry_payload(&records_read, &entry, &mut remaining, deadline)
+                        .await?
+                else {
+                    continue;
+                };
+                if payload["type"] != "tool" {
+                    continue;
                 }
-                if found_tool {
-                    break;
+                let call_id = payload["data"]["invocation"]["toolCallId"]
+                    .as_str()
+                    .context("completed tool omitted call identity")?;
+                if call_id != phase.action_call() {
+                    continue;
                 }
+                let state = payload["data"]["state"]["kind"]
+                    .as_str()
+                    .context("completed tool omitted state")?;
+                ensure!(
+                    matches!(state, "failed" | "denied"),
+                    "forbidden spawn was not rejected: {state}"
+                );
+                let metadata = &payload["data"]["state"];
+                if state == "failed" {
+                    metadata["failedAt"]
+                        .as_i64()
+                        .context("failed spawn omitted failedAt")?;
+                    serde_json::from_value::<pl_protocol::ThreadToolFailure>(
+                        metadata
+                            .get("failure")
+                            .context("failed spawn omitted failure")?
+                            .clone(),
+                    )
+                    .context("failed spawn had invalid failure metadata")?;
+                } else {
+                    metadata["deniedAt"]
+                        .as_i64()
+                        .context("denied spawn omitted deniedAt")?;
+                    metadata["reason"]
+                        .as_str()
+                        .context("denied spawn omitted reason")?;
+                }
+                found_tool = true;
+                break;
             }
             ensure!(
                 found_tool,
-                "rejected real tool member missing from its Turn's work groups"
+                "rejected real tool record missing from its Turn"
             );
             Ok(())
         })
@@ -1075,9 +1046,7 @@ async fn cold_main_chat(
         for _ in 0..256 {
             charge_chat_batch(&page, remaining)?;
             for entry in &page.entries {
-                if entry.main_presentation != MainPresentation::Single {
-                    // Main work entries are only representatives. This cold
-                    // inventory asserts text facts, not complete work history.
+                if entry.atom.kind != ChatAtomKind::Text {
                     continue;
                 }
                 if let Some(payload) =

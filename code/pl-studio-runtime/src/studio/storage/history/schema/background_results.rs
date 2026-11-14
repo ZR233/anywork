@@ -533,10 +533,31 @@ mod tests {
     }
 
     async fn unrelated_facts(db: &impl ConnectionTrait) -> Result<Vec<String>> {
-        db.query_all_raw(statement(
-        "SELECT json_array(effect_seq,suborder,atom_id,phase,fact_order,hex(metadata)) AS value FROM conversation_atom_facts WHERE atom_id='unrelated-live' ORDER BY phase",
-        vec![],
-    )).await?.into_iter().map(|row| row.try_get("", "value").map_err(Into::into)).collect()
+        let value = if version(db).await? == 24 {
+            super::super::super::execution_lifecycle::read(db, "unrelated-live")
+                .await?
+                .context("real lifecycle")?
+        } else {
+            let row=db.query_one_raw(statement("SELECT effect_seq,metadata FROM conversation_atom_facts WHERE atom_id='unrelated-live' AND phase='terminal'",vec![])).await?.context("terminal source")?;
+            super::super::super::execution_lifecycle::ExecutionLifecycle::from_atom(
+                &serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?,
+                u64::try_from(row.try_get::<i64>("", "effect_seq")?)?,
+            )?
+        };
+        Ok(vec![serde_json::to_string(&(
+            value.identity,
+            value.source,
+            value.kind,
+            value.delivery,
+            value.source_order,
+            value.started,
+            value.started_at,
+            value.ended,
+            value.finished_at,
+            value.outcome,
+            value.completion_item_id,
+            value.last_write_seq,
+        ))?])
     }
 
     #[tokio::test]
@@ -637,7 +658,7 @@ mod tests {
         let corrected = snapshot(&db).await?;
         db.execute_unprepared(
         "CREATE TRIGGER reject_repeat_metadata BEFORE UPDATE ON conversation_items BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
-         CREATE TRIGGER reject_repeat_facts BEFORE UPDATE ON conversation_atom_facts BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
+         CREATE TRIGGER reject_repeat_facts BEFORE UPDATE ON execution_lifecycle BEGIN SELECT RAISE(ABORT,'repeat correction'); END;
          CREATE TRIGGER reject_repeat_rebuild BEFORE DELETE ON completion_boundary_archive_timeline_items BEGIN SELECT RAISE(ABORT,'repeat rebuild'); END;
          CREATE TRIGGER reject_repeat_current BEFORE UPDATE ON completion_boundary_archive_view_state BEGIN SELECT RAISE(ABORT,'repeat current'); END;"
     ).await?;

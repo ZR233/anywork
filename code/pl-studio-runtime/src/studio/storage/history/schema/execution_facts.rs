@@ -354,46 +354,47 @@ async fn old_items(db: &impl ConnectionTrait) -> Result<()> {
                             stored.turn.state == *turn.state()
                                 && stored.turn.input_id.as_deref() == turn.input_id()
                         });
-                } else if let Some(original) = conversation::read_item(db, &id).await? {
-                    if item.is_terminal() {
-                        let value: serde_json::Value = serde_json::from_slice(&original.payload)?;
-                        let effect = value["sourceEffectSeq"].as_u64();
-                        let database = db
-                            .query_one_raw(statement(
-                                "SELECT database_id FROM history_meta WHERE id=1",
-                                vec![],
-                            ))
-                            .await?
-                            .context("history database identity missing")?
-                            .try_get::<String>("", "database_id")?;
-                        if let Some(effect) = effect {
-                            if let Ok(draft) =
-                                crate::studio::runtime::chat_item::completion_draft_reusing(
-                                    &item,
-                                    effect,
-                                    &database,
-                                    &original.contents,
-                                )
-                            {
-                                let expected: serde_json::Value =
-                                    serde_json::from_slice(&draft.payload)?;
-                                covered = exact_shape
-                                    && expected["type"] == value["type"]
-                                    && expected["data"] == value["data"]
-                                    && draft.contents == original.contents;
-                                if let ExecutionShape::Tool(tool) = item.state() {
-                                    // Plan completions intentionally carry the document, not the invocation.
-                                    // Only a real saved task can prove that those original arguments survive.
-                                    let arguments_owned = original.contents.values().any(|content| content.descriptor.key.key == crate::studio::runtime::chat_item::TOOL_ARGUMENTS_FIELD);
-                                    if !arguments_owned {
-                                        covered = false;
-                                    }
-                                    ensure!(
-                                        tool.invocation().tool_call_id().is_empty() == false,
-                                        "legacy tool call identity is empty"
-                                    );
-                                }
+                } else if let Some(original) = conversation::read_item(db, &id).await?
+                    && item.is_terminal()
+                {
+                    let value: serde_json::Value = serde_json::from_slice(&original.payload)?;
+                    let effect = value["sourceEffectSeq"].as_u64();
+                    let database = db
+                        .query_one_raw(statement(
+                            "SELECT database_id FROM history_meta WHERE id=1",
+                            vec![],
+                        ))
+                        .await?
+                        .context("history database identity missing")?
+                        .try_get::<String>("", "database_id")?;
+                    if let Some(effect) = effect
+                        && let Ok(draft) =
+                            crate::studio::runtime::chat_item::completion_draft_reusing(
+                                &item,
+                                effect,
+                                &database,
+                                &original.contents,
+                            )
+                    {
+                        let expected: serde_json::Value = serde_json::from_slice(&draft.payload)?;
+                        covered = exact_shape
+                            && expected["type"] == value["type"]
+                            && expected["data"] == value["data"]
+                            && draft.contents == original.contents;
+                        if let ExecutionShape::Tool(tool) = item.state() {
+                            // Plan completions intentionally carry the document, not the invocation.
+                            // Only a real saved task can prove that those original arguments survive.
+                            let arguments_owned = original.contents.values().any(|content| {
+                                content.descriptor.key.key
+                                    == crate::studio::runtime::chat_item::TOOL_ARGUMENTS_FIELD
+                            });
+                            if !arguments_owned {
+                                covered = false;
                             }
+                            ensure!(
+                                !tool.invocation().tool_call_id().is_empty(),
+                                "legacy tool call identity is empty"
+                            );
                         }
                     }
                 }
@@ -752,6 +753,50 @@ mod tests {
     use sea_orm::{Database, DatabaseConnection};
     const THREAD: &str = "execution-migration";
 
+    /// Explicit manual fixture import. The source is read-only and is copied before migration.
+    #[tokio::test]
+    #[ignore = "manual nonempty production-shaped history migration measurement"]
+    async fn measure_existing_history_migration() -> Result<()> {
+        let source = std::env::var("ANYWORK_MIGRATION_SOURCE")?;
+        let output = std::env::var("ANYWORK_MIGRATION_OUTPUT")?;
+        ensure!(
+            !std::path::Path::new(&output).exists(),
+            "measurement output already exists"
+        );
+        std::fs::copy(&source, &output)?;
+        let probe = Database::connect(format!("sqlite://{output}?mode=ro")).await?;
+        let row = probe
+            .query_one_raw(statement("SELECT thread_id FROM history_meta", vec![]))
+            .await?
+            .context("missing fixture identity")?;
+        let id: String = row.try_get("", "thread_id")?;
+        let original = originals(&probe).await?;
+        probe.close().await?;
+        let history =
+            crate::studio::storage::history::HistoryStore::open(std::path::Path::new(&output), &id)
+                .await?;
+        let started = std::time::Instant::now();
+        history.prepare_history_access().await?;
+        let db = &history.writer().await?.db;
+        assert_eq!(originals(db).await?, original);
+        validate(db).await?;
+        let counts = db.query_one_raw(statement(
+            "SELECT (SELECT count(*) FROM conversation_items) AS originals,(SELECT count(*) FROM execution_lifecycle) AS lifecycle,(SELECT count(*) FROM history_turns) AS turns,(SELECT count(*) FROM history_fact_receipts WHERE kind='legacy_execution_record') AS legacy",
+            vec![],
+        )).await?.context("missing migrated counts")?;
+        eprintln!(
+            "HISTORY_MIGRATION_METRICS {}",
+            serde_json::json!({
+                "threadId":id,"elapsedMs":started.elapsed().as_millis(),
+                "originals":counts.try_get::<i64>("", "originals")?,
+                "lifecycle":counts.try_get::<i64>("", "lifecycle")?,
+                "turns":counts.try_get::<i64>("", "turns")?,
+                "legacy":counts.try_get::<i64>("", "legacy")?,
+            })
+        );
+        Ok(())
+    }
+
     async fn fixture() -> Result<(tempfile::TempDir, DatabaseConnection)> {
         let dir = tempfile::tempdir()?;
         let mut options = sea_orm::ConnectOptions::new(format!(
@@ -868,6 +913,33 @@ mod tests {
         db.close().await?;
         Ok(())
     }
+    #[tokio::test]
+    async fn current_admission_rejects_missing_or_changed_execution_indexes_without_repair()
+    -> Result<()> {
+        for damage in [
+            "DROP INDEX execution_lifecycle_active".to_owned(),
+            "DROP INDEX conversation_items_by_parent".to_owned(),
+            "DROP INDEX execution_lifecycle_active; CREATE INDEX execution_lifecycle_active ON execution_lifecycle(identity) WHERE outcome IS NULL".to_owned(),
+            "DROP INDEX conversation_items_tool; CREATE INDEX conversation_items_tool ON conversation_items(seq,parent_id)".to_owned(),
+            "CREATE TABLE replacement AS SELECT * FROM execution_lifecycle; DROP TABLE execution_lifecycle; ALTER TABLE replacement RENAME TO execution_lifecycle".to_owned(),
+            format!("DROP TABLE execution_lifecycle;{}",execution_lifecycle::CREATE.replace("kind TEXT NOT NULL","kind TEXT COLLATE NOCASE NOT NULL")),
+        ] {
+            let (dir,db)=fixture().await?;seed(&db).await?;
+            super::super::prepare(&db,THREAD,Preparation::Schema,None).await?;
+            let originals=originals(&db).await?;
+            db.execute_unprepared(&damage).await?;
+            let schema=| |statement("SELECT json_group_array(sql) AS definition FROM (SELECT sql FROM sqlite_schema ORDER BY type,name)",vec![]);
+            let before:String=db.query_one_raw(schema()).await?.context("schema")?.try_get("","definition")?;
+            let cold=HistoryStore::open(&dir.path().join("history.sqlite"),THREAD).await?;
+            assert!(pl_core::chat::ChatHistory::publication_seed(&cold).await.is_err(),"{damage}");
+            assert!(cold.state.reader.get().is_none());
+            assert_eq!(db.query_one_raw(schema()).await?.context("schema")?.try_get::<String>("","definition")?,before,"failed admission cannot repair the source");
+            assert_eq!(super::originals(&db).await?,originals);
+            db.close().await?;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn reserved_evidence_collision_preserves_the_old_database() -> Result<()> {
         let (_dir, db) = fixture().await?;

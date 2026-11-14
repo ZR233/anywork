@@ -54,6 +54,7 @@ fn output(record: &ChatItem, value: ToolOutputDescriptor) -> Result<ThreadToolOu
 }
 
 fn tool(
+    thread_id: &str,
     record: &ChatItem,
     value: ToolDescriptor,
     data: &serde_json::Value,
@@ -174,8 +175,14 @@ fn tool(
                     ThreadToolUserInputState::Resolved(ResolvedThreadToolUserInput::new(restored))
                 }
             };
+            let (owner, interaction) =
+                crate::thread_assembler::decode_interaction_key(&input.interaction_id)?;
+            ensure!(
+                owner == thread_id,
+                "canonical interaction belongs to another Thread"
+            );
             Ok(ThreadToolUserInput::new(
-                input.interaction_id,
+                interaction.into(),
                 questions,
                 state,
             ))
@@ -195,7 +202,10 @@ fn content_outcome(value: ContentOutcome) -> ThreadContentLifecycle {
     }
 }
 
-pub(in crate::studio) fn execution_state(record: &ChatItem) -> Result<ExecutionShape> {
+pub(in crate::studio) fn execution_state(
+    record: &ChatItem,
+    thread_id: &str,
+) -> Result<ExecutionShape> {
     let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
     ensure!(
         atom.completion_item_id.as_deref() == Some(record.header.item_id.as_str())
@@ -244,7 +254,7 @@ pub(in crate::studio) fn execution_state(record: &ChatItem) -> Result<ExecutionS
                 content_outcome(value.outcome),
             ))
         }
-        ItemDescriptor::Tool(value) => ExecutionShape::Tool(tool(record, value, data)?),
+        ItemDescriptor::Tool(value) => ExecutionShape::Tool(tool(thread_id, record, value, data)?),
         ItemDescriptor::Turn(value) => {
             let state = match value.outcome {
                 TurnOutcome::Queued(value) => TurnState::Queued(value),
@@ -270,7 +280,7 @@ pub(in crate::studio) fn execution_item(
 ) -> Result<ExecutionItem> {
     let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
     let envelope: serde_json::Value = serde_json::from_slice(&record.payload)?;
-    let state = execution_state(record)?;
+    let state = execution_state(record, thread_id)?;
     let ordinal = placement
         .map(|value| value.0)
         .or(atom.source_order)

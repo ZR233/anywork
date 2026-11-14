@@ -265,62 +265,23 @@ pub(crate) async fn completed_entry_payload(
     Ok(Some(payload))
 }
 
-/// Build a Run reference only from a validated representative's run position
-/// and its Deferred completion reference; never infer a run from atom fields.
-pub(crate) fn completion_run_ref(
-    entry: &pl_protocol::CompletedEntry,
-) -> Result<pl_protocol::CompletionRunRef> {
-    use pl_protocol::{COMPLETED_READ_INDEX_VERSION, MainPresentation};
-    ensure!(
-        matches!(
-            entry.main_presentation,
-            MainPresentation::ForegroundWork | MainPresentation::BackgroundResults
-        ),
-        "only a Main work representative can identify a completion Run"
-    );
-    let run = entry
-        .run
-        .context("Main work representative omitted run position")?;
-    ensure!(
-        run.start_seq > 0 && run.start_seq <= entry.completion_seq && run.ordinal > 0,
-        "Main work representative has an invalid run position"
-    );
-    let Some(PayloadData::Deferred { reference, .. }) = entry.atom.payload.as_ref() else {
-        anyhow::bail!("Main work representative did not carry a Deferred payload reference");
-    };
-    ensure!(
-        !reference.database_id.is_empty()
-            && matches!(
-                &reference.target,
-                ContentTarget::ItemPayload { item_id } if !item_id.is_empty()
-            ),
-        "Main work representative has an invalid Deferred completion reference"
-    );
-    Ok(pl_protocol::CompletionRunRef {
-        database_id: reference.database_id.clone(),
-        index_version: COMPLETED_READ_INDEX_VERSION,
-        start_seq: run.start_seq,
-    })
-}
-
-/// Page every immutable member of one actual Run, preserving bounded demand,
-/// deadline, continuation progress, and the caller's cumulative byte budget.
-pub(crate) async fn completion_run_entries(
+/// Page the immutable records of one real Turn with bounded demand and a shared byte budget.
+pub(crate) async fn completed_turn_records(
     read: &crate::http::ChatRead,
-    representative: &pl_protocol::CompletedEntry,
+    turn_id: &str,
     remaining: &mut usize,
     deadline: Instant,
 ) -> Result<(crate::http::ChatRead, Vec<pl_protocol::CompletedEntry>)> {
-    let reference = completion_run_ref(representative)?;
-    let scope = ChatScope::Run {
-        reference: reference.clone(),
+    let scope = ChatScope {
+        query_class: pl_protocol::ChatClassFilter::All {},
+        parent_id: Some(format!("{}:{turn_id}", turn_id.len())),
     };
-    let (run_read, mut page) = tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        read.open_run(&reference, CHAT_DEMAND),
+    let (records_read, mut page) = tokio::time::timeout_at(
+        deadline.into(),
+        read.open_records(scope.clone(), CHAT_DEMAND),
     )
     .await
-    .context("opening completion Run exceeded observation deadline")??;
+    .context("opening Turn records exceeded observation deadline")??;
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for page_index in 0..256 {
@@ -331,29 +292,29 @@ pub(crate) async fn completion_run_entries(
             if let Some(before) = page.before.take() {
                 ensure!(
                     page_index + 1 < 256,
-                    "completion Run exceeded bounded page budget"
+                    "Turn records exceeded bounded page budget"
                 );
                 ensure!(
                     seen.insert(before.clone()),
-                    "completion Run continuation did not advance"
+                    "Turn records continuation did not advance"
                 );
-                page = run_read.load_older(&before, CHAT_DEMAND).await?;
+                page = records_read.load_older(&before, CHAT_DEMAND).await?;
             } else {
                 return Ok::<bool, anyhow::Error>(false);
             }
             Ok(true)
         })
         .await
-        .context("completion Run read exceeded observation deadline")??;
+        .context("Turn records read exceeded observation deadline")??;
         if !has_more {
             break;
         }
     }
     ensure!(
         page.before.is_none(),
-        "completion Run exceeded bounded page budget"
+        "Turn records exceeded bounded page budget"
     );
-    Ok((run_read, entries))
+    Ok((records_read, entries))
 }
 
 /// Successful Turn receipts are Hidden from Main; inspect the original typed

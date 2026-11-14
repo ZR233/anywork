@@ -374,7 +374,7 @@ async fn materialize(
 }
 
 #[cfg(test)]
-mod record_read_tests {
+pub(in crate::studio) mod record_read_tests {
     use super::*;
     use pl_core::chat::{ChatDraft, ChatQuery, ReadDemand};
     use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
@@ -417,7 +417,7 @@ mod record_read_tests {
     async fn records_keep_every_kind_and_respect_real_parent_and_fixed_completion_cut() -> Result<()>
     {
         let (_dir, db) = super::tests::fixture().await?;
-        let mut records = vec![
+        let mut records = [
             record(1, atom("one", ChatAtomKind::ToolCall, "F")),
             record(2, atom("hidden", ChatAtomKind::Inference, "F")),
             record(3, atom("text", ChatAtomKind::Text, "F")),
@@ -653,7 +653,7 @@ mod record_read_tests {
         Ok(())
     }
 
-    pub(in crate::studio::storage::history::conversation) mod sqlite_work {
+    pub(in crate::studio) mod sqlite_work {
         //! Test-only observations of the SQLx connection used by the real production page.
         //! No alternate SQL implementation or database is involved.
         use super::*;
@@ -669,6 +669,7 @@ mod record_read_tests {
         enum Scope {
             #[default]
             CompletionHeads,
+            AllStatements,
             DisplayHeads,
             DisplayMembers,
         }
@@ -694,7 +695,7 @@ mod record_read_tests {
         }
 
         #[derive(Debug)]
-        pub(in crate::studio::storage::history::conversation) struct Work {
+        pub(in crate::studio) struct Work {
             pub candidates: u64,
             pub member_rows: u64,
             pub reference_rows: u64,
@@ -707,14 +708,14 @@ mod record_read_tests {
             pub denied_reads: u64,
         }
 
-        pub(in crate::studio::storage::history::conversation) struct Lifetime(Weak<State>);
+        pub(in crate::studio) struct Lifetime(Weak<State>);
         impl Lifetime {
             pub fn is_alive(&self) -> bool {
                 self.0.strong_count() != 0
             }
         }
 
-        pub(in crate::studio::storage::history::conversation) struct Sampler {
+        pub(in crate::studio) struct Sampler {
             state: Arc<State>,
         }
 
@@ -763,6 +764,10 @@ mod record_read_tests {
         }
 
         impl Sampler {
+            pub async fn all_statements(db: &sea_orm::DatabaseConnection) -> Result<Self> {
+                Self::install_scope(db, Scope::AllStatements).await
+            }
+
             pub async fn install(db: &sea_orm::DatabaseConnection) -> Result<Self> {
                 Self::install_scope(db, Scope::CompletionHeads).await
             }
@@ -823,6 +828,9 @@ mod record_read_tests {
                     }
                 }
                 let sampler = Self { state };
+                if matches!(scope, Scope::AllStatements) {
+                    return Ok(sampler);
+                }
                 // Prove the column guard is active before the measured request. Preparing this forbidden
                 // read fails even though the fixture's content table is empty. Exclude the probe from Main.
                 let mut probes = vec!["SELECT data FROM conversation_content_chunks LIMIT 1"];
@@ -875,7 +883,8 @@ mod record_read_tests {
                     "invalid SQLite statement counter"
                 );
                 ensure!(
-                    s.unexpected_statements.load(Relaxed) == 0,
+                    matches!(s.scope, Scope::AllStatements)
+                        || s.unexpected_statements.load(Relaxed) == 0,
                     "production read executed SQL outside the selected sampling scope"
                 );
                 Ok(Work {
@@ -905,6 +914,9 @@ mod record_read_tests {
         }
 
         fn kind(sql: &[u8], scope: Scope) -> Kind {
+            if matches!(scope, Scope::AllStatements) {
+                return Kind::Unexpected;
+            }
             let sql = sql.trim_ascii();
             if !matches!(scope, Scope::CompletionHeads) {
                 if sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order ASC LIMIT ?"
@@ -1037,6 +1049,9 @@ mod record_read_tests {
             // The context has the same driver-owned Arc lifetime as the trace callback.
             let (state, table) =
                 unsafe { (&*context.cast::<State>(), CStr::from_ptr(table).to_bytes()) };
+            if matches!(state.scope, Scope::AllStatements) {
+                return libsqlite3_sys::SQLITE_OK;
+            }
             if !matches!(state.scope, Scope::CompletionHeads) {
                 let allowed = table == b"conversation_display_blocks"
                     || (matches!(state.scope, Scope::DisplayMembers)

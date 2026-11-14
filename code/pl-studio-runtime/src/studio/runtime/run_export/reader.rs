@@ -16,8 +16,8 @@ use pl_protocol::{ChatContentRole, ContentTarget};
 use sha2::{Digest, Sha256};
 
 use super::types::{
-    CONTENT_EXPORT_CHUNK_BYTES, ChatItemHeaderExportV1, EventSourceV1, ExportedBlobV1,
-    ExportedContentV1,
+    CONTENT_EXPORT_CHUNK_BYTES, ChatItemHeaderExportV2, EventSourceV2, ExportedBlobV2,
+    ExportedContentV2,
 };
 use super::writer::{BlobChunkWriter, ContentBlobSink};
 
@@ -55,15 +55,15 @@ impl ChatBudget for ExportChatBudget {
     }
 }
 
-/// Decoded and persisted completion payload ready to become an `EventV1::Completion`.
+/// Decoded and persisted completion payload ready to become an `EventV2::Completion`.
 pub struct ExportedCompletionRecord {
     pub epoch: String,
-    pub source: EventSourceV1,
-    pub header: ChatItemHeaderExportV1,
+    pub source: EventSourceV2,
+    pub header: ChatItemHeaderExportV2,
     pub header_payload_fingerprint: String,
     pub atom: pl_protocol::ChatAtom,
-    pub payload: ExportedBlobV1,
-    pub contents: Vec<ExportedContentV1>,
+    pub payload: ExportedBlobV2,
+    pub contents: Vec<ExportedContentV2>,
 }
 
 /// Incremental UTF-8 validator across arbitrary chunk splits (handling multi-byte codepoints).
@@ -242,7 +242,7 @@ async fn export_single_item<S: ContentBlobSink>(
         }
     };
 
-    let header_export = ChatItemHeaderExportV1::from_core(&item.header);
+    let header_export = ChatItemHeaderExportV2::from_core(&item.header);
     let mut header_fp = Sha256::new();
     header_fp.update(serde_json::to_vec(&header_export)?);
     header_fp.update(item.header.metadata.as_ref());
@@ -286,7 +286,7 @@ async fn export_single_item<S: ContentBlobSink>(
                         content.reference, item.header.item_id
                     )
                 })?;
-        exported_contents.push(ExportedContentV1 {
+        exported_contents.push(ExportedContentV2 {
             native_ref: content.reference.clone(),
             role: Some(content.role),
             path: blob.path,
@@ -323,7 +323,7 @@ async fn export_single_item<S: ContentBlobSink>(
             sink,
         )
         .await?;
-        exported_contents.push(ExportedContentV1 {
+        exported_contents.push(ExportedContentV2 {
             native_ref,
             role,
             path: blob.path,
@@ -334,7 +334,7 @@ async fn export_single_item<S: ContentBlobSink>(
         });
     }
 
-    let source = EventSourceV1 {
+    let source = EventSourceV2 {
         epoch: Some(epoch.clone()),
         effect_seq: completion_effect_seq(&entry.atom),
         turn_id: entry.atom.turn_id.clone(),
@@ -415,7 +415,7 @@ async fn stream_content_to_sink<S: ContentBlobSink>(
     explicit_media_type: Option<String>,
     is_payload: bool,
     sink: &mut S,
-) -> Result<ExportedBlobV1> {
+) -> Result<ExportedBlobV2> {
     let mut offset = 0_u64;
     let mut expected_generation = None;
     let mut total_bytes: Option<u64> = expected_len;

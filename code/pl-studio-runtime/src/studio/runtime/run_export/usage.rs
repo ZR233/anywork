@@ -1,4 +1,4 @@
-//! Canonical `UsageExportV1` builder and raw-receipt reconciliation against authoritative `UsageSummary`.
+//! Canonical `UsageExportV2` builder and raw-receipt reconciliation against authoritative `UsageSummary`.
 
 use std::collections::BTreeMap;
 
@@ -9,8 +9,8 @@ use pl_core::usage::{UsageAnalysis, UsageField, UsageStatus, analyze_usage};
 use pl_protocol::{InferenceBillingRecord, PricingOutcome};
 
 use super::types::{
-    ModelUsageExportV1, ThreadUsageExportV1, UsageCoverage, UsageExportV1, UsageKnownTotalsV1,
-    UsageMetricKey, UsageTotalsV1,
+    ModelUsageExportV2, ThreadUsageExportV2, UsageCoverage, UsageExportV2, UsageKnownTotalsV2,
+    UsageMetricKey, UsageTotalsV2,
 };
 use crate::studio::thread_projection::PreparedAccounting;
 
@@ -142,9 +142,9 @@ impl MetricGroupAcc {
     fn finish(
         &self,
         coverage: UsageCoverage,
-    ) -> (UsageTotalsV1, UsageKnownTotalsV1, Vec<UsageMetricKey>) {
+    ) -> (UsageTotalsV2, UsageKnownTotalsV2, Vec<UsageMetricKey>) {
         let complete = coverage == UsageCoverage::Complete;
-        let totals = UsageTotalsV1 {
+        let totals = UsageTotalsV2 {
             inference_count: complete.then_some(self.inference_count).flatten(),
             input_tokens: complete.then_some(self.input_tokens).flatten(),
             output_tokens: complete.then_some(self.output_tokens).flatten(),
@@ -154,7 +154,7 @@ impl MetricGroupAcc {
             total_tokens: complete.then_some(self.total_tokens).flatten(),
             estimated_cost_usd: complete.then_some(self.estimated_cost_usd).flatten(),
         };
-        let known_totals = UsageKnownTotalsV1 {
+        let known_totals = UsageKnownTotalsV2 {
             inference_count: self.known_inference_count,
             input_tokens: self.known_input_tokens,
             output_tokens: self.known_output_tokens,
@@ -270,7 +270,7 @@ fn frozen_usd_cost(pricing: &PricingOutcome) -> Option<f64> {
     }
 }
 
-fn collect_unknown_fields(totals: &UsageTotalsV1) -> Vec<UsageMetricKey> {
+fn collect_unknown_fields(totals: &UsageTotalsV2) -> Vec<UsageMetricKey> {
     let mut missing = Vec::new();
     if totals.inference_count.is_none() {
         missing.push(UsageMetricKey::InferenceCount);
@@ -309,7 +309,7 @@ pub struct ThreadUsageInput<'a> {
 
 /// Output of full run usage aggregation + raw-receipt reconciliation.
 pub struct BuiltUsageExport {
-    pub export: UsageExportV1,
+    pub export: UsageExportV2,
     pub usage_complete: bool,
     pub cost_complete: bool,
     pub reconciled: bool,
@@ -318,7 +318,7 @@ pub struct BuiltUsageExport {
 
 /// Replays every admitted raw `PreparedAccounting` through the canonical reducer and verifies
 /// exact field-for-field agreement with each thread's authoritative `UsageSummary`, then builds
-/// `UsageExportV1` with frozen model identities and honest unknown-value handling.
+/// `UsageExportV2` with frozen model identities and honest unknown-value handling.
 pub struct UsageAccumulator {
     run: MetricGroupAcc,
     by_model: BTreeMap<(Option<String>, Option<String>), MetricGroupAcc>,
@@ -378,7 +378,7 @@ impl UsageAccumulator {
         for thread in threads {
             any_thread_counts_overflowed |= thread.summary.diagnostics.counts_overflowed
                 || thread.summary.diagnostics.overflow_calls != 0;
-            by_thread.push(ThreadUsageExportV1 {
+            by_thread.push(ThreadUsageExportV2 {
                 thread_id: thread.thread_id.to_string(),
                 through_effect_seq: thread.through_effect_seq,
                 summary: thread.summary.clone(),
@@ -392,7 +392,7 @@ impl UsageAccumulator {
             let (m_totals, m_known, m_unknown) = acc.finish(coverage);
             let has_unknown_values = coverage != UsageCoverage::Complete || !m_unknown.is_empty();
             any_model_unknown |= has_unknown_values;
-            by_model.push(ModelUsageExportV1 {
+            by_model.push(ModelUsageExportV2 {
                 account_id: account_id.clone(),
                 model_id: model_id.clone(),
                 coverage,
@@ -415,7 +415,7 @@ impl UsageAccumulator {
             && !run_acc.cost_overflow;
 
         BuiltUsageExport {
-            export: UsageExportV1 {
+            export: UsageExportV2 {
                 coverage,
                 has_unknown_values,
                 totals,

@@ -1806,6 +1806,7 @@ impl LiveOwner {
             Box::pin(exporter.admit_live_handoff(
                 &self.thread.id,
                 &pending.prepared.accounting,
+                &pending.prepared.current.lifecycle,
                 &self.retained.usage,
                 &self.chat,
                 self.retained.projection.conversation_database_id(),
@@ -6473,7 +6474,7 @@ mod storage_fault_tests {
         let original_source = store
             .history(&thread.id)
             .await?
-            .conversation_sources(&source_ids, 1)
+            .execution_sources(&source_ids, 1)
             .await?
             .pop()
             .context("saved running source")?;
@@ -6558,7 +6559,7 @@ mod storage_fault_tests {
         assert_eq!(saved.id, interrupted.turn_id);
         assert!(matches!(saved.state, pl_protocol::TurnState::Cancelled(_)));
         let recovered_source = history
-            .conversation_sources(&source_ids, 2)
+            .execution_sources(&source_ids, 2)
             .await?
             .pop()
             .context("saved interrupted source")?;

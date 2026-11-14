@@ -162,7 +162,7 @@ impl LiveProjection {
             .collect::<BTreeSet<_>>();
         if !sources.is_empty() {
             for source in history
-                .conversation_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
+                .execution_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
                 .await
                 .map_err(|error| ProjectionError::History(error.to_string()))?
             {

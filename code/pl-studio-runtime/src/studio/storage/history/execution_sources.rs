@@ -358,10 +358,13 @@ mod tests {
             .execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
             .await?;
         let snapshot = writer.db.begin().await?;
-        assert_eq!(read(&snapshot, &[origin()], 1).await?, [started.clone()]);
+        assert_eq!(
+            read(&snapshot, &[origin()], 1).await?.as_slice(),
+            std::slice::from_ref(&started)
+        );
         snapshot.commit().await?;
         writer.db.execute_raw(statement("UPDATE conversation_sources SET ended_observed=2,outcome='invalid lifecycle JSON' WHERE source_key=?",vec![source_key(&origin())?.into()])).await?;
-        assert!(store.conversation_sources(&[origin()], 2).await.is_err());
+        assert!(store.execution_sources(&[origin()], 2).await.is_err());
         let cold = store
             .cold_conversation(
                 ChatQuery::new("conversation", Some(parent)),
@@ -444,7 +447,7 @@ mod tests {
             );
         }
         assert_eq!(store.watermark().await?, 2);
-        assert_eq!(store.conversation_sources(&[origin()], 2).await?, [end]);
+        assert_eq!(store.execution_sources(&[origin()], 2).await?, [end]);
         Ok(())
     }
 }

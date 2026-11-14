@@ -7,15 +7,15 @@ use pl_core::chat::{Session, TimelineEpoch};
 use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
 use pl_protocol::{
-    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, ThreadItem,
-    UnpricedReason, UsageReport,
+    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UnpricedReason,
+    UsageReport,
 };
 use sha2::{Digest, Sha256};
 
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
 use super::reader::export_completions_range;
 use super::types::{
-    EventV1, MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV1, UsageCoverage, UsageMetricKey,
+    EventV2, MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV2, UsageCoverage, UsageMetricKey,
 };
 use super::usage::{UsageAccumulator, fold_next_accounting};
 use super::writer::{ExportCommand, FsContentBlobSink};
@@ -675,14 +675,63 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     non_billing.fold_into(&mut summary);
     billing.fold_into(&mut summary);
 
+    let mut atom = pl_protocol::ChatAtom {
+        id: "bodyless".into(),
+        completion_item_id: None,
+        completion_seq: None,
+        source: pl_protocol::ChatSourceId::Operation {
+            operation_id: "bodyless".into(),
+        },
+        source_state: None,
+        source_order: None,
+        kind: pl_protocol::ChatAtomKind::Compaction,
+        delivery: pl_protocol::ChatDeliveryKind::Independent,
+        lifecycle: pl_protocol::ChatAtomLifecycle::Active {
+            started: Some(pl_protocol::ChatFactPosition {
+                effect_seq: 1,
+                suborder: 0,
+            }),
+            status: pl_protocol::ChatActiveStatus::Running,
+        },
+        turn_id: None,
+        attempt_id: None,
+        tool: None,
+        wait: None,
+        text_channel: None,
+        started_at: None,
+        finished_at: None,
+        content_present: None,
+        contents: vec![],
+        payload: None,
+    };
+    let start =
+        crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
+            &atom, 1,
+        )?;
+    atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
+        started: Some(pl_protocol::ChatFactPosition {
+            effect_seq: 1,
+            suborder: 0,
+        }),
+        ended: Some(pl_protocol::ChatFactPosition {
+            effect_seq: 2,
+            suborder: 0,
+        }),
+        outcome: pl_protocol::ChatTerminalOutcome::Cancelled,
+    };
+    let end = crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
+        &atom, 2,
+    )?;
+    let start: Arc<[_]> = Arc::from([start]);
+    let end: Arc<[_]> = Arc::from([end]);
     coord
-        .admit_live_handoff("t-idem", &non_billing, &summary, &session, None)
+        .admit_live_handoff("t-idem", &non_billing, &start, &summary, &session, None)
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &summary, &session, None)
+        .admit_live_handoff("t-idem", &billing, &end, &summary, &session, None)
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &summary, &session, None)
+        .admit_live_handoff("t-idem", &billing, &end, &summary, &session, None)
         .await; // idempotent redelivery
 
     coord.record_thread_final_cut(RetiredThreadCut {
@@ -702,6 +751,35 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     assert_eq!(usage.totals.inference_count, Some(1));
     assert_eq!(usage.totals.total_tokens, Some(15));
 
+    let events = std::fs::read_to_string(dir.path().join("idem-ok/events.jsonl"))?
+        .lines()
+        .map(serde_json::from_str::<EventV2>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let facts = events
+        .iter()
+        .filter_map(|event| match &event.body {
+            super::types::EventBodyV2::ExecutionLifecycle { facts } => Some(facts),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        facts.len(),
+        2,
+        "identical redelivery must not duplicate a lifecycle event"
+    );
+    assert!(
+        facts
+            .iter()
+            .flat_map(|facts| facts.iter())
+            .all(|fact| fact.completion_item_id.is_none()
+                && fact.started_at.is_none()
+                && fact.finished_at.is_none()),
+        "bodyless starts and unknown times cannot become fabricated completions"
+    );
+    assert_eq!(
+        facts[1][0].outcome,
+        Some(pl_protocol::ChatTerminalOutcome::Cancelled)
+    );
     // 2. Conflicting effect at same (threadId, effectSeq) triggers fatal failure + cancellation.
     let exp_conflict = RunExporter::start(RunExportOptions {
         output_dir: dir.path().join("idem-conflict"),
@@ -749,10 +827,17 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         },
         PricingOutcome::NoCharge,
     )?;
-    c2.admit_live_handoff("t-idem", &billing, &summary, &session, None)
+    c2.admit_live_handoff("t-idem", &billing, &Arc::from([]), &summary, &session, None)
         .await;
-    c2.admit_live_handoff("t-idem", &changed_billing, &summary, &session, None)
-        .await;
+    c2.admit_live_handoff(
+        "t-idem",
+        &changed_billing,
+        &Arc::from([]),
+        &summary,
+        &session,
+        None,
+    )
+    .await;
     assert!(exp_conflict.cancellation().is_cancelled());
     let bad_report = c2.finalize_internal(None, true, true, Some(0), None).await;
     assert!(!bad_report.trace_complete);
@@ -791,10 +876,17 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         coordinator.enroll_root("t-idem");
         coordinator.register_member(make_reg()).await;
         coordinator
-            .admit_live_handoff("t-idem", &non_billing, &summary, &session, None)
+            .admit_live_handoff(
+                "t-idem",
+                &non_billing,
+                &Arc::from([]),
+                &summary,
+                &session,
+                None,
+            )
             .await;
         coordinator
-            .admit_live_handoff("t-idem", &billing, &summary, &session, None)
+            .admit_live_handoff("t-idem", &billing, &Arc::from([]), &summary, &session, None)
             .await;
         let mut final_summary = summary.clone();
         if missing_events {
@@ -813,7 +905,14 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
             repeated.sequence = 3;
             repeated.fold_into(&mut final_summary);
             coordinator
-                .admit_live_handoff("t-idem", &repeated, &final_summary, &session, None)
+                .admit_live_handoff(
+                    "t-idem",
+                    &repeated,
+                    &Arc::from([]),
+                    &final_summary,
+                    &session,
+                    None,
+                )
                 .await;
         }
         coordinator.record_thread_final_cut(RetiredThreadCut {
@@ -984,7 +1083,8 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
             1,
             EffectCommit {
                 current: &test_current(1),
-                items: &[],
+                turns: &[],
+                execution_order: 0,
                 completions: &[],
                 rolled_back_turns: &Default::default(),
                 identities: &[],
@@ -1046,7 +1146,7 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
         } else {
             format!("message-{idx}")
         };
-        let mut item = ThreadItem::completed_user_message(
+        let mut item = crate::ExecutionItem::completed_user_message(
             format!("msg-{idx}"),
             child_thread_id.to_string(),
             String::new(),
@@ -1071,7 +1171,8 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
             258,
             EffectCommit {
                 current: &test_current(258),
-                items: &items,
+                turns: &[],
+                execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
                 completions: &completions,
                 rolled_back_turns: &Default::default(),
                 identities: &[],
@@ -1141,7 +1242,7 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
         weak.upgrade().is_none(),
         "export sources must be released before store.close"
     );
-    let events: Vec<EventV1> = std::fs::read_to_string(out_dir.join("events.jsonl"))?
+    let events: Vec<EventV2> = std::fs::read_to_string(out_dir.join("events.jsonl"))?
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()?;
@@ -1155,16 +1256,16 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
 #[test]
 fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
     let fixture_root =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/run-export/v1");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/run-export/v2");
     let run_bytes = std::fs::read(fixture_root.join("run.json"))?;
-    let manifest: RunManifestV1 = serde_json::from_slice(&run_bytes)?;
-    assert_eq!(manifest.schema_version, 1);
+    let manifest: RunManifestV2 = serde_json::from_slice(&run_bytes)?;
+    assert_eq!(manifest.schema_version, 2);
     let expected_manifest_sha = hex::encode(Sha256::digest(&run_bytes));
 
     let events_bytes = std::fs::read(fixture_root.join("events.jsonl"))?;
     let expected_events_sha = hex::encode(Sha256::digest(&events_bytes));
     let events_text = String::from_utf8(events_bytes)?;
-    let events: Vec<EventV1> = events_text
+    let events: Vec<EventV2> = events_text
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<Vec<_>, _>>()?;
@@ -1174,7 +1275,7 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
     }
 
     match &events[0].body {
-        super::types::EventBodyV1::RunStarted {
+        super::types::EventBodyV2::RunStarted {
             manifest_sha256, ..
         } => assert_eq!(manifest_sha256, &expected_manifest_sha),
         other => anyhow::bail!("expected runStarted first, got {other:?}"),
@@ -1182,7 +1283,7 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
 
     // Verify all referenced payload + content blobs exist with matching SHA-256 and byte length.
     for event in &events {
-        if let super::types::EventBodyV1::Completion {
+        if let super::types::EventBodyV2::Completion {
             payload, contents, ..
         } = &event.body
         {
@@ -1197,7 +1298,7 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
         }
     }
 
-    let result: super::types::ResultV1 =
+    let result: super::types::ResultV2 =
         serde_json::from_slice(&std::fs::read(fixture_root.join("result.json"))?)?;
     assert!(result.trace_complete);
     assert!(result.usage_complete);

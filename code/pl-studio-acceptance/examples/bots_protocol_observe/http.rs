@@ -10,7 +10,7 @@ use pl_protocol::studio::{
     StartBotRegistrationRequest, StudioError,
 };
 use pl_protocol::{
-    ChatBatch, ChatPlacement, ChatScope, CompletionRunRef, ContentRange, ContentRef, ContentWindow,
+    ChatBatch, ChatPlacement, ChatScope, ContentRange, ContentRef, ContentWindow,
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
 };
 use pl_studio_runtime::StudioThreadDirectoryPage;
@@ -79,20 +79,12 @@ impl ChatRead {
             .await
     }
 
-    pub async fn open_run(
+    pub async fn open_records(
         &self,
-        reference: &CompletionRunRef,
+        scope: ChatScope,
         demand: ReadDemand,
     ) -> Result<(ChatRead, ChatBatch)> {
-        self.http
-            .open_chat(
-                &self.thread_id,
-                ChatScope::Run {
-                    reference: reference.clone(),
-                },
-                demand,
-            )
-            .await
+        self.http.open_chat(&self.thread_id, scope, demand).await
     }
 
     pub async fn load_older(&self, before: &str, demand: ReadDemand) -> Result<ChatBatch> {
@@ -455,17 +447,9 @@ impl StudioHttp {
             query
                 .append_pair("maxItems", &demand.max_items.to_string())
                 .append_pair("maxBytes", &demand.max_bytes.to_string());
-            match &scope {
-                ChatScope::conversation(None) => {}
-                ChatScope::conversation(Some(parent_id)) => {
-                    query.append_pair("parentId", parent_id);
-                }
-                ChatScope::Run { reference } => {
-                    query
-                        .append_pair("runDatabaseId", &reference.database_id)
-                        .append_pair("runIndexVersion", &reference.index_version.to_string())
-                        .append_pair("runStartSeq", &reference.start_seq.to_string());
-                }
+            query.append_pair("queryClass", &serde_json::to_string(&scope.query_class)?);
+            if let Some(parent_id) = &scope.parent_id {
+                query.append_pair("parentId", parent_id);
             }
         }
         let request = client

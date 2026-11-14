@@ -1201,7 +1201,7 @@ impl TurnResult {
             let order = atom
                 .source_order
                 .context("report execution order is unknown")?;
-            match crate::studio::runtime::chat_item::execution_state(record)? {
+            match crate::studio::runtime::chat_item::execution_state(record, thread_id)? {
                 ExecutionShape::Text(text) => {
                     let key = (order, atom.id);
                     match text.channel() {
@@ -1228,7 +1228,6 @@ impl TurnResult {
                 _ => {}
             }
         }
-        let _ = thread_id;
         Ok(())
     }
 

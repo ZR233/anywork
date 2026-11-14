@@ -8158,6 +8158,125 @@ pub(crate) mod storage_fault_tests {
         Ok((*prepared).clone())
     }
 
+    /// Manual comparison of the same production admission/projection/writer workload on both revisions.
+    /// This is deliberately excluded from ordinary CI: it emits measurements, not timing assertions.
+    #[tokio::test]
+    #[ignore = "manual before/after history write measurement"]
+    async fn measure_history_write_cost() -> Result<()> {
+        use crate::studio::storage::history::conversation::record_read_tests::sqlite_work::Sampler;
+        use sea_orm::{DbBackend, Statement};
+        async fn occupied(db: &sea_orm::DatabaseConnection) -> Result<i64> {
+            let mut values = Vec::new();
+            for pragma in ["page_count", "freelist_count", "page_size"] {
+                let row = db
+                    .query_one_raw(Statement::from_string(
+                        DbBackend::Sqlite,
+                        format!("PRAGMA {pragma}"),
+                    ))
+                    .await?
+                    .context("missing SQLite page counter")?;
+                values.push(row.try_get_by_index::<i64>(0)?);
+            }
+            Ok((values[0] - values[1]) * values[2])
+        }
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "history-write-measurement";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let chat = store.chat_session(id).await?;
+        let history = store.history(id).await?;
+        let mut projection = live_projection(&sink).await?;
+        let (writer, reader) = history.measurement_connections().await?;
+        let before_pages = occupied(&writer).await?;
+        let writer_sample = Sampler::all_statements(&writer).await?;
+        let reader_sample = Sampler::all_statements(&reader).await?;
+        let gate = sink.0.channel.step_lock.lock().await;
+        let body = "测量正文".repeat(2048);
+        let effects = 32u64;
+        let mut original_bytes = 0usize;
+        let mut phase_bytes = 0usize;
+        let mutable_bytes = 0usize;
+        let mut prepared_bytes = 0u64;
+        let mut originals = Vec::new();
+        for seq in 1..=effects {
+            let mut write = visible_input_ticket(id, seq, &format!("input-{seq}"))?;
+            let mut input = write.checkpoint.state.inputs[0].clone();
+            input.input.payload = OpaquePayload::new(
+                "pl.studio.prompt",
+                1,
+                serde_json::json!({"text":body,"presentation":"visible","attachments":[]})
+                    .to_string(),
+            )?;
+            input.input.context = vec![ContextContent::Text {
+                text: body.clone().into(),
+            }];
+            write.checkpoint.state.inputs = Arc::from([input.clone()]);
+            Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
+            let prepared = drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
+            prepared_bytes += prepared.retained_bytes();
+            for fact in prepared.current.lifecycle.iter() {
+                phase_bytes += serde_json::to_vec(&fact.kind)?.len()
+                    + serde_json::to_vec(&fact.delivery)?.len();
+                if let Some(value) = fact.text_channel {
+                    phase_bytes += serde_json::to_vec(&value)?.len();
+                }
+                if let Some(value) = fact.outcome {
+                    phase_bytes += serde_json::to_vec(&value)?.len();
+                }
+                if let pl_protocol::ChatSourceId::InboxMessage {
+                    source_id,
+                    message_id,
+                } = &fact.source
+                {
+                    phase_bytes += serde_json::to_vec(&(source_id, message_id))?.len();
+                }
+            }
+            for item in prepared.completions.iter() {
+                original_bytes += item.payload.len()
+                    + item.header.metadata.len()
+                    + item
+                        .contents
+                        .values()
+                        .map(|content| content.data.len())
+                        .sum::<usize>();
+                originals.push(Arc::downgrade(item));
+            }
+        }
+        let queue_peak = sink.pressure(id).thread_bytes;
+        let resident_before = projection.retained_bytes();
+        drop(gate);
+        sink.flush(id, effects).await?;
+        let writer_work = writer_sample.finish(&writer).await?;
+        let reader_work = reader_sample.finish(&reader).await?;
+        let occupied_growth = occupied(&writer).await? - before_pages;
+        let retained_originals = originals
+            .iter()
+            .filter(|item| item.strong_count() > 0)
+            .count();
+        let metrics = serde_json::json!({
+            "effects":effects,"bodyBytesPerEffect":body.len(),
+            "sqlStatements":writer_work.statements + reader_work.statements,
+            "writerStatements":writer_work.statements,"readerStatements":reader_work.statements,
+            "vmSteps":writer_work.vm_steps + reader_work.vm_steps,
+            "canonicalPayloadMetadataContentBytes":original_bytes,
+            "extraMutableItemJsonBytes":mutable_bytes,"phaseOrLifecycleJsonBytes":phase_bytes,
+            "sumPreparedBudgetBytes":prepared_bytes,"queueBudgetPeakBytes":queue_peak,
+            "queueBudgetAfterDurableBytes":sink.pressure(id).thread_bytes,
+            "projectionBudgetBeforeDurableBytes":resident_before,
+            "projectionBudgetAfterDurableBytes":projection.retained_bytes(),
+            "retainedCanonicalRecordsAfterDurable":retained_originals,
+            "occupiedDatabasePageGrowthBytes":occupied_growth,
+        });
+        eprintln!("HISTORY_WRITE_METRICS {metrics}");
+        ensure!(
+            retained_originals == 0,
+            "durable original records remained resident"
+        );
+        sink.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
     /// A delayed Running acknowledgement must not retire provider observations published after
     /// its batch was prepared. The writer step lock fixes the interleaving without timing sleeps.
     #[tokio::test]
@@ -9209,7 +9328,7 @@ pub(crate) mod storage_fault_tests {
             turn_id: "visible-turn".into(),
         }];
         let original_source = history
-            .conversation_sources(&source_ids, 1)
+            .execution_sources(&source_ids, 1)
             .await?
             .pop()
             .context("saved running source")?;
@@ -9252,7 +9371,7 @@ pub(crate) mod storage_fault_tests {
             original_turn.turn_order
         );
         assert_eq!(
-            history.conversation_sources(&source_ids, 2).await?,
+            history.execution_sources(&source_ids, 2).await?,
             vec![original_source],
             "cold activation must retain the original source start, not start the Turn again"
         );

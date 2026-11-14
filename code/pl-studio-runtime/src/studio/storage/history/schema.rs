@@ -2606,9 +2606,7 @@ mod atomic_tests {
                             for id in ["01", "1"] {
                                 let hits = db
                                 .query_one_raw(statement(
-                                    &format!(
-                                        "SELECT COUNT(*) AS hits FROM conversation_items WHERE item_id=?"
-                                    ),
+                                    "SELECT COUNT(*) AS hits FROM conversation_items WHERE item_id=?",
                                     vec![id.into()],
                                 ))
                                 .await?
@@ -2644,12 +2642,20 @@ mod atomic_tests {
                         );
                         assert!(cold.state.reader.get().is_none());
                     }
-                    let preserved = db
-                        .query_all_raw(statement(&select, vec![]))
+                    let preserved = if allowed && !current {
+                        legacy_execution_item::fixture_facts(
+                            &db,
+                            &["ordinal", "item_id", "payload"],
+                            false,
+                        )
                         .await?
-                        .into_iter()
-                        .map(|row| row.try_get::<String>("", "fact"))
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    } else {
+                        db.query_all_raw(statement(&select, vec![]))
+                            .await?
+                            .into_iter()
+                            .map(|row| row.try_get::<String>("", "fact"))
+                            .collect::<std::result::Result<Vec<_>, _>>()?
+                    };
                     assert_eq!(preserved, original);
                     db.close().await?;
                 }

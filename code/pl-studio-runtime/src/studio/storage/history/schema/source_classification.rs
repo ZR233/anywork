@@ -371,12 +371,18 @@ mod tests {
                 ],
                 false,
             )
-            .await?,
+            .await?
+            .into_iter()
+            .filter(|value| {
+                serde_json::from_str::<serde_json::Value>(value)
+                    .is_ok_and(|row| row[1] == "active-agent")
+            }),
         );
         Ok(result)
     }
 
     async fn derived(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+        let current = version(db).await? == 24;
         let completed = completion_boundary::applied(db).await?;
         let mut result = Vec::new();
         for sql in [
@@ -395,6 +401,11 @@ mod tests {
             "SELECT hex(metadata) AS value FROM conversation_items ORDER BY seq",
             "SELECT hex(metadata) AS value FROM conversation_atom_facts ORDER BY atom_id,phase",
         ] {
+            let sql = if current && sql.contains("FROM conversation_atom_facts") {
+                "SELECT json_array(identity,kind,source_kind,source_identity,started_effect,started_suborder,ended_effect,ended_suborder,outcome,completion_item_id,last_write_seq) AS value FROM execution_lifecycle ORDER BY identity"
+            } else {
+                sql
+            };
             result.extend(rows(db, sql).await?);
         }
         Ok(result)

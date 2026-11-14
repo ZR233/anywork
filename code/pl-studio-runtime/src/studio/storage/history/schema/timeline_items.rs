@@ -366,8 +366,8 @@ mod tests {
          FROM conversation_sources ORDER BY source_key",
     ] {
         let query = if completed {
-            query.replace("FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_contents UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
-                .replace("FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_content_chunks UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
+            query.replace("FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_contents WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_contents) ORDER BY")
+                .replace("FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' ORDER BY", "FROM (SELECT * FROM conversation_content_chunks WHERE owner_key NOT GLOB '23:legacy-execution-record*' UNION ALL SELECT * FROM completion_boundary_archive_content_chunks) ORDER BY")
         } else { query.to_owned() };
         for row in db.query_all_raw(statement(&query, vec![])).await? {
             facts.push(row.try_get("", "fact")?);
@@ -390,7 +390,12 @@ mod tests {
                 ],
                 false,
             )
-            .await?,
+            .await?
+            .into_iter()
+            .filter(|value| {
+                serde_json::from_str::<serde_json::Value>(value)
+                    .is_ok_and(|row| row[1].as_str().is_some_and(|id| id.starts_with("live-")))
+            }),
         );
         Ok(facts)
     }
@@ -1123,12 +1128,12 @@ mod tests {
         let applied_ledger = migration_records(db).await?;
         assert_eq!(
             applied_ledger.len(),
-            original_ledger.len() + 8,
-            "content preparation appends the eight named content/display upgrades, not lifecycle migrations"
+            original_ledger.len() + 9,
+            "content preparation appends the nine named content/execution upgrades, not session lifecycle migrations"
         );
         let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1155,7 +1160,8 @@ mod tests {
                 TIMELINE_BACKGROUND_TAIL,
                 IMMUTABLE_COMPLETION_RUNS,
                 WORK_SNAPSHOTS,
-                DISPLAY_BLOCK_ORDER
+                DISPLAY_BLOCK_ORDER,
+                EXECUTION_FACTS
             ]
         );
         for record in &original_ledger {

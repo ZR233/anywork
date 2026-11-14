@@ -650,6 +650,21 @@ impl HistoryStore {
         Ok(Some(reader))
     }
 
+    #[cfg(test)]
+    pub(in crate::studio) async fn measurement_connections(
+        &self,
+    ) -> Result<(sea_orm::DatabaseConnection, sea_orm::DatabaseConnection)> {
+        self.prepare_conversation_read().await?;
+        let writer = self.writer().await?.db.clone();
+        let reader = self
+            .reader()
+            .await?
+            .context("missing measurement reader")?
+            .db
+            .clone();
+        Ok((writer, reader))
+    }
+
     /// The single writer connection, created and upgraded on first use.
     ///
     /// The whole first connect+initialize runs under the write side of the initialization lock, so a
@@ -784,6 +799,25 @@ impl HistoryStore {
         for item in items {
             self.upsert_item(&tx, integer(write_seq)?, item.clone())
                 .await?;
+            if let ExecutionShape::Turn(turn) = item.state() {
+                self.upsert_turn(
+                    &tx,
+                    integer(write_seq)?,
+                    &LegacyTurn {
+                        turn: pl_protocol::Turn {
+                            id: item.turn_id.clone(),
+                            thread_id: item.thread_id.clone(),
+                            input_id: turn.input_id().map(str::to_owned),
+                            revision: item.revision,
+                            state: turn.state().clone(),
+                            updated_at: item.updated_at,
+                        },
+                        last_item_id: item.id.clone(),
+                        context_disposition: Default::default(),
+                    },
+                )
+                .await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -1883,7 +1917,7 @@ impl HistoryStore {
         Ok(atoms)
     }
 
-    pub(crate) async fn conversation_sources(
+    pub(crate) async fn execution_sources(
         &self,
         sources: &[pl_protocol::ChatSourceId],
         effect_cut: u64,
@@ -5651,9 +5685,14 @@ mod storage_fault_tests {
             cold.prepare_history_access().await?;
             drop(cold);
             let prepared = HistoryStore::open(&path, "supported-v2").await?;
+            let restored = prepared
+                .execution_seeds([item.id.clone()])
+                .await?
+                .remove(&item.id)
+                .context("restored original")?;
             assert_eq!(
-                prepared.execution_seeds([item.id.clone()]).await?[&item.id],
-                item
+                (restored.id.as_str(), restored.ordinal, restored.state()),
+                (item.id.as_str(), item.ordinal, item.state())
             );
             assert_eq!(
                 prepared
@@ -7356,9 +7395,14 @@ mod storage_fault_tests {
             state.last_attempt_usage
         );
         assert!(checkpoint.state.last_attempt_usage_origin.is_none());
+        let original = restored
+            .execution_seeds([item.id.clone()])
+            .await?
+            .remove(&item.id)
+            .context("restored source")?;
         assert_eq!(
-            restored.execution_seeds([item.id.clone()]).await?[&item.id],
-            item
+            (original.id.as_str(), original.ordinal, original.state()),
+            (item.id.as_str(), item.ordinal, item.state())
         );
         assert_eq!(restored.watermark().await?, 1);
         Ok(())
