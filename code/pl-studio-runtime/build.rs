@@ -41,4 +41,63 @@ fn main() {
         hex::encode(digest.finalize()),
     )
     .expect("write Skill fingerprint");
+    if let Ok(target) = env::var("TARGET") {
+        println!("cargo:rustc-env=PL_BUILD_TARGET={target}");
+    }
+    emit_git_commit_env();
+}
+
+fn emit_git_commit_env() {
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    if let Some(git_dir) = find_git_dir(&manifest_dir) {
+        let head = git_dir.join("HEAD");
+        if head.exists() {
+            println!("cargo:rerun-if-changed={}", head.display());
+            if let Ok(head_content) = fs::read_to_string(&head)
+                && let Some(ref_path) = head_content.trim().strip_prefix("ref: ")
+            {
+                let target_ref = git_dir.join(ref_path.trim());
+                if target_ref.exists() {
+                    println!("cargo:rerun-if-changed={}", target_ref.display());
+                }
+            }
+        }
+    }
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&manifest_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !commit.is_empty() && commit.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        println!("cargo:rustc-env=PL_GIT_COMMIT={commit}");
+    }
+}
+
+fn find_git_dir(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join(".git");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if candidate.is_file()
+            && let Ok(text) = fs::read_to_string(&candidate)
+            && let Some(rest) = text.trim().strip_prefix("gitdir: ")
+        {
+            let path = Path::new(rest.trim());
+            return Some(if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                ancestor.join(path)
+            });
+        }
+    }
+    None
 }

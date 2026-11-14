@@ -545,6 +545,7 @@ impl StudioThreadFactory {
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
+        let export_session = persistence.chat_session();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
         let model = pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
@@ -589,6 +590,29 @@ impl StudioThreadFactory {
             )
             .await
             .map_err(|error| resource_error("confirm root worktree binding", error))?;
+        }
+        if let Some(exporter) = &self.services.run_export
+            && exporter.is_enrolled_root(&thread.root_thread_id)
+        {
+            Box::pin(exporter.register_member(
+                crate::studio::runtime::run_export::NewMemberRegistration {
+                    root_thread_id: thread.root_thread_id.clone(),
+                    thread_id: id.into(),
+                    agent_id: id.into(),
+                    parent_agent_id: None,
+                    parent_thread_id: None,
+                    role: Some(crate::config::ROOT_AGENT_ROUTE_KEY.to_owned()),
+                    workspace_id: thread.workspace_id.clone(),
+                    spawn_tool_call_id: None,
+                    initial_effect_seq: saved.commit_sequence,
+                    session: export_session,
+                },
+            ))
+            .await;
+            if let Some(catalog) = prepared.catalog.as_deref() {
+                Box::pin(exporter.record_skills_discovered(&thread.root_thread_id, id, catalog))
+                    .await;
+            }
         }
         Ok(prepared.tools.install(spec))
     }

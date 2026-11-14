@@ -24,7 +24,7 @@ pub enum Command {
 
 #[derive(Args)]
 #[command(
-    after_long_help = "所有相对路径以进程启动目录为基准解析，不改变 HOME 或全局工作目录。\n凭据只读取原生账号 bearer_token_env 指定的非空环境变量；不访问系统凭据库或交互登录。\n技能优先级：项目 > 默认用户 > 系统 > 配置 external_dirs > --skill-dir 出现顺序。\n--skill-dir 直接指向只读技能集合根，不自动添加 .agents/skills，也不扩大写权限。\n\n容器示例：\n  anywk exec --studio-home /runs/profile --cwd /workspace/task --account benchmark --model vendor/model --prompt-file /runs/prompt.txt --no-default-user-skills --skill-dir /opt/evaluation/skills\n\n本阶段不导出完整追踪或用量文件。"
+    after_long_help = "所有相对路径以进程启动目录为基准解析，不改变 HOME 或全局工作目录。\n凭据只读取原生账号 bearer_token_env 指定的非空环境变量；不访问系统凭据库或交互登录。\n技能优先级：项目 > 默认用户 > 系统 > 配置 external_dirs > --skill-dir 出现顺序。\n--skill-dir 直接指向只读技能集合根，不自动添加 .agents/skills，也不扩大写权限。\n--output-dir 可选启用原子运行归档，输出 run.json、events.jsonl、contents/ 与 result.json。\n\n容器示例：\n  anywk exec --studio-home /runs/profile --cwd /workspace/task --account benchmark --model vendor/model --prompt-file /runs/prompt.txt --no-default-user-skills --skill-dir /opt/evaluation/skills --output-dir /runs/export"
 )]
 pub struct ExecArgs {
     /// 显式 Studio 数据根；其中必须已有有效的 config.toml。
@@ -57,6 +57,23 @@ pub struct ExecArgs {
     /// 追加只读技能集合根；可重复，按首次出现顺序保留，支持既有 ~ 展开。
     #[arg(long, value_name = "PATH")]
     pub skill_dir: Vec<PathBuf>,
+    /// 可选原子导出目录（run.json / events.jsonl / contents / result.json）；必须不存在或为空可写非符号链接目录。
+    #[arg(long, value_name = "PATH")]
+    pub output_dir: Option<PathBuf>,
+}
+
+pub struct PreparedExport {
+    pub output_dir: PathBuf,
+    pub run_id: String,
+    pub cwd: PathBuf,
+    pub studio_home: PathBuf,
+    pub account_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub mode: Option<String>,
+    pub max_model_steps: Option<u32>,
+    pub prompt_sha256: String,
+    pub skill_search: SkillSearchOptions,
 }
 
 pub struct PreparedExec {
@@ -66,6 +83,7 @@ pub struct PreparedExec {
     pub mode: ThreadModeId,
     pub prompt: String,
     pub max_model_steps: Option<NonZeroU32>,
+    pub export: Option<PreparedExport>,
 }
 
 impl ExecArgs {
@@ -97,9 +115,32 @@ impl ExecArgs {
             .read_to_string(&mut prompt)
             .context("任务必须为有效 UTF-8 文本")?;
         ensure!(!prompt.trim().is_empty(), "任务正文不能为空白");
-        let mut runtime = StudioRuntimeOptions::cli(studio_home);
+        let output_dir = self
+            .output_dir
+            .as_deref()
+            .map(resolve)
+            .transpose()
+            .context("无法解析输出目录路径")?;
+        if let Some(dir) = &output_dir {
+            pl_studio_runtime::validate_export_output_dir_preflight(dir)
+                .context("输出目录必须不存在或为空可写非符号链接目录")?;
+        }
+        let mut runtime = StudioRuntimeOptions::cli(studio_home.clone());
         runtime.skill_search =
             SkillSearchOptions::resolve(!self.no_default_user_skills, self.skill_dir, startup_cwd)?;
+        let export = output_dir.map(|output_dir| PreparedExport {
+            output_dir,
+            run_id: format!("run-{}", uuid::Uuid::new_v4()),
+            cwd: cwd.clone(),
+            studio_home,
+            account_id: Some(self.account.clone()),
+            model_id: Some(self.model.clone()),
+            reasoning_effort: self.reasoning_effort.clone(),
+            mode: Some(self.mode.clone()),
+            max_model_steps: self.max_model_steps.map(NonZeroU32::get),
+            prompt_sha256: pl_studio_runtime::export_sha256_hex(prompt.as_bytes()),
+            skill_search: runtime.skill_search.clone(),
+        });
         Ok(PreparedExec {
             runtime,
             cwd,
@@ -111,6 +152,7 @@ impl ExecArgs {
             mode: ThreadModeId::new(self.mode)?,
             prompt,
             max_model_steps: self.max_model_steps,
+            export,
         })
     }
 }

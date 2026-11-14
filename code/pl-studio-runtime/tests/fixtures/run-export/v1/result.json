@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-golden-0001",
+  "rootThreadId": "thread-root",
+  "outcome": "completed",
+  "executionOutcome": "completed",
+  "exitCode": 0,
+  "startedAt": "2026-11-13T15:00:00.000Z",
+  "finishedAt": "2026-11-13T15:00:00.120Z",
+  "build": {
+    "version": "1.0.0-test",
+    "gitCommit": "0123456789abcdef0123456789abcdef01234567",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "timing": {
+    "totalWallMs": 120,
+    "initializeWallMs": 10,
+    "agentWallMs": 80,
+    "shutdownWallMs": 20,
+    "exportFinalizeMs": 10
+  },
+  "finalText": "root completed after child analysis",
+  "traceComplete": true,
+  "usageComplete": true,
+  "costComplete": true,
+  "trace": {
+    "eventsPath": "events.jsonl",
+    "eventsSha256": "050c3735ee85962974a85692cd49e856c19b27f68e886bdbb790712c07eadf55",
+    "eventCount": 11,
+    "lastEventSeq": 11,
+    "sealed": true,
+    "reason": null
+  },
+  "usage": {
+    "coverage": "complete",
+    "hasUnknownValues": false,
+    "totals": {
+      "inferenceCount": 2,
+      "inputTokens": 140,
+      "outputTokens": 35,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "totalTokens": 175,
+      "estimatedCostUsd": 0.007
+    },
+    "knownTotals": {
+      "inferenceCount": 2,
+      "inputTokens": 140,
+      "outputTokens": 35,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "totalTokens": 175,
+      "estimatedCostUsd": 0.007
+    },
+    "byModel": [
+      {
+        "accountId": "fixture",
+        "modelId": "vendor/golden-model",
+        "coverage": "complete",
+        "hasUnknownValues": false,
+        "totals": {
+          "inferenceCount": 2,
+          "inputTokens": 140,
+          "outputTokens": 35,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "totalTokens": 175,
+          "estimatedCostUsd": 0.007
+        },
+        "knownTotals": {
+          "inferenceCount": 2,
+          "inputTokens": 140,
+          "outputTokens": 35,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "totalTokens": 175,
+          "estimatedCostUsd": 0.007
+        },
+        "unknownFields": []
+      }
+    ],
+    "byThread": [
+      {
+        "threadId": "thread-child-1",
+        "throughEffectSeq": 1,
+        "summary": {
+          "appliedSequence": 1,
+          "binding": {
+            "routeIdentity": "fixture",
+            "model": "vendor/golden-model",
+            "contextWindow": 128000,
+            "maxContextWindow": 128000,
+            "compactionThreshold": null
+          },
+          "totals": {
+            "inferenceCount": 1,
+            "promptTokens": 40,
+            "completionTokens": 10,
+            "cachedPromptTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "totalTokens": 50
+          },
+          "cache": {
+            "inputTokens": 40,
+            "readTokens": 0,
+            "sampleCount": 1,
+            "incomplete": false
+          },
+          "context": {
+            "tokens": 50,
+            "latestCall": null
+          },
+          "throughput": {
+            "turnId": "turn-1",
+            "completionTokens": 10,
+            "responseMillis": 120
+          },
+          "diagnostics": {
+            "incompleteCalls": 0,
+            "missingCalls": 0,
+            "partialCalls": 0,
+            "invalidCalls": 0,
+            "overflowCalls": 0,
+            "byOutcome": [],
+            "byPurpose": [],
+            "otherPurposeCalls": 0,
+            "byIssue": [],
+            "recentGaps": [],
+            "legacyUnknown": false,
+            "legacyIncomplete": false,
+            "countsOverflowed": false
+          },
+          "pricing": {
+            "incomplete": false,
+            "estimatedCosts": [
+              {
+                "currency": "USD",
+                "amount": 0.002
+              }
+            ],
+            "estimatedCacheSavings": []
+          }
+        }
+      },
+      {
+        "threadId": "thread-root",
+        "throughEffectSeq": 1,
+        "summary": {
+          "appliedSequence": 1,
+          "binding": {
+            "routeIdentity": "fixture",
+            "model": "vendor/golden-model",
+            "contextWindow": 128000,
+            "maxContextWindow": 128000,
+            "compactionThreshold": null
+          },
+          "totals": {
+            "inferenceCount": 1,
+            "promptTokens": 100,
+            "completionTokens": 25,
+            "cachedPromptTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "totalTokens": 125
+          },
+          "cache": {
+            "inputTokens": 100,
+            "readTokens": 0,
+            "sampleCount": 1,
+            "incomplete": false
+          },
+          "context": {
+            "tokens": 125,
+            "latestCall": null
+          },
+          "throughput": {
+            "turnId": "turn-1",
+            "completionTokens": 25,
+            "responseMillis": 120
+          },
+          "diagnostics": {
+            "incompleteCalls": 0,
+            "missingCalls": 0,
+            "partialCalls": 0,
+            "invalidCalls": 0,
+            "overflowCalls": 0,
+            "byOutcome": [],
+            "byPurpose": [],
+            "otherPurposeCalls": 0,
+            "byIssue": [],
+            "recentGaps": [],
+            "legacyUnknown": false,
+            "legacyIncomplete": false,
+            "countsOverflowed": false
+          },
+          "pricing": {
+            "incomplete": false,
+            "estimatedCosts": [
+              {
+                "currency": "USD",
+                "amount": 0.005
+              }
+            ],
+            "estimatedCacheSavings": []
+          }
+        }
+      }
+    ]
+  },
+  "shutdown": {
+    "outcome": "clean",
+    "issues": [],
+    "persistence": {
+      "kind": "drained"
+    }
+  },
+  "error": null,
+  "executionError": null
+}

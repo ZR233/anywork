@@ -1131,6 +1131,11 @@ pub enum RequestMatch {
         marker: String,
         step: usize,
     },
+    /// Strict match on an incoming child-agent terminal report message (`TurnReport`).
+    AgentReport {
+        marker: String,
+        step: usize,
+    },
     /// Strict match on the runtime's delivered tool result for one call identity.
     ///
     /// A foreground tool result reaches the provider as a `function_call_output`
@@ -1377,6 +1382,23 @@ impl Step {
         Self {
             protocol,
             request: RequestMatch::Delivery {
+                marker: marker.into(),
+                step,
+            },
+            reply,
+            optional: false,
+        }
+    }
+
+    pub fn agent_report(
+        protocol: Protocol,
+        marker: impl Into<String>,
+        step: usize,
+        reply: Reply,
+    ) -> Self {
+        Self {
+            protocol,
+            request: RequestMatch::AgentReport {
                 marker: marker.into(),
                 step,
             },
@@ -4656,6 +4678,9 @@ fn match_step(
                     RequestMatch::Delivery { marker, step } => {
                         *step == index && user_messages_contain(body, marker)
                     }
+                    RequestMatch::AgentReport { marker, step } => {
+                        *step == index && agent_report_contains(body, marker)
+                    }
                     RequestMatch::ToolOutput {
                         call_id,
                         marker,
@@ -4793,6 +4818,7 @@ fn reject_diagnostic(
         }
         Some(RequestMatch::Compaction { marker, .. }) => ("compaction", Some(marker.clone())),
         Some(RequestMatch::Delivery { marker, .. }) => ("delivery", Some(marker.clone())),
+        Some(RequestMatch::AgentReport { marker, .. }) => ("agent_report", Some(marker.clone())),
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => ("tool_output", Some(format!("{call_id}:{marker}"))),
@@ -4838,6 +4864,7 @@ fn reject_diagnostic(
         Some(RequestMatch::Delivery { marker, .. }) => {
             actual.is_some_and(|value| value.contains(marker.as_str()))
         }
+        Some(RequestMatch::AgentReport { marker, .. }) => agent_report_contains(body, marker),
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
@@ -5153,6 +5180,16 @@ fn user_messages_contain(body: &Value, marker: &str) -> bool {
                 && user_text(item)
                     .is_some_and(|text| text.starts_with("Task task:") && text.contains(marker))
         })
+    })
+}
+
+/// Whether the request carries a serialized child-agent terminal report (`TurnReport`) for `marker`.
+fn agent_report_contains(body: &Value, marker: &str) -> bool {
+    prompt(body).is_some_and(|text| {
+        serde_json::from_str::<Value>(text)
+            .ok()
+            .is_some_and(|report| report.get("childId").is_some())
+            && text.contains(marker)
     })
 }
 
@@ -6265,6 +6302,79 @@ mod timeline_history_20k_tests {
                 .last()
                 .and_then(|event| { event["response"]["usage"]["output_tokens"].as_u64() }),
             Some(GUI_STREAMING_OUTPUT_REFERENCE_TOKENS as u64)
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_report_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn agent_report_matcher_accepts_turn_report_and_rejects_plain_or_compaction_prompts() {
+        let step = Step::agent_report(
+            Protocol::ResponsesHttp,
+            "child finished",
+            0,
+            Reply::Sse(responses_text("noted", "resp-report", "fixture-model")),
+        );
+        let fixture = FixtureServer::start(vec![step]).await.unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("{}/responses", fixture.base_url());
+
+        let plain = client
+            .post(&url)
+            .json(&json!({
+                "model": "fixture-model",
+                "stream": true,
+                "input": [{"role": "user", "content": "child finished"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(plain.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let report_json = json!({
+            "childId": "child-1",
+            "status": "completed",
+            "message": "child finished"
+        })
+        .to_string();
+        let compaction = client
+            .post(&url)
+            .json(&json!({
+                "model": "fixture-model",
+                "stream": true,
+                "input": [
+                    {"role": "user", "content": report_json},
+                    {"role": "user", "content": "你负责将当前对话压缩为可交接给下一轮模型的上下文摘要。"}
+                ]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(compaction.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let valid = client
+            .post(&url)
+            .json(&json!({
+                "model": "fixture-model",
+                "stream": true,
+                "input": [
+                    {"role": "user", "content": report_json},
+                    {"role": "user", "content": "[当前宿主事实：workspace=/tmp]"}
+                ]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), reqwest::StatusCode::OK);
+        let _body = valid.text().await.unwrap();
+
+        let err = fixture.finish().await.unwrap_err().to_string();
+        assert!(
+            err.contains("1 accepted") && err.contains("2 rejected (0 owned, 2 unexpected)"),
+            "unexpected report: {err}"
         );
     }
 }

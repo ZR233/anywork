@@ -3,6 +3,7 @@ mod accounting;
 mod billing;
 pub(crate) use accounting::PreparedAccounting;
 pub(crate) use billing::AuxiliaryBillingReceipt;
+pub(in crate::studio) use billing::BillingFact;
 #[cfg(test)]
 pub(in crate::studio) use billing::billing_facts;
 mod activity;

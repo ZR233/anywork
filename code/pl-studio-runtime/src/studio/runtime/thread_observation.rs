@@ -569,6 +569,7 @@ pub(super) struct ObservationServices {
     pub(super) performance: ModelPerformanceOwner,
     pub(super) sessions: crate::session::WeakSessionTable,
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    pub(super) run_export: Option<std::sync::Arc<super::run_export::RunExportCoordinator>>,
 }
 impl ObservationServices {
     fn session_of(&self, id: &str) -> Option<crate::session::SessionRuntime> {
@@ -1805,6 +1806,18 @@ impl LiveOwner {
                 }
             }
         }
+        if let (Some(exporter), Some(pending)) = (&services.run_export, &self.retained.pending)
+            && (pending.mode == HandoffMode::Live
+                || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))
+        {
+            Box::pin(exporter.admit_live_handoff(
+                &self.thread.id,
+                &pending.prepared.accounting,
+                &self.retained.usage,
+                &self.chat,
+            ))
+            .await;
+        }
         self.handover_pending(services)
     }
 
@@ -2541,6 +2554,35 @@ async fn run(
                     let target = worker.services.writer.admitted_ticket();
                     match worker.services.writer.flush_through(target).await {
                         Ok(()) => {
+                            if let (Some(exporter), Some(live)) =
+                                (&worker.services.run_export, &worker.live)
+                            {
+                                let status_value =
+                                    crate::studio::thread_projection::status(&current);
+                                let status = serde_json::to_value(status_value)
+                                    .ok()
+                                    .and_then(|value| value.as_str().map(str::to_owned));
+                                let (aborted, error) = match &current.input_execution {
+                                    pl_core::thread::input::InputExecution::Failed { error } => {
+                                        (false, Some(error.to_string()))
+                                    }
+                                    pl_core::thread::input::InputExecution::Interrupting {
+                                        ..
+                                    } => (true, None),
+                                    _ => (false, None),
+                                };
+                                exporter.record_thread_final_cut(
+                                    crate::studio::runtime::run_export::RetiredThreadCut {
+                                        thread_id: worker.id.clone(),
+                                        through_effect_seq: current.commit_sequence,
+                                        session: live.chat.clone(),
+                                        summary: live.retained.usage.clone(),
+                                        status,
+                                        aborted,
+                                        error,
+                                    },
+                                );
+                            }
                             worker
                                 .state
                                 .progress
@@ -3203,6 +3245,7 @@ mod storage_fault_tests {
             ),
             sessions: sessions.downgrade(),
             writer: resources.writer.clone(),
+            run_export: None,
         };
         let observations = ThreadObservations::new(services.clone());
         observations.install()?;
@@ -4565,6 +4608,7 @@ mod storage_fault_tests {
                 ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
                 helper_source: source,
                 bots,
+                run_export: None,
             },
         );
         let sessions = crate::session::SessionTable::new();
@@ -4594,6 +4638,7 @@ mod storage_fault_tests {
             performance,
             sessions: sessions.downgrade(),
             writer: writer.clone(),
+            run_export: None,
         };
         let observations = ThreadObservations::new(services.clone());
         observations.install()?;

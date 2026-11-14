@@ -221,6 +221,50 @@ impl SkillDiscoverySources {
         ))
     }
 
+    pub(super) fn discovery_fingerprint(&self) -> Result<String> {
+        compute_discovery_fingerprint(
+            &self.scope.workspace_root,
+            &self.scope.config,
+            self.scope.system_dir.as_deref(),
+            &self.scope.providers,
+        )
+    }
+
+    pub(super) fn configured_sources(&self) -> Vec<crate::skill::SkillDiscoverySourceSummary> {
+        let mut sources = Vec::with_capacity(self.scope.providers.len() + 2);
+        sources.push(crate::skill::SkillDiscoverySourceSummary {
+            provider_id: "config".to_string(),
+            kind: "projectDir".to_string(),
+            location: Some(self.scope.project_dir.to_string_lossy().into_owned()),
+            identity: self.scope.config.project_dir.clone(),
+        });
+        for external in &self.scope.config.external_dirs {
+            sources.push(crate::skill::SkillDiscoverySourceSummary {
+                provider_id: "config".to_string(),
+                kind: "externalDir".to_string(),
+                location: None,
+                identity: external.clone(),
+            });
+        }
+        if let Some(system_dir) = &self.scope.system_dir {
+            sources.push(crate::skill::SkillDiscoverySourceSummary {
+                provider_id: "config".to_string(),
+                kind: "systemDir".to_string(),
+                location: Some(system_dir.to_string_lossy().into_owned()),
+                identity: system_dir.to_string_lossy().into_owned(),
+            });
+        }
+        for provider in &self.scope.providers {
+            sources.push(crate::skill::SkillDiscoverySourceSummary {
+                provider_id: provider.id().as_str().to_string(),
+                kind: "provider".to_string(),
+                location: None,
+                identity: provider.discovery_identity(),
+            });
+        }
+        sources
+    }
+
     pub(super) fn invalidate(&self) {
         self.scope
             .registry
@@ -233,15 +277,30 @@ fn source_authorization(
     request: &SkillProviderRequest,
     providers: &[Arc<dyn SkillProvider>],
 ) -> Result<ToolAuthorization> {
+    let fingerprint = compute_discovery_fingerprint(
+        &request.workspace_root,
+        &request.config,
+        request.system_dir.as_deref(),
+        providers,
+    )?;
+    Ok(ToolAuthorization::new(fingerprint))
+}
+
+fn compute_discovery_fingerprint(
+    workspace_root: &std::path::Path,
+    config: &SkillsConfig,
+    system_dir: Option<&std::path::Path>,
+    providers: &[Arc<dyn SkillProvider>],
+) -> Result<String> {
     let mut digest = Sha256::new();
     let mut part = |bytes: &[u8]| {
         digest.update((bytes.len() as u64).to_le_bytes());
         digest.update(bytes);
     };
     part(b"pl-tool/skill-discovery-authority/v1");
-    part(request.workspace_root.as_os_str().as_encoded_bytes());
-    part(&serde_json::to_vec(&request.config)?);
-    match &request.system_dir {
+    part(workspace_root.as_os_str().as_encoded_bytes());
+    part(&serde_json::to_vec(config)?);
+    match system_dir {
         None => part(b"no-system-source"),
         Some(path) => {
             part(b"system-source");
@@ -259,8 +318,8 @@ fn source_authorization(
         part(provider.id().as_str().as_bytes());
         part(identity.as_bytes());
     }
-    Ok(ToolAuthorization::new(format!(
+    Ok(format!(
         "pl.skills-sources:{}",
         hex::encode(digest.finalize())
-    )))
+    ))
 }

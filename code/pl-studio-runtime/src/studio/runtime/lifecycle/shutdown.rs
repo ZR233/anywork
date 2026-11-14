@@ -1035,6 +1035,9 @@ impl StudioRuntime {
         // 单向终止闩：先于任何阶段武装，拒绝迟到安装；快照不可用时也照样封闭，绝不因只读观测
         // 失败而漏掉独立取消（准入封闭与取消不依赖 runtime 快照）。
         self.shutdown_latch.arm();
+        if let Some(exporter) = &self.agent_facility.run_export {
+            exporter.arm_shutdown_deadline(budget.deadline().map(tokio::time::Instant::from_std));
+        }
 
         if let Some(current) = current.as_ref()
             && matches!(current.state.kind(), StudioRuntimeStateKind::Initializing)
@@ -1558,6 +1561,9 @@ impl StudioRuntime {
                 let agent_ok = outcomes
                     .iter()
                     .any(|outcome| outcome.stage == "agentFramework" && outcome.is_done());
+                if !agent_ok && let Some(exporter) = &runtime.agent_facility.run_export {
+                    exporter.close_admission_on_producer_timeout();
+                }
                 let _ = sessions_ready_tx.send(agent_ok);
                 let _ = transport_ready_tx.send(agent_ok);
                 // 只在真实已知时发布 pending count；未知不伪造 0。
@@ -1580,6 +1586,17 @@ impl StudioRuntime {
                 outcomes.push(persistence);
                 // 观测真实剩余待保存事实；有界只读，未知即 Unknown，绝不用 0 冒充。
                 let pending_after = runtime.observe_pending(budget).await;
+                if let Some(exporter) = &runtime.agent_facility.run_export {
+                    let _report = exporter
+                        .finalize_during_shutdown(
+                            runtime.store.clone(),
+                            budget.deadline().map(tokio::time::Instant::from_std),
+                            agent_ok,
+                            flush_ok,
+                            pending_after,
+                        )
+                        .await;
+                }
                 (outcomes, agent_ok, flush_ok, pending_after)
             }
         };

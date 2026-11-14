@@ -4,7 +4,7 @@
 
 `anywk` 是 Studio 的非交互式命令行宿主，使用生产 `Cli` 身份、原生配置、项目、会话、模型路由、任务状态及关闭流程。它不持有第二套智能体循环或完成判断。运行锁元数据中的宿主为 `cli`；同一 Studio home 的实例互斥仍由原生运行锁负责。
 
-当前支持 `--help`、`--version` 和 `exec`；版本来自产品版本，与 Rust 工作区包版本分开。帮助和版本查询在初始化运行时前完成。当前阶段交付单任务执行与退出语义；完整追踪、用量及文件导出、Harbor 适配器与外层取消后续接入，不能将当前标准输出视为完整评测数据。没有交互终端界面、SSH 工作区、恢复执行或 ACP 服务端。
+当前支持 `--help`、`--version` 和 `exec`；版本来自产品版本，与 Rust 工作区包版本分开。帮助和版本查询在初始化运行时前完成。`exec` 默认只执行单任务并按终态退出；传入 `--output-dir` 时启用面向外部分析的原子运行归档导出，未传时保持标准输出与退出行为完全不变。标准输出始终只写最终助手文本，不能将其视为完整评测数据；Harbor 适配器与外层取消协作后续接入。没有交互终端界面、SSH 工作区、恢复执行或 ACP 服务端。
 
 本地工具沿用原生执行器，不要求预装远端 SSH 辅助程序。远端辅助程序与宿主 MCP 的资源来源保持显式外部来源；命令行本身不启动 HTTP 监听器或调用后台更新入口。基准配置通过已有能力配置关闭不参与评测的 MCP、在线模型发现与自学习，不增加另一套子系统开关；隔离数据根不得放入已启用的机器人配置。
 
@@ -21,10 +21,11 @@ anywk exec \
   --prompt-file /runs/prompt.txt \
   --max-model-steps 100 \
   --no-default-user-skills \
-  --skill-dir /opt/evaluation/skills
+  --skill-dir /opt/evaluation/skills \
+  --output-dir /runs/export
 ```
 
-`--studio-home`、`--cwd`、`--account`、`--model` 与 `--prompt-file` 必须显式提供。数据根必须已有原生 `config.toml`；任务目录必须存在且可访问，允许普通非 Git 目录，不自动初始化 Git 或创建工作树。模型 ID 原样交付，不按斜杠拆分。推理强度通过所选模型的现有路由能力校验，不设全局枚举，也不静默替换。工作模式默认 `mode.simple`，未知模式明确失败。
+`--studio-home`、`--cwd`、`--account`、`--model` 与 `--prompt-file` 必须显式提供。`--output-dir` 为可选开关：省略时不创建任何导出目录或临时文件；传入时要求目标尚不存在或为已存在的空可写非符号链接目录，并在初始化运行时及获取运行锁前完成只读预检，失败以 `2` 退出且不改动既有文件。数据根必须已有原生 `config.toml`；任务目录必须存在且可访问，允许普通非 Git 目录，不自动初始化 Git 或创建工作树。模型 ID 原样交付，不按斜杠拆分。推理强度通过所选模型的现有路由能力校验，不设全局枚举，也不静默替换。工作模式默认 `mode.simple`，未知模式明确失败。
 
 所有参数路径以进程启动目录为基准一次性转为绝对路径，词法消去 `.`、`..`，不改变全局工作目录或用户主目录。技能目录复用既有 `~` 展开规则；词法归一化不跟随链接，也不代替既有链接、重解析点及目录越界检查。运行时后续取得任务目录的原生物理身份，不重新解释其他参数。
 
@@ -60,7 +61,7 @@ SIGINT/SIGTERM 锁存第一个信号；重复信号不启动第二个关闭所�
 | 模型步数预算耗尽 | 4 |
 | 模型、工具或任务运行失败 | 10 |
 | 启动环境或内部错误 | 11 |
-| 导出失败，后续导出阶段使用 | 12 |
+| 导出失败（指定 `--output-dir` 时写出、校验或封口失败） | 12 |
 | 关闭失败或持久化未排空 | 13 |
 | 其他原生取消 | 14 |
 | SIGINT | 130 |
@@ -77,3 +78,15 @@ SIGINT/SIGTERM 锁存第一个信号；重复信号不启动第二个关闭所�
 `--skill-dir` 直接指定一个只读技能集合根，不自动附加 `.agents/skills`；追加在配置外部目录之后，按出现顺序保留。词法归一化后重复的命令目录只保留第一次；显式重新加入被关闭的默认用户路径时，它以 External 身份生效。显式目录必须存在、为可读目录且符合既有路径安全约束；每次发现重新核对，目录失效不能转为默认来源或完整空集合。
 
 来源策略由运行时唯一技能目录所有者持有，进入提供方身份、授权身份与目录指纹。刷新可产生新快照，已冻结调用不扩大来源；根与子智能体共用运行级策略，Project 来源始终来自各自实际工作区。追加目录不增加工作区可写路径、命令权限或审批授权；技能管理仍只写已授权的项目技能目录。
+
+## 29.6 运行轨迹、用量与关闭结果导出
+
+指定 `--output-dir` 后，`anywk exec` 在不改变核心智能体执行与标准输出语义的前提下，将运行事实写入独立版本化归档目录（Schema契约位于 `code/pl-studio-runtime/schemas/run-export/v1/`）：
+
+- **`run.json`（`RunManifestV1`）**：在 `StudioRuntime` 启动与获取运行锁前通过只读配置读取并经临时文件 + `sync_all` + 原子重命名写出。记录 `runId`、构建标识、调用参数、`skillSearch` 策略、`configInputs` 摘要以及严格脱敏后的配置快照——剥离内联密钥、`http_headers` 与内联 `env` 值，同时完整保留 `*_env` 环境变量名引用。
+- **`events.jsonl`（`EventV1`）与 `contents/<sha256>.bin`**：单背景写者串行递增写入 `eventSeq`，覆盖 `runStarted`、`agentRegistered`（含父子关系与 `spawnToolCallId`）、`skillsDiscovered`（只记录来源、优胜技能清单、告警与完整性而不复制正文）、`inferenceFinished`（保留每次调用冻结的 `accountId`、`modelId`、用途与原始 `InferenceBillingRecord`）、`completion`（复用内核只读 `pl_core::chat::Session` 游标读取 `query = None`，并通过有界块大小 `<= 256 KiB` 流式落盘、按 SHA-256 去重与完整性复核）、`threadSealed` 以及最终的 `runSealed`。对于先完成并已回收的封闭子会话，终结回填仅按 `StudioStore::chat_session` 打开只读 `Session`，绝不重新激活 `ThreadHandle` 或触发 `thread_snapshot()`。
+- **`result.json`（`ResultV1`）**：在原生关闭与导出封口完成后通过原子重命名写入，统一给出 `outcome`、`executionOutcome`、`exitCode`、分阶段墙钟耗时、`finalText`、`trace` 摘要（含 `eventsSha256`、`eventCount` 与 `sealed`）、规范化 `usage`、`shutdown` 报告及两阶段归因错误。
+
+导出管线与原生关闭所有者严格解耦并守住事实单一性：不新建第二套 SQLite 账本、不维护第二份 `History` 投影、不从有界滚动调用日志重建完整历史。写者入口采用有界队列背压（`256` 批次 / `16 MiB` 元数据），队列满时阻塞生产者而不静默丢弃；若发生持久化写错或同源重投冲突（`(threadId, effectSeq)` 摘要不一致），立即触发导出取消令牌收敛当次执行并隔离记录至 `RunExportReport`。关闭编排仅在写者与持久化彻底刷盘确认（`flush_persistence`）之后、`store.close()` 之前在同一串行边界完成最后截止面封口，绝不把导出自身故障混入 `StudioShutdownReport` 伪装为关机失败，也不在预算到期时阻塞关闭退出。
+
+用量归并与原始回执对账消费同源 `PreparedAccounting::fold_into` 语义：`usage.byModel` 与总览严格区分已知零值（`0`）与缺失未知项（`null` 配合 `knownTotals` 与 `unknownFields`），`NoCharge` 计为 `0.0` USD，未定价、禁用或非 USD 币种保持成本未知并置 `costComplete = false`。只要完整轨迹已核验并成功封口，单次模型缺少用量或价格（`usageComplete = false` 或 `costComplete = false`）保持进程原正常退出码，不触发 `12` 导出失败；多原因叠加时保持退出码优先级 `shutdownFailed (13) > exportFailed (12) > 原任务或信号终态`。

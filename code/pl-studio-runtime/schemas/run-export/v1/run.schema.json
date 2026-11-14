@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anywork.dev/schemas/run-export/v1/run.schema.json",
+  "title": "RunManifestV1",
+  "description": "Immutable startup manifest written atomically to run.json before StudioRuntime initialization.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "startedAt",
+    "build",
+    "invocation",
+    "skillSearch",
+    "configInputs",
+    "exportSchema"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "startedAt": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "build": {
+      "$ref": "#/$defs/BuildInfoV1"
+    },
+    "invocation": {
+      "$ref": "#/$defs/RunInvocationV1"
+    },
+    "skillSearch": {
+      "$ref": "#/$defs/SkillSearchManifestV1"
+    },
+    "configInputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConfigInputEntryV1"
+      }
+    },
+    "exportSchema": {
+      "$ref": "#/$defs/ExportSchemaV1"
+    }
+  },
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "BuildInfoV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "gitCommit", "target"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "gitCommit": { "type": ["string", "null"] },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    },
+    "RunInvocationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cwd",
+        "studioHome",
+        "accountId",
+        "modelId",
+        "reasoningEffort",
+        "mode",
+        "maxModelSteps",
+        "promptSha256"
+      ],
+      "properties": {
+        "cwd": { "type": "string", "minLength": 1 },
+        "studioHome": { "type": "string", "minLength": 1 },
+        "accountId": { "type": ["string", "null"] },
+        "modelId": { "type": ["string", "null"] },
+        "reasoningEffort": { "type": ["string", "null"] },
+        "mode": { "type": ["string", "null"] },
+        "maxModelSteps": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "promptSha256": { "$ref": "#/$defs/sha256Hex" }
+      }
+    },
+    "SkillSearchManifestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "includeDefaultUserDir",
+        "additionalDirs",
+        "externalDirs",
+        "systemEnabled",
+        "skillsEnabled"
+      ],
+      "properties": {
+        "includeDefaultUserDir": { "type": "boolean" },
+        "additionalDirs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "externalDirs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "systemEnabled": { "type": "boolean" },
+        "skillsEnabled": { "type": "boolean" }
+      }
+    },
+    "ConfigInputEntryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logicalName", "present", "sha256", "redactedSummary"],
+      "properties": {
+        "logicalName": { "type": "string", "minLength": 1 },
+        "present": { "type": "boolean" },
+        "sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256Hex" },
+            { "type": "null" }
+          ]
+        },
+        "redactedSummary": {}
+      }
+    },
+    "ExportSchemaV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "events", "result", "contentAddressing"],
+      "properties": {
+        "manifest": { "const": 1 },
+        "events": { "const": 1 },
+        "result": { "const": 1 },
+        "contentAddressing": { "const": "sha256" }
+      }
+    }
+  }
+}

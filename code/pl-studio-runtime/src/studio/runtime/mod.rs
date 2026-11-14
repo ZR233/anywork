@@ -51,6 +51,7 @@ mod product_subscription;
 mod prompt_runner;
 pub(crate) mod rejected_tools;
 mod residency;
+pub(in crate::studio) mod run_export;
 mod session_entry;
 pub(crate) mod session_tools;
 mod settings_api;
@@ -71,6 +72,19 @@ pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
 pub use presentation_feed::{TimelineEvent, TimelineFeed};
 pub use presentation_reader::DisplayMembers;
 pub use product_subscription::StudioProductTopicSubscription;
+pub use run_export::{
+    BuildInfoV1, ChatItemHeaderExportV1, ChatReadHintExportV1, ChatRunPositionExportV1,
+    CompletionCursorV1, ConfigInputEntryV1, EVENTS_SCHEMA_VERSION, EventBodyV1, EventSourceV1,
+    EventV1, ExecutionErrorStage, ExecutionErrorV1, ExecutionOutcome, ExportSchemaV1,
+    ExportedBlobV1, ExportedContentV1, ModelUsageExportV1, RESULT_SCHEMA_VERSION,
+    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV1, RunExportOptions, RunExportReport,
+    RunExporter, RunInvocationV1, RunManifestV1, SealedMemberCutV1, SkillSearchManifestV1,
+    ThreadUsageExportV1, TimingReportV1, TraceSummaryV1, UsageCoverage, UsageExportV1,
+    UsageKnownTotalsV1, UsageMetricKey, UsageTotalsV1,
+    format_utc_rfc3339 as format_export_utc_rfc3339,
+    prepare_output_dir as prepare_export_output_dir, sha256_hex as export_sha256_hex,
+    validate_output_dir_preflight as validate_export_output_dir_preflight,
+};
 pub(crate) mod thread_observation;
 mod thread_title;
 mod updater;
@@ -278,6 +292,7 @@ struct StudioAgentFacility {
     persistence: std::sync::Arc<
         tokio::sync::Mutex<Option<crate::studio::agent_host::ThreadWriteBehindWriter>>,
     >,
+    run_export: Option<std::sync::Arc<run_export::RunExportCoordinator>>,
 }
 
 #[derive(Clone, Default)]

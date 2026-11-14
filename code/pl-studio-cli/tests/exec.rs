@@ -532,3 +532,503 @@ async fn native_signals_cancel_the_same_runtime_and_release_its_lock() -> Result
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Result<()> {
+    use pl_studio_runtime::{
+        EventBodyV1, EventV1, ExecutionOutcome, ResultOutcome, ResultV1, RunManifestV1,
+    };
+
+    const CHILD_INPUT: &str = "child-export-input";
+    const SKILL: &str = "cli-export-skill";
+    const MARKER: &str = "CLI_EXPORT_SKILL_BODY";
+    let huge_answer = format!("root finished {}\n", "L".repeat(320 * 1024));
+
+    let child_stage = ReplyStage::new();
+    let child = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            CHILD_INPUT,
+            0,
+            native_tool("skill_view", "child-view", serde_json::json!({"name": SKILL})),
+        ),
+        Step::tool_output(
+            Protocol::ResponsesHttp,
+            "child-view",
+            MARKER,
+            1,
+            child_stage.gated(
+                vec![serde_json::json!({"type":"response.created","response":{"id":"child-done","model":MODEL}})],
+                pl_provider_fixture::responses_text("child finished", "child-done", MODEL)
+                    .into_iter()
+                    .skip(1)
+                    .collect(),
+            ),
+        ),
+    ])
+    .await?;
+
+    let root = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            PROMPT,
+            0,
+            native_tool(
+                "skill_view",
+                "root-view",
+                serde_json::json!({"name": SKILL}),
+            ),
+        ),
+        Step::tool_output(
+            Protocol::ResponsesHttp,
+            "root-view",
+            MARKER,
+            1,
+            Reply::Sse(pl_provider_fixture::responses_tool_calls(
+                "spawn",
+                MODEL,
+                &[pl_provider_fixture::RealtimeToolCall {
+                    item_id: "spawn",
+                    call_id: "spawn",
+                    name: "spawn_agent",
+                    arguments: serde_json::json!({
+                        "profileId": "cli_child",
+                        "taskSummary": "check child export",
+                        "message": CHILD_INPUT
+                    })
+                    .to_string(),
+                }],
+            )),
+        ),
+        Step::tool_output(
+            Protocol::ResponsesHttp,
+            "spawn",
+            "agentId",
+            2,
+            Reply::Sse(pl_provider_fixture::responses_text(
+                &huge_answer,
+                "root-done",
+                MODEL,
+            )),
+        ),
+        Step::agent_report(
+            Protocol::ResponsesHttp,
+            "child finished",
+            3,
+            Reply::Sse(pl_provider_fixture::responses_text(
+                "noted",
+                "root-after-child",
+                MODEL,
+            )),
+        )
+        .optional(),
+    ])
+    .await?;
+
+    let environment = Environment::new(&root.base_url())?;
+    let paths = ConfigPaths::from_config_dir(&environment.home);
+    let store = ConfigStore::new(paths.clone());
+    let mut config = store.load()?;
+    {
+        let fixture_account = config
+            .models
+            .accounts
+            .get_mut(&AccountId::new("fixture")?)
+            .context("fixture account")?;
+        let pl_model::config::AccountModelCatalogConfig::Explicit { models, .. } =
+            &mut fixture_account.catalog
+        else {
+            anyhow::bail!("fixture account must use an explicit model catalog");
+        };
+        let model = models
+            .iter_mut()
+            .find(|model| model.model_id == MODEL)
+            .context("fixture model")?;
+        model.context_window = Some(512_000);
+        model.max_context_window = Some(512_000);
+    }
+    let mut account = config.models.accounts[&AccountId::new("fixture")?].clone();
+    account.base_url = child.base_url();
+    account.bearer_token_env = Some("ANYWK_TEST_ENV_TOKEN".into());
+    config
+        .models
+        .accounts
+        .insert(AccountId::new("child")?, account);
+    store.save(&config)?;
+    pl_studio_runtime::config::save_user_agent_profile(
+        &paths,
+        "cli_child",
+        &pl_studio_runtime::UserAgentProfile {
+            enabled: true,
+            display_name: "CLI Child".into(),
+            description: "CLI child test".into(),
+            when_to_use: "CLI child test".into(),
+            binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+                route: Some(pl_studio_runtime::NewThreadModelRoute {
+                    account_id: "child".into(),
+                    model_id: MODEL.into(),
+                    effort: None,
+                }),
+                system_instructions: Some("Use the configured skill".into()),
+            }),
+            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+        },
+        &config,
+        &Default::default(),
+    )?;
+
+    let collection = environment.temporary.path().join("evaluation-skills");
+    let skill = collection.join(SKILL);
+    std::fs::create_dir_all(&skill)?;
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: {SKILL}\ndescription: CLI export test\n---\n{MARKER}\n"),
+    )?;
+
+    let export_dir = environment.temporary.path().join("export-run");
+    let mut command = environment.command();
+    command
+        .args([
+            "--skill-dir",
+            "evaluation-skills",
+            "--output-dir",
+            "export-run",
+        ])
+        .env("ANYWK_TEST_ENV_TOKEN", "synthetic-secret-should-not-leak");
+    let process = command.spawn()?;
+    tokio::time::timeout(Duration::from_secs(60), child_stage.wait_reached()).await?;
+    child_stage.release();
+    let result =
+        tokio::time::timeout(Duration::from_secs(90), process.wait_with_output()).await??;
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout)?,
+        format!("{huge_answer}\n")
+    );
+
+    // Verify no leftover temp files remain in export_dir or contents/.
+    for entry in std::fs::read_dir(&export_dir)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with('.'),
+            "unexpected leftover temp file {name}"
+        );
+    }
+    for entry in std::fs::read_dir(export_dir.join("contents"))? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        assert!(
+            name.ends_with(".bin"),
+            "unexpected file in contents/: {name}"
+        );
+    }
+
+    let run_bytes = std::fs::read(export_dir.join("run.json"))?;
+    let manifest: RunManifestV1 = serde_json::from_slice(&run_bytes)?;
+    let manifest_sha = pl_studio_runtime::export_sha256_hex(&run_bytes);
+    let manifest_text = String::from_utf8(run_bytes)?;
+    assert!(!manifest_text.contains("synthetic-secret-should-not-leak"));
+    assert!(manifest_text.contains("ANYWK_TEST_ENV_TOKEN"));
+    assert_eq!(manifest.schema_version, 1);
+
+    let events_bytes = std::fs::read(export_dir.join("events.jsonl"))?;
+    let events_sha = pl_studio_runtime::export_sha256_hex(&events_bytes);
+    let events_text = String::from_utf8(events_bytes)?;
+    let events: Vec<EventV1> = events_text
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(!events.is_empty());
+
+    let mut seen_agents = 0usize;
+    let mut seen_skills = false;
+    let mut seen_inference = 0usize;
+    let mut seen_large_blob = false;
+    let mut sealed_threads = 0usize;
+    let mut seen_run_sealed = false;
+    let mut seen_child_spawn = false;
+
+    for (idx, ev) in events.iter().enumerate() {
+        assert_eq!(ev.event_seq, idx as u64 + 1);
+        match &ev.body {
+            EventBodyV1::RunStarted {
+                manifest_sha256, ..
+            } => {
+                assert_eq!(manifest_sha256, &manifest_sha);
+            }
+            EventBodyV1::AgentRegistered {
+                parent_agent_id,
+                spawn_tool_call_id,
+                ..
+            } => {
+                seen_agents += 1;
+                if parent_agent_id.is_some() {
+                    assert_eq!(spawn_tool_call_id.as_deref(), Some("spawn"));
+                    seen_child_spawn = true;
+                }
+            }
+            EventBodyV1::SkillsDiscovered {
+                winners, complete, ..
+            } => {
+                assert!(*complete);
+                if winners.iter().any(|w| w.name == SKILL) {
+                    seen_skills = true;
+                }
+            }
+            EventBodyV1::InferenceFinished { .. } => seen_inference += 1,
+            EventBodyV1::Completion {
+                payload, contents, ..
+            } => {
+                let p_bytes = std::fs::read(export_dir.join(&payload.path))?;
+                assert_eq!(p_bytes.len() as u64, payload.byte_length);
+                assert_eq!(
+                    pl_studio_runtime::export_sha256_hex(&p_bytes),
+                    payload.sha256
+                );
+                for content in contents {
+                    let c_bytes = std::fs::read(export_dir.join(&content.path))?;
+                    assert_eq!(c_bytes.len() as u64, content.byte_length);
+                    assert_eq!(
+                        pl_studio_runtime::export_sha256_hex(&c_bytes),
+                        content.sha256
+                    );
+                    if content.byte_length > 256 * 1024 {
+                        seen_large_blob = true;
+                    }
+                }
+            }
+            EventBodyV1::ThreadSealed { .. } => sealed_threads += 1,
+            EventBodyV1::RunSealed {
+                reconciled,
+                trace_complete,
+                members,
+                ..
+            } => {
+                assert!(*reconciled);
+                assert!(*trace_complete);
+                assert!(members.len() >= 2);
+                seen_run_sealed = true;
+            }
+        }
+    }
+    assert!(seen_agents >= 2, "expected root + child agents");
+    assert!(seen_child_spawn, "expected child spawnToolCallId");
+    assert!(seen_skills, "expected explicit skill provenance");
+    assert!(seen_inference >= 4, "expected root + child inferences");
+    assert!(
+        seen_large_blob,
+        "expected >256KiB streamed blob in contents/"
+    );
+    assert!(sealed_threads >= 2);
+    assert!(seen_run_sealed);
+
+    let result_doc: ResultV1 =
+        serde_json::from_slice(&std::fs::read(export_dir.join("result.json"))?)?;
+    assert_eq!(result_doc.outcome, ResultOutcome::Completed);
+    assert_eq!(
+        result_doc.execution_outcome,
+        Some(ExecutionOutcome::Completed)
+    );
+    assert_eq!(result_doc.exit_code, 0);
+    assert!(result_doc.trace_complete);
+    assert!(result_doc.trace.sealed);
+    assert_eq!(
+        result_doc.trace.events_sha256.as_deref(),
+        Some(events_sha.as_str())
+    );
+    assert_eq!(result_doc.trace.event_count, events.len() as u64);
+    assert_eq!(
+        result_doc.shutdown.outcome,
+        pl_studio_runtime::StudioShutdownOutcome::Clean
+    );
+    let usage = result_doc.usage.as_ref().context("expected usage")?;
+    assert!(usage.by_thread.len() >= 2);
+    assert!(!usage.by_model.is_empty());
+
+    root.finish().await?;
+    child.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_keeps_exit_zero_when_provider_omits_usage_or_pricing() -> Result<()> {
+    use pl_studio_runtime::{ExecutionOutcome, ResultOutcome, ResultV1};
+
+    let no_usage_sse = Reply::Sse(vec![
+        serde_json::json!({"type":"response.created","response":{"id":"no-usage","model":MODEL}}),
+        serde_json::json!({"type":"response.output_item.added","item":{"id":"m1","type":"message","role":"assistant","content":[]}}),
+        serde_json::json!({"type":"response.output_text.delta","item_id":"m1","delta":"unreported ok"}),
+        serde_json::json!({"type":"response.output_item.done","item":{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":"unreported ok"}]}}),
+        serde_json::json!({"type":"response.completed","response":{"id":"no-usage","model":MODEL,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unreported ok"}]}]}}),
+    ]);
+    let server = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        PROMPT,
+        0,
+        no_usage_sse,
+    )])
+    .await?;
+    let environment = Environment::new(&server.base_url())?;
+    let export_dir = environment.temporary.path().join("export-unreported");
+    let res = output(
+        environment
+            .command()
+            .args(["--output-dir", export_dir.to_str().unwrap()]),
+    )
+    .await?;
+    assert_eq!(
+        res.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&res.stderr)
+    );
+    assert_eq!(String::from_utf8(res.stdout)?, "unreported ok\n");
+
+    let result_doc: ResultV1 =
+        serde_json::from_slice(&std::fs::read(export_dir.join("result.json"))?)?;
+    assert_eq!(result_doc.outcome, ResultOutcome::Completed);
+    assert_eq!(
+        result_doc.execution_outcome,
+        Some(ExecutionOutcome::Completed)
+    );
+    assert_eq!(result_doc.exit_code, 0);
+    assert!(result_doc.trace_complete);
+    assert!(result_doc.trace.sealed);
+    assert!(!result_doc.usage_complete);
+    assert!(!result_doc.cost_complete);
+    let usage = result_doc.usage.as_ref().context("usage present")?;
+    assert!(usage.has_unknown_values);
+    assert_eq!(usage.totals.input_tokens, None);
+    assert_eq!(usage.totals.estimated_cost_usd, None);
+
+    server.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_preflight_rejects_bad_output_dir_without_modifying_files() -> Result<()> {
+    let server = FixtureServer::start(Vec::new()).await?;
+    let environment = Environment::new(&server.base_url())?;
+
+    // 1. Non-empty directory
+    let non_empty = environment.temporary.path().join("non-empty-out");
+    std::fs::create_dir_all(&non_empty)?;
+    std::fs::write(non_empty.join("keep.txt"), b"do-not-touch")?;
+    let r1 = output(
+        environment
+            .command()
+            .args(["--output-dir", non_empty.to_str().unwrap()]),
+    )
+    .await?;
+    assert_eq!(r1.status.code(), Some(2));
+    assert_eq!(std::fs::read(non_empty.join("keep.txt"))?, b"do-not-touch");
+    assert!(!non_empty.join("run.json").exists());
+
+    // 2. Existing regular file
+    let existing_file = environment.temporary.path().join("file-out");
+    std::fs::write(&existing_file, b"file-content")?;
+    let r2 = output(
+        environment
+            .command()
+            .args(["--output-dir", existing_file.to_str().unwrap()]),
+    )
+    .await?;
+    assert_eq!(r2.status.code(), Some(2));
+    assert_eq!(std::fs::read(&existing_file)?, b"file-content");
+
+    // 3. Symlink directory (Unix)
+    #[cfg(unix)]
+    {
+        let target = environment.temporary.path().join("sym-target");
+        std::fs::create_dir_all(&target)?;
+        let link = environment.temporary.path().join("sym-out");
+        std::os::unix::fs::symlink(&target, &link)?;
+        let r3 = output(
+            environment
+                .command()
+                .args(["--output-dir", link.to_str().unwrap()]),
+        )
+        .await?;
+        assert_eq!(r3.status.code(), Some(2));
+        assert!(std::fs::read_dir(&target)?.next().is_none());
+    }
+
+    assert!(server.recorded().is_empty());
+    server.finish().await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn export_records_startup_failure_and_sigterm_partial_run() -> Result<()> {
+    use pl_studio_runtime::{ResultOutcome, ResultV1};
+
+    // 1. Corrupt config.toml triggers StartupFailed(2) while still writing run.json + result.json.
+    let server = FixtureServer::start(Vec::new()).await?;
+    let env_bad = Environment::new(&server.base_url())?;
+    std::fs::write(
+        env_bad.home.join("config.toml"),
+        b"schema_version = 999999\n",
+    )?;
+    let out_bad = env_bad.temporary.path().join("export-startup-fail");
+    let r_bad = output(
+        env_bad
+            .command()
+            .args(["--output-dir", out_bad.to_str().unwrap()]),
+    )
+    .await?;
+    assert_eq!(r_bad.status.code(), Some(2));
+    assert!(out_bad.join("run.json").exists());
+    let res_bad: ResultV1 = serde_json::from_slice(&std::fs::read(out_bad.join("result.json"))?)?;
+    assert_eq!(res_bad.outcome, ResultOutcome::StartupFailed);
+    assert_eq!(res_bad.exit_code, 2);
+    assert!(!res_bad.trace_complete);
+    assert!(!res_bad.trace.sealed);
+    server.finish().await?;
+
+    // 2. SIGTERM mid-turn produces clean shutdown + cancelled result.json (exit 143).
+    let stage = ReplyStage::new();
+    let server2 = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        PROMPT,
+        0,
+        stage.gated(
+            vec![serde_json::json!({"type":"response.created","response":{"id":"sigterm-export","model":MODEL}})],
+            Vec::new(),
+        ),
+    )])
+    .await?;
+    let env_sig = Environment::new(&server2.base_url())?;
+    let out_sig = env_sig.temporary.path().join("export-sigterm");
+    let child = env_sig
+        .command()
+        .args(["--output-dir", out_sig.to_str().unwrap()])
+        .spawn()?;
+    tokio::time::timeout(Duration::from_secs(60), stage.wait_reached()).await?;
+    assert_eq!(
+        unsafe { libc::kill(child.id().context("child pid")? as i32, libc::SIGTERM) },
+        0
+    );
+    let r_sig = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output()).await??;
+    assert_eq!(
+        r_sig.status.code(),
+        Some(143),
+        "{}",
+        String::from_utf8_lossy(&r_sig.stderr)
+    );
+    assert!(out_sig.join("run.json").exists());
+    assert!(out_sig.join("events.jsonl").exists());
+    let res_sig: ResultV1 = serde_json::from_slice(&std::fs::read(out_sig.join("result.json"))?)?;
+    assert_eq!(res_sig.outcome, ResultOutcome::Cancelled);
+    assert_eq!(res_sig.exit_code, 143);
+    assert_eq!(
+        res_sig.shutdown.outcome,
+        pl_studio_runtime::StudioShutdownOutcome::Clean
+    );
+    server2.finish().await?;
+    Ok(())
+}

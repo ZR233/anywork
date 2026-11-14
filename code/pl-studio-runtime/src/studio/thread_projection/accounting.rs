@@ -149,6 +149,19 @@ impl PreparedAccounting {
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         self.retained_bytes
     }
+
+    pub(in crate::studio) fn committed_at(&self) -> i64 {
+        self.committed_at
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) fn binding(&self) -> Option<&Option<ModelUsageBinding>> {
+        self.binding.as_ref()
+    }
+
+    pub(in crate::studio) fn primary_turn_id(&self) -> Option<&str> {
+        self.primary_turn_id.as_deref()
+    }
 }
 
 fn merge_costs(
