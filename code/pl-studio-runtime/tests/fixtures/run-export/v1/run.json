@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
+  "startedAt": "2026-11-13T15:00:00.000Z",
+  "build": {
+    "version": "1.0.0-test",
+    "gitCommit": "0123456789abcdef0123456789abcdef01234567",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "invocation": {
+    "cwd": "/workspace/golden-task",
+    "studioHome": "/runs/golden-profile",
+    "accountId": "fixture",
+    "modelId": "vendor/golden-model",
+    "reasoningEffort": "medium",
+    "mode": "mode.simple",
+    "maxModelSteps": null,
+    "promptSha256": "f56c58e0f04eab0da5d8a6527d4357fa1f962d81c50255dc42b8ece1f7a96663"
+  },
+  "skillSearch": {
+    "includeDefaultUserDir": false,
+    "additionalDirs": [
+      "/opt/eval/skills"
+    ],
+    "externalDirs": [],
+    "systemEnabled": true,
+    "skillsEnabled": true
+  },
+  "configInputs": [
+    {
+      "logicalName": "config.toml",
+      "present": true,
+      "sha256": "35b55765277b63654698bb1c4403d94ed396cf9c57043373e3e375dbdc8f7e2e",
+      "redactedSummary": null
+    }
+  ],
+  "exportSchema": {
+    "manifest": 1,
+    "events": 1,
+    "result": 1,
+    "contentAddressing": "sha256"
+  }
+}

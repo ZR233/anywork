@@ -51,6 +51,16 @@ fn main() -> ExitCode {
     {
         eprintln!("anywk: 任务终态 {:?}", turn.state);
     }
+    if let Some(export_error) = &report.export_error {
+        eprintln!(
+            "anywk: 导出失败 {} ({})",
+            export_error.message, export_error.code
+        );
+    } else if let Some(export) = &report.export
+        && let Some(failure) = &export.failure
+    {
+        eprintln!("anywk: 导出失败 {} ({})", failure.message, failure.code);
+    }
     for issue in &report.shutdown.issues {
         eprintln!("anywk: 关闭失败 {} ({})", issue.stage, issue.code);
     }

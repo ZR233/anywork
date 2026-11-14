@@ -2607,6 +2607,10 @@ fn clear_recovered_fault(progress: &mut Progress) -> bool {
 }
 
 impl ThreadStorageSink {
+    pub(in crate::studio) fn chat_session(&self) -> pl_core::chat::Session {
+        self.0.conversation.session().clone()
+    }
+
     pub(crate) async fn new(
         store: StudioStore,
         thread: pl_protocol::Thread,
@@ -5254,6 +5258,7 @@ pub(crate) mod storage_fault_tests {
             ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
             helper_source: source,
             bots,
+            run_export: None,
         });
         Ok(CloseFactoryFixture {
             factory,

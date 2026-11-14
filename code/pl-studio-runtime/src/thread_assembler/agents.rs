@@ -330,6 +330,12 @@ async fn cleanup_spawn_failure(
     id: &str,
     operation: ThreadAssemblyError,
 ) -> ControlError {
+    let abort_reason = format!("child_spawn_aborted: {operation}");
+    if let Some(services) = { owner.0.state().agent_services.clone() } {
+        services
+            .factory
+            .mark_run_export_spawn_aborted(id, &abort_reason);
+    }
     match owner.discard_child_resources(id).await {
         Ok(()) => ControlError::service(operation),
         Err(cleanup) => ControlError::service(SpawnCleanupError {

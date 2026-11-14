@@ -1433,6 +1433,10 @@ impl LiveProjection {
         self.execution_history = Some(history);
         Ok(())
     }
+    pub(in crate::studio) fn conversation_database_id(&self) -> Option<&str> {
+        self.current.database_id()
+    }
+
     pub(in crate::studio) fn bind_conversation_identity(
         &mut self,
         database_id: String,

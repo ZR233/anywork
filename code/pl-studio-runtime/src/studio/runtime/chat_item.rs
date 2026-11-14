@@ -79,6 +79,21 @@ pub(crate) fn atom_content_role(key: &BodyKey) -> Option<pl_protocol::ChatConten
     }
 }
 
+pub(crate) fn atom_content_role_by_key(key: &str) -> Option<pl_protocol::ChatContentRole> {
+    let parsed = if key == "body" {
+        BodyKey::Body
+    } else if key.starts_with("part.outputText.") {
+        BodyKey::Part(PresentationPart::OutputText(0))
+    } else if key.starts_with("part.reasoningText.") {
+        BodyKey::Part(PresentationPart::ReasoningText(0))
+    } else if key.starts_with("part.summaryText.") {
+        BodyKey::Part(PresentationPart::SummaryText(0))
+    } else {
+        BodyKey::Host(key.to_owned())
+    };
+    atom_content_role(&parsed)
+}
+
 /// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
 #[cfg(test)]
 pub(crate) fn completion_draft(
