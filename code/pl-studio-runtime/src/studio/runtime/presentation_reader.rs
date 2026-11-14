@@ -28,6 +28,8 @@ pub(super) struct DisplayReadCut {
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
     pub history: Vec<Arc<DisplayHeader>>,
+    // The requested bounded history page was selected in the cold metadata transaction.
+    history_from_snapshot: bool,
 }
 
 impl ConversationReader {
@@ -70,6 +72,7 @@ impl ConversationReader {
                     .flatten(),
                 open: cut.open,
                 history: cut.history,
+                history_from_snapshot: false,
             },
             ReadCut::Cold(Some(snapshot)) => {
                 cold_page = true;
@@ -78,6 +81,8 @@ impl ConversationReader {
                         resources.database_id.as_deref().ok_or_else(resync)?,
                         live_before,
                         live_limit,
+                        history_after,
+                        history_limit,
                     )
                     .await?;
                 DisplayReadCut {
@@ -88,7 +93,8 @@ impl ConversationReader {
                     execution_present: false,
                     current_work_id: stored.current_work_id,
                     open: stored.open,
-                    history: Vec::new(),
+                    history: stored.history,
+                    history_from_snapshot: true,
                 }
             }
             ReadCut::Cold(None) => DisplayReadCut {
@@ -100,6 +106,7 @@ impl ConversationReader {
                 current_work_id: None,
                 open: Vec::new(),
                 history: Vec::new(),
+                history_from_snapshot: true,
             },
             ReadCut::Ready { .. } => unreachable!("display request captures its display cut"),
         };
@@ -220,7 +227,7 @@ impl ConversationReader {
                 limit,
             )
         };
-        let saved = if complete {
+        let saved = if cut.history_from_snapshot || complete {
             Vec::new()
         } else {
             let permit = self.resources().await?;

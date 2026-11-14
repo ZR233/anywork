@@ -24,6 +24,7 @@ pub(in crate::studio) struct StoredDisplayCut {
     pub effect: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
+    pub history: Vec<Arc<DisplayHeader>>,
 }
 
 pub(in crate::studio) struct StoredDisplayMembers {
@@ -649,6 +650,8 @@ impl super::super::ConversationSnapshot {
         database: &str,
         before_order: Option<u64>,
         limit: usize,
+        history_after: Option<u64>,
+        history_limit: usize,
     ) -> Result<StoredDisplayCut> {
         ensure!(self.database_id == database, "stale display database");
         let (published, effect) = watermarks(&self.tx).await?;
@@ -667,6 +670,14 @@ impl super::super::ConversationSnapshot {
         } else {
             None
         };
+        let history = block_page(
+            &self.tx,
+            history_after.unwrap_or(0),
+            display_upper(published, before_order)?,
+            history_limit,
+            history_after.is_some(),
+        )
+        .await?;
         self.tx.commit().await?;
         Ok(StoredDisplayCut {
             published,
@@ -674,6 +685,7 @@ impl super::super::ConversationSnapshot {
             effect,
             current_work_id,
             open,
+            history,
         })
     }
 
@@ -694,6 +706,14 @@ impl super::super::ConversationSnapshot {
             .await?
             .context("display block reference is missing")?;
         let header = Arc::new(decode_header(&row)?);
+        let before = Some(
+            before.unwrap_or(u64::MAX).min(
+                header
+                    .next_member
+                    .checked_add(1)
+                    .context("display member boundary exhausted")?,
+            ),
+        );
         let entries = member_page(&self.tx, block_id, before, limit).await?;
         self.tx.commit().await?;
         Ok(StoredDisplayMembers { header, entries })

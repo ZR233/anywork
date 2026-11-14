@@ -1175,6 +1175,11 @@ mod tests {
                 let reopened = timeline(&mut cold).await?;
                 assert_eq!(reopened.blocks, page);
                 assert_eq!(reopened.through_order, 13);
+                let reads = h.history.reader_calls();
+                let cold_page = cold.reader().initial_timeline(demand(3)).await?;
+                assert_eq!(cold_page.blocks, page);
+                assert_eq!(h.history.reader_calls() - reads, 1,
+                    "cold metadata and both bounded display pages must use the one pinned SQLite snapshot");
                 cold.reader().close().await?;
                 cold.close().await?;
                 Ok(())
