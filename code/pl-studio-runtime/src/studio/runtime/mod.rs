@@ -209,7 +209,6 @@ pub struct StudioRuntime {
     rejected_tools: rejected_tools::RejectedToolOwners,
     tool_catalog_updates: std::sync::Arc<tokio::sync::Notify>,
     sessions: crate::session::SessionTable,
-    acp_workers: std::sync::Arc<pl_remote_helper::Executor>,
     #[cfg(test)]
     s2_delete_publication_failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,

@@ -8,7 +8,7 @@ use pl_protocol::studio::*;
 
 use super::{AcpResources, AcpSessionCompletion, AcpSessionObservation, projection};
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
-use crate::studio::runtime::{StudioRuntime, acp_launch, acp_worker::AcpSpawnRequest};
+use crate::studio::runtime::StudioRuntime;
 
 /// An accepted product member and its original SDK observation. A resident
 /// member returns the same target and no second observation/connection.
@@ -25,7 +25,7 @@ pub(crate) struct AcpBusinessOwner {
     config: crate::config::ConfigRuntime,
     store: crate::studio::StudioStore,
     events: crate::studio::ProductEventBus,
-    workers: std::sync::Arc<pl_remote_helper::Executor>,
+    connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
     mcp_source: crate::host_mcp_assets::HostMcpSource,
 }
 
@@ -199,7 +199,7 @@ impl AcpBusinessOwner {
         config: crate::config::ConfigRuntime,
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
-        workers: std::sync::Arc<pl_remote_helper::Executor>,
+        connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
         mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
         Self {
@@ -207,7 +207,7 @@ impl AcpBusinessOwner {
             config,
             store,
             events,
-            workers,
+            connections,
             mcp_source,
         }
     }
@@ -244,9 +244,8 @@ impl AcpBusinessOwner {
             instance: resources.instance,
         };
         let factory = self.factory.clone();
-        let store = self.store.clone();
         let events = self.events.clone();
-        let workers = self.workers.clone();
+        let connections = self.connections.clone();
         let config = self.config.clone();
         let mcp_source = self.mcp_source.clone();
         let resources_for_result = resources.clone();
@@ -259,14 +258,12 @@ impl AcpBusinessOwner {
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
                     let cwd_path = std::path::PathBuf::from(&cwd);
-                    let launch = acp_launch::resolve_launch(
-                        &store,
-                        &definition,
-                        &cwd_path,
-                        &resources.cancellation,
-                    )
-                    .await
-                    .map_err(projection::launch_failure)?;
+                    let account = connections.connection(&definition).map_err(|_| projection::preparation("ACP account connection is closing or stale"))?;
+                    let prepared = tokio::select! {
+                        biased;
+                        () = resources.cancellation.cancelled() => return Err(projection::preparation("ACP preparation cancelled")),
+                        result = account.ready_business() => result?,
+                    };
                     let usage = match usage {
                         Some(usage) => usage,
                         None => factory
@@ -306,7 +303,7 @@ impl AcpBusinessOwner {
                                 )
                                 .map_err(|error| projection::preparation(&error.to_string()))?,
                             ),
-                            expected_server_version: launch.expected_server_version,
+                            expected_server_version: prepared.expected_version,
                             cleanup: pl_acp::auth::CleanupBudget::new(
                                 std::time::Duration::from_secs(5),
                             ),
@@ -321,16 +318,7 @@ impl AcpBusinessOwner {
                         .expect("single observation")
                         .send(Ok(observer));
                     resources
-                        .start(
-                            AcpSpawnRequest {
-                                program: launch.program,
-                                args: launch.args,
-                                cwd: cwd_path,
-                                env: launch.env,
-                            },
-                            &workers,
-                            usage,
-                        )
+                        .start(account, prepared.protocol, usage)
                         .await
                         .map_err(|_| projection::preparation("ACP business launch failed"))?;
                     let session = resources
@@ -566,7 +554,7 @@ impl StudioRuntime {
             self.config_runtime.clone(),
             self.store.clone(),
             self.agent_facility.product_events.clone(),
-            self.acp_workers.clone(),
+            self.acp_auth.clone(),
             self.host_mcp_source.clone(),
         );
         let cwd = match &previous {

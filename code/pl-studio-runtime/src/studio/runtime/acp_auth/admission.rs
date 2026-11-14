@@ -182,6 +182,9 @@ impl AcpAuthRuntime {
                 .filter_map(|slot| slot.operation.clone())
                 .collect()
         };
+        for connection in self.connections() {
+            connection.signal_cancel();
+        }
         for operation in operations {
             operation.cancel.cancel();
             operation.cleanup_retry.notify_one();
@@ -232,6 +235,11 @@ impl AcpAuthRuntime {
                 }
             }
         }
+        for connection in self.connections() {
+            if let Err(error) = connection.close().await {
+                issues.push(error.to_string());
+            }
+        }
         if issues.is_empty() {
             Ok(())
         } else {
@@ -250,6 +258,7 @@ impl SettingsCommitObserver for AcpSettingsObserver {
     fn settings_committed(&self, snapshot: &crate::ConfigRuntimeSnapshot) {
         if let Some(inner) = self.inner.upgrade() {
             inner.observe_committed(snapshot.revision, &snapshot.acp);
+            AcpAuthRuntime { inner }.background_prepare(snapshot.revision, &snapshot.acp);
         }
     }
 }

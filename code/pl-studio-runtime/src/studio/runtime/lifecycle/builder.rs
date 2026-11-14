@@ -106,13 +106,12 @@ impl StudioRuntime {
             },
         );
         let sessions = crate::session::SessionTable::new();
-        let acp_workers = std::sync::Arc::new(local_executor.clone());
         let acp_business = super::super::acp_business::AcpBusinessOwner::new(
             thread_factory.clone(),
             config_runtime.clone(),
             store.clone(),
             product_events.clone(),
-            acp_workers.clone(),
+            acp_auth.clone(),
             host_mcp_source.clone(),
         );
         let service_config = config_runtime.clone();
@@ -193,7 +192,6 @@ impl StudioRuntime {
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             acp_detection,
-            acp_workers,
             host_mcp_source,
             model_performance,
             updater,

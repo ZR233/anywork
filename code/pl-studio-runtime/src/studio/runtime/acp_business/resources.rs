@@ -9,9 +9,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
+use crate::studio::runtime::acp_auth::AccountConnection;
 use crate::studio::runtime::acp_host_mcp::HostMcp;
-use crate::studio::runtime::acp_worker::{AcpSpawnRequest, AcpWorker, Reclaim};
-use pl_remote_helper::Executor;
 
 /// A thin delivery into the original parent's inbox, bound by the Session owner.
 pub(crate) type AcpReportDelivery = Arc<
@@ -37,9 +36,7 @@ struct Owned {
     driver: Option<Driver>,
     join: Option<JoinHandle<Exit>>,
     exit: Option<Exit>,
-    worker: Option<AcpWorker>,
-    reclaim: Option<JoinHandle<(AcpWorker, Reclaim)>>,
-    reclaim_failed: bool,
+    account: Option<Arc<AccountConnection>>,
     usage: Option<WorkspaceUsageLease>,
     worker_error: Option<String>,
     driver_error: Option<String>,
@@ -104,9 +101,7 @@ impl AcpResources {
                 driver: None,
                 join: None,
                 exit: None,
-                worker: None,
-                reclaim: None,
-                reclaim_failed: false,
+                account: None,
                 usage: None,
                 worker_error: None,
                 driver_error: None,
@@ -286,9 +281,9 @@ impl AcpResources {
     /// Called only by the already registered preparation task. Never race spawn
     /// against cancellation by dropping its future: every returned worker is retained.
     pub(super) async fn start(
-        &self,
-        launch: AcpSpawnRequest,
-        workers: &Executor,
+        self: &Arc<Self>,
+        account: Arc<AccountConnection>,
+        protocol: pl_acp::connection::Connection,
         usage: WorkspaceUsageLease,
     ) -> Result<()> {
         let mut owned = self.owned.lock().await;
@@ -301,17 +296,25 @@ impl AcpResources {
             !self.cancellation.is_cancelled(),
             "ACP preparation cancelled"
         );
-        let worker = AcpWorker::spawn(launch, workers, &self.cancellation)
-            .await
-            .map_err(|_| anyhow::anyhow!("ACP business process launch failed"))?;
-        owned.worker = Some(worker);
-        let (writer, reader) = owned
-            .worker
-            .as_mut()
-            .and_then(AcpWorker::take_streams)
-            .context("ACP business process has no streams")?;
+        account.attach(self)?;
+        owned.account = Some(account);
         let driver = owned.driver.take().context("ACP driver already consumed")?;
-        owned.join = Some(tokio::spawn(driver.run(writer, reader)));
+        let cancellation = self.cancellation.clone();
+        let session = self.session()?.clone();
+        owned.join = Some(tokio::spawn(async move {
+            let drive = driver.run(protocol);
+            tokio::pin!(drive);
+            tokio::select! {
+                result = &mut drive => result,
+                () = cancellation.cancelled() => {
+                    // Keep polling the original driver while admitting its own close command.
+                    let close = session.close();
+                    tokio::pin!(close);
+                    tokio::select! { result = &mut drive => return result, _ = &mut close => {} }
+                    drive.await
+                }
+            }
+        }));
         Ok(())
     }
 
@@ -403,6 +406,7 @@ impl AcpResources {
             // A failed protocol close must not short-circuit physical reclamation.
             if let Some(session) = self.session.get()
                 && let Err(error) = session.close().await
+                && !matches!(error, pl_acp::session::Error::Closed)
             {
                 owned.driver_error.get_or_insert_with(|| error.to_string());
             }
@@ -416,50 +420,6 @@ impl AcpResources {
                 }
                 owned.join = None;
             }
-        }
-        // Reclamation must keep progressing after the shared deadline or a caller's
-        // cancellation. Retrying an expired timeout around a newly created future
-        // can repeatedly cancel the supervisor's wait before it drains its exit.
-        if owned.reclaim.is_none()
-            && let Some(mut worker) = owned.worker.take()
-        {
-            owned.reclaim = Some(tokio::spawn(async move {
-                let result = worker.reclaim().await;
-                (worker, result)
-            }));
-        }
-        if let Some(reclaim) = owned.reclaim.as_mut() {
-            match tokio::time::timeout_at(self.cleanup.deadline(), reclaim).await {
-                Ok(Ok((_, Reclaim::Stopped))) => {
-                    owned.reclaim = None;
-                    owned.worker_error = None;
-                }
-                Ok(Ok((_, Reclaim::Settled(error)))) => {
-                    owned.reclaim = None;
-                    owned.worker_error = Some(error);
-                }
-                Ok(Ok((worker, Reclaim::Pending(error)))) => {
-                    owned.reclaim = None;
-                    owned.worker = Some(worker);
-                    owned.worker_error = Some(error);
-                }
-                Ok(Err(error)) => {
-                    owned.reclaim = None;
-                    owned.reclaim_failed = true;
-                    owned.worker_error = Some(error.to_string());
-                }
-                Err(_) => {
-                    owned.worker_error = Some("ACP process reclamation is pending".into());
-                }
-            }
-        }
-        // Reclaimed IO can finish a driver whose graceful deadline elapsed.
-        if owned.join.as_ref().is_some_and(JoinHandle::is_finished) {
-            match owned.join.as_mut().expect("checked join").await {
-                Ok(exit) => owned.exit = Some(exit),
-                Err(error) => owned.driver_error = Some(error.to_string()),
-            }
-            owned.join = None;
         }
         if owned.join.is_none() {
             self.join_report(&mut owned.report_join).await;
@@ -496,18 +456,21 @@ impl AcpResources {
                 }
             }
         }
-        let local_complete = owned.worker.is_none()
-            && owned.reclaim.is_none()
-            && !owned.reclaim_failed
-            && owned.join.is_none()
+        let local_complete = owned.join.is_none()
             && owned.association.is_none()
             && owned.report_join.is_none()
             && host_mcp.is_none();
         if local_complete {
-            self.mcp_frontend
+            if let Some(frontend) = self
+                .mcp_frontend
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
+                .take()
+                && let Some(account) = owned.account.as_ref()
+            {
+                account.retain_frontend(frontend);
+            }
+            owned.account = None;
             owned.usage = None;
             self.obligations.store(false, Ordering::Release);
         }
@@ -526,9 +489,6 @@ impl Drop for AcpResources {
         // Final cancellation fence only. Normal close always joins in place above.
         if let Some(join) = &self.owned.get_mut().join {
             join.abort();
-        }
-        if let Some(reclaim) = &self.owned.get_mut().reclaim {
-            reclaim.abort();
         }
         if let Some(report) = &self.owned.get_mut().report_join {
             report.abort();
