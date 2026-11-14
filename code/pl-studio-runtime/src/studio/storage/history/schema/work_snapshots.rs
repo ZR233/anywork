@@ -265,9 +265,9 @@ pub(in crate::studio::storage::history) mod tests {
     #[tokio::test]
     async fn fresh_store_initializes_current_snapshots_without_legacy_conversion() -> Result<()> {
         let (_dir, db) = fixture().await?;
-        super::initialize(&db).await?;
+        initialize_current(&db).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
-        super::validate(&db).await?;
+        super::super::display_block_order::validate(&db).await?;
         assert_eq!(conversation::display::watermarks(&db).await?, (0, 0));
         Ok(())
     }
@@ -336,8 +336,8 @@ pub(in crate::studio::storage::history) mod tests {
         db.execute_unprepared("UPDATE history_meta SET schema_version=21 WHERE id=1")
             .await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, 22);
-        super::validate(&db).await?;
+        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        super::super::display_block_order::validate(&db).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         assert!(
         db.query_one_raw(statement(

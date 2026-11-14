@@ -91,7 +91,7 @@ void main() {
       blocks: [
         LiveDisplayBlock(
           id: 'live',
-          blockOrder: 1,
+          blockOrder: feed.readyFrontier + 1,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
             visibility: SingleVisibility.content,

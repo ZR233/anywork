@@ -172,7 +172,9 @@ impl TimelineBatch {
             let current_id = current.next().map(|block| block.id.as_str());
             live.ready_frontier == self.through_order
                 && live.blocks.iter().all(|block| {
-                    let ordered = block.block_order > order;
+                    let ordered = block.block_order > order
+                        && block.block_order > live.ready_frontier
+                        && block.block_order <= i64::MAX as u64;
                     order = block.block_order;
                     ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
                 })

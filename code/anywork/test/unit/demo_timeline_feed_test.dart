@@ -157,7 +157,7 @@ void main() {
           for (var i = 1; i <= 3; i++)
             LiveDisplayBlock(
               id: 'live-$i',
-              blockOrder: i,
+              blockOrder: 3 + i,
               body: SingleDisplayBlock(
                 visibility: SingleVisibility.content,
                 record: DisplayRecord(
@@ -451,7 +451,7 @@ void main() {
           for (var i = 1; i <= 2; i++)
             LiveDisplayBlock(
               id: 'handoff-$i',
-              blockOrder: i,
+              blockOrder: 3 + i,
               body: SingleDisplayBlock(
                 visibility: SingleVisibility.content,
                 record: DisplayRecord(
@@ -515,7 +515,7 @@ void main() {
         blocks: [
           LiveDisplayBlock(
             id: id,
-            blockOrder: through,
+            blockOrder: through + 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -599,7 +599,7 @@ void main() {
           blocks: [
             LiveDisplayBlock(
               id: ref.blockId,
-              blockOrder: 1,
+              blockOrder: 4,
               body: body,
               state: DisplayBlockState.sealed,
             ),
@@ -710,7 +710,7 @@ void main() {
           blocks: [
             LiveDisplayBlock(
               id: ref.blockId,
-              blockOrder: 1,
+              blockOrder: 4,
               body: original,
               state: DisplayBlockState.sealed,
             ),
@@ -861,7 +861,7 @@ void main() {
         blocks: [
           LiveDisplayBlock(
             id: ref.blockId,
-            blockOrder: 1,
+            blockOrder: 4,
             body: WorkDisplayBlock(timing: displayTiming(), members: ref),
             state: DisplayBlockState.open,
           ),

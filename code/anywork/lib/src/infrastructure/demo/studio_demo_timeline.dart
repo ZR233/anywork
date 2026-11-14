@@ -10,6 +10,7 @@ final class _DemoDisplayScript {
   final bool work;
   final String? turnId;
   bool sealed = false;
+  int? blockOrder;
   final int startedAt;
   int? finishedAt;
 }
@@ -87,6 +88,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     final entry = completed[itemId];
     final atom = entry?.atom ?? activeAtoms[itemId];
     if (atom == null) return;
+    script.blockOrder ??= ++displayLastOrder;
     final heads = displayHeads.putIfAbsent(displayRef(id), () => []);
     final order = script.memberIds.indexOf(itemId) + 1;
     final index = heads.indexWhere((h) => h.memberKey == itemId);
@@ -218,6 +220,28 @@ extension _DemoDisplayHistory on _DemoHistory {
     );
   }
 
+  void advanceDisplayFrontier() {
+    var frontier = displayLastOrder;
+    for (final script in displayScripts.values) {
+      if (!script.sealed &&
+          script.blockOrder != null &&
+          script.blockOrder! - 1 < frontier) {
+        frontier = script.blockOrder! - 1;
+      }
+    }
+    for (final block in displayLiveSeed?.blocks ?? <LiveDisplayBlock>[]) {
+      if (block.state == DisplayBlockState.open &&
+          !displayBlocks.any((saved) => saved.id == block.id) &&
+          block.blockOrder - 1 < frontier) {
+        frontier = block.blockOrder - 1;
+      }
+    }
+    if (frontier < displayReadyFrontier) {
+      throw _demoQueryFailure('Display ready frontier regressed');
+    }
+    displayReadyFrontier = frontier;
+  }
+
   void sealDisplay(String id) {
     final script = displayScripts[id]!;
     if (script.sealed) return;
@@ -238,10 +262,12 @@ extension _DemoDisplayHistory on _DemoHistory {
     displayBlocks.add(
       DisplayBlock(
         id: id,
-        blockOrder: displayHead + 1,
+        blockOrder: script.blockOrder!,
         body: scriptBody(script),
       ),
     );
+    displayBlocks.sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
+    advanceDisplayFrontier();
     if (displayCurrentWorkId == id) displayCurrentWorkId = null;
     displayRevision++;
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
@@ -295,7 +321,14 @@ extension _DemoDisplayHistory on _DemoHistory {
     final existingBodies = {
       for (final block in liveBlocks()) block.id: block.body,
     };
-    void validateIdentity(String id, DisplayBlockBody body) {
+    final existingOrders = {
+      for (final block in liveBlocks()) block.id: block.blockOrder,
+    };
+    void validateIdentity(String id, DisplayBlockBody body, int order) {
+      final previousOrder = existingOrders[id];
+      if (previousOrder != null && previousOrder != order) {
+        throw _demoDisplayIdentityFailure;
+      }
       final script = displayScripts[id];
       if (script != null &&
           (script.work != (body is WorkDisplayBlock) ||
@@ -313,7 +346,7 @@ extension _DemoDisplayHistory on _DemoHistory {
       if (block.blockOrder <= through || !ids.add(block.id)) {
         throw _demoQueryFailure('Duplicate or unordered display fixture');
       }
-      validateIdentity(block.id, block.body);
+      validateIdentity(block.id, block.body, block.blockOrder);
       if (block.body case WorkDisplayBlock(:final members)) {
         if (members.databaseId != epoch || members.blockId != block.id) {
           throw _demoStale();
@@ -331,10 +364,11 @@ extension _DemoDisplayHistory on _DemoHistory {
     for (final block in live?.blocks ?? <LiveDisplayBlock>[]) {
       if (block.id.isEmpty ||
           !liveIds.add(block.id) ||
-          block.blockOrder <= liveOrder) {
+          block.blockOrder <= liveOrder ||
+          block.blockOrder <= through) {
         throw _demoQueryFailure('Invalid explicit live display order');
       }
-      validateIdentity(block.id, block.body);
+      validateIdentity(block.id, block.body, block.blockOrder);
       if (block.body case WorkDisplayBlock(:final members)) {
         if (members.databaseId != epoch || members.blockId != block.id) {
           throw _demoStale();
@@ -377,6 +411,18 @@ extension _DemoDisplayHistory on _DemoHistory {
         reference.blockId,
     };
     displayBlocks.addAll(blocks);
+    displayBlocks.sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
+    displayReadyFrontier = through;
+    for (final block in blocks) {
+      if (block.blockOrder > displayLastOrder) {
+        displayLastOrder = block.blockOrder;
+      }
+    }
+    for (final block in live?.blocks ?? <LiveDisplayBlock>[]) {
+      if (block.blockOrder > displayLastOrder) {
+        displayLastOrder = block.blockOrder;
+      }
+    }
     if (blocks.any((block) => block.id == displayCurrentWorkId)) {
       displayCurrentWorkId = null;
     }
@@ -399,6 +445,15 @@ extension _DemoDisplayHistory on _DemoHistory {
     ...?displayLiveSeed?.blocks.where(
       (b) => !displayBlocks.any((s) => s.id == b.id),
     ),
+    for (final block in displayBlocks.where(
+      (block) => block.blockOrder > displayHead,
+    ))
+      LiveDisplayBlock(
+        id: block.id,
+        blockOrder: block.blockOrder,
+        body: block.body,
+        state: DisplayBlockState.sealed,
+      ),
     for (final script in displayScripts.values)
       if (!script.sealed &&
           (displayHeads[displayRef(script.id)]?.isNotEmpty ?? false))
@@ -407,10 +462,7 @@ extension _DemoDisplayHistory on _DemoHistory {
           source: script.turnId == null
               ? null
               : ForegroundTurnChatSource(turnId: script.turnId!),
-          blockOrder:
-              (displayLiveSeed?.blocks.lastOrNull?.blockOrder ?? 0) +
-              displayScripts.keys.toList().indexOf(script.id) +
-              1,
+          blockOrder: script.blockOrder!,
           hasUnfinishedMembers:
               (displayHeads[displayRef(script.id)] ??
                       const <DisplayMemberHead>[])
@@ -420,7 +472,7 @@ extension _DemoDisplayHistory on _DemoHistory {
           body: scriptBody(script),
           state: DisplayBlockState.open,
         ),
-  ];
+  ]..sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
 }
 
 Object _displayRecordJson(DisplayRecord record) => {
@@ -599,7 +651,7 @@ extension _DemoTimelineReader on _DemoReader {
         ? h0 + 1
         : boundary(before, 'display-history', h0);
     final records = _history.displayBlocks
-        .where((b) => b.blockOrder < end)
+        .where((b) => b.blockOrder < end && b.blockOrder <= h0)
         .toList();
     DisplayBlock fitted(DisplayBlock b) => DisplayBlock(
       id: b.id,
@@ -720,6 +772,9 @@ extension _DemoTimelineReader on _DemoReader {
       }
       selected.add(candidate);
       through = b.blockOrder;
+    }
+    if (selected.length < demand.maxItems && records.length == selected.length) {
+      through = target.readyFrontier;
     }
     // A partial append carries no live replacement: it cannot retire an ID
     // before the matching sealed block reaches the consumer.

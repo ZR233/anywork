@@ -472,7 +472,9 @@ final class ConversationContentImpl implements TimelineContent {
             valid &&
             block.id.isNotEmpty &&
             ids.add(block.id) &&
-            block.blockOrder > order;
+            block.blockOrder > order &&
+            block.blockOrder > incoming.readyFrontier &&
+            block.blockOrder <= 0x7fffffffffffffff;
         order = block.blockOrder;
         if (block.state == DisplayBlockState.open &&
             block.body is WorkDisplayBlock) {

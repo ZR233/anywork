@@ -547,7 +547,9 @@ final class _DemoHistory {
   String? displayCurrentWorkId;
   int displayRevision = 0;
   bool displayExecutionPresent = false;
-  int get displayHead => displayBlocks.lastOrNull?.blockOrder ?? 0;
+  int displayLastOrder = 0;
+  int displayReadyFrontier = 0;
+  int get displayHead => displayReadyFrontier;
   // Original completion consumers retain their own ordered envelopes and Run
   // fixtures. GUI display positions and grouping are declared separately above.
   final List<CompletedEntry> displayItems = [];

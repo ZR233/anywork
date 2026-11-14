@@ -3287,7 +3287,7 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 
 #[cfg(test)]
 pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTrait) -> Result<()> {
-    if matches!(schema::version(db).await?, 22..=22) {
+    if matches!(schema::version(db).await?, 22..=23) {
         // A current fixture may also contain an open Work with no immutable completion.
         // Prove every original/display collection empty before dropping any current display structure.
         for table in [
@@ -3305,13 +3305,19 @@ pub(super) async fn restore_empty_pre_completion_fixture(db: &impl ConnectionTra
                 .try_get("", "count")?;
             ensure!(count == 0, "legacy fixture must not discard {table} facts");
         }
+        if schema::version(db).await? == 23 {
+            db.execute_unprepared("ALTER TABLE history_meta DROP COLUMN display_last_order")
+                .await?;
+        } else {
+            db.execute_unprepared("ALTER TABLE history_meta RENAME COLUMN display_published_through TO display_ready_frontier").await?;
+        }
         db.execute_unprepared(
             "DROP TABLE conversation_display_members;
              DROP TABLE conversation_display_blocks;
              ALTER TABLE history_meta DROP COLUMN display_ready_frontier;
              ALTER TABLE history_meta DROP COLUMN display_applied_effect;
              DELETE FROM seaql_migrations
-             WHERE version IN ('m20261113_000001_work_snapshots');
+             WHERE version IN ('m20261113_000001_work_snapshots','m20261113_000002_display_block_order');
              UPDATE history_meta SET schema_version=18 WHERE id=1;",
         )
         .await?;

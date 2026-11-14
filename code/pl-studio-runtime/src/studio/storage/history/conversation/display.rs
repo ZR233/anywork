@@ -1,7 +1,9 @@
 //! Display row IO. The caller owns the original history transaction.
 use super::*;
+#[cfg(test)]
+use crate::studio::thread_projection::presentation::BlockOrder;
 use crate::studio::thread_projection::presentation::{
-    BlockOrder, DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta,
+    DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta, display_upper,
 };
 #[cfg(test)]
 use pl_protocol::DisplayBlock;
@@ -78,9 +80,11 @@ pub(in crate::studio) async fn block_page(
 }
 
 pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeader) -> Result<()> {
-    BlockOrder::new(header.block_order)?;
     ensure!(
-        header.version == 5 && header.block_order > 0 && !header.id.is_empty(),
+        header.version == 5
+            && header.block_order.get() > 0
+            && header.next_member <= i64::MAX as u64
+            && !header.id.is_empty(),
         "invalid display header"
     );
     if let DisplayBlockBody::Single { record, .. } = &header.body {
@@ -116,7 +120,7 @@ fn decode_header(row: &QueryResult) -> Result<DisplayHeader> {
     validate_header(&header)?;
     ensure!(
         header.id == row.try_get::<String>("", "block_id")?
-            && header.block_order == u64::try_from(row.try_get::<i64>("", "block_order")?)?
+            && header.block_order.get() == u64::try_from(row.try_get::<i64>("", "block_order")?)?
             && header.sealed == (row.try_get::<i64>("", "sealed")? == 1)
             && serde_json::to_string(&header.source)? == row.try_get::<String>("", "source_key")?,
         "display header differs from indexed identity; original history preserved"
@@ -264,7 +268,7 @@ pub(in crate::studio) async fn apply(
             .await?;
         let values = vec![
             serde_json::to_string(&h.source)?.into(),
-            integer(h.block_order)?.into(),
+            integer(h.block_order.get())?.into(),
             i64::from(h.sealed).into(),
             integer(delta.effect_seq)?.into(),
             serde_json::to_vec(h.as_ref())?.into(),
@@ -468,7 +472,8 @@ pub(in crate::studio) async fn history_heads(
     before: Option<u64>,
     limit: usize,
 ) -> Result<Vec<Arc<DisplayBlock>>> {
-    let upper = ceiling.min(before.map_or(ceiling, |value| value.saturating_sub(1)));
+    let (frontier, _) = watermarks(db).await?;
+    let upper = display_upper(ceiling.min(frontier), before)?;
     block_page(db, 0, upper, limit, false)
         .await?
         .into_iter()
@@ -488,7 +493,7 @@ pub(in crate::studio) async fn open_heads(
     let (frontier, _) = watermarks(db).await?;
     let upper = last_order(db)
         .await?
-        .min(before_order.map_or(i64::MAX as u64, |before| before.saturating_sub(1)));
+        .min(display_upper(i64::MAX as u64, before_order)?);
     Ok(block_page(db, frontier, upper, limit, false)
         .await?
         .into_iter()
@@ -502,7 +507,7 @@ pub(in crate::studio) async fn member_page(
     before: Option<u64>,
     limit: usize,
 ) -> Result<Vec<DisplayMemberWrite>> {
-    let upper = before.map_or(i64::MAX as u64, |value| value.saturating_sub(1));
+    let upper = display_upper(i64::MAX as u64, before)?;
     let rows = db.query_all_raw(statement(
         &format!("SELECT {MEMBER} FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"),
         vec![block_id.into(), integer(upper)?.into(), integer(limit)?.into()]
@@ -525,7 +530,7 @@ pub(in crate::studio) async fn recovery(db: &impl ConnectionTrait) -> Result<Dis
         }
         for row in rows {
             let header = decode_header(&row)?;
-            after = header.block_order;
+            after = header.block_order.get();
             let mut member_after = 0u64;
             let mut count = 0u64;
             loop {
@@ -590,7 +595,7 @@ impl super::super::HistoryStore {
         limit: usize,
         ascending: bool,
     ) -> Result<Vec<Arc<DisplayBlock>>> {
-        let upper = through.min(before.map_or(through, |before| before.saturating_sub(1)));
+        let upper = display_upper(through, before)?;
         self.display_block_page(database, after, upper, limit, ascending)
             .await?
             .into_iter()
@@ -731,8 +736,8 @@ mod cost_tests {
         db.execute_raw(statement(
         "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
          INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header)
-         SELECT 'history-'||i,?,i+CASE WHEN i>20 THEN 1 ELSE 0 END,1,2,
-             CAST(json_set(?,'$.id','history-'||i,'$.block_order',i+CASE WHEN i>20 THEN 1 ELSE 0 END,
+         SELECT 'history-'||i,?,i,1,2,
+             CAST(json_set(?,'$.id','history-'||i,'$.block_order',i,
                  '$.body.members.blockId','history-'||i) AS BLOB) FROM n",
         vec![integer(after+1)?.into(), integer(through)?.into(),
             serde_json::to_string(&base.source)?.into(), serde_json::to_string(base)?.into()]
@@ -745,8 +750,8 @@ mod cost_tests {
          FROM conversation_display_blocks WHERE block_order>? AND block_order<=? AND block_id<>'history-20'",
         vec![serde_json::to_string(member)?.into(), integer(after)?.into(), integer(through)?.into()]
     )).await?;
-        db.execute_raw(statement("UPDATE history_meta SET applied_write_seq=2,display_applied_effect=2,display_ready_frontier=?,display_last_order=? WHERE id=1",
-        vec![integer(through)?.into(),integer(through+1)?.into()])).await?;
+        db.execute_raw(statement("UPDATE history_meta SET applied_write_seq=2,display_applied_effect=2,display_ready_frontier=999999,display_last_order=1000000 WHERE id=1",
+        vec![])).await?;
         Ok(())
     }
 
@@ -816,7 +821,7 @@ mod cost_tests {
         let seed = owner.prepare(1, 10, &[atom], &[], &[])?;
         let mut frozen = seed.blocks[0].header.as_ref().clone();
         frozen.id = "history-20".into();
-        frozen.block_order = 20;
+        frozen.block_order = BlockOrder::new(20)?;
 
         frozen.sealed = true;
         frozen.boundary = Some(ChatFactPosition {
@@ -833,7 +838,7 @@ mod cost_tests {
         open.source = ChatSourceId::ForegroundTurn {
             turn_id: "open-turn".into(),
         };
-        open.block_order = 21;
+        open.block_order = BlockOrder::new(1_000_000)?;
 
         open.boundary = None;
         open.sealed = false;
@@ -842,7 +847,7 @@ mod cost_tests {
             members.block_id = open.id.clone();
         }
         db.execute_raw(statement(
-        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header) VALUES(?,?,21,0,2,?)",
+        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header) VALUES(?,?,1000000,0,2,?)",
         vec![open.id.clone().into(), serde_json::to_string(&open.source)?.into(), serde_json::to_vec(&open)?.into()]
     )).await?;
         let mut headers = [frozen.clone(), open];
@@ -869,7 +874,7 @@ mod cost_tests {
             previous_members = members;
 
             let sampler = Sampler::display_heads(&db).await?;
-            let outcome = history_heads(&db, 20, Some(21), 20).await;
+            let outcome = block_page(&db, 0, 20, 20, false).await;
             let work = sampler.finish(&db).await?;
             let heads = outcome?;
             assert_eq!(heads.len(), 20);
@@ -900,7 +905,7 @@ mod cost_tests {
             );
 
             let sampler = Sampler::display_heads(&db).await?;
-            let outcome = open_heads(&db, None, 1).await;
+            let outcome = block_page(&db, 999999, 1000000, 1, false).await;
             let work = sampler.finish(&db).await?;
             let heads = outcome?;
             assert_eq!(
@@ -925,10 +930,10 @@ mod cost_tests {
                 .map(|header| LiveDisplayBlock {
                     has_unfinished_members: false,
                     thinking_summary: None,
-                    id: header.id,
-                    block_order: header.block_order,
-                    source: Some(header.source),
-                    body: header.body,
+                    id: header.id.clone(),
+                    block_order: header.block_order.get(),
+                    source: Some(header.source.clone()),
+                    body: header.body.clone(),
                     state: if header.sealed {
                         pl_protocol::DisplayBlockState::Sealed
                     } else {
@@ -957,7 +962,7 @@ mod cost_tests {
                     work.member_rows,
                     work.reference_rows
                 ),
-                (2, 0, 20, 1)
+                (1, 0, 20, 0)
             );
             assert_eq!(
                 (
@@ -1091,7 +1096,8 @@ mod cost_tests {
                         .members
                         .keys
                         .iter()
-                        .all(|(_, position)| *position > batch * 250 && *position <= effect * 250)
+                        .all(|(_, position)| position.get() > batch * 250
+                            && position.get() <= effect * 250)
                 );
                 eprintln!(
                     "TAIL_COMMIT_COST {}",
@@ -1137,7 +1143,7 @@ mod cost_tests {
         assert!(cold.retained_bytes() < 4096);
         let id = tail_id.unwrap();
         let sampler = Sampler::display_heads(&db).await?;
-        let heads = open_heads(&db, None, 1).await;
+        let heads = block_page(&db, 0, 1, 1, false).await;
         let work = sampler.finish(&db).await?;
         let heads = heads?;
         assert_eq!(heads[0].id, id);

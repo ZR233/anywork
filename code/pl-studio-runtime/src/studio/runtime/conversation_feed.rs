@@ -2260,7 +2260,7 @@ pub(super) mod tests {
                 )
                 .await
             }
-            async fn effect_phases(
+            pub(in crate::studio::runtime) async fn effect_phases(
                 &mut self,
                 starts: Vec<ModelStartedMember>,
                 visible: Vec<ModelContentAvailableMember>,

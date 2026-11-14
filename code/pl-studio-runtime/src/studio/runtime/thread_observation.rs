@@ -4847,7 +4847,7 @@ mod storage_fault_tests {
                     before: None,
                     limit: 2,
                     after: None,
-                    pending: 2,
+                    history_limit: 2,
                 })
                 .await?
             else {

@@ -8,7 +8,7 @@ use super::{
     conversation_reader::{PresentationTokens, ReadObservation, cancelled, resync},
     presentation_feed::history_batch,
 };
-use crate::studio::thread_projection::presentation::DisplayHeader;
+use crate::studio::thread_projection::presentation::{BlockOrder, DisplayHeader, display_upper};
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
 use pl_protocol::DisplayBlockState;
@@ -22,7 +22,7 @@ use std::sync::Arc;
 pub(super) struct DisplayReadCut {
     pub published: u64,
     pub last_order: u64,
-    pub resident_block_floor: Option<u64>,
+    pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
     pub execution_present: bool,
     pub current_work_id: Option<String>,
@@ -36,19 +36,21 @@ impl ConversationReader {
         &self,
         live_before: Option<u64>,
         live_limit: usize,
-        pending_after: Option<u64>,
-        pending_limit: usize,
+        history_after: Option<u64>,
+        history_limit: usize,
     ) -> Result<DisplayReadCut> {
+        display_upper(i64::MAX as u64, live_before)?;
         let permit = self.resources().await?;
         let resources = permit.as_ref().ok_or_else(cancelled)?;
         use crate::studio::conversation_store::{ReadCut, ReadRequest};
+        let mut cold_page = false;
         let mut cut = match resources
             .conversation
             .capture(ReadRequest::Display {
                 before: live_before,
                 limit: live_limit,
-                after: pending_after,
-                pending: pending_limit,
+                after: history_after,
+                history_limit,
             })
             .await?
         {
@@ -70,6 +72,7 @@ impl ConversationReader {
                 history: cut.history,
             },
             ReadCut::Cold(Some(snapshot)) => {
+                cold_page = true;
                 let stored = snapshot
                     .display_cut(
                         resources.database_id.as_deref().ok_or_else(resync)?,
@@ -91,7 +94,7 @@ impl ConversationReader {
             ReadCut::Cold(None) => DisplayReadCut {
                 published: 0,
                 last_order: 0,
-                resident_block_floor: Some(1),
+                resident_block_floor: Some(BlockOrder::new(1)?),
                 revision: 0,
                 execution_present: false,
                 current_work_id: None,
@@ -104,11 +107,15 @@ impl ConversationReader {
         ensure!(cut.published <= cut.last_order, resync());
         let upper = cut
             .last_order
-            .min(live_before.map_or(cut.last_order, |before| before.saturating_sub(1)));
-        if cut.published < upper && live_limit > 0 {
-            let keys = cut.open.iter().map(|h| h.block_order).collect::<Vec<_>>();
+            .min(display_upper(cut.last_order, live_before)?);
+        if !cold_page && cut.published < upper && live_limit > 0 {
+            let keys = cut
+                .open
+                .iter()
+                .map(|h| h.block_order.get())
+                .collect::<Vec<_>>();
             if !crate::studio::thread_projection::presentation::covered_desc(
-                cut.resident_block_floor,
+                cut.resident_block_floor.map(BlockOrder::get),
                 cut.published,
                 &keys,
                 live_limit,
@@ -140,7 +147,7 @@ impl ConversationReader {
             .iter()
             .map(|header| LiveDisplayBlock {
                 id: header.id.clone(),
-                block_order: header.block_order,
+                block_order: header.block_order.get(),
                 source: Some(header.source.clone()),
                 body: header.body.clone(),
                 has_unfinished_members: header.unfinished > 0,
@@ -171,7 +178,7 @@ impl ConversationReader {
         before: Option<u64>,
         limit: usize,
     ) -> Result<Vec<DisplayBlock>> {
-        let upper = ceiling.min(before.map_or(ceiling, |before| before.saturating_sub(1)));
+        let upper = display_upper(ceiling, before)?;
         let heads = self
             .merge_display_history(cut, 0, upper, limit, false)
             .await?;
@@ -195,16 +202,19 @@ impl ConversationReader {
         let overlay = cut
             .history
             .iter()
-            .filter(|h| h.block_order > lower && h.block_order <= upper)
+            .filter(|h| h.block_order.get() > lower && h.block_order.get() <= upper)
             .cloned()
             .collect::<Vec<_>>();
-        let keys = overlay.iter().map(|h| h.block_order).collect::<Vec<_>>();
+        let keys = overlay
+            .iter()
+            .map(|h| h.block_order.get())
+            .collect::<Vec<_>>();
         let complete = if ascending {
             cut.resident_block_floor
-                .is_some_and(|floor| lower >= floor - 1)
+                .is_some_and(|floor| lower >= floor.get() - 1)
         } else {
             crate::studio::thread_projection::presentation::covered_desc(
-                cut.resident_block_floor,
+                cut.resident_block_floor.map(BlockOrder::get),
                 lower,
                 &keys,
                 limit,
@@ -546,8 +556,8 @@ fn merge_headers(
 ) -> Vec<Arc<DisplayHeader>> {
     let mut rows = std::collections::BTreeMap::new();
     for header in saved.into_iter().chain(overlay) {
-        if header.block_order > lower && header.block_order <= upper {
-            rows.insert(header.block_order, header);
+        if header.block_order.get() > lower && header.block_order.get() <= upper {
+            rows.insert(header.block_order.get(), header);
         }
     }
     let mut result = if ascending {
@@ -555,7 +565,7 @@ fn merge_headers(
     } else {
         rows.into_values().rev().take(limit).collect()
     };
-    result.sort_by_key(|h| h.block_order);
+    result.sort_by_key(|h| h.block_order.get());
     result
 }
 

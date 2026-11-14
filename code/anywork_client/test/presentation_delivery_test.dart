@@ -40,7 +40,7 @@ LiveDisplayWindow _live(List<String> ids, {int pos = 0, int revision = 1}) =>
         for (var i = 0; i < ids.length; i++)
           LiveDisplayBlock(
             id: ids[i],
-            blockOrder: i + 1,
+            blockOrder: pos + i + 1,
             body: _body(ids[i]),
             state: DisplayBlockState.sealed,
           ),
@@ -179,6 +179,51 @@ Future<DisplayMemberPage?> _deliverMemberPage(
 }
 
 void main() {
+  test('v6 accepts sparse orders and advances an empty checked suffix without replacing prior history', () async {
+    final h = _Harness();
+    addTearDown(h.close);
+    final feed = await h.open();
+    await feed.deliver(ConversationTimelineEvent(batch: _set(live: const [])));
+    await feed.deliver(
+      ConversationTimelineEvent(
+        batch: TimelineBatch(
+          presentationVersion: presentationVersion,
+          placement: ChatPlacement.append,
+          blocks: [_block('order-3', 3)],
+          fromOrder: 0,
+          throughOrder: 3,
+        ),
+      ),
+    );
+    await feed.deliver(
+      ConversationTimelineEvent(
+        batch: TimelineBatch(
+          presentationVersion: presentationVersion,
+          placement: ChatPlacement.append,
+          blocks: const [],
+          fromOrder: 3,
+          throughOrder: 10,
+          live: _live(const [], pos: 10),
+        ),
+      ),
+    );
+    expect(
+      h.consumer.values
+          .map(
+            (entry) =>
+                entry.$1.blocks.map((block) => block.blockOrder).toList(),
+          )
+          .toList(),
+      <List<int>>[
+        <int>[],
+        <int>[3],
+        <int>[],
+      ],
+    );
+    expect(h.consumer.values.last.$1.throughOrder, 10);
+    expect(feed.acknowledgements, [1, 2, 3]);
+  });
+
   test('#364 current Work survives split max_items=1, older pages and P-unchanged updates', () async {
     final h = _Harness();
     addTearDown(h.close);

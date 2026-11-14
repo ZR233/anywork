@@ -106,6 +106,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -134,6 +135,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|step| !matches!(step.name(), TIMELINE_ITEMS))
@@ -159,6 +161,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .collect()
@@ -848,6 +851,7 @@ mod tests {
                 COMPLETION_BOUNDARY,
                 IMMUTABLE_COMPLETION_RUNS,
                 WORK_SNAPSHOTS,
+                DISPLAY_BLOCK_ORDER,
             ];
             assert_eq!(latest.len(), upgraded_ledger.len() + appended_steps.len());
             for step in appended_steps {
@@ -1098,12 +1102,12 @@ mod tests {
         let applied_ledger = migration_records(db).await?;
         assert_eq!(
             applied_ledger.len(),
-            original_ledger.len() + 7,
-            "content preparation appends the seven named content/display upgrades, not lifecycle migrations"
+            original_ledger.len() + 8,
+            "content preparation appends the eight named content/display upgrades, not lifecycle migrations"
         );
         let new_steps = db
         .query_all_raw(statement(
-            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?) ORDER BY version",
+            "SELECT version FROM seaql_migrations WHERE version IN (?,?,?,?,?,?,?,?) ORDER BY version",
             vec![
                 TIMELINE_ITEMS.into(),
                 TIMELINE_THINKING_SUMMARY.into(),
@@ -1112,6 +1116,7 @@ mod tests {
                 TIMELINE_BACKGROUND_TAIL.into(),
                 IMMUTABLE_COMPLETION_RUNS.into(),
                 WORK_SNAPSHOTS.into(),
+                DISPLAY_BLOCK_ORDER.into(),
             ],
         ))
         .await?
@@ -1127,7 +1132,8 @@ mod tests {
                 COMPLETION_BOUNDARY,
                 TIMELINE_BACKGROUND_TAIL,
                 IMMUTABLE_COMPLETION_RUNS,
-                WORK_SNAPSHOTS
+                WORK_SNAPSHOTS,
+                DISPLAY_BLOCK_ORDER
             ]
         );
         for record in &original_ledger {

@@ -342,17 +342,11 @@ pub(super) fn history_batch(
     let mut previous = 0;
     for block in &blocks {
         ensure!(
-            block.block_order > previous
-                && block.block_order <= through
-                && (previous == 0 || previous.checked_add(1) == Some(block.block_order)),
+            block.block_order > previous && block.block_order <= through,
             resync()
         );
         previous = block.block_order;
     }
-    ensure!(
-        !matches!(placement, ChatPlacement::Set) || previous == through,
-        resync()
-    );
     let batch = TimelineBatch {
         presentation_version: PRESENTATION_VERSION,
         placement,
@@ -483,8 +477,8 @@ mod tests {
     fn rejected_prefix_and_byte_budget_do_not_advance_delivery() -> Result<()> {
         let mut delivery = TimelineDelivery::new(0);
         delivery.capture(live(2, &[3]))?;
-        assert!(delivery.append(vec![], demand(1)).is_err());
-        assert!(delivery.append(vec![block(2)], demand(1)).is_err());
+        assert!(delivery.append_page(vec![], 0, demand(1)).is_err());
+        assert!(delivery.append(vec![block(3)], demand(1)).is_err());
         assert!(
             delivery
                 .append(vec![block(1), block(2)], demand(1))
@@ -503,6 +497,28 @@ mod tests {
         assert_eq!(delivery.target_through(), Some(2));
         let final_frame = delivery.append(vec![block(2)], demand(1))?;
         assert!(final_frame.live.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn sparse_history_and_checked_empty_suffix_advance_to_the_captured_frontier() -> Result<()> {
+        let window = live(9, &[10]);
+        let set = history_batch(
+            ChatPlacement::Set,
+            vec![block(2), block(7)],
+            None,
+            9,
+            Some(window.clone()),
+            demand(2),
+        )?;
+        assert_eq!(set.through_order, 9);
+        let mut delivery = TimelineDelivery::new(0);
+        delivery.capture(window.clone())?;
+        let prefix = delivery.append_page(vec![block(2), block(7)], 7, demand(2))?;
+        assert!(prefix.live.is_none());
+        let suffix = delivery.append_page(Vec::new(), 9, demand(1))?;
+        assert_eq!(suffix.live, Some(window));
+        assert_eq!(delivery.delivered(), 9);
         Ok(())
     }
 
@@ -1088,6 +1104,82 @@ mod tests {
                 .unwrap()
                 .confirm(prepared.sequence);
             Ok(())
+        }
+
+        #[tokio::test]
+        async fn ready_frontier_merges_reclaimed_waiting_blocks_with_newly_frozen_ram_head()
+        -> Result<()> {
+            let env = Environment::new(vec![], vec![]).await?;
+            let result = async {
+                async fn complete_visible(
+                    h: &mut Harness, id: &str, text: &str,
+                ) -> Result<std::sync::Arc<crate::studio::thread_projection::PreparedEffect>> {
+                    let started = start(id, false);
+                    let visible = pl_core::model::ModelContentAvailableMember {
+                        turn_id: started.turn_id.clone(), attempt_id: started.attempt_id.clone(),
+                        generation: started.generation, identity: started.identity.clone(),
+                    };
+                    h.effect_phases(vec![started], vec![visible], vec![finish(id, false, text)?],
+                        pl_core::thread::TurnState::Running).await
+                }
+                let mut h = Harness::new(&env).await?;
+                for index in 1..=10 {
+                    let effect = complete_visible(&mut h, &format!("prefix-{index}"), "visible original").await?;
+                    if index == 1 {
+                        let mut resident = env.runtime.open_timeline_feed(&h.thread.id, demand(1)).await?;
+                        let before = h.history.reader_calls();
+                        let all_ram = resident.reader().initial_timeline(demand(1)).await?;
+                        assert_eq!(all_ram.blocks[0].block_order, 1);
+                        assert_eq!(h.history.reader_calls(), before,
+                            "complete resident range must not enter SQLite, COUNT, or existence IO");
+                        resident.reader().close().await?;
+                        resident.close().await?;
+                    }
+                    persist(&h, &effect).await?;
+                }
+                let started = h.effect(vec![start("blocked", false)], vec![]).await?;
+                persist(&h, &started).await?;
+                let visible = h.content_available(vec![start("blocked", false)]).await?;
+                persist(&h, &visible).await?;
+                let waiting = h.effect(vec![start("waiting-work", true)], vec![]).await?;
+                persist(&h, &waiting).await?;
+                let boundary = complete_visible(&mut h, "later-single", "later visible original").await?;
+                persist(&h, &boundary).await?;
+                assert_eq!(boundary.display.as_ref().unwrap().ready_frontier, 10);
+                let waiting_heads = boundary.display.as_ref().unwrap().blocks.iter()
+                    .filter(|block| block.header.sealed)
+                    .map(|block| std::sync::Arc::downgrade(&block.header)).collect::<Vec<_>>();
+                drop((visible, waiting, boundary));
+                assert!(waiting_heads.iter().all(|head| head.upgrade().is_none()),
+                    "durable waiting heads must leave RAM before the frontier passes them");
+                let mut feed = env.runtime.open_timeline_feed(&h.thread.id, demand(3)).await?;
+                let initial = timeline(&mut feed).await?;
+                assert_eq!(initial.through_order, 10);
+                let pending = h.effect(vec![], vec![finish("blocked", false, "final authoritative text")?]).await?;
+                assert_eq!(pending.display.as_ref().unwrap().ready_frontier, 13);
+                let reads = h.history.reader_calls();
+                let page = feed.reader().timeline_append_heads(10, 13, demand(3)).await?;
+                assert_eq!(page.iter().map(|head| head.block_order).collect::<Vec<_>>(), [11, 12, 13]);
+                assert_eq!(h.history.reader_calls() - reads, 1,
+                    "reclaimed waiting rows require one bounded DB page");
+                assert!(matches!(&page[0].body, DisplayBlockBody::Single { record, .. }
+                    if matches!(record.content_source, pl_protocol::DisplayContentSource::CompletedOriginal { .. })));
+                let appended = timeline(&mut feed).await?;
+                assert_eq!(appended.blocks, page);
+                persist(&h, &pending).await?;
+                feed.reader().close().await?;
+                feed.close().await?;
+                h.conversation.retire_test_execution();
+                env.runtime.thread_observations.observation_slot(&h.thread.id).retire(&h.source);
+                let mut cold = env.runtime.open_timeline_feed(&h.thread.id, demand(3)).await?;
+                let reopened = timeline(&mut cold).await?;
+                assert_eq!(reopened.blocks, page);
+                assert_eq!(reopened.through_order, 13);
+                cold.reader().close().await?;
+                cold.close().await?;
+                Ok(())
+            }.await;
+            env.finish(result).await
         }
 
         #[tokio::test]
@@ -1862,7 +1954,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn v364_applied_bad_original_reference_is_rejected_on_member_read_without_rebuilding()
+        async fn missing_original_is_rejected_by_explicit_content_read_without_rebuilding()
         -> Result<()> {
             use sea_orm::{ConnectionTrait, Database};
             let env = Environment::new(vec![], vec![]).await?;
@@ -1903,12 +1995,11 @@ mod tests {
                     .conversation_database_id()
                     .await?
                     .context("database")?;
-                assert!(
-                    h.history
-                        .display_member_page(&database, &member.block_id, None, 1, None)
-                        .await
-                        .is_err()
-                );
+                let page=h.history.display_member_page(&database,&member.block_id,None,1,None).await?;
+                assert!(matches!(&page.entries[0].head.record.content_source,pl_protocol::DisplayContentSource::CompletedOriginal { completion_id } if completion_id=="missing"));
+                let mut feed=env.runtime.open_timeline_feed(&h.thread.id,demand(1)).await?;
+                assert!(feed.reader().read_content(&pl_protocol::ContentRef {database_id:database.clone(),target:pl_protocol::ContentTarget::ItemPayload {item_id:"missing".into()}},pl_protocol::ContentRange {offset:0,max_bytes:1024}).await.is_err());
+                feed.reader().close().await?; feed.close().await?;
                 assert!(
                     pl_core::chat::ChatHistory::item(&h.history, &original)
                         .await?

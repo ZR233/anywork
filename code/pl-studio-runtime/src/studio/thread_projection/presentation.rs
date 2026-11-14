@@ -25,7 +25,7 @@ type PresentationMap<K, V> = BTreeMap<K, V>;
 pub(in crate::studio) type PresentationHandle = Arc<Mutex<PresentationState>>;
 
 /// Positive creation position, independent of completion and effect sequences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
 pub(in crate::studio) struct BlockOrder(u64);
 impl BlockOrder {
@@ -52,13 +52,22 @@ impl From<BlockOrder> for u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::studio) struct MemberOrder(u64);
+impl MemberOrder {
+    pub(in crate::studio) fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Persisted small header, never an array of member identities or bodies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::studio) struct DisplayHeader {
     pub version: u32,
     pub id: String,
     pub source: ChatSourceId,
-    pub block_order: u64,
+    pub block_order: BlockOrder,
     pub boundary: Option<ChatFactPosition>,
     pub first_content_at: Option<ChatFactPosition>,
     pub sealed: bool,
@@ -74,7 +83,7 @@ impl DisplayHeader {
     pub fn frozen(&self) -> Option<DisplayBlock> {
         self.sealed.then(|| DisplayBlock {
             id: self.id.clone(),
-            block_order: self.block_order,
+            block_order: self.block_order.get(),
             body: self.body.clone(),
         })
     }
@@ -184,7 +193,7 @@ pub(in crate::studio) struct DisplayInput<'a> {
 pub(in crate::studio) struct PresentationCut {
     pub published: u64,
     pub last_order: u64,
-    pub resident_block_floor: Option<u64>,
+    pub resident_block_floor: Option<BlockOrder>,
     pub revision: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
@@ -199,20 +208,20 @@ pub(in crate::studio) struct DisplayMemberCut {
 
 pub(in crate::studio) struct PresentationState {
     database: String,
-    open_work: Option<u64>,
-    blocks: PresentationMap<u64, Arc<DisplayHeader>>,
+    open_work: Option<BlockOrder>,
+    blocks: PresentationMap<BlockOrder, Arc<DisplayHeader>>,
     unready: BTreeSet<BlockOrder>,
-    block_versions: BTreeMap<u64, u64>,
-    member_versions: BTreeMap<(u64, u64), u64>,
-    block_batches: BTreeMap<u64, Vec<u64>>,
-    member_batches: BTreeMap<u64, Vec<(u64, u64)>>,
-    resident_block_floor: Option<u64>,
-    resident_member_floor: HashMap<u64, Option<u64>>,
-    by_id: HashMap<String, u64>,
-    members: PresentationMap<(u64, u64), Arc<DisplayMemberWrite>>,
-    current_work_rows: HashMap<String, (u64, u64)>,
-    open_texts: HashMap<String, (u64, u64)>,
-    unfinished_members: BTreeSet<(u64, u64)>,
+    block_versions: BTreeMap<BlockOrder, u64>,
+    member_versions: BTreeMap<(BlockOrder, MemberOrder), u64>,
+    block_batches: BTreeMap<u64, Vec<BlockOrder>>,
+    member_batches: BTreeMap<u64, Vec<(BlockOrder, MemberOrder)>>,
+    resident_block_floor: Option<BlockOrder>,
+    resident_member_floor: HashMap<BlockOrder, Option<MemberOrder>>,
+    by_id: HashMap<String, BlockOrder>,
+    members: PresentationMap<(BlockOrder, MemberOrder), Arc<DisplayMemberWrite>>,
+    current_work_rows: HashMap<String, (BlockOrder, MemberOrder)>,
+    open_texts: HashMap<String, (BlockOrder, MemberOrder)>,
+    unfinished_members: BTreeSet<(BlockOrder, MemberOrder)>,
     observations: BTreeMap<ChatContentKey, (u64, Arc<ChatContent>)>,
     observation_batches: BTreeMap<u64, Vec<ChatContentKey>>,
     published: u64,
@@ -223,6 +232,8 @@ pub(in crate::studio) struct PresentationState {
     applied_effect: u64,
     changes: Option<tokio::sync::watch::Sender<u64>>,
     retained: u64,
+    // Row payloads shared with the original reliable queue are charged there once.
+    shared_pending: u64,
 }
 
 impl Default for PresentationState {
@@ -236,7 +247,7 @@ impl Default for PresentationState {
             member_versions: Default::default(),
             block_batches: Default::default(),
             member_batches: Default::default(),
-            resident_block_floor: Some(1),
+            resident_block_floor: Some(BlockOrder(1)),
             resident_member_floor: Default::default(),
             by_id: Default::default(),
             members: Default::default(),
@@ -253,16 +264,37 @@ impl Default for PresentationState {
             applied_effect: Default::default(),
             changes: Default::default(),
             retained: Default::default(),
+            shared_pending: 0,
         }
     }
+}
+
+pub(in crate::studio) fn display_upper(ceiling: u64, before: Option<u64>) -> Result<u64> {
+    let upper = before
+        .map(|boundary| {
+            boundary.checked_sub(1).ok_or_else(|| {
+                pl_core::chat::ChatError::InvalidArgument(
+                    "display cursor boundary must be positive".into(),
+                )
+            })
+        })
+        .transpose()?;
+    Ok(upper.map_or(ceiling, |upper| ceiling.min(upper)))
 }
 
 pub(in crate::studio) fn successor(order: u64) -> Option<u64> {
     order.checked_add(1).filter(|next| *next <= i64::MAX as u64)
 }
-fn advance_floor(floor: &mut Option<u64>, removed: u64) {
+fn advance_block_floor(floor: &mut Option<BlockOrder>, removed: u64) {
     if let Some(old) = *floor {
-        *floor = successor(removed).map(|next| old.max(next));
+        *floor = successor(removed).map(BlockOrder).map(|next| old.max(next));
+    }
+}
+fn advance_member_floor(floor: &mut Option<MemberOrder>, removed: u64) {
+    if let Some(old) = *floor {
+        *floor = successor(removed)
+            .map(MemberOrder)
+            .map(|next| old.max(next));
     }
 }
 pub(in crate::studio) fn covered_desc(
@@ -283,8 +315,8 @@ pub(in crate::studio) struct PresentationPlan {
     next: PresentationState,
     delta: Arc<PreparedDisplayDelta>,
     keys: BTreeSet<String>,
-    positions: BTreeSet<(u64, u64)>,
-    old_work: Option<u64>,
+    positions: BTreeSet<(BlockOrder, MemberOrder)>,
+    old_work: Option<BlockOrder>,
 }
 
 // JSON's tuple encoding is unambiguous, including the typed source discriminant.
@@ -468,6 +500,18 @@ impl PresentationState {
             return;
         }
         let previous = header.thinking_summary.as_ref().map_or(0, String::len);
+        // This streaming replacement owns a new header allocation; the queued
+        // immutable header remains charged to its prepared effect until commit.
+        if self
+            .block_versions
+            .get(&order)
+            .is_some_and(|effect| *effect != 0)
+        {
+            self.shared_pending = self
+                .shared_pending
+                .saturating_sub(bytes(header.as_ref()).expect("validated header size"));
+            self.block_versions.insert(order, 0);
+        }
         let mut header = header.as_ref().clone();
         header.thinking_summary = Some(summary.to_owned());
         self.blocks.insert(order, Arc::new(header));
@@ -489,7 +533,7 @@ impl PresentationState {
         }
     }
 
-    fn location(&self, key: &str) -> Option<(u64, u64)> {
+    fn location(&self, key: &str) -> Option<(BlockOrder, MemberOrder)> {
         self.current_work_rows
             .get(key)
             .or_else(|| self.open_texts.get(key))
@@ -516,7 +560,7 @@ impl PresentationState {
     }
 
     pub fn retained_bytes(&self) -> u64 {
-        self.retained
+        self.retained.saturating_sub(self.shared_pending)
     }
 
     #[cfg(test)]
@@ -536,7 +580,11 @@ impl PresentationState {
         let header = self.blocks.get(&order)?.clone();
         let overlay = self.member_heads(block_id, before, limit);
         let complete = covered_desc(
-            self.resident_member_floor.get(&order).copied().flatten(),
+            self.resident_member_floor
+                .get(&order)
+                .copied()
+                .flatten()
+                .map(MemberOrder::get),
             0,
             &overlay
                 .iter()
@@ -558,31 +606,26 @@ impl PresentationState {
         after_order: Option<u64>,
         history_limit: usize,
     ) -> PresentationCut {
-        let mut open = self
-            .blocks
-            .range((
-                std::ops::Bound::Excluded(self.published),
-                std::ops::Bound::Excluded(
-                    before_order
-                        .unwrap_or(u64::MAX)
-                        .max(self.published.saturating_add(1)),
-                ),
-            ))
-            .rev()
-            .take(live_limit)
-            .map(|(_, h)| h.clone())
-            .collect::<Vec<_>>();
+        let tail_upper =
+            display_upper(self.next_order, before_order).expect("validated display boundary");
+        let mut open = if self.published < tail_upper {
+            self.blocks
+                .range(BlockOrder(self.published + 1)..=BlockOrder(tail_upper))
+                .rev()
+                .take(live_limit)
+                .map(|(_, h)| h.clone())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         open.reverse();
         let lower = after_order.unwrap_or(0);
         let upper = self
             .published
-            .min(before_order.map_or(self.published, |before| before.saturating_sub(1)));
+            .min(display_upper(self.published, before_order).expect("validated display boundary"));
         let mut history = Vec::new();
         if lower < upper && history_limit > 0 {
-            let range = self.blocks.range((
-                std::ops::Bound::Excluded(lower),
-                std::ops::Bound::Included(upper),
-            ));
+            let range = self.blocks.range(BlockOrder(lower + 1)..=BlockOrder(upper));
             history = if after_order.is_some() {
                 range.take(history_limit).map(|(_, h)| h.clone()).collect()
             } else {
@@ -592,7 +635,7 @@ impl PresentationState {
                     .map(|(_, h)| h.clone())
                     .collect()
             };
-            history.sort_by_key(|h| h.block_order);
+            history.sort_by_key(|h| h.block_order.get());
         }
         PresentationCut {
             published: self.published,
@@ -616,9 +659,13 @@ impl PresentationState {
         let Some(order) = self.by_id.get(block_id).copied() else {
             return Vec::new();
         };
+        let upper = display_upper(i64::MAX as u64, before).expect("validated member boundary");
+        if upper == 0 {
+            return Vec::new();
+        }
         let mut page = self
             .members
-            .range((order, 0)..(order, before.unwrap_or(u64::MAX)))
+            .range((order, MemberOrder(1))..=(order, MemberOrder(upper)))
             .rev()
             .take(limit)
             .map(|(_, m)| m.clone())
@@ -645,7 +692,7 @@ impl PresentationState {
         self.durable = published;
         self.next_order = next_order;
         self.applied_effect = effect;
-        self.resident_block_floor = successor(next_order);
+        self.resident_block_floor = successor(next_order).map(BlockOrder);
         for header in headers {
             ensure!(
                 !header.sealed && header.version == 5,
@@ -654,14 +701,16 @@ impl PresentationState {
             if !header.sealed && matches!(header.body, DisplayBlockBody::Work { .. }) {
                 ensure!(
                     self.open_work.replace(header.block_order).is_none()
-                        && header.block_order == next_order,
+                        && header.block_order.get() == next_order,
                     "multiple open work blocks"
                 );
             }
             self.retained += header_bytes(&header)?;
-            self.unready.insert(BlockOrder::new(header.block_order)?);
-            self.resident_member_floor
-                .insert(header.block_order, successor(header.next_member));
+            self.unready.insert(header.block_order);
+            self.resident_member_floor.insert(
+                header.block_order,
+                successor(header.next_member).map(MemberOrder),
+            );
             self.by_id.insert(header.id.clone(), header.block_order);
             self.blocks.insert(header.block_order, Arc::new(header));
         }
@@ -684,7 +733,7 @@ impl PresentationState {
             );
             self.retained += bytes(&member)?;
             self.unfinished_members
-                .insert((order, member.head.member_order));
+                .insert((order, MemberOrder(member.head.member_order)));
             let locations = if matches!(self.blocks[&order].body, DisplayBlockBody::Work { .. }) {
                 &mut self.current_work_rows
             } else {
@@ -699,13 +748,15 @@ impl PresentationState {
                 locations
                     .insert(
                         member.association_key.clone(),
-                        (order, member.head.member_order)
+                        (order, MemberOrder(member.head.member_order))
                     )
                     .is_none(),
                 "duplicate unfinished display member"
             );
-            self.members
-                .insert((order, member.head.member_order), Arc::new(member));
+            self.members.insert(
+                (order, MemberOrder(member.head.member_order)),
+                Arc::new(member),
+            );
         }
         Ok(())
     }
@@ -736,9 +787,9 @@ impl PresentationState {
                 .expect("confirmed batch");
             for key in keys {
                 if let Some((_, content)) = self.observations.remove(&key) {
-                    self.retained = self
-                        .retained
-                        .saturating_sub(content.data.len() as u64 + 192);
+                    let bytes = content.data.len() as u64 + 192;
+                    self.retained = self.retained.saturating_sub(bytes);
+                    self.shared_pending = self.shared_pending.saturating_sub(bytes);
                 }
             }
         }
@@ -755,9 +806,17 @@ impl PresentationState {
                 let Some(member) = self.members.get(&position) else {
                     continue;
                 };
-                if self.member_versions[&position] > effect
-                    || (!member.terminal && self.unready.contains(&BlockOrder(position.0)))
-                {
+                let version = self.member_versions[&position];
+                if version > effect {
+                    continue;
+                }
+                if version != 0 {
+                    self.shared_pending = self
+                        .shared_pending
+                        .saturating_sub(bytes(member.as_ref()).expect("validated member size"));
+                    self.member_versions.insert(position, 0);
+                }
+                if !member.terminal && self.unready.contains(&position.0) {
                     continue;
                 }
                 let member = self.members.remove(&position).expect("captured member");
@@ -770,7 +829,7 @@ impl PresentationState {
                     self.open_texts.remove(&member.association_key);
                 }
                 if let Some(floor) = self.resident_member_floor.get_mut(&position.0) {
-                    advance_floor(floor, position.1);
+                    advance_member_floor(floor, position.1.get());
                 }
                 self.retained = self
                     .retained
@@ -790,14 +849,24 @@ impl PresentationState {
                 let Some(header) = self.blocks.get(&order) else {
                     continue;
                 };
-                if self.block_versions[&order] > effect || !header.sealed {
+                let version = self.block_versions[&order];
+                if version > effect {
+                    continue;
+                }
+                if version != 0 {
+                    self.shared_pending = self
+                        .shared_pending
+                        .saturating_sub(bytes(header.as_ref()).expect("validated header size"));
+                    self.block_versions.insert(order, 0);
+                }
+                if !header.sealed {
                     continue;
                 }
                 let header = self.blocks.remove(&order).expect("captured block");
                 self.block_versions.remove(&order);
                 self.by_id.remove(&header.id);
                 self.resident_member_floor.remove(&order);
-                advance_floor(&mut self.resident_block_floor, order);
+                advance_block_floor(&mut self.resident_block_floor, order.get());
                 self.retained = self
                     .retained
                     .saturating_sub(header_bytes(&header).expect("validated header size"));
@@ -871,6 +940,7 @@ impl PresentationState {
                     } else {
                         *next = next
                             .checked_add(1)
+                            .filter(|next| *next <= i64::MAX as u64)
                             .context("display member order exhausted")?;
                         (
                             *next,
@@ -924,7 +994,7 @@ impl PresentationState {
             if let Some(order) = original_group.take() {
                 for position in self
                     .unfinished_members
-                    .range((order, 0)..=(order, u64::MAX))
+                    .range((order, MemberOrder(1))..=(order, MemberOrder(i64::MAX as u64)))
                 {
                     let member = &self.members[position];
                     if terminals
@@ -1081,7 +1151,7 @@ impl PresentationState {
         }
         for (_, member) in requests.values() {
             if let Some(order) = self.by_id.get(&member.block_id) {
-                positions.insert((*order, member.head.member_order));
+                positions.insert((*order, MemberOrder(member.head.member_order)));
                 orders.insert(*order);
             }
             keys.insert(member.association_key.clone());
@@ -1107,11 +1177,7 @@ impl PresentationState {
         }
         // Only touched rows enter the private plan. The first untouched unready key
         // is sufficient to compute the new frontier; no frozen prefix is copied.
-        if let Some(order) = self
-            .unready
-            .iter()
-            .find(|order| !orders.contains(&order.get()))
-        {
+        if let Some(order) = self.unready.iter().find(|order| !orders.contains(order)) {
             next.unready.insert(*order);
         }
         for order in orders {
@@ -1119,7 +1185,7 @@ impl PresentationState {
                 next.blocks.insert(order, header.clone());
                 next.by_id.insert(header.id.clone(), order);
                 if !header.sealed {
-                    next.unready.insert(BlockOrder::new(order)?);
+                    next.unready.insert(order);
                 }
             }
         }
@@ -1134,6 +1200,44 @@ impl PresentationState {
             completions,
             capture,
         )?;
+        next.shared_pending = self.shared_pending;
+        for block in &delta.blocks {
+            let order = block.header.block_order;
+            if self
+                .block_versions
+                .get(&order)
+                .is_some_and(|effect| *effect != 0)
+            {
+                next.shared_pending = next
+                    .shared_pending
+                    .saturating_sub(bytes(self.blocks[&order].as_ref())?);
+            }
+            next.shared_pending = next
+                .shared_pending
+                .saturating_add(bytes(block.header.as_ref())?);
+        }
+        for member in &delta.members {
+            if let Some(order) = self.by_id.get(&member.block_id) {
+                let position = (*order, MemberOrder(member.head.member_order));
+                if self
+                    .member_versions
+                    .get(&position)
+                    .is_some_and(|effect| *effect != 0)
+                {
+                    next.shared_pending = next
+                        .shared_pending
+                        .saturating_sub(bytes(self.members[&position].as_ref())?);
+                }
+            }
+            next.shared_pending = next.shared_pending.saturating_add(bytes(member.as_ref())?);
+        }
+        next.shared_pending = next.shared_pending.saturating_add(
+            delta
+                .contents
+                .iter()
+                .map(|content| content.data.len() as u64 + 192)
+                .sum::<u64>(),
+        );
         Ok((
             PresentationPlan {
                 next,
@@ -1172,20 +1276,22 @@ impl PresentationState {
             let order = block.header.block_order;
             self.by_id.insert(block.header.id.clone(), order);
             if block.header.sealed {
-                self.unready.remove(&BlockOrder(order));
+                self.unready.remove(&order);
             } else {
-                self.unready.insert(BlockOrder(order));
+                self.unready.insert(order);
             }
             self.blocks.insert(order, block.header.clone());
             self.block_versions.insert(order, delta.effect_seq);
-            self.resident_member_floor.entry(order).or_insert(Some(1));
+            self.resident_member_floor
+                .entry(order)
+                .or_insert(Some(MemberOrder(1)));
             orders.push(order);
         }
         self.block_batches.insert(delta.effect_seq, orders);
         let mut changed = Vec::new();
         for member in &delta.members {
             let order = self.by_id[&member.block_id];
-            let position = (order, member.head.member_order);
+            let position = (order, MemberOrder(member.head.member_order));
             self.members.insert(position, member.clone());
             self.member_versions.insert(position, delta.effect_seq);
             changed.push(position);
@@ -1200,6 +1306,7 @@ impl PresentationState {
         self.next_order = next.next_order;
         self.applied_effect = next.applied_effect;
         self.retained = next.retained;
+        self.shared_pending = next.shared_pending;
         if let Some(changes) = &self.changes
             && *changes.borrow() != self.member_change
         {
@@ -1374,7 +1481,7 @@ impl PresentationState {
                     terminal: matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
                     head: DisplayMemberHead {
                         member_key: previous.head.member_key.clone(),
-                        member_order: position.1,
+                        member_order: position.1.get(),
                         record: next_record.clone(),
                     },
                 });
@@ -1423,6 +1530,7 @@ impl PresentationState {
                 header.next_member = header
                     .next_member
                     .checked_add(1)
+                    .filter(|next| *next <= i64::MAX as u64)
                     .context("display member order exhausted")?;
                 update_member_counts(&mut header, None, &atom)?;
                 if matches!(header.body, DisplayBlockBody::Work { .. })
@@ -1451,7 +1559,7 @@ impl PresentationState {
                         ),
                     },
                 });
-                let position = (order, header.next_member);
+                let position = (order, MemberOrder(header.next_member));
                 self.retained = self.retained.saturating_add(bytes(member.as_ref())?);
                 if work(&atom) {
                     self.current_work_rows.insert(key, position);
@@ -1500,7 +1608,11 @@ impl PresentationState {
         Ok(Arc::new(delta))
     }
 
-    fn replace_header(&mut self, header: DisplayHeader, touched: &mut BTreeSet<u64>) -> Result<()> {
+    fn replace_header(
+        &mut self,
+        header: DisplayHeader,
+        touched: &mut BTreeSet<BlockOrder>,
+    ) -> Result<()> {
         if header.sealed
             && self
                 .blocks
@@ -1513,9 +1625,9 @@ impl PresentationState {
                 .context("display structure revision exhausted")?;
         }
         if header.sealed {
-            self.unready.remove(&BlockOrder(header.block_order));
+            self.unready.remove(&header.block_order);
         } else {
-            self.unready.insert(BlockOrder::new(header.block_order)?);
+            self.unready.insert(header.block_order);
         }
         if let Some(old) = self
             .blocks
@@ -1538,8 +1650,8 @@ impl PresentationState {
         key: &str,
         is_work: bool,
         committed_at: i64,
-        touched: &mut BTreeSet<u64>,
-    ) -> Result<u64> {
+        touched: &mut BTreeSet<BlockOrder>,
+    ) -> Result<BlockOrder> {
         self.revision = self
             .revision
             .checked_add(1)
@@ -1554,7 +1666,7 @@ impl PresentationState {
             !self.by_id.contains_key(&id),
             "display block identity reused"
         );
-        let order = self.next_order;
+        let order = BlockOrder::new(self.next_order)?;
         if is_work {
             self.open_work = Some(order);
         }
@@ -1603,8 +1715,8 @@ impl PresentationState {
         &mut self,
         at: Option<ChatFactPosition>,
         (effect, committed_at): (u64, i64),
-        touched: &mut BTreeSet<u64>,
-        changed_members: &mut BTreeMap<(u64, u64), Arc<DisplayMemberWrite>>,
+        touched: &mut BTreeSet<BlockOrder>,
+        changed_members: &mut BTreeMap<(BlockOrder, MemberOrder), Arc<DisplayMemberWrite>>,
         contents: &mut Vec<Arc<ChatContent>>,
         captured: &mut HashMap<String, observations::PreparedObservation>,
     ) -> Result<()> {
@@ -1617,7 +1729,7 @@ impl PresentationState {
             // completion collection is consulted at this boundary.
             let positions = self
                 .unfinished_members
-                .range((order, 0)..=(order, u64::MAX))
+                .range((order, MemberOrder(1))..=(order, MemberOrder(i64::MAX as u64)))
                 .map(|position| (*position, self.members[position].clone()))
                 .collect::<Vec<_>>();
             for (position, previous) in positions {
@@ -1934,8 +2046,8 @@ mod cost {
 
     #[derive(Debug)]
     pub(in crate::studio) struct Visits {
-        pub members: Access<(u64, u64)>,
-        pub heads: Access<u64>,
+        pub members: Access<(super::BlockOrder, super::MemberOrder)>,
+        pub heads: Access<super::BlockOrder>,
     }
     impl super::PresentationState {
         pub(in crate::studio) fn begin_cost_observation(&self) {
@@ -2030,7 +2142,7 @@ mod tests {
         let mut s = state();
         let start = atom("call", ChatAtomKind::ToolCall, false);
         s.prepare(1, 10, &[start], &[], &[])?;
-        let key = s.member_heads(&s.blocks[&1].id, None, 8)[0]
+        let key = s.member_heads(&s.blocks[&BlockOrder(1)].id, None, 8)[0]
             .head
             .member_key
             .clone();
@@ -2053,7 +2165,7 @@ mod tests {
             &[],
         )?;
         assert_eq!(only_end.members[0].head.record.start_fact, None);
-        assert_eq!(s.blocks[&1].next_member, 2);
+        assert_eq!(s.blocks[&BlockOrder(1)].next_member, 2);
         Ok(())
     }
 
@@ -2063,7 +2175,7 @@ mod tests {
             let mut s = state();
             let active = atom("call", ChatAtomKind::ToolCall, false);
             s.prepare(1, 10, std::slice::from_ref(&active), &[], &[])?;
-            let old = s.blocks[&1].id.clone();
+            let old = s.blocks[&BlockOrder(1)].id.clone();
             let mut text = atom("body", ChatAtomKind::Text, false);
             let boundary = ChatFactPosition {
                 effect_seq: 2,
@@ -2171,7 +2283,7 @@ mod tests {
             data: ContentData::text(prefix.clone()),
         });
         s.prepare(1, 10, &[start.clone()], &[], &[])?;
-        let block = s.blocks[&1].id.clone();
+        let block = s.blocks[&BlockOrder(1)].id.clone();
         let old_key = s.member_heads(&block, None, 8)[0].head.member_key.clone();
         let mut observed = start.clone();
         observed.lifecycle = ChatAtomLifecycle::Active {
@@ -2198,7 +2310,7 @@ mod tests {
             cut.ready_frontier, 1,
             "unfinished members do not delay freezing"
         );
-        let frozen = s.blocks[&1].clone();
+        let frozen = s.blocks[&BlockOrder(1)].clone();
         let member = s.member_heads(&block, None, 8)[0].clone();
         assert_eq!(member.head.member_key, old_key);
         assert_eq!(member.head.record.end_fact, None);
@@ -2261,7 +2373,7 @@ mod tests {
             .started_at,
             Some(99)
         );
-        assert_eq!(*s.blocks[&1], *frozen);
+        assert_eq!(*s.blocks[&BlockOrder(1)], *frozen);
         assert_eq!(s.member_heads(&block, None, 8)[0].head, member.head);
         Ok(())
     }
@@ -2276,7 +2388,7 @@ mod tests {
             &[],
             &[],
         )?;
-        let before = s.blocks[&1].clone();
+        let before = s.blocks[&BlockOrder(1)].clone();
         assert!(
             s.prepare_capturing(
                 2,
@@ -2289,7 +2401,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(s.applied_effect, 1);
-        assert_eq!(s.blocks[&1], before);
+        assert_eq!(s.blocks[&BlockOrder(1)], before);
         assert_eq!(s.blocks.len(), 1);
         assert_eq!(s.published, 0);
         assert!(
@@ -2316,7 +2428,7 @@ mod tests {
             "invalid observation encoding must fail before revoking membership"
         );
         assert_eq!(s.applied_effect, 1);
-        assert_eq!(s.blocks[&1], before);
+        assert_eq!(s.blocks[&BlockOrder(1)], before);
         let retry = s.prepare(2, 20, &[atom("body", ChatAtomKind::Text, false)], &[], &[])?;
         assert_eq!(retry.ready_frontier, 1);
         Ok(())
@@ -2338,6 +2450,34 @@ mod tests {
         let mut s = PresentationState::default();
         s.bind("db").unwrap();
         s
+    }
+
+    #[test]
+    fn shared_pending_rows_transfer_their_charge_to_durable_mutable_rows() -> Result<()> {
+        let mut s = state();
+        let started = at_effect(atom("tool", ChatAtomKind::ToolCall, false), 1);
+        let pending = s.prepare(1, 10, &[started], &[], &[])?;
+        assert!(pending.retained_bytes > 0);
+        assert_eq!(
+            s.retained_bytes(),
+            0,
+            "the same queued Arcs must not be charged again by Store indexes"
+        );
+        s.confirm_cut(1, 0, 1)?;
+        assert!(
+            s.retained_bytes() > 0,
+            "durable mutable rows remain resident after the queue releases its charge"
+        );
+        let terminal = at_effect(atom("tool", ChatAtomKind::ToolCall, true), 2);
+        s.prepare(2, 20, &[terminal], &[], &[])?;
+        assert_eq!(s.retained_bytes(), 0);
+        s.confirm_cut(2, 0, 1)?;
+        assert_eq!(s.members.len(), 0);
+        assert!(
+            s.retained_bytes() > 0,
+            "the appendable work header is still owned by Store"
+        );
+        Ok(())
     }
     fn timing(h: &DisplayHeader) -> &WorkTiming {
         let DisplayBlockBody::Work {
@@ -2364,11 +2504,87 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "十万冻结等待块规模检查，按需运行"]
+    fn hundred_thousand_waiting_blocks_reclaim_before_frontier_and_advance_without_a_walk()
+    -> Result<()> {
+        let mut s = state();
+        let started = s.prepare(
+            1,
+            1,
+            &[atom("blocking-text", ChatAtomKind::Text, false)],
+            &[],
+            &[],
+        )?;
+        s.confirm_cut(1, started.ready_frontier, started.last_order)?;
+        for batch in 0..100u64 {
+            let effect = batch + 2;
+            let facts = (0..1000)
+                .map(|offset| {
+                    let mut fact = at_effect(
+                        atom(
+                            &format!("independent-{batch}-{offset}"),
+                            ChatAtomKind::FileChange,
+                            true,
+                        ),
+                        effect,
+                    );
+                    fact.delivery = ChatDeliveryKind::Independent;
+                    fact
+                })
+                .collect::<Vec<_>>();
+            let delta = s.prepare(effect, effect as i64, &facts, &[], &[])?;
+            assert_eq!(delta.ready_frontier, 0);
+            s.confirm_cut(effect, delta.ready_frontier, delta.last_order)?;
+            assert_eq!(
+                s.blocks.len(),
+                1,
+                "durable waiting heads must not remain behind an unfinished earlier block"
+            );
+            assert_eq!(s.members.len(), 1);
+        }
+        s.begin_cost_observation();
+        let finished = s.prepare(
+            102,
+            102,
+            &[at_effect(
+                atom("blocking-text", ChatAtomKind::Text, true),
+                102,
+            )],
+            &[],
+            &[],
+        )?;
+        let visits = s.finish_cost_observation();
+        assert_eq!(finished.ready_frontier, 100001);
+        assert_eq!(
+            finished.blocks.len(),
+            1,
+            "frontier movement emits only the changed block"
+        );
+        assert_eq!(
+            visits.heads.keys.len(),
+            1,
+            "frontier movement must not walk the frozen prefix"
+        );
+        assert!(
+            visits.heads.reads <= 16 && visits.heads.writes <= 2,
+            "{visits:?}"
+        );
+        eprintln!(
+            "DISPLAY_FRONTIER_COST {}",
+            serde_json::json!({"waiting_blocks":100000,"frontier":finished.ready_frontier,"changed_heads":finished.blocks.len(),"head_reads":visits.heads.reads,"head_writes":visits.heads.writes,"resident_heads":s.blocks.len(),"resident_members":s.members.len(),"resident_bytes":s.retained_bytes()})
+        );
+        s.confirm_cut(102, finished.ready_frontier, finished.last_order)?;
+        assert!(s.blocks.is_empty() && s.members.is_empty());
+        assert_eq!(s.retained_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn v364_cross_source_work_joins_one_tail_and_input_seals_it() -> Result<()> {
         let mut s = state();
         let foreground = atom("foreground", ChatAtomKind::ToolCall, false);
         s.prepare(1, 10, &[foreground], &[], &[])?;
-        let tail = s.blocks[&1].id.clone();
+        let tail = s.blocks[&BlockOrder(1)].id.clone();
         let mut background = atom("background", ChatAtomKind::ToolCall, true);
         background.source = ChatSourceId::BackgroundResult {
             message_id: "result".into(),
@@ -2384,7 +2600,7 @@ mod tests {
             1,
             "different sources must share the current Work"
         );
-        assert_eq!(s.blocks[&1].next_member, 2);
+        assert_eq!(s.blocks[&BlockOrder(1)].next_member, 2);
         let mut input = atom("input", ChatAtomKind::Input, true);
         input.source = ChatSourceId::ForegroundTurn {
             turn_id: "another-turn".into(),
@@ -2396,7 +2612,8 @@ mod tests {
         };
         s.prepare(3, 30, &[input], &[], &[])?;
         assert_eq!(
-            s.blocks[&1].id, tail,
+            s.blocks[&BlockOrder(1)].id,
+            tail,
             "a cross-source Single must freeze the tail"
         );
         Ok(())
@@ -2412,7 +2629,7 @@ mod tests {
             &[],
             &[],
         )?;
-        let tail = s.blocks[&1].clone();
+        let tail = s.blocks[&BlockOrder(1)].clone();
         let mut text = atom("empty", ChatAtomKind::Text, false);
         text.content_present = Some(false);
         text.lifecycle = ChatAtomLifecycle::Active {
@@ -2421,7 +2638,7 @@ mod tests {
         };
         s.prepare(2, 20, &[text], &[], &[])?;
         assert_eq!(s.published, 0, "zero-byte Started cannot freeze Work");
-        assert_eq!(s.blocks[&1], tail);
+        assert_eq!(s.blocks[&BlockOrder(1)], tail);
         let mut terminal = atom("empty", ChatAtomKind::Text, true);
         terminal.content_present = Some(false);
         terminal.lifecycle = ChatAtomLifecycle::Terminal {
@@ -2440,17 +2657,17 @@ mod tests {
         let mut s = state();
         let work = atom("done", ChatAtomKind::ToolCall, true);
         s.prepare(1, 10, std::slice::from_ref(&work), &[], &[])?;
-        let id = s.blocks[&1].id.clone();
+        let id = s.blocks[&BlockOrder(1)].id.clone();
         s.prepare(2, 20, &[], &[source_ended(&work, 2)], &[])?;
         assert_eq!(s.published, 0, "SourceEnded is not a visible boundary");
-        assert!(!s.blocks[&1].sealed);
+        assert!(!s.blocks[&BlockOrder(1)].sealed);
         let mut cold = state();
         cold.restore(
             "db",
             0,
             s.next_order,
             2,
-            vec![s.blocks[&1].as_ref().clone()],
+            vec![s.blocks[&BlockOrder(1)].as_ref().clone()],
             vec![],
         )?;
         let mut next = atom("resumed", ChatAtomKind::Reasoning, false);
@@ -2463,8 +2680,8 @@ mod tests {
         };
         cold.prepare(3, 100_000, &[next], &[], &[])?;
         assert_eq!(cold.blocks.len(), 1);
-        assert_eq!(cold.blocks[&1].id, id);
-        assert_eq!(cold.blocks[&1].next_member, 2);
+        assert_eq!(cold.blocks[&BlockOrder(1)].id, id);
+        assert_eq!(cold.blocks[&BlockOrder(1)].next_member, 2);
         Ok(())
     }
 
@@ -2491,7 +2708,7 @@ mod tests {
             status: ChatActiveStatus::Running,
         };
         s.prepare(3, 30, &[b], &[], &[])?;
-        let tail = s.blocks[&3].id.clone();
+        let tail = s.blocks[&BlockOrder(3)].id.clone();
         let mut end = atom("T", ChatAtomKind::Text, true);
         end.content_present = Some(true);
         end.lifecycle = ChatAtomLifecycle::Terminal {
@@ -2507,9 +2724,9 @@ mod tests {
             outcome: ChatTerminalOutcome::Completed,
         };
         s.prepare(5, 50, &[y], &[], &[])?;
-        assert_eq!(s.blocks.len(), 1);
-        assert_eq!(s.blocks[&3].id, tail);
-        assert_eq!(s.blocks[&3].next_member, 2);
+        assert_eq!(s.blocks.values().filter(|header| !header.sealed).count(), 1);
+        assert_eq!(s.blocks[&BlockOrder(3)].id, tail);
+        assert_eq!(s.blocks[&BlockOrder(3)].next_member, 2);
         Ok(())
     }
 
@@ -2525,7 +2742,7 @@ mod tests {
                     &[],
                     &[],
                 )?;
-                let foreground = s.blocks[&1].clone();
+                let foreground = s.blocks[&BlockOrder(1)].clone();
                 let mut result = atom("result", ChatAtomKind::ToolCall, true);
                 result.tool.as_mut().unwrap().name = name.into();
                 result.source = ChatSourceId::BackgroundResult {
@@ -2564,27 +2781,30 @@ mod tests {
                 assert_eq!(result_member.head.record.end_fact, Some(at(2)));
                 if name == pl_tool::file_display::TOOL_SHOW_FILES {
                     assert_eq!(s.published, 2);
-                    assert_eq!(s.blocks[&1].id, foreground.id);
-                    assert!(matches!(s.blocks[&2].body, DisplayBlockBody::Single { .. }));
+                    assert_eq!(s.blocks[&BlockOrder(1)].id, foreground.id);
+                    assert!(matches!(
+                        s.blocks[&BlockOrder(2)].body,
+                        DisplayBlockBody::Single { .. }
+                    ));
                 } else {
                     assert_eq!(s.published, 0);
                     assert_eq!(s.blocks.len(), 1);
-                    assert_eq!(s.blocks[&1].id, foreground.id);
+                    assert_eq!(s.blocks[&BlockOrder(1)].id, foreground.id);
                     let DisplayBlockBody::Work {
                         timing: summary,
                         members,
-                    } = &s.blocks[&1].body
+                    } = &s.blocks[&BlockOrder(1)].body
                     else {
                         panic!("ordinary background tool must be Work");
                     };
-                    assert_eq!(s.blocks[&1].next_member, 2);
-                    assert_eq!(s.blocks[&1].unfinished, 1);
+                    assert_eq!(s.blocks[&BlockOrder(1)].next_member, 2);
+                    assert_eq!(s.blocks[&BlockOrder(1)].unfinished, 1);
                     assert_eq!(summary.started_at, Some(10));
                     assert_eq!(summary.finished_at, None);
                     assert_eq!(members.block_id, foreground.id);
                     assert_eq!(members.database_id, "db");
-                    assert!(!s.blocks[&1].sealed);
-                    assert_eq!(s.blocks[&1].source, foreground.source);
+                    assert!(!s.blocks[&BlockOrder(1)].sealed);
+                    assert_eq!(s.blocks[&BlockOrder(1)].source, foreground.source);
                 }
             }
         }
@@ -2646,7 +2866,7 @@ mod tests {
                 .find(|w| w.header.sealed)
                 .map(|w| &w.header)
                 .unwrap(),
-            &s.blocks[&1]
+            &s.blocks[&BlockOrder(1)]
         ));
         s.confirm_cut(5, 1, 2)?;
         assert_eq!(s.durable, 1);
@@ -2664,8 +2884,8 @@ mod tests {
             let mut done = atom("done", ChatAtomKind::ToolCall, true);
             done.started_at = None;
             s.prepare(1, created, &[done], &[], &[])?;
-            assert_eq!(timing(&s.blocks[&1]).started_at, Some(created));
-            assert_eq!(timing(&s.blocks[&1]).finished_at, None);
+            assert_eq!(timing(&s.blocks[&BlockOrder(1)]).started_at, Some(created));
+            assert_eq!(timing(&s.blocks[&BlockOrder(1)]).finished_at, None);
             let delta = s.prepare(
                 2,
                 observed,
@@ -2698,7 +2918,7 @@ mod tests {
             s.published, 1,
             "first visible content freezes unfinished R/A immediately"
         );
-        let first = s.blocks[&1].clone();
+        let first = s.blocks[&BlockOrder(1)].clone();
         s.prepare(
             3,
             30,
@@ -2736,14 +2956,15 @@ mod tests {
         let ended = source_ended(&background, 5);
         s.prepare(5, 50, &[background, input], &[ended], &[])?;
         assert_eq!(s.published, 4);
-        assert!(s.blocks.is_empty());
+        assert!(s.unready.is_empty());
+        assert!(s.blocks.values().all(|header| header.sealed));
         let DisplayBlockBody::Work {
             timing: summary, ..
-        } = &s.blocks[&3].body
+        } = &s.blocks[&BlockOrder(3)].body
         else {
             panic!("Work")
         };
-        assert_eq!(s.blocks[&3].next_member, 2);
+        assert_eq!(s.blocks[&BlockOrder(3)].next_member, 2);
         assert_eq!(summary.started_at, Some(40));
         assert_eq!(summary.finished_at, Some(50));
         let ended = s.prepare(
@@ -2761,20 +2982,27 @@ mod tests {
                 .blocks
                 .iter()
                 .filter(|w| w.header.sealed)
-                .map(|w| w.header.block_order)
+                .map(|w| w.header.block_order.get())
                 .collect::<Vec<_>>(),
             vec![5]
         );
         assert_eq!(
-            *s.blocks[&1], *first,
+            *s.blocks[&BlockOrder(1)],
+            *first,
             "late terminals never rewrite the boundary cut"
         );
-        assert!(matches!(s.blocks[&5].body, DisplayBlockBody::Work { .. }));
+        assert!(matches!(
+            s.blocks[&BlockOrder(5)].body,
+            DisplayBlockBody::Work { .. }
+        ));
         assert!(
-            matches!(&s.blocks[&5].body, DisplayBlockBody::Work { timing: summary, .. }
+            matches!(&s.blocks[&BlockOrder(5)].body, DisplayBlockBody::Work { timing: summary, .. }
         if summary.started_at == Some(60) && summary.finished_at == Some(70))
         );
-        assert!(matches!(s.blocks[&2].body, DisplayBlockBody::Single { .. }));
+        assert!(matches!(
+            s.blocks[&BlockOrder(2)].body,
+            DisplayBlockBody::Single { .. }
+        ));
         Ok(())
     }
 
@@ -2799,7 +3027,7 @@ mod tests {
         assert_ne!(member_key(&handoff)?, member_key(&result)?);
         let ended = source_ended(&result, 2);
         s.prepare(2, 20, &[result], &[ended], &[])?;
-        let tail = s.blocks[&1].id.clone();
+        let tail = s.blocks[&BlockOrder(1)].id.clone();
         let mut empty_start = at_effect(atom("empty", ChatAtomKind::Text, false), 3);
         empty_start.content_present = Some(false);
         s.prepare(3, 30, &[empty_start], &[], &[])?;
@@ -2808,7 +3036,7 @@ mod tests {
         let delta = s.prepare(4, 40, &[at_effect(empty, 4)], &[], &[])?;
         assert!(delta.blocks.iter().all(|block| block.header.version == 5));
         assert_eq!(s.published, 0);
-        assert_eq!(s.blocks[&1].next_member, 2);
+        assert_eq!(s.blocks[&BlockOrder(1)].next_member, 2);
         s.prepare(
             5,
             50,
@@ -2817,7 +3045,7 @@ mod tests {
             &[],
         )?;
         assert_eq!(s.blocks.values().next().unwrap().id, tail);
-        assert_eq!(s.blocks[&1].next_member, 3);
+        assert_eq!(s.blocks[&BlockOrder(1)].next_member, 3);
         Ok(())
     }
 
@@ -3099,9 +3327,9 @@ mod tests {
         let mut r1_active = atom("r1", ChatAtomKind::Reasoning, false);
         r1_active.source_order = Some(1);
         s.prepare(1, 10, &[r1_active], &[], &[])?;
-        assert_eq!(s.blocks[&1].thinking_summary, None);
-        let persisted = serde_json::to_value(&s.blocks[&1])?;
-        let revision = s.blocks[&1].revision;
+        assert_eq!(s.blocks[&BlockOrder(1)].thinking_summary, None);
+        let persisted = serde_json::to_value(&s.blocks[&BlockOrder(1)])?;
+        let revision = s.blocks[&BlockOrder(1)].revision;
         s.members.begin();
         s.observe_thinking_summary("流式 **摘要**");
         s.observe_thinking_summary("最新流式 **摘要**");
@@ -3111,11 +3339,11 @@ mod tests {
             (0, 0, 0)
         );
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("最新流式 **摘要**")
         );
-        assert_eq!(s.blocks[&1].revision, revision);
-        assert_eq!(serde_json::to_value(&s.blocks[&1])?, persisted);
+        assert_eq!(s.blocks[&BlockOrder(1)].revision, revision);
+        assert_eq!(serde_json::to_value(&s.blocks[&BlockOrder(1)])?, persisted);
 
         let (r1_done, r1_item) = completed_reasoning(
             "r1",
@@ -3130,7 +3358,7 @@ mod tests {
         )?;
         s.prepare(2, 20, &[r1_done], &[], &[r1_item])?;
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
         );
 
@@ -3143,7 +3371,7 @@ mod tests {
             &[],
         )?;
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
         );
         s.prepare(
@@ -3154,7 +3382,7 @@ mod tests {
             &[],
         )?;
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
         );
 
@@ -3163,7 +3391,7 @@ mod tests {
             completed_reasoning("r-raw", 2, 6, vec![], vec!["仅有正文无摘要".into()], 2)?;
         s.prepare(6, 35, &[r_nosummary], &[], &[r_nosummary_item])?;
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("梳理 **会话共享组件** 与 `LiveStatusBar` 边界")
         );
 
@@ -3178,7 +3406,7 @@ mod tests {
         )?;
         s.prepare(8, 40, &[r2_done], &[], &[r2_item])?;
         assert_eq!(
-            s.blocks[&1].thinking_summary.as_deref(),
+            s.blocks[&BlockOrder(1)].thinking_summary.as_deref(),
             Some("### 确认收尾检查与 `cargo flutter analyze`")
         );
 

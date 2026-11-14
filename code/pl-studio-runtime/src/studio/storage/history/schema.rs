@@ -1882,6 +1882,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {
@@ -1920,6 +1921,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {
@@ -1964,6 +1966,7 @@ mod atomic_tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .filter(|migration| {

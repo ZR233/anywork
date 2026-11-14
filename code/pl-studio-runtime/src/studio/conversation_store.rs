@@ -22,7 +22,7 @@ pub(in crate::studio) enum ReadRequest<'a> {
         before: Option<u64>,
         limit: usize,
         after: Option<u64>,
-        pending: usize,
+        history_limit: usize,
     },
     Members {
         block: &'a str,
@@ -585,8 +585,11 @@ impl ConversationReadHandle {
                 before,
                 limit,
                 after,
-                pending,
-            } => (Some(owner.capture(*before, *limit, *after, *pending)), None),
+                history_limit,
+            } => (
+                Some(owner.capture(*before, *limit, *after, *history_limit)),
+                None,
+            ),
             ReadRequest::Members {
                 block,
                 before,
