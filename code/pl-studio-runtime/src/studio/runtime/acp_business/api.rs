@@ -26,7 +26,6 @@ pub(crate) struct AcpBusinessOwner {
     store: crate::studio::StudioStore,
     events: crate::studio::ProductEventBus,
     connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
-    mcp_source: crate::host_mcp_assets::HostMcpSource,
 }
 
 struct MemberOpen {
@@ -200,7 +199,6 @@ impl AcpBusinessOwner {
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
         connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
-        mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
         Self {
             factory,
@@ -208,7 +206,6 @@ impl AcpBusinessOwner {
             store,
             events,
             connections,
-            mcp_source,
         }
     }
 
@@ -247,7 +244,6 @@ impl AcpBusinessOwner {
         let events = self.events.clone();
         let connections = self.connections.clone();
         let config = self.config.clone();
-        let mcp_source = self.mcp_source.clone();
         let resources_for_result = resources.clone();
         let baseline = previous
             .as_ref()
@@ -299,7 +295,6 @@ impl AcpBusinessOwner {
                                         mode: session_record.delegation_mode,
                                         preference: session_record.delegation_preference,
                                     },
-                                    mcp_source,
                                 )
                                 .map_err(|error| projection::preparation(&error.to_string()))?,
                             ),
@@ -555,7 +550,6 @@ impl StudioRuntime {
             self.store.clone(),
             self.agent_facility.product_events.clone(),
             self.acp_auth.clone(),
-            self.host_mcp_source.clone(),
         );
         let cwd = match &previous {
             Some(agent) => match &agent.backend {

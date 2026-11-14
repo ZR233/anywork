@@ -6,6 +6,9 @@ with (root / 'spawns').open('a') as log:
     log.write(str(os.getpid()) + '\n')
 (root / 'process-cwd').write_text(os.getcwd())
 next_session = 0
+stdio_endpoints = set()
+stdio_capabilities = set()
+stdio_sessions = 0
 def emit(value):
     sys.stdout.write(json.dumps(value) + '\n')
     sys.stdout.flush()
@@ -59,6 +62,21 @@ for line in sys.stdin:
                 emit({'jsonrpc':'2.0','id':rid,'error':{
                     'code':-32602,'message':'Expected host HTTP MCP setup was not received'}})
                 continue
+        if mode == 'mcp-stdio':
+            servers=msg['params'].get('mcpServers', [])
+            assert len(servers) == 1 and servers[0].get('name') == 'anywork'
+            server=servers[0]
+            env={item['name']: item['value'] for item in server['env']}
+            endpoint=env['ANYWORK_HOST_IPC_ENDPOINT']
+            capability=env['ANYWORK_HOST_IPC_CAPABILITY']
+            assert endpoint not in stdio_endpoints and capability not in stdio_capabilities
+            stdio_endpoints.add(endpoint)
+            stdio_capabilities.add(capability)
+            stdio_sessions += 1
+            # Only safe facts and the executable path leave the synthetic peer's memory.
+            (root / 'stdio-isolation').write_text(str(stdio_sessions))
+            with (root / 'stdio-helper-paths').open('a') as log:
+                log.write(server['command'] + '\n')
         if method == 'session/new':
             next_session += 1
         sid=msg['params'].get('sessionId', 'remote-one' if next_session == 1 else 'remote-' + str(next_session))

@@ -176,6 +176,8 @@ pub(super) struct Registry {
     pub(super) closed: bool,
     pub(super) slots: BTreeMap<String, Slot>,
     pub(super) retiring: Vec<Arc<super::connection::AccountConnection>>,
+    /// 已完成退役的最近一次安全关闭失败；不持有历史 owner 或无界错误列表。
+    pub(super) retirement_issue: Option<String>,
     /// 已受理操作身份（含已完成）；容量有界、只增不减，重启运行时才重置。
     pub(super) accepted: BTreeMap<String, AcceptedIntent>,
 }
@@ -217,6 +219,9 @@ pub(super) struct AcpAuthInner {
     pub(super) config: ConfigRuntime,
     pub(super) events: ProductEventBus,
     pub(super) workers: Executor,
+    pub(super) mcp_source: crate::host_mcp_assets::HostMcpSource,
+    pub(super) retirement_wake: Arc<tokio::sync::Notify>,
+    pub(super) retirement_join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     registry: Mutex<Registry>,
 }
 
@@ -226,12 +231,16 @@ impl AcpAuthInner {
         config: ConfigRuntime,
         events: ProductEventBus,
         workers: Executor,
+        mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
         Self {
             store,
             config,
             events,
             workers,
+            mcp_source,
+            retirement_wake: Arc::new(tokio::sync::Notify::new()),
+            retirement_join: tokio::sync::Mutex::new(None),
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -361,6 +370,7 @@ impl AcpAuthInner {
             }
             // 已退役且没有在途操作的记录不再持有任何资源责任。
             registry.retiring.extend(retiring);
+            self.retirement_wake.notify_one();
             registry
                 .slots
                 .retain(|_, slot| !(slot.retired && slot.operation.is_none()));

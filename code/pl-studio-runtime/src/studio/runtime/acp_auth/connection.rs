@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Result, ensure};
+use futures::FutureExt;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -35,11 +36,20 @@ pub(crate) struct AccountConnection {
     protocol: Mutex<Option<pl_acp::connection::Connection>>,
     members: Mutex<Vec<Arc<AcpResources>>>,
     // Even after a member closes, the official process can retain its helper image.
-    frontends: Mutex<Vec<crate::host_mcp_assets::HostMcpAsset>>,
+    mcp_source: crate::host_mcp_assets::HostMcpSource,
+    frontend: tokio::sync::Mutex<Frontend>,
     join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     settled: AtomicBool,
+    supervisor_finished: AtomicBool,
+    retirement_wake: Arc<tokio::sync::Notify>,
     issue: Mutex<Option<String>>,
     retry: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct Frontend {
+    asset: Option<crate::host_mcp_assets::HostMcpAsset>,
+    preparation: Option<JoinHandle<Result<crate::host_mcp_assets::HostMcpAsset, String>>>,
 }
 
 impl AccountConnection {
@@ -84,11 +94,46 @@ impl AccountConnection {
         Ok(())
     }
 
-    pub(crate) fn retain_frontend(&self, frontend: crate::host_mcp_assets::HostMcpAsset) {
-        self.frontends
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(frontend);
+    pub(crate) async fn frontend(&self) -> Result<crate::host_mcp_assets::HostMcpAsset> {
+        let mut frontend = self.frontend.lock().await;
+        ensure!(!self.is_closing(), "ACP account connection is closing");
+        if let Some(asset) = frontend.asset.as_ref() {
+            return Ok(asset.clone());
+        }
+        if frontend.preparation.is_none() {
+            let source = self.mcp_source.clone();
+            frontend.preparation = Some(tokio::spawn(async move {
+                crate::host_mcp_assets::prepare(source)
+                    .await
+                    .map_err(|error| error.to_string())
+            }));
+        }
+        // Borrow the original join in its owner. A cancelled session/waiter cannot detach it
+        // or start another materialization while that preparation is still in flight.
+        let result = frontend
+            .preparation
+            .as_mut()
+            .expect("registered preparation")
+            .await;
+        frontend.preparation.take();
+        let asset = result
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+            .map_err(anyhow::Error::msg)?;
+        frontend.asset = Some(asset.clone());
+        ensure!(!self.is_closing(), "ACP account connection is closing");
+        Ok(asset)
+    }
+
+    async fn close_frontend(&self) {
+        let mut frontend = self.frontend.lock().await;
+        if let Some(preparation) = frontend.preparation.as_mut() {
+            if !matches!(preparation.await, Ok(Ok(_))) {
+                *self.issue.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some("ACP Host MCP preparation failed during shutdown".into());
+            }
+            frontend.preparation.take();
+        }
+        frontend.asset.take();
     }
 
     async fn launched(&self) -> Result<PreparedConnection, AcpFailure> {
@@ -140,12 +185,17 @@ impl AccountConnection {
     /// Borrow the original join; cancelling a waiter never detaches its supervisor.
     pub(super) async fn wait(&self) -> Result<()> {
         let mut join = self.join.lock().await;
+        let joining = join.is_some();
         if let Some(task) = join.as_mut() {
             if let Err(error) = task.await {
                 *self.issue.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(error.to_string());
             }
             join.take();
+        }
+        drop(join);
+        if joining {
+            self.retirement_wake.notify_one();
         }
         if let Some(issue) = self
             .issue
@@ -175,6 +225,90 @@ fn closed_failure() -> AcpFailure {
 }
 
 impl AcpAuthRuntime {
+    pub(super) fn start_retirement_driver(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        let wake = self.inner.retirement_wake.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let notified = wake.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let candidates: Vec<_> = inner
+                    .lock()
+                    .retiring
+                    .iter()
+                    .filter(|account| account.supervisor_finished.load(Ordering::Acquire))
+                    .cloned()
+                    .collect();
+                for account in candidates {
+                    let result = account.wait().await;
+                    // A supervisor panic is joined but does not prove physical reclamation.
+                    // Keep such an owner, and all still-pending cleanup, in the original registry.
+                    if account.settled.load(Ordering::Acquire) {
+                        let mut registry = inner.lock();
+                        registry
+                            .retiring
+                            .retain(|entry| !Arc::ptr_eq(entry, &account));
+                        if let Err(error) = result {
+                            registry.retirement_issue = Some(
+                                format!(
+                                    "ACP retired account {} cleanup failed: {error}",
+                                    account.account_id
+                                )
+                                .chars()
+                                .take(2048)
+                                .collect(),
+                            );
+                        }
+                    }
+                }
+                let done = {
+                    let registry = inner.lock();
+                    registry.closed
+                        && registry
+                            .retiring
+                            .iter()
+                            .all(|account| account.supervisor_finished.load(Ordering::Acquire))
+                };
+                drop(inner);
+                if done {
+                    return;
+                }
+                notified.await;
+            }
+        });
+        *self
+            .inner
+            .retirement_join
+            .try_lock()
+            .expect("new retirement owner") = Some(task);
+    }
+
+    pub(super) async fn join_retirement_driver(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        self.inner.retirement_wake.notify_one();
+        tokio::time::timeout_at(deadline, async {
+            let mut join = self.inner.retirement_join.lock().await;
+            let result = match join.as_mut() {
+                Some(task) => task.await.map_err(anyhow::Error::from),
+                None => Ok(()),
+            };
+            join.take();
+            if result.is_err() {
+                self.inner.lock().retirement_issue =
+                    Some("ACP retirement driver join failed".into());
+            }
+            result
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("ACP retiring connections remain pending"))?
+    }
+
     pub(crate) fn connection(
         &self,
         definition: &AcpServiceDefinition,
@@ -235,9 +369,12 @@ impl AcpAuthRuntime {
                 ready,
                 protocol: Mutex::new(None),
                 members: Mutex::new(Vec::new()),
-                frontends: Mutex::new(Vec::new()),
+                mcp_source: inner.mcp_source.clone(),
+                frontend: tokio::sync::Mutex::new(Frontend::default()),
                 join: tokio::sync::Mutex::new(None),
                 settled: AtomicBool::new(false),
+                supervisor_finished: AtomicBool::new(false),
+                retirement_wake: inner.retirement_wake.clone(),
                 issue: Mutex::new(None),
                 retry: tokio::sync::Notify::new(),
             });
@@ -247,14 +384,29 @@ impl AcpAuthRuntime {
                 .expect("validated slot")
                 .connection = Some(connection.clone());
             // Registry and join owner are installed before the supervisor can acquire launch resources.
-            let task = tokio::spawn(supervise(
-                inner.clone(),
-                connection.clone(),
-                definition.clone(),
-                previous,
-                publish,
-            ));
+            let run_inner = inner.clone();
+            let run_account = connection.clone();
+            let run_definition = definition.clone();
+            let task = tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(supervise(
+                    run_inner,
+                    run_account.clone(),
+                    run_definition,
+                    previous,
+                    publish,
+                ))
+                .catch_unwind()
+                .await;
+                run_account
+                    .supervisor_finished
+                    .store(true, Ordering::Release);
+                run_account.retirement_wake.notify_one();
+                if let Err(panic) = result {
+                    std::panic::resume_unwind(panic);
+                }
+            });
             *connection.join.try_lock().expect("private join") = Some(task);
+            inner.retirement_wake.notify_one();
             Ok(connection)
         })?
     }
@@ -439,11 +591,7 @@ async fn supervise(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clear();
-    account
-        .frontends
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clear();
+    account.close_frontend().await;
     account.settled.store(true, Ordering::Release);
 }
 
@@ -599,6 +747,411 @@ mod tests {
         })
         .await
         .expect("synthetic peer reached marker");
+    }
+
+    async fn retired(runtime: &StudioRuntime, old: &std::sync::Weak<AccountConnection>) {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if runtime.acp_auth.inner.lock().retiring.is_empty() && old.upgrade().is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("original supervisor joined and historical owner released without another open");
+    }
+
+    // Count real anonymous image FDs, not cached Arc entries. Never read pipes, sockets,
+    // or unrelated files: only deleted regular files of the synthetic payload's size.
+    fn image_fds(payload: &[u8]) -> Result<usize> {
+        let mut count = 0;
+        for entry in std::fs::read_dir("/proc/self/fd")? {
+            let path = entry?.path();
+            let Ok(target) = std::fs::read_link(&path) else {
+                continue;
+            };
+            if !target
+                .as_os_str()
+                .as_encoded_bytes()
+                .ends_with(b" (deleted)")
+            {
+                continue;
+            }
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.is_file()
+                && metadata.len() == payload.len() as u64
+                && std::fs::read(&path).is_ok_and(|bytes| bytes == payload)
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    #[tokio::test]
+    async fn repair_stdio_history_reuses_one_physical_image_and_isolates_sessions() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let bundle = tempfile::tempdir()?;
+        let target = format!("{}-unknown-linux-gnu", std::env::consts::ARCH);
+        let directory = bundle.path().join(&target);
+        std::fs::create_dir(&directory)?;
+        // Native ELF fixture only; the synthetic peer never executes this helper.
+        let mut payload = std::fs::read("/usr/bin/true")?;
+        payload.extend_from_slice(bundle.path().as_os_str().as_encoded_bytes());
+        let archive = directory.join("pl-studio-mcp.zst");
+        std::fs::write(&archive, zstd::bulk::compress(&payload, 1)?)?;
+        std::fs::write(
+            directory.join("pl-studio-mcp.metadata.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"target":target, "sha256":hex::encode(Sha256::digest(&payload))}),
+            )?,
+        )?;
+        let fixture = Fixture::with_mcp_source(
+            "mcp-stdio",
+            crate::HostMcpSource::Bundled(bundle.path().into()),
+        )
+        .await?;
+        with_cleanup(&fixture.runtime, async {
+            assert_eq!(image_fds(&payload)?, 0);
+            let (first, second) = tokio::join!(fixture.open(), fixture.open());
+            let mut first = first?;
+            let mut anchor = second?;
+            let (a, b) = tokio::join!(Fixture::ready(&mut first), Fixture::ready(&mut anchor));
+            a?;
+            b?;
+            first.completion.wait().await?;
+            anchor.completion.wait().await?;
+            let pid = fixture.pid("pid")?;
+            let first_owner = fixture
+                .runtime
+                .sessions
+                .get(&pl_protocol::SessionId::new(
+                    first.target.session_id.clone(),
+                )?)
+                .expect("first session is resident");
+            let first_resources = first_owner
+                .resident_acp(&first.target.thread_id)?
+                .expect("first ACP member is resident");
+            assert_eq!(image_fds(&payload)?, 1);
+            assert!(
+                fixture
+                    .runtime
+                    .close_acp_session(first.target)
+                    .await?
+                    .local_complete
+            );
+            assert!(
+                first_resources.cancellation.is_cancelled(),
+                "close revokes only this member's domain qualification"
+            );
+            // Further sessions must reuse the prepared image even after its source disappears.
+            std::fs::remove_file(archive)?;
+            for _ in 0..8 {
+                let mut next = fixture.open().await?;
+                Fixture::ready(&mut next).await?;
+                next.completion.wait().await?;
+                assert_eq!(fixture.pid("pid")?, pid);
+                assert_eq!(image_fds(&payload)?, 1);
+                assert!(
+                    fixture
+                        .runtime
+                        .close_acp_session(next.target)
+                        .await?
+                        .local_complete
+                );
+            }
+            fixture
+                .runtime
+                .prompt_acp_session(
+                    anchor.target.clone(),
+                    vec![pl_acp::session::schema::ContentBlock::Text(
+                        pl_acp::session::schema::TextContent::new("anchor still owns its tools"),
+                    )],
+                )
+                .await?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(AcpSessionEvent::Completed { completed }) =
+                        anchor.observation.as_mut().unwrap().recv().await
+                    {
+                        assert!(completed.result.is_ok());
+                        break;
+                    }
+                }
+            })
+            .await?;
+            let owner = fixture
+                .runtime
+                .sessions
+                .get(&pl_protocol::SessionId::new(
+                    anchor.target.session_id.clone(),
+                )?)
+                .expect("anchor session is resident");
+            let resources = owner
+                .resident_acp(&anchor.target.thread_id)?
+                .expect("anchor ACP member is resident");
+            assert_eq!(resources.host_mcp_status().await["injected"], true);
+            assert!(
+                !resources.cancellation.is_cancelled(),
+                "anchor retains its own qualification"
+            );
+            let paths = std::fs::read_to_string(fixture.home.path().join("stdio-helper-paths"))?;
+            let paths: Vec<_> = paths.lines().collect();
+            assert_eq!(paths.len(), 10);
+            assert!(paths.iter().all(|path| *path == paths[0]));
+            let image = PathBuf::from(paths[0]);
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("stdio-isolation"))?,
+                "10"
+            );
+            assert!(
+                fixture
+                    .runtime
+                    .close_acp_session(anchor.target)
+                    .await?
+                    .local_complete
+            );
+            assert_eq!(
+                image_fds(&payload)?,
+                1,
+                "closed members do not release the account image"
+            );
+            assert!(image.exists());
+            use std::os::unix::fs::MetadataExt;
+            let original_image = std::fs::metadata(&image)?;
+            fixture.runtime.shutdown_runtime().await?;
+            assert_eq!(image_fds(&payload)?, 0);
+            // Numeric /proc FD paths can be reused by shutdown's unrelated file I/O.
+            // The original anonymous inode, rather than that number, must be gone.
+            assert!(
+                !std::fs::metadata(&image)
+                    .is_ok_and(|current| current.dev() == original_image.dev()
+                        && current.ino() == original_image.ino())
+            );
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn repair_retirement_releases_historical_owners_without_another_open() -> Result<()> {
+        // HTTP sessions must not even inspect an unavailable stdio bundle.
+        let missing = tempfile::tempdir()?.path().join("not-installed");
+        let fixture =
+            Fixture::with_mcp_source("mcp-http", crate::HostMcpSource::Bundled(missing)).await?;
+        with_cleanup(&fixture.runtime, async {
+            let mut revision = fixture.revision;
+            let mut previous = None;
+            for generation in 0..5 {
+                let mut open = fixture
+                    .runtime
+                    .open_acp_session(OpenAcpSessionRequest {
+                        account_id: "business-peer".into(),
+                        expected_connection_revision: revision,
+                        workspace_id: fixture.workspace.id.clone(),
+                        thread_id: None,
+                        intent: AcpOpenIntent::New,
+                    })
+                    .await?;
+                Fixture::ready(&mut open).await?;
+                open.completion.wait().await?;
+                if let Some((pid, weak)) = previous.take() {
+                    assert!(
+                        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                        "new readiness cannot overlap the old process"
+                    );
+                    retired(&fixture.runtime, &weak).await;
+                }
+                let pid = fixture.pid("pid")?;
+                let entry = fixture
+                    .runtime
+                    .config_runtime
+                    .read_acp_definitions()
+                    .definitions["business-peer"]
+                    .clone();
+                let account = fixture.runtime.acp_auth.connection(&entry.definition)?;
+                let weak = Arc::downgrade(&account);
+                drop(account);
+                if generation == 4 {
+                    fixture.runtime.config_runtime.delete_acp_definition(
+                        fixture.runtime.config_runtime.read()?.revision,
+                        "business-peer",
+                        entry.document_revision,
+                    )?;
+                    // No later open, prepare or close call is allowed to do this cleanup for us.
+                    retired(&fixture.runtime, &weak).await;
+                    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+                } else {
+                    let mut changed = entry.definition;
+                    changed
+                        .env
+                        .insert("SYNTHETIC_GENERATION".into(), generation.to_string());
+                    fixture.runtime.config_runtime.save_acp_definition(
+                        fixture.runtime.config_runtime.read()?.revision,
+                        &changed,
+                        Some(entry.document_revision),
+                    )?;
+                    revision = fixture
+                        .runtime
+                        .config_runtime
+                        .read_acp_definitions()
+                        .definitions["business-peer"]
+                        .connection_revision;
+                    previous = Some((pid, weak));
+                }
+            }
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                5
+            );
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("mcp-http-received"))?,
+                "true"
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    fn pending_account(
+        runtime: &StudioRuntime,
+    ) -> (Arc<AccountConnection>, tokio::sync::oneshot::Sender<()>) {
+        let (_, ready) = watch::channel(None);
+        let (release, blocked) = tokio::sync::oneshot::channel();
+        let account = Arc::new(AccountConnection {
+            account_id: "synthetic-retirement".into(),
+            revision: 1,
+            cancel: CancellationToken::new(),
+            cleanup: pl_acp::auth::CleanupBudget::new(PROCESS_CLEANUP_LIMIT),
+            ready,
+            protocol: Mutex::new(None),
+            members: Mutex::new(Vec::new()),
+            mcp_source: crate::HostMcpSource::External,
+            frontend: tokio::sync::Mutex::new(Frontend::default()),
+            join: tokio::sync::Mutex::new(Some(tokio::spawn(async move {
+                let _ = blocked.await;
+            }))),
+            // Deliberately announce cleanup before task return: only awaiting the original
+            // JoinHandle, never these flags alone, is proof that it is safe to deregister.
+            settled: AtomicBool::new(true),
+            supervisor_finished: AtomicBool::new(true),
+            retirement_wake: runtime.acp_auth.inner.retirement_wake.clone(),
+            issue: Mutex::new(None),
+            retry: tokio::sync::Notify::new(),
+        });
+        (account, release)
+    }
+
+    #[tokio::test]
+    async fn repair_retirement_preserves_pending_original_join_when_waiter_is_cancelled()
+    -> Result<()> {
+        let fixture = Fixture::new("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            let (account, release) = pending_account(&fixture.runtime);
+            let waiting = account.clone();
+            let waiter = tokio::spawn(async move { waiting.wait().await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while account.join.try_lock().is_ok() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            assert!(
+                !account
+                    .join
+                    .lock()
+                    .await
+                    .as_ref()
+                    .expect("original join retained")
+                    .is_finished()
+            );
+            fixture
+                .runtime
+                .acp_auth
+                .inner
+                .lock()
+                .retiring
+                .push(account.clone());
+            fixture.runtime.acp_auth.inner.retirement_wake.notify_one();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while account.join.try_lock().is_ok() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            assert_eq!(
+                fixture.runtime.acp_auth.inner.lock().retiring.len(),
+                1,
+                "even settled flags cannot discard a pending join"
+            );
+            let weak = Arc::downgrade(&account);
+            drop(account);
+            release.send(()).unwrap();
+            retired(&fixture.runtime, &weak).await;
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn repair_retirement_errors_are_bounded_without_retaining_historical_owners() -> Result<()>
+    {
+        let fixture = Fixture::new("replay").await?;
+        let work = std::panic::AssertUnwindSafe(async {
+            for index in 0..4 {
+                let (account, release) = pending_account(&fixture.runtime);
+                *account.issue.lock().unwrap() =
+                    Some(format!("failure-{index}:{}", "x".repeat(8192)));
+                let weak = Arc::downgrade(&account);
+                fixture.runtime.acp_auth.inner.lock().retiring.push(account);
+                fixture.runtime.acp_auth.inner.retirement_wake.notify_one();
+                release.send(()).unwrap();
+                retired(&fixture.runtime, &weak).await;
+                let registry = fixture.runtime.acp_auth.inner.lock();
+                let issue = registry
+                    .retirement_issue
+                    .as_ref()
+                    .expect("retired failure remains observable");
+                assert!(issue.chars().count() <= 2048);
+                assert!(
+                    issue.contains(&format!("failure-{index}:")),
+                    "only the latest issue is retained"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .catch_unwind()
+        .await;
+        // Always run real cleanup. Historical failures must remain truthful shutdown
+        // failures even though no full historical owner is retained.
+        let shutdown = fixture.runtime.shutdown_runtime().await;
+        match work {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(result) => result?,
+        }
+        assert!(
+            shutdown.is_err(),
+            "a recorded retirement failure must prevent Clean shutdown"
+        );
+        assert!(
+            fixture
+                .runtime
+                .acp_auth
+                .inner
+                .retirement_join
+                .lock()
+                .await
+                .is_none()
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -68,7 +68,8 @@ pub(crate) struct AcpResources {
     owned: Mutex<Owned>,
     obligations: AtomicBool,
     host_mcp: Mutex<Option<HostMcp>>,
-    /// Kept independently of the HTTP listener until the entire ACP process tree is joined.
+    /// Member lease of the account-cached image; the account retains its own lease until
+    /// the entire ACP process tree is joined, independently of this session's service.
     mcp_frontend: std::sync::Mutex<Option<crate::host_mcp_assets::HostMcpAsset>>,
     mcp_injected: AtomicBool,
     mcp_calls: OnceLock<Arc<AtomicU64>>,
@@ -156,6 +157,17 @@ impl AcpResources {
             .map_err(|_| anyhow::anyhow!("ACP Host MCP metrics already bound"))?;
         self.mcp_injected.store(true, Ordering::Release);
         Ok(definition)
+    }
+
+    pub(crate) async fn host_mcp_frontend(&self) -> Result<crate::host_mcp_assets::HostMcpAsset> {
+        let account = self
+            .owned
+            .lock()
+            .await
+            .account
+            .clone()
+            .context("ACP account is not attached")?;
+        account.frontend().await
     }
 
     pub(crate) fn delivery_error(&self) -> Option<String> {
@@ -461,15 +473,10 @@ impl AcpResources {
             && owned.report_join.is_none()
             && host_mcp.is_none();
         if local_complete {
-            if let Some(frontend) = self
-                .mcp_frontend
+            self.mcp_frontend
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                && let Some(account) = owned.account.as_ref()
-            {
-                account.retain_frontend(frontend);
-            }
+                .take();
             owned.account = None;
             owned.usage = None;
             self.obligations.store(false, Ordering::Release);

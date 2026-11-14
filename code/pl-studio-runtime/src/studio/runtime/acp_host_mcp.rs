@@ -44,7 +44,6 @@ pub(crate) fn prepare_open(
     config: &ConfigRuntime,
     cwd: &str,
     selection: pl_protocol::DelegationSettings,
-    mcp_source: crate::host_mcp_assets::HostMcpSource,
 ) -> Result<PrepareOpen> {
     let snapshot = config.read()?;
     let profiles = config.agent_profiles_snapshot()?;
@@ -58,14 +57,14 @@ pub(crate) fn prepare_open(
         let host = host.clone();
         let caller = caller.clone();
         let mut instructions = instructions.clone();
-        let mcp_source = mcp_source.clone();
         Box::pin(async move {
             let resources = resources.upgrade().ok_or(pl_acp::session::Error::Closed)?;
             let frontend = if capabilities.mcp_capabilities.http {
                 None
             } else {
                 Some(
-                    crate::host_mcp_assets::prepare(mcp_source)
+                    resources
+                        .host_mcp_frontend()
                         .await
                         .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?,
                 )
