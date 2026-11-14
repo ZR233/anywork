@@ -80,6 +80,21 @@ pub(in crate::studio) struct DisplayHeader {
 }
 
 impl DisplayHeader {
+    // A member's mutable detail revision does not invalidate the main tail page.
+    // Membership, terminal counts and actual head/content qualification do.
+    fn same_layout(&self, next: &Self) -> bool {
+        self.version == next.version
+            && self.id == next.id
+            && self.source == next.source
+            && self.block_order == next.block_order
+            && self.boundary == next.boundary
+            && self.first_content_at == next.first_content_at
+            && self.sealed == next.sealed
+            && self.unfinished == next.unfinished
+            && self.next_member == next.next_member
+            && self.body == next.body
+    }
+
     pub fn frozen(&self) -> Option<DisplayBlock> {
         self.sealed.then(|| DisplayBlock {
             id: self.id.clone(),
@@ -1684,7 +1699,18 @@ impl PresentationState {
         header: DisplayHeader,
         touched: &mut BTreeSet<BlockOrder>,
     ) -> Result<()> {
-        self.advance_layout()?;
+        let previous = self.blocks.get(&header.block_order);
+        let layout_changed = previous.is_none_or(|old| !old.same_layout(&header));
+        let summary_changed =
+            previous.is_some_and(|old| old.thinking_summary != header.thinking_summary);
+        if layout_changed {
+            self.advance_layout()?;
+        } else if summary_changed {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .context("display view revision exhausted")?;
+        }
         if header.sealed {
             self.unready.remove(&header.block_order);
         } else {
@@ -3159,6 +3185,7 @@ mod tests {
         };
         s.prepare(1, 10, &[waiting.clone()], &[], &[])?;
         let revision = s.revision;
+        let layout_revision = s.layout_revision;
         let mut watch = s.subscribe_members();
         s.prepare(2, 20, &[waiting], &[], &[])?;
         assert_eq!(s.revision, revision);
@@ -3166,9 +3193,10 @@ mod tests {
         assert_eq!(s.blocks.values().next().unwrap().unfinished, 1);
         let terminal = atom("q", ChatAtomKind::ToolCall, true);
         s.prepare(3, 30, std::slice::from_ref(&terminal), &[], &[])?;
-        assert_eq!(
-            s.revision, revision,
-            "terminal/summary changes do not stale live older"
+        assert!(s.revision > revision);
+        assert!(
+            s.layout_revision > layout_revision,
+            "terminal changes revoke the old live page qualification"
         );
         assert!(watch.has_changed()?);
         watch.borrow_and_update();

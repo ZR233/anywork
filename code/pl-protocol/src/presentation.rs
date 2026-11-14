@@ -267,6 +267,12 @@ mod tests {
 
     #[test]
     fn keep_and_status_cannot_carry_a_second_tail_window() {
+        let keep = serde_json::json!({"kind": "keep"});
+        assert_eq!(
+            serde_json::from_value::<TailUpdate>(keep.clone()).unwrap(),
+            TailUpdate::Keep {}
+        );
+        assert_eq!(serde_json::to_value(TailUpdate::Keep {}).unwrap(), keep);
         assert!(
             serde_json::from_value::<TailUpdate>(serde_json::json!({
                 "kind": "keep", "snapshot": {}
@@ -283,5 +289,11 @@ mod tests {
             serde_json::from_slice::<TailUpdate>(&serde_json::to_vec(&update).unwrap()).unwrap(),
             update
         );
+        let mut unknown = serde_json::to_value(&update).unwrap();
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("snapshot".into(), serde_json::json!({}));
+        assert!(serde_json::from_value::<TailUpdate>(unknown).is_err());
     }
 }
