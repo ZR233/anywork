@@ -1,7 +1,7 @@
 //! Decode retired formats only inside the official migration transaction.
 use super::*;
 use crate::studio::thread_projection::presentation::{
-    DisplayHeader, DisplayMemberWrite, lightweight, member_key, record,
+    DisplayMemberWrite, lightweight, member_key, record,
 };
 use pl_protocol::{ChatAtom, DisplayBlockBody, SingleVisibility};
 use serde_json::{Value, json};

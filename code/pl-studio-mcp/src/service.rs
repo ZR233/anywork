@@ -9,7 +9,7 @@ use rmcp::{
     service::RequestContext,
 };
 
-use crate::{HostError, HostInvocation, HostOperation, HostTools};
+use crate::{HostError, HostInvocation, HostTools};
 
 /// The same protocol service is used by in-process HTTP and IPC-backed stdio.
 #[derive(Clone)]
@@ -59,7 +59,7 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
             .into_iter()
             .map(|entry| {
                 let mut tool = Tool::default();
-                tool.name = entry.operation.tool_name().into();
+                tool.name = entry.tool_id.into();
                 tool.description = Some(entry.description.into());
                 tool.input_schema = Arc::new(entry.input_schema);
                 tool
@@ -76,7 +76,14 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let operation = HostOperation::from_tool_name(&request.name)
+        let tool_id = self
+            .backend
+            .catalog()
+            .await
+            .map_err(protocol_error)?
+            .into_iter()
+            .find(|entry| entry.tool_id == request.name)
+            .map(|entry| entry.tool_id)
             .ok_or_else(|| ErrorData::invalid_params("unknown host tool", None))?;
         let cancellation = context.ct.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
@@ -84,7 +91,7 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
             .backend
             .invoke(
                 HostInvocation {
-                    operation,
+                    tool_id,
                     arguments: request.arguments.unwrap_or_default(),
                 },
                 cancellation,

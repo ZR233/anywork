@@ -31,6 +31,7 @@ pub use interaction_router::{StudioInteractionError, project_thread_interaction}
 mod approval;
 mod permission_projection;
 mod plan_confirmation;
+pub(crate) use approval::authorize_remote_workspace;
 pub(crate) use approval::{ApprovalHost, StudioApprovalOptions};
 pub use permission_projection::{PermissionProjectionError, project_execution_permission};
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;

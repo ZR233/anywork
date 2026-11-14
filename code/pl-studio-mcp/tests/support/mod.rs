@@ -7,9 +7,7 @@ use std::{
     time::Duration,
 };
 
-use pl_studio_mcp::{
-    HostCatalog, HostError, HostInvocation, HostOperation, HostResult, HostTool, HostTools,
-};
+use pl_studio_mcp::{HostCatalog, HostError, HostInvocation, HostResult, HostTool, HostTools};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -41,7 +39,7 @@ impl Drop for Active {
 impl HostTools for Backend {
     async fn catalog(&self) -> Result<HostCatalog, HostError> {
         Ok(vec![HostTool {
-            operation: HostOperation::WaitAgent,
+            tool_id: "anywork_fixture_echo".into(),
             description: "fixture host port".into(),
             input_schema: json!({"type":"object"}).as_object().unwrap().clone(),
         }])
@@ -52,6 +50,9 @@ impl HostTools for Backend {
         request: HostInvocation,
         cancellation: CancellationToken,
     ) -> Result<HostResult, HostError> {
+        if request.tool_id != "anywork_fixture_echo" {
+            return Err(HostError::InvalidRequest);
+        }
         self.0.calls.fetch_add(1, Ordering::SeqCst);
         self.0.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(self.0.clone());
@@ -81,7 +82,7 @@ impl HostTools for Backend {
 
 pub fn invocation(arguments: Value) -> HostInvocation {
     HostInvocation {
-        operation: HostOperation::WaitAgent,
+        tool_id: "anywork_fixture_echo".into(),
         arguments: arguments.as_object().unwrap().clone(),
     }
 }

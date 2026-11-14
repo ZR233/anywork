@@ -3,8 +3,8 @@ use lsp_types::{
     DocumentSymbolClientCapabilities, GeneralClientCapabilities, GotoCapability,
     HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind,
     PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
-    TextDocumentClientCapabilities, WindowClientCapabilities, WorkDoneProgressParams,
-    WorkspaceClientCapabilities, WorkspaceFolder,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
+    WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::Value;
 
@@ -72,6 +72,11 @@ fn client_capabilities() -> ClientCapabilities {
             ..WorkspaceClientCapabilities::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                dynamic_registration: Some(false),
+                did_save: Some(true),
+                ..TextDocumentSyncClientCapabilities::default()
+            }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
             hover: Some(HoverClientCapabilities {
                 content_format: Some(vec![MarkupKind::Markdown]),

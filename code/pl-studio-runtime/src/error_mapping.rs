@@ -518,6 +518,7 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
         | StudioUpdateErrorCode::DownloadIncomplete
         | StudioUpdateErrorCode::HashMismatch
         | StudioUpdateErrorCode::SignatureInvalid
+        | StudioUpdateErrorCode::InstallerOutcomeUnknown
         | StudioUpdateErrorCode::InstallerLaunchFailed
         | StudioUpdateErrorCode::Io => StudioErrorCode::Update,
     };

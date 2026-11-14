@@ -350,6 +350,39 @@ struct FrozenSkillEntry {
     provider: Arc<dyn SkillProvider>,
 }
 
+/// Summary of one configured or active discovery source in resolution precedence order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillDiscoverySourceSummary {
+    pub provider_id: String,
+    pub kind: String,
+    pub location: Option<String>,
+    pub identity: String,
+}
+
+/// Metadata-only summary of one winning Skill candidate selected during catalog discovery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillWinnerSummary {
+    pub name: String,
+    pub source: crate::skill::SkillSourceKind,
+    pub provider_id: String,
+    pub rank: u16,
+    pub local_order: usize,
+    pub resource_base: SkillResourceBase,
+}
+
+/// Immutable provenance summary of one frozen Skill discovery pass without copying Skill bodies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillDiscoveryReport {
+    pub source_fingerprint: String,
+    pub sources: Vec<SkillDiscoverySourceSummary>,
+    pub winners: Vec<SkillWinnerSummary>,
+    pub warnings: Vec<String>,
+    pub complete: bool,
+}
+
 /// One immutable observation retaining winner Provider locators and its separate source capability.
 #[derive(Clone)]
 pub struct FrozenSkillCatalog {
@@ -384,6 +417,44 @@ impl FrozenSkillCatalog {
     /// Returns the serializable catalog projection.
     pub fn snapshot(&self) -> &SkillCatalog {
         &self.snapshot
+    }
+
+    /// Returns metadata-only provenance of sources, precedence winners, and warnings without
+    /// reading or copying full Skill documents.
+    pub fn discovery_report(&self) -> Result<SkillDiscoveryReport> {
+        let mut winners: Vec<SkillWinnerSummary> = self
+            .entries
+            .values()
+            .map(|entry| SkillWinnerSummary {
+                name: entry.candidate.summary.name.clone(),
+                source: entry.candidate.summary.source,
+                provider_id: entry.provider.id().as_str().to_string(),
+                rank: entry.candidate.rank,
+                local_order: entry.candidate.local_order,
+                resource_base: entry.candidate.summary.resource_base.clone(),
+            })
+            .collect();
+        winners.sort_by(|left, right| {
+            (
+                left.rank,
+                left.local_order,
+                &left.provider_id,
+                left.name.to_ascii_lowercase(),
+            )
+                .cmp(&(
+                    right.rank,
+                    right.local_order,
+                    &right.provider_id,
+                    right.name.to_ascii_lowercase(),
+                ))
+        });
+        Ok(SkillDiscoveryReport {
+            source_fingerprint: self.sources.discovery_fingerprint()?,
+            sources: self.sources.configured_sources(),
+            winners,
+            warnings: self.snapshot.warnings.clone(),
+            complete: self.snapshot.complete,
+        })
     }
 
     /// Invalidates the Provider registry that produced this catalog.

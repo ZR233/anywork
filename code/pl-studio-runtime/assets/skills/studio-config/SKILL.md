@@ -12,6 +12,10 @@ the requested feature; do not copy another client's JSON configuration into anyw
 This main document is an index: load the selected support file through the skill
 reader, not a guessed installation path.
 
+ACP programs and authentication remain on the Studio host for SSH projects too.
+Remote workspace tools use the ordinary session execution binding through Host MCP;
+see the ACP section in the main configuration reference, not remote agent setup.
+
 ## Find the correct location
 
 `<studio-home>` is the running application's configuration root, resolved in order:
@@ -36,6 +40,7 @@ configuration are different locations:
 | Configure | Current file/location | Read next |
 | --- | --- | --- |
 | Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 33 | [Main configuration](references/main-config.md) |
+| Desktop diagnostic logging | Studio host process startup environment; no TOML key | [Diagnostic logging](references/main-config.md#desktop-diagnostic-logging) |
 | Noninteractive `anywk exec` | Explicit `--studio-home`, existing native config, environment-only credentials and runtime-only skill options | [CLI execution](references/main-config.md#noninteractive-cli-execution) |
 | ACP definitions | `<studio-home>/acp/<id>.toml`, TOML schema 1 | [Main configuration](references/main-config.md#acp-accounts) |
 | MCP, including Dart MCP | `<studio-home>/mcp/host/<key>.toml` or `mcp/ssh/<ssh-key>/<key>.toml`, TOML schema 1; both directories are on the Studio host | [MCP formats and setup](references/mcp.md) |

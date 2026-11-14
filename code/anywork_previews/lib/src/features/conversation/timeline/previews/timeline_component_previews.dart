@@ -519,7 +519,7 @@ class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
     TimelineDisplayUnit(
       block: DisplayBlock(
         id: 'overlap-text',
-        historyPos: 1,
+        blockOrder: 1,
         body: SingleDisplayBlock(
           visibility: SingleVisibility.content,
           record: DisplayRecord(

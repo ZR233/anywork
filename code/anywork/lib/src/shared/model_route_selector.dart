@@ -152,7 +152,6 @@ class ModelRouteSelector extends StatefulWidget {
 }
 
 class _ModelRouteSelectorState extends State<ModelRouteSelector> {
-  final MenuController _controller = MenuController();
   final FocusNode _triggerFocus = FocusNode(debugLabel: 'model-route-trigger');
 
   @override
@@ -185,18 +184,19 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
 
     return MenuAnchor(
       key: widget.selectorKey,
-      controller: _controller,
       childFocusNode: _triggerFocus,
       style: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
       alignmentOffset: const Offset(6, 6),
       onOpen: _keepSelectedItemVisible,
       menuChildren: _menuChildren(context, contentWidth, selected),
-      child: _buildTrigger(context, canSelect, selectedLabel),
+      builder: (context, controller, child) =>
+          _buildTrigger(context, controller, canSelect, selectedLabel),
     );
   }
 
   Widget _buildTrigger(
     BuildContext context,
+    MenuController controller,
     bool canSelect,
     String selectedLabel,
   ) {
@@ -212,10 +212,10 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
           focusNode: _triggerFocus,
           onPressed: canSelect
               ? () {
-                  if (_controller.isOpen) {
-                    _controller.close();
+                  if (controller.isOpen) {
+                    controller.close();
                   } else {
-                    _controller.open();
+                    controller.open();
                   }
                 }
               : widget.onBlockedTap,
@@ -313,12 +313,13 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
       final context = _selectedRowKey.currentContext;
       final renderObject = context?.findRenderObject();
       final scrollable = context == null ? null : Scrollable.maybeOf(context);
-      if (renderObject == null ||
+      if (context == null ||
+          renderObject == null ||
           !renderObject.attached ||
           scrollable == null ||
           !scrollable.position.hasContentDimensions ||
           !mounted ||
-          !_controller.isOpen) {
+          MenuController.maybeOf(context)?.isOpen != true) {
         return;
       }
       scrollable.position.ensureVisible(renderObject, duration: Duration.zero);

@@ -151,7 +151,7 @@ Map<String, Object?> timelineWaitFailureSnapshot({
       for (final unit in main.skip(main.length > 64 ? main.length - 64 : 0))
         {
           'blockId': unit.id,
-          'historyPos': unit.historyPos,
+          'blockOrder': unit.blockOrder,
           ...body(unit.body, unit.id),
         },
     ],
@@ -159,7 +159,7 @@ Map<String, Object?> timelineWaitFailureSnapshot({
         ? null
         : {
             'revision': live.revision,
-            'historyThrough': live.historyThrough,
+            'readyFrontier': live.readyFrontier,
             'executionPresent': live.executionPresent,
             'blocks': [
               for (final block in live.blocks)
@@ -333,7 +333,7 @@ final class TimelineObservation {
         value.id,
         reason: 'one canonical Main card owns one Message',
       );
-      expect(value.historyPos, greaterThan(0));
+      expect(value.blockOrder, greaterThan(0));
       if (value.body case WorkDisplayBlock(:final timing, :final members)) {
         expect(timing.finishedAt, isNotNull);
         expect(members.blockId, value.id);
@@ -496,7 +496,7 @@ final class TimelineObservation {
       final contains = await _workContainsSource(block, source);
       expect(lease, same(original));
       final admitted = main.where((unit) => unit.id == block.id).single;
-      expect(admitted.historyPos, block.historyPos);
+      expect(admitted.blockOrder, block.blockOrder);
       expect(admitted.memberReference, block.memberReference);
       if (contains) return true;
     }
@@ -1400,7 +1400,7 @@ final class TimelineObservation {
       'identity': identityHashCode(unit),
       'id': unit.id,
       'kind': unit.body is WorkDisplayBlock ? 'work' : 'single',
-      'historyPos': unit.historyPos,
+      'blockOrder': unit.blockOrder,
       'blockReference': ref == null
           ? null
           : {'databaseId': ref.databaseId, 'blockId': ref.blockId},
@@ -1628,7 +1628,7 @@ final class TimelineObservation {
     final controller = lease.controller;
     final sets = lease.appliedSets;
     final header = groupHeader(id);
-    if (value.historyPos != null) {
+    if (value.blockOrder != null) {
       await reveal(header, id, timeout: timeout);
     } else {
       await until(
@@ -2006,7 +2006,7 @@ final class TimelineObservation {
     });
     for (final group in groups) {
       if (group.expansion.expanded != true) continue;
-      if (group.historyPos != null) {
+      if (group.blockOrder != null) {
         await reveal(groupHeader(group.id), group.id);
       }
       await until(

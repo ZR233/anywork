@@ -3,16 +3,16 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use anyhow::{Result, bail};
-use pl_core::chat::{Session, WeakSession};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
+use crate::studio::conversation_store::ConversationStore;
 use crate::studio::storage::calls::CallsStore;
 use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
@@ -220,7 +220,7 @@ struct Inner {
     /// Thread that still has a live holder reuses the same writer identity.
     history: Mutex<BTreeMap<String, HistoryStoreShare>>,
     /// Views and the active writer share one session without pinning cold sessions forever.
-    chats: Mutex<BTreeMap<String, WeakSession>>,
+    conversations: Mutex<BTreeMap<String, Weak<ConversationStore>>>,
     queued_bytes: Arc<AtomicU64>,
     capacity: watch::Sender<u64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
@@ -261,7 +261,7 @@ impl Default for ThreadPersistenceCoordinator {
             usage: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(CallsQueueMetrics::default()),
             history: Mutex::new(BTreeMap::new()),
-            chats: Mutex::new(BTreeMap::new()),
+            conversations: Mutex::new(BTreeMap::new()),
             queued_bytes: Arc::new(AtomicU64::new(0)),
             capacity,
             state,
@@ -296,7 +296,7 @@ impl ThreadPersistenceCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(thread_id);
         self.0
-            .chats
+            .conversations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(thread_id);
@@ -389,30 +389,34 @@ impl ThreadPersistenceCoordinator {
         (waiting, release)
     }
 
-    pub(crate) fn chat_session(&self, thread_id: &str) -> Option<Session> {
+    pub(crate) fn conversation_store(&self, thread_id: &str) -> Option<Arc<ConversationStore>> {
         let mut chats = self
             .0
-            .chats
+            .conversations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active = chats.get(thread_id).and_then(WeakSession::upgrade);
+        let active = chats.get(thread_id).and_then(Weak::upgrade);
         if active.is_none() {
             chats.remove(thread_id);
         }
         active
     }
 
-    pub(crate) fn install_chat_session(&self, thread_id: &str, session: Session) -> Session {
+    pub(crate) fn install_conversation_store(
+        &self,
+        thread_id: &str,
+        session: Arc<ConversationStore>,
+    ) -> Arc<ConversationStore> {
         let mut chats = self
             .0
-            .chats
+            .conversations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(active) = chats.get(thread_id).and_then(WeakSession::upgrade) {
+        if let Some(active) = chats.get(thread_id).and_then(Weak::upgrade) {
             return active;
         }
         chats.retain(|_, session| session.upgrade().is_some());
-        chats.insert(thread_id.to_owned(), session.downgrade());
+        chats.insert(thread_id.to_owned(), Arc::downgrade(&session));
         session
     }
 

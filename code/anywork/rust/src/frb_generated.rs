@@ -16338,14 +16338,14 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayBlock {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_historyPos = <u64>::sse_decode(deserializer);
+        let mut var_blockOrder = <u64>::sse_decode(deserializer);
         let mut var_body =
             <crate::api::studio::types::presentation::BridgeDisplayBlockBody>::sse_decode(
                 deserializer,
             );
         return crate::api::studio::types::presentation::BridgeDisplayBlock {
             id: var_id,
-            history_pos: var_historyPos,
+            block_order: var_blockOrder,
             body: var_body,
         };
     }
@@ -16986,7 +16986,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_revision = <u64>::sse_decode(deserializer);
-        let mut var_historyThrough = <u64>::sse_decode(deserializer);
+        let mut var_readyFrontier = <u64>::sse_decode(deserializer);
         let mut var_executionPresent = <bool>::sse_decode(deserializer);
         let mut var_currentWorkId = <Option<String>>::sse_decode(deserializer);
         let mut var_blocks =
@@ -16996,7 +16996,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
         let mut var_older = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::presentation::BridgeLiveDisplayWindow {
             revision: var_revision,
-            history_through: var_historyThrough,
+            ready_frontier: var_readyFrontier,
             execution_present: var_executionPresent,
             current_work_id: var_currentWorkId,
             blocks: var_blocks,
@@ -22393,8 +22393,8 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeTimelineBatch 
                 deserializer,
             );
         let mut var_before = <Option<String>>::sse_decode(deserializer);
-        let mut var_fromPos = <Option<u64>>::sse_decode(deserializer);
-        let mut var_throughPos = <u64>::sse_decode(deserializer);
+        let mut var_fromOrder = <Option<u64>>::sse_decode(deserializer);
+        let mut var_throughOrder = <u64>::sse_decode(deserializer);
         let mut var_live =
             <Option<crate::api::studio::types::presentation::BridgeLiveDisplayWindow>>::sse_decode(
                 deserializer,
@@ -22404,8 +22404,8 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeTimelineBatch 
             placement: var_placement,
             blocks: var_blocks,
             before: var_before,
-            from_pos: var_fromPos,
-            through_pos: var_throughPos,
+            from_order: var_fromOrder,
+            through_order: var_throughOrder,
             live: var_live,
         };
     }
@@ -22993,9 +22993,13 @@ impl SseDecode for crate::api::studio::types::updater::BridgeUpdaterStateSnapsho
             <Option<crate::api::studio::types::updater::BridgeReadyUpdate>>::sse_decode(
                 deserializer,
             );
+        let mut var_installationError = <Option<
+            crate::api::studio::types::runtime::BridgeStateError,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::updater::BridgeUpdaterStateSnapshot {
             activity: var_activity,
             ready_update: var_readyUpdate,
+            installation_error: var_installationError,
         };
     }
 }
@@ -36605,7 +36609,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.id.into_into_dart().into_dart(),
-            self.history_pos.into_into_dart().into_dart(),
+            self.block_order.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -37537,7 +37541,7 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.revision.into_into_dart().into_dart(),
-            self.history_through.into_into_dart().into_dart(),
+            self.ready_frontier.into_into_dart().into_dart(),
             self.execution_present.into_into_dart().into_dart(),
             self.current_work_id.into_into_dart().into_dart(),
             self.blocks.into_into_dart().into_dart(),
@@ -43800,8 +43804,8 @@ impl flutter_rust_bridge::IntoDart
             self.placement.into_into_dart().into_dart(),
             self.blocks.into_into_dart().into_dart(),
             self.before.into_into_dart().into_dart(),
-            self.from_pos.into_into_dart().into_dart(),
-            self.through_pos.into_into_dart().into_dart(),
+            self.from_order.into_into_dart().into_dart(),
+            self.through_order.into_into_dart().into_dart(),
             self.live.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -44509,6 +44513,7 @@ impl flutter_rust_bridge::IntoDart
         [
             self.activity.into_into_dart().into_dart(),
             self.ready_update.into_into_dart().into_dart(),
+            self.installation_error.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -52249,7 +52254,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayBlock {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.id, serializer);
-        <u64>::sse_encode(self.history_pos, serializer);
+        <u64>::sse_encode(self.block_order, serializer);
         <crate::api::studio::types::presentation::BridgeDisplayBlockBody>::sse_encode(
             self.body, serializer,
         );
@@ -52750,7 +52755,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveDisplayWin
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u64>::sse_encode(self.revision, serializer);
-        <u64>::sse_encode(self.history_through, serializer);
+        <u64>::sse_encode(self.ready_frontier, serializer);
         <bool>::sse_encode(self.execution_present, serializer);
         <Option<String>>::sse_encode(self.current_work_id, serializer);
         <Vec<crate::api::studio::types::presentation::BridgeLiveDisplayBlock>>::sse_encode(
@@ -56861,8 +56866,8 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeTimelineBatch 
             serializer,
         );
         <Option<String>>::sse_encode(self.before, serializer);
-        <Option<u64>>::sse_encode(self.from_pos, serializer);
-        <u64>::sse_encode(self.through_pos, serializer);
+        <Option<u64>>::sse_encode(self.from_order, serializer);
+        <u64>::sse_encode(self.through_order, serializer);
         <Option<crate::api::studio::types::presentation::BridgeLiveDisplayWindow>>::sse_encode(
             self.live, serializer,
         );
@@ -57331,6 +57336,10 @@ impl SseEncode for crate::api::studio::types::updater::BridgeUpdaterStateSnapsho
         );
         <Option<crate::api::studio::types::updater::BridgeReadyUpdate>>::sse_encode(
             self.ready_update,
+            serializer,
+        );
+        <Option<crate::api::studio::types::runtime::BridgeStateError>>::sse_encode(
+            self.installation_error,
             serializer,
         );
     }

@@ -89,6 +89,7 @@ pub(crate) fn bridge_update_state(state: StudioUpdateStateSnapshot) -> BridgeUpd
         }
     };
     BridgeUpdaterStateSnapshot {
+        installation_error: state.installation_error.as_ref().map(Into::into),
         activity,
         ready_update: state.ready_update.map(|ready| BridgeReadyUpdate {
             update: bridge_update(&ready.update),

@@ -332,11 +332,17 @@ sealed class BridgeUpdaterActivity with _$BridgeUpdaterActivity {
 class BridgeUpdaterStateSnapshot {
   final BridgeUpdaterActivity activity;
   final BridgeReadyUpdate? readyUpdate;
+  final BridgeStateError? installationError;
 
-  const BridgeUpdaterStateSnapshot({required this.activity, this.readyUpdate});
+  const BridgeUpdaterStateSnapshot({
+    required this.activity,
+    this.readyUpdate,
+    this.installationError,
+  });
 
   @override
-  int get hashCode => activity.hashCode ^ readyUpdate.hashCode;
+  int get hashCode =>
+      activity.hashCode ^ readyUpdate.hashCode ^ installationError.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -344,7 +350,8 @@ class BridgeUpdaterStateSnapshot {
       other is BridgeUpdaterStateSnapshot &&
           runtimeType == other.runtimeType &&
           activity == other.activity &&
-          readyUpdate == other.readyUpdate;
+          readyUpdate == other.readyUpdate &&
+          installationError == other.installationError;
 }
 
 class BridgeVerifiedUpdateSummary {

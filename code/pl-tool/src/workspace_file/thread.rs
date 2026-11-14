@@ -67,6 +67,16 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceF
         input: OpaquePayload,
         context: CallContext,
     ) -> std::result::Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
+    pub async fn execute_workspace(
+        &self,
+        input: OpaquePayload,
+        context: crate::invocation::WorkspaceInvocation,
+    ) -> std::result::Result<ToolOutput, ToolError> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }

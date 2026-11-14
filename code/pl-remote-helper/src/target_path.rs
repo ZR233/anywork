@@ -61,23 +61,22 @@ impl Executor {
         self.check_path_owner(base)?;
         self.check_path_owner(path)?;
         if self.target_info().os == "windows" {
-            return std::path::Path::new(path.as_str())
-                .strip_prefix(base.as_str())
-                .ok()
-                .map(|path| {
-                    path.to_str()
-                        .map(|path| {
-                            if path.is_empty() {
-                                ".".into()
-                            } else {
-                                path.into()
-                            }
-                        })
-                        .ok_or_else(|| {
-                            ExecutionError::InvalidInput("target path is not UTF-8".into())
-                        })
-                })
-                .transpose();
+            return windows_relative_path(
+                std::path::Path::new(base.as_str()),
+                std::path::Path::new(path.as_str()),
+            )
+            .map(|path| {
+                path.to_str()
+                    .map(|path| {
+                        if path.is_empty() {
+                            ".".into()
+                        } else {
+                            path.into()
+                        }
+                    })
+                    .ok_or_else(|| ExecutionError::InvalidInput("target path is not UTF-8".into()))
+            })
+            .transpose();
         }
         let base = base.as_str().trim_end_matches('/');
         if path.as_str().trim_end_matches('/') == base {
@@ -149,4 +148,40 @@ impl Executor {
             self.path(format!("{}/{path}", base.as_str().trim_end_matches('/')))
         }
     }
+}
+
+/// Canonical Windows replies retain their verbatim prefix for long paths even
+/// when their workspace root can use a regular prefix. Compare volume identity
+/// and complete components without changing either I/O spelling or collapsing
+/// `..`, reserved names, case, or verbatim component semantics.
+fn windows_relative_path<'a>(
+    base: &std::path::Path,
+    path: &'a std::path::Path,
+) -> Option<&'a std::path::Path> {
+    use std::path::{Component, Prefix};
+
+    let mut candidate = path.components();
+    for expected in base.components() {
+        let actual = candidate.next()?;
+        let same = match (expected, actual) {
+            (Component::Prefix(expected), Component::Prefix(actual)) => {
+                match (expected.kind(), actual.kind()) {
+                    (
+                        Prefix::Disk(a) | Prefix::VerbatimDisk(a),
+                        Prefix::Disk(b) | Prefix::VerbatimDisk(b),
+                    ) => a == b,
+                    (
+                        Prefix::UNC(a, b) | Prefix::VerbatimUNC(a, b),
+                        Prefix::UNC(c, d) | Prefix::VerbatimUNC(c, d),
+                    ) => a == c && b == d,
+                    (a, b) => a == b,
+                }
+            }
+            (expected, actual) => expected == actual,
+        };
+        if !same {
+            return None;
+        }
+    }
+    Some(candidate.as_path())
 }

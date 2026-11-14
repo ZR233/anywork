@@ -123,6 +123,7 @@ pub struct BridgeVerifiedUpdateSummary {
 pub struct BridgeUpdaterStateSnapshot {
     pub activity: BridgeUpdaterActivity,
     pub ready_update: Option<BridgeReadyUpdate>,
+    pub installation_error: Option<BridgeStateError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

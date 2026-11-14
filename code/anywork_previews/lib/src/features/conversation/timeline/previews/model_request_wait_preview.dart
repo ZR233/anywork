@@ -26,7 +26,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
   static final _window = LiveDisplayWindow(
     currentWorkId: 'model-request-wait',
     revision: 7,
-    historyThrough: 0,
+    readyFrontier: 0,
     executionPresent: true,
     blocks: const [
       LiveDisplayBlock(
@@ -50,7 +50,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
       LiveStatusObservation(
         cut: LiveWindowCut(
           revision: _window.revision,
-          historyThrough: _window.historyThrough,
+          readyFrontier: _window.readyFrontier,
           executionPresent: _window.executionPresent,
           attemptId: 1,
           isDisplayActive: true,

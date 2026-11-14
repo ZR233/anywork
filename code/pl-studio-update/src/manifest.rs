@@ -1,11 +1,13 @@
 use super::error::{StudioUpdateError, StudioUpdateErrorCode};
 use super::types::{StudioUpdate, StudioUpdateAsset, StudioUpdateCheck};
+use crate::StudioUpdatePlatform;
 use semver::Version;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use url::Url;
 
 pub(super) const LATEST_MANIFEST_URL: &str =
-    "https://github.com/ZR233/pure-lang/releases/latest/download/latest.json";
+    "https://github.com/ZR233/anywork/releases/latest/download/latest-v2.json";
 pub(super) const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -15,14 +17,7 @@ pub(super) struct UpdateManifest {
     version: String,
     published_at: i64,
     notes_url: String,
-    platforms: UpdatePlatforms,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UpdatePlatforms {
-    #[serde(rename = "windows-x86_64")]
-    windows_x86_64: UpdateAssetManifest,
+    platforms: BTreeMap<String, UpdateAssetManifest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,10 +32,11 @@ struct UpdateAssetManifest {
 pub(super) fn evaluate_manifest(
     bytes: &[u8],
     current_version: &str,
+    platform: StudioUpdatePlatform,
 ) -> Result<StudioUpdateCheck, StudioUpdateError> {
     let manifest: UpdateManifest = serde_json::from_slice(bytes)
         .map_err(|error| invalid_manifest(format!("invalid update manifest JSON: {error}")))?;
-    if manifest.schema_version != 1 {
+    if manifest.schema_version != 2 {
         return Err(invalid_manifest(format!(
             "unsupported update schema {}",
             manifest.schema_version
@@ -52,8 +48,15 @@ pub(super) fn evaluate_manifest(
         return Ok(StudioUpdateCheck::UpToDate);
     }
     validate_notes_url(&manifest.notes_url, &available)?;
-    let asset = validate_asset(manifest.platforms.windows_x86_64, &available)?;
+    let asset = manifest.platforms.get(platform.key()).ok_or_else(|| {
+        StudioUpdateError::new(
+            StudioUpdateErrorCode::UnsupportedPlatform,
+            format!("release {} has no {} asset", available, platform.key()),
+        )
+    })?;
+    let asset = validate_asset(asset, &available, platform)?;
     Ok(StudioUpdateCheck::Available(StudioUpdate {
+        platform,
         version: available.to_string(),
         published_at: manifest.published_at,
         notes_url: manifest.notes_url,
@@ -65,13 +68,14 @@ pub(super) fn validate_update(update: &StudioUpdate) -> Result<(), StudioUpdateE
     let version = stable_version(&update.version, "update version")?;
     validate_notes_url(&update.notes_url, &version)?;
     validate_asset(
-        UpdateAssetManifest {
+        &UpdateAssetManifest {
             url: update.installer.url.clone(),
             size: update.installer.size,
             sha256: update.installer.sha256.clone(),
             signature: update.installer.signature.clone(),
         },
         &version,
+        update.platform,
     )?;
     Ok(())
 }
@@ -91,8 +95,9 @@ pub(super) fn validate_redirect_url(url: &Url) -> Result<(), StudioUpdateError> 
 }
 
 fn validate_asset(
-    asset: UpdateAssetManifest,
+    asset: &UpdateAssetManifest,
     version: &Version,
+    platform: StudioUpdatePlatform,
 ) -> Result<StudioUpdateAsset, StudioUpdateError> {
     if asset.size == 0 || asset.size > MAX_INSTALLER_BYTES {
         return Err(StudioUpdateError::new(
@@ -105,8 +110,8 @@ fn validate_asset(
             "installer SHA-256 is not 64 hexadecimal characters",
         ));
     }
-    let expected_name = format!("anywork-{version}-windows-x86_64-setup.exe");
-    let expected_path = format!("/ZR233/pure-lang/releases/download/v{version}/{expected_name}");
+    let expected_name = platform.asset_name(&version.to_string());
+    let expected_path = format!("/ZR233/anywork/releases/download/v{version}/{expected_name}");
     let url = parse_stable_url(&asset.url)?;
     if url.host_str() != Some("github.com") || url.path() != expected_path {
         return Err(invalid_manifest(
@@ -131,7 +136,7 @@ fn validate_asset(
 
 fn validate_notes_url(raw: &str, version: &Version) -> Result<(), StudioUpdateError> {
     let url = parse_stable_url(raw)?;
-    let expected = format!("/ZR233/pure-lang/releases/tag/v{version}");
+    let expected = format!("/ZR233/anywork/releases/tag/v{version}");
     if url.host_str() != Some("github.com") || url.path() != expected {
         return Err(invalid_manifest(
             "release notes URL does not match manifest version",
@@ -183,7 +188,7 @@ mod tests {
     fn manifest() -> serde_json::Value {
         let update = crate::test_support::update(b"test");
         serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "version": update.version,
             "publishedAt": update.published_at,
             "notesUrl": update.notes_url,
@@ -195,21 +200,21 @@ mod tests {
     fn stable_manifest_admits_only_a_newer_version_and_validates_its_assets() {
         let bytes = serde_json::to_vec(&manifest()).unwrap();
         assert_eq!(
-            evaluate_manifest(&bytes, "1.0.0").unwrap(),
+            evaluate_manifest(&bytes, "1.0.0", StudioUpdatePlatform::WindowsX86_64).unwrap(),
             StudioUpdateCheck::UpToDate
         );
         assert_eq!(
-            evaluate_manifest(&bytes, "2.0.0").unwrap(),
+            evaluate_manifest(&bytes, "2.0.0", StudioUpdatePlatform::WindowsX86_64).unwrap(),
             StudioUpdateCheck::UpToDate
         );
         assert_eq!(
-            evaluate_manifest(&bytes, "0.9.0").unwrap(),
+            evaluate_manifest(&bytes, "0.9.0", StudioUpdatePlatform::WindowsX86_64).unwrap(),
             StudioUpdateCheck::Available(crate::test_support::update(b"test"))
         );
         for (pointer, value, expected) in [
             (
                 "/schemaVersion",
-                serde_json::json!(2),
+                serde_json::json!(1),
                 StudioUpdateErrorCode::InvalidManifest,
             ),
             (
@@ -239,16 +244,20 @@ mod tests {
             ),
             (
                 "/notesUrl",
-                serde_json::json!("https://github.com/ZR233/pure-lang/releases/tag/v2.0.0"),
+                serde_json::json!("https://github.com/ZR233/anywork/releases/tag/v2.0.0"),
                 StudioUpdateErrorCode::InvalidManifest,
             ),
         ] {
             let mut input = manifest();
             *input.pointer_mut(pointer).unwrap() = value;
             assert_eq!(
-                evaluate_manifest(&serde_json::to_vec(&input).unwrap(), "0.9.0")
-                    .unwrap_err()
-                    .code(),
+                evaluate_manifest(
+                    &serde_json::to_vec(&input).unwrap(),
+                    "0.9.0",
+                    StudioUpdatePlatform::WindowsX86_64
+                )
+                .unwrap_err()
+                .code(),
                 expected,
                 "{pointer}"
             );
@@ -278,5 +287,59 @@ mod tests {
                 StudioUpdateErrorCode::InvalidManifest
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn each_platform_selects_and_validates_only_its_own_asset() {
+        let windows = crate::test_support::update(b"test");
+        let mut linux = windows.clone();
+        linux.platform = StudioUpdatePlatform::LinuxX86_64;
+        linux.installer.url = format!(
+            "https://github.com/ZR233/anywork/releases/download/v1.0.0/{}",
+            linux.platform.asset_name("1.0.0")
+        );
+        linux.installer.signature = format!("{}.minisig", linux.installer.url);
+        let manifest = serde_json::json!({"schemaVersion": 2, "version": "1.0.0", "publishedAt": 1,
+            "notesUrl": windows.notes_url,
+            "platforms": {"windows-x86_64": windows.installer, "linux-x86_64": linux.installer}});
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        for update in [windows, linux] {
+            assert_eq!(
+                evaluate_manifest(&bytes, "0.9.0", update.platform).unwrap(),
+                StudioUpdateCheck::Available(update)
+            );
+        }
+        let mut missing = manifest.clone();
+        missing["platforms"]
+            .as_object_mut()
+            .unwrap()
+            .remove("linux-x86_64");
+        assert_eq!(
+            evaluate_manifest(
+                &serde_json::to_vec(&missing).unwrap(),
+                "0.9.0",
+                StudioUpdatePlatform::LinuxX86_64
+            )
+            .unwrap_err()
+            .code(),
+            StudioUpdateErrorCode::UnsupportedPlatform
+        );
+        let mut mismatched = manifest;
+        mismatched["platforms"]["linux-x86_64"] = mismatched["platforms"]["windows-x86_64"].clone();
+        assert_eq!(
+            evaluate_manifest(
+                &serde_json::to_vec(&mismatched).unwrap(),
+                "0.9.0",
+                StudioUpdatePlatform::LinuxX86_64
+            )
+            .unwrap_err()
+            .code(),
+            StudioUpdateErrorCode::InvalidManifest
+        );
     }
 }

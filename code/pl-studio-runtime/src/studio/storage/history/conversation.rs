@@ -1145,16 +1145,15 @@ mod run_read_tests {
         fn kind(sql: &[u8], scope: Scope) -> Kind {
             let sql = sql.trim_ascii();
             if !matches!(scope, Scope::CompletionHeads) {
-                if sql.starts_with(b"SELECT block_id,source_key,block_order,history_pos,sealed,updated_effect,header FROM conversation_display_blocks WHERE ") {
-            return Kind::Heads;
-        }
-                if matches!(scope, Scope::DisplayMembers) {
-                    if sql == b"SELECT 1 FROM conversation_display_blocks WHERE block_id=?" {
-                        return Kind::Reference;
-                    }
-                    if sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?" {
-                return Kind::Members;
-            }
+                if sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order ASC LIMIT ?"
+                    || sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order DESC LIMIT ?"
+                {
+                    return Kind::Heads;
+                }
+                if matches!(scope, Scope::DisplayMembers)
+                    && sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"
+                {
+                    return Kind::Members;
                 }
                 return Kind::Unexpected;
             }

@@ -4,7 +4,7 @@ publish_to: 'none'
 
 # Release Please updates this stable SemVer in its reviewed Release PR.
 # Windows uses these major, minor, and patch components for product and file versions.
-version: 6.39.0 # x-release-please-version
+version: 6.42.0 # x-release-please-version
 
 environment:
   sdk: ^3.14.0
@@ -49,6 +49,7 @@ dev_dependencies:
     path: ../anywork_previews
   analyzer: 14.7.0
   args: 2.7.0
+  crypto: 3.0.8
   ffi: ^2.2.0
   win32: ^6.4.0
   flutter_test:

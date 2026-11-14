@@ -33,6 +33,12 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 
 ## 生命周期与执行边界
 
+Host MCP 暴露工作区工具时，复用普通会话的独立作者、冻结工作区/执行端口和必要任务基础，
+不要在 MCP handler 中重写命令、文件或 Git 算法，也不要构造 Native Thread/Turn 来借工具。
+目录及执行绑定同源，非 JSON 输入只在传输边界做原文适配。受理后的任务、进程、捕获与归档
+必须由真实成员 owner 持有并参与关闭；MCP 断开只结束观察，不等于业务取消或退出。
+本机 ACP cwd 与 SSH 业务路径分开，具体契约见 `design/28`，不把提示词或工具前缀当作沙箱。
+
 工作区、命令、路径、文件权限、LSP、MCP、SSH 与归档由工具后端负责；文件许可不隐含 exec/Git/MCP 权限。CallContext 由宿主分配，参数不扩大能力。
 
 Handle 不可 Clone、不实现工具 trait、不在 Drop 自动关闭。原 core owner/lease 负责停止准入、等待在途、catch execute/close future 构造与轮询、收束拒绝候选，并保留 close 失败的原实例重试；不能以强引用计数替换显式 lease 计数，不在注册锁内 await/IO/外部回调。

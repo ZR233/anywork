@@ -23,7 +23,7 @@ def publish_diagnostic(message):
     log({"method": "fixture/publishDiagnostics", "message": message})
     send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
           "params": {"uri": (Path.cwd() / "source.fixture").as_uri(),
-                     "diagnostics": [{"range": {"start": {"line": 0, "character": 0},
+                     "diagnostics": [] if message is None else [{"range": {"start": {"line": 0, "character": 0},
                                                 "end": {"line": 0, "character": 1}},
                                       "severity": 1, "message": message}]}})
 
@@ -51,11 +51,19 @@ while True:
         sys.exit(7)
     if method == "initialized" and os.environ.get("LSP_FIXTURE_DIAGNOSTIC"):
         publish_diagnostic(os.environ["LSP_FIXTURE_DIAGNOSTIC"])
+    if os.environ.get("LSP_FIXTURE_DOCUMENT_DIAGNOSTICS") == "1":
+        if method == "textDocument/didOpen":
+            publish_diagnostic("original error")
+        if method == "textDocument/didChange" and os.environ.get("LSP_FIXTURE_EXPECT_SAVE") != "1":
+            publish_diagnostic(None)
+        if method == "textDocument/didSave":
+            publish_diagnostic(None)
     if "id" not in message:
         continue
     if method == "initialize":
         time.sleep(float(os.environ.get("LSP_FIXTURE_DELAY", "0")))
-        result = {"capabilities": {"hoverProvider": True, "textDocumentSync": 1}}
+        result = {"capabilities": {"hoverProvider": True, "textDocumentSync":
+                                  json.loads(os.environ.get("LSP_FIXTURE_SYNC", "1"))}}
         if os.environ.get("LSP_FIXTURE_FAIL") == "1":
             send({"jsonrpc": "2.0", "id": message["id"],
                   "error": {"code": -32603, "message": "fixture handshake rejected"}})

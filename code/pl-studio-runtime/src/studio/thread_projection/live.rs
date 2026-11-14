@@ -323,7 +323,7 @@ pub(in crate::studio) struct PreparedEffect {
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
     display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) items: Vec<ThreadItem>,
+    pub(in crate::studio) items: Arc<[ThreadItem]>,
     /// The frozen completion records this batch published atomically before the handoff.
     ///
     /// The completion session allocated their `append_seq` in one short critical section and keeps
@@ -341,7 +341,7 @@ pub(in crate::studio) struct PreparedEffect {
         Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
-        Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+        Arc<[crate::thread_assembler::review_delivery::ReviewDeliveryFact]>,
 }
 
 fn review_delivery_facts(
@@ -396,10 +396,8 @@ impl PreparedEffect {
     /// `terminal_retention` is excluded here because that managed owner carries its one charge.
     /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
     ///
-    /// Shell contract: the value includes each item's and the report's own shell, but not the
-    /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
-    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method. Even an empty
-    /// content batch retains its prepared accounting material and its corresponding charge.
+    /// 条目使用共享的 Arc 切片，本估算已包含条目与报告本身的外壳；没有 Vec 预留容量。
+    /// 即使内容批次为空，也保留准备好的记账资料及其对应预算。
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let parent_report = self.parent_report_retained_bytes();
         let review_delivery = self.review_delivery.iter().fold(0_u64, |bytes, fact| {
@@ -1326,6 +1324,10 @@ impl LiveProjection {
         self.execution_history = Some(history);
         Ok(())
     }
+    pub(in crate::studio) fn conversation_database_id(&self) -> Option<&str> {
+        self.current.database_id()
+    }
+
     pub(in crate::studio) fn bind_conversation_identity(
         &mut self,
         database_id: String,
@@ -1559,6 +1561,23 @@ impl LiveProjection {
     /// A frame while many final parts remain resident therefore still visits those report entries;
     /// the identity accumulator does not make the whole retention query constant-time.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        self.retained_without_display().saturating_add(
+            self.presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retained_bytes(),
+        )
+    }
+
+    pub(in crate::studio) fn retained_after_display(
+        &self,
+        plan: &super::presentation::PresentationPlan,
+    ) -> u64 {
+        self.retained_without_display()
+            .saturating_add(plan.retained_bytes())
+    }
+
+    fn retained_without_display(&self) -> u64 {
         let mut bytes = self
             .items_bytes
             .saturating_add(self.facts_bytes)
@@ -1569,12 +1588,6 @@ impl LiveProjection {
                     + RETAINED_ENTRY_OVERHEAD
             }))
             .saturating_add(self.current.retained_bytes());
-        bytes = bytes.saturating_add(
-            self.presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retained_bytes(),
-        );
         bytes = bytes
             .saturating_add(
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
@@ -1676,12 +1689,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1754,12 +1767,12 @@ impl LiveProjection {
             display_text_visible,
             display_observation_plan,
             display_observations,
-            items,
+            items: items.into(),
             completions: Arc::from(Vec::new()),
             completion_drafts: Some(completion_drafts),
             parent_report: None,
             terminal_retention: None,
-            review_delivery,
+            review_delivery: review_delivery.into(),
         });
         self.retain(state);
         Ok(prepared)
@@ -1881,7 +1894,9 @@ impl LiveProjection {
             .filter(|item| matches!(item.state(), ThreadItemState::Turn(_)) && item.is_terminal())
             .map(|item| item.id.clone())
             .collect();
-        let (mut existing, restored) = self.resolve(thread, ids, &terminal_turns).await?;
+        let (mut existing, restored) = self
+            .resolve(thread, ids, &terminal_turns, effect.sequence)
+            .await?;
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -2250,6 +2265,68 @@ impl LiveProjection {
     }
 
     /// Publishes only the retained batch's original drafts. Every wait belongs to that batch.
+    pub(in crate::studio) fn plan_display(
+        &self,
+        prepared: &PreparedEffect,
+        records: &[Arc<ChatItem>],
+    ) -> anyhow::Result<(
+        super::presentation::PresentationPlan,
+        Arc<super::presentation::PreparedDisplayDelta>,
+    )> {
+        let presentation = self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let display_facts = prepared
+            .display_atom_updates
+            .iter()
+            .filter(|atom| presentation.accepts_update(atom))
+            .chain(prepared.current.atom_facts.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        presentation.plan_visible(
+            prepared.sequence,
+            prepared.committed_at,
+            super::presentation::DisplayInput {
+                facts: &display_facts,
+                visible: &prepared.display_text_visible,
+                observations: Some(&prepared.display_observation_plan),
+            },
+            records,
+            |member| {
+                prepared
+                    .display_observations
+                    .get(&member.association_key)
+                    .ok_or_else(|| anyhow::anyhow!("boundary has no retained effect observation"))?
+                    .freeze()
+            },
+        )
+    }
+
+    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationPlan) {
+        self.presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .apply_visible(plan);
+    }
+
+    pub(in crate::studio) fn complete_prepared(
+        prepared: &mut PreparedEffect,
+        records: Arc<[Arc<ChatItem>]>,
+        display: Arc<super::presentation::PreparedDisplayDelta>,
+    ) {
+        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
+        prepared.display = Some(display);
+        prepared.display_atom_updates = Arc::from([]);
+        prepared.display_text_visible = Arc::from([]);
+        prepared.display_observation_plan = Arc::new(BTreeMap::new());
+        prepared.display_observations = Arc::new(BTreeMap::new());
+        prepared.completions = records;
+        prepared.completion_drafts = None;
+    }
+
+    /// 明确的恢复／重放入口；普通新批次由 Store 的同步准入负责。
+    #[cfg(test)]
     pub(in crate::studio) async fn publish_prepared(
         &mut self,
         chat: &Session,
@@ -2807,6 +2884,7 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         ids: impl IntoIterator<Item = String>,
         terminal_turns: &BTreeSet<String>,
+        effect: u64,
     ) -> Result<ResolvedIdentities, ProjectionError> {
         let mut existing = BTreeMap::new();
         let mut restored = BTreeSet::new();
@@ -2837,8 +2915,14 @@ impl LiveProjection {
                 existing.insert(id, item);
                 continue;
             }
-            // Only a reliable identity miss reaches storage. Streaming frames and retained
-            // identities stay entirely in memory.
+            if self
+                .order_index
+                .as_ref()
+                .is_some_and(|index| index.is_new_reservation(&id, effect))
+            {
+                continue;
+            }
+            // Unknown and restored identities retain their explicit history validation.
             let history = self
                 .execution_history
                 .as_ref()
@@ -3883,7 +3967,7 @@ mod completion_boundary_tests {
             );
             assert_eq!(chat.head_seq(), 0);
             let presentation = projection.presentation();
-            let cut = presentation.lock().unwrap().capture(None, 8, 0, 8);
+            let cut = presentation.lock().unwrap().capture(None, 8, Some(0), 8);
             assert_eq!(
                 cut.published, 0,
                 "reliable Started is not content availability"
@@ -4060,7 +4144,7 @@ mod completion_boundary_tests {
                 .context("frozen A")?;
             let block = frozen.block_id.clone();
             let page = history
-                .display_member_page(&database, &block, None, 8)
+                .display_member_page(&database, &block, None, 8, None)
                 .await?;
             let record = page
                 .entries
@@ -4139,7 +4223,7 @@ mod completion_boundary_tests {
             .into();
             publish(&mut projection, &history, &chat, &thread, &state, &terminal).await?;
             let unchanged = history
-                .display_member_page(&database, &block, None, 8)
+                .display_member_page(&database, &block, None, 8, None)
                 .await?;
             assert_eq!(
                 unchanged
@@ -4159,7 +4243,9 @@ mod completion_boundary_tests {
             drop(chat);
             let cold = HistoryStore::open(&path, &thread.id).await?;
             let cold_chat = Session::new(cold.clone(), TimelineEpoch::new("a07-cold")?);
-            let page = cold.display_member_page(&database, &block, None, 8).await?;
+            let page = cold
+                .display_member_page(&database, &block, None, 8, None)
+                .await?;
             let cold_record = &page
                 .entries
                 .iter()
@@ -4292,7 +4378,7 @@ mod completion_boundary_tests {
         let activity = projection.current.activity().context("summary activity")?;
         assert_eq!(activity.summary, "LAST_SUMMARY");
         assert_eq!(activity.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
-        let cut = projection.presentation.lock().unwrap().capture(None, 8, 0, 8);
+        let cut = projection.presentation.lock().unwrap().capture(None, 8, Some(0), 8);
         let work = cut.open.iter().find(|header| Some(&header.id) == cut.current_work_id.as_ref()).context("open Work")?;
         assert_eq!(work.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
         sender.edit_parts(|parts| {
@@ -4507,7 +4593,7 @@ mod completion_boundary_tests {
             .context("original tool start")?
             .clone();
         let owner = projection.presentation();
-        let first_cut = owner.lock().unwrap().capture(None, 1, 0, 1);
+        let first_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
         let block_id = first_cut.open[0].id.clone();
         let structure_revision = first_cut.revision;
         let mut previous_revision = first_cut.open[0].revision;
@@ -4579,7 +4665,7 @@ mod completion_boundary_tests {
             assert!(cut.header.revision > previous_revision);
             previous_revision = cut.header.revision;
             assert_eq!(
-                owner.lock().unwrap().capture(None, 1, 0, 1).revision,
+                owner.lock().unwrap().capture(None, 1, Some(0), 1).revision,
                 structure_revision
             );
             assert!(changes.has_changed()?);
@@ -4592,7 +4678,7 @@ mod completion_boundary_tests {
             assert!(matches!(cut.overlay[0].head.record.atom.lifecycle,
                 ChatAtomLifecycle::Active { status, .. } if status == expected));
             let saved = history
-                .display_member_page(&database, &block_id, None, 2)
+                .display_member_page(&database, &block_id, None, 2, None)
                 .await?;
             assert_eq!(saved.header.as_ref(), cut.header.as_ref());
             assert_eq!(saved.entries[0], *cut.overlay[0]);
@@ -4605,7 +4691,7 @@ mod completion_boundary_tests {
             );
         }
         let before_token = history
-            .display_member_page(&database, &block_id, None, 2)
+            .display_member_page(&database, &block_id, None, 2, None)
             .await?;
         let mut part = ObservedPart::new(started("preview-only").identity);
         for version in 1..=2 {
@@ -4625,7 +4711,7 @@ mod completion_boundary_tests {
         assert!(!changes.has_changed()?);
         assert_eq!(
             history
-                .display_member_page(&database, &block_id, None, 2)
+                .display_member_page(&database, &block_id, None, 2, None)
                 .await?
                 .entries,
             before_token.entries
@@ -4643,7 +4729,7 @@ mod completion_boundary_tests {
         boundary.model_member_starts = vec![text].into();
         publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
         let page = history
-            .display_member_page(&database, &block_id, None, 2)
+            .display_member_page(&database, &block_id, None, 2, None)
             .await?;
         let frozen = &page
             .entries
@@ -4761,7 +4847,7 @@ mod completion_boundary_tests {
         let presentation = projection.presentation();
         {
             let owner = presentation.lock().unwrap();
-            let cut = owner.capture(None, 8, 0, 8);
+            let cut = owner.capture(None, 8, Some(0), 8);
             assert_eq!(cut.published, 0);
             assert!(
                 matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
@@ -4783,7 +4869,7 @@ mod completion_boundary_tests {
         third.model_member_starts = vec![text].into();
         let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
         let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.published.is_some()).context("published Work")?;
+            .find(|block| block.header.sealed).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
             pl_protocol::DisplayBlockBody::Work { timing, .. }
             if timing.started_at == Some(first.committed_at) && timing.finished_at == Some(third.committed_at)));
@@ -4792,7 +4878,7 @@ mod completion_boundary_tests {
         let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
         assert_eq!(chat.head_seq(), h);
         assert!(prepared.completions.is_empty());
-        assert_eq!(prepared.display.as_ref().unwrap().published_through, 1);
+        assert_eq!(prepared.display.as_ref().unwrap().ready_frontier, 1);
         assert!(Arc::ptr_eq(
             prepared.display.as_ref().unwrap(),
             prepared.current.display.as_ref().unwrap()
@@ -4822,7 +4908,7 @@ mod completion_boundary_tests {
                         .unwrap()
                         .blocks
                         .iter()
-                        .find(|b| b.header.history_pos.is_none())
+                        .find(|b| !b.header.sealed)
                         .unwrap()
                         .header
                         .id,
@@ -4833,7 +4919,7 @@ mod completion_boundary_tests {
                 .complete
         );
         let completed_id = &prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.header.history_pos.is_some()).context("completed work")?.header.id;
+            .find(|block| block.header.sealed).context("completed work")?.header.id;
         assert!(presentation.lock().unwrap().member_cut(completed_id,None,8).context("retained completed member")?
             .overlay.iter().any(|member| member.terminal));
         presentation.lock().unwrap().begin_cost_observation();
@@ -4866,7 +4952,7 @@ mod completion_boundary_tests {
         }));
         projection.confirm_sources(3);
         assert_eq!(
-            presentation.lock().unwrap().capture(None, 8, 0, 8).durable,
+            presentation.lock().unwrap().capture(None, 8, Some(0), 8).published,
             1
         );
         super::restore_tests::save(&history, &third, &prepared).await?; // exact lost-ACK replay

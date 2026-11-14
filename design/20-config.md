@@ -1,5 +1,7 @@
 # 20 - Studio 持久化配置
 
+ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；SSH 项目不改变启动来源或要求目标机安装代理。远程命令、文件及 Git 能力由原 Host MCP 按普通会话的能力配置和权限装配，不新增 SSH/ACP 专用配置文件或工具开关；具体边界见 [28.12](./28-acp.md#2812-host-mcp-与宿主指令)。
+
 本文是配置文件结构（schema）、账号与模型结构、提示词分层、MCP/技能/LSP 配置与凭据策略的唯一权威源；权限语义见 [04](./04-security.md)，模型层机制见 [06](./06-model.md)，设置页 UI 见 [19](./19-studio-ui.md)，智能体配置模板（Agent Profile）体系见 [12](./12-collaboration.md)。
 
 ## 20.1 配置位置与产品身份

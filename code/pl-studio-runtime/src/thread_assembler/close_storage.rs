@@ -160,14 +160,17 @@ impl SessionRuntime {
         storage: pl_core::thread::cold::ColdStoreHandle,
     ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
-        let mut preparation_storage = None;
-        if let Some(services) = &services
-            && services
+        let preparation = match &services {
+            Some(services) => services
                 .store
                 .thread_preparation(id)
                 .await
-                .map_err(preparation_storage_error)?
-                .is_some_and(|record| !record.published)
+                .map_err(preparation_storage_error)?,
+            None => None,
+        };
+        let mut preparation_storage = None;
+        if let Some(services) = &services
+            && preparation.as_ref().is_some_and(|record| !record.published)
         {
             let incarnation = crate::studio::new_id("preparation-storage");
             let through = self
@@ -196,11 +199,27 @@ impl SessionRuntime {
                     .map(|services| services.store.thread_persistence().history_channel(id)),
             )
         };
-        let binding = channel.map(|channel| {
-            Arc::new(ThreadStorageBinding {
-                storage: storage.clone(),
+        let conversation = match services.as_ref() {
+            Some(services) => Some(
+                match &preparation {
+                    Some(preparation) => {
+                        services
+                            .store
+                            .conversation_store_for(&preparation.identity.workspace_id, id)
+                            .await
+                    }
+                    None => services.store.conversation_store(id).await,
+                }
+                .map_err(preparation_storage_error)?,
+            ),
+            None => None,
+        };
+        let binding = channel.zip(conversation).map(|(channel, conversation)| {
+            Arc::new(ThreadStorageBinding::new(
+                storage.clone(),
                 channel,
-            })
+                conversation,
+            ))
         });
         let completion = async move { thread.attach_storage(storage).await.map_err(Arc::new) }
             .boxed()
@@ -439,9 +458,32 @@ impl SessionRuntime {
         }
     }
 
+    /// writer 初始化后观察者即可借用原绑定恢复投影；Core 的附加完成仍由关闭流程确认。
+    /// 观察者不能等待 Core 附加命令，否则该命令的保存屏障可能反过来等待观察者。
+    pub(crate) fn projection_storage_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
+        let state = self.0.state();
+        let entry = state
+            .entries
+            .get(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        match entry.native()?.close_storage.as_ref() {
+            Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
+            Some(
+                CloseStorage::Initialized(binding)
+                | CloseStorage::Attaching { binding, .. }
+                | CloseStorage::Attached(binding),
+            ) => Ok(Some(binding.clone())),
+            None if entry.native()?.purpose == EntryPurpose::Execution => Ok(None),
+            _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
+        }
+    }
+
     /// Only ordinary execution entries legitimately have no close-only binding. A missing or
     /// unfinished binding on either storage-only purpose cannot count as successful cleanup.
-    pub(super) fn close_storage_binding(
+    pub(crate) fn close_storage_binding(
         &self,
         id: &str,
     ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {

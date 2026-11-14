@@ -23,14 +23,7 @@ impl TaskStatus {
     }
 }
 
-/// A cancellation acknowledgement, separate from the task's eventual terminal status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TaskCancellationReceipt {
-    Requested,
-    AlreadyRequested,
-    AlreadyFinished,
-}
+pub use crate::tool::task::TaskCancellationReceipt;
 
 /// Identifies the exact context version containing the accepted task receipt.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -120,9 +113,8 @@ impl Owner {
             return Ok(TaskCancellationReceipt::AlreadyRequested);
         }
         let token = self
-            .task_tokens
-            .get(id)
-            .cloned()
+            .executions
+            .token(id)
             .ok_or(ThreadError::InvalidIdentity)?;
         record.revision = record
             .revision

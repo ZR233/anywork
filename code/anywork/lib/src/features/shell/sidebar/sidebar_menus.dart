@@ -52,16 +52,7 @@ class SidebarProjectMenu extends StatefulWidget {
 }
 
 class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
-  final MenuController _controller = MenuController();
   final FocusNode _triggerFocus = FocusNode(debugLabel: 'project-menu-trigger');
-
-  void _open() {
-    if (_controller.isOpen) {
-      _controller.close();
-    } else {
-      _controller.open();
-    }
-  }
 
   @override
   void dispose() {
@@ -78,7 +69,6 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
   Widget build(BuildContext context) {
     return MenuAnchor(
       key: widget.menuKey,
-      controller: _controller,
       childFocusNode: _triggerFocus,
       crossAxisUnconstrained: false,
       style: const MenuStyle(
@@ -112,13 +102,14 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
           child: Text(context.l10n.sidebarCloseProject),
         ),
       ],
-      child: IconButton(
+      builder: (context, controller, child) => IconButton(
         constraints: BoxConstraints.tightFor(
           width: widget.minTarget,
           height: widget.minTarget,
         ),
         tooltip: context.l10n.sidebarProjects,
-        onPressed: _open,
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
         focusNode: _triggerFocus,
         visualDensity: VisualDensity.standard,
         style: const ButtonStyle(
@@ -166,16 +157,7 @@ class SidebarThreadMenu extends StatefulWidget {
 }
 
 class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
-  final MenuController _controller = MenuController();
   final FocusNode _triggerFocus = FocusNode(debugLabel: 'thread-menu-trigger');
-
-  void _open() {
-    if (_controller.isOpen) {
-      _controller.close();
-    } else {
-      _controller.open();
-    }
-  }
 
   @override
   void dispose() {
@@ -198,7 +180,6 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
       dimension: widget.minTarget,
       child: MenuAnchor(
         key: StudioDriverKeys.threadMenu(row.threadId),
-        controller: _controller,
         childFocusNode: _triggerFocus,
         // 受控紧凑宽度需要约束横轴；默认 UnconstrainedBox 会让长路径撑开内容。
         crossAxisUnconstrained: false,
@@ -310,13 +291,14 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
             ),
           ),
         ],
-        child: IconButton(
+        builder: (context, controller, child) => IconButton(
           tooltip: MaterialLocalizations.of(context).showMenuTooltip,
           constraints: BoxConstraints.tightFor(
             width: widget.minTarget,
             height: widget.minTarget,
           ),
-          onPressed: _open,
+          onPressed: () =>
+              controller.isOpen ? controller.close() : controller.open(),
           focusNode: _triggerFocus,
           visualDensity: VisualDensity.standard,
           style: const ButtonStyle(

@@ -235,6 +235,22 @@ pub async fn shutdown_runtime(
             // `Stopped` + instance-lock release) is only reachable when both the bridge and the
             // runtime settled every owner.
             let mut issues = external_issues;
+            if intent == BridgeExitIntent::Exit {
+                match tokio::time::timeout(
+                    remaining_until(deadline),
+                    bridge.studio.abort_studio_update_installation(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    _ => issues.push(bridge_issue(
+                        "updateOperations",
+                        "handoffAbortFailed",
+                        "The prepared installer did not confirm cancellation",
+                        true,
+                    )),
+                }
+            }
             issues.extend(take_bridge_early_issues());
             issues.append(&mut bridge_issues);
             let remaining = remaining_ms_u32(deadline);
@@ -247,23 +263,16 @@ pub async fn shutdown_runtime(
                     )
                     .await,
             );
-            if report.outcome == BridgeShutdownOutcome::Clean {
-                let mode = match intent {
-                    BridgeExitIntent::Exit => pl_studio_update::StudioUpdateLaunch::OnExit,
-                    BridgeExitIntent::UpdateRestart => {
-                        pl_studio_update::StudioUpdateLaunch::Restart
-                    }
-                };
+            if report.outcome == BridgeShutdownOutcome::Clean
+                && intent == BridgeExitIntent::UpdateRestart
+            {
                 update_handoff = match tokio::time::timeout(
                     remaining_until(deadline),
-                    bridge.studio.launch_studio_update_on_exit(mode),
+                    bridge.studio.launch_studio_update_on_exit(),
                 )
                 .await
                 {
                     Ok(Ok(Some(version))) => BridgeUpdateHandoff::Launched { version },
-                    Ok(Ok(None)) if intent == BridgeExitIntent::Exit => {
-                        BridgeUpdateHandoff::NotRequested
-                    }
                     Ok(Ok(None)) => handoff_failure(
                         "updateNotReady",
                         "The prepared update is no longer available",
@@ -276,6 +285,24 @@ pub async fn shutdown_runtime(
                         "Update handoff exceeded the remaining exit budget",
                     ),
                 };
+            }
+            if report.outcome != BridgeShutdownOutcome::Clean
+                || matches!(update_handoff, BridgeUpdateHandoff::Failed { .. })
+            {
+                // A failed shutdown can never leave a latent installer waiting
+                // to replace files after the forced native exit.
+                match tokio::time::timeout(
+                    remaining_until(deadline),
+                    bridge.studio.abort_studio_update_installation(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::error!(%error, "update handoff cancellation failed"),
+                    Err(error) => {
+                        tracing::error!(%error, "update handoff cancellation exceeded shutdown budget")
+                    }
+                }
             }
             report
         }

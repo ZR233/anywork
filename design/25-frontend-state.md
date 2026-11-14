@@ -29,13 +29,15 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| 不可变原件、冻结展示块与成员索引 | Rust Session/HistoryStore 及原 live 展示 owner | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
+| 不可变原件、冻结展示块与成员索引 | Rust ConversationStore 及其共享 Session/HistoryStore | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
 | 原生 OpenAI 登录状态与待保存授权 | Rust 原生认证所有者 | 账号 Repository 的类型化观察；共享 Native 编辑器只持有认证选择与登录身份 | `loginId + editorId + accountId`；显式取消、编辑意图丢弃或应用关闭，保存按 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证) 认领 |
 | 已加载展示 item 与阅读/跟随意图 | Flutter 呈现 owner | item 引用、item/成员分页边界、展示控制器与局部 UI | Thread + 展示 item 代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
+
+Native 内容读句柄绑定稳定会话 Store 与数据库身份。执行所有者退出或更换不更换仍被读者持有的数据源，也不因此撤销内容游标；执行状态自身的资格仍按原执行生命周期判断。冷读取与执行初始化使用同一生命周期切面，初始化中的读取等待原恢复结果，失败明确返回。页面只关闭自己的读取资格，不取消可靠保存。现役内容推送及传输确认协议继续由原适配层维护，未引入新的客户端观察协议。
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
 
@@ -57,7 +59,7 @@ open 操作的观察入口与 Ready/Failed 属于同一次操作，load 完成�
 
 外部会话列表从当前真实 owner 的 `listSessions` 能力与就绪状态派生入口，仅用户显式打开面板、刷新或翻页时请求；保留对端 ID、标题、工作目录、更新时间与不透明 cursor，不把列表导入产品目录。读取限定来源成员原工作目录；单项打开还须核对返回条目的工作目录，不能将异工作区会话关联到当前项目。用户明确选择 Load 或 Resume 后才建立产品关联，不回落 New；一次打开在途禁止重复，未知结果保留且不自动重试。组件退役不关闭来源成员，后台内容增量不驱动列表入口刷新。
 
-ACP 创建与发送沿原草稿、附件 owner 分支执行，不经过 Native route、mode 或历史 materialize。用户先选服务和真实本机业务 workspace，显式创建一个真实会话；创建后保留输入与附件，由用户按该会话的实际配置发送首条 prompt，不自动发送或重发。配置在途或失败不能悄悄以旧值发送；附件按实际能力验证，失败保留草稿，暂存资源至少保留到实际序列化和发送责任结束。
+ACP 创建与发送沿原草稿、附件 owner 分支执行，不经过 Native route、mode 或历史 materialize。用户先选服务和实际本地或 SSH 业务 workspace，显式创建一个真实会话；ACP 本机 cwd 与远程业务根由运行时分别管理，界面不因 SSH 排除 ACP，也不把本机目录展示为远程根。创建后保留输入与附件，由用户按该会话的实际配置发送首条 prompt，不自动发送或重发。配置在途或失败不能悄悄以旧值发送；附件按实际能力验证，失败保留草稿，暂存资源至少保留到实际序列化和发送责任结束。
 
 涉及后端数据的 Flutter 区域统一遵循 `adapter → Client owner → ViewModel → Connector → View/Widget` 分层，其中 `features/conversation/acp/` 按 `state/`、`view_models/`、`connectors/`、`views/` 与 `widgets/` 严格隔离，开发预览单独位于 `code/anywork_previews` 并遵守同一纯呈现边界（由 `client_boundary_check.dart` 的 `UI-02` 静态校验守卫）：`state/` 仅持有纯 Freezed 不可变呈现值，不含异步句柄或 Flutter 控件依赖；启动卡片、阅读流头部与按索引单行条目、Plan 卡片、权限停靠栏、服务端动态配置栏、输入框与附件、底部状态栏及外部会话对话框各自拥有独立的 `@riverpod` ViewModel／Notifier，按 `threadId` 或 `workspaceId` 细粒度 `.select` 观察 `anywork_client` 状态并内聚自身命令动作（外部会话 ViewModel 亦仅以 `threadId` 建键并在内部核验当前会话 owner 身份，不跨组件传递 `AcpConversationSession` 实例）；外层工作区与连接器只做布局与身份绑定，不外挂协议归并、提交校验、异步结果处理或整页刷新链；纯 `views/`、`widgets/` 与 `acp_views.dart` 仅接收不可变状态与回调，不导入 Riverpod、Client 仓储或 FRB 类型。组件退役仅释放显示观察，不关闭 Client 业务 owner；焦点、输入法组词区间、滚动与局部展开状态由对应纯视图组件自身持有。S6 的 Host MCP 与混合协作入口不因普通 ACP 聊天已接入而启用。
 
@@ -481,7 +483,7 @@ Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged �
 
 GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原 Run/Children 完成查询继续保留其原 scope/parent 资格，不能作为 GUI 分组 fallback。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
 
-工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，不冒领 history_pos；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
+工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，使用既有 block_order，不虚增历史前沿；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
@@ -503,7 +505,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 ### 25.15.1 唯一尾组的呈现与读取所有权
 
-Native presentation v5 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配假 history_pos，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
+Native presentation v6 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配第二展示位置，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
 
 实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不为组件测试保留另一套归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。
 
@@ -523,6 +525,8 @@ Mode 编辑会话保留打开或新建时的身份；可编辑 JSON 中的文档
 
 ### 更新检查与多个 GUI 入口
 
-更新调度、当前准备轮次与已验证安装包租约统一属于 Rust 更新器。Windows 正式版就绪后立即检查，之后每 20 分钟串行检查；单轮错误不结束调度，取消下载只取消当前轮次，关停才停止并等待整个后台 owner。
+更新调度、当前准备轮次与已验证安装包租约统一属于 Rust 更新器。Windows / Linux x86_64 正式版就绪后立即检查，之后每 20 分钟串行检查；单轮错误不结束调度，取消下载只取消当前轮次，关停才停止并等待整个后台 owner。
+
+Linux 安装授权与平台交接仍由 Rust 更新器持有，准备回执成功才请求更新重启。普通退出不消费安装包。安装终态在下一次 bootstrap 中进入 `installationError`，该字段与活动共用 revision，经同一 Store/事件链显示，不建立 GUI 安装结果回读。
 
 Client 的 `UpdaterStore` 只接纳 bootstrap、`UpdaterTopic` 基线及状态事件。快照中的当前活动和已验证安装包独立表达，因此检查或准备新版失败不会抹掉旧安装包。侧栏与设置页通过同一只读 Riverpod 投影观察，不持有任务、不启动轮询。准备句柄只结算完成或取消；`Ready(version)` 回执供宿主选择退出意图，不能回灌 canonical 状态。手动安装冻结版本，准备完成不依赖 GUI 是否已消费对应事件，也不等待常驻调度结束。

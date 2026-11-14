@@ -150,7 +150,7 @@ impl StudioThreadFactory {
                 }
                 pl_protocol::AgentBinding::Acp(_) => (
                     ToolWorkspace::new(pl_tool::workspace::AgentWorkspace::local(PathBuf::from(
-                        &parent.session.workspace_path,
+                        self.acp_business_root(&request.caller, &parent.session),
                     ))),
                     project.clone(),
                 ),
@@ -385,11 +385,39 @@ impl StudioChildResources for StudioThreadFactory {
             .ok_or_else(|| ThreadAssemblyError::Identity(request.id.clone()))?;
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
-            persisted_thread,
+            persisted_thread.clone(),
             None,
         )
         .await
         .map_err(|error| resource_error("open child chat session", error))?;
+        let export_session = persistence.chat_session();
+        if let Some(exporter) = &self.services.run_export
+            && exporter.is_enrolled_root(&persisted_thread.root_thread_id)
+        {
+            Box::pin(exporter.register_member(
+                crate::studio::runtime::run_export::NewMemberRegistration {
+                    root_thread_id: persisted_thread.root_thread_id.clone(),
+                    thread_id: request.id.clone(),
+                    agent_id: child_identity.agent_id.to_string(),
+                    parent_agent_id: Some(caller_identity.agent_id.to_string()),
+                    parent_thread_id: Some(request.caller.clone()),
+                    role: Some(profile.profile.profile_id.clone()),
+                    workspace_id: persisted_thread.workspace_id.clone(),
+                    spawn_tool_call_id: Some(request.call_id.clone()),
+                    initial_effect_seq: 0,
+                    session: export_session,
+                },
+            ))
+            .await;
+            if let Some(catalog) = prepared_tools.catalog.as_deref() {
+                Box::pin(exporter.record_skills_discovered(
+                    &persisted_thread.root_thread_id,
+                    &request.id,
+                    catalog,
+                ))
+                .await;
+            }
+        }
         let model = pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&profile.route)?,
             profile.route.reasoning_config(),

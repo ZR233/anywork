@@ -565,7 +565,7 @@ TimelineBatch _mainBatch(
         ? LiveDisplayWindow(
             currentWorkId: null,
             revision: 1,
-            historyThrough: through,
+            readyFrontier: through,
             executionPresent: false,
             blocks: const [],
           )

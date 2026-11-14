@@ -303,6 +303,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 )
             })
             .collect()
@@ -595,6 +596,7 @@ mod tests {
             COMPLETION_BOUNDARY,
             IMMUTABLE_COMPLETION_RUNS,
             WORK_SNAPSHOTS,
+            DISPLAY_BLOCK_ORDER,
         ];
         assert_eq!(new_ledger.len(), old_ledger.len() + appended_steps.len());
         for step in appended_steps {

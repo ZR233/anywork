@@ -583,7 +583,7 @@ TimelineBatch _timelineBatch(
         : LiveDisplayWindow(
             currentWorkId: null,
             revision: 0,
-            historyThrough: through,
+            readyFrontier: through,
             executionPresent: false,
             blocks: const [],
           ),

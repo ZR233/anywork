@@ -940,6 +940,7 @@ final class _TimelineScene {
             'baseRevision': state.baseRevision,
             'sync': state.sync.phase.name,
             'syncRetryExhausted': state.sync.retryExhausted,
+            'syncErrorMessage': state.sync.errorMessage,
             'lastTurn': turnCut(state.lastTurn),
             'activeTurn': turnCut(state.activeTurn),
             'execution': execution == null

@@ -164,6 +164,14 @@ impl StudioThreadFactory {
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
         let identity = self.resolve_workspace_identity(project, root).await?;
+        self.assign_workspace_identity(usage, identity).await
+    }
+
+    pub(in crate::studio) async fn assign_workspace_identity(
+        &self,
+        usage: &WorkspaceUsageLease,
+        identity: WorkspaceIdentity,
+    ) -> Result<WorkspaceIdentity> {
         let owner = self.services.worktrees.usage_owner(usage)?;
         if self
             .services

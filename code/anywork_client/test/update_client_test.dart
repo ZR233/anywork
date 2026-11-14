@@ -107,6 +107,24 @@ StudioUpdateClient _client(_UpdateApi api, UpdaterStore store) =>
     StudioUpdateClient(api: api..store = store, updater: store, enabled: true);
 
 void main() {
+  test(
+    'Rust disabled capability prevents both automatic and manual checks',
+    () async {
+      final api = _UpdateApi();
+      final store = UpdaterStore()
+        ..apply(
+          UpdaterStateSnapshot(
+            activity: DisabledUpdaterActivity(revision: 7, updatedAt: _now),
+          ),
+        );
+      final client = _client(api, store)..attach();
+      await client.check();
+      expect(api.automaticStarts, 0);
+      expect(api.checkCalls, 0);
+      expect((await client.close()).complete, isTrue);
+    },
+  );
+
   test('preparation receipt never backfills canonical state or waits for UI delivery', () async {
     final api = _UpdateApi();
     final store = UpdaterStore()..apply(_available(7));

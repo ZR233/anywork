@@ -261,6 +261,7 @@ impl StudioRuntime {
             resolved.host_mcp_source.clone(),
             resolved.ssh_config.clone(),
             resolved.skill_search.clone(),
+            resolved.run_export.clone(),
         )
         .await;
         let runtime = match assembled {

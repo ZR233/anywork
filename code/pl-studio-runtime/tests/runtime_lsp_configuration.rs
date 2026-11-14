@@ -49,7 +49,7 @@ fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: Reply) {
     ));
 }
 
-fn script(configuration: &str) -> Vec<Step> {
+fn script(configuration: &str, shell: bool) -> Vec<Step> {
     let mut steps = vec![
         prompt_step(
             "plain",
@@ -80,15 +80,25 @@ fn script(configuration: &str) -> Vec<Step> {
         "true",
         text_reply("failure is isolated", "inspected"),
     );
-    steps.push(prompt_step(
-        "repair configuration",
-        steps.len(),
+    let repair = if shell {
+        program_reply(
+            "exec_command",
+            "repair-file",
+            json!({"command":format!(
+                "python3 - <<'PY'\nfrom pathlib import Path\nPath({}).write_text({})\nprint({})\nPY",
+                serde_json::to_string(REPAIR_PATH).unwrap(),
+                serde_json::to_string(configuration).unwrap(),
+                serde_json::to_string(REPAIR_PATH).unwrap(),
+            )}),
+        )
+    } else {
         program_reply(
             "write_file",
             "repair-file",
             json!({"path":REPAIR_PATH,"mode":"overwrite","content":configuration}),
-        ),
-    ));
+        )
+    };
+    steps.push(prompt_step("repair configuration", steps.len(), repair));
     after(
         &mut steps,
         "repair-file",
@@ -306,13 +316,24 @@ fn server<'a>(status: &'a Value, id: &str) -> Result<&'a Value> {
 
 #[tokio::test]
 async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread() -> Result<()> {
+    configuration_journey(false).await
+}
+
+#[tokio::test]
+async fn shell_configuration_publishes_servers_and_tools_in_the_same_real_thread() -> Result<()> {
+    configuration_journey(true).await
+}
+
+async fn configuration_journey(shell: bool) -> Result<()> {
     let deadline = support::integration_test_deadline()?;
     let configuration = fixture_configuration()?;
-    let env = Environment::new(script(&configuration), Vec::new()).await?;
+    let env = Environment::new(script(&configuration, shell), Vec::new()).await?;
     let observed = tokio::time::timeout(deadline, async {
         let directory = env.repo.join(".anywork/lsp");
         std::fs::create_dir_all(&directory)?;
-        std::fs::write(env.repo.join(REPAIR_PATH), "schema_version = [broken TOML")?;
+        if !shell {
+            std::fs::write(env.repo.join(REPAIR_PATH), "schema_version = [broken TOML")?;
+        }
         std::fs::write(
             directory.join("missing.toml"),
             "schema_version = 1\nid = 'missing'\n\
@@ -329,7 +350,9 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
         let thread = &started.thread.id;
         ensure!(PathBuf::from(&started.thread.workspace_path) == env.repo);
         completed(&env, thread, "plain").await?;
-        wait_lsp(&mut events, "fixture", false).await?;
+        if !shell {
+            wait_lsp(&mut events, "fixture", false).await?;
+        }
         // A fresh subscription includes the latest baseline even if both failures coalesced.
         events = env
             .runtime
@@ -342,7 +365,12 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
                 thread_id: thread.clone(),
             })
             .await?;
-        let association = wait_thread_lsp(&mut thread_lsp, &["fixture", "missing"]).await?;
+        let failed_ids: &[&str] = if shell {
+            &["missing"]
+        } else {
+            &["fixture", "missing"]
+        };
+        let association = wait_thread_lsp(&mut thread_lsp, failed_ids).await?;
         ensure!(association.thread_id == *thread);
         ensure!(
             association
@@ -358,7 +386,7 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
         ensure!(
             PathBuf::from(status["workspaceRoot"].as_str().context("status root")?) == env.repo
         );
-        for id in ["fixture", "missing"] {
+        for &id in failed_ids {
             let failed = server(&status, id)?;
             ensure!(failed["phase"] == "failed", "{failed}");
             ensure!(
@@ -376,7 +404,7 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
         }
         ensure!(receipt(&env.root_provider, "ordinary-stat")?["exists"] == true);
 
-        // The real write tool must trigger reloading; no test-owned registry refresh,
+        // Real file and shell writes must trigger reloading; no test-owned registry refresh,
         // runtime restart, new Thread or explicit GUI reload is allowed here.
         events = env
             .runtime
@@ -385,6 +413,8 @@ async fn failed_lsp_configuration_isolated_and_repaired_in_the_same_real_thread(
         submit(&env, thread, "repair configuration").await?;
         ensure!(std::fs::read_to_string(env.repo.join(REPAIR_PATH))? == configuration);
         wait_lsp(&mut events, "fixture", true).await?;
+        let published = wait_thread_lsp(&mut thread_lsp, &["fixture", "missing"]).await?;
+        ensure!(published.binding_id == association.binding_id);
         let expected = ["lsp_capabilities", "lsp_query", "lsp_status"];
         let mut recovered = false;
         for attempt in 0..CATALOG_ATTEMPTS {

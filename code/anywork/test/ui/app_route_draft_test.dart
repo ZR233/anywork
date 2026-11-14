@@ -272,7 +272,7 @@ void main() {
           transport.seedTimelineItems('thread-main', [completedBody]);
           transport.seedDisplayBlocks(
             threadId: 'thread-main',
-            blocks: [displaySingle(completedBody, historyPos: 45)],
+            blocks: [displaySingle(completedBody, blockOrder: 45)],
           );
           expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');

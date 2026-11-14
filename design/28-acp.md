@@ -180,7 +180,11 @@ Host MCP 与混合协作沿本节同一业务会话资源实现，不另建协�
 
 ### 会话与历史
 
-一个 ACP 成员独占一个真实 SDK session，租用同账户连接代次的受管进程与已初始化连接，不独占进程，也不复用认证/额度的探测 session。`pl-acp` 仅消费宿主 I/O 和正式协议类型，不读配置或启动进程。Studio 从唯一用户定义准备账户连接，模板复用原安装校验和进程监督器；业务 cwd 只消费工作区所有者确认的本机目录及已有 worktree，不由连接启动器创建、不从工作区发现服务。SSH 在资源副作用前 Unsupported；AuthRequired 返回真实登录指引，不后台登录。单个成员关闭释放其 session 和租约，不排空共享 SDK 或终止其他成员。
+一个 ACP 成员独占一个真实 SDK session，租用同账户连接代次的宿主受管进程与已初始化连接，不独占进程，也不复用认证/额度的探测 session。单个成员关闭释放其 session 和租约，不排空共享 SDK 或终止其他成员。`pl-acp` 只消费宿主提供的 I/O 和正式协议类型，不读配置或自行启动进程。Studio 从唯一用户定义准备账户连接，模板复用原安装校验和进程监督器。command、args、env 和登录态始终属于 Studio 宿主；SSH 项目不在目标机安装或运行 ACP，不复制凭据，不增加 SSH 隧道。
+
+业务工作区与 ACP 协议 cwd 分开：本地成员保留原已验证目录；SSH 成员使用所属宿主会话 scratch 下的私有 `acp-cwd` 目录作为协议 cwd，不镜像源码，不借用认证探测目录。真实业务根、child/worktree 分配及清理身份来自原工作区 owner，不能从协议 cwd 推导。产品引用保存实际协议 cwd，load/resume 分别核对外部会话关联与原物理工作区；缺失时明确失败，不自动 new。AuthRequired 返回真实服务指引，不后台登录或冒用探测 session。
+
+SSH 业务通过 [28.12](#2812-host-mcp-与宿主指令) 的工作区工具复用普通会话远程机制。同一实例只冻结一份工作区执行绑定，项目指令、命令、文件、Git、会话文件及归档从同一绑定取得；旧连接失效不切换到新代次继续旧调用。远程启动资格包含实际工作区和工具准备，不能仅删除 SSH 拒绝条件。
 
 历史、内容及能力完全遵循稳定 ACP v1：New 创建新身份，Load 在响应前通过 `session/update` 回放对端历史，Resume 不回放，List 直接读对端目录。只有实际声明能力才允许发送对应请求，不自动降级或重试。Anywork 只持久化 [17](./17-studio-storage.md#171-数据布局) 的最小产品关联，不保存 transcript、Native history/checkpoint 或完整外部目录，也不以缺少历史猜测对端 idle。
 
@@ -226,7 +230,11 @@ Host MCP 在原领域运行时之上提供传输无关的服务。`AgentHost` / 
 
 initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rmcp Streamable HTTP 服务，监听 `127.0.0.1:0` 的 `/mcp`，handler 在原进程直接调用领域端口。否则准备原实例本地 IPC 端点，并注入 ACP v1 标准 stdio 定义，由 Agent 启动宿主原生 `pl-studio-mcp --stdio`；该程序是正式 MCP server，通过 IPC 调用原运行时，stdio 路径不创建 HTTP MCP listener。HTTP/SSE 为 false 不等于没有 MCP，外层 ACP stdio 与内层 MCP stdio 是独立通道。new/load/resume 共用准备与选择逻辑，resume 仍受其真实能力约束；准备失败明确返回错误。能力声明、接收配置、实际连接与真实工具调用分别核对，不以注入成功推断可用。
 
-领域端口仅交付工具目录和执行调用；`HostOperation` 为现有九项操作的封闭集合，`HostInvocation` 携带操作和参数，`HostResult` 携带结构化结果及业务错误标记。目录由原声明投影，不回解作者侧 `ToolDefinition`，不另写 schema。MCP 握手、request ID、通知和结果封装由各入口的官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
+领域端口只交付工具目录和执行调用。目录项与可调用绑定由同一装配结果产生，`HostInvocation` 携带该实例目录中的工具身份和参数，`HostResult` 携带结构化结果及业务错误标记；不维护另一份九项操作枚举或名称白名单。目录直接投影原作者声明，不回解 `ToolDefinition`，不复制 schema；Grammar/Text 输入只在 MCP 边界以明确的字符串字段承载原文。MCP 握手、request ID、通知和结果封装由官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
+
+对端工具通知不必回显 HostResult。隔离验收需要核对原返回值时，按 [24](./24-testing.md) 使用原 handler 的定向 TRACE 诊断；它不新增执行通路或产品结果镜像，不修改 ACP 更新，不把宿主 call ID 伪装为 MCP／ACP ID，也不改变任务的受理、取消和关闭语义。普通会话不依赖或读取该日志。
+
+同样，ACP 工具通知的 `rawInput` 与 MCP `arguments` 分属对端报告和宿主执行边界，不能由 SDK 类型相同推导逐字段等值。供应商已核实的展示元字段只可在 [24](./24-testing.md) 指定的窄验收适配中表达，完整原通知仍原样交付 Client；生产映射不删除 `toolSummary` 或其他字段，Host MCP 也不为配合显示而改写实际参数。
 
 IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝远程连接并限定本机用户的 named pipe，复用锁定 Tokio、h2 与 prost。每个 h2 stream 对应一次目录读取或执行调用，protobuf 外层承载原 JSON 参数/结果；收发上限为 4 MiB，超限明确失败，不截断。h2 负责并发关联、流控、reset 和连接关闭，不新增请求账本、业务 deadline、重放、重连或结果缓存，也不把产品调用塞入 SSH helper 协议。
 
@@ -236,8 +244,16 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
+SSH 项目的同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。本地 ACP 保留已有协作工具和外部代理原本的本机工具，不在本期额外增加宿主文件/命令访问或其审批能力。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
+
+SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分支不能取得本机 `HOST_WORKSPACE_ACCESS` grant，工作区外请求按原远程策略处理，不转为本机用户审批或自动审查。`RequestApproval`/`AutoReview` 的本机越界审批依赖 Native 执行上下文，不用假 Turn/TaskAccess、另选模型或新增计费 owner 补齐；这些本机能力不属于远程项目接入范围。该限制不改变 Native 已有权限模式，也不声称 Shell 命令受 OS 沙箱隔离。
+
+任务受理、执行 future 所有权、取消、等待、结果访问和关闭共享普通会话的必要任务基础。Native 的 TaskRecord、Turn、writer/checkpoint、ACK 和冷读仍归 Native owner；ACP 只使用真实实例及调用身份，不伪造 Native 对象、轮次或持久序号，不新增任务数据库，也不承诺跨实例恢复。一次 MCP 请求结束只结束观察；已受理执行由任务 owner 持有，stdin 和结果查询使用真实原回执，不能从文件名或 MCP request ID 合成。长输出与归档失败继续由原捕获/可靠资源责任收束，不能重跑命令补日志。
+
+宿主指令分别标明 ACP 本机目录与业务执行端、Shell、根目录及执行侧会话文件路径，要求远程操作使用上述 MCP 工具；项目指令也由原业务文件后端读取。工具输入不能选择 caller、SSH 目标或扩大工作区权限。外部代理自带的本机工具不受这些 MCP 权限约束，不能把提示词或前缀声称为沙箱。
+
 宿主指令由共享项目指令、实际角色、工作区与已提供的协作能力组成，不套用未支持的 Native workflow。对端声明 `sessionCapabilities.systemPrompt` 时，通过正式 `systemPrompt` 的 `append` 模式传入；未声明时，在用户 prompt 内容前附独立的宿主指令文本块，用户原内容与附件保持独立。两种传递方式使用同一内容来源；不使用 `override` 替换 agent 原指令。
 
 宿主指令要求派发、成员管理、结果等待与关闭使用 `anywork_` 工具。前缀帮助识别，提示词引导选择，两者不构成权限控制。稳定 ACP 没有统一关闭 agent 自带工具的开关；客户端不声明文件或终端能力，只限制由客户端执行的 ACP 方法，不能禁止 agent 自己运行工具。`systemPrompt` 同样不改变工具可用性、MCP 服务、权限或会话配置；具体服务的私有选项不解释成通用禁用策略。
 
-listener、handler、IPC 连接驱动和请求任务的 join 直接归原 ACP 实例资源，stdio 程序随原受监督进程树收束。MCP 取消、IPC reset/EOF 只结束等待与尚未受理的调用；原 `AgentOperations` 等 owner 已接管的操作继续由其收束，取消 `wait_agent` 只结束观察。断连可能发生在受理后，不宣称“未执行”，也不重放。关闭顺序遵循 [14](./14-runtime-host.md#142-输入受理与驱动)，部分失败保留原句柄供原流程重试，旧凭据不能控制重开实例。不建立共享 listener 租约表、持久 cursor 映射、ACP 结果数据库、Native 父伪装或旁路关闭；不提供公网或 experimental MCP-over-ACP。
+listener、handler、IPC 连接驱动、共享任务资源和请求任务的 join 直接归原 ACP 实例资源，stdio 程序随原受监督进程树收束。关闭先封闭工具准入，再取消并等待所属业务任务、进程、捕获及归档，最后释放工作区使用租约；Drop 或发出取消不能代证完成。MCP 取消、IPC reset/EOF 只结束等待与尚未受理的调用；原 owner 已接管的操作继续由其收束，取消 `wait_agent` 只结束观察。断连可能发生在受理后，不宣称“未执行”，也不重放。关闭顺序遵循 [14](./14-runtime-host.md#142-输入受理与驱动)，部分失败保留原句柄供原流程重试，旧凭据不能控制重开实例。不建立共享 listener 租约表、持久 cursor 映射、ACP 结果数据库、Native 父伪装或旁路关闭；不提供公网或 experimental MCP-over-ACP。

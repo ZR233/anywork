@@ -1,5 +1,7 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod acp_child;
+mod acp_workspace;
+pub(in crate::studio) use acp_workspace::PreparedAcpWorkspace;
 mod bot_workspace;
 mod child_resources;
 mod close_child;
@@ -53,6 +55,7 @@ pub(in crate::studio) struct StudioThreadServices {
     pub ssh_manager: Arc<pl_tool::remote::SshManager>,
     pub helper_source: crate::worker_assets::RemoteHelperSource,
     pub bots: crate::bots::BotRuntime,
+    pub run_export: Option<Arc<crate::studio::runtime::run_export::RunExportCoordinator>>,
 }
 
 /// Assembles fresh model and tool instances from product inputs, without the old Turn engine.
@@ -76,6 +79,12 @@ pub(crate) struct StudioThreadFactory {
 impl StudioThreadFactory {
     pub(in crate::studio) fn local_executor(&self) -> pl_remote_helper::Executor {
         self.services.local_executor.clone()
+    }
+
+    pub(crate) fn mark_run_export_spawn_aborted(&self, thread_id: &str, reason: &str) {
+        if let Some(exporter) = &self.services.run_export {
+            exporter.mark_spawn_aborted(thread_id, reason);
+        }
     }
 
     pub(crate) async fn ensure_member_execution_allowed(&self, id: &str) -> anyhow::Result<()> {

@@ -271,6 +271,11 @@ jobs:
             export PATH="$PWD/target/debug:$PATH"
             cargo test --locked --workspace --features pl-core/sqlite
           '
+      - name: Verify real PackageKit updates across supported distributions
+        run: |
+          executable=$(bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-update --lib --no-run --message-format=json |
+            python3 -c 'import json,sys; messages=(json.loads(line) for line in sys.stdin if line.startswith("{")); paths=[m["executable"] for m in messages if m.get("reason")=="compiler-artifact" and m.get("executable") and m.get("profile",{}).get("test")]; assert len(paths)==1,paths; print(paths[0])')
+          bash .github/scripts/test-linux-updater.sh "$executable"
       - name: Build the standalone server
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-server
 
@@ -465,12 +470,23 @@ jobs:
           source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
           workspace: ${{ needs.linux-inputs.outputs.workspace }}
           environment: ${{ needs.linux-inputs.outputs.environment }}
+      - name: Install pinned code generators with authenticated downloads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tools="$GITHUB_WORKSPACE/output/ci-codegen-tools"
+          mkdir -p "$tools"
+          # Keep the read-only token in the installer container, away from source execution.
+          docker run --rm --init --pull=never --user "$(id -u):$(id -g)" \
+            --env GITHUB_TOKEN --workdir /opt/anywork-toolchain \
+            --mount "type=bind,src=$tools,dst=/tools" \
+            "$LINUX_BUILD_IMAGE" \
+            cargo binstall --root /tools --no-confirm --force --disable-strategies compile \
+              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
       - name: Check generated sources once without repeating Rust quality or UI tests
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            cargo binstall --root "$HOME/.quality-tools" --no-confirm --force --disable-strategies compile \
-              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
-            export PATH="$HOME/.quality-tools/bin:$PATH"
+            export PATH="$PWD/output/ci-codegen-tools/bin:$PATH"
             "$1" check-gui-generated
           ' -- "$PR_QUALITY_XTASK"
 
@@ -738,6 +754,18 @@ jobs:
       - name: Check Rust on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Verify native Windows long-path identity
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked -p pl-remote-helper --test windows_paths
+      - name: Verify Windows installer handoff from published and current clients
+        if: needs.changes.outputs.windows_gui_build == 'true'
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Install-StudioInnoSetup
+          $compiler = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 6\ISCC.exe') |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          .github/scripts/test-windows-updater.ps1 -Compiler $compiler -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'windows-updater')
       - name: Compile the Release AOT application without running tests
         if: needs.changes.outputs.windows_gui_build == 'true'
         run: cargo xtask build-gui

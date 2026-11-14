@@ -119,7 +119,7 @@ void main() {
       final unit = TimelineDisplayUnit(
         block: DisplayBlock(
           id: 'retracted-block',
-          historyPos: 7,
+          blockOrder: 7,
           body: SingleDisplayBlock(
             visibility: SingleVisibility.finalEmptyAfterContent,
             record: DisplayRecord(
@@ -135,7 +135,7 @@ void main() {
       expect(find.text('该输出的最终内容为空'), findsOneWidget);
       expect(find.text('内容状态未知'), findsNothing);
       expect(find.byType(TimelineContentRangeConnector), findsNothing);
-      expect(unit.historyPos, 7);
+      expect(unit.blockOrder, 7);
     },
   );
 
@@ -228,7 +228,7 @@ void main() {
         final unit = TimelineDisplayUnit(
           block: DisplayBlock(
             id: 'accepted',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -427,7 +427,7 @@ void main() {
       final unit = TimelineDisplayUnit(
         block: DisplayBlock(
           id: 'inbox-record',
-          historyPos: 1,
+          blockOrder: 1,
           body: SingleDisplayBlock(
             visibility: SingleVisibility.content,
             record: DisplayRecord(
@@ -494,7 +494,7 @@ void main() {
         final unit = TimelineDisplayUnit(
           block: DisplayBlock(
             id: contentItemId,
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -1374,7 +1374,7 @@ void main() {
         final unit = TimelineDisplayUnit(
           block: DisplayBlock(
             id: 'patch-declared-$truncated',
-            historyPos: 1,
+            blockOrder: 1,
             body: SingleDisplayBlock(
               visibility: SingleVisibility.content,
               record: DisplayRecord(
@@ -1674,7 +1674,7 @@ void main() {
       final unit = TimelineDisplayUnit(
         block: DisplayBlock(
           id: 'lsp-declared',
-          historyPos: 1,
+          blockOrder: 1,
           body: SingleDisplayBlock(
             visibility: SingleVisibility.content,
             record: DisplayRecord(

@@ -200,7 +200,6 @@ class StudioExitCoordinator {
     this.onFailure,
     this.shutdownOverride,
     this.closeClient,
-    this.readyUpdateVersion,
     this.onBeginExit,
   });
 
@@ -213,7 +212,6 @@ class StudioExitCoordinator {
   /// 注入式清理（测试/自定义），成功即视为 Clean；默认走 [runStudioShutdown]。
   final Future<void> Function()? shutdownOverride;
   final Future<CloseReport> Function(DateTime deadline)? closeClient;
-  final String? Function()? readyUpdateVersion;
   final void Function(String? version, bool restart)? onBeginExit;
   StudioExitIntent? _intent;
   bool _updateNotice = false;
@@ -314,7 +312,9 @@ class StudioExitCoordinator {
     _intent ??= intent;
     final completed = Completer<void>();
     _exitFuture = completed.future;
-    final version = updateVersion ?? readyUpdateVersion?.call();
+    final version = _intent == StudioExitIntent.updateRestart
+        ? updateVersion
+        : null;
     _updateNotice = version != null;
     onBeginExit?.call(version, _intent == StudioExitIntent.updateRestart);
     // 单一 shared future：重复退出 / dispose / driver 复用同一次收束，期限不刷新。

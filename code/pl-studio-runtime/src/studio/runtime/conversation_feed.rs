@@ -25,7 +25,6 @@ pub struct ConversationFeed {
     initial: Option<ChatBatch>,
     initial_activity: Option<Arc<ActivitySnapshot>>,
     progress: Option<watch::Receiver<Option<Arc<ConversationSource>>>>,
-    slot_changed: watch::Receiver<u64>,
     target: Option<Arc<CompletionTarget>>,
     delivered: u64,
     seen_serial: u64,
@@ -84,13 +83,23 @@ impl StudioRuntime {
         let scope_query = query(&scope)?;
         let id = crate::studio::ids::new_id("conversation");
         let slot = self.thread_observations.observation_slot(thread_id);
-        let (position, mut slot_changed) = slot.capture();
-        // Register both observations before capturing the serial boundary.
-        let registered = position.source.as_ref().map(|source| source.conversation());
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
+        let conversation = self
+            .store
+            .conversation_store(thread_id)
+            .await?
+            .open_reader();
         let history = self.store.history(thread_id).await?;
-        let mut progress = None;
+        conversation.wait_initialization().await?;
+        if conversation.current_conversation().is_none() {
+            history.prepare_conversation_read().await?;
+        }
+        let progress_rx = conversation.subscribe_progress();
+        let cut = conversation
+            .capture(crate::studio::conversation_store::ReadRequest::Current)
+            .await?;
+        let progress = Some(progress_rx);
         let mut initial_activity = Arc::new(ActivitySnapshot {
             revision: 0,
             completed_through: 0,
@@ -100,164 +109,145 @@ impl StudioRuntime {
         let mut initial_serial = 0;
         let mut source_states = Vec::new();
         let mut cold_sources = None;
-        let (session, database_id, head, effect_cut, items, boundary) = if let Some(registration) =
-            registered
-        {
-            let mut source = registration.source;
-            let mut progress_rx = registration.progress;
-            let mut owner_progress = registration.owner_progress;
-            loop {
-                if source.is_some() {
-                    break;
-                }
-                ensure!(slot.is_current(position.epoch), resync());
-                let retained = owner_progress.borrow_and_update().clone();
-                if let Some(error) = retained.retained_error() {
-                    return Err(crate::error_mapping::shared_runtime_error(error));
-                }
-                source = progress_rx.borrow_and_update().clone();
-                if source.is_some() {
-                    break;
-                }
-                ensure!(!retained.is_finished(), resync());
-                #[cfg(test)]
-                if let Some(feed) = position.source.as_ref() {
-                    feed.notify_first_open_wait();
-                }
-                tokio::select! { biased;
-                    _ = slot_changed.changed() => return Err(resync()),
-                    changed = owner_progress.changed() => { ensure!(changed.is_ok(), resync()); },
-                    changed = progress_rx.changed() => { ensure!(changed.is_ok(), resync()); },
-                }
-            }
-            let source = source.ok_or_else(resync)?;
-            let database_id = history
-                .conversation_database_id()
-                .await?
-                .ok_or_else(resync)?;
-            let budget = JsonBudget::new(
-                database_id.clone(),
-                continuation_reserve(&id, &scope, &database_id, source.session.epoch().as_str()),
-            )
-            .for_scope(&scope);
-            validate_run(&scope, &database_id, &source.session, source.head, &budget).await?;
-            let page = if completed {
-                Some(
-                    source
-                        .session
-                        .page(
-                            core::ChatPageRequest {
-                                query: scope_query,
-                                demand: core_demand(demand)?,
-                                before: None,
-                                ceiling: Some(source.head),
-                            },
-                            &budget,
-                        )
-                        .await?,
-                )
-            } else {
-                None
-            };
-            initial_serial = source.serial;
-            initial_activity = source.activity.clone();
-            if completed {
-                source_states = source.current.source_states().to_vec();
-            }
-            let effect_cut = source.current.projection().source_effect_seq;
-            progress = Some(progress_rx);
-            let (items, boundary) = page.map_or_else(
-                || (Vec::new(), None),
-                |page| (page.items, page.before.map(|cursor| cursor.append_seq)),
-            );
-            (
-                source.session.clone(),
-                Some(database_id),
-                source.head,
-                effect_cut,
-                items,
-                boundary,
-            )
-        } else {
-            history.prepare_conversation_read().await?;
-            let database_id = history.conversation_database_id().await?;
-            let session = self.store.chat_session(thread_id).await?;
-            let budget = JsonBudget::new(
-                database_id.clone().unwrap_or_default(),
-                continuation_reserve(
-                    &id,
-                    &scope,
-                    database_id.as_deref().unwrap_or_default(),
-                    session.epoch().as_str(),
-                ),
-            )
-            .for_scope(&scope);
-            // The existing cold facade reads actual business state without installing execution.
-            let cold = if completed {
-                history
-                    .cold_conversation(scope_query, core_demand(demand)?, &budget)
+        let (session, database_id, head, effect_cut, items, boundary) =
+            if let crate::studio::conversation_store::ReadCut::Ready { source, .. } = cut {
+                let database_id = history
+                    .conversation_database_id()
                     .await?
-            } else {
-                history.cold_presentation_baseline().await?
-            };
-            match cold {
-                Some(cold) => {
-                    ensure!(
-                        database_id.as_deref() == Some(cold.database_id.as_str()),
-                        resync()
-                    );
-                    // Initialize the original Session's D/H from its read-only publication seed.
-                    if completed {
-                        session
-                            .completed_after(
-                                core::ChatCompletionCursor::new(session.epoch(), 0),
-                                None,
-                                Some(0),
-                                core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
+                    .ok_or_else(resync)?;
+                let budget = JsonBudget::new(
+                    database_id.clone(),
+                    continuation_reserve(
+                        &id,
+                        &scope,
+                        &database_id,
+                        source.session.epoch().as_str(),
+                    ),
+                )
+                .for_scope(&scope);
+                validate_run(&scope, &database_id, &source.session, source.head, &budget).await?;
+                let page = if completed {
+                    Some(
+                        source
+                            .session
+                            .page(
+                                core::ChatPageRequest {
+                                    query: scope_query,
+                                    demand: core_demand(demand)?,
+                                    before: None,
+                                    ceiling: Some(source.head),
+                                },
                                 &budget,
                             )
-                            .await?;
-                    }
-                    validate_run(&scope, &cold.database_id, &session, cold.head, &budget).await?;
-                    let boundary = if cold.page.exhausted {
-                        None
-                    } else {
-                        cold.page.items.first().map(|item| {
-                            if matches!(scope, ChatScope::Main) {
-                                item.header
-                                    .run
-                                    .map_or(item.header.append_seq, |run| run.start_seq)
-                            } else {
-                                item.header.append_seq
-                            }
-                        })
-                    };
-                    initial_activity = Arc::new(ActivitySnapshot {
-                        completed_through: cold.head,
-                        revision: 0,
-                        execution_present: false,
-                        entries: Vec::new(),
-                    });
-                    cold_sources = Some(cold.sources);
-                    (
-                        session,
-                        Some(cold.database_id),
-                        cold.head,
-                        cold.current.source_effect_seq,
-                        cold.page.items,
-                        boundary,
+                            .await?,
                     )
+                } else {
+                    None
+                };
+                initial_serial = source.serial;
+                initial_activity = source.activity.clone();
+                if completed {
+                    source_states = source.current.source_states().to_vec();
                 }
-                None => {
-                    ensure!(
-                        !matches!(scope, ChatScope::Run { .. }),
-                        core::ChatError::InvalidArgument("unknown completion run".into())
-                    );
-                    (session, None, 0, 0, Vec::new(), None)
+                let effect_cut = source.current.projection().source_effect_seq;
+                let (items, boundary) = page.map_or_else(
+                    || (Vec::new(), None),
+                    |page| (page.items, page.before.map(|cursor| cursor.append_seq)),
+                );
+                (
+                    source.session.clone(),
+                    Some(database_id),
+                    source.head,
+                    effect_cut,
+                    items,
+                    boundary,
+                )
+            } else {
+                let crate::studio::conversation_store::ReadCut::Cold(snapshot) = cut else {
+                    unreachable!("handled ready cut")
+                };
+                let database_id = snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.database_id.clone());
+                let session = conversation.session().clone();
+                let budget = JsonBudget::new(
+                    database_id.clone().unwrap_or_default(),
+                    continuation_reserve(
+                        &id,
+                        &scope,
+                        database_id.as_deref().unwrap_or_default(),
+                        session.epoch().as_str(),
+                    ),
+                )
+                .for_scope(&scope);
+                // The existing cold facade reads actual business state without installing execution.
+                let cold = match snapshot {
+                    Some(snapshot) if completed => {
+                        snapshot
+                            .cold_conversation(scope_query, core_demand(demand)?, &budget)
+                            .await?
+                    }
+                    Some(snapshot) => Some(snapshot.presentation_baseline().await?),
+                    None => None,
+                };
+                match cold {
+                    Some(cold) => {
+                        ensure!(
+                            database_id.as_deref() == Some(cold.database_id.as_str()),
+                            resync()
+                        );
+                        // Initialize the original Session's D/H from its read-only publication seed.
+                        if completed {
+                            session
+                                .completed_after(
+                                    core::ChatCompletionCursor::new(session.epoch(), 0),
+                                    None,
+                                    Some(0),
+                                    core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
+                                    &budget,
+                                )
+                                .await?;
+                        }
+                        validate_run(&scope, &cold.database_id, &session, cold.head, &budget)
+                            .await?;
+                        let boundary = if cold.page.exhausted {
+                            None
+                        } else {
+                            cold.page.items.first().map(|item| {
+                                if matches!(scope, ChatScope::Main) {
+                                    item.header
+                                        .run
+                                        .map_or(item.header.append_seq, |run| run.start_seq)
+                                } else {
+                                    item.header.append_seq
+                                }
+                            })
+                        };
+                        initial_activity = Arc::new(ActivitySnapshot {
+                            completed_through: cold.head,
+                            revision: 0,
+                            execution_present: false,
+                            entries: Vec::new(),
+                        });
+                        cold_sources = Some(cold.sources);
+                        (
+                            session,
+                            Some(cold.database_id),
+                            cold.head,
+                            cold.current.source_effect_seq,
+                            cold.page.items,
+                            boundary,
+                        )
+                    }
+                    None => {
+                        ensure!(
+                            !matches!(scope, ChatScope::Run { .. }),
+                            core::ChatError::InvalidArgument("unknown completion run".into())
+                        );
+                        (session, None, 0, 0, Vec::new(), None)
+                    }
                 }
-            }
-        };
-        ensure!(slot.is_current(position.epoch), resync());
+            };
         let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
         if !completed {
             // The presentation facade shares read resources, never reads/annotates an
@@ -267,18 +257,19 @@ impl StudioRuntime {
         } else {
             annotate_sources(&mut initial_entries, &history, &source_states, effect_cut).await?;
         }
+        conversation.bind_database(database_id.as_deref())?;
         let reader = ConversationReader::new(
             id,
             scope,
             head,
             effect_cut,
             slot,
-            position.epoch,
+            self.thread_observations.read_lifetime(),
             ReadResources {
                 history,
                 session,
                 database_id,
-                source: position.source.clone(),
+                conversation,
                 thread: thread.clone(),
                 recovery: self.recovery.clone(),
             },
@@ -302,7 +293,6 @@ impl StudioRuntime {
             initial,
             initial_activity: completed.then_some(initial_activity),
             progress,
-            slot_changed,
             target: None,
             delivered: head,
             seen_serial: initial_serial,
@@ -515,7 +505,6 @@ impl ConversationFeed {
     pub(super) async fn wait_change(&mut self) -> Result<()> {
         let progress_open = tokio::select! { biased;
             _ = self.cancel.cancelled() => return Err(core::ChatError::Cancelled.into()),
-            _ = self.slot_changed.changed() => return Err(resync()),
             progress = async { match self.progress.as_mut() { Some(progress) => progress.changed().await.is_ok(), None => std::future::pending().await } } => progress,
         };
         ensure!(progress_open, resync());
@@ -2157,6 +2146,7 @@ pub(super) mod tests {
             pub session: core::Session,
             pub projection: LiveProjection,
             pub source: Arc<super::super::super::thread_observation::ThreadLiveFeed>,
+            pub conversation: Arc<crate::studio::conversation_store::ConversationStore>,
             pub sequence: u64,
             _owner: watch::Sender<super::super::super::thread_observation::Progress>,
         }
@@ -2193,7 +2183,8 @@ pub(super) mod tests {
                     .conversation_database_id()
                     .await?
                     .context("database")?;
-                let session = env.runtime.store.chat_session(&thread.id).await?;
+                let conversation = env.runtime.store.conversation_store(&thread.id).await?;
+                let session = conversation.session().clone();
                 let channel = env
                     .runtime
                     .store
@@ -2211,6 +2202,7 @@ pub(super) mod tests {
                         Default::default(),
                     ),
                 );
+                source.bind_conversation(&conversation);
                 source.bind_test_presentation(projection.presentation());
                 env.runtime
                     .thread_observations
@@ -2226,6 +2218,7 @@ pub(super) mod tests {
                     session,
                     projection,
                     source,
+                    conversation,
                     sequence: 0,
                     _owner: owner,
                 })
@@ -2267,7 +2260,7 @@ pub(super) mod tests {
                 )
                 .await
             }
-            async fn effect_phases(
+            pub(in crate::studio::runtime) async fn effect_phases(
                 &mut self,
                 starts: Vec<ModelStartedMember>,
                 visible: Vec<ModelContentAvailableMember>,
@@ -2958,7 +2951,8 @@ pub(super) mod tests {
         }
 
         #[tokio::test]
-        async fn a_b_a_reincarnation_never_rebinds_old_reader_or_late_retirement() -> Result<()> {
+        async fn execution_replacement_keeps_store_readers_until_explicit_revocation() -> Result<()>
+        {
             let env = support::Environment::new(vec![], vec![]).await?;
             let result = async {
                 let h = Harness::new(&env).await?;
@@ -2982,7 +2976,7 @@ pub(super) mod tests {
                 );
                 slot.install(replacement);
                 slot.install(h.source.clone());
-                assert!(reader.ensure().is_err());
+                reader.ensure()?;
                 let mut new = env
                     .runtime
                     .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
@@ -3024,7 +3018,7 @@ pub(super) mod tests {
             let display = prepared.display.as_ref().context("frozen display delta")?;
             let digest = display.digest()?;
             let owner = h.projection.presentation();
-            let before = owner.lock().unwrap().capture(None, 8, 0, 8);
+            let before = owner.lock().unwrap().capture(None, 8, Some(0), 8);
             let source = h
                 .source
                 .current_conversation()
@@ -3046,14 +3040,14 @@ pub(super) mod tests {
                 display,
             ));
             assert!(Arc::ptr_eq(&replay.completions, &prepared.completions));
-            let after = owner.lock().unwrap().capture(None, 8, 0, 8);
+            let after = owner.lock().unwrap().capture(None, 8, Some(0), 8);
             assert_eq!(
-                (after.published, after.durable, after.revision),
-                (before.published, before.durable, before.revision),
+                (after.published, after.last_order, after.revision),
+                (before.published, before.last_order, before.revision),
                 "redelivery must not allocate another presentation position or revision",
             );
             assert_eq!(after.open, before.open);
-            assert_eq!(after.pending, before.pending);
+            assert_eq!(after.history, before.history);
             // admit already exercised the original source publication. LiveOwner consumes that
             // current_state publication right once; retrying its frozen handoff creates no Activity.
             assert!(Arc::ptr_eq(
@@ -3822,6 +3816,7 @@ pub(super) mod tests {
                         Default::default(),
                     ),
                 );
+                h.source.bind_conversation(&h.conversation);
                 publish(
                     &mut h,
                     &CoreSnapshot {
@@ -3830,9 +3825,10 @@ pub(super) mod tests {
                     },
                 )
                 .await?;
+                h.source.bind_conversation(&h.conversation);
                 slot.install(h.source.clone());
                 retired.publish_test_state_activity(999, Some(summary.clone()));
-                assert!(old.recv().await.is_err());
+                old.reader().ensure()?;
                 assert!(old_state.recv().await.is_err());
                 let mut new = env
                     .runtime

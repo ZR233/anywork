@@ -1,6 +1,6 @@
 import 'chat_models.dart';
 
-const presentationVersion = 5;
+const presentationVersion = 6;
 
 final class DisplayBlockRef {
   const DisplayBlockRef({required this.databaseId, required this.blockId});
@@ -78,11 +78,11 @@ enum DisplayBlockState { open, sealed }
 final class DisplayBlock {
   const DisplayBlock({
     required this.id,
-    required this.historyPos,
+    required this.blockOrder,
     required this.body,
   });
   final String id;
-  final int historyPos;
+  final int blockOrder;
   final DisplayBlockBody body;
 }
 
@@ -108,14 +108,14 @@ final class LiveDisplayBlock {
 final class LiveDisplayWindow {
   LiveDisplayWindow({
     required this.revision,
-    required this.historyThrough,
+    required this.readyFrontier,
     required this.executionPresent,
     required this.currentWorkId,
     required List<LiveDisplayBlock> blocks,
     this.older,
   }) : blocks = List.unmodifiable(blocks);
   final int revision;
-  final int historyThrough;
+  final int readyFrontier;
   final bool executionPresent;
   final String? currentWorkId;
   final List<LiveDisplayBlock> blocks;
@@ -128,16 +128,16 @@ final class TimelineBatch {
     required this.placement,
     required List<DisplayBlock> blocks,
     this.before,
-    this.fromPos,
-    required this.throughPos,
+    this.fromOrder,
+    required this.throughOrder,
     this.live,
   }) : blocks = List.unmodifiable(blocks);
   final int presentationVersion;
   final ChatPlacement placement;
   final List<DisplayBlock> blocks;
   final String? before;
-  final int? fromPos;
-  final int throughPos;
+  final int? fromOrder;
+  final int throughOrder;
   final LiveDisplayWindow? live;
 }
 

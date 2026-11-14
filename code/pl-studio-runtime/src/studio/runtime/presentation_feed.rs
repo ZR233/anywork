@@ -39,7 +39,7 @@ impl StudioRuntime {
             .await?;
         // Progress registration already exists before this original read lease captures P0.
         let initial = shared.reader().initial_timeline(demand).await?;
-        let through = initial.through_pos;
+        let through = initial.through_order;
         let last_live = initial.live.clone();
         Ok(TimelineFeed {
             shared,
@@ -122,18 +122,18 @@ impl TimelineFeed {
                 drop(source);
                 let cut = self
                     .reader()
-                    .capture_display(None, self.demand.max_items as usize + 1, Some(u64::MAX), 0)
+                    .capture_display(None, self.demand.max_items as usize, Some(u64::MAX), 0)
                     .await?;
                 let tokens = self.reader().presentation_tokens().await?;
                 // A split handoff can finish with a pure-live frame at Pt. Reserve its widest
-                // from_pos now, including decimal-width growth since the last delivered position.
+                // from_order now, including decimal-width growth since the last delivered position.
                 let reserve = TimelineBatch {
                     presentation_version: PRESENTATION_VERSION,
                     placement: ChatPlacement::Append,
                     blocks: Vec::new(),
                     before: None,
-                    from_pos: Some(cut.published),
-                    through_pos: cut.published,
+                    from_order: Some(cut.published),
+                    through_order: cut.published,
                     live: None,
                 };
                 let bytes = (self.demand.max_bytes as usize)
@@ -161,6 +161,8 @@ impl TimelineFeed {
                 } else {
                     Vec::new()
                 };
+                let exhausted = heads.len() < self.demand.max_items as usize;
+                let candidates = heads.len();
                 let mut bytes = 0;
                 let mut count = 0;
                 for head in &heads {
@@ -169,8 +171,8 @@ impl TimelineFeed {
                         placement: ChatPlacement::Append,
                         blocks: Vec::new(),
                         before: None,
-                        from_pos: Some(self.delivery.delivered()),
-                        through_pos: head.history_pos,
+                        from_order: Some(self.delivery.delivered()),
+                        through_order: head.block_order,
                         live: None,
                     };
                     let next = bytes + encoded_size(head)? + usize::from(count > 0);
@@ -182,7 +184,16 @@ impl TimelineFeed {
                 }
                 ensure!(heads.is_empty() || count > 0, invalid_page());
                 heads.truncate(count);
-                let batch = self.delivery.append(heads, self.demand)?;
+                let checked_through = if exhausted && count == candidates {
+                    through
+                } else {
+                    heads
+                        .last()
+                        .map_or(self.delivery.delivered(), |head| head.block_order)
+                };
+                let batch = self
+                    .delivery
+                    .append_page(heads, checked_through, self.demand)?;
                 if let Some(live) = &batch.live {
                     self.last_live = Some(live.clone());
                 }
@@ -220,23 +231,33 @@ impl TimelineDelivery {
     }
 
     pub(super) fn target_through(&self) -> Option<u64> {
-        self.target.as_ref().map(|live| live.history_through)
+        self.target.as_ref().map(|live| live.ready_frontier)
     }
 
     /// Called only after the previous target is completely consumed. New watch values cannot
     /// replace a partly delivered target and strand its live blocks.
     pub(super) fn capture(&mut self, live: LiveDisplayWindow) -> Result<()> {
         ensure!(self.target.is_none(), resync());
-        ensure!(live.history_through >= self.delivered, resync());
+        ensure!(live.ready_frontier >= self.delivered, resync());
         self.target = Some(live);
         Ok(())
     }
 
-    /// Accept one contiguous frozen prefix selected by the original presentation reader.
+    #[cfg(test)]
+    fn append(&mut self, blocks: Vec<DisplayBlock>, demand: ReadDemand) -> Result<TimelineBatch> {
+        let through = blocks.last().map_or_else(
+            || self.target_through().unwrap_or(self.delivered),
+            |head| head.block_order,
+        );
+        self.append_page(blocks, through, demand)
+    }
+
+    /// Accept one ordered frozen page selected by the original presentation reader.
     /// State advances only after every invariant and the actual encoded budget have passed.
-    pub(super) fn append(
+    pub(super) fn append_page(
         &mut self,
         blocks: Vec<DisplayBlock>,
+        checked_through: u64,
         demand: ReadDemand,
     ) -> Result<TimelineBatch> {
         demand.validate(1)?;
@@ -244,25 +265,29 @@ impl TimelineDelivery {
         ensure!(blocks.len() <= demand.max_items as usize, invalid_page());
         let mut through = self.delivered;
         for block in &blocks {
-            let expected = through.checked_add(1).ok_or_else(resync)?;
             ensure!(
-                block.history_pos == expected && block.history_pos <= target.history_through,
+                block.block_order > through && block.block_order <= checked_through,
                 resync()
             );
-            through = block.history_pos;
+            through = block.block_order;
         }
         ensure!(
-            through > self.delivered || through == target.history_through,
+            checked_through >= through && checked_through <= target.ready_frontier,
             resync()
         );
-        let complete = through == target.history_through;
+        through = checked_through;
+        ensure!(
+            through > self.delivered || through == target.ready_frontier,
+            resync()
+        );
+        let complete = through == target.ready_frontier;
         let mut batch = TimelineBatch {
             presentation_version: PRESENTATION_VERSION,
             placement: ChatPlacement::Append,
             blocks,
             before: None,
-            from_pos: Some(self.delivered),
-            through_pos: through,
+            from_order: Some(self.delivered),
+            through_order: through,
             live: complete.then(|| target.clone()),
         };
         // A head and the target window may each fit while their combination does not. Deliver the
@@ -306,7 +331,7 @@ pub(super) fn history_batch(
     );
     ensure!(
         live.as_ref().is_none_or(|live| {
-            matches!(placement, ChatPlacement::Set) && live.history_through == through
+            matches!(placement, ChatPlacement::Set) && live.ready_frontier == through
         }),
         resync()
     );
@@ -317,24 +342,18 @@ pub(super) fn history_batch(
     let mut previous = 0;
     for block in &blocks {
         ensure!(
-            block.history_pos > previous
-                && block.history_pos <= through
-                && (previous == 0 || previous.checked_add(1) == Some(block.history_pos)),
+            block.block_order > previous && block.block_order <= through,
             resync()
         );
-        previous = block.history_pos;
+        previous = block.block_order;
     }
-    ensure!(
-        !matches!(placement, ChatPlacement::Set) || previous == through,
-        resync()
-    );
     let batch = TimelineBatch {
         presentation_version: PRESENTATION_VERSION,
         placement,
         blocks,
         before,
-        from_pos: None,
-        through_pos: through,
+        from_order: None,
+        through_order: through,
         live,
     };
     ensure!(
@@ -372,14 +391,14 @@ mod tests {
         DisplayBlock {
             body: body(&id),
             id,
-            history_pos: pos,
+            block_order: pos,
         }
     }
 
     fn live(through: u64, ids: &[u64]) -> LiveDisplayWindow {
         LiveDisplayWindow {
             revision: 7,
-            history_through: through,
+            ready_frontier: through,
             execution_present: true,
             current_work_id: ids.last().map(|order| format!("block-{order}")),
             blocks: ids
@@ -411,15 +430,15 @@ mod tests {
         let target = live(2, &[3]);
         delivery.capture(target.clone())?;
         let first = delivery.append(vec![block(1)], demand(1))?;
-        assert_eq!(first.from_pos, Some(0));
-        assert_eq!(first.through_pos, 1);
+        assert_eq!(first.from_order, Some(0));
+        assert_eq!(first.through_order, 1);
         assert!(first.live.is_none());
         // A newer watch value is not allowed to overtake an already captured target.
         assert!(delivery.capture(live(5, &[6])).is_err());
         assert_eq!(delivery.target_through(), Some(2));
         let second = delivery.append(vec![block(2)], demand(1))?;
-        assert_eq!(second.from_pos, Some(1));
-        assert_eq!(second.through_pos, 2);
+        assert_eq!(second.from_order, Some(1));
+        assert_eq!(second.through_order, 2);
         assert_eq!(second.live, Some(target));
         assert_eq!(delivery.delivered(), 2);
         assert_eq!(delivery.target_through(), None);
@@ -427,7 +446,7 @@ mod tests {
         delivery.capture(live(5, &[6]))?;
         for pos in 3..=5 {
             let batch = delivery.append(vec![block(pos)], demand(1))?;
-            assert_eq!(batch.blocks[0].history_pos, pos);
+            assert_eq!(batch.blocks[0].block_order, pos);
             assert_eq!(batch.live.is_some(), pos == 5);
         }
         Ok(())
@@ -442,8 +461,8 @@ mod tests {
         delivery.capture(changed.clone())?;
         let frame = delivery.append(Vec::new(), demand(1))?;
         assert!(frame.blocks.is_empty());
-        assert_eq!(frame.from_pos, Some(4));
-        assert_eq!(frame.through_pos, 4);
+        assert_eq!(frame.from_order, Some(4));
+        assert_eq!(frame.through_order, 4);
         assert_eq!(frame.live, Some(changed));
         // Removing a reliably empty text segment also needs no fabricated history position.
         delivery.capture(live(4, &[]))?;
@@ -458,8 +477,8 @@ mod tests {
     fn rejected_prefix_and_byte_budget_do_not_advance_delivery() -> Result<()> {
         let mut delivery = TimelineDelivery::new(0);
         delivery.capture(live(2, &[3]))?;
-        assert!(delivery.append(vec![], demand(1)).is_err());
-        assert!(delivery.append(vec![block(2)], demand(1)).is_err());
+        assert!(delivery.append_page(vec![], 0, demand(1)).is_err());
+        assert!(delivery.append(vec![block(3)], demand(1)).is_err());
         assert!(
             delivery
                 .append(vec![block(1), block(2)], demand(1))
@@ -482,6 +501,28 @@ mod tests {
     }
 
     #[test]
+    fn sparse_history_and_checked_empty_suffix_advance_to_the_captured_frontier() -> Result<()> {
+        let window = live(9, &[10]);
+        let set = history_batch(
+            ChatPlacement::Set,
+            vec![block(2), block(7)],
+            None,
+            9,
+            Some(window.clone()),
+            demand(2),
+        )?;
+        assert_eq!(set.through_order, 9);
+        let mut delivery = TimelineDelivery::new(0);
+        delivery.capture(window.clone())?;
+        let prefix = delivery.append_page(vec![block(2), block(7)], 7, demand(2))?;
+        assert!(prefix.live.is_none());
+        let suffix = delivery.append_page(Vec::new(), 9, demand(1))?;
+        assert_eq!(suffix.live, Some(window));
+        assert_eq!(delivery.delivered(), 9);
+        Ok(())
+    }
+
+    #[test]
     fn set_is_same_cut_and_prepend_cannot_replace_live_or_change_stream_position() -> Result<()> {
         let delivery = TimelineDelivery::new(9);
         let set = history_batch(
@@ -492,8 +533,8 @@ mod tests {
             Some(live(9, &[10])),
             demand(1),
         )?;
-        assert_eq!(set.through_pos, 9);
-        assert!(set.from_pos.is_none());
+        assert_eq!(set.through_order, 9);
+        assert!(set.from_order.is_none());
         assert!(
             history_batch(
                 ChatPlacement::Set,
@@ -537,8 +578,8 @@ mod tests {
             placement: ChatPlacement::Append,
             blocks: vec![],
             before: None,
-            from_pos: Some(1),
-            through_pos: 1,
+            from_order: Some(1),
+            through_order: 1,
             live: Some(target.clone()),
         };
         let demand = ReadDemand {
@@ -548,12 +589,12 @@ mod tests {
         let mut delivery = TimelineDelivery::new(0);
         delivery.capture(target.clone())?;
         let first = delivery.append(vec![block(1)], demand)?;
-        assert_eq!(first.through_pos, 1);
+        assert_eq!(first.through_order, 1);
         assert!(first.live.is_none());
         assert_eq!(delivery.target_through(), Some(1));
         let last = delivery.append(vec![], demand)?;
-        assert_eq!(last.from_pos, Some(1));
-        assert_eq!(last.through_pos, 1);
+        assert_eq!(last.from_order, Some(1));
+        assert_eq!(last.through_order, 1);
         assert_eq!(last.live, Some(target));
         assert!(delivery.target_through().is_none());
         Ok(())
@@ -578,7 +619,7 @@ mod tests {
             let TimelineEvent::Timeline { batch } = feed.receive().await?;
             assert_eq!(batch.placement, ChatPlacement::Set);
             assert!(batch.blocks.is_empty());
-            assert_eq!(batch.through_pos, 0);
+            assert_eq!(batch.through_order, 0);
             let initial_live = batch.live.expect("Set must carry live at its P");
             assert!(initial_live.blocks.is_empty());
             assert!(
@@ -749,7 +790,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
                 let initial = timeline(&mut feed).await?;
-                assert_eq!(initial.through_pos, 0);
+                assert_eq!(initial.through_order, 0);
                 let live = initial
                     .live
                     .context("initial open Work and earlier active Text")?;
@@ -771,7 +812,7 @@ mod tests {
                     .await?;
                 assert_eq!(h.session.head_seq(), 1);
                 let updated = feed.reader().load_live_older(&before, demand(1)).await?;
-                assert_eq!(updated.history_through, 0);
+                assert_eq!(updated.ready_frontier, 0);
                 assert_eq!(
                     updated.revision, older.revision,
                     "status changes must not stale a structural cursor"
@@ -861,7 +902,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, generous)
                     .await?;
                 let initial = timeline(&mut feed).await?;
-                assert_eq!(initial.through_pos, delivered);
+                assert_eq!(initial.through_order, delivered);
                 let retiring_id = initial
                     .live
                     .as_ref()
@@ -896,13 +937,13 @@ mod tests {
                     placement: ChatPlacement::Append,
                     blocks: Vec::new(),
                     before: None,
-                    from_pos: Some(delivered),
-                    through_pos: target,
+                    from_order: Some(delivered),
+                    through_order: target,
                     live: Some(full_live.clone()),
                 };
                 let tight_bytes = encoded_size(&old_reserve)? as u32;
                 let final_full = TimelineBatch {
-                    from_pos: Some(target),
+                    from_order: Some(target),
                     ..old_reserve
                 };
                 assert_eq!(encoded_size(&final_full)?, tight_bytes as usize + 1);
@@ -926,12 +967,12 @@ mod tests {
                 for _ in 0..3 {
                     let batch = timeline(&mut feed).await?;
                     assert!(encoded_size(&batch)? <= tight_bytes as usize);
-                    assert_eq!(batch.from_pos, Some(previous));
-                    assert!(batch.through_pos >= previous && batch.through_pos <= target);
-                    previous = batch.through_pos;
+                    assert_eq!(batch.from_order, Some(previous));
+                    assert!(batch.through_order >= previous && batch.through_order <= target);
+                    previous = batch.through_order;
                     accepted_ids.extend(batch.blocks.iter().map(|block| block.id.clone()));
                     if let Some(live) = batch.live {
-                        assert_eq!(batch.through_pos, target);
+                        assert_eq!(batch.through_order, target);
                         final_live = Some(live);
                         break;
                     }
@@ -940,7 +981,7 @@ mod tests {
                 let live = final_live
                     .context("the captured target must finish, not terminate on demand")?;
                 assert_eq!(accepted_ids, [retiring_id]);
-                assert_eq!(live.history_through, target);
+                assert_eq!(live.ready_frontier, target);
                 assert_eq!(live.revision, cut.revision);
                 assert!(
                     live.blocks.len() < full_live.blocks.len(),
@@ -963,7 +1004,7 @@ mod tests {
                     let older = feed.reader().load_live_older(&cursor, feed.demand).await?;
                     assert!(encoded_size(&older)? <= tight_bytes as usize);
                     assert_eq!(
-                        (older.history_through, older.revision),
+                        (older.ready_frontier, older.revision),
                         (target, cut.revision)
                     );
                     ids.extend(older.blocks.into_iter().map(|head| head.id));
@@ -1054,7 +1095,7 @@ mod tests {
                     prepared
                         .display
                         .as_ref()
-                        .map_or(0, |delta| delta.published_through),
+                        .map_or(0, |delta| delta.ready_frontier),
                 )
             })?;
             h.projection
@@ -1063,6 +1104,87 @@ mod tests {
                 .unwrap()
                 .confirm(prepared.sequence);
             Ok(())
+        }
+
+        #[tokio::test]
+        async fn ready_frontier_merges_reclaimed_waiting_blocks_with_newly_frozen_ram_head()
+        -> Result<()> {
+            let env = Environment::new(vec![], vec![]).await?;
+            let result = async {
+                async fn complete_visible(
+                    h: &mut Harness, id: &str, text: &str,
+                ) -> Result<std::sync::Arc<crate::studio::thread_projection::PreparedEffect>> {
+                    let started = start(id, false);
+                    let visible = pl_core::model::ModelContentAvailableMember {
+                        turn_id: started.turn_id.clone(), attempt_id: started.attempt_id.clone(),
+                        generation: started.generation, identity: started.identity.clone(),
+                    };
+                    h.effect_phases(vec![started], vec![visible], vec![finish(id, false, text)?],
+                        pl_core::thread::TurnState::Running).await
+                }
+                let mut h = Harness::new(&env).await?;
+                for index in 1..=10 {
+                    let effect = complete_visible(&mut h, &format!("prefix-{index}"), "visible original").await?;
+                    if index == 1 {
+                        let mut resident = env.runtime.open_timeline_feed(&h.thread.id, demand(1)).await?;
+                        let before = h.history.reader_calls();
+                        let all_ram = resident.reader().initial_timeline(demand(1)).await?;
+                        assert_eq!(all_ram.blocks[0].block_order, 1);
+                        assert_eq!(h.history.reader_calls(), before,
+                            "complete resident range must not enter SQLite, COUNT, or existence IO");
+                        resident.reader().close().await?;
+                        resident.close().await?;
+                    }
+                    persist(&h, &effect).await?;
+                }
+                let started = h.effect(vec![start("blocked", false)], vec![]).await?;
+                persist(&h, &started).await?;
+                let visible = h.content_available(vec![start("blocked", false)]).await?;
+                persist(&h, &visible).await?;
+                let waiting = h.effect(vec![start("waiting-work", true)], vec![]).await?;
+                persist(&h, &waiting).await?;
+                let boundary = complete_visible(&mut h, "later-single", "later visible original").await?;
+                persist(&h, &boundary).await?;
+                assert_eq!(boundary.display.as_ref().unwrap().ready_frontier, 10);
+                let waiting_heads = boundary.display.as_ref().unwrap().blocks.iter()
+                    .filter(|block| block.header.sealed)
+                    .map(|block| std::sync::Arc::downgrade(&block.header)).collect::<Vec<_>>();
+                drop((visible, waiting, boundary));
+                assert!(waiting_heads.iter().all(|head| head.upgrade().is_none()),
+                    "durable waiting heads must leave RAM before the frontier passes them");
+                let mut feed = env.runtime.open_timeline_feed(&h.thread.id, demand(3)).await?;
+                let initial = timeline(&mut feed).await?;
+                assert_eq!(initial.through_order, 10);
+                let pending = h.effect(vec![], vec![finish("blocked", false, "final authoritative text")?]).await?;
+                assert_eq!(pending.display.as_ref().unwrap().ready_frontier, 13);
+                let reads = h.history.reader_calls();
+                let page = feed.reader().timeline_append_heads(10, 13, demand(3)).await?;
+                assert_eq!(page.iter().map(|head| head.block_order).collect::<Vec<_>>(), [11, 12, 13]);
+                assert_eq!(h.history.reader_calls() - reads, 1,
+                    "reclaimed waiting rows require one bounded DB page");
+                assert!(matches!(&page[0].body, DisplayBlockBody::Single { record, .. }
+                    if matches!(record.content_source, pl_protocol::DisplayContentSource::CompletedOriginal { .. })));
+                let appended = timeline(&mut feed).await?;
+                assert_eq!(appended.blocks, page);
+                persist(&h, &pending).await?;
+                feed.reader().close().await?;
+                feed.close().await?;
+                h.conversation.retire_test_execution();
+                env.runtime.thread_observations.observation_slot(&h.thread.id).retire(&h.source);
+                let mut cold = env.runtime.open_timeline_feed(&h.thread.id, demand(3)).await?;
+                let reopened = timeline(&mut cold).await?;
+                assert_eq!(reopened.blocks, page);
+                assert_eq!(reopened.through_order, 13);
+                let reads = h.history.reader_calls();
+                let cold_page = cold.reader().initial_timeline(demand(3)).await?;
+                assert_eq!(cold_page.blocks, page);
+                assert_eq!(h.history.reader_calls() - reads, 1,
+                    "cold metadata and both bounded display pages must use the one pinned SQLite snapshot");
+                cold.reader().close().await?;
+                cold.close().await?;
+                Ok(())
+            }.await;
+            env.finish(result).await
         }
 
         #[tokio::test]
@@ -1168,7 +1290,7 @@ mod tests {
             .await?;
         let hot = timeline(&mut hot_feed).await?;
         assert_eq!(
-            hot.through_pos, 2,
+            hot.through_order, 2,
             "a reliably accepted public parent Text seals the prior Work and publishes its Single"
         );
         assert_eq!(hot.blocks.len(), 2);
@@ -1322,7 +1444,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
                 let cut = timeline(&mut feed).await?;
-                assert_eq!(cut.through_pos, 0, "empty Started must not publish Work");
+                assert_eq!(cut.through_order, 0, "empty Started must not publish Work");
                 assert!(cut.blocks.is_empty());
                 let live = cut.live.context("same live tail")?;
                 assert_eq!(live.blocks.len(), 1);
@@ -1341,7 +1463,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
                 let cut = timeline(&mut feed).await?;
-                assert_eq!(cut.through_pos, 0);
+                assert_eq!(cut.through_order, 0);
                 assert_eq!(
                     work_reference(&cut.live.context("tail after empty completion")?)?,
                     original
@@ -1434,7 +1556,7 @@ mod tests {
                     unreachable!()
                 };
                 assert!(record.start_fact < text.first_content_at);
-                assert_eq!(visible.display.as_ref().unwrap().published_through, 1);
+                assert_eq!(visible.display.as_ref().unwrap().ready_frontier, 1);
                 let b = h.effect(vec![start("B", true)], vec![]).await?;
                 persist(&h, &b).await?;
                 let tail_id = b.display.as_ref().unwrap().blocks[0].header.id.clone();
@@ -1477,7 +1599,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
                 let initial = timeline(&mut feed).await?;
-                assert_eq!(initial.through_pos, 2);
+                assert_eq!(initial.through_order, 2);
                 assert_eq!(initial.blocks.len(), 1);
                 let live = initial.live.context("latest canonical live cut")?;
                 assert_eq!(live.current_work_id.as_deref(), Some(tail_id.as_str()));
@@ -1495,6 +1617,7 @@ mod tests {
                 assert!(older.live.is_none());
                 feed.reader().close().await?;
                 feed.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1544,8 +1667,9 @@ mod tests {
                     }
                 )));
                 persist(&h, &turn).await?;
-                assert_eq!(turn.display.as_ref().unwrap().published_through, 0);
+                assert_eq!(turn.display.as_ref().unwrap().ready_frontier, 0);
                 assert!(turn.display.as_ref().unwrap().blocks.is_empty());
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1576,13 +1700,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn cold_resting_member_snapshot_seals_observation_without_freezing_work() -> Result<()>
-        {
+        async fn resting_member_observation_survives_execution_replacement_without_freezing_work()
+        -> Result<()> {
             use pl_core::chat::{ChatError, ChatHistory};
-            use pl_protocol::{
-                DisplayBlockState,
-                studio::{StudioError, StudioErrorReason},
-            };
+            use pl_protocol::DisplayBlockState;
 
             let env = Environment::new(vec![], vec![]).await?;
             let result = async {
@@ -1622,6 +1743,7 @@ mod tests {
                     (before.open[0].next_member, before.open[0].unfinished),
                     (2, 0)
                 );
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -1644,13 +1766,13 @@ mod tests {
                     .await?;
                 let page = latest.next().await?.context("fixed cold member page")?;
                 assert!(
-                    page.sealed,
-                    "a saved-only bounded observation must seal before its finite EOF"
+                    !page.sealed,
+                    "execution retirement must not seal a mutable business block"
                 );
                 assert_eq!(page.revision, before.open[0].revision);
                 assert_eq!(page.entries, [expected[1].clone()]);
                 assert_eq!(page.before, Some(2));
-                assert!(latest.next().await?.is_none());
+                assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
                 let mut older = reader
                     .open_display_members(
                         reference.clone(),
@@ -1659,10 +1781,10 @@ mod tests {
                     )
                     .await?;
                 let prefix = older.next().await?.context("fixed cold prefix")?;
-                assert!(prefix.sealed);
+                assert!(!prefix.sealed);
                 assert_eq!(prefix.entries, [expected[0].clone()]);
                 assert!(prefix.before.is_none());
-                assert!(older.next().await?.is_none());
+                assert!(futures::poll!(Box::pin(older.next()).as_mut()).is_pending());
                 older.close().await?;
                 let after = h
                     .history
@@ -1734,29 +1856,14 @@ mod tests {
                     .thread_observations
                     .observation_slot(&h.thread.id)
                     .install(h.source.clone());
-                let changed = captured_cold
+                let unchanged = captured_cold
                     .next()
-                    .await
-                    .expect_err("a new source invalidates a cold qualification");
-                assert_eq!(
-                    changed
-                        .downcast_ref::<StudioError>()
-                        .context("typed continuity error")?
-                        .reason(),
-                    Some(StudioErrorReason::ConversationResyncRequired.label())
-                );
+                    .await?
+                    .context("same Store after execution replacement")?;
+                assert_eq!(unchanged.entries, [expected[1].clone()]);
+                assert!(!unchanged.sealed);
                 captured_cold.close().await?;
-                let changed = latest
-                    .next()
-                    .await
-                    .expect_err("even fixed EOF must recheck the original source epoch");
-                assert_eq!(
-                    changed
-                        .downcast_ref::<StudioError>()
-                        .context("typed continuity error after EOF")?
-                        .reason(),
-                    Some(StudioErrorReason::ConversationResyncRequired.label())
-                );
+                assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
                 latest.close().await?;
                 reader.close().await?;
                 feed.close().await?;
@@ -1852,7 +1959,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn v364_applied_bad_original_reference_is_rejected_on_member_read_without_rebuilding()
+        async fn missing_original_is_rejected_by_explicit_content_read_without_rebuilding()
         -> Result<()> {
             use sea_orm::{ConnectionTrait, Database};
             let env = Environment::new(vec![], vec![]).await?;
@@ -1893,12 +2000,11 @@ mod tests {
                     .conversation_database_id()
                     .await?
                     .context("database")?;
-                assert!(
-                    h.history
-                        .display_member_page(&database, &member.block_id, None, 1)
-                        .await
-                        .is_err()
-                );
+                let page=h.history.display_member_page(&database,&member.block_id,None,1,None).await?;
+                assert!(matches!(&page.entries[0].head.record.content_source,pl_protocol::DisplayContentSource::CompletedOriginal { completion_id } if completion_id=="missing"));
+                let mut feed=env.runtime.open_timeline_feed(&h.thread.id,demand(1)).await?;
+                assert!(feed.reader().read_content(&pl_protocol::ContentRef {database_id:database.clone(),target:pl_protocol::ContentTarget::ItemPayload {item_id:"missing".into()}},pl_protocol::ContentRange {offset:0,max_bytes:1024}).await.is_err());
+                feed.reader().close().await?; feed.close().await?;
                 assert!(
                     pl_core::chat::ChatHistory::item(&h.history, &original)
                         .await?
@@ -1935,7 +2041,7 @@ mod tests {
                 assert_eq!(initial.placement, ChatPlacement::Set);
                 assert!(initial.blocks.is_empty());
                 let first_live = initial.live.context("initial live")?;
-                assert_eq!(first_live.history_through, 0);
+                assert_eq!(first_live.ready_frontier, 0);
                 let reference = work_reference(&first_live)?;
                 let reader = feed.reader().clone();
                 let mut members = reader
@@ -1964,8 +2070,8 @@ mod tests {
                     "atomic consumer must not wait for display boundary"
                 );
                 let updated = timeline(&mut feed).await?;
-                assert_eq!(updated.from_pos, Some(0));
-                assert_eq!(updated.through_pos, 0);
+                assert_eq!(updated.from_order, Some(0));
+                assert_eq!(updated.through_order, 0);
                 assert!(
                     updated.blocks.is_empty(),
                     "terminal member must remain inside live Work"
@@ -1994,8 +2100,8 @@ mod tests {
                 h.content_available(vec![start("text", false)]).await?;
                 assert_eq!(h.session.head_seq(), before_h);
                 let handoff = timeline(&mut feed).await?;
-                assert_eq!(handoff.from_pos, Some(0));
-                assert_eq!(handoff.through_pos, 1);
+                assert_eq!(handoff.from_order, Some(0));
+                assert_eq!(handoff.through_order, 1);
                 assert_eq!(handoff.blocks.len(), 1);
                 assert_eq!(handoff.blocks[0].id, reference.block_id);
                 let live = handoff.live.context("handoff live")?;
@@ -2086,6 +2192,7 @@ mod tests {
                 assert_eq!(hot.blocks[0].source.as_ref(), Some(&original.source));
                 hot_feed.close().await?;
                 hot_reader.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -2127,7 +2234,7 @@ mod tests {
                     .runtime
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
-                assert_eq!(timeline(&mut feed).await?.through_pos, 0);
+                assert_eq!(timeline(&mut feed).await?.through_order, 0);
                 let reader = feed.reader().clone();
                 let mut reference = None;
                 for i in 0..2 {
@@ -2162,8 +2269,8 @@ mod tests {
                 let mut delivered = Vec::new();
                 for pos in 1..=4 {
                     let batch = timeline(&mut feed).await?;
-                    assert_eq!(batch.from_pos, Some(pos - 1));
-                    assert_eq!(batch.through_pos, pos);
+                    assert_eq!(batch.from_order, Some(pos - 1));
+                    assert_eq!(batch.through_order, pos);
                     assert_eq!(batch.blocks.len(), 1);
                     assert_eq!(batch.live.is_some(), pos == 4);
                     delivered.extend(batch.blocks);
@@ -2208,6 +2315,7 @@ mod tests {
                 reader.read_business_refs().await?;
                 reader.close().await?;
                 hot_members.close().await?;
+                h.conversation.retire_test_execution();
                 env.runtime
                     .thread_observations
                     .observation_slot(&h.thread.id)
@@ -2217,7 +2325,7 @@ mod tests {
                     .open_timeline_feed(&h.thread.id, demand(1))
                     .await?;
                 let cold_set = timeline(&mut cold_feed).await?;
-                assert_eq!(cold_set.through_pos, 4);
+                assert_eq!(cold_set.through_order, 4);
                 assert_eq!(cold_set.blocks[0], delivered[3]);
                 assert!(
                     !cold_set
@@ -2235,7 +2343,7 @@ mod tests {
                     assert_eq!(older.placement, ChatPlacement::Prepend);
                     assert!(older.live.is_none());
                     assert_eq!(&older.blocks[0], expected);
-                    if expected.history_pos > 1 {
+                    if expected.block_order > 1 {
                         before = older.before.context("continuation")?;
                     } else {
                         assert!(older.before.is_none());

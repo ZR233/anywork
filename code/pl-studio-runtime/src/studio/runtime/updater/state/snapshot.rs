@@ -118,6 +118,8 @@ impl StudioUpdateActivity {
 pub struct StudioUpdateStateSnapshot {
     pub activity: StudioUpdateActivity,
     pub ready_update: Option<StudioReadyUpdate>,
+    /// Previous install outcome stays visible while this process checks again.
+    pub installation_error: Option<pl_protocol::StateError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,10 +130,22 @@ pub struct StudioReadyUpdate {
 }
 
 impl StudioUpdateStateSnapshot {
+    pub fn disabled(updated_at: i64) -> Self {
+        Self {
+            activity: StudioUpdateActivity::Disabled(DisabledUpdateState {
+                revision: 0,
+                updated_at,
+            }),
+            ready_update: None,
+            installation_error: None,
+        }
+    }
+
     pub fn idle(updated_at: i64) -> Self {
         Self {
             activity: StudioUpdateActivity::idle(updated_at),
             ready_update: None,
+            installation_error: None,
         }
     }
 

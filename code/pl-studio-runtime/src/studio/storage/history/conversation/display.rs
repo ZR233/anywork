@@ -1,9 +1,13 @@
 //! Display row IO. The caller owns the original history transaction.
 use super::*;
+#[cfg(test)]
+use crate::studio::thread_projection::presentation::BlockOrder;
 use crate::studio::thread_projection::presentation::{
-    DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta,
+    DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta, display_upper,
 };
-use pl_protocol::{DisplayBlock, DisplayBlockBody, DisplayContentSource, PayloadData};
+#[cfg(test)]
+use pl_protocol::DisplayBlock;
+use pl_protocol::{DisplayBlockBody, DisplayContentSource, PayloadData};
 use sea_orm::TransactionTrait;
 
 pub(in crate::studio) struct DisplayRecovery {
@@ -16,9 +20,11 @@ pub(in crate::studio) struct DisplayRecovery {
 
 pub(in crate::studio) struct StoredDisplayCut {
     pub published: u64,
+    pub last_order: u64,
     pub effect: u64,
     pub current_work_id: Option<String>,
     pub open: Vec<Arc<DisplayHeader>>,
+    pub history: Vec<Arc<DisplayHeader>>,
 }
 
 pub(in crate::studio) struct StoredDisplayMembers {
@@ -28,28 +34,60 @@ pub(in crate::studio) struct StoredDisplayMembers {
 pub(in crate::studio) async fn watermarks(db: &impl ConnectionTrait) -> Result<(u64, u64)> {
     let row = db
         .query_one_raw(statement(
-            "SELECT display_published_through,display_applied_effect FROM history_meta WHERE id=1",
+            "SELECT display_ready_frontier,display_applied_effect FROM history_meta WHERE id=1",
             vec![],
         ))
         .await?
         .context("display watermarks are missing; original history preserved")?;
     Ok((
-        u64::try_from(row.try_get::<i64>("", "display_published_through")?)?,
+        u64::try_from(row.try_get::<i64>("", "display_ready_frontier")?)?,
         u64::try_from(row.try_get::<i64>("", "display_applied_effect")?)?,
     ))
 }
 
+pub(in crate::studio) async fn last_order(db: &impl ConnectionTrait) -> Result<u64> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT display_last_order FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("display last order missing")?;
+    Ok(u64::try_from(
+        row.try_get::<i64>("", "display_last_order")?,
+    )?)
+}
+
+pub(in crate::studio) async fn block_page(
+    db: &impl ConnectionTrait,
+    lower: u64,
+    upper: u64,
+    limit: usize,
+    ascending: bool,
+) -> Result<Vec<Arc<DisplayHeader>>> {
+    if lower >= upper || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let direction = if ascending { "ASC" } else { "DESC" };
+    let rows=db.query_all_raw(statement(&format!("SELECT {HEAD} FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order {direction} LIMIT ?"),vec![integer(lower)?.into(),integer(upper)?.into(),integer(limit)?.into()])).await?;
+    let mut heads = rows
+        .iter()
+        .map(|row| decode_header(row).map(Arc::new))
+        .collect::<Result<Vec<_>>>()?;
+    if !ascending {
+        heads.reverse();
+    }
+    Ok(heads)
+}
+
 pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeader) -> Result<()> {
     ensure!(
-        header.version == 4 && header.block_order > 0 && !header.id.is_empty(),
+        header.version == 5
+            && header.block_order.get() > 0
+            && header.next_member <= i64::MAX as u64
+            && !header.id.is_empty(),
         "invalid display header"
     );
-    if let Some(pos) = header.history_pos {
-        ensure!(
-            pos > 0 && header.sealed && !header.skip_display,
-            "published display header is not ready"
-        );
-    }
     if let DisplayBlockBody::Single { record, .. } = &header.body {
         ensure!(
             !matches!(record.atom.payload, Some(PayloadData::Inline { .. })),
@@ -83,12 +121,7 @@ fn decode_header(row: &QueryResult) -> Result<DisplayHeader> {
     validate_header(&header)?;
     ensure!(
         header.id == row.try_get::<String>("", "block_id")?
-            && header.block_order == u64::try_from(row.try_get::<i64>("", "block_order")?)?
-            && header.history_pos
-                == row
-                    .try_get::<Option<i64>>("", "history_pos")?
-                    .map(u64::try_from)
-                    .transpose()?
+            && header.block_order.get() == u64::try_from(row.try_get::<i64>("", "block_order")?)?
             && header.sealed == (row.try_get::<i64>("", "sealed")? == 1)
             && serde_json::to_string(&header.source)? == row.try_get::<String>("", "source_key")?,
         "display header differs from indexed identity; original history preserved"
@@ -96,7 +129,9 @@ fn decode_header(row: &QueryResult) -> Result<DisplayHeader> {
     Ok(header)
 }
 
-fn decode_member(row: &QueryResult) -> Result<DisplayMemberWrite> {
+pub(in crate::studio::storage::history) fn decode_member(
+    row: &QueryResult,
+) -> Result<DisplayMemberWrite> {
     let member: DisplayMemberWrite =
         serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
     ensure!(
@@ -137,7 +172,7 @@ fn validate_original(atom: &pl_protocol::ChatAtom, original: &pl_protocol::ChatA
     Ok(())
 }
 
-async fn validate_original_references(
+pub(in crate::studio::storage::history) async fn validate_original_references(
     db: &impl ConnectionTrait,
     members: &[DisplayMemberWrite],
 ) -> Result<()> {
@@ -174,9 +209,9 @@ async fn validate_original_references(
     Ok(())
 }
 
-const HEAD: &str = "block_id,source_key,block_order,history_pos,sealed,updated_effect,header";
+const HEAD: &str = "block_id,source_key,block_order,sealed,updated_effect,header";
 const MEMBER: &str = "block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata";
-const RECEIPT: &str = "studio.display-delta:v2";
+const RECEIPT: &str = "studio.display-delta:v3";
 
 pub(in crate::studio) async fn verify(
     db: &impl ConnectionTrait,
@@ -198,7 +233,7 @@ pub(in crate::studio) async fn verify(
     );
     let (published, effect) = watermarks(db).await?;
     ensure!(
-        effect >= delta.effect_seq && published >= delta.published_through,
+        effect >= delta.effect_seq && published >= delta.ready_frontier,
         "display replay is not covered by durable watermarks"
     );
     Ok(())
@@ -213,36 +248,19 @@ pub(in crate::studio) async fn apply(
         return verify(db, delta).await;
     }
     ensure!(
-        delta.published_through >= old_published,
+        delta.ready_frontier >= old_published,
         "display published prefix regressed"
     );
-    let mut expected_pos = old_published;
-    // Creation order need not equal cross-source publication order.
-    let mut positions = delta
-        .blocks
-        .iter()
-        .filter_map(|w| w.header.history_pos)
-        .collect::<Vec<_>>();
-    positions.sort_unstable();
-    for pos in positions {
-        expected_pos = expected_pos
-            .checked_add(1)
-            .context("display prefix exhausted")?;
-        ensure!(pos == expected_pos, "display published prefix has a hole");
-    }
+    let last = last_order(db).await?;
     ensure!(
-        expected_pos == delta.published_through,
-        "display prefix lacks frozen heads"
+        delta.last_order >= last && delta.ready_frontier <= delta.last_order,
+        "display order cut regressed"
     );
     let mut previously_sealed = std::collections::BTreeSet::new();
     let mut owners = std::collections::HashMap::new();
     for write in &delta.blocks {
         let h = &write.header;
         validate_header(h)?;
-        ensure!(
-            write.published.as_deref() == h.frozen().as_ref(),
-            "frozen display Arc differs"
-        );
         let existing = db
             .query_one_raw(statement(
                 &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE block_id=?"),
@@ -251,8 +269,7 @@ pub(in crate::studio) async fn apply(
             .await?;
         let values = vec![
             serde_json::to_string(&h.source)?.into(),
-            integer(h.block_order)?.into(),
-            h.history_pos.map(integer).transpose()?.into(),
+            integer(h.block_order.get())?.into(),
             i64::from(h.sealed).into(),
             integer(delta.effect_seq)?.into(),
             serde_json::to_vec(h.as_ref())?.into(),
@@ -262,28 +279,22 @@ pub(in crate::studio) async fn apply(
             let old = decode_header(&row)?;
             if old.sealed {
                 previously_sealed.insert(old.id.clone());
-                let mut published = old.clone();
-                published.history_pos = h.history_pos;
-                ensure!(
-                    published == **h && h.history_pos.is_some(),
-                    "sealed display header changed beyond initial publication"
-                );
+                ensure!(old == **h, "sealed display header changed");
             }
             ensure!(
-                old.history_pos.is_none()
-                    && old.source == h.source
+                old.source == h.source
                     && old.block_order == h.block_order
                     && old.revision <= h.revision
                     && row.try_get::<i64>("", "updated_effect")? < integer(delta.effect_seq)?,
                 "display head conflicts with immutable ownership"
             );
             db.execute_raw(statement(
-                "UPDATE conversation_display_blocks SET source_key=?,block_order=?,history_pos=?,sealed=?,updated_effect=?,header=? WHERE block_id=?",
+                "UPDATE conversation_display_blocks SET source_key=?,block_order=?,sealed=?,updated_effect=?,header=? WHERE block_id=?",
                 values
             )).await?;
         } else {
             db.execute_raw(statement(
-                "INSERT INTO conversation_display_blocks(source_key,block_order,history_pos,sealed,updated_effect,header,block_id) VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO conversation_display_blocks(source_key,block_order,sealed,updated_effect,header,block_id) VALUES(?,?,?,?,?,?)",
                 values
             )).await?;
         }
@@ -389,47 +400,6 @@ pub(in crate::studio) async fn apply(
             )).await?;
         }
     }
-    for removed in &delta.remove_empty {
-        ensure!(
-            removed.history_pos.is_none()
-                && removed.skip_display
-                && removed.unfinished == 0
-                && matches!(&removed.body, DisplayBlockBody::Single { record, .. }
-                if record.atom.kind == pl_protocol::ChatAtomKind::Text && record.atom.content_present == Some(false)
-                && matches!(record.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal { .. })),
-            "RemoveEmpty requires reliable empty terminal text"
-        );
-        let existing = db
-            .query_one_raw(statement(
-                &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE block_id=?"),
-                vec![removed.id.clone().into()],
-            ))
-            .await?;
-        if let Some(row) = existing {
-            let old = decode_header(&row)?;
-            ensure!(
-                old.history_pos.is_none()
-                    && old.id == removed.id
-                    && old.source == removed.source
-                    && old.block_order == removed.block_order
-                    && matches!((&old.body, &removed.body),
-                        (DisplayBlockBody::Single { record: before, .. }, DisplayBlockBody::Single { record: after, .. })
-                        if before.atom.id == after.atom.id && before.atom.kind == pl_protocol::ChatAtomKind::Text
-                            && before.atom.content_present != Some(true)),
-                "cannot remove a published display"
-            );
-            db.execute_raw(statement(
-                "DELETE FROM conversation_display_members WHERE block_id=?",
-                vec![removed.id.clone().into()],
-            ))
-            .await?;
-            db.execute_raw(statement(
-                "DELETE FROM conversation_display_blocks WHERE block_id=? AND history_pos IS NULL",
-                vec![removed.id.clone().into()],
-            ))
-            .await?;
-        }
-    }
     let mut observation_keys = std::collections::BTreeSet::new();
     for member in &delta.members {
         if matches!(
@@ -484,9 +454,10 @@ pub(in crate::studio) async fn apply(
     )
     .await?;
     db.execute_raw(statement(
-        "UPDATE history_meta SET display_published_through=?,display_applied_effect=? WHERE id=1",
+        "UPDATE history_meta SET display_ready_frontier=?,display_last_order=?,display_applied_effect=? WHERE id=1",
         vec![
-            integer(delta.published_through)?.into(),
+            integer(delta.ready_frontier)?.into(),
+            integer(delta.last_order)?.into(),
             integer(delta.effect_seq)?.into(),
         ],
     ))
@@ -495,29 +466,24 @@ pub(in crate::studio) async fn apply(
 }
 
 /// History main reads only indexed small headers; never JOINs/counts members or reads bodies.
+#[cfg(test)]
 pub(in crate::studio) async fn history_heads(
     db: &impl ConnectionTrait,
     ceiling: u64,
     before: Option<u64>,
     limit: usize,
 ) -> Result<Vec<Arc<DisplayBlock>>> {
-    let upper = ceiling.min(before.map_or(ceiling, |value| value.saturating_sub(1)));
-    let rows = db.query_all_raw(statement(
-        &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE history_pos<=? ORDER BY history_pos DESC LIMIT ?"),
-        vec![integer(upper)?.into(), integer(limit)?.into()]
-    )).await?;
-    let mut heads = rows
-        .iter()
-        .map(|row| {
+    let (frontier, _) = watermarks(db).await?;
+    let upper = display_upper(ceiling.min(frontier), before)?;
+    block_page(db, 0, upper, limit, false)
+        .await?
+        .into_iter()
+        .map(|header| {
             Ok(Arc::new(
-                decode_header(row)?
-                    .frozen()
-                    .context("history head has no position")?,
+                header.frozen().context("history header is not frozen")?,
             ))
         })
-        .collect::<Result<Vec<_>>>()?;
-    heads.reverse();
-    Ok(heads)
+        .collect()
 }
 
 pub(in crate::studio) async fn open_heads(
@@ -525,14 +491,15 @@ pub(in crate::studio) async fn open_heads(
     before_order: Option<u64>,
     limit: usize,
 ) -> Result<Vec<DisplayHeader>> {
-    let upper = before_order.map_or(i64::MAX as u64, |value| value.saturating_sub(1));
-    let rows = db.query_all_raw(statement(
-        &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE history_pos IS NULL AND block_order<=? ORDER BY block_order DESC LIMIT ?"),
-        vec![integer(upper)?.into(), integer(limit)?.into()]
-    )).await?;
-    let mut heads = rows.iter().map(decode_header).collect::<Result<Vec<_>>>()?;
-    heads.reverse();
-    Ok(heads)
+    let (frontier, _) = watermarks(db).await?;
+    let upper = last_order(db)
+        .await?
+        .min(display_upper(i64::MAX as u64, before_order)?);
+    Ok(block_page(db, frontier, upper, limit, false)
+        .await?
+        .into_iter()
+        .map(|h| h.as_ref().clone())
+        .collect())
 }
 
 pub(in crate::studio) async fn member_page(
@@ -541,16 +508,7 @@ pub(in crate::studio) async fn member_page(
     before: Option<u64>,
     limit: usize,
 ) -> Result<Vec<DisplayMemberWrite>> {
-    ensure!(
-        db.query_one_raw(statement(
-            "SELECT 1 FROM conversation_display_blocks WHERE block_id=?",
-            vec![block_id.into()]
-        ))
-        .await?
-        .is_some(),
-        "display block reference is missing"
-    );
-    let upper = before.map_or(i64::MAX as u64, |value| value.saturating_sub(1));
+    let upper = display_upper(i64::MAX as u64, before)?;
     let rows = db.query_all_raw(statement(
         &format!("SELECT {MEMBER} FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"),
         vec![block_id.into(), integer(upper)?.into(), integer(limit)?.into()]
@@ -562,57 +520,143 @@ pub(in crate::studio) async fn member_page(
 
 pub(in crate::studio) async fn recovery(db: &impl ConnectionTrait) -> Result<DisplayRecovery> {
     let (published, effect) = watermarks(db).await?;
-    let row = db
-        .query_one_raw(statement(
-            "SELECT block_order FROM conversation_display_blocks ORDER BY block_order DESC LIMIT 1",
-            vec![],
-        ))
-        .await?;
-    let last_order = row
-        .map(|r| r.try_get::<i64>("", "block_order"))
-        .transpose()?
-        .unwrap_or(0);
-    let open = open_heads(db, None, i64::MAX as usize).await?;
+    let last_order = last_order(db).await?;
+    let mut open = Vec::new();
     let mut unfinished = Vec::new();
-    for header in &open {
-        if header.sealed {
-            continue;
+    let mut after = 0u64;
+    loop {
+        let rows=db.query_all_raw(statement(&format!("SELECT {HEAD} FROM conversation_display_blocks WHERE sealed=0 AND block_order>? ORDER BY block_order LIMIT 128"),vec![integer(after)?.into()])).await?;
+        if rows.is_empty() {
+            break;
         }
-        let rows = db.query_all_raw(statement(
-            &format!("SELECT {MEMBER} FROM conversation_display_members WHERE block_id=? AND terminal=0 ORDER BY member_order"),
-            vec![header.id.clone().into()]
-        )).await?;
-        let members = rows.iter().map(decode_member).collect::<Result<Vec<_>>>()?;
-        ensure!(
-            members.len() as u64 == header.unfinished,
-            "open display unfinished index differs"
-        );
-        unfinished.extend(members);
+        for row in rows {
+            let header = decode_header(&row)?;
+            after = header.block_order.get();
+            let mut member_after = 0u64;
+            let mut count = 0u64;
+            loop {
+                let rows=db.query_all_raw(statement(&format!("SELECT {MEMBER} FROM conversation_display_members WHERE block_id=? AND terminal=0 AND member_order>? ORDER BY member_order LIMIT 128"),vec![header.id.clone().into(),integer(member_after)?.into()])).await?;
+                if rows.is_empty() {
+                    break;
+                }
+                for row in rows {
+                    let member = decode_member(&row)?;
+                    member_after = member.head.member_order;
+                    unfinished.push(member);
+                    count += 1;
+                }
+            }
+            ensure!(
+                count == header.unfinished,
+                "open display unfinished index differs"
+            );
+            open.push(header);
+        }
     }
     Ok(DisplayRecovery {
         published,
         effect,
-        last_order: u64::try_from(last_order)?,
+        last_order,
         open,
         unfinished,
     })
 }
 
 impl super::super::HistoryStore {
-    pub(in crate::studio) async fn display_cut(
+    /// One indexed range query after the caller has captured immutable RAM versions.
+    pub(in crate::studio) async fn display_block_page(
         &self,
         database: &str,
-        before_order: Option<u64>,
+        lower: u64,
+        upper: u64,
         limit: usize,
-    ) -> Result<StoredDisplayCut> {
+        ascending: bool,
+    ) -> Result<Vec<Arc<DisplayHeader>>> {
+        if lower >= upper || limit == 0 {
+            return Ok(Vec::new());
+        }
         let connection = self
             .reader()
             .await?
             .context("display database is missing")?;
         ensure!(connection.database_id == database, "stale display database");
         let tx = connection.db.begin().await?;
-        let (published, effect) = watermarks(&tx).await?;
-        let open: Vec<_> = open_heads(&tx, before_order, limit)
+        let heads = block_page(&tx, lower, upper, limit, ascending).await?;
+        tx.commit().await?;
+        Ok(heads)
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio) async fn display_history_heads(
+        &self,
+        database: &str,
+        after: u64,
+        through: u64,
+        before: Option<u64>,
+        limit: usize,
+        ascending: bool,
+    ) -> Result<Vec<Arc<DisplayBlock>>> {
+        let upper = display_upper(through, before)?;
+        self.display_block_page(database, after, upper, limit, ascending)
+            .await?
+            .into_iter()
+            .map(|h| Ok(Arc::new(h.frozen().context("history head is not frozen")?)))
+            .collect()
+    }
+
+    pub(in crate::studio) async fn display_member_page(
+        &self,
+        database: &str,
+        block_id: &str,
+        before: Option<u64>,
+        limit: usize,
+        captured: Option<Arc<DisplayHeader>>,
+    ) -> Result<StoredDisplayMembers> {
+        if let Some(header) = captured {
+            let connection = self
+                .reader()
+                .await?
+                .context("display database is missing")?;
+            ensure!(connection.database_id == database, "stale display database");
+            let tx = connection.db.begin().await?;
+            let entries = member_page(&tx, block_id, before, limit).await?;
+            tx.commit().await?;
+            return Ok(StoredDisplayMembers { header, entries });
+        }
+        let mut snapshot = self
+            .conversation_snapshot()
+            .await?
+            .context("display database is missing")?;
+        snapshot.pin(&self.state.thread_id).await?;
+        snapshot
+            .display_member_page(database, block_id, before, limit)
+            .await
+    }
+
+    pub(in crate::studio) async fn display_recovery(&self) -> Result<Option<DisplayRecovery>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let result = recovery(&tx).await?;
+        tx.commit().await?;
+        Ok(Some(result))
+    }
+}
+
+impl super::super::ConversationSnapshot {
+    pub(in crate::studio) async fn display_cut(
+        self,
+        database: &str,
+        before_order: Option<u64>,
+        limit: usize,
+        history_after: Option<u64>,
+        history_limit: usize,
+    ) -> Result<StoredDisplayCut> {
+        ensure!(self.database_id == database, "stale display database");
+        let (published, effect) = watermarks(&self.tx).await?;
+        let last_order = last_order(&self.tx).await?;
+        let open: Vec<_> = open_heads(&self.tx, before_order, limit)
             .await?
             .into_iter()
             .map(Arc::new)
@@ -626,92 +670,35 @@ impl super::super::HistoryStore {
         } else {
             None
         };
-        tx.commit().await?;
+        let history = block_page(
+            &self.tx,
+            history_after.unwrap_or(0),
+            display_upper(published, before_order)?,
+            history_limit,
+            history_after.is_some(),
+        )
+        .await?;
+        self.tx.commit().await?;
         Ok(StoredDisplayCut {
             published,
+            last_order,
             effect,
             current_work_id,
             open,
+            history,
         })
     }
 
-    /// Fresh SQLite snapshot is established only after the caller captured P/Dp.
-    pub(in crate::studio) async fn display_history_heads(
-        &self,
-        database: &str,
-        after_pos: u64,
-        through_pos: u64,
-        before_pos: Option<u64>,
-        limit: usize,
-        ascending: bool,
-    ) -> Result<Vec<Arc<DisplayBlock>>> {
-        let connection = self
-            .reader()
-            .await?
-            .context("display database is missing")?;
-        ensure!(connection.database_id == database, "stale display database");
-        let tx = connection.db.begin().await?;
-        let (published, _) = watermarks(&tx).await?;
-        ensure!(
-            through_pos <= published,
-            "display durable prefix not available"
-        );
-        let direction = if ascending { "ASC" } else { "DESC" };
-        let upper =
-            through_pos.min(before_pos.map_or(through_pos, |value| value.saturating_sub(1)));
-        let rows = tx.query_all_raw(statement(
-            &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE history_pos>? AND history_pos<=? ORDER BY history_pos {direction} LIMIT ?"),
-            vec![integer(after_pos)?.into(), integer(upper)?.into(), integer(limit)?.into()]
-        )).await?;
-        let mut result = rows
-            .iter()
-            .map(|row| {
-                Ok(Arc::new(
-                    decode_header(row)?
-                        .frozen()
-                        .context("display history head missing position")?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        if !ascending {
-            result.reverse();
-        }
-        let expected = upper.saturating_sub(after_pos).min(limit as u64);
-        ensure!(
-            result.len() as u64 == expected
-                && result.first().is_none_or(|head| head.history_pos
-                    == if ascending {
-                        after_pos + 1
-                    } else {
-                        upper - expected + 1
-                    }),
-            "display history prefix has missing heads; original history preserved"
-        );
-        // A sparse history prefix is corruption, not an invitation to reconstruct old groups.
-        for pair in result.windows(2) {
-            ensure!(
-                pair[0].history_pos.checked_add(1) == Some(pair[1].history_pos),
-                "display history prefix has a hole"
-            );
-        }
-        tx.commit().await?;
-        Ok(result)
-    }
-
     pub(in crate::studio) async fn display_member_page(
-        &self,
+        self,
         database: &str,
         block_id: &str,
         before: Option<u64>,
         limit: usize,
     ) -> Result<StoredDisplayMembers> {
-        let connection = self
-            .reader()
-            .await?
-            .context("display database is missing")?;
-        ensure!(connection.database_id == database, "stale display database");
-        let tx = connection.db.begin().await?;
-        let row = tx
+        ensure!(self.database_id == database, "stale display database");
+        let row = self
+            .tx
             .query_one_raw(statement(
                 &format!("SELECT {HEAD} FROM conversation_display_blocks WHERE block_id=?"),
                 vec![block_id.into()],
@@ -719,34 +706,17 @@ impl super::super::HistoryStore {
             .await?
             .context("display block reference is missing")?;
         let header = Arc::new(decode_header(&row)?);
-        let entries = member_page(&tx, block_id, before, limit).await?;
-        validate_original_references(&tx, &entries).await?;
-        let upper = header
-            .next_member
-            .min(before.unwrap_or(u64::MAX).saturating_sub(1));
-        let expected = upper.min(limit as u64);
-        ensure!(
-            entries.len() as u64 == expected
-                && entries
-                    .first()
-                    .is_none_or(|member| member.head.member_order == upper - expected + 1)
-                && entries
-                    .windows(2)
-                    .all(|pair| pair[0].head.member_order + 1 == pair[1].head.member_order),
-            "display member page has missing rows; original history preserved"
+        let before = Some(
+            before.unwrap_or(u64::MAX).min(
+                header
+                    .next_member
+                    .checked_add(1)
+                    .context("display member boundary exhausted")?,
+            ),
         );
-        tx.commit().await?;
+        let entries = member_page(&self.tx, block_id, before, limit).await?;
+        self.tx.commit().await?;
         Ok(StoredDisplayMembers { header, entries })
-    }
-
-    pub(in crate::studio) async fn display_recovery(&self) -> Result<Option<DisplayRecovery>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let result = recovery(&tx).await?;
-        tx.commit().await?;
-        Ok(Some(result))
     }
 }
 
@@ -785,10 +755,10 @@ mod cost_tests {
     ) -> Result<()> {
         db.execute_raw(statement(
         "WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i<?)
-         INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header)
-         SELECT 'history-'||i,?,i+CASE WHEN i>20 THEN 1 ELSE 0 END,i,1,2,
-             CAST(json_set(?,'$.id','history-'||i,'$.block_order',i+CASE WHEN i>20 THEN 1 ELSE 0 END,
-                 '$.history_pos',i,'$.body.members.blockId','history-'||i) AS BLOB) FROM n",
+         INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header)
+         SELECT 'history-'||i,?,i,1,2,
+             CAST(json_set(?,'$.id','history-'||i,'$.block_order',i,
+                 '$.body.members.blockId','history-'||i) AS BLOB) FROM n",
         vec![integer(after+1)?.into(), integer(through)?.into(),
             serde_json::to_string(&base.source)?.into(), serde_json::to_string(base)?.into()]
     )).await?;
@@ -797,11 +767,11 @@ mod cost_tests {
          SELECT block_id,1,block_id||':member:1',block_id||':association:1',1,NULL,2,
              CAST(json_set(?,'$.block_id',block_id,'$.head.memberOrder',1,
                  '$.head.memberKey',block_id||':member:1','$.association_key',block_id||':association:1','$.head.record.atom.id','tool-'||block_id) AS BLOB)
-         FROM conversation_display_blocks WHERE history_pos>? AND history_pos<=? AND block_id<>'history-20'",
+         FROM conversation_display_blocks WHERE block_order>? AND block_order<=? AND block_id<>'history-20'",
         vec![serde_json::to_string(member)?.into(), integer(after)?.into(), integer(through)?.into()]
     )).await?;
-        db.execute_raw(statement("UPDATE history_meta SET applied_write_seq=2,display_applied_effect=2,display_published_through=? WHERE id=1",
-        vec![integer(through)?.into()])).await?;
+        db.execute_raw(statement("UPDATE history_meta SET applied_write_seq=2,display_applied_effect=2,display_ready_frontier=999999,display_last_order=1000000 WHERE id=1",
+        vec![])).await?;
         Ok(())
     }
 
@@ -839,7 +809,8 @@ mod cost_tests {
     -> Result<()> {
         let (_dir, db) =
             crate::studio::storage::history::schema::work_snapshots::tests::fixture().await?;
-        crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
+            .await?;
 
         let database: String = db
             .query_one_raw(statement(
@@ -870,8 +841,8 @@ mod cost_tests {
         let seed = owner.prepare(1, 10, &[atom], &[], &[])?;
         let mut frozen = seed.blocks[0].header.as_ref().clone();
         frozen.id = "history-20".into();
-        frozen.block_order = 20;
-        frozen.history_pos = Some(20);
+        frozen.block_order = BlockOrder::new(20)?;
+
         frozen.sealed = true;
         frozen.boundary = Some(ChatFactPosition {
             effect_seq: 2,
@@ -887,8 +858,8 @@ mod cost_tests {
         open.source = ChatSourceId::ForegroundTurn {
             turn_id: "open-turn".into(),
         };
-        open.block_order = 21;
-        open.history_pos = None;
+        open.block_order = BlockOrder::new(1_000_000)?;
+
         open.boundary = None;
         open.sealed = false;
         if let DisplayBlockBody::Work { timing, members } = &mut open.body {
@@ -896,7 +867,7 @@ mod cost_tests {
             members.block_id = open.id.clone();
         }
         db.execute_raw(statement(
-        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header) VALUES(?,?,21,NULL,0,2,?)",
+        "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header) VALUES(?,?,1000000,0,2,?)",
         vec![open.id.clone().into(), serde_json::to_string(&open.source)?.into(), serde_json::to_vec(&open)?.into()]
     )).await?;
         let mut headers = [frozen.clone(), open];
@@ -923,7 +894,7 @@ mod cost_tests {
             previous_members = members;
 
             let sampler = Sampler::display_heads(&db).await?;
-            let outcome = history_heads(&db, 20, Some(21), 20).await;
+            let outcome = block_page(&db, 0, 20, 20, false).await;
             let work = sampler.finish(&db).await?;
             let heads = outcome?;
             assert_eq!(heads.len(), 20);
@@ -954,7 +925,7 @@ mod cost_tests {
             );
 
             let sampler = Sampler::display_heads(&db).await?;
-            let outcome = open_heads(&db, None, 1).await;
+            let outcome = block_page(&db, 999999, 1000000, 1, false).await;
             let work = sampler.finish(&db).await?;
             let heads = outcome?;
             assert_eq!(
@@ -979,10 +950,10 @@ mod cost_tests {
                 .map(|header| LiveDisplayBlock {
                     has_unfinished_members: false,
                     thinking_summary: None,
-                    id: header.id,
-                    block_order: header.block_order,
-                    source: Some(header.source),
-                    body: header.body,
+                    id: header.id.clone(),
+                    block_order: header.block_order.get(),
+                    source: Some(header.source.clone()),
+                    body: header.body.clone(),
                     state: if header.sealed {
                         pl_protocol::DisplayBlockState::Sealed
                     } else {
@@ -1011,7 +982,7 @@ mod cost_tests {
                     work.member_rows,
                     work.reference_rows
                 ),
-                (2, 0, 20, 1)
+                (1, 0, 20, 0)
             );
             assert_eq!(
                 (
@@ -1058,7 +1029,8 @@ mod cost_tests {
     -> Result<()> {
         let (_dir, db) =
             crate::studio::storage::history::schema::work_snapshots::tests::fixture().await?;
-        crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
+            .await?;
 
         let database: String = db
             .query_one_raw(statement(
@@ -1124,7 +1096,7 @@ mod cost_tests {
             assert!(tail_id.as_ref().is_none_or(|previous| previous == id));
             tail_id = Some(id.clone());
             assert!(!delta.blocks[0].header.sealed);
-            assert_eq!(delta.published_through, 0);
+            assert_eq!(delta.ready_frontier, 0);
             let tx = db.begin().await?;
             apply(&tx, &delta).await?;
             tx.execute_raw(statement(
@@ -1144,7 +1116,8 @@ mod cost_tests {
                         .members
                         .keys
                         .iter()
-                        .all(|(_, position)| *position > batch * 250 && *position <= effect * 250)
+                        .all(|(_, position)| position.get() > batch * 250
+                            && position.get() <= effect * 250)
                 );
                 eprintln!(
                     "TAIL_COMMIT_COST {}",
@@ -1190,7 +1163,7 @@ mod cost_tests {
         assert!(cold.retained_bytes() < 4096);
         let id = tail_id.unwrap();
         let sampler = Sampler::display_heads(&db).await?;
-        let heads = open_heads(&db, None, 1).await;
+        let heads = block_page(&db, 0, 1, 1, false).await;
         let work = sampler.finish(&db).await?;
         let heads = heads?;
         assert_eq!(heads[0].id, id);
@@ -1267,7 +1240,8 @@ mod tests {
         };
         use pl_protocol::*;
         let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
-        crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
+            .await?;
 
         let database: String = db
             .query_one_raw(statement(
@@ -1430,7 +1404,8 @@ mod tests {
             ChatAtomKind, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
         };
         let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
-        crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
+            .await?;
 
         let database: String = db
             .query_one_raw(statement(
@@ -1490,8 +1465,8 @@ mod tests {
             crate::studio::runtime::chat_item::native_read_hint_v1("conversation", &ended);
         let original = Arc::new(ChatItem::complete(draft, 1, None));
         let finish = owner.prepare(2, 20, &[ended], &[], std::slice::from_ref(&original))?;
-        assert!(finish.remove_empty.is_empty());
-        assert_eq!(finish.published_through, 1);
+        assert!(finish.blocks.iter().all(|block| block.header.sealed));
+        assert_eq!(finish.ready_frontier, 1);
         db.execute_unprepared(
             "CREATE TRIGGER reject_empty_finish BEFORE UPDATE ON conversation_display_blocks
         BEGIN SELECT RAISE(ABORT,'final empty update rejection'); END;",
@@ -1534,7 +1509,8 @@ mod tests {
     -> Result<()> {
         use sea_orm::TransactionTrait;
         let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
-        crate::studio::storage::history::schema::work_snapshots::initialize(&db).await?;
+        crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
+            .await?;
 
         let database: String = db
             .query_one_raw(statement(
@@ -1624,7 +1600,7 @@ mod tests {
         summary.finished_at = Some(12);
         assert!(verify(&db, &wrong_time).await.is_err());
         let mut contradictory = delta.as_ref().clone();
-        contradictory.published_through = 1;
+        contradictory.ready_frontier = 1;
         assert!(verify(&db, &contradictory).await.is_err());
         assert_eq!(watermarks(&db).await?, (0, 1));
         // Snapshot reads are independent of original payload tables.

@@ -3,14 +3,18 @@
 mod client;
 mod error;
 mod install;
+#[cfg(target_os = "linux")]
+pub mod linux;
 mod manifest;
+mod platform;
 mod transfer;
 mod types;
 mod verification;
 
 pub use client::{STUDIO_VERSION, StudioUpdater};
 pub use error::{StudioUpdateError, StudioUpdateErrorCode};
-pub use install::{PreparedStudioUpdate, StudioUpdateCancellation, StudioUpdateLaunch};
+pub use install::{PreparedStudioUpdate, StudioUpdateCancellation};
+pub use platform::StudioUpdatePlatform;
 pub use types::{StudioUpdate, StudioUpdateAsset, StudioUpdateCheck, StudioUpdateEvent};
 
 #[cfg(test)]
@@ -26,12 +30,13 @@ y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+b
     pub(super) fn update(bytes: &[u8]) -> crate::StudioUpdate {
         use sha2::{Digest, Sha256};
         crate::StudioUpdate {
+            platform: crate::StudioUpdatePlatform::WindowsX86_64,
             version: "1.0.0".into(),
             published_at: 1,
-            notes_url: "https://github.com/ZR233/pure-lang/releases/tag/v1.0.0".into(),
+            notes_url: "https://github.com/ZR233/anywork/releases/tag/v1.0.0".into(),
             installer: crate::StudioUpdateAsset {
-                url: "https://github.com/ZR233/pure-lang/releases/download/v1.0.0/anywork-1.0.0-windows-x86_64-setup.exe".into(),
-                signature: "https://github.com/ZR233/pure-lang/releases/download/v1.0.0/anywork-1.0.0-windows-x86_64-setup.exe.minisig".into(),
+                url: "https://github.com/ZR233/anywork/releases/download/v1.0.0/anywork-1.0.0-windows-x86_64-setup.exe".into(),
+                signature: "https://github.com/ZR233/anywork/releases/download/v1.0.0/anywork-1.0.0-windows-x86_64-setup.exe.minisig".into(),
                 size: bytes.len() as u64,
                 sha256: hex::encode(Sha256::digest(bytes)),
             },

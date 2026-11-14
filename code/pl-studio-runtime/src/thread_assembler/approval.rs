@@ -76,6 +76,15 @@ impl ExecutionPolicy for StudioExecutionPolicy {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
+        if matches!(self.options.host, ApprovalHost::Remote) {
+            return authorize_remote_workspace(
+                &self.tool_id,
+                input,
+                self.options.mode,
+                self.options.workspace.root(),
+            )
+            .await;
+        }
         let exec = if self.tool_id == pl_tool::exec::TOOL_EXEC {
             Some(
                 pl_tool::exec::parse_and_validate_exec_input(input.content())
@@ -107,14 +116,9 @@ impl ExecutionPolicy for StudioExecutionPolicy {
         let name = self.tool_id.clone();
         let raw = input.content().to_owned();
         let root = self.options.workspace.root().to_owned();
-        let host = self.options.host;
-        let assessment = tokio::task::spawn_blocking(move || match (host, exec) {
-            (ApprovalHost::Local, Some(input)) => pl_tool::approval::assess_exec(&input, &root),
-            (ApprovalHost::Remote, Some(input)) => {
-                pl_tool::approval::assess_exec_remote(&input, &root)
-            }
-            (ApprovalHost::Local, None) => pl_tool::approval::assess(&name, &raw, &root),
-            (ApprovalHost::Remote, None) => pl_tool::approval::assess_remote(&name, &raw, &root),
+        let assessment = tokio::task::spawn_blocking(move || match exec {
+            Some(input) => pl_tool::approval::assess_exec(&input, &root),
+            None => pl_tool::approval::assess(&name, &raw, &root),
         })
         .await
         .map_err(ToolError::new)?;
@@ -184,6 +188,50 @@ impl ExecutionPolicy for StudioExecutionPolicy {
             }
         }
     }
+}
+
+/// Remote execution has no local host-path grant or Native approval interaction.
+/// Both Native and ACP use this assessment before the same physical backend admission.
+pub(crate) async fn authorize_remote_workspace(
+    name: &str,
+    input: &OpaquePayload,
+    mode: PermissionMode,
+    root: &std::path::Path,
+) -> Result<ExecutionGrant, ToolError> {
+    let is_exec = name == pl_tool::exec::TOOL_EXEC;
+    let exec = if is_exec {
+        Some(
+            pl_tool::exec::parse_and_validate_exec_input(input.content())
+                .map_err(pl_tool::exec::ExecInputError::into_tool_error)?,
+        )
+    } else {
+        if name == pl_tool::exec::TOOL_WRITE_STDIN {
+            pl_tool::exec::parse_and_validate_stdin_input(input.content())
+                .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
+        }
+        None
+    };
+    if mode == PermissionMode::FullAccess {
+        return Ok(ExecutionGrant::default());
+    }
+    let root = root.to_owned();
+    let name = name.to_owned();
+    let raw = input.content().to_owned();
+    let assessment = tokio::task::spawn_blocking(move || match exec {
+        Some(input) => pl_tool::approval::assess_exec_remote(&input, &root),
+        None => pl_tool::approval::assess_remote(&name, &raw, &root),
+    })
+    .await
+    .map_err(ToolError::new)?;
+    if assessment.requested_access.allows_external() {
+        let error = PermissionDenied("the assigned workspace is confined".into());
+        return Err(if is_exec {
+            pl_tool::exec::permission_denied(error)
+        } else {
+            ToolError::new(error)
+        });
+    }
+    Ok(ExecutionGrant::default())
 }
 
 impl StudioThreadTools {

@@ -1214,12 +1214,12 @@ mod tests {
             ("MembersRequest", &["reference", "window", "demand"][..]),
             (
                 "TimelineBatch",
-                &["presentationVersion", "placement", "blocks", "throughPos"][..],
+                &["presentationVersion", "placement", "blocks", "throughOrder"][..],
             ),
-            ("DisplayBlock", &["id", "historyPos", "body"][..]),
+            ("DisplayBlock", &["id", "blockOrder", "body"][..]),
             (
                 "LiveDisplayWindow",
-                &["revision", "historyThrough", "executionPresent", "blocks"][..],
+                &["revision", "readyFrontier", "executionPresent", "blocks"][..],
             ),
             (
                 "LiveDisplayBlock",
@@ -1328,7 +1328,7 @@ mod tests {
                 .iter()
                 .any(|schema| schema["type"] == "null")
         );
-        assert!(schemas["TimelineBatch"]["properties"]["fromPos"].is_object());
+        assert!(schemas["TimelineBatch"]["properties"]["fromOrder"].is_object());
         assert!(
             schemas["TimelineBatch"]["properties"]
                 .get("fromSeq")

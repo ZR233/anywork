@@ -114,7 +114,7 @@ impl Drop for ResetOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HostInvocation, HostOperation};
+    use crate::HostInvocation;
     use serde_json::json;
 
     #[test]
@@ -131,11 +131,11 @@ mod tests {
     }
 
     #[test]
-    fn domain_decode_rejects_authority_fields_and_unknown_operations() {
+    fn domain_decode_rejects_authority_fields_without_an_operation_whitelist() {
         for request in [
-            json!({"operation":"wait_agent","arguments":{},"caller":"forged"}),
-            json!({"operation":"wait_agent","arguments":{},"call_id":"forged"}),
-            json!({"operation":"invented_operation","arguments":{}}),
+            json!({"tool_id":"anywork_wait_agent","arguments":{},"caller":"forged"}),
+            json!({"tool_id":"anywork_wait_agent","arguments":{},"call_id":"forged"}),
+            json!({"operation":"wait_agent","arguments":{}}),
         ] {
             assert!(matches!(
                 Envelope::json(&request).unwrap().value::<HostInvocation>(),
@@ -143,12 +143,12 @@ mod tests {
             ));
         }
         let request = Envelope::json(&json!({
-            "operation":"wait_agent","arguments":{"nested":{"value":42}}
+            "tool_id":"anywork_fixture_echo","arguments":{"nested":{"value":42}}
         }))
         .unwrap()
         .value::<HostInvocation>()
         .unwrap();
-        assert_eq!(request.operation, HostOperation::WaitAgent);
+        assert_eq!(request.tool_id, "anywork_fixture_echo");
         assert_eq!(request.arguments["nested"]["value"], 42);
     }
 }

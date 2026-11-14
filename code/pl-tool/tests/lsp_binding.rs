@@ -866,6 +866,138 @@ fn fixture_query(root: &Path, operation: LspQueryOperation) -> pl_lsp::query::Ls
 }
 
 #[tokio::test]
+async fn file_diagnostics_sync_disk_saves_using_negotiated_options() -> anyhow::Result<()> {
+    use serde_json::json;
+
+    for (save, expected_text) in [
+        (Some(json!(true)), Some(false)),
+        (Some(json!({"includeText": false})), Some(false)),
+        (Some(json!({"includeText": true})), Some(true)),
+        (Some(json!({})), Some(false)),
+        (Some(json!(false)), None),
+        (None, None),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source.fixture");
+        tokio::fs::write(&source, "broken\n").await?;
+        let mut config = fixture_config("fixture", "saves.jsonl");
+        let sync = save.map_or(
+            json!(1),
+            |save| json!({"openClose": true, "change": 2, "save": save}),
+        );
+        config
+            .env
+            .insert("LSP_FIXTURE_SYNC".into(), sync.to_string());
+        config
+            .env
+            .insert("LSP_FIXTURE_DOCUMENT_DIAGNOSTICS".into(), "1".into());
+        if expected_text.is_some() {
+            config
+                .env
+                .insert("LSP_FIXTURE_EXPECT_SAVE".into(), "1".into());
+        }
+        write_config(directory.path(), "fixture", config).await?;
+        let registry = LspRuntimeRegistry::new();
+        let _lease = registry
+            .acquire_workspace(directory.path(), Some(local_host(directory.path())?), None)
+            .await?;
+        let observed: anyhow::Result<()> = async {
+            wait_ready(&registry, directory.path(), "fixture").await?;
+            let mut updates = registry.subscribe();
+            let mut query = fixture_query(directory.path(), LspQueryOperation::Diagnostics);
+            query.file_path = Some(source.clone());
+            // Diagnostics alone must open/synchronize the file, without a hover
+            // query incidentally refreshing the server's view first.
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let result = registry
+                        .query_in_workspace(directory.path(), query.clone())
+                        .await?;
+                    if result.result.contains("original error") {
+                        break;
+                    }
+                    updates.recv().await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await??;
+            let log = directory.path().join("saves.jsonl");
+            anyhow::ensure!(
+                !log_messages(&log).await?.iter().any(|message| {
+                    message["method"] == "textDocument/didSave"
+                }),
+                "opening a disk snapshot must not invent a save"
+            );
+            for (index, content) in ["fixed once\n", "fixed twice\n"].into_iter().enumerate() {
+                tokio::fs::write(&source, content).await?;
+                if index == 1 {
+                    // Product file writes and query-time disk refresh share the
+                    // same ordered document state, so this must not double-save.
+                    registry.notify_file_changed(&source).await;
+                }
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let result = registry
+                            .query_in_workspace(directory.path(), query.clone())
+                            .await?;
+                        if result.result_count == Some(0) {
+                            break;
+                        }
+                        updates.recv().await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                // An ordinary request is a protocol barrier before inspecting
+                // the peer log; it must not add another change or save.
+                registry
+                    .query_in_workspace(
+                        directory.path(),
+                        fixture_query(directory.path(), LspQueryOperation::Hover),
+                    )
+                    .await?;
+                let messages = log_messages(&log).await?;
+                let initialize = messages.iter().find(|m| m["method"] == "initialize").unwrap();
+                anyhow::ensure!(
+                    initialize["params"]["capabilities"]["textDocument"]["synchronization"]["didSave"] == true
+                );
+                let changes: Vec<_> = messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m["method"] == "textDocument/didChange")
+                    .collect();
+                let saves: Vec<_> = messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m["method"] == "textDocument/didSave")
+                    .collect();
+                anyhow::ensure!(changes.len() == index + 1, "{messages:?}");
+                anyhow::ensure!(changes[index].1["params"]["textDocument"]["version"] == index + 2);
+                if let Some(include_text) = expected_text {
+                    anyhow::ensure!(saves.len() == index + 1, "{messages:?}");
+                    anyhow::ensure!(changes[index].0 < saves[index].0);
+                    let params = &saves[index].1["params"];
+                    anyhow::ensure!(params["textDocument"]["uri"] == changes[index].1["params"]["textDocument"]["uri"]);
+                    if include_text {
+                        anyhow::ensure!(params["text"] == content);
+                    } else {
+                        anyhow::ensure!(params.get("text").is_none());
+                    }
+                } else {
+                    anyhow::ensure!(saves.is_empty());
+                }
+            }
+            Ok(())
+        }
+        .await;
+        let shutdown = registry.shutdown().await;
+        observed?;
+        shutdown?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn endpoint_views_isolate_same_root_and_global_owner_joins_every_partition()
 -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;

@@ -638,7 +638,7 @@
   "statusSelectorsNotReady": "Session settings are not ready yet, or a submission is in flight; the selection is unavailable for now.",
   "statusModeNeedsProject": "Choose a project before setting the session mode.",
   "composerWorkspaceModeLabel": "Session workspace",
-  "composerWorkspaceModeLocal": "Local directory",
+  "composerWorkspaceModeLocal": "Project directory",
   "composerWorkspaceModeWorktree": "New worktree",
   "statusPlannerModel": "Main agent model",
   "statusModelRouteUnavailable": "Current model unavailable; show reason",
@@ -1588,7 +1588,7 @@
   "settingsDeepSeekWebFetchConfigured": "Fetch configured",
   "settingsDeepSeekWebFetchEffective": "Fetch effective",
   "settingsStudioUpdateTitle": "anywork update",
-  "settingsStudioUpdateDisabled": "Version {version}. Automatic checks run only in Windows release builds.",
+  "settingsStudioUpdateDisabled": "Version {version}. Automatic updates are unavailable for this platform or build.",
   "@settingsStudioUpdateDisabled": {
     "placeholders": {
       "version": {
@@ -3065,7 +3065,7 @@
   "composerNoProject": "No project",
   "composerProjectSearch": "Search projects, paths or SSH",
   "composerNewProject": "New project…",
-  "composerFixedLocalDirectory": "Fixed local directory",
+  "composerFixedLocalDirectory": "Fixed project directory",
   "composerWorktreeHint": "Create an isolated worktree from Git HEAD",
   "composerLocalDirectoryHint": "Use the project directory directly",
   "composerEnvironmentLocked": "Preparing the session; settings cannot be changed yet",
@@ -3101,10 +3101,9 @@
   "acpBackendServicesHeader": "ACP services",
   "acpBackendReadyBadge": "Enabled",
   "acpStartDraftHint": "Optional initial draft (carried into the new ACP session without auto-sending)…",
-  "acpStartHandshakeNote": "Creating a session completes handshake and fetches server configuration first; your draft is carried into the composer.",
+  "acpStartHandshakeNote": "ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.",
   "acpStartCreateAction": "Start ACP session",
   "acpStartCreatingAction": "Starting…",
-  "acpStartSshUnsupported": "ACP sessions do not support SSH remote projects yet. Select a local project.",
   "acpStartExistingAttachmentsHint": "Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.",
   "acpSessionConnectingTitle": "Connecting to ACP service…",
   "acpSessionConnectingSubtitle": "Initializing protocol handshake and negotiating capabilities.",

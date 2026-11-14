@@ -685,7 +685,7 @@ class _SealedToolWorkGroupPreviewState
   late final group = TimelineDisplayUnit(
     block: DisplayBlock(
       id: 'sealed-tool-preview-group',
-      historyPos: 2,
+      blockOrder: 2,
       body: WorkDisplayBlock(
         timing: const WorkTiming(startedAt: 1735689600, finishedAt: 1735689725),
         members: const DisplayBlockRef(

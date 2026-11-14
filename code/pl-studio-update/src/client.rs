@@ -4,7 +4,6 @@ use super::manifest::{LATEST_MANIFEST_URL, evaluate_manifest, validate_redirect_
 use super::types::{StudioUpdate, StudioUpdateCheck, StudioUpdateEvent};
 use futures::StreamExt;
 use reqwest::{Client, Response, StatusCode};
-use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ pub const STUDIO_VERSION: &str = include_str!("../../../studio-version.txt");
 pub struct StudioUpdater {
     pub(super) client: Client,
     pub(super) downloader: downlowd::Client,
-    pub(super) cache_dir: PathBuf,
+    pub(super) cache_dir: Option<PathBuf>,
     pub(super) public_key: &'static str,
     pub(super) install_active: Arc<tokio::sync::Mutex<()>>,
 }
@@ -46,11 +45,15 @@ impl StudioUpdater {
             .max_retries(Some(3))
             .build()
             .map_err(super::transfer::download_error)?;
-        let cache_root = env::var_os("LOCALAPPDATA")
+        // Preserve Windows' existing LOCALAPPDATA contract, including isolated
+        // launch environments. Other platforms use their standard cache base.
+        #[cfg(windows)]
+        let cache_base = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_else(env::temp_dir)
-            .join("anywork")
-            .join("updates");
+            .or_else(dirs::cache_dir);
+        #[cfg(not(windows))]
+        let cache_base = dirs::cache_dir();
+        let cache_root = cache_base.map(|root| root.join("anywork").join("updates"));
         Ok(Self {
             client,
             downloader,
@@ -82,7 +85,13 @@ impl StudioUpdater {
                 "update check exceeded its 60 second deadline",
             )
         })??;
-        evaluate_manifest(&bytes, current_version)
+        let platform = crate::StudioUpdatePlatform::current().ok_or_else(|| {
+            StudioUpdateError::new(
+                StudioUpdateErrorCode::UnsupportedPlatform,
+                "this build has no supported update asset",
+            )
+        })?;
+        evaluate_manifest(&bytes, current_version, platform)
     }
 
     /// 下载并验证更新，仅返回文件租约，不关闭应用或启动安装器。

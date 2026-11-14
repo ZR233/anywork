@@ -954,6 +954,32 @@ jobs:
           }
           Assert-StudioMacOSChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
 
+      # Platform archive identities were checked above. Sign the Linux payload
+      # and build the current feed only after all same-version inputs are present.
+      # GITHUB_PATH additions become available only to subsequent steps.
+      - name: Install pinned signing tool
+        shell: pwsh
+        run: |
+          . .github/scripts/studio-package-tools.ps1
+          Install-StudioMinisign
+
+      - name: Sign combined platform assets and finalize update feeds
+        shell: pwsh
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MINISIGN_SECRET_KEY)) { throw 'Missing Minisign key' }
+          $key = Join-Path $env:RUNNER_TEMP 'anywork-combined.key'
+          try {
+            Set-Content -LiteralPath $key -Value $env:MINISIGN_SECRET_KEY -NoNewline
+            $env:MINISIGN_SECRET_KEY_FILE = $key
+            & $env:STUDIO_RELEASE_TOOL release-gui finalize --version $env:RELEASE_VERSION
+            if ($LASTEXITCODE -ne 0) { throw "Combined release finalization exited with $LASTEXITCODE" }
+          } finally {
+            if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Force }
+          }
+
       - name: Upload only missing identical assets
         shell: pwsh
         env:
@@ -1140,44 +1166,10 @@ jobs:
           if (-not $plan.Complete) {
             throw "Published Release $env:RELEASE_ID is incomplete"
           }
-          # Full remote/local reconciliation precedes platform-local verification.
-          # Never broaden the strict Windows manifest's expected file set.
-          $linuxNames = @($expectedNames | Where-Object { $_ -clike '*-linux-x86_64.deb*' })
-          $linuxDir = Join-Path $env:RUNNER_TEMP 'published-linux-assets'
-          if ($linuxNames.Count -ne 0) {
-            Assert-StudioDebianChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
-            New-Item -ItemType Directory -Path $linuxDir | Out-Null
-            foreach ($name in $linuxNames) {
-              Move-Item -LiteralPath (Join-Path $releaseDir $name) -Destination $linuxDir
-            }
-          }
-          $macosNames = @($expectedNames | Where-Object { $_ -clike '*-macos-arm64.zip*' })
-          $macosDir = Join-Path $env:RUNNER_TEMP 'published-macos-assets'
-          if ($macosNames.Count -ne 0) {
-            Assert-StudioMacOSChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
-            New-Item -ItemType Directory -Path $macosDir | Out-Null
-            foreach ($name in $macosNames) {
-              Move-Item -LiteralPath (Join-Path $releaseDir $name) -Destination $macosDir
-            }
-          }
-          try {
-            cargo xtask release-gui verify --version $env:RELEASE_VERSION
-            if ($LASTEXITCODE -ne 0) { throw "Published Windows asset verification exited with $LASTEXITCODE" }
-          } finally {
-            foreach ($name in $linuxNames) {
-              Move-Item -LiteralPath (Join-Path $linuxDir $name) -Destination $releaseDir
-            }
-            foreach ($name in $macosNames) {
-              Move-Item -LiteralPath (Join-Path $macosDir $name) -Destination $releaseDir
-            }
-          }
-          if ($linuxNames.Count -ne 0) {
-            Assert-StudioDebianChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
-          }
-
-          if ($macosNames.Count -ne 0) {
-            Assert-StudioMacOSChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
-          }
+          cargo xtask release-gui verify --version $env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Published multi-platform verification exited with $LASTEXITCODE" }
+          Assert-StudioDebianChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
+          Assert-StudioMacOSChecksum -Version $env:RELEASE_VERSION -AssetDirectory $releaseDir
 
           $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or [string]$latest.id -cne $env:RELEASE_ID) {

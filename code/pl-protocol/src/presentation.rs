@@ -8,7 +8,7 @@ use crate::{
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 
-pub const PRESENTATION_VERSION: u32 = 5;
+pub const PRESENTATION_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -88,7 +88,7 @@ pub enum DisplayBlockState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DisplayBlock {
     pub id: String,
-    pub history_pos: u64,
+    pub block_order: u64,
     pub body: DisplayBlockBody,
 }
 
@@ -109,7 +109,7 @@ pub struct LiveDisplayBlock {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveDisplayWindow {
     pub revision: u64,
-    pub history_through: u64,
+    pub ready_frontier: u64,
     pub execution_present: bool,
     pub current_work_id: Option<String>,
     pub blocks: Vec<LiveDisplayBlock>,
@@ -123,8 +123,8 @@ pub struct TimelineBatch {
     pub placement: ChatPlacement,
     pub blocks: Vec<DisplayBlock>,
     pub before: Option<String>,
-    pub from_pos: Option<u64>,
-    pub through_pos: u64,
+    pub from_order: Option<u64>,
+    pub through_order: u64,
     /// None preserves the remaining live blocks during a split handoff.
     pub live: Option<LiveDisplayWindow>,
 }
@@ -144,23 +144,23 @@ impl TimelineBatch {
             ));
         }
         let placement_valid = match self.placement {
-            ChatPlacement::Set => self.from_pos.is_none() && self.live.is_some(),
-            ChatPlacement::Prepend => self.from_pos.is_none() && self.live.is_none(),
+            ChatPlacement::Set => self.from_order.is_none() && self.live.is_some(),
+            ChatPlacement::Prepend => self.from_order.is_none() && self.live.is_none(),
             ChatPlacement::Append => {
                 self.before.is_none()
-                    && self.from_pos.is_some_and(|from| {
-                        from < self.through_pos
-                            || (from == self.through_pos
+                    && self.from_order.is_some_and(|from| {
+                        from < self.through_order
+                            || (from == self.through_order
                                 && self.blocks.is_empty()
                                 && self.live.is_some())
                     })
             }
         };
-        let mut previous = self.from_pos.unwrap_or(0);
+        let mut previous = self.from_order.unwrap_or(0);
         let mut identities = std::collections::HashSet::new();
         let blocks_valid = self.blocks.iter().all(|block| {
-            let ordered = block.history_pos > previous && block.history_pos <= self.through_pos;
-            previous = block.history_pos;
+            let ordered = block.block_order > previous && block.block_order <= self.through_order;
+            previous = block.block_order;
             ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
         });
         let live_valid = self.live.as_ref().is_none_or(|live| {
@@ -170,16 +170,19 @@ impl TimelineBatch {
                     && matches!(block.body, DisplayBlockBody::Work { .. })
             });
             let current_id = current.next().map(|block| block.id.as_str());
-            live.history_through == self.through_pos
+            live.ready_frontier == self.through_order
                 && live.blocks.iter().all(|block| {
-                    let ordered = block.block_order > order;
+                    let ordered = block.block_order > order
+                        && block.block_order > live.ready_frontier
+                        && block.block_order <= i64::MAX as u64;
                     order = block.block_order;
                     ordered && !block.id.is_empty() && identities.insert(block.id.as_str())
                 })
                 && live.current_work_id.as_deref() == current_id
                 && current.next().is_none()
         });
-        if !placement_valid || !blocks_valid || !live_valid || self.through_pos > i64::MAX as u64 {
+        if !placement_valid || !blocks_valid || !live_valid || self.through_order > i64::MAX as u64
+        {
             return Err(StudioError::new(
                 StudioErrorCode::InvalidArgument,
                 "Invalid timeline delivery cut",
@@ -248,28 +251,28 @@ mod tests {
             placement: ChatPlacement::Append,
             blocks: vec![DisplayBlock {
                 id: "g1".into(),
-                history_pos: 1,
+                block_order: 1,
                 body: work("g1"),
             }],
             before: None,
-            from_pos: Some(0),
-            through_pos: 1,
+            from_order: Some(0),
+            through_order: 1,
             live: None,
         };
         assert!(batch.validate().is_ok());
         batch.blocks.clear();
-        batch.from_pos = Some(1);
+        batch.from_order = Some(1);
         assert!(batch.validate().is_err());
         batch.live = Some(LiveDisplayWindow {
             revision: 2,
-            history_through: 1,
+            ready_frontier: 1,
             execution_present: true,
             current_work_id: None,
             blocks: vec![],
             older: None,
         });
         assert!(batch.validate().is_ok());
-        batch.live.as_mut().unwrap().history_through = 2;
+        batch.live.as_mut().unwrap().ready_frontier = 2;
         assert!(batch.validate().is_err());
     }
 
@@ -280,15 +283,15 @@ mod tests {
             placement: ChatPlacement::Set,
             blocks: vec![DisplayBlock {
                 id: "g1".into(),
-                history_pos: 1,
+                block_order: 1,
                 body: work("g1"),
             }],
             before: None,
-            from_pos: None,
-            through_pos: 1,
+            from_order: None,
+            through_order: 1,
             live: Some(LiveDisplayWindow {
                 revision: 2,
-                history_through: 1,
+                ready_frontier: 1,
                 execution_present: true,
                 current_work_id: None,
                 blocks: vec![LiveDisplayBlock {
@@ -313,11 +316,11 @@ mod tests {
             placement: ChatPlacement::Set,
             blocks: vec![],
             before: None,
-            from_pos: None,
-            through_pos: 0,
+            from_order: None,
+            through_order: 0,
             live: Some(LiveDisplayWindow {
                 revision: 1,
-                history_through: 0,
+                ready_frontier: 0,
                 execution_present: false,
                 current_work_id: Some("tail".into()),
                 older: None,

@@ -1,0 +1,492 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anywork.dev/schemas/run-export/v1/events.schema.json",
+  "title": "EventV1",
+  "description": "One immutable JSONL line written to events.jsonl.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "eventSeq",
+    "type",
+    "data",
+    "emittedAt",
+    "threadId",
+    "source"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "runStarted",
+        "agentRegistered",
+        "skillsDiscovered",
+        "inferenceFinished",
+        "completion",
+        "threadSealed",
+        "runSealed"
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "emittedAt": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "threadId": {
+      "type": ["string", "null"]
+    },
+    "source": {
+      "$ref": "#/$defs/EventSourceV1"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "runStarted" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunStartedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "agentRegistered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/AgentRegisteredData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "skillsDiscovered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/SkillsDiscoveredData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "inferenceFinished" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/InferenceFinishedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "completion" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/CompletionData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "threadSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/ThreadSealedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "runSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunSealedData" } } }
+    }
+  ],
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativeBlobPath": {
+      "type": "string",
+      "pattern": "^contents/[0-9a-f]{64}\\.bin$"
+    },
+    "BuildInfoV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "gitCommit", "target"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    },
+    "EventSourceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "epoch",
+        "effectSeq",
+        "turnId",
+        "attemptId",
+        "toolCallId",
+        "completionItemId",
+        "completionSeq"
+      ],
+      "properties": {
+        "epoch": { "type": ["string", "null"] },
+        "effectSeq": { "type": ["integer", "null"], "minimum": 0 },
+        "turnId": { "type": ["string", "null"] },
+        "attemptId": { "type": ["string", "null"] },
+        "toolCallId": { "type": ["string", "null"] },
+        "completionItemId": { "type": ["string", "null"] },
+        "completionSeq": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "CompletionCursorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch", "completionSeq"],
+      "properties": {
+        "epoch": { "type": ["string", "null"] },
+        "completionSeq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "RunStartedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "build", "manifestSha256"],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "build": { "$ref": "#/$defs/BuildInfoV1" },
+        "manifestSha256": { "$ref": "#/$defs/sha256Hex" }
+      }
+    },
+    "AgentRegisteredData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId",
+        "threadId",
+        "parentAgentId",
+        "parentThreadId",
+        "role",
+        "workspaceId",
+        "spawnToolCallId",
+        "initialEffectSeq",
+        "initialCompletionCursor"
+      ],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "parentThreadId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "workspaceId": { "type": "string" },
+        "spawnToolCallId": { "type": ["string", "null"] },
+        "initialEffectSeq": { "type": "integer", "minimum": 0 },
+        "initialCompletionCursor": { "$ref": "#/$defs/CompletionCursorV1" }
+      }
+    },
+    "SkillDiscoverySourceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "kind", "location", "identity"],
+      "properties": {
+        "providerId": { "type": "string" },
+        "kind": { "type": "string" },
+        "location": { "type": ["string", "null"] },
+        "identity": { "type": "string" }
+      }
+    },
+    "SkillResourceBase": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "directory" },
+            "path": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": { "const": "url" },
+            "url": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "description"],
+          "properties": {
+            "kind": { "const": "opaque" },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "SkillWinnerSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "providerId",
+        "rank",
+        "localOrder",
+        "resourceBase"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "source": { "enum": ["project", "user", "system", "external"] },
+        "providerId": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 0 },
+        "localOrder": { "type": "integer", "minimum": 0 },
+        "resourceBase": { "$ref": "#/$defs/SkillResourceBase" }
+      }
+    },
+    "SkillsDiscoveredData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "sourceFingerprint",
+        "sources",
+        "winners",
+        "warnings",
+        "complete"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "sourceFingerprint": { "type": "string" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SkillDiscoverySourceSummary" }
+        },
+        "winners": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SkillWinnerSummary" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "InferenceFinishedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "auxiliary", "billing"],
+      "properties": {
+        "status": {
+          "enum": [
+            "committed",
+            "rejected",
+            "cancelled",
+            "interrupted",
+            "failed"
+          ]
+        },
+        "auxiliary": { "type": "boolean" },
+        "billing": {
+          "$ref": "native.schema.json#/$defs/InferenceBillingRecord"
+        }
+      }
+    },
+    "ChatReadHintExportV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "hidden" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "single" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "key"],
+          "properties": {
+            "kind": { "const": "adjacent" },
+            "key": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "ChatRunPositionExportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSeq", "ordinal"],
+      "properties": {
+        "startSeq": { "type": "integer", "minimum": 0 },
+        "ordinal": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ChatItemHeaderExportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appendSeq",
+        "itemId",
+        "queryClass",
+        "parentId",
+        "readHint",
+        "run",
+        "byteLength"
+      ],
+      "properties": {
+        "appendSeq": { "type": "integer", "minimum": 1 },
+        "itemId": { "type": "string", "minLength": 1 },
+        "queryClass": { "type": "string" },
+        "parentId": { "type": ["string", "null"] },
+        "readHint": { "$ref": "#/$defs/ChatReadHintExportV1" },
+        "run": {
+          "oneOf": [
+            { "$ref": "#/$defs/ChatRunPositionExportV1" },
+            { "type": "null" }
+          ]
+        },
+        "byteLength": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ExportedBlobV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "byteLength", "sha256", "mediaType", "encoding"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ExportedContentV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nativeRef",
+        "role",
+        "path",
+        "byteLength",
+        "sha256",
+        "mediaType",
+        "encoding"
+      ],
+      "properties": {
+        "nativeRef": {
+          "$ref": "native.schema.json#/$defs/ContentRef"
+        },
+        "role": {
+          "oneOf": [
+            {
+              "enum": [
+                "body",
+                "reasoningSummary",
+                "toolArguments",
+                "toolOutput"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "CompletionData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["header", "atom", "payload", "contents"],
+      "properties": {
+        "header": { "$ref": "#/$defs/ChatItemHeaderExportV1" },
+        "atom": {
+          "$ref": "native.schema.json#/$defs/ChatAtom"
+        },
+        "payload": { "$ref": "#/$defs/ExportedBlobV1" },
+        "contents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ExportedContentV1" }
+        }
+      }
+    },
+    "UsageSummary": {
+      "$ref": "native.schema.json#/$defs/UsageSummary"
+    },
+    "ThreadSealedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "throughEffectSeq",
+        "completionCut",
+        "summary",
+        "status",
+        "aborted",
+        "error"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV1" },
+        "summary": { "$ref": "#/$defs/UsageSummary" },
+        "status": { "type": ["string", "null"] },
+        "aborted": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "SealedMemberCutV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "agentId",
+        "parentAgentId",
+        "role",
+        "throughEffectSeq",
+        "completionCut",
+        "aborted",
+        "sealed"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "agentId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "completionCut": { "$ref": "#/$defs/CompletionCursorV1" },
+        "aborted": { "type": "boolean" },
+        "sealed": { "type": "boolean" }
+      }
+    },
+    "RunSealedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "members",
+        "reconciled",
+        "reconcileError",
+        "traceComplete",
+        "usageComplete",
+        "costComplete"
+      ],
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SealedMemberCutV1" }
+        },
+        "reconciled": { "type": "boolean" },
+        "reconcileError": { "type": ["string", "null"] },
+        "traceComplete": { "type": "boolean" },
+        "usageComplete": { "type": "boolean" },
+        "costComplete": { "type": "boolean" }
+      }
+    }
+  }
+}

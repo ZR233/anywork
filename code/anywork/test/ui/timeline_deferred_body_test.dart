@@ -168,7 +168,7 @@ final class _Controls implements TimelineUiControllers {
                   TimelineDisplayUnit(
                     block: DisplayBlock(
                       id: displayId ?? atom.id,
-                      historyPos: 1,
+                      blockOrder: 1,
                       body: SingleDisplayBlock(
                         visibility: SingleVisibility.content,
                         record: DisplayRecord(

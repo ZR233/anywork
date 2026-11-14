@@ -8,6 +8,8 @@ pub use input::{ExecInputError, parse_and_validate_exec_input, parse_and_validat
 pub use output::permission_denied;
 pub use pl_tool_command::exec::{ExecInput, ValidatedExecInput, exec_definition};
 pub use pl_tool_command::write_stdin::{WriteStdinInput, write_stdin_definition};
-pub use thread::{CommandAccess, CommandOutputArchive, ExecFailure, ThreadExecTool};
+pub use thread::{
+    CommandAccess, CommandOutputArchive, ExecFailure, ThreadExecTool, ThreadWriteStdinTool,
+};
 pub const TOOL_EXEC: &str = "exec_command";
 pub const TOOL_WRITE_STDIN: &str = "write_stdin";

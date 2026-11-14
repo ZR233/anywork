@@ -107,7 +107,7 @@ void main() {
           live: LiveDisplayWindow(
             currentWorkId: null,
             revision: 2,
-            historyThrough: 1,
+            readyFrontier: 1,
             executionPresent: true,
             blocks: [],
           ),
@@ -267,7 +267,7 @@ void main() {
           'old',
           'next',
         ]);
-        expect(pendingIntent.current!.historyPos, 4);
+        expect(pendingIntent.current!.blockOrder, 4);
         expect(pendingIntent.expanded, isTrue);
         expect(created, ['old', 'next']);
         expect(retired, isEmpty);

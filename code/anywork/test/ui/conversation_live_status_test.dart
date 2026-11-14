@@ -942,7 +942,7 @@ void main() {
         bool executionPresent = true,
       }) => LiveDisplayWindow(
         revision: 1,
-        historyThrough: 0,
+        readyFrontier: 0,
         executionPresent: executionPresent,
         currentWorkId: null,
         blocks: blocks,
@@ -1802,7 +1802,7 @@ class _ZeroJitterHarness {
     final window = LiveDisplayWindow(
       currentWorkId: currentWorkId,
       revision: ++revision,
-      historyThrough: 0,
+      readyFrontier: 0,
       executionPresent: true,
       blocks: blocks,
     );
@@ -1813,7 +1813,7 @@ class _ZeroJitterHarness {
         LiveStatusObservation(
           cut: LiveWindowCut(
             revision: window.revision,
-            historyThrough: window.historyThrough,
+            readyFrontier: window.readyFrontier,
             executionPresent: window.executionPresent,
             attemptId: 1,
             isDisplayActive: true,

@@ -41,6 +41,8 @@
 目录后端形状在现有 Catalog 正式版本序列内迁移，保留原身份、父边、标题时间、归档、workspace、显式关闭及历史路径，丢弃旧 child 复制的 mode，不全量改写冻结历史。无法证明真实外部引用的旧 ACP 数据保留原件并给出迁移/恢复诊断，不伪造 session ID、自动 new 或清空目录。公共树、归档、删除、关闭及父工作区解析读取 Session/Agent 记录，核验实际根成员与会话身份，并通过 root 的真实 `thread_id` 查询原工作区/租约，不先投影 Native Thread。
 
 ACP 历史由对端协议能力提供，Anywork 不创建其 `history.sqlite`、Native checkpoint、transcript 或外部目录镜像。外部 `session/list` 直接消费对端结果，只有明确新建或打开的成员写入产品关联。本地归档/移除关联不删除对端历史、安装资产或凭据，物理清理按后端跳过 Native 历史与检查点文件；ACP 冷引用只表示本地未运行、远端状态未知，不推导 idle。业务流与关闭事实见 [28.11](./28-acp.md#2811-acp-业务会话与原生内容通路)。
+
+ACP 引用中的 `cwd` 始终表示实际宿主进程与 ACP 协议目录，不是 SSH 业务根。本地旧引用保留原义；SSH 成员使用所属宿主会话 scratch 的私有 `acp-cwd`，业务根及 worktree 归属由原工作区记录和物理身份维护，恢复及清理不得用本机 cwd 替代远程身份。该目录不保存远程源码镜像或 Native 历史，使用现有会话目录归属和清理规则。经 MCP 产生的命令捕获及可靠资源复用现有存储，不新增 ACP 任务数据库或跨重启回执账本。
 每个会话恰有一个属于本会话的无父成员，默认 Thread 引用唯一；跨会话根引用与额外无父成员均拒绝。
 永久删除最后一个会话后，带有效 revision 的空目录是合法状态，重启不得误判为数据丢失。
 
@@ -74,7 +76,7 @@ Studio 数据根目录（默认 `~/.anywork/`）的目录结构如下：
 │   │       └── temp/               # 宿主传输与处理中间文件；归档清理
 │   ├── calls/
 │   │   ├── calls.sqlite            # 有界调用调试索引与轻量性能统计投影
-│   │   └── logs/                   # 版本化滚动 JSONL 调试日志
+│   │   └── logs/                   # 版本化滚动 JSONL 调试日志（不作外部完整归档数据源；详见 [29.6](./29-cli-harbor.md#296-运行轨迹用量与关闭结果导出)）
 │   ├── migrations/                 # 当前领域的必要迁移记录
 │   └── temp/
 │       ├── attachment-drafts/      # 尚未绑定会话的附件草稿
@@ -250,17 +252,23 @@ ChatGPT 安装身份保存在 `<Studio home>/data/chatgpt-host.toml`，具有独
 
 调用诊断明细遵循 7 天日志保留期；模型性能汇总则使用全局独立的有界样本表，按调用完成时间与复合调用身份稳定排序，仅保留最近 `3000` 条有效成功调用样本，并在每批统计写事务提交前自动裁剪超出窗口的更早样本；会话可靠累计费用、执行幂等身份与对话历史正文不受性能样本淘汰影响。性能样本作为独立投影存储，不持有指向已轮转淘汰的原始日志表的外键。在本版本将生成速率统计口径从“纯解码速率（decode TPS）”切换为“含首字等待的总响应速率（end-to-end TPS）”时，旧口径的性能样本直接作废丢弃，不执行近似折算或迁移；性能历史与速率汇总仅读取新口径样本，禁止从旧 JSONL 日志或历史账单中回填复活旧速率统计。旧检查点中缓存的最近速率派生值同步作废，待新口径下的有效样本产生后重新建立；除此之外的累计词元用量、累计费用、原始调用日志、账单明细与对话历史全部完整保留。性能样本自身内含模型标识、词元用量与计时摘要，聚合查询无需回读已过期的 JSONL 日志正文。统计写入器按批次共用单个 SQLite 事务，批次内部单条记录写入失败通过事务保存点（`SAVEPOINT`）局部隔离，整批成功记录的完成水位严格在外部事务正式提交后才推进；可重试的写入失败按原顺序重新入队，不可恢复的硬错误则显式记入统计缺口并终结对应写入票据（ticket）。
 
+每个 Native 会话由一个轻量 `ConversationStore` 统一持有完成集合、当前状态和展示投影。目录只弱注册 Store；读句柄、真实执行绑定和未偿还保存义务持有强引用。执行驱动只在有效绑定期间借用投影，退出后保留的原交接批次仍归 Store 和原可靠通道，页面关闭不撤销保存责任。所有真实引用及保存义务均释放后自然回收，不设强缓存或定时清扫。
+
+保存 writer 初始化后，观察驱动即可借用同一真实绑定恢复投影；它不等待 Core 的存储附加命令，避免该命令的保存屏障反向等待观察驱动。关闭与清理仍须等待原附加操作完成，不能把“writer 已初始化”当作“Core 已附加”的成功回执。
+
+Store 已初始化且真实绑定有效时，普通新 effect 的完成 draft 经过同步内存准入：原批次先被唯一可靠通道接纳，全部冻结、序列化、身份、计数、报告和预算准备成功后，才共同发布完成原件、当前状态与展示结果。正常新完成不逐项查询历史正文；未知外部身份、导入和重放仍走明确的历史验证入口。同批重试复用原 `PreparedEffect` 与 `Arc<ChatItem>`，已落盘 effect 以真实通道水位及回执识别，不因 pending 回收重新分配序号。
+
 完成 Session 从已提交 conversation_items 取得序号上界，在每次完成发布时递增 seq；writer 仅持久化已分配的序号。内部 history_items 的 ordinal/revision 仍归执行投影，消费 Turn 绑定与资源修复不修改冻结完成项。进程重建的读取代次拒绝可能重用 RAM 尾部序号的旧游标，代次与水位留 Rust。
 
 模型传输层透明恢复产生的展示事实随模型所有者的最终调用回执一并持久化（观察契约见 [16](./16-core-contracts.md) §16.3）。引入观察代次扩展不会重写既有时间线条目的身份或历史排序号；早期 `v2` 回执若缺少观察代次与失败子尝试字段，在其生产者迁移边界按该版本约定转换为“首次尝试且无透明恢复记录”，原有回复正文与计费数据保持不变，正常运行只读取转换后的当前回执。任何新增持久化字段均须明确定义缺省值或版本迁移规则，禁止因旧记录缺少新增恢复字段而清空历史库、重置默认配置或回退读取已隔离的旧版本数据根。
 
-完成保存确认只推进成功提交的连续完成前缀并回收对应 pending，不改变历史载荷、不发布内容更新。运行预览留在 Runtime 活动所有者，按各自执行生命周期收束；完成快照不得引用可覆盖的 history_items 正文或临时文件。读取与提交交错的证明归 [26](./26-timeline-content.md)。
+唯一 writer 在真实事务提交后向同一 Store 确认数据库身份、effect 区间与实际完成前缀；该同步确认同时回收对应 pending 和符合条件的展示引用，不改变历史载荷、不发布内容更新。运行预览留在 Runtime 活动所有者，按各自执行生命周期收束；完成快照不得引用可覆盖的 history_items 正文或临时文件。读取与提交交错的证明归 [26](./26-timeline-content.md)。
 
 对于已先行写入 `history_items` 但当时尚未关联具体轮次的独立消息条目，后续模型消费该消息时可使用原条目身份与原 `ordinal` 将其绑定至消费它的轮次（`turn_id`）。若该消息条目的 `ordinal` 小于目标轮次在 `history_turns` 表中已记录的 `first_ordinal`，历史写入器必须在更新该消息条目的同一 SQLite 事务中将 `history_turns.first_ordinal` 向前扩展至该消息的 `ordinal`；除这一合法的消费绑定扩展外，任何轮次的首条序号均禁止被随意改写。
 
 history_input_identities 与内部执行事实同事务保存输入展示属性；可见输入在 history_items 保留执行恢复记录，隐藏续接只保留明确隐藏身份。不能因缺记录猜隐藏，冲突/缺身份按失败关闭。旧标记只在迁移边界回填；普通 reader 不恢复执行。公开完成历史唯一读取 conversation_items，其输入完成项不随后续消费绑定修改。
 
-Studio 产品投影一次准备业务事实与不可变完成项，先在 Session 原子可见，再由同一 PreparedEffect 经原 writer 将完成记录、内容/current、执行事实、checkpoint、上下文和回执合批同事务提交，附件先过 blob fence。不增加第二队列或独立保存计时器；原 writer 合批与 flush 语义见 [15](./15-session-storage.md)，SQLite 同步保证不降低。
+Studio 产品投影一次准备业务事实与不可变完成项，在 Store 的同步边界共同可见，并由同一 PreparedEffect 经原 writer 将完成记录、内容/current、执行事实、checkpoint、上下文和回执合批同事务提交，附件先过 blob fence。不增加第二队列或独立保存计时器；原 writer 合批与 flush 语义见 [15](./15-session-storage.md)，SQLite 同步保证不降低。
 
 history_items、任务、checkpoint、输入身份和工具交付索引保留执行恢复及审查职责；conversation_items 是对外完成历史唯一读模型，不能把内部执行表改成只存完成项。冻结快照的必要重复是不可变语义成本；资源共享以真正不可变为前提。
 
@@ -374,7 +382,7 @@ Thread 的可靠队列、投影驻留、终态交付材料与执行身份索引�
 
 仅对已证明归属、明确采用本地受管执行模式，且原字段精确等于所记录旧受管根的类型化地址进行转换：包括 Thread 的 `workspacePath`、会话清单、产品冻结 WorkspaceIdentity，以及检查点 `studio.project` 的有效执行地址和 `studio.workspace` 回执。相应写入及完整性摘要由各自现有迁移所有者维护，保留稳定 ID、业务 revision、历史水位、账号、授权和关闭事实；检查点转换在其具名历史迁移中完成，不用临时兼容解码绕过。正常激活之前必须已取得一致的新表示，冷历史准备不重放模型或工具。
 
-精确地址比较统一处理 Windows 可安全简化的 `\\?\` 路径表示差异，再按宿主路径组件核对完整记录地址；规划、冻结身份、检查点和执行文件迁移完成标记使用同一规则，写回本次操作记录的目标表示。该比较不访问文件系统，不要求已搬迁的旧根仍然存在，不解析符号链接或接受子目录、其他受管根，也不将不能安全简化的路径视为另一种等价表示；非 Windows 平台不进行 Windows 前缀转换。
+精确地址比较统一处理 Windows 可安全简化的 `\\?\` 前缀与目录分隔符的表示差异，再按宿主路径组件核对完整记录地址；规划、冻结身份、检查点和执行文件迁移完成标记使用同一规则。布局转换写回本次操作记录的目标表示，普通恢复按该规则核对已保存的完成事实。该比较不访问文件系统，不要求已搬迁的旧根仍然存在，不解析符号链接或接受子目录、其他受管根，也不将不能安全简化的路径视为另一种等价表示；非 Windows 平台不进行 Windows 前缀转换。
 
 真实业务项目的 canonical Workspace 路径通常不是机器人受管根，必须原样保留；只有原清单明确表明其就是本次物理搬迁的受管归属时才允许精确映射。原值指向用户业务目录、工作树、任意其他地址或端点身份不一致时，不自动改绑到新根；保留既有事实并明确报告不能安全迁移的执行绑定。历史正文、工具原始输出、供应商不透明状态及提示词中的路径字符串不做替换。后续按需检查点转换所需的源/目标身份映射属于迁移记录，不构成正常执行的旧路径回退。
 
@@ -617,7 +625,7 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 原完成索引保留原记录两个可空 run 列及可见 seq/段 seq 索引，提示由原 typed metadata 经唯一 Native v1 分类还原。完成级 Main/Run 查询继续按这些索引读取；GUI 历史改读冻结展示头，见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
 
-普通工具结果的展示形态升级使用后续具名迁移，仅按 [26](./26-timeline-content.md) 将目标 Single 派生头转换为单成员 Work。迁移保留原 block_id、history_pos、成员 key、来源边界及原件引用，不修改完成原件、原子事实、内容和执行恢复状态；不通过重排或删除已发布块实现合组。独立文件展示等非目标内容保持不变，转换与迁移账本在同一事务提交，失败回滚并保源。
+普通工具结果的展示形态升级使用后续具名迁移，仅按 [26](./26-timeline-content.md) 将目标 Single 派生头转换为单成员 Work。迁移保留原块身份、既有显示顺序和成员 key、来源边界及原件引用，不修改完成原件、原子事实、内容和执行恢复状态；不通过重排或删除已发布块实现合组。独立文件展示等非目标内容保持不变，转换与迁移账本在同一事务提交，失败回滚并保源。
 
 普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
 
@@ -696,7 +704,7 @@ contents 的 owner_key 为带类型通用身份，content_key 不透明，目录
 
 执行激活恢复未终态内容时，原投影 owner 使用同一次安装的 Thread 与 ThreadSnapshot，在处理任何后续可靠 effect 前，将已保存内容、原 generation 和引用归属恢复到供完成冻结读取的同一 current owner。恢复入口返回即满足这一不变量，不能要求调用方先运行一次预览、伪造 effect/start 或重置代次；恢复后首个 effect 直接完成、失败或取消时，仍按原内容身份发布并接受持久化冲突校验。该操作仅属于执行恢复，不扩大被动会话打开的读取范围。
 
-原轻量业务状态保留 active turn、Plan、交互、来源和必要集合引用，不承担展示组装。完成级 ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动；GUI 从 §17.19 读轻量块头和成员引用，execution_present=false。真正开放且无执行 owner 的块显示未恢复；已封存待发布段保持静态观察，不因 history_pos=NULL 显示恢复异常，两者都不伪装运行计时。待决业务状态仍可读和操作。PreparedEffect 同切面捕获可靠检查点、完成材料、边界派生观察及展示增量，唯一 writer 同事务保存，不新增保存队列或逐 token 保存活动正文。
+原轻量业务状态保留 active turn、Plan、交互、来源和必要集合引用，不承担展示组装。完成级 ActivitySnapshot 只驻 RAM，无热 owner 的冷浏览为空活动；GUI 从 §17.19 读轻量块头和成员引用，execution_present=false。真正开放且无执行 owner 的块显示未恢复；已封存待发布段保持静态观察，不因 尚未进入 ready_frontier 的尾部 显示恢复异常，两者都不伪装运行计时。待决业务状态仍可读和操作。PreparedEffect 同切面捕获可靠检查点、完成材料、边界派生观察及展示增量，唯一 writer 同事务保存，不新增保存队列或逐 token 保存活动正文。
 
 ThreadBusinessRefs 不落库：从原 Plan/交互资源投影，热源先建立可读材料再发 State，冷源在同一短事务取得字段和引用。Plan 完整 sealed 文档与交互恢复事实仍由原 writer 保存，缺块/坏引用失败，不借全量 checkpoint 或历史卡片补正文。业务引用只含 Plan 与 interactions，旧 tools/members 活动集合退出业务交付；原输入/收件历史不因新封存入口补写猜测的旧完成项。本补充沿同一次未发布 schema18 迁移保全，不另建引用表或并行迁移。
 
@@ -719,13 +727,15 @@ CREATE TABLE conversation_display_blocks (
     block_id TEXT PRIMARY KEY,
     source_key TEXT NOT NULL,
     block_order INTEGER NOT NULL UNIQUE CHECK(block_order > 0),
-    history_pos INTEGER UNIQUE CHECK(history_pos IS NULL OR history_pos > 0),
     sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
     updated_effect INTEGER NOT NULL,
     header BLOB NOT NULL
 );
 CREATE INDEX conversation_display_open
-    ON conversation_display_blocks(block_order) WHERE history_pos IS NULL;
+    ON conversation_display_blocks(block_order) WHERE sealed=0;
+CREATE UNIQUE INDEX conversation_display_current_work
+    ON conversation_display_blocks((1))
+    WHERE sealed=0 AND json_extract(header,'$.body.kind')='work';
 CREATE TABLE conversation_display_members (
     block_id TEXT NOT NULL,
     member_order INTEGER NOT NULL CHECK(member_order > 0),
@@ -742,19 +752,23 @@ CREATE INDEX conversation_display_unfinished
     ON conversation_display_members(block_id,member_order) WHERE terminal=0;
 ```
 
-以上为当前目标结构；`member_key` 是组内展示记录身份，`association_key` 仅用于当前组关联，不全表唯一。开始/结束事实分别沿原 `conversation_atom_facts` 保存，成员 metadata 持可空双事实引用、轻量状态及类型化内容来源，不保存全组数组、正文、完整 payload 或 ThreadSnapshot。`sealed` 独立于 history_pos 和 terminal；已封存组拒绝一切成员、内容及头更新，允许初次发布 history_pos 与精确重放，不能仅以 terminal 行作写保护。原 history_meta 的 display_published_through/display_applied_effect 复用原库身份和账本，不建 Ready/generation/repair 表。
+以上为现役结构。`member_key` 是组内展示记录身份，`association_key` 仅用于当前组关联，不全表唯一。成员 metadata 保存轻量状态、开始／结束事实引用及类型化内容来源，不保存全组数组、正文或完整 payload。冻结组拒绝后来覆盖，冻结观察即使 terminal=0 也不恢复执行更新资格。`history_meta` 保存同切面的 `display_ready_frontier`、`display_last_order`、`display_applied_effect` 和原保存水位；不建另一张发布位置表。展示回执使用 `studio.display-delta:v3`，旧 v2 原字节保留，不用新头编码比较旧摘要。
 
-PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，后续发布只分配 history_pos。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
+PreparedDisplayDelta 是原 owner 在对应 effect 切面冻结的材料，随原可靠批次提交。开始/终态只更新当前组合格行或新增结束行及小头。边界立即捕获未结束观察的公开状态、参数及 immutable chunk 链，沿原内容 writer 以显示块/行命名空间保存 sealed 派生内容；完成成员继续引用真实原件。它不是第三条事实，不补 finished_at/completion_id，不指向最新 atom 内容；同长度或 generation 不能证明旧前缀。封存组和成员计时也在该 effect 固定，冻结后保持创建位置。token/滚动/图片解码/显示时钟不写展示表。原件、内容、检查点、展示增量与水位同事务，失败整批回滚；重放核对同材料和提交凭据，不查询历史算摘要，不以 OR REPLACE/OR IGNORE 吞冲突。
 
-RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置的派生段，先删除本段成员再删除块；原完成项、来源事实、内容、检查点保留。该处置同 effect 保存和重放，不是 reader 清理，不推进展示历史位置。
+展示预算沿原可靠通道统一计算：当前行和观察内容持续由 Store 计费，准备批次只计自身容器及被替换后仍由原队列保留的未耐久旧版本，避免共享 Arc 重复计费。流式摘要替换产生的旧头计费保留在原 effect 的批次元数据中，随对应提交释放；耐久确认只减少 Store 计费，不为仍可变行临时新增未受理的预算。受理按准备完成后的 Store 规模核算，失败保留原义务，不依赖界面确认。
 
-### 工作组生命周期快照与 history22
+正常路径不删除已接纳块，也不使用 RemoveEmpty。始终空且无附件的正文不建块，曾可见的权威终值变空则保留既有边界并显示 FinalEmptyAfterContent。
 
-当前展示快照直接初始化为 history22、DisplayHeader v4；公共 presentation v5。Work 仅保存可空开始 startedAt、可空封口 finishedAt（Unix 秒）和成员引用，删除组级结果统计、累计活动区间及持久摘要。开始与封口沿原 effect 和唯一 writer 同事务保存，封口后不可变；未完成数与下一成员序号仅承担内部读取恢复职责。
+### 单一展示位置的保全迁移
+
+当前展示索引使用正的 BlockOrder 与独立历史前沿，公共 presentation v6。正式迁移在原事务内把旧已发布块按 history_pos 升序放在前面，再把其余块按旧 block_order 升序接在后面，逐页分配新位置。只重写展示头版本和位置；块／成员身份、关联键、完成 item_id/seq、来源事实和冻结观察字节保留。先复制到事务内临时输出表，再核对身份、原件引用及外键，依次替换 members 和 blocks；不关闭外键校验。元数据、格式版本和 SeaORM 迁移记录成功后一起提交，失败全部回滚。旧展示游标明确失效，原件游标不变，不保留运行时位置转换表。
+
+已完成工作组快照迁移的 history22 是这一迁移的直接输入。显式内容准备先按其原有结构和迁移账本校验，再执行位置升级；缺失必需结构或仍有更早内容步骤待执行时，拒绝并保全原库，不能借升级静默修补损坏。
 
 实时思考摘要是当前开放组的有界内存投影，封口释放，不写快照。实时经过时间为 now−startedAt，包含暂停、闲置、跨重开和隔夜间隔；封口历史为 finishedAt−startedAt。界面计时不写数据库、不触发成员读取或历史重建。
 
-新库直接创建当前表、索引和水位，不运行旧展示快照转换链；旧 history19–21 展示快照在官方迁移事务内升级，保留块、成员和内容引用，并归档原快照字节。旧迁移名称保留在迁移账本中，全部转换只在明确边界执行；缺失的组创建与封口时间保持未知，不从成员耗时推断。history18 及更早的受支持数据先完成原迁移，再按原始完成顺序建立展示引用。迁移失败回滚，不清空原始消息、工具结果或备份。其他原始业务事实和非展示配置仍归其原有所有者，版本及异常边界见 [26.10](./26-timeline-content.md#2610-当前快照格式与旧数据边界)。
+新库沿正式迁移序列建立当前表、索引和水位，空源不回放业务历史；旧 history19–21 展示快照在官方迁移事务内升级，保留块、成员和内容引用，并归档原快照字节。旧迁移名称保留在迁移账本中，全部转换只在明确边界执行；缺失的组创建与封口时间保持未知，不从成员耗时推断。history18 及更早的受支持数据先完成原迁移，再按原始完成顺序建立展示引用。迁移失败回滚，不清空原始消息、工具结果或备份。其他原始业务事实和非展示配置仍归其原有所有者，版本及异常边界见 [26.10](./26-timeline-content.md#2610-当前快照格式与旧数据边界)。
 
 ### 保存停滞阶段与只读隔离
 
@@ -763,3 +777,9 @@ RemoveEmpty 只允许可靠证明无正文无附件、尚未分配历史位置�
 原 HistoryChannel 看门狗覆盖最老未保存队首：尚未 prepared 为 projection_prepare，已准备未提交为 writer_queue，真实 SQL 在途为 sql_commit。复用现役 NO_PROGRESS_WINDOW、HistoryFault::NoProgress、故障代次和 pressure；队列为空不报保存停滞，只有队首前进/真实阶段转换重置单调时钟，普通通知、后来入队和查询不重置。prepared_through 只表示连续准备前缀，不取最大序号掩盖缺口。既有明确 Storage 错误不被覆盖，触发后保留材料、预算、writer 所有权和显式恢复义务，唤醒固定目标等待报错；SQL 未退出不能报告已取消或释放资源。
 
 诊断在原模块 span 记录可获得的 thread/execution/request/generation、stage/单调起点、head/admitted/prepared/durable、flush_target、pending_count/bytes、fault_kind/error_source 和脱敏有限原因链。未知保持 None，不用汇总最小水位或 0 伪造；不新增全局可变监控表、writer、消息总线、队列容量或超时配置。结构修复及确定性交错不等于已定位 Windows 原现场首因，网络等待与本地确认等待分别取证。
+
+## 17.20 更新缓存与安装结果
+
+更新包属于可重建缓存，不写入用户配置或会话库。Windows 沿用 `%LOCALAPPDATA%/anywork/updates`，Linux 使用 `$XDG_CACHE_HOME/anywork/updates`（默认 `~/.cache/anywork/updates`）。普通退出保留包，重新使用必须完整验证长度、SHA-256 与 Minisign。内存 `Ready` 租约不能由缓存路径或安装结果文件恢复。
+
+Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/update-result.json`（默认 `~/.local/state/anywork/update-result.json`），目录仅供当前用户访问。下一次启动接纳并消费该结果，只作为更新状态里的安装错误，不推导包管理器安装成功或可安装包租约；立即检查不抹除该错误。root 暂存目录仅保存已授权本轮安装包，安装事务真实结束且完成点已知时由所属辅助程序清理；PackageKit 丢失或结果未知时保留输入，不将断连视为停止读取。

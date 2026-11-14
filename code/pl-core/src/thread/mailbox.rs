@@ -470,9 +470,9 @@ impl Owner {
                     .get(&caller)
                     .is_some_and(|task| task.status == task::TaskStatus::Running)
                     || self
-                        .task_tokens
-                        .get(&caller)
-                        .is_some_and(CancellationToken::is_cancelled)
+                        .executions
+                        .token(&caller)
+                        .is_some_and(|token| token.is_cancelled())
                 {
                     Err(ThreadError::TaskAccessExpired)
                 } else if !executor.remains_authorized(&self.tools) {

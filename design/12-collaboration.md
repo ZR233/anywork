@@ -81,7 +81,7 @@ effort = "high"
 
 协作继续由现有会话所有者统一裁决，`AgentControlHost` 保留创建、发送、列表、中断与关闭五项操作，`ThreadAgentControl` 只负责 Native 工具适配；不增加平行协调服务、通用命令总线或后端注册框架。
 
-Native 与 ACP 适配共用同一协作所有者。ACP 的宿主 MCP 工具使用 `anywork_` 前缀，工具集合、HTTP/stdio 传输选择、实例与提示词边界见 [28.12](./28-acp.md#2812-host-mcp-与宿主指令)。Profile 与模型选择查询从同一已发布目录派生；自动选模仅适用于 Native child，ACP Profile 始终校验当前用户级定义。ACP 不接受 Native 模型覆盖、`writablePaths`、structured review 或 Native workflow，ACP 父也不主持依赖 Native 父执行上下文的 review/自动返修。ACP v1 的基础 stdio MCP 不要求公告 HTTP 能力，普通 child 也不获得递归派发权限。创建回执的 `model` 和发送回执的 `sequence` 对 ACP 省略，不能伪造 Native 路由或持久接受序号。
+Native 与 ACP 适配共用同一协作所有者。ACP 的宿主 MCP 工具使用 `anywork_` 前缀，工具集合、HTTP/stdio 传输选择、实例与提示词边界见 [28.12](./28-acp.md#2812-host-mcp-与宿主指令)。同一 Host MCP 还按原能力提供普通会话的工作区工具；SSH child 的 ACP 仍在宿主运行，业务工具冻结其原工作区执行绑定，不在远程启动第二代理。Profile 与模型选择查询从同一已发布目录派生；自动选模仅适用于 Native child，ACP Profile 始终校验当前用户级定义。ACP 不接受 Native 模型覆盖、`writablePaths`、structured review 或 Native workflow，ACP 父也不主持依赖 Native 父执行上下文的 review/自动返修。ACP v1 的基础 stdio MCP 不要求公告 HTTP 能力，普通 child 也不获得递归派发权限。创建回执的 `model` 和发送回执的 `sequence` 对 ACP 省略，不能伪造 Native 路由或持久接受序号。
 
 - **可信调用上下文**：`AgentCallContext` 是不支持反序列化的进程内值，只携带调用成员 `AgentId`、宿主可信 `call_id` 与本次调用的取消令牌。会话由已绑定的所有者确定，默认 `ThreadId` 从 `AgentThreadIdentity` 解析，不接受模型指定调用者身份。Native 适配器先核验冻结工具绑定、本次成员实例及实际 `CallContext`，再转换为业务上下文；同名成员重新物化不能使旧工具绑定重新取得资格。调用取消不成为已发布 child 的生命周期令牌。
 - **成员关系与操作资格分开**：根成员、直接 child、后代与同会话判定只使用目录提交的 `session_id / agent_id / parent_agent_id / thread_id`；驻留实例引用这些冻结事实，冷成员沿原目录读取，不启动执行或扫描历史。Native `parent_id` 或快照不能作为公共关系算法的回退。准备期预约仍由原所有者登记并计入容量；已发布、关闭中、永久显式关闭及实例代次资格沿原准入边界裁决，不能以“正在执行”证明成员归属。
@@ -178,7 +178,9 @@ ACP 报告的持久消息身份和 cursor 使用每次实例新建的 UUID 代�
 
 子工作树准入只统计 staged、unstaged、untracked 待提交内容，Git 正常 ignored 内容不构成拒绝条件；这与独立 Recovery 安全清理保护 ignored 内容是不同策略，不能共用一个不区分用途的“脏”判据。准入失败不得准备工作树池或发布 child；通过准入后的工作树创建也不新建或改写忽略规则以掩盖修改，受管父目录创建复用现有文件后端。已有 SessionFiles 的独立布局职责不因此改为工作树准入的一部分。
 
-创建错误的“可能有副作用”仅表示结果未决，不证明当前路径中的现场由本次调用新建。未发布资源仍由原准备所有者承担保存、真实退出和责任归还；无法证明物理现场归属时保留并报告，不自动接管、重建或删除，也不以分支存在性预检补造所有权。
+SSH 工作树的文件访问与 Git 命令在执行边界共用远端 POSIX 路径规范化，覆盖父目录准备、创建、核验与清理；Windows 宿主拼接产生的分隔符不得直接交给 Linux 解释。本地路径继续遵循本地平台语义。
+
+创建错误的“可能有副作用”仅表示结果未决，不证明当前路径中的现场由本次调用新建。未发布资源仍由原准备所有者承担保存、真实退出和责任归还；无法证明物理现场归属时保留并报告，不自动接管、重建或删除，也不以分支存在性预检补造所有权。创建失败沿原类型化错误链报告实际操作、错误分类与安全原因，不以固定的权限或磁盘提示遮蔽具体失败，也不向界面透传未经脱敏的 Git 输出。
 
 ### 归档与独立恢复清理
 

@@ -4104,6 +4104,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4151,6 +4152,7 @@ dependencies = [
  "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
+ "pl-tool",
  "reqwest",
  "sea-orm",
  "serde",
@@ -4283,6 +4285,7 @@ dependencies = [
  "tokio-util",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "version-migrate",
@@ -4337,6 +4340,7 @@ dependencies = [
 name = "pl-studio-update"
 version = "0.1.0"
 dependencies = [
+ "dirs 7.0.0",
  "downlowd",
  "fs4",
  "futures",
@@ -4344,6 +4348,7 @@ dependencies = [
  "minisign-verify",
  "pl-remote-helper",
  "reqwest",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
@@ -4352,7 +4357,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
+ "zbus",
 ]
 
 [[package]]

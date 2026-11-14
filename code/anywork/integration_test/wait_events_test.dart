@@ -26,6 +26,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:path/path.dart' as p;
 
 import 'support/timeline_observation.dart';
 import 'support/presentation_capture.dart';
@@ -85,9 +86,10 @@ void main() {
       final directory =
           Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS'];
       if (directory != null && directory.isNotEmpty) {
-        await File('$directory/wait-events-captures.json').writeAsString(
-          '${const JsonEncoder.withIndent('  ').convert(captureReport)}\n',
-        );
+        await File(p.join(directory, 'wait-events-captures.json'))
+            .writeAsString(
+              '${const JsonEncoder.withIndent('  ').convert(captureReport)}\n',
+            );
       }
     }
   });
@@ -145,7 +147,9 @@ void main() {
     );
     captureReport['nativeWindow'] = await configurePresentationWindow(tester);
     trace.snapshot(tester, name, 'before-open-project');
-    await graph.client.directoryCommands.openProject('$projectRoot/$name');
+    await graph.client.directoryCommands.openProject(
+      p.join(projectRoot!, name),
+    );
     trace.snapshot(tester, name, 'after-open-project');
     return _Scene(tester, graph, name, captureReport, trace);
   }

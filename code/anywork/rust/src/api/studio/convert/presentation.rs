@@ -83,7 +83,7 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
 pub(crate) fn live_window(value: protocol::LiveDisplayWindow) -> BridgeLiveDisplayWindow {
     BridgeLiveDisplayWindow {
         revision: value.revision,
-        history_through: value.history_through,
+        ready_frontier: value.ready_frontier,
         execution_present: value.execution_present,
         current_work_id: value.current_work_id,
         blocks: value
@@ -116,13 +116,13 @@ pub(crate) fn batch(value: protocol::TimelineBatch) -> Result<BridgeTimelineBatc
             .into_iter()
             .map(|block| BridgeDisplayBlock {
                 id: block.id,
-                history_pos: block.history_pos,
+                block_order: block.block_order,
                 body: body(block.body),
             })
             .collect(),
         before: value.before,
-        from_pos: value.from_pos,
-        through_pos: value.through_pos,
+        from_order: value.from_order,
+        through_order: value.through_order,
         live: value.live.map(live_window),
     })
 }
@@ -172,12 +172,12 @@ mod tests {
             placement: protocol::ChatPlacement::Append,
             blocks: vec![protocol::DisplayBlock {
                 id: "work".into(),
-                history_pos: 4,
+                block_order: 4,
                 body: work(),
             }],
             before: None,
-            from_pos: Some(3),
-            through_pos: 4,
+            from_order: Some(3),
+            through_order: 4,
             live: None,
         }
     }
@@ -186,9 +186,9 @@ mod tests {
     fn split_handoff_preserves_absent_live_and_presentation_positions() {
         let mapped = batch(cut()).unwrap();
         assert_eq!(mapped.placement, BridgeChatPlacement::Append);
-        assert_eq!(mapped.from_pos, Some(3));
-        assert_eq!(mapped.through_pos, 4);
-        assert_eq!(mapped.blocks[0].history_pos, 4);
+        assert_eq!(mapped.from_order, Some(3));
+        assert_eq!(mapped.through_order, 4);
+        assert_eq!(mapped.blocks[0].block_order, 4);
         let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.blocks[0].body else {
             panic!("expected Work");
         };
@@ -198,10 +198,10 @@ mod tests {
 
         let mut live_only = cut();
         live_only.blocks.clear();
-        live_only.from_pos = Some(4);
+        live_only.from_order = Some(4);
         live_only.live = Some(protocol::LiveDisplayWindow {
             revision: 8,
-            history_through: 4,
+            ready_frontier: 4,
             execution_present: false,
             current_work_id: None,
             blocks: vec![protocol::LiveDisplayBlock {
@@ -238,7 +238,7 @@ mod tests {
     fn live_source_preserves_unknown_and_independent_ownership() {
         let mut window = protocol::LiveDisplayWindow {
             revision: 1,
-            history_through: 0,
+            ready_frontier: 0,
             execution_present: false,
             current_work_id: Some("not-an-encoded-turn".into()),
             blocks: vec![protocol::LiveDisplayBlock {

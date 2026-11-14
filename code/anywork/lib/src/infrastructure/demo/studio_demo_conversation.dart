@@ -547,7 +547,9 @@ final class _DemoHistory {
   String? displayCurrentWorkId;
   int displayRevision = 0;
   bool displayExecutionPresent = false;
-  int get displayHead => displayBlocks.lastOrNull?.historyPos ?? 0;
+  int displayLastOrder = 0;
+  int displayReadyFrontier = 0;
+  int get displayHead => displayReadyFrontier;
   // Original completion consumers retain their own ordered envelopes and Run
   // fixtures. GUI display positions and grouping are declared separately above.
   final List<CompletedEntry> displayItems = [];
@@ -1607,7 +1609,7 @@ class _DemoConversationFeed implements ConversationFeed {
         _phase = 1;
         if (timeline) {
           final batch = _initialTimeline!;
-          _displayThrough = batch.throughPos;
+          _displayThrough = batch.throughOrder;
           _displayRevision = batch.live!.revision;
           _send(ConversationTimelineEvent(batch: batch));
           _initialTimeline = null;
@@ -1629,7 +1631,7 @@ class _DemoConversationFeed implements ConversationFeed {
             _displayRevision != _history.displayRevision) {
           final target = _displayTarget ??= reader.timelineTarget(_demand);
           final batch = reader.timelineAppend(_demand, _displayThrough, target);
-          _displayThrough = batch.throughPos;
+          _displayThrough = batch.throughOrder;
           if (batch.live != null) {
             _displayRevision = batch.live!.revision;
             _displayTarget = null;

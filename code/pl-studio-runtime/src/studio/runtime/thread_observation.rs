@@ -9,7 +9,7 @@
 //! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
 mod billing;
 mod directory;
-mod publication;
+pub(in crate::studio) mod publication;
 mod reports;
 mod slot;
 pub(super) use publication::{ConversationRegistration, ConversationSource};
@@ -176,7 +176,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     last_turn: watch::Sender<Option<Arc<pl_protocol::Turn>>>,
     /// Latest shared current content, never a queue of deltas. Subscribers derive their own bounded
     /// increments from these canonical blocks, so coalescing a wakeup cannot drop text.
-    conversation: publication::ConversationPublication,
+    conversation: Mutex<Arc<publication::ConversationPublication>>,
     /// Borrowed from this owner's original retained progress, including failures before publication.
     owner_progress: watch::Receiver<Progress>,
     #[cfg(test)]
@@ -184,15 +184,33 @@ pub(in crate::studio) struct ThreadLiveFeed {
     latest_runtime: Mutex<Option<RuntimeStateCut>>,
     /// Original State activity event retained for subscribers opening after its broadcast.
     latest_activity: Mutex<Option<StateActivityCut>>,
+    /// 现役 State 协议的通知去重，不拥有业务内容或读取资格。
+    latest_business_refs: Mutex<Option<pl_protocol::ThreadBusinessRefs>>,
 }
 
 impl ThreadLiveFeed {
+    fn publication(&self) -> Arc<publication::ConversationPublication> {
+        self.conversation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub(in crate::studio::runtime) fn bind_conversation(
+        &self,
+        store: &crate::studio::conversation_store::ConversationStore,
+    ) {
+        *self
+            .conversation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = store.publication.clone();
+    }
+
     #[cfg(test)]
     pub(in crate::studio) fn bind_test_presentation(
         &self,
         handle: crate::studio::thread_projection::presentation::PresentationHandle,
     ) {
-        self.conversation.bind_presentation(handle);
+        self.publication().bind_presentation(handle);
     }
     pub(super) fn is_delivery_closed(&self) -> bool {
         self.delivery_closed.is_cancelled()
@@ -243,19 +261,25 @@ impl ThreadLiveFeed {
         current: Arc<crate::studio::thread_projection::CurrentState>,
     ) -> Result<()> {
         let references = current.business_refs();
-        let changed = self
-            .current_conversation()
-            .is_none_or(|previous| previous.current.business_refs() != references);
         let sequence = current.projection().source_effect_seq;
         // Install the resource owner before its reference can enter State.
-        self.conversation.publish(session, current)?;
-        if changed {
+        self.publication().publish(session, current)?;
+        self.publish_business_refs(sequence, references);
+        Ok(())
+    }
+
+    fn publish_business_refs(&self, sequence: u64, references: pl_protocol::ThreadBusinessRefs) {
+        let mut previous = self
+            .latest_business_refs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if previous.as_ref() != Some(&references) {
+            *previous = Some(references.clone());
             self.publish(|| ThreadLiveEvent::BusinessRefs {
                 sequence,
                 references,
             });
         }
-        Ok(())
     }
 
     pub(super) fn new(
@@ -267,7 +291,7 @@ impl ThreadLiveFeed {
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
-            conversation: publication::ConversationPublication::new(),
+            conversation: Mutex::new(Arc::new(publication::ConversationPublication::new())),
             delivery_closed,
             events,
             storage,
@@ -277,17 +301,19 @@ impl ThreadLiveFeed {
             first_open_wait: Default::default(),
             latest_runtime: Default::default(),
             latest_activity: Default::default(),
+            latest_business_refs: Default::default(),
         }
     }
 
     pub(super) fn conversation(&self) -> ConversationRegistration {
-        self.conversation.capture(self.owner_progress.clone())
+        self.publication().capture(self.owner_progress.clone())
     }
     pub(super) fn current_conversation(&self) -> Option<Arc<ConversationSource>> {
-        self.conversation.current()
+        self.publication().current()
     }
+    #[cfg(test)]
     pub(super) fn content_changes(&self) -> watch::Receiver<u64> {
-        self.conversation.content_changes()
+        self.publication().content_changes()
     }
 
     pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
@@ -543,6 +569,7 @@ pub(super) struct ObservationServices {
     pub(super) performance: ModelPerformanceOwner,
     pub(super) sessions: crate::session::WeakSessionTable,
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    pub(super) run_export: Option<std::sync::Arc<super::run_export::RunExportCoordinator>>,
 }
 impl ObservationServices {
     fn session_of(&self, id: &str) -> Option<crate::session::SessionRuntime> {
@@ -631,6 +658,10 @@ impl ThreadObservations {
     /// responsibility continues independently of an idle external receiver.
     pub(super) fn close_deliveries(&self) {
         self.0.delivery_closed.cancel();
+    }
+
+    pub(super) fn read_lifetime(&self) -> tokio_util::sync::CancellationToken {
+        self.0.delivery_closed.clone()
     }
 
     fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
@@ -1073,6 +1104,19 @@ impl ThreadObservations {
     }
 
     pub(super) async fn finish(&self) -> Result<()> {
+        // 执行实例更换保留内容资格；整个运行时结束则封闭旧资格并等待在途读取。
+        self.close_deliveries();
+        let slots = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for slot in slots {
+            slot.close_readers().await?;
+        }
         self.synchronize(None).await?;
         let observations = self
             .observations(None)
@@ -1116,13 +1160,48 @@ impl StudioRuntime {
     }
 }
 
-/// The single realtime projection owner of one Thread.
+/// 同一稳定 Store 的串行执行驱动；借用投影，退出时将原批次归还 Store。
 ///
 /// It lives in the Thread's observation worker, so a GUI opening and closing never changes who
 /// projects or who publishes content: every committed effect is projected exactly once into the
 /// shared chat session, and its typed changes are broadcast to whichever subscribers exist. The same
 /// batch is handed to the Thread's reliable admission channel, so the history writer commits the
 /// content this owner published instead of projecting the effect a second time.
+/// Store 保留投影和至多一个原交接批次；执行驱动仅在租约期间借用它。
+pub(in crate::studio) struct RetainedProjection {
+    pub(in crate::studio) projection: LiveProjection,
+    pub(in crate::studio) pending: Option<PendingHandoff>,
+    pub(in crate::studio) baseline: Option<Arc<crate::studio::thread_projection::CurrentState>>,
+    usage: UsageSummary,
+}
+
+struct ProjectionLease {
+    store: Arc<crate::studio::conversation_store::ConversationStore>,
+    value: Option<RetainedProjection>,
+}
+impl ProjectionLease {
+    fn claim(store: Arc<crate::studio::conversation_store::ConversationStore>) -> Result<Self> {
+        let value = store.take_projection()?;
+        Ok(Self { store, value })
+    }
+}
+impl std::ops::Deref for ProjectionLease {
+    type Target = RetainedProjection;
+    fn deref(&self) -> &Self::Target {
+        self.value.as_ref().expect("initialized projection lease")
+    }
+}
+impl std::ops::DerefMut for ProjectionLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.value.as_mut().expect("initialized projection lease")
+    }
+}
+impl Drop for ProjectionLease {
+    fn drop(&mut self) {
+        self.store.retain_projection(self.value.take());
+    }
+}
+
 struct LiveOwner {
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
@@ -1132,7 +1211,8 @@ struct LiveOwner {
     first_send: bool,
     config: crate::config::ConfigRuntime,
     qualification_revision: u64,
-    projection: LiveProjection,
+    retained: ProjectionLease,
+    binding: Option<Arc<crate::studio::ThreadStorageBinding>>,
     /// The Thread's only activity projection: the same owner derives it from the snapshot it just
     /// published, so activity never becomes a second fact source and never reads SQL.
     /// Last activity already broadcast, so an unchanged projection does not produce a frame.
@@ -1149,11 +1229,9 @@ struct LiveOwner {
     channel: Arc<HistoryChannel>,
     chat: Session,
     thread: pl_protocol::Thread,
-    usage: UsageSummary,
     feed: Arc<ThreadLiveFeed>,
     /// The one committed batch this owner prepared but has not handed to the writer yet; see
     /// [`PendingHandoff`].
-    pending: Option<PendingHandoff>,
     #[cfg(test)]
     pending_hook: PendingHookSlot,
 }
@@ -1176,9 +1254,10 @@ enum HandoffMode {
 /// content the writer will commit. Retaining it closes the window between the report preparation
 /// and the handoff — a failure, a cancelled wait or an explicit retry re-enters this same batch
 /// instead of projecting the same commit a second time and bumping its content revisions.
-struct PendingHandoff {
-    write: Arc<ThreadWrite>,
-    prepared: Arc<crate::studio::thread_projection::PreparedEffect>,
+pub(in crate::studio) struct PendingHandoff {
+    pub(in crate::studio) write: Arc<ThreadWrite>,
+    pub(in crate::studio) prepared: Arc<crate::studio::thread_projection::PreparedEffect>,
+    pub(in crate::studio) admitted: bool,
     /// Managed terminal delivery prepared from the same frozen report, still owned here until the
     /// reliable channel accepts this batch (or proves the same sequence already durable).
     terminal: Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>,
@@ -1189,6 +1268,10 @@ struct PendingHandoff {
 }
 
 impl PendingHandoff {
+    pub(in crate::studio) fn publishes_current(&self) -> bool {
+        self.mode == HandoffMode::Live
+    }
+
     /// Retained size of the prepared content while its owner still owes the handoff.
     ///
     /// The same measurement the reliable channel charges when it takes the batch over, so the
@@ -1202,7 +1285,7 @@ impl PendingHandoff {
     }
 
     /// Delivery changes owned here in addition to the shared prepared batch.
-    fn extra_retained_bytes(&self) -> u64 {
+    pub(in crate::studio) fn extra_retained_bytes(&self) -> u64 {
         // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
         // the one implementation the writer shares); the delivery changes are this owner's own
         // residents and are charged element by element.
@@ -1235,7 +1318,7 @@ impl PendingHandoff {
         feed: &ThreadLiveFeed,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let sequence = self.prepared.sequence;
-        if !channel.prepare(Arc::clone(&self.prepared)) {
+        if !self.admitted && !channel.prepare(Arc::clone(&self.prepared)) {
             anyhow::bail!("reliable channel refused the handoff of live Thread commit {sequence}");
         }
         // Only the prepared content is authoritative for the terminal fact — never the optional
@@ -1314,7 +1397,25 @@ impl LiveOwner {
     ) -> Result<Self> {
         let channel = state.channel.clone();
         let id = thread.id.as_str();
-        let chat = projector.store.chat_session(id).await?;
+        let conversation = projector.store.conversation_store(id).await?;
+        let chat = conversation.session().clone();
+        #[cfg(not(test))]
+        let binding = projector
+            .session_of(id)
+            .map(|session| session.projection_storage_binding(id))
+            .transpose()?
+            .flatten();
+        #[cfg(test)]
+        let binding = projector
+            .session_of(id)
+            .and_then(|session| session.projection_storage_binding(id).ok())
+            .flatten();
+        #[cfg(not(test))]
+        anyhow::ensure!(binding.is_some(), "execution has no storage binding");
+        if let Some(binding) = &binding {
+            conversation.attach_execution(binding).await?;
+        }
+        feed.bind_conversation(&conversation);
         let history = projector.store.history(id).await?;
         let database_id = history
             .conversation_database_id()
@@ -1332,16 +1433,59 @@ impl LiveOwner {
         let usage = live_usage(projector, id, snapshot);
         // Seed the bounded active slice once. The channel owns allocation continuity; only a
         // retired identity referenced by a late reliable fact needs an exact durable lookup.
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history)?;
-        projection.bind_conversation_identity(database_id)?;
-        feed.conversation
-            .bind_presentation(projection.presentation());
-        let retained = handle.effects().await?;
-        let (seed_items, hidden) =
-            cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;
-        projection.seed(seed_items, hidden);
-        projection.restore_current(&chat, &thread, snapshot).await?;
+        let effects = handle.effects().await?;
+        conversation
+            .initialize_projection(Arc::new({
+                let store = projector.store.clone();
+                let channel = channel.clone();
+                let thread = thread.clone();
+                let snapshot = snapshot.clone();
+                let chat = chat.clone();
+                let usage = usage.clone();
+                move || {
+                    let (
+                        store,
+                        channel,
+                        thread,
+                        snapshot,
+                        chat,
+                        usage,
+                        effects,
+                        database_id,
+                        history,
+                    ) = (
+                        store.clone(),
+                        channel.clone(),
+                        thread.clone(),
+                        snapshot.clone(),
+                        chat.clone(),
+                        usage.clone(),
+                        effects.clone(),
+                        database_id.clone(),
+                        history.clone(),
+                    );
+                    Box::pin(async move {
+                        let mut projection = LiveProjection::new();
+                        projection.bind_execution_history(channel.order_index(), history)?;
+                        projection.bind_conversation_identity(database_id)?;
+                        let (seed_items, hidden) =
+                            cold_seed(&store, &thread, &snapshot, &channel, &effects).await?;
+                        projection.seed(seed_items, hidden);
+                        projection
+                            .restore_current(&chat, &thread, &snapshot)
+                            .await?;
+                        let baseline = projection.current_state();
+                        Ok(RetainedProjection {
+                            projection,
+                            pending: None,
+                            baseline,
+                            usage,
+                        })
+                    })
+                }
+            }))
+            .await?;
+        let retained = ProjectionLease::claim(conversation.clone())?;
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1381,7 +1525,8 @@ impl LiveOwner {
             first_send: state.observed_before_execution,
             config: projector.config.clone(),
             qualification_revision: catalog.revision,
-            projection,
+            retained,
+            binding,
             activity_published,
             runtime_published,
             model_route_published,
@@ -1389,9 +1534,7 @@ impl LiveOwner {
             channel,
             chat,
             thread,
-            usage,
             feed,
-            pending: None,
             #[cfg(test)]
             pending_hook: state.pending_hook_slot(),
         };
@@ -1435,18 +1578,17 @@ impl LiveOwner {
     fn retention(&self) -> ProjectionRetention {
         // The activity summary and its bounded resident detail are resident facts of the same owner,
         // so they belong to the same Thread budget instead of living outside it.
-        let mut bytes = self.projection.retained_bytes();
+        let mut bytes = self.retained.projection.retained_bytes();
         // The pending handoff batch is real resident product content this owner still holds. It is
         // charged here — under the same Thread budget — until the reliable channel takes it over;
         // the queue's own `ThreadWrite` Arc is the very object admission already charged, so only
         // the prepared content is added and no body is counted twice in steady state.
-        let pending = self.pending.as_ref().map(|pending| {
-            let prepared_bytes = pending.prepared.retained_bytes();
+        let pending = self.retained.pending.as_ref().and_then(|pending| {
             bytes = bytes.saturating_add(pending.extra_retained_bytes());
-            PendingProjectionRetention {
+            (!pending.admitted).then(|| PendingProjectionRetention {
                 sequence: pending.prepared.sequence,
-                prepared_bytes,
-            }
+                prepared_bytes: pending.prepared.retained_bytes(),
+            })
         });
         ProjectionRetention {
             resident_bytes: bytes,
@@ -1498,14 +1640,14 @@ impl LiveOwner {
         }
         let history = services.store.history(thread_id).await?;
         crate::studio::thread_projection::seed_repaired_targets(
-            &mut self.projection,
+            &mut self.retained.projection,
             &history,
             &write.effect,
         )
         .await
         .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
         crate::studio::thread_projection::seed_interaction_targets(
-            &mut self.projection,
+            &mut self.retained.projection,
             thread_id,
             &history,
             &write.effect,
@@ -1523,7 +1665,7 @@ impl LiveOwner {
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let effect = &write.effect;
         anyhow::ensure!(
-            self.pending.is_none(),
+            self.retained.pending.is_none(),
             "a retained handoff must finish before projecting another effect"
         );
         // A receiver may register while this effect is being prepared or retained before handoff.
@@ -1531,6 +1673,7 @@ impl LiveOwner {
         // only the outward envelope is optional. Otherwise that receiver loses a reliable commit.
         let started = std::time::Instant::now();
         let projected = self
+            .retained
             .projection
             .prepare(&self.thread, effect, &write.checkpoint.state, true)
             .await;
@@ -1547,20 +1690,21 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
-        prepared.accounting.fold_into(&mut self.usage);
+        prepared.accounting.fold_into(&mut self.retained.usage);
         // The folded commit is already resident in the shared session, so this owner retains the
         // whole handoff — the original write, the prepared batch, the delivery decision it made and
         // its mode — before the first await of the parent-report preparation. A failure, a
         // cancellation or a retry inside that window re-enters the same retained batch instead of
         // projecting the commit a second time, which would bump content revisions for the same fact.
-        if let Some(pending) = self.pending.as_ref() {
+        if let Some(pending) = self.retained.pending.as_ref() {
             anyhow::bail!(
                 "live projection still owes the handoff of commit {} before projecting commit {}",
                 pending.write.effect.sequence,
                 effect.sequence
             );
         }
-        self.pending = Some(PendingHandoff {
+        self.retained.pending = Some(PendingHandoff {
+            admitted: false,
             write: Arc::clone(write),
             prepared,
             terminal: None,
@@ -1585,56 +1729,53 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
-        // Publication may wait on either execution history or the completion Session's
-        // history port. Its original drafts and every projected body already belong
-        // to this charged slot, including when an earlier attempt failed or was cancelled.
+        // 原批次先保留，全部可失败准备先完成；发布与可靠交接只推进同一冻结批次。
         self.publish_retained()?;
-        if let Some(pending) = self.pending.as_mut() {
-            let started = std::time::Instant::now();
-            let result = self
-                .projection
-                .publish_prepared(&self.chat, &mut pending.prepared)
-                .await;
-            tracing::debug!(
-                target: "conversation_work",
-                thread_id = self.thread.id,
-                source_effect_seq = pending.prepared.sequence,
-                completion_publication_elapsed_us = started.elapsed().as_micros() as u64,
-                success = result.is_ok(),
-                "completion publication finished"
-            );
-            result?;
-        }
-        // Charge the original frozen completion batch before publishing its
-        // latest activity boundary. Slow readers do not reserve execution capacity.
-        self.publish_retained()?;
-        if let Some(pending) = self.pending.as_mut()
-            && let Some(current) = pending.prepared.current_state.as_ref()
-        {
-            // A behind transfer still owes its original durable facts, not a new
-            // publication right. In particular it may precede an already exposed
-            // resident collection cut from the very same effect.
-            if pending.mode == HandoffMode::Live {
-                self.feed
-                    .publish_conversation(&self.chat, current.clone())?;
-                tracing::debug!(
-                    target: "conversation_work",
-                    thread_id = self.thread.id,
-                    source_effect_seq = pending.prepared.sequence,
-                    "conversation feed published"
+        self.prepare_parent_report(services).await?;
+        self.prepare_terminal_delivery(services)?;
+        self.prepare_handoff(services)?;
+        if let Some(binding) = &self.binding {
+            let prepared =
+                binding
+                    .conversation
+                    .admit_prepared(binding, &self.channel, &mut self.retained)?;
+            if self
+                .retained
+                .pending
+                .as_ref()
+                .is_some_and(PendingHandoff::publishes_current)
+            {
+                self.feed.publish_business_refs(
+                    prepared.sequence,
+                    crate::studio::thread_projection::project_business_refs(
+                        prepared.current.projection(),
+                    ),
                 );
             }
-            let prepared = Arc::get_mut(&mut pending.prepared)
-                .context("prepared effect is shared before its reliable handoff")?;
-            prepared.current_state = None;
+        }
+        #[cfg(test)]
+        if self.binding.is_none() {
+            let retained = &mut *self.retained;
+            if let Some(pending) = retained.pending.as_mut() {
+                retained
+                    .projection
+                    .publish_prepared(&self.chat, &mut pending.prepared)
+                    .await?;
+                if let Some(current) = Arc::make_mut(&mut pending.prepared).current_state.take()
+                    && pending.publishes_current()
+                {
+                    self.feed.publish_conversation(&self.chat, current)?;
+                }
+            }
         }
         self.publish_retained()?;
         // Test-only fault boundary: a fault test that installed a hook parks the real batch right
-        // after its retention and before the report preparation, and may fail it once. Production
+        // after its validated publication and before outward handover, and may fail it once. Production
         // builds (and owners without a hook) pass straight through.
         #[cfg(test)]
         if let Some((hook, sequence)) = self.pending_hook.as_ref().zip(
-            self.pending
+            self.retained
+                .pending
                 .as_ref()
                 .map(|pending| pending.write.effect.sequence),
         ) {
@@ -1665,16 +1806,18 @@ impl LiveOwner {
                 }
             }
         }
-        self.prepare_parent_report(services).await?;
-        self.prepare_terminal_delivery(services)?;
-        if let Some(pending) = &self.pending
-            && pending.mode == HandoffMode::Live
+        if let (Some(exporter), Some(pending)) = (&services.run_export, &self.retained.pending)
+            && (pending.mode == HandoffMode::Live
+                || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))
         {
-            billing::record(
-                &services.performance,
-                &self.thread.root_thread_id,
+            Box::pin(exporter.admit_live_handoff(
+                &self.thread.id,
                 &pending.prepared.accounting,
-            )?;
+                &self.retained.usage,
+                &self.chat,
+                self.retained.projection.conversation_database_id(),
+            ))
+            .await;
         }
         self.handover_pending(services)
     }
@@ -1685,7 +1828,7 @@ impl LiveOwner {
     /// refuse the batch, this pending slot remains its sole owner. That prevents the next worker pass
     /// from starting delivery before the reliable handoff and keeps cancellation/retry on one batch.
     fn prepare_terminal_delivery(&mut self, services: &ObservationServices) -> Result<()> {
-        let Some(pending) = self.pending.as_ref() else {
+        let Some(pending) = self.retained.pending.as_ref() else {
             return Ok(());
         };
         if pending.terminal.is_some() {
@@ -1698,6 +1841,7 @@ impl LiveOwner {
         // qualification; the retained batch cannot change during these synchronous borrows.
         let before = self.retention();
         let pending = self
+            .retained
             .pending
             .as_mut()
             .expect("terminal batch was checked above");
@@ -1765,19 +1909,9 @@ impl LiveOwner {
         Ok(())
     }
 
-    /// Hands the retained batch to the reliable channel, or keeps it fully retained.
-    ///
-    /// Nothing in here awaits: the channel's decision, the terminal and realtime publications, the
-    /// slot release and the budget update form one boundary, so the batch is either still this
-    /// owner's responsibility with an explicit refusal, or handed over with its facts published
-    /// exactly once. `prepare` accepting is the explicit handoff, not a durability confirmation —
-    /// durability remains the writer's own watermark.
-    fn handover_pending(
-        &mut self,
-        services: &ObservationServices,
-    ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
-        let Some(pending) = self.pending.as_ref() else {
-            return Ok(None);
+    fn prepare_handoff(&self, services: &ObservationServices) -> Result<()> {
+        let Some(pending) = &self.retained.pending else {
+            return Ok(());
         };
         if pending.mode == HandoffMode::Live
             && crate::studio::thread_projection::prepared_terminal_turn(&pending.prepared).is_some()
@@ -1795,6 +1929,30 @@ impl LiveOwner {
                 snapshot,
             )?;
         }
+        if pending.mode == HandoffMode::Live {
+            billing::record(
+                &services.performance,
+                &self.thread.root_thread_id,
+                &pending.prepared.accounting,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Hands the retained batch to the reliable channel, or keeps it fully retained.
+    ///
+    /// Nothing in here awaits: the channel's decision, the terminal and realtime publications, the
+    /// slot release and the budget update form one boundary, so the batch is either still this
+    /// owner's responsibility with an explicit refusal, or handed over with its facts published
+    /// exactly once. `prepare` accepting is the explicit handoff, not a durability confirmation —
+    /// durability remains the writer's own watermark.
+    fn handover_pending(
+        &mut self,
+        _services: &ObservationServices,
+    ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
+        let Some(pending) = self.retained.pending.as_ref() else {
+            return Ok(None);
+        };
         let sequence = pending.prepared.sequence;
         let handed_over = pending.hand_over(&self.channel, &self.feed);
         let report = match handed_over {
@@ -1806,6 +1964,7 @@ impl LiveOwner {
                     return Err(error);
                 }
                 if let Some(terminal) = self
+                    .retained
                     .pending
                     .as_mut()
                     .and_then(|pending| pending.terminal.as_mut())
@@ -1822,6 +1981,7 @@ impl LiveOwner {
             }
         };
         let terminal = self
+            .retained
             .pending
             .as_mut()
             .and_then(|pending| pending.terminal.take());
@@ -1830,13 +1990,13 @@ impl LiveOwner {
                 .terminal_transfer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            anyhow::ensure!(
+            assert!(
                 transfer.is_none(),
-                "terminal responsibility has not been handed over"
+                "terminal responsibility was validated before admission"
             );
             *transfer = Some(terminal);
         }
-        self.pending = None;
+        self.retained.pending = None;
         self.publish_retained()?;
         Ok(report)
     }
@@ -1848,7 +2008,7 @@ impl LiveOwner {
     /// written back. A failure or a cancelled wait leaves the slot exactly as it was, so the next
     /// pass reuses the same batch instead of rebuilding the report from a later checkpoint.
     async fn prepare_parent_report(&mut self, services: &ObservationServices) -> Result<()> {
-        let (write, prepared) = match self.pending.as_ref() {
+        let (write, prepared) = match self.retained.pending.as_ref() {
             Some(pending) => (Arc::clone(&pending.write), Arc::clone(&pending.prepared)),
             None => return Ok(()),
         };
@@ -1864,7 +2024,7 @@ impl LiveOwner {
             return Ok(());
         }
         let turn = turn.clone();
-        let mut result = if let Some(result) = self.projection.turn_result(&turn.turn_id) {
+        let mut result = if let Some(result) = self.retained.projection.turn_result(&turn.turn_id) {
             result.clone()
         } else {
             // The durable fence is the ticket of batches this owner already handed over — never
@@ -1914,7 +2074,7 @@ impl LiveOwner {
         )?;
         drop(prepared);
         let shared = {
-            let Some(pending) = self.pending.as_mut() else {
+            let Some(pending) = self.retained.pending.as_mut() else {
                 unreachable!(
                     "the pending handoff slot cannot vanish while its owner prepares its report"
                 );
@@ -1956,6 +2116,7 @@ impl LiveOwner {
         self.seed_durable_targets(services, thread_id, write)
             .await?;
         let projected = self
+            .retained
             .projection
             .prepare_committed(&self.thread, &write.effect, &write.checkpoint.state)
             .await;
@@ -1971,14 +2132,15 @@ impl LiveOwner {
         };
         // The behind batch is retained the same way before its report await; its mode keeps it from
         // ever gaining realtime publication rights on a retry.
-        if let Some(pending) = self.pending.as_ref() {
+        if let Some(pending) = self.retained.pending.as_ref() {
             anyhow::bail!(
                 "live projection still owes the handoff of commit {} before taking over commit {}",
                 pending.write.effect.sequence,
                 write.effect.sequence
             );
         }
-        self.pending = Some(PendingHandoff {
+        self.retained.pending = Some(PendingHandoff {
+            admitted: false,
             write: Arc::clone(write),
             prepared,
             terminal: None,
@@ -1995,13 +2157,14 @@ impl LiveOwner {
     /// The preview is written into the shared session — the one content window — and emits no
     /// content frame; current activity and runtime facts are published separately.
     async fn stream(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
-        self.projection
+        self.retained
+            .projection
             .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
             .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
         self.observe_runtime(snapshot).await?;
         self.observe_activity(snapshot).await;
-        if let Some(current) = self.projection.current_state() {
+        if let Some(current) = self.retained.projection.current_state() {
             self.feed.publish_conversation(&self.chat, current)?;
         }
         self.publish_retained()?;
@@ -2020,7 +2183,7 @@ impl LiveOwner {
             &self.thread.id,
             snapshot,
             at,
-            &self.usage,
+            &self.retained.usage,
         )?;
         let mut model_route = crate::studio::model_route::projected(snapshot)?;
         let same_identity = match (self.model_route_published.as_ref(), model_route.as_ref()) {
@@ -2080,7 +2243,7 @@ impl LiveOwner {
     /// Shared producer versions cover body changes even when the bounded summary stays identical.
     /// The completion ceiling also advances independently of the activity summary.
     async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
-        let activity = self.projection.current_activity();
+        let activity = self.retained.projection.current_activity();
         let activity_changed = activity != self.activity_published;
         if !activity_changed {
             return;
@@ -2105,7 +2268,7 @@ impl LiveOwner {
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
     ) {
         if let Some(through) = persistence.and_then(|detail| detail.history_durable_sequence) {
-            self.projection.confirm_sources(through);
+            self.retained.projection.confirm_sources(through);
         }
         let storage = persistence.map(|detail| storage_state(snapshot, detail));
         if storage == self.storage_published {
@@ -2117,13 +2280,10 @@ impl LiveOwner {
 }
 
 impl Drop for LiveOwner {
-    /// Releases this owner's share of the Thread's budget when the observation ends.
-    ///
-    /// The retained bodies die with the owner, so leaving the gauge where it was would keep a
-    /// released Thread reading as pending work forever. A re-activated Thread installs a new owner
-    /// that republishes its own tables on its first step.
     fn drop(&mut self) {
-        self.channel.release_projection_retention();
+        if let Some(binding) = &self.binding {
+            binding.conversation.detach_execution(binding);
+        }
     }
 }
 
@@ -2395,6 +2555,35 @@ async fn run(
                     let target = worker.services.writer.admitted_ticket();
                     match worker.services.writer.flush_through(target).await {
                         Ok(()) => {
+                            if let (Some(exporter), Some(live)) =
+                                (&worker.services.run_export, &worker.live)
+                            {
+                                let status_value =
+                                    crate::studio::thread_projection::status(&current);
+                                let status = serde_json::to_value(status_value)
+                                    .ok()
+                                    .and_then(|value| value.as_str().map(str::to_owned));
+                                let (aborted, error) = match &current.input_execution {
+                                    pl_core::thread::input::InputExecution::Failed { error } => {
+                                        (false, Some(error.to_string()))
+                                    }
+                                    pl_core::thread::input::InputExecution::Interrupting {
+                                        ..
+                                    } => (true, None),
+                                    _ => (false, None),
+                                };
+                                exporter.record_thread_final_cut(
+                                    crate::studio::runtime::run_export::RetiredThreadCut {
+                                        thread_id: worker.id.clone(),
+                                        through_effect_seq: current.commit_sequence,
+                                        session: live.chat.clone(),
+                                        summary: live.retained.usage.clone(),
+                                        status,
+                                        aborted,
+                                        error,
+                                    },
+                                );
+                            }
                             worker
                                 .state
                                 .progress
@@ -2586,7 +2775,7 @@ async fn turn_result(
     live: &LiveOwner,
     turn_id: &str,
 ) -> Result<crate::studio::thread_projection::TurnResult> {
-    if let Some(result) = live.projection.turn_result(turn_id) {
+    if let Some(result) = live.retained.projection.turn_result(turn_id) {
         return Ok(result.clone());
     }
     await_history_durable(
@@ -2776,8 +2965,8 @@ impl ProjectionWorker {
             // The retained handoff is completed before any new queue work: its write is the very
             // Arc the queue admitted, so even a queue entry that already disappeared cannot make
             // this owner forget or re-project the commit it still owes.
-            let retained_mode = live.pending.as_ref().map(|pending| pending.mode);
-            let Some(write) = next_projection_write(&live.pending, &live.channel) else {
+            let retained_mode = live.retained.pending.as_ref().map(|pending| pending.mode);
+            let Some(write) = next_projection_write(&live.retained.pending, &live.channel) else {
                 break;
             };
             // Core admits effects before publishing its snapshot. Do not cross that publication
@@ -2845,81 +3034,71 @@ impl ProjectionWorker {
 #[cfg(test)]
 mod readiness_tests {
     use super::*;
-    use crate::runtime_test_support as support;
-    use pl_protocol::{ChatScope, ReadDemand};
+    use crate::studio::conversation_store::{ConversationStore, ReadRequest};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    async fn first_publication_uses_retained_owner_failure_and_epoch_qualification() -> Result<()> {
-        let env = support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = env
-                .runtime
-                .create_thread(&env.project.id, "readiness")
-                .await?;
-            let slot = env.runtime.thread_observations.observation_slot(&thread.id);
-            let expected = pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::StaleRevision,
-                "original owner failure",
-                false,
-            )
-            .with_reason(
-                pl_protocol::studio::StudioErrorReason::StaleReadScope,
-                serde_json::json!({"owner":"original"}),
-            );
-            let retained = Arc::new(anyhow::Error::new(expected.clone()));
-            // Original retained failure (including finished), a later failure, normal finish,
-            // and an expired epoch competing with an old owner's failure.
-            for mode in 0..4 {
-                let (progress, receiver) = watch::channel(Progress {
-                    error: (mode == 0).then(|| retained.clone()),
-                    finished: mode == 0 || mode == 2,
-                    ..Default::default()
-                });
-                let feed = Arc::new(ThreadLiveFeed::new(None, receiver, Default::default()));
-                slot.install(feed.clone());
-                let entered = (mode == 1 || mode == 3).then(|| feed.arm_first_open_wait());
-                let open = env.runtime.open_conversation_feed(
-                    &thread.id,
-                    ChatScope::Main,
-                    ReadDemand {
-                        max_items: 1,
-                        max_bytes: 65536,
-                    },
-                );
-                let (opened, control) =
-                    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                        tokio::join!(open, async {
-                            if let Some(entered) = entered {
-                                entered.await?;
-                                if mode == 3 {
-                                    slot.retire(&feed);
-                                }
-                                progress.send_modify(|value| {
-                                    value.error = Some(retained.clone());
-                                    value.finished = true;
-                                });
-                            }
-                            Ok::<_, anyhow::Error>(())
-                        })
-                    })
-                    .await?;
-                control?;
-                let error = opened.err().context("first open unexpectedly succeeded")?;
-                let mapped = crate::error_mapping::studio_error_from_anyhow(error);
-                if mode < 2 {
-                    assert_eq!(
-                        serde_json::to_value(mapped)?,
-                        serde_json::to_value(&expected)?
-                    );
-                } else {
-                    assert_eq!(mapped.reason(), Some("conversationResyncRequired"));
-                }
-                slot.retire(&feed);
+    async fn initialization_cancellation_retains_the_original_operation_and_typed_failure()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let history = HistoryStore::open(&path, "store-readiness").await?;
+        let store = ConversationStore::new(history)?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Notify::new());
+        let expected = pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::StaleRevision,
+            "original initialization failure",
+            false,
+        )
+        .with_reason(
+            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            serde_json::json!({"initialization":"original"}),
+        );
+        let factory = Arc::new({
+            let attempts = attempts.clone();
+            let release = release.clone();
+            let expected = expected.clone();
+            move || {
+                let (attempts, release, expected) =
+                    (attempts.clone(), release.clone(), expected.clone());
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    Err(anyhow::Error::new(expected))
+                })
+                    as futures::future::BoxFuture<'static, Result<RetainedProjection>>
             }
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
+        });
+        let mut waiting = Box::pin(store.initialize_projection(factory.clone()));
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        drop(waiting);
+        release.notify_one();
+        let reader = store.open_reader();
+        let failure = reader
+            .capture(ReadRequest::Current)
+            .await
+            .err()
+            .context("initializer unexpectedly succeeded")?;
+        assert_eq!(
+            crate::error_mapping::studio_error_from_anyhow(failure),
+            expected
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        let failure = store
+            .initialize_projection(factory)
+            .await
+            .err()
+            .context("retry unexpectedly succeeded")?;
+        assert_eq!(
+            crate::error_mapping::studio_error_from_anyhow(failure),
+            expected
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(!path.try_exists()?);
+        Ok(())
     }
 }
 
@@ -3067,6 +3246,7 @@ mod storage_fault_tests {
             ),
             sessions: sessions.downgrade(),
             writer: resources.writer.clone(),
+            run_export: None,
         };
         let observations = ThreadObservations::new(services.clone());
         observations.install()?;
@@ -3252,182 +3432,6 @@ mod storage_fault_tests {
         .await;
         result?;
         cleanup
-    }
-
-    async fn completion_publication_retry(mode: HandoffMode, cancel: bool) -> Result<()> {
-        use sea_orm::ConnectionTrait;
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink, _sessions) =
-            terminal_projection_fixture(&store, false).await?;
-        let history = store.history(&worker.id).await?;
-        let db = sea_orm::Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &store
-                    .session_paths("project-test", &worker.id)?
-                    .history_database(),
-                crate::studio::paths::SqliteFileMode::ReadWrite,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        let result = async {
-            let write = Arc::new(terminal_write(&worker.id, false)?);
-            sink.admit(&worker.id, write.as_ref().clone())?;
-            let services = worker.services.clone();
-            let channel = worker.state.channel.clone();
-            let live = worker.live.as_mut().context("real projection owner")?;
-            let chat = live.chat.clone();
-            let before = channel_gauge(&channel);
-            let head = chat.head_seq();
-            let (entered, release) = history.arm_completion_read_gate().await;
-            let mut publishing = Box::pin(async {
-                match mode {
-                    HandoffMode::Live => live
-                        .advance(&services, &write.effect.thread_id, &write)
-                        .await
-                        .map(|_| ()),
-                    HandoffMode::Behind => {
-                        live.prepare_behind(&services, &write.effect.thread_id, &write)
-                            .await
-                    }
-                }
-            });
-            let id = tokio::select! {
-                entered = entered => entered.context("real completion identity read entered")?,
-                result = publishing.as_mut() => {
-                    result?;
-                    anyhow::bail!("publication returned before its actual history read");
-                }
-            };
-            anyhow::ensure!(!id.is_empty());
-            anyhow::ensure!(
-                futures::poll!(publishing.as_mut()).is_pending(),
-                "publication must still owe the gated SQL read"
-            );
-            anyhow::ensure!(
-                channel_gauge(&channel) > before,
-                "projected bodies and drafts must be charged before the first publication wait"
-            );
-            anyhow::ensure!(chat.head_seq() == head);
-            if cancel {
-                drop(publishing);
-                anyhow::ensure!(release.is_closed(), "cancelled read retained its gate");
-            } else {
-                db.execute_unprepared(
-                    "ALTER TABLE conversation_items RENAME TO paused_conversation_items",
-                )
-                .await?;
-                release
-                    .send(())
-                    .map_err(|_| anyhow::anyhow!("publication read dropped its gate"))?;
-                let failed = publishing.await;
-                // Restore the real database before checking the failure or resuming the owner.
-                db.execute_unprepared(
-                    "ALTER TABLE paused_conversation_items RENAME TO conversation_items",
-                )
-                .await?;
-                anyhow::ensure!(
-                    failed.is_err(),
-                    "missing completion table must fail its read"
-                );
-            }
-
-            let pending = live.pending.as_ref().context("retained publication work")?;
-            anyhow::ensure!(pending.mode == mode);
-            anyhow::ensure!(Arc::ptr_eq(&pending.write, &write));
-            let drafts = pending
-                .prepared
-                .completion_drafts
-                .as_ref()
-                .context("original completion drafts still owed")?;
-            anyhow::ensure!(!drafts.is_empty());
-            let originals = pending.prepared.items.clone();
-            let expected_ids = drafts
-                .iter()
-                .map(|draft| draft.item_id.clone())
-                .collect::<std::collections::BTreeSet<_>>();
-            anyhow::ensure!(live.retention().pending.is_some());
-            anyhow::ensure!(chat.head_seq() == head);
-            anyhow::ensure!(channel.handoff_ticket() == 1);
-
-            // Resume only publication/report/handoff: the effect is never projected again.
-            live.finish_pending(&services).await?;
-            anyhow::ensure!(live.pending.is_none());
-            sink.flush(&worker.id, 2).await?;
-            let saved = history
-                .existing_items(originals.iter().map(|item| item.id.clone()))
-                .await?;
-            let by_id = |items: Vec<pl_protocol::ThreadItem>| {
-                items
-                    .into_iter()
-                    .map(|item| (item.id.clone(), item))
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            };
-            anyhow::ensure!(saved == by_id(originals));
-            let page = chat
-                .completed_after(
-                    pl_core::chat::ChatCompletionCursor::new(chat.epoch(), 0),
-                    None,
-                    None,
-                    pl_core::chat::ReadDemand::new(100, 256 * 1024),
-                    &crate::studio::runtime::conversation_reader::JsonBudget::new(
-                        history
-                            .conversation_database_id()
-                            .await?
-                            .context("initialized history")?,
-                        String::new(),
-                    ),
-                )
-                .await?;
-            let ids = page
-                .items
-                .iter()
-                .map(|item| item.header.item_id.clone())
-                .collect::<std::collections::BTreeSet<_>>();
-            anyhow::ensure!(ids == expected_ids && ids.len() == page.items.len());
-            anyhow::ensure!(
-                page.items
-                    .iter()
-                    .enumerate()
-                    .all(|(index, item)| item.header.append_seq == index as u64 + 1)
-            );
-            live.finish_pending(&services).await?;
-            anyhow::ensure!(chat.head_seq() == page.items.len() as u64);
-            Ok(())
-        }
-        .await;
-        let channel = worker.state.channel.clone();
-        drop(worker);
-        drop(sink);
-        let cleanup = async {
-            channel.stop_and_join().await?;
-            observations.finish().await?;
-            resources.shutdown().await
-        }
-        .await;
-        result?;
-        cleanup
-    }
-
-    #[tokio::test]
-    async fn completion_publication_read_failure_keeps_the_original_projected_batch() -> Result<()>
-    {
-        for mode in [HandoffMode::Live, HandoffMode::Behind] {
-            completion_publication_retry(mode, false).await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn completion_publication_read_cancellation_keeps_the_original_projected_batch()
-    -> Result<()> {
-        for mode in [HandoffMode::Live, HandoffMode::Behind] {
-            completion_publication_retry(mode, true).await?;
-        }
-        Ok(())
     }
 
     fn terminal_write(id: &str, review: bool) -> Result<ThreadWrite> {
@@ -3638,6 +3642,7 @@ mod storage_fault_tests {
                 worker.project(&write.checkpoint.state, false, None),
             )
             .await??;
+            drop(worker.live.take()); // 冷接收同一会话前归还稳定 Store 的唯一驱动。
             assert!(worker.state.terminal_transfer.lock().unwrap().is_none());
             assert!(
                 tokio::time::timeout(
@@ -3817,6 +3822,7 @@ mod storage_fault_tests {
             .as_mut()
             .context("projection owner")?
             .pending_hook = None;
+        drop(worker.live.take());
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -4005,6 +4011,7 @@ mod storage_fault_tests {
                 .await?
                 .is_none()
         );
+        drop(worker.live.take());
         drop(parent_gate);
         wait_terminal_receipt(&store, &id).await?;
         tokio::time::timeout(
@@ -4080,6 +4087,7 @@ mod storage_fault_tests {
         let write = terminal_write(&worker.id, true)?;
         sink.admit(&worker.id, write.clone())?;
         worker.project(&write.checkpoint.state, false, None).await?;
+        drop(worker.live.take());
         let source = worker.services.require_session(&worker.id)?;
         assert!(
             tokio::time::timeout(
@@ -4295,6 +4303,7 @@ mod storage_fault_tests {
             let mut last_turn = feed.last_turn();
             projection.publish_prepared(&chat, &mut prepared).await?;
             let pending = PendingHandoff {
+                admitted: false,
                 write: Arc::new(write.clone()),
                 prepared,
                 terminal: None,
@@ -4358,6 +4367,7 @@ mod storage_fault_tests {
         let mut prepared = prepared;
         Arc::make_mut(&mut prepared).parent_report = Some(Arc::new(original_report.clone()));
         let pending = PendingHandoff {
+            admitted: false,
             write: Arc::new(write.clone()),
             prepared,
             terminal: None,
@@ -4599,6 +4609,7 @@ mod storage_fault_tests {
                 ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
                 helper_source: source,
                 bots,
+                run_export: None,
             },
         );
         let sessions = crate::session::SessionTable::new();
@@ -4628,6 +4639,7 @@ mod storage_fault_tests {
             performance,
             sessions: sessions.downgrade(),
             writer: writer.clone(),
+            run_export: None,
         };
         let observations = ThreadObservations::new(services.clone());
         observations.install()?;
@@ -4680,6 +4692,274 @@ mod storage_fault_tests {
         )
         .await?;
         Ok((handle, feed, live))
+    }
+
+    #[tokio::test]
+    async fn conversation_store_keeps_original_arcs_across_prepare_failure_owner_change_and_commit()
+    -> Result<()> {
+        use crate::studio::storage::thread_writer::storage_fault_tests::visible_input_ticket;
+        use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("conversation-store-original");
+        register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle_a, feed_a, mut owner_a) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
+        let binding_a = Arc::new(sink.binding());
+        let store = binding_a.conversation.clone();
+        store.attach_execution(&binding_a).await?;
+        owner_a.binding = Some(binding_a.clone());
+        let reader = store.open_reader();
+        assert!(Arc::ptr_eq(
+            &store,
+            &fixture.store.conversation_store(&thread.id).await?
+        ));
+        let path = fixture
+            .store
+            .session_paths(&thread.workspace_id, &thread.id)?
+            .history_database();
+        let blocker = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        let transaction = blocker
+            .begin_with_options(TransactionOptions {
+                sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
+                ..Default::default()
+            })
+            .await?;
+        let history = fixture.store.history(&thread.id).await?;
+        let (mut forbidden_read, release_read) = history.arm_completion_read_gate().await;
+        sink.admit(
+            &thread.id,
+            visible_input_ticket(&thread.id, 1, "original-input")?,
+        )?;
+        let write = channel.next_unprojected().context("accepted original")?;
+        let (changes, prepared) = owner_a
+            .retained
+            .projection
+            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
+            .await?;
+        let frozen = prepared.clone();
+        owner_a.retained.pending = Some(PendingHandoff {
+            admitted: false,
+            write: write.clone(),
+            prepared,
+            terminal: None,
+            changes,
+            mode: HandoffMode::Live,
+        });
+        let before = reader.current_conversation().context("hydrated baseline")?;
+        let pending = owner_a.retained.pending.as_mut().unwrap();
+        let drafts = Arc::make_mut(&mut pending.prepared)
+            .completion_drafts
+            .as_mut()
+            .unwrap();
+        let mut conflict = drafts.first().context("completed input")?.clone();
+        conflict.payload = Arc::from(&b"conflicting original"[..]);
+        drafts.push(conflict);
+        assert!(
+            store
+                .admit_prepared(&binding_a, &channel, &mut owner_a.retained)
+                .is_err()
+        );
+        assert_eq!(store.session().head_seq(), 0);
+        assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
+        owner_a.retained.pending.as_mut().unwrap().prepared = frozen;
+        owner_a.publish_retained()?;
+        let funded = sink.pressure(&thread.id).thread_bytes;
+        owner_a.retained.pending.as_mut().unwrap().write = Arc::new(write.as_ref().clone());
+        let rejected = store
+            .admit_prepared(&binding_a, &channel, &mut owner_a.retained)
+            .err()
+            .context("a different write Arc must reject the handoff")?;
+        assert!(
+            rejected
+                .to_string()
+                .contains("original effect is not this channel's accepted write")
+        );
+        assert_eq!(
+            sink.pressure(&thread.id).thread_bytes,
+            funded,
+            "failed publication must restore the original Store and pending-batch charge"
+        );
+        assert_eq!(store.session().head_seq(), 0);
+        assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
+        owner_a.retained.pending.as_mut().unwrap().write = write.clone();
+        let original = store.admit_prepared(&binding_a, &channel, &mut owner_a.retained)?;
+        let record = original
+            .completions
+            .first()
+            .context("published original")?
+            .clone();
+        assert_eq!(record.header.append_seq, 1);
+        assert_eq!(store.session().durable_seq(), 0);
+        assert!(
+            matches!(
+                forbidden_read.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "ordinary admission queried the completion history"
+        );
+        release_read.send(()).ok();
+        drop(owner_a);
+        let (handle_b, feed_b, mut owner_b) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
+        let binding_b = Arc::new(sink.binding());
+        store.attach_execution(&binding_b).await?;
+        owner_b.binding = Some(binding_b.clone());
+        assert!(
+            store
+                .admit_prepared(&binding_a, &channel, &mut owner_b.retained)
+                .is_err(),
+            "detached binding published"
+        );
+        let retried = store.admit_prepared(&binding_b, &channel, &mut owner_b.retained)?;
+        assert!(Arc::ptr_eq(&original, &retried));
+        assert!(Arc::ptr_eq(&record, &retried.completions[0]));
+        assert_eq!(reader.current_conversation().unwrap().head, 1);
+        owner_b.handover_pending(&fixture.services)?;
+        drop(owner_b);
+        transaction.rollback().await?;
+        sink.flush(&thread.id, 1).await?;
+        assert_eq!(store.session().durable_seq(), 1);
+        let weak_record = Arc::downgrade(&record);
+        drop(original);
+        drop(retried);
+        assert!(
+            weak_record.upgrade().is_some(),
+            "reader's original was reclaimed early"
+        );
+        drop(record);
+        assert!(
+            weak_record.upgrade().is_none(),
+            "durable completion stayed in the Store"
+        );
+        drop(reader);
+        let weak_store = Arc::downgrade(&store);
+        drop(binding_a);
+        drop(binding_b);
+        drop(store);
+        channel.stop_and_join().await?;
+        drop(sink);
+        handle_a.close().await?;
+        handle_b.close().await?;
+        drop(feed_a);
+        drop(feed_b);
+        blocker.close().await?;
+        assert!(
+            weak_store.upgrade().is_none(),
+            "weak registry retained an idle conversation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn conversation_store_fixed_admission_budget_and_durable_reclamation() -> Result<()> {
+        use crate::studio::conversation_store::{ReadCut, ReadRequest};
+        use crate::studio::storage::thread_writer::storage_fault_tests::visible_input_ticket;
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("store-admission-budget");
+        register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle, feed, mut owner) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
+        let binding = Arc::new(sink.binding());
+        let store = binding.conversation.clone();
+        store.attach_execution(&binding).await?;
+        owner.binding = Some(binding.clone());
+        let reader = store.open_reader();
+        let history = fixture.store.history(&thread.id).await?;
+        let writer = channel.hold_writer().await;
+        let reads = history.reader_calls();
+        let mut elapsed = Vec::new();
+        let mut originals = Vec::new();
+        for sequence in 1..=64 {
+            sink.admit(
+                &thread.id,
+                visible_input_ticket(&thread.id, sequence, &format!("input-{sequence}"))?,
+            )?;
+            let write = channel.next_unprojected().context("accepted original")?;
+            let (changes, prepared) = owner
+                .retained
+                .projection
+                .prepare(&thread, &write.effect, &write.checkpoint.state, true)
+                .await?;
+            owner.retained.pending = Some(PendingHandoff {
+                admitted: false,
+                write,
+                prepared,
+                changes,
+                terminal: None,
+                mode: HandoffMode::Live,
+            });
+            owner.publish_retained()?;
+            let prepared = store.admit_prepared(&binding, &channel, &mut owner.retained)?;
+            elapsed.push(store.last_admission_locked_us());
+            originals.extend(prepared.completions.iter().map(Arc::downgrade));
+            let ReadCut::Ready {
+                source,
+                display: Some(_),
+                ..
+            } = reader
+                .capture(ReadRequest::Display {
+                    before: None,
+                    limit: 2,
+                    after: None,
+                    history_limit: 2,
+                })
+                .await?
+            else {
+                anyhow::bail!("ready capture used cold SQL")
+            };
+            assert_eq!(source.head, sequence);
+            assert_eq!(source.current.projection().source_effect_seq, sequence);
+            owner.handover_pending(&fixture.services)?;
+        }
+        assert_eq!(
+            history.reader_calls(),
+            reads,
+            "fresh admission or RAM capture accessed SQLite"
+        );
+        let queue_bytes = channel.subscribe().borrow().queued_bytes;
+        assert!(queue_bytes > 0 && queue_bytes < 64 * 1024 * 1024);
+        elapsed.sort_unstable();
+        println!(
+            "STORE_ADMISSION_PERF {}",
+            serde_json::json!({"samples":elapsed.len(), "sql":0, "read_port_calls":0, "locked_us_p50":elapsed[32], "locked_us_p95":elapsed[60], "locked_us_max":elapsed[63], "queued_bytes":queue_bytes})
+        );
+        drop(owner);
+        drop(reader);
+        drop(writer);
+        sink.flush(&thread.id, 64).await?;
+        assert_eq!(store.session().head_seq(), store.session().durable_seq());
+        assert!(
+            originals
+                .iter()
+                .all(|original| original.upgrade().is_none())
+        );
+        assert_eq!(channel.subscribe().borrow().queued_records, 0);
+        println!(
+            "STORE_DURABLE_ORIGINAL_BYTES=0 STORE_PENDING_RECORDS_AFTER_COMMIT=0 STORE_RESIDENT_BYTES={}",
+            channel.subscribe().borrow().queued_bytes
+        );
+        channel.stop_and_join().await?;
+        handle.close().await?;
+        drop(feed);
+        let weak = Arc::downgrade(&store);
+        drop(binding);
+        drop(store);
+        drop(sink);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(channel.subscribe().borrow().queued_bytes, 0);
+        Ok(())
     }
 
     #[tokio::test]
@@ -4914,7 +5194,7 @@ mod storage_fault_tests {
                 .await
                 .context("State lag blocked a successor effect")??;
                 assert_eq!(channel.handoff_ticket(), sequence);
-                assert!(live.pending.is_none());
+                assert!(live.retained.pending.is_none());
 
                 // The fast receiver retains every fact and its original observation qualification.
                 loop {
@@ -5125,7 +5405,7 @@ mod storage_fault_tests {
             let call_id = "state-pending-question";
             // The tool's existing body is fixture input; the question itself is introduced only by
             // the real owner advance below, then frozen, charged and handed to the real writer.
-            live.projection.seed(
+            live.retained.projection.seed(
                 vec![ThreadItem::new(
                     crate::studio::thread_projection::order::tool_id(call_id),
                     thread.id.clone(),
@@ -5357,8 +5637,6 @@ mod storage_fault_tests {
     /// 落盘、发布资格与预算随保槽/释放收束，最后真实关闭并回收全部观察与写入资源。
     #[tokio::test]
     async fn a_child_terminal_report_failure_retains_the_batch_until_a_real_retry() -> Result<()> {
-        use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
-
         let fixture = observation_fixture().await?;
         let child_id = "child-terminal-report";
         let parent_id = "child-terminal-report-parent";
@@ -5428,8 +5706,6 @@ mod storage_fault_tests {
         let terminal = handle.snapshot().commit_sequence;
 
         // Pass every earlier batch at the phase boundary; the terminal batch stays parked.
-        let mut first_released = None;
-        let mut writer_block = None;
         loop {
             let sequence = {
                 let mut entries = entered.lock().await;
@@ -5437,38 +5713,10 @@ mod storage_fault_tests {
                     .await?
                     .context("pending hook closed")?
             };
-            if let Some(first) = first_released.take() {
-                // The next phase proves the first write was handed over. Let
-                // that real write create the database, then hold its writer
-                // lock so the remaining earlier batches deterministically lag.
-                tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, first))
-                    .await??;
-                let database_path = fixture
-                    .store
-                    .registered_session_paths(child_id)?
-                    .history_database();
-                let options = crate::studio::paths::sqlite_file_options(
-                    &database_path,
-                    crate::studio::paths::SqliteFileMode::ReadWrite,
-                    |options| options.busy_timeout(Duration::from_secs(10)),
-                )
-                .await?;
-                let blocker = Database::connect(options).await?;
-                let writer_lock = blocker
-                    .begin_with_options(TransactionOptions {
-                        sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
-                        ..Default::default()
-                    })
-                    .await?;
-                writer_block = Some((blocker, writer_lock));
-            }
             if sequence == terminal {
                 break;
             }
             control.send_replace(Some(Ok(())));
-            if writer_block.is_none() {
-                first_released = Some(sequence);
-            }
         }
         // The parked batch is already folded into the shared session: freeze its observable facts.
         let chat = fixture.store.chat_session(child_id).await?;
@@ -5481,10 +5729,6 @@ mod storage_fault_tests {
         assert!(!first.is_empty());
         let earlier = channel.handoff_ticket();
         assert!(earlier < terminal);
-        assert!(channel.subscribe().borrow().committed_sequence < earlier);
-        let (blocker, writer_lock) = writer_block.context("earlier writes held by SQLite")?;
-        writer_lock.commit().await?;
-        blocker.close().await?;
         tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, earlier)).await??;
         // Only the parked batch and this projection remain charged. Earlier
         // writer batches cannot drain between the two budget observations.
@@ -5751,6 +5995,7 @@ mod storage_fault_tests {
 
         // The cancelled call leaves the batch retained; nothing re-projected it.
         let pending = live
+            .retained
             .pending
             .as_ref()
             .context("retained batch after cancellation")?;
@@ -5774,15 +6019,16 @@ mod storage_fault_tests {
         let pending_bytes = pending.retained_bytes();
         assert!(pending_bytes > 0);
 
-        // The real report preparation attaches to the retained batch and the budget grows with it.
+        // 全部可失败报告准备已经在发布前完成；重试复用原报告且不重复计费。
         live.prepare_parent_report(&fixture.services).await?;
         let with_report = live
+            .retained
             .pending
             .as_ref()
             .context("batch retained through report preparation")?
             .retained_bytes();
-        assert!(with_report > pending_bytes);
-        assert!(channel_gauge(&channel) > gauge_before);
+        assert_eq!(with_report, pending_bytes);
+        assert_eq!(channel_gauge(&channel), gauge_before);
 
         // The same owner finishes the handoff; the hook consumes one pre-armed release.
         control.send_replace(Some(Ok(())));
@@ -5790,7 +6036,7 @@ mod storage_fault_tests {
             .finish_pending(&fixture.services)
             .await?
             .context("original report handed over")?;
-        assert!(live.pending.is_none());
+        assert!(live.retained.pending.is_none());
         let second = turn_items(
             &chat,
             &fixture.store.history(child_id).await?,

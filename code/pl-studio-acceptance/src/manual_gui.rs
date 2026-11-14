@@ -1152,8 +1152,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
     if options.preset == "shutdown" {
         fixture_command.env(
-            "ANYWORK_SHUTDOWN_TOOL_COORD",
-            working.path().join("shutdown-tool-coord.json"),
+            "ANYWORK_SHUTDOWN_TOOL_COMMAND",
+            shutdown::tool_command(
+                &fixture_executable,
+                &working.path().join("shutdown-tool-coord.json"),
+            ),
         );
     }
     #[cfg(windows)]

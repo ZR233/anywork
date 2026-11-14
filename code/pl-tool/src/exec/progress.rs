@@ -5,8 +5,8 @@
 //! a chunk therefore copies no accumulated text at all — neither here nor in the Thread — and the
 //! canonical result still comes from the archived capture, not from this preview.
 use crate::command::process_manager::{CommandOutputObserver, CommandOutputStream};
+use crate::invocation::CommandTaskAccess;
 use pl_core::model::{ContentBlock, ToolProgressUpdate};
-use pl_core::thread::TaskAccess;
 use std::{future::Future, sync::Arc};
 use tokio::sync::watch;
 
@@ -127,7 +127,7 @@ impl CommandPreview {
 pub(super) async fn drive<F: Future>(
     future: F,
     mut windows: watch::Receiver<Arc<ContentBlock>>,
-    access: Option<&TaskAccess>,
+    access: Option<&dyn CommandTaskAccess>,
 ) -> F::Output {
     tokio::pin!(future);
     let mut access = access;
@@ -158,7 +158,7 @@ pub(super) async fn drive<F: Future>(
 
 /// Delivers the bytes this Thread has not accepted yet from the newest published window.
 async fn report(
-    access: &TaskAccess,
+    access: &dyn CommandTaskAccess,
     window: &Arc<ContentBlock>,
     delivered: &mut Option<Arc<ContentBlock>>,
 ) -> bool {

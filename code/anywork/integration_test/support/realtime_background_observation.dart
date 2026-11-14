@@ -65,7 +65,7 @@ TimelineDisplayUnit? realtimeBackgroundSingle(
   final block = matches.single;
   final body = block.body as SingleDisplayBlock;
   final atom = body.record.atom;
-  expect(block.historyPos, greaterThan(0));
+  expect(block.blockOrder, greaterThan(0));
   expect(block.memberReference, isNull);
   expect((atom.source as BackgroundResultChatSource).messageId, isNotEmpty);
   expect(atom.id, isNotEmpty);

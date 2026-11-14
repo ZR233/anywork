@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DESKTOP: &str = "share/applications/io.github.zr233.anywork.desktop";
+const UPDATE_POLICY: &str = "share/polkit-1/actions/io.github.zr233.anywork.update.policy";
+const UPDATE_HELPER: &str = "libexec/anywork-update-helper";
 const ICON: &str = "share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png";
 const LIBRARIES: [&str; 3] = [
     "lib/libflutter_linux_gtk.so",
@@ -65,7 +67,7 @@ pub(super) fn stage(
         copy_file(&source, &app.join(name))?;
         copy_file(&source, &package.join("usr/share/doc/anywork").join(name))?;
     }
-    for resource in [DESKTOP, ICON] {
+    for resource in [DESKTOP, ICON, UPDATE_POLICY] {
         copy_file(&app.join(resource), &package.join("usr").join(resource))?;
     }
     validate_bundle(&app)?;
@@ -116,7 +118,7 @@ fn control(version: &Version, depends: Option<&str>) -> String {
         .map(|value| format!("{value}, "))
         .unwrap_or_default();
     format!(
-        "Package: anywork\nVersion: {version}\nArchitecture: amd64\nSection: utils\nPriority: optional\nMaintainer: anywork maintainers <maintainers@anywork.invalid>\nDepends: {depends}libegl1, libgl1, libgles2\nDescription: anywork desktop application\n"
+        "Package: anywork\nVersion: {version}\nArchitecture: amd64\nSection: utils\nPriority: optional\nMaintainer: anywork maintainers <maintainers@anywork.invalid>\nDepends: {depends}libegl1, libgl1, libgles2, packagekit, pkexec, shared-mime-info\nDescription: anywork desktop application\n"
     )
 }
 
@@ -188,7 +190,7 @@ pub(super) fn verify(release_dir: &Path, version: &Version) -> Result<()> {
         fs::read_link(temp.path().join("usr/bin/anywork"))? == Path::new("/opt/anywork/anywork"),
         "invalid /usr/bin/anywork symlink"
     );
-    for resource in [DESKTOP, ICON] {
+    for resource in [DESKTOP, ICON, UPDATE_POLICY] {
         let installed = temp.path().join("usr").join(resource);
         require_file(&installed)?;
         ensure!(
@@ -221,9 +223,16 @@ fn require_file(path: &Path) -> Result<()> {
 fn validate_bundle(bundle: &Path) -> Result<()> {
     ensure!(bundle.is_dir(), "bundle not found: {}", bundle.display());
     checked_tree(bundle, None)?;
-    for required in ["anywork", "data/icudtl.dat", DESKTOP, ICON]
-        .into_iter()
-        .chain(LIBRARIES)
+    for required in [
+        "anywork",
+        "data/icudtl.dat",
+        DESKTOP,
+        ICON,
+        UPDATE_POLICY,
+        UPDATE_HELPER,
+    ]
+    .into_iter()
+    .chain(LIBRARIES)
     {
         require_file(&bundle.join(required))?;
     }
@@ -241,11 +250,13 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
         &bundle.join("data/host-mcp"),
         "x86_64-unknown-linux-gnu",
     )?;
-    ensure!(
-        fs::metadata(bundle.join("anywork"))?.permissions().mode() & 0o111 != 0,
-        "anywork must be executable"
-    );
-    for required in ["anywork"].into_iter().chain(LIBRARIES) {
+    for executable in ["anywork", UPDATE_HELPER] {
+        ensure!(
+            fs::metadata(bundle.join(executable))?.permissions().mode() & 0o111 != 0,
+            "{executable} must be executable"
+        );
+    }
+    for required in ["anywork", UPDATE_HELPER].into_iter().chain(LIBRARIES) {
         ensure!(
             is_elf(&bundle.join(required))?,
             "required ELF missing: {required}"
@@ -555,6 +566,16 @@ mod tests {
             )?;
             // Retain an internal library symlink rather than flattening it.
             symlink("libpl_studio_bridge.so", bundle.join("lib/bridge-alias.so"))?;
+            fs::create_dir_all(bundle.join("libexec"))?;
+            fs::copy(bundle.join("anywork"), bundle.join(UPDATE_HELPER))?;
+            let policy = bundle.join(UPDATE_POLICY);
+            fs::create_dir_all(policy.parent().unwrap())?;
+            fs::write(
+                &policy,
+                include_str!(
+                    "../../../code/pl-studio-update/assets/io.github.zr233.anywork.update.policy"
+                ),
+            )?;
             let release = root.join("release");
             Ok(Self {
                 temp,

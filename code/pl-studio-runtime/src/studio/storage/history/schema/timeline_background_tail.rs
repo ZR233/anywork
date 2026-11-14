@@ -75,6 +75,7 @@ mod tests {
                         | COMPLETION_BOUNDARY
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
+                        | DISPLAY_BLOCK_ORDER
                 ) && !is_lifecycle_migration(step.name())
             })
             .collect()

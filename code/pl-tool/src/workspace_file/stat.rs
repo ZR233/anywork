@@ -3,6 +3,7 @@ use super::{
     WorkspaceFileBackend,
     independent::{FileCapability, granted_backend},
 };
+use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -39,6 +40,16 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
         &self,
         input: Self::Args,
         context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_workspace(input, context.into()).await
+    }
+}
+
+impl<B: WorkspaceFileBackend + 'static> ThreadStatPathTool<B> {
+    pub async fn execute_workspace(
+        &self,
+        input: crate::file::PathInput,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));

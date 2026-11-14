@@ -104,23 +104,21 @@ impl LspRuntimeRegistry {
         query: LspQuery,
     ) -> LspResult<LspQueryResult> {
         let max_results = query.max_results.unwrap_or(100);
-        let mut diagnostics = self
-            .all_diagnostics_for_workspace(workspace_root, query.file_path.as_deref())
-            .await;
         let server_id = if query.server_id.is_some() || query.language_id.is_some() {
-            let server_id = self
-                .server_id_for_query_in_workspace(workspace_root, &query)
+            let (server_id, _, client) = self
+                .client_for_query_in_workspace(workspace_root, &query)
                 .await?;
-            self.ensure_operation_supported_in_workspace(
-                workspace_root,
-                &server_id,
-                query.operation,
-            )
-            .await?;
+            if let Some(path) = query.file_path.as_deref() {
+                let uri = path_to_file_uri(path, client.path_style());
+                client.open_document(path, &uri).await?;
+            }
             Some(server_id)
         } else {
             None
         };
+        let mut diagnostics = self
+            .all_diagnostics_for_workspace(workspace_root, query.file_path.as_deref())
+            .await;
         if let Some(server_id) = server_id.as_deref() {
             diagnostics.retain(|diagnostic| diagnostic.server_id == server_id);
         }
