@@ -674,16 +674,17 @@ mod tests {
                 Ok(()) | Err(session::Error::Closed)
             ));
             assert!(!join_b.await.unwrap().cleanup_timed_out);
-            let prompts = observed.lock().unwrap();
-            assert_eq!(
-                prompts
-                    .iter()
-                    .filter(|(id, content)| id == "/probe"
-                        && *content == vec![ContentBlock::Text(TextContent::new("/usage"))])
-                    .count(),
-                1
-            );
-            drop(prompts);
+            {
+                let prompts = observed.lock().unwrap();
+                assert_eq!(
+                    prompts
+                        .iter()
+                        .filter(|(id, content)| id == "/probe"
+                            && *content == vec![ContentBlock::Text(TextContent::new("/usage"))])
+                        .count(),
+                    1
+                );
+            }
             assert_eq!(initializes.load(Ordering::Relaxed), 1);
             connection.cancel();
             sdk.await.unwrap().result.unwrap();
