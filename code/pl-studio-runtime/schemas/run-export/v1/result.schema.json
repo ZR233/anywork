@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anywork.dev/schemas/run-export/v1/result.schema.json",
+  "title": "ResultV1",
+  "description": "Terminal result report written atomically to result.json after shutdown flush and exporter closure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "rootThreadId",
+    "outcome",
+    "executionOutcome",
+    "exitCode",
+    "startedAt",
+    "finishedAt",
+    "build",
+    "timing",
+    "finalText",
+    "traceComplete",
+    "usageComplete",
+    "costComplete",
+    "trace",
+    "usage",
+    "shutdown",
+    "error",
+    "executionError"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "rootThreadId": {
+      "type": ["string", "null"]
+    },
+    "outcome": {
+      "enum": [
+        "completed",
+        "invalidInput",
+        "blockedOnInput",
+        "budgetExceeded",
+        "failed",
+        "startupFailed",
+        "exportFailed",
+        "shutdownFailed",
+        "cancelled"
+      ]
+    },
+    "executionOutcome": {
+      "enum": [
+        "completed",
+        "blockedOnInput",
+        "budgetExceeded",
+        "failed",
+        "cancelled",
+        null
+      ]
+    },
+    "exitCode": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "startedAt": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "finishedAt": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "build": {
+      "$ref": "#/$defs/BuildInfoV1"
+    },
+    "timing": {
+      "$ref": "#/$defs/TimingReportV1"
+    },
+    "finalText": {
+      "type": ["string", "null"]
+    },
+    "traceComplete": {
+      "type": "boolean"
+    },
+    "usageComplete": {
+      "type": "boolean"
+    },
+    "costComplete": {
+      "type": "boolean"
+    },
+    "trace": {
+      "$ref": "#/$defs/TraceSummaryV1"
+    },
+    "usage": {
+      "oneOf": [
+        { "$ref": "#/$defs/UsageExportV1" },
+        { "type": "null" }
+      ]
+    },
+    "shutdown": {
+      "$ref": "#/$defs/StudioShutdownReport"
+    },
+    "error": {
+      "oneOf": [
+        { "$ref": "#/$defs/ExecutionErrorV1" },
+        { "type": "null" }
+      ]
+    },
+    "executionError": {
+      "oneOf": [
+        { "$ref": "#/$defs/ExecutionErrorV1" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "BuildInfoV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "gitCommit", "target"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    },
+    "TimingReportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalWallMs",
+        "initializeWallMs",
+        "agentWallMs",
+        "shutdownWallMs",
+        "exportFinalizeMs"
+      ],
+      "properties": {
+        "totalWallMs": { "type": "integer", "minimum": 0 },
+        "initializeWallMs": { "type": ["integer", "null"], "minimum": 0 },
+        "agentWallMs": { "type": ["integer", "null"], "minimum": 0 },
+        "shutdownWallMs": { "type": ["integer", "null"], "minimum": 0 },
+        "exportFinalizeMs": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "TraceSummaryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventsPath",
+        "eventsSha256",
+        "eventCount",
+        "lastEventSeq",
+        "sealed",
+        "reason"
+      ],
+      "properties": {
+        "eventsPath": { "const": "events.jsonl" },
+        "eventsSha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256Hex" },
+            { "type": "null" }
+          ]
+        },
+        "eventCount": { "type": "integer", "minimum": 0 },
+        "lastEventSeq": { "type": ["integer", "null"], "minimum": 1 },
+        "sealed": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "UsageCoverage": {
+      "enum": ["complete", "partial"]
+    },
+    "UsageMetricKey": {
+      "enum": [
+        "inferenceCount",
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "totalTokens",
+        "estimatedCostUsd"
+      ]
+    },
+    "UsageTotalsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inferenceCount",
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "totalTokens",
+        "estimatedCostUsd"
+      ],
+      "properties": {
+        "inferenceCount": { "type": ["integer", "null"], "minimum": 0 },
+        "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cacheReadTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cacheWriteTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "reasoningTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "totalTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "estimatedCostUsd": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "UsageKnownTotalsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inferenceCount",
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens",
+        "totalTokens",
+        "estimatedCostUsd"
+      ],
+      "properties": {
+        "inferenceCount": { "type": "integer", "minimum": 0 },
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "cacheReadTokens": { "type": "integer", "minimum": 0 },
+        "cacheWriteTokens": { "type": "integer", "minimum": 0 },
+        "reasoningTokens": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "integer", "minimum": 0 },
+        "estimatedCostUsd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ModelUsageExportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "modelId",
+        "coverage",
+        "hasUnknownValues",
+        "totals",
+        "knownTotals",
+        "unknownFields"
+      ],
+      "properties": {
+        "accountId": { "type": ["string", "null"] },
+        "modelId": { "type": ["string", "null"] },
+        "coverage": { "$ref": "#/$defs/UsageCoverage" },
+        "hasUnknownValues": { "type": "boolean" },
+        "totals": { "$ref": "#/$defs/UsageTotalsV1" },
+        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV1" },
+        "unknownFields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/UsageMetricKey" }
+        }
+      }
+    },
+    "ThreadUsageExportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId", "throughEffectSeq", "summary"],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "summary": {
+          "$ref": "native.schema.json#/$defs/UsageSummary"
+        }
+      }
+    },
+    "UsageExportV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coverage",
+        "hasUnknownValues",
+        "totals",
+        "knownTotals",
+        "byModel",
+        "byThread"
+      ],
+      "properties": {
+        "coverage": { "$ref": "#/$defs/UsageCoverage" },
+        "hasUnknownValues": { "type": "boolean" },
+        "totals": { "$ref": "#/$defs/UsageTotalsV1" },
+        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV1" },
+        "byModel": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ModelUsageExportV1" }
+        },
+        "byThread": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ThreadUsageExportV1" }
+        }
+      }
+    },
+    "StudioShutdownIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "code", "message", "retryable", "correlationId"],
+      "properties": {
+        "stage": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "correlationId": { "type": "string" }
+      }
+    },
+    "StudioPendingPersistence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "unknown" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "drained" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "pending" },
+            "data": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["count"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "StudioShutdownReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "issues", "persistence"],
+      "properties": {
+        "outcome": { "enum": ["notStarted", "clean", "degraded"] },
+        "issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StudioShutdownIssue" }
+        },
+        "persistence": { "$ref": "#/$defs/StudioPendingPersistence" }
+      }
+    },
+    "TurnFailure": {
+      "type": "object",
+      "required": ["category", "message", "retry"],
+      "properties": {
+        "category": { "type": "string" },
+        "providerKind": { "type": ["string", "null"] },
+        "code": { "type": ["string", "null"] },
+        "httpStatus": { "type": ["integer", "null"] },
+        "message": { "type": "string" },
+        "retry": { "type": "object" }
+      }
+    },
+    "ExecutionErrorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "code", "message", "turnFailure"],
+      "properties": {
+        "stage": {
+          "enum": ["preflight", "startup", "turn", "export", "shutdown"]
+        },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "turnFailure": {
+          "oneOf": [
+            { "$ref": "#/$defs/TurnFailure" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -16,6 +16,7 @@ use super::super::{
 };
 
 impl StudioRuntime {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn assemble(
         store: StudioStore,
         config_runtime: ConfigRuntime,
@@ -24,6 +25,7 @@ impl StudioRuntime {
         host_mcp_source: crate::host_mcp_assets::HostMcpSource,
         ssh_config: Option<crate::SshConfigFile>,
         skill_search: pl_tool::skill::SkillSearchOptions,
+        run_export: Option<std::sync::Arc<super::super::run_export::RunExportCoordinator>>,
     ) -> Result<Self> {
         let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
@@ -103,6 +105,7 @@ impl StudioRuntime {
                 ssh_manager: ssh_manager.clone(),
                 helper_source: helper_source.clone(),
                 bots: bots.clone(),
+                run_export: run_export.clone(),
             },
         );
         let sessions = crate::session::SessionTable::new();
@@ -146,6 +149,7 @@ impl StudioRuntime {
                 sessions: sessions.downgrade(),
                 writer: persistence.clone(),
                 recovery: recovery.clone(),
+                run_export: run_export.clone(),
             },
         );
         let rejected_tools =
@@ -182,6 +186,7 @@ impl StudioRuntime {
                 worktrees,
                 persistence: std::sync::Arc::new(tokio::sync::Mutex::new(Some(persistence))),
                 product_events: product_events.clone(),
+                run_export,
             },
             runtime_state: StudioRuntimeState::new(),
             recovery,
