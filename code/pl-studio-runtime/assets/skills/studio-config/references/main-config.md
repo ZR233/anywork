@@ -267,7 +267,21 @@ Use Settings for atomic document-CAS save/delete and explicit reload after
 external edits. Startup/reload scans this directory; ordinary reads are cache-only,
 and one bad file does not replace healthy definitions. Changing command/args/env or
 template advances the runtime connection identity; renaming does not. Existing
-business sessions retain their frozen definition after reload, disable or delete.
+business sessions on a replaced, disabled or deleted connection are closed; no
+prompt or session-open request is replayed. Finish active work before changing
+connection settings. The old process and pipes must settle before a replacement
+can start; a display-name edit does not restart the service.
+
+Enabled Antigravity templates whose managed installation is ready are prepared in
+the background at Studio startup and after effective configuration changes. This
+does not block startup, install missing software or start interactive login. An
+authentication-required result keeps the connection and exposes the existing
+login continuation. Ordinary commands remain lazy. Each account/connection
+generation reuses one initialized service for authentication, explicit quota
+queries and independent business sessions; closing one session does not stop the
+account service. Studio shutdown closes all sessions and joins the service process
+tree. No new TOML key is required, and reading settings does not start a process.
+
 Local detection only checks help/version; it neither downloads nor logs in and
 does not prove authentication. ACP accounts are not Native model-route candidates.
 Never repair a conflict by deleting migration records, definitions or credentials.

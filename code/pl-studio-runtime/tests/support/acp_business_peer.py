@@ -2,6 +2,13 @@
 import json, os, pathlib, subprocess, sys, time
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 (root / 'pid').write_text(str(os.getpid()))
+with (root / 'spawns').open('a') as log:
+    log.write(str(os.getpid()) + '\n')
+(root / 'process-cwd').write_text(os.getcwd())
+next_session = 0
+stdio_endpoints = set()
+stdio_capabilities = set()
+stdio_sessions = 0
 def emit(value):
     sys.stdout.write(json.dumps(value) + '\n')
     sys.stdout.flush()
@@ -19,10 +26,16 @@ for line in sys.stdin:
     rid=msg['id']
     if method == 'initialize':
         mode=(root / 'mode').read_text()
+        if mode == 'initialize-hold':
+            (root / 'initializing').write_text('received')
+            while not (root / 'release-init').exists():
+                time.sleep(0.01)
+            mode=(root / 'mode').read_text()
         # Ordinary lifecycle cases use HTTP so they do not require the separately
         # packaged stdio executable. Dedicated stdio cases exercise that transport.
-        capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}}
+        capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}, 'sessionCapabilities':{'close':{}}}
         result={'protocolVersion':1, 'agentCapabilities':capabilities,
+                'agentInfo':{'name':'synthetic-peer','version':'1.4.5'},
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
     elif method in ['session/new','session/load','session/resume']:
         mode=(root / 'mode').read_text()
@@ -49,7 +62,26 @@ for line in sys.stdin:
                 emit({'jsonrpc':'2.0','id':rid,'error':{
                     'code':-32602,'message':'Expected host HTTP MCP setup was not received'}})
                 continue
-        sid=msg['params'].get('sessionId', 'remote-one')
+        if mode == 'mcp-stdio':
+            servers=msg['params'].get('mcpServers', [])
+            assert len(servers) == 1 and servers[0].get('name') == 'anywork'
+            server=servers[0]
+            env={item['name']: item['value'] for item in server['env']}
+            endpoint=env['ANYWORK_HOST_IPC_ENDPOINT']
+            capability=env['ANYWORK_HOST_IPC_CAPABILITY']
+            assert endpoint not in stdio_endpoints and capability not in stdio_capabilities
+            stdio_endpoints.add(endpoint)
+            stdio_capabilities.add(capability)
+            stdio_sessions += 1
+            # Only safe facts and the executable path leave the synthetic peer's memory.
+            (root / 'stdio-isolation').write_text(str(stdio_sessions))
+            with (root / 'stdio-helper-paths').open('a') as log:
+                log.write(server['command'] + '\n')
+        if method == 'session/new':
+            next_session += 1
+        sid=msg['params'].get('sessionId', 'remote-one' if next_session == 1 else 'remote-' + str(next_session))
+        with (root / 'sessions').open('a') as log:
+            log.write(json.dumps({'id':sid, 'cwd':msg['params']['cwd'], 'mcp':bool(msg['params'].get('mcpServers', []))}) + '\n')
         if mode in ['replay', 'load-hold']:
             update(sid, 'history before ready')
         if mode == 'load-hold':
@@ -70,7 +102,8 @@ for line in sys.stdin:
                 continue
         result={'sessionId':sid}
     elif method == 'session/prompt':
-        assert msg['params']['sessionId'] == 'remote-one'
+        sid=msg['params']['sessionId']
+        assert sid
         if (root / 'mode').read_text() == 'prompt-fail':
             emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32603,'message':'prompt failed'}})
             continue
@@ -78,8 +111,16 @@ for line in sys.stdin:
             (root / 'prompting').write_text('received')
             while not (root / 'release').exists():
                 time.sleep(0.01)
-        update('remote-one','actual answer')
+        usage = msg['params']['prompt'] == [{'type':'text','text':'/usage'}]
+        if usage:
+            with (root / 'usage-sessions').open('a') as log:
+                log.write(sid + '\n')
+        update(sid, '### Quota Limits\n- No quota limits reported.' if usage else 'actual answer')
         result={'stopReason':'end_turn'}
+    elif method == 'authenticate':
+        assert msg['params']['methodId'] == 'login'
+        (root / 'mode').write_text('replay')
+        result={}
     elif method == 'session/close':
         result={}
     else:

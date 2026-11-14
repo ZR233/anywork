@@ -47,10 +47,13 @@ impl AcpAuthRuntime {
         config: ConfigRuntime,
         events: ProductEventBus,
         source: Executor,
+        mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
-        Self {
-            inner: Arc::new(AcpAuthInner::new(store, config, events, source)),
-        }
+        let runtime = Self {
+            inner: Arc::new(AcpAuthInner::new(store, config, events, source, mcp_source)),
+        };
+        runtime.start_retirement_driver();
+        runtime
     }
 
     /// 安装 Settings 提交观察者，并立即取得当前 canonical 快照的接入身份。
@@ -182,10 +185,14 @@ impl AcpAuthRuntime {
                 .filter_map(|slot| slot.operation.clone())
                 .collect()
         };
+        for connection in self.connections() {
+            connection.signal_cancel();
+        }
         for operation in operations {
             operation.cancel.cancel();
             operation.cleanup_retry.notify_one();
         }
+        self.inner.retirement_wake.notify_one();
     }
 
     /// 取消并等待所有在途操作收束；超时保留 join 句柄，绝不伪报已回收。
@@ -232,6 +239,17 @@ impl AcpAuthRuntime {
                 }
             }
         }
+        for connection in self.connections() {
+            if let Err(error) = connection.close().await {
+                issues.push(error.to_string());
+            }
+        }
+        if let Err(error) = self.join_retirement_driver(deadline).await {
+            issues.push(error.to_string());
+        }
+        if let Some(issue) = self.inner.lock().retirement_issue.clone() {
+            issues.push(issue);
+        }
         if issues.is_empty() {
             Ok(())
         } else {
@@ -250,6 +268,7 @@ impl SettingsCommitObserver for AcpSettingsObserver {
     fn settings_committed(&self, snapshot: &crate::ConfigRuntimeSnapshot) {
         if let Some(inner) = self.inner.upgrade() {
             inner.observe_committed(snapshot.revision, &snapshot.acp);
+            AcpAuthRuntime { inner }.background_prepare(snapshot.revision, &snapshot.acp);
         }
     }
 }

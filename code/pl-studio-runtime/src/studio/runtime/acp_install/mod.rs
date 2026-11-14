@@ -35,3 +35,51 @@ pub(in crate::studio::runtime) use prepare::{
 /// 产品固定支持的官方 server 版本；模板、安装与认证版本核对共用这一份事实。
 pub(in crate::studio::runtime) use source::SERVER_VERSION;
 pub(crate) use source::availability as automatic_install_availability;
+
+/// 合成生命周期 peer 的测试安装；只在隔离测试 home 构造本地回执，不下载或冒充真实发行验收。
+#[cfg(all(test, target_os = "linux"))]
+pub(in crate::studio::runtime) fn seed_synthetic_install(
+    store: &crate::studio::StudioStore,
+    program: &[u8],
+) {
+    use sha2::Digest;
+    use std::os::unix::fs::PermissionsExt;
+    let release = source::resolve(pl_protocol::studio::AcpProvider::Antigravity).unwrap();
+    let id = source::installation_id(pl_protocol::studio::AcpProvider::Antigravity, &release);
+    let key = source::storage_key(&id).unwrap();
+    let root = paths::ManagedRoot::open(
+        store.paths().home(),
+        store.acp_servers_root(),
+        pl_protocol::studio::AcpInstallStage::Publish,
+    )
+    .unwrap();
+    let installed = root
+        .ensure_dir(
+            &["installed", "antigravity", &release.release.target, &key],
+            pl_protocol::studio::AcpInstallStage::Publish,
+        )
+        .unwrap();
+    let path = installed.join(&release.command);
+    std::fs::write(&path, program).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    archive::write_receipt(
+        &root,
+        &installed,
+        &archive::Receipt {
+            format: 1,
+            installation_id: id,
+            release: release.release,
+            command: release.command.clone(),
+            args: release.args,
+            archive_sha256: "synthetic-no-archive".into(),
+            members: vec![archive::ReceiptMember {
+                path: release.command,
+                size: program.len() as u64,
+                sha256: hex::encode(sha2::Sha256::digest(program)),
+                mode: Some(0o700),
+            }],
+            directories: Vec::new(),
+        },
+    )
+    .unwrap();
+}

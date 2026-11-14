@@ -11,11 +11,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::{ConnectionTo, Responder};
-use agent_client_protocol::{Agent, ByteStreams, Client, JsonRpcMessage, JsonRpcResponse};
+use agent_client_protocol::{Agent, JsonRpcMessage, JsonRpcResponse};
+#[cfg(test)]
+use agent_client_protocol::{ByteStreams, Client};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
+#[cfg(test)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::auth::{AsyncRead, AsyncWrite, CleanupBudget};
+use crate::auth::CleanupBudget;
+#[cfg(test)]
+use crate::auth::{AsyncRead, AsyncWrite};
 
 /// 公开接口直接消费同一版本的官方协议类型。
 pub use agent_client_protocol::v1::schema;
@@ -286,6 +291,7 @@ pub struct Driver {
     commands: mpsc::Receiver<Command>,
     state: Shared,
     lifetime: Option<DriverLifetime>,
+    connection: Option<crate::connection::Connection>,
 }
 
 // Transferred from the unrun driver into run's outer future, so normal exit,
@@ -312,6 +318,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
         session_id,
         ready: false,
+        finished: false,
         opened,
         initialized: None,
         capabilities: AgentCapabilities::default(),
@@ -327,6 +334,8 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         permission_bytes: Arc::new(Semaphore::new(PERMISSION_BYTES)),
         replacement: None,
         config_pending: false,
+        config_reply: None,
+        list_reply: None,
         list_pending: false,
         closing: false,
         close_sent: false,
@@ -350,13 +359,14 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
             request,
             commands,
             lifetime: Some(DriverLifetime(state.clone())),
+            connection: None,
             state,
         },
     )
 }
 
-type Shared = Arc<Mutex<State>>;
-fn lock(state: &Shared) -> MutexGuard<'_, State> {
+pub(crate) type Shared = Arc<Mutex<State>>;
+pub(crate) fn lock(state: &Shared) -> MutexGuard<'_, State> {
     state.lock().expect("ACP short state callback panicked")
 }
 
@@ -375,10 +385,11 @@ struct Permission {
     _bytes: OwnedSemaphorePermit,
 }
 
-struct State {
-    instance: u64,
-    session_id: Option<SessionId>,
+pub(crate) struct State {
+    pub(crate) instance: u64,
+    pub(crate) session_id: Option<SessionId>,
     ready: bool,
+    pub(crate) finished: bool,
     // DriverLifetime settles pending open and closes completion/events even when
     // Session retains this original State after the driver exits or is cancelled.
     opened: watch::Sender<Option<Result<SessionId, Error>>>,
@@ -396,11 +407,13 @@ struct State {
     permission_bytes: Arc<Semaphore>,
     replacement: Option<(Vec<ContentBlock>, Reply<RunId>)>,
     config_pending: bool,
+    config_reply: Option<ReplySlot<()>>,
+    list_reply: Option<ReplySlot<ListSessionsResponse>>,
     list_pending: bool,
     closing: bool,
     close_sent: bool,
     close_done: bool,
-    close_error: Option<Error>,
+    pub(crate) close_error: Option<Error>,
     reason: Option<ExitReason>,
     events: observe::Sender,
     wake: Arc<Notify>,
@@ -409,11 +422,32 @@ struct State {
 }
 
 impl State {
+    /// 账户撤代的同步准入闸门；驱动随后发送自身取消并等待真实尾部，不排空其他成员。
+    pub(crate) fn revoke(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.closing = true;
+        self.settle_open(Err(Error::Closed));
+        self.cancel_permissions();
+        if let Some((_, reply)) = self.replacement.take() {
+            let _ = reply.send(Err(Error::Closed));
+        }
+        self.wake.notify_one();
+    }
+
     fn finish_driver(&mut self) {
+        self.finished = true;
         self.closing = true;
         self.ready = false;
         self.settle_open(Err(Error::Closed));
         self.cancel_permissions();
+        if let Some(reply) = self.config_reply.take() {
+            deliver(&reply, Err(Error::Closed));
+        }
+        if let Some(reply) = self.list_reply.take() {
+            deliver(&reply, Err(Error::Closed));
+        }
         if let Some((_, reply)) = self.replacement.take() {
             let _ = reply.send(Err(Error::Closed));
         }
@@ -458,8 +492,8 @@ impl State {
         self.session_id.clone().ok_or(Error::NotReady)
     }
 
-    fn update(&mut self, notification: SessionNotification) {
-        if self.session_id.as_ref() != Some(&notification.session_id) {
+    pub(crate) fn update(&mut self, notification: SessionNotification) {
+        if self.finished || self.session_id.as_ref() != Some(&notification.session_id) {
             return;
         }
         match &notification.update {
@@ -490,7 +524,13 @@ impl State {
         self.emit(Event::Update(notification), size);
     }
 
-    fn setup(&mut self, result: Result<NewSessionResponse, agent_client_protocol::Error>) {
+    pub(crate) fn setup(
+        &mut self,
+        result: Result<NewSessionResponse, agent_client_protocol::Error>,
+    ) {
+        if self.finished {
+            return;
+        }
         match result {
             Ok(response) => {
                 // New acquires its real ID only here, in the ordered result callback.
@@ -502,6 +542,11 @@ impl State {
                 self.config_options = response.config_options.clone();
                 self.modes = response.modes.clone();
                 self.ready = true;
+                if self.closing {
+                    self.settle_open(Err(Error::Closed));
+                    self.wake.notify_one();
+                    return;
+                }
                 self.settle_open(Ok(response.session_id.clone()));
                 self.emit(Event::Ready(response), size);
             }
@@ -510,7 +555,10 @@ impl State {
         self.wake.notify_one();
     }
 
-    fn fail_open(&mut self, error: Error) {
+    pub(crate) fn fail_open(&mut self, error: Error) {
+        if self.finished {
+            return;
+        }
         self.settle_open(Err(error.clone()));
         let size = match &error {
             Error::Rpc(error) => rpc_error_size(error),
@@ -549,7 +597,7 @@ impl State {
         }
     }
 
-    fn permission(
+    pub(crate) fn permission(
         &mut self,
         request: RequestPermissionRequest,
         responder: Responder<RequestPermissionResponse>,
@@ -566,6 +614,7 @@ impl State {
         let Some(run) = run.filter(|_| {
             observable
                 && !self.closing
+                && !self.finished
                 && self.session_id.as_ref() == Some(&request.session_id)
                 && self.permissions.len() < PERMISSIONS
         }) else {
@@ -641,41 +690,34 @@ fn rpc_error_size(error: &agent_client_protocol::Error) -> usize {
 }
 
 impl Driver {
-    /// 消费受监督 I/O，驱动协议及全部命令；宿主负责 spawn/join 和真实 worker 回收。
-    pub async fn run<W, R>(mut self, outgoing: W, incoming: R) -> Exit
-    where
-        W: AsyncWrite + Unpin + Send + 'static,
-        R: AsyncRead + Unpin + Send + 'static,
-    {
+    /// 租用已登记的账户连接；只驱动自身 session，不排空共享 SDK。
+    pub async fn run(mut self, shared: crate::connection::Connection) -> Exit {
         let _lifetime = self.lifetime.take();
         let state = self.state.clone();
-        let updates = state.clone();
-        let permissions = state.clone();
+        self.connection = Some(shared.clone());
         let (closing, mut deadline) = watch::channel(None);
-        let connection = Client
-            .v1()
-            .on_receive_notification(
-                async move |notification: SessionNotification, _: ConnectionTo<Agent>| {
-                    lock(&updates).update(notification);
-                    Ok(())
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .on_receive_request(
-                async move |request: RequestPermissionRequest,
-                            responder: Responder<RequestPermissionResponse>,
-                            _: ConnectionTo<Agent>| {
-                    lock(&permissions).permission(request, responder);
-                    Ok(())
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .connect_with(
-                ByteStreams::new(outgoing.compat_write(), incoming.compat()),
-                async move |connection| self.drive(connection, closing).await,
-            );
-        tokio::pin!(connection);
-        let expires = async move {
+        let drive = async {
+            let ready = loop {
+                tokio::select! {
+                    result = shared.ready() => break result?,
+                    command = self.commands.recv() => {
+                        match command {
+                            Some(Command::Close(reply)) => { let _ = reply.send(Ok(())); return Ok(()); }
+                            None => return Ok(()),
+                            Some(command) => reject_unready(command),
+                        }
+                    }
+                }
+            };
+            let _lease = shared.lease()?;
+            let _registration = shared.register(state.clone())?;
+            lock(&state).initialized = Some(Ok(ready.initialize));
+            self.drive(ready.sdk, closing, shared.clone())
+                .await
+                .map_err(Error::from)
+        };
+        tokio::pin!(drive);
+        let expires = async {
             loop {
                 let value = *deadline.borrow_and_update();
                 if let Some(at) = value {
@@ -687,13 +729,17 @@ impl Driver {
                 }
             }
         };
-        let (sdk_finished, cleanup_timed_out, sdk_error) = tokio::select! {
-            result = &mut connection => (true, false, result.err()),
-            () = expires => (false, true, None),
+        let (cleanup_timed_out, failure) = tokio::select! {
+            result = &mut drive => (false, result.err()),
+            () = expires => (true, None),
         };
+        let sdk_error = failure.as_ref().and_then(|error| match error {
+            Error::Rpc(error) => Some(error.clone()),
+            _ => None,
+        });
         let mut state = lock(&state);
         if !state.ready && !matches!(state.reason, Some(ExitReason::OpenFailed(_))) {
-            let error = sdk_error.clone().map_or(Error::Closed, Error::from);
+            let error = failure.unwrap_or(Error::Closed);
             state.settle_open(Err(error.clone()));
             state.emit(
                 Event::Failed(error.clone()),
@@ -712,7 +758,7 @@ impl Driver {
             reason: state.reason.clone().unwrap_or(ExitReason::IncomingClosed),
             close_error: state.close_error.clone(),
             sdk_error,
-            sdk_finished,
+            sdk_finished: false,
             cleanup_timed_out,
             unfinished_prompt: state.active.as_ref().map(|run| run.id),
             unfinished_controls: state.config_pending
@@ -729,31 +775,12 @@ impl Driver {
         mut self,
         connection: ConnectionTo<Agent>,
         closing: watch::Sender<Option<tokio::time::Instant>>,
+        shared: crate::connection::Connection,
     ) -> Result<(), agent_client_protocol::Error> {
         let state = self.state.clone();
         let observation_lost = lock(&state).events.invalidated();
         tokio::pin!(observation_lost);
         let mut observation_ended = false;
-        connection
-            .prepare_request(
-                InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
-                    ClientCapabilities::new().session(
-                        ClientSessionCapabilities::new().config_options(
-                            SessionConfigOptionsCapabilities::new()
-                                .boolean(BooleanConfigOptionCapabilities::new()),
-                        ),
-                    ),
-                ),
-            )
-            .on_receiving_result({
-                let state = state.clone();
-                async move |result| {
-                    let mut state = lock(&state);
-                    state.initialized = Some(result);
-                    state.wake.notify_one();
-                    Ok(())
-                }
-            })?;
         let wake = lock(&state).wake.clone();
         let mut preparing: Option<OpenSetupFuture> = None;
         loop {
@@ -803,6 +830,14 @@ impl Driver {
                         owner.close_done = true;
                     }
                     closing.send_replace(Some(self.request.cleanup.deadline()));
+                    if let Some(run) = owner
+                        .active
+                        .as_ref()
+                        .filter(|run| !run.cancelling)
+                        .map(|run| run.id)
+                    {
+                        let _ = cancel(&connection, &mut owner, run);
+                    }
                     if owner.ready && !owner.close_sent && owner.active.is_none() {
                         self.close_peer(&connection, &mut owner);
                     }
@@ -836,6 +871,9 @@ impl Driver {
                     observation_ended = true;
                     lock(&state).cancel_permissions();
                 }
+                () = shared.cancelled(), if !lock(&state).closing => {
+                    begin_close(&connection, &mut lock(&state));
+                }
                 () = connection.incoming_closed() => {
                     lock(&state).reason = Some(ExitReason::IncomingClosed);
                     break;
@@ -851,7 +889,6 @@ impl Driver {
                 }
             }
         }
-        closing.send_replace(Some(self.request.cleanup.deadline()));
         Ok(())
     }
 
@@ -881,6 +918,7 @@ impl Driver {
             None
         };
         let state = self.state.clone();
+        let account = self.connection.clone().expect("registered connection");
         let cwd = &self.request.cwd;
         let result = match &self.request.intent {
             Open::New => connection
@@ -890,7 +928,7 @@ impl Driver {
                         .system_prompt(system_prompt),
                 )
                 .on_receiving_result(async move |result| {
-                    lock(&state).setup(result);
+                    account.setup(&state, result);
                     Ok(())
                 }),
             Open::Load(id) if owner.capabilities.load_session => {
@@ -902,12 +940,15 @@ impl Driver {
                             .system_prompt(system_prompt),
                     )
                     .on_receiving_result(async move |result| {
-                        lock(&state).setup(result.map(|r| {
-                            NewSessionResponse::new(id)
-                                .config_options(r.config_options)
-                                .modes(r.modes)
-                                .meta(r.meta)
-                        }));
+                        account.setup(
+                            &state,
+                            result.map(|r| {
+                                NewSessionResponse::new(id)
+                                    .config_options(r.config_options)
+                                    .modes(r.modes)
+                                    .meta(r.meta)
+                            }),
+                        );
                         Ok(())
                     })
             }
@@ -920,12 +961,15 @@ impl Driver {
                             .system_prompt(system_prompt),
                     )
                     .on_receiving_result(async move |result| {
-                        lock(&state).setup(result.map(|r| {
-                            NewSessionResponse::new(id)
-                                .config_options(r.config_options)
-                                .modes(r.modes)
-                                .meta(r.meta)
-                        }));
+                        account.setup(
+                            &state,
+                            result.map(|r| {
+                                NewSessionResponse::new(id)
+                                    .config_options(r.config_options)
+                                    .modes(r.modes)
+                                    .meta(r.meta)
+                            }),
+                        );
                         Ok(())
                     })
             }
@@ -942,6 +986,7 @@ impl Driver {
     fn close_peer(&self, connection: &ConnectionTo<Agent>, owner: &mut State) {
         owner.close_sent = true;
         if owner.capabilities.session_capabilities.close.is_none() {
+            owner.close_error = Some(Error::Unsupported);
             owner.close_done = true;
             return;
         }
@@ -1022,13 +1067,22 @@ impl Driver {
                 owner.list_pending = true;
                 let state = self.state.clone();
                 let reply = Arc::new(Mutex::new(Some(reply)));
+                owner.list_reply = Some(reply.clone());
                 let callback_reply = reply.clone();
                 let result =
                     connection
                         .prepare_request(request)
                         .on_receiving_result(async move |result| {
-                            lock(&state).list_pending = false;
-                            deliver(&callback_reply, result.map_err(Error::from));
+                            let mut owner = lock(&state);
+                            owner.list_pending = false;
+                            deliver(
+                                &callback_reply,
+                                if owner.finished {
+                                    Err(Error::Closed)
+                                } else {
+                                    result.map_err(Error::from)
+                                },
+                            );
                             Ok(())
                         });
                 if let Err(error) = result {
@@ -1092,7 +1146,7 @@ fn start_prompt(
         .prepare_request(PromptRequest::new(session_id, content))
         .on_receiving_result(async move |result| {
             let mut owner = lock(&state);
-            if owner.active.as_ref().map(|run| run.id) == Some(id) {
+            if !owner.finished && owner.active.as_ref().map(|run| run.id) == Some(id) {
                 let active = owner.active.take().expect("matched run");
                 owner.cancel_permissions();
                 let completed = Completed {
@@ -1161,7 +1215,7 @@ fn begin_close(connection: &ConnectionTo<Agent>, owner: &mut State) {
     }
     owner.closing = true;
     owner.settle_open(Err(Error::Closed));
-    owner.reason = Some(ExitReason::Closed);
+    owner.reason.get_or_insert(ExitReason::Closed);
     owner.wake.notify_one();
 }
 
@@ -1250,11 +1304,16 @@ impl Driver {
         owner.config_pending = true;
         let state = self.state.clone();
         let reply = Arc::new(Mutex::new(Some(reply)));
+        owner.config_reply = Some(reply.clone());
         let callback_reply = reply.clone();
         let result = connection
             .prepare_request(SetSessionConfigOptionRequest::new(session, id, value))
             .on_receiving_result(async move |result| {
                 let mut owner = lock(&state);
+                if owner.finished {
+                    deliver(&callback_reply, Err(Error::Closed));
+                    return Ok(());
+                }
                 owner.config_pending = false;
                 if let Ok(response) = &result {
                     owner.config_options = Some(response.config_options.clone());
@@ -1306,11 +1365,16 @@ impl Driver {
         owner.config_pending = true;
         let state = self.state.clone();
         let reply = Arc::new(Mutex::new(Some(reply)));
+        owner.config_reply = Some(reply.clone());
         let callback_reply = reply.clone();
         let result = connection
             .prepare_request(SetSessionModeRequest::new(session, id.clone()))
             .on_receiving_result(async move |result| {
                 let mut owner = lock(&state);
+                if owner.finished {
+                    deliver(&callback_reply, Err(Error::Closed));
+                    return Ok(());
+                }
                 owner.config_pending = false;
                 if result.is_ok()
                     && owner.config_options.is_none()
@@ -1327,6 +1391,52 @@ impl Driver {
             owner.config_pending = false;
             deliver(&reply, Err(error.into()));
         }
+    }
+}
+
+fn reject_unready(command: Command) {
+    match command {
+        Command::Submit(_, reply) | Command::Replace(_, _, reply) => {
+            let _ = reply.send(Err(Error::NotReady));
+        }
+        Command::Interrupt(_, reply)
+        | Command::Config(_, _, reply)
+        | Command::Mode(_, reply)
+        | Command::Permission(_, _, reply)
+        | Command::Close(reply) => {
+            let _ = reply.send(Err(Error::NotReady));
+        }
+        Command::List(_, reply) => {
+            let _ = reply.send(Err(Error::NotReady));
+        }
+    }
+}
+
+#[cfg(test)]
+impl Driver {
+    async fn run_isolated<W, R>(self, outgoing: W, incoming: R) -> Exit
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        let (connection, driver) = crate::connection::channel(None, self.request.cleanup.clone());
+        struct CancelOnDrop(crate::connection::Connection);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let _cancel = CancelOnDrop(connection.clone());
+        let sdk = tokio::spawn(driver.run(outgoing, incoming));
+        let mut exit = self.run(connection.clone()).await;
+        connection.cancel();
+        let sdk = sdk.await.expect("SDK joined");
+        exit.sdk_finished = sdk.sdk_finished;
+        exit.cleanup_timed_out |= sdk.cleanup_timed_out;
+        if let Err(Error::Rpc(error)) = sdk.result {
+            exit.sdk_error = Some(error);
+        }
+        exit
     }
 }
 
@@ -1485,7 +1595,7 @@ mod tests {
                 expected_server_version: scenario.expected_server_version.clone(),
                 prepare: scenario.prepare.clone(),
             });
-            let driver = tokio::spawn(driver.run(client_writer, client_reader));
+            let driver = tokio::spawn(driver.run_isolated(client_writer, client_reader));
             let peer_state = state.clone();
             let peer_changed = changed.clone();
             let init_scenario = scenario.clone();
@@ -2083,7 +2193,7 @@ mod tests {
                 panic!("invalid protocol must not invoke prepare")
             })),
         });
-        let driver = tokio::spawn(driver.run(client_writer, client_reader));
+        let driver = tokio::spawn(driver.run_isolated(client_writer, client_reader));
         // The official client rejects V0 before producing a typed InitializeResponse.
         match opened(&session).await {
             Err(Error::Rpc(error)) => assert_eq!(
@@ -2593,7 +2703,7 @@ mod tests {
         });
         let exit = tokio::time::timeout(
             Duration::from_secs(5),
-            driver.run(tokio::io::sink(), BrokenReader),
+            driver.run_isolated(tokio::io::sink(), BrokenReader),
         )
         .await
         .unwrap();
@@ -3502,7 +3612,7 @@ mod tests {
             let state = harness.state.clone();
             let exit = harness.finish().await;
             assert_eq!(peer_lock(&state).closes, usize::from(capability));
-            assert_eq!(exit.close_error.is_some(), failure);
+            assert_eq!(exit.close_error.is_some(), failure || !capability);
             assert_eq!(exit.cleanup_timed_out, hangs);
             assert_eq!(exit.sdk_finished, !hangs);
         }

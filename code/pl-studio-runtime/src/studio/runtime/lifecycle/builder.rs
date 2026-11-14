@@ -62,6 +62,7 @@ impl StudioRuntime {
             config_runtime.clone(),
             product_events.clone(),
             local_executor.clone(),
+            host_mcp_source.clone(),
         );
         // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
         // 同一 Settings command 锁，因此不会有提交落在两者之间。
@@ -109,14 +110,12 @@ impl StudioRuntime {
             },
         );
         let sessions = crate::session::SessionTable::new();
-        let acp_workers = std::sync::Arc::new(local_executor.clone());
         let acp_business = super::super::acp_business::AcpBusinessOwner::new(
             thread_factory.clone(),
             config_runtime.clone(),
             store.clone(),
             product_events.clone(),
-            acp_workers.clone(),
-            host_mcp_source.clone(),
+            acp_auth.clone(),
         );
         let service_config = config_runtime.clone();
         let service_store = store.clone();
@@ -198,8 +197,6 @@ impl StudioRuntime {
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             acp_detection,
-            acp_workers,
-            host_mcp_source,
             model_performance,
             updater,
             activation: Default::default(),

@@ -24,6 +24,13 @@ pub struct AcpTransportFixture {
 
 impl AcpTransportFixture {
     pub async fn new(mode: &str) -> Result<Self> {
+        Self::with_mcp_source(mode, pl_studio_runtime::HostMcpSource::External).await
+    }
+
+    pub async fn with_mcp_source(
+        mode: &str,
+        host_mcp_source: pl_studio_runtime::HostMcpSource,
+    ) -> Result<Self> {
         let home = tempfile::tempdir()?;
         let program = home.path().join("peer.py");
         std::fs::write(&program, PEER)?;
@@ -35,6 +42,7 @@ impl AcpTransportFixture {
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
             studio_home: Some(home.path().join("studio")),
             host: StudioHostKind::Test,
+            host_mcp_source,
             ..StudioRuntimeOptions::desktop()
         })
         .await?;

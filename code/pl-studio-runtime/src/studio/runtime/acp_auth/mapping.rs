@@ -15,6 +15,7 @@ use super::super::acp_install::PrepareFailure;
 use super::registry::AcpAuthInner;
 
 /// 类型化阶段失败（与 wire 形态一一对应）。
+#[derive(Clone)]
 pub(super) struct AcpFailure {
     pub(super) code: AcpAuthFailureCode,
     pub(super) stage: AcpAuthStage,
