@@ -3739,6 +3739,16 @@ final class _ConceptScene {
               content.role == ChatContentRole.toolOutput,
         )
         .toList();
+    final arguments = declarations
+        .where((content) => content.role == ChatContentRole.toolArguments)
+        .toList();
+    final output = declarations
+        .where((content) => content.role == ChatContentRole.toolOutput)
+        .toList();
+    expect(arguments, hasLength(1));
+    expect(output, hasLength(1));
+    expect(renderedTool.presentationContract, 'builtin.view_image@1');
+    final succeeded = tool.outcome == TimelineToolOutcome.succeeded;
     final bodyConnectors = find.descendant(
       of: card,
       matching: find.byType(TimelineContentRangeConnector),
@@ -3747,11 +3757,12 @@ final class _ConceptScene {
       for (final element in bodyConnectors.evaluate())
         (element as StatefulElement).state as TimelineCurrentWindowDisplay,
     ];
-    expect(windows, isNotEmpty);
+    // A successful image card reads the image resource directly. A failed
+    // card reads only its declared result to render the actual diagnostic.
     expect(
       windows.map((window) => contentReferenceIdentity(window.reference)),
       unorderedEquals(
-        declarations.map(
+        (succeeded ? <ChatAtomContent>[] : output).map(
           (content) => contentReferenceIdentity(content.reference),
         ),
       ),
@@ -3767,7 +3778,6 @@ final class _ConceptScene {
         findRichText: true,
       ),
     );
-    final succeeded = tool.outcome == TimelineToolOutcome.succeeded;
     await _until(
       tester,
       () {
