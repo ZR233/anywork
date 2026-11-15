@@ -5,10 +5,11 @@ use tokio::sync::watch;
 
 use crate::{CloseError, ResourceId, scope::Scope};
 
-/// A resource whose successful close acknowledges that its real cleanup finished.
+/// 能够报告真实清理结果的资源。
 ///
-/// `request_close` must be synchronous, nonblocking, idempotent and must not
-/// panic. `close` may be called again after a failure, on the same instance.
+/// `request_close` 必须同步、非阻塞、幂等且不 panic。`close` 成功表示真实关闭已
+/// 完成；失败后可在同一个实例上再次调用。构造函数交出资源之前的部分初始化仍由
+/// 构造函数负责回滚。
 pub trait ManagedResource: Send + Sync + 'static {
     type Error: Send + Sync + 'static;
 
@@ -65,10 +66,9 @@ impl<E> Attempt<E> {
     }
 }
 
-/// Exclusive ownership of a scope-managed resource.
+/// 作用域托管资源的独占句柄。
 ///
-/// The borrowed resource remains subject to its own domain operation gates.
-/// Dropping this guard requests cleanup; it does not wait for cleanup to finish.
+/// 借出的资源仍受领域自身的操作准入约束。丢弃句柄会请求清理，但不会等待完成。
 pub struct Managed<R: ManagedResource> {
     pub(crate) resource: Arc<R>,
     pub(crate) scope: Arc<Scope<R::Error>>,
@@ -76,14 +76,17 @@ pub struct Managed<R: ManagedResource> {
 }
 
 impl<R: ManagedResource> Managed<R> {
+    /// 借用原资源；不能通过该借用绕过资源自身的关闭或读写约束。
     pub fn get(&self) -> &R {
         &self.resource
     }
 
+    /// 请求关闭，不等待异步清理。
     pub fn request_close(&self) {
         self.scope.request_member(self.id);
     }
 
+    /// 等待当前关闭尝试。取消等待不会取消清理，失败后再次调用不会隐式重试。
     pub async fn close(&self) -> Result<(), CloseError<R::Error>> {
         match self.scope.close_member(self.id, false) {
             Some(attempt) => attempt.wait().await,
@@ -91,6 +94,8 @@ impl<R: ManagedResource> Managed<R> {
         }
     }
 
+    /// 在活动状态开始首次关闭，在关闭中共享当前尝试，在失败后启动一次重试。
+    /// 本次尝试若失败，调用直接返回失败，不会自动再次重试。
     pub async fn retry_close(&self) -> Result<(), CloseError<R::Error>> {
         match self.scope.close_member(self.id, true) {
             Some(attempt) => attempt.wait().await,

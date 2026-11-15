@@ -30,6 +30,7 @@ pub enum Phase {
 pub struct ScopeClosed;
 
 #[derive(Debug)]
+/// 构造过程的终态；业务错误以 `Arc` 原样保留，不要求错误实现 `Clone`。
 pub enum OpenError<E> {
     ScopeClosed,
     Cancelled,
@@ -39,6 +40,7 @@ pub enum OpenError<E> {
 }
 
 #[derive(Debug)]
+/// 清理尝试的终态；业务错误以 `Arc` 原样保留。
 pub enum CloseError<E> {
     Resource(Arc<E>),
     Panicked,
@@ -74,6 +76,7 @@ pub enum RegistrationError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// 由作用域标识与作用域内资源标识共同确定的成员身份。
 pub struct ResourceInfo {
     pub scope_id: ScopeId,
     pub resource_id: ResourceId,
@@ -81,6 +84,7 @@ pub struct ResourceInfo {
 }
 
 #[derive(Debug)]
+/// 一个失败的构造或清理操作；`retained` 表示原资源仍需清理。
 pub struct FailedResource<E> {
     pub resource: ResourceInfo,
     pub attempt_id: AttemptId,
@@ -102,6 +106,7 @@ impl<E> Clone for FailedResource<E> {
 }
 
 #[derive(Clone, Debug)]
+/// 截止时刻仍在执行的构造或清理操作。
 pub struct PendingResource {
     pub resource: ResourceInfo,
     pub attempt_id: AttemptId,
@@ -109,6 +114,10 @@ pub struct PendingResource {
 }
 
 #[derive(Debug)]
+/// 当前作用域及子树的关闭观察结果。
+///
+/// `workers_finished` 覆盖全部受监督工作；诊断错误可在原资源释放后继续存在，
+/// 因此资源已经释放不代表 `is_clean()` 为真。
 pub struct CloseReport<E> {
     pub scope_id: ScopeId,
     pub sealed: bool,

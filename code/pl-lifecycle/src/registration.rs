@@ -2,7 +2,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::RegistrationError;
 
-/// An exclusive guard for a synchronous cleanup callback.
+/// 同步清理回调的独占凭证；作用域或凭证释放时回调恰好执行一次。
 pub struct Registration {
     release: Option<Box<dyn FnOnce() + Send + 'static>>,
 }

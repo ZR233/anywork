@@ -24,6 +24,12 @@ use crate::{
 };
 
 type Cleanup = Box<dyn FnOnce() + Send + 'static>;
+type CleanupAttempt<E> = (AttemptId, Arc<Attempt<E>>, Arc<dyn ErasedResource<E>>);
+
+struct OpenTicket<R: ManagedResource> {
+    receiver: oneshot::Receiver<Result<Managed<R>, OpenError<R::Error>>>,
+    guard: OpeningGuard<R::Error>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScopePhase {
@@ -64,6 +70,11 @@ struct Tree {
     changed: watch::Sender<u64>,
 }
 
+struct Generation {
+    value: AtomicU64,
+    parent: Option<Arc<Generation>>,
+}
+
 pub(crate) struct Scope<E: Send + Sync + 'static> {
     id: ScopeId,
     _label: &'static str,
@@ -71,6 +82,7 @@ pub(crate) struct Scope<E: Send + Sync + 'static> {
     pub(crate) tracker: TaskTracker,
     parent: Weak<Scope<E>>,
     tree: Arc<Tree>,
+    generation: Arc<Generation>,
     state: Mutex<State<E>>,
 }
 
@@ -87,12 +99,23 @@ impl<E: Send + Sync + 'static> Scope<E> {
             .send_modify(|value| *value = value.wrapping_add(1));
     }
 
+    // A parent must notice new work anywhere below it. A child does not use
+    // its siblings' generations or trackers to decide whether it is finished.
+    fn worker_registered(&self) {
+        let mut generation = Some(self.generation.as_ref());
+        while let Some(current) = generation {
+            current.value.fetch_add(1, Ordering::SeqCst);
+            generation = current.parent.as_deref();
+        }
+    }
+
     fn create(
         id: ScopeId,
         label: &'static str,
         runtime: Handle,
         parent: Weak<Self>,
         tree: Arc<Tree>,
+        parent_generation: Option<Arc<Generation>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -101,6 +124,10 @@ impl<E: Send + Sync + 'static> Scope<E> {
             tracker: TaskTracker::new(),
             parent,
             tree,
+            generation: Arc::new(Generation {
+                value: AtomicU64::new(0),
+                parent: parent_generation,
+            }),
             state: Mutex::new(State {
                 phase: ScopePhase::Open,
                 next_resource: 0,
@@ -140,6 +167,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
             self.runtime.clone(),
             Arc::downgrade(self),
             Arc::clone(&self.tree),
+            Some(Arc::clone(&self.generation)),
         );
         state.children.push(Arc::clone(&child));
         drop(state);
@@ -183,13 +211,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
         self: &Arc<Self>,
         label: &'static str,
         factory: F,
-    ) -> Result<
-        (
-            oneshot::Receiver<Result<Managed<R>, OpenError<E>>>,
-            OpeningGuard<E>,
-        ),
-        ScopeClosed,
-    >
+    ) -> Result<OpenTicket<R>, ScopeClosed>
     where
         R: ManagedResource<Error = E>,
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
@@ -217,19 +239,20 @@ impl<E: Send + Sync + 'static> Scope<E> {
             },
         );
         let tracked = self.tracker.token();
+        self.worker_registered();
         let guard = WorkerGuard::new(Arc::clone(self), id);
         let (sender, receiver) = oneshot::channel();
         drop(state);
         worker::spawn_open(Arc::clone(self), id, token, factory, sender, guard, tracked);
         self.changed();
-        Ok((
+        Ok(OpenTicket {
             receiver,
-            OpeningGuard {
+            guard: OpeningGuard {
                 scope: Arc::clone(self),
                 id,
                 armed: true,
             },
-        ))
+        })
     }
 
     pub(crate) fn publish_open<R: ManagedResource<Error = E>>(
@@ -254,7 +277,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
         };
         let erased: Arc<dyn ErasedResource<E>> = resource.clone();
         *stored = Some(erased.clone());
-        let should_close = closing || *close_requested;
+        let should_close = closing || *close_requested || token.is_cancelled();
         if should_close {
             entry.phase = Phase::Closing;
             entry.attempt_id = AttemptId(1);
@@ -285,25 +308,22 @@ impl<E: Send + Sync + 'static> Scope<E> {
 
     pub(crate) fn opening_failed(&self, id: ResourceId, error: Option<CloseError<E>>) {
         let mut state = self.state();
-        if let Some(entry) = state.entries.remove(&id) {
-            if let Some(error) = error {
-                state.diagnostics.push(FailedResource {
-                    resource: entry.info,
-                    attempt_id: AttemptId(0),
-                    phase: Phase::Opening,
-                    error,
-                    retained: false,
-                });
-            }
+        if let Some(entry) = state.entries.remove(&id)
+            && let Some(error) = error
+        {
+            state.diagnostics.push(FailedResource {
+                resource: entry.info,
+                attempt_id: AttemptId(0),
+                phase: Phase::Opening,
+                error,
+                retained: false,
+            });
         }
         drop(state);
         self.changed();
     }
 
-    pub(crate) fn current_cleanup(
-        &self,
-        id: ResourceId,
-    ) -> Option<(AttemptId, Arc<Attempt<E>>, Arc<dyn ErasedResource<E>>)> {
+    pub(crate) fn current_cleanup(&self, id: ResourceId) -> Option<CleanupAttempt<E>> {
         let state = self.state();
         let entry = state.entries.get(&id)?;
         let EntryKind::Async {
@@ -434,6 +454,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
                 let cell = Attempt::new();
                 *attempt = Some(Arc::clone(&cell));
                 let tracked = self.tracker.token();
+                self.worker_registered();
                 let guard = WorkerGuard::new(Arc::clone(self), id);
                 spawn = Some((
                     entry.attempt_id,
@@ -491,6 +512,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
             child.seal();
         }
         self.changed();
+        self.retire_if_empty();
     }
 
     fn run_registration(&self, id: ResourceId) {
@@ -509,16 +531,16 @@ impl<E: Send + Sync + 'static> Scope<E> {
         self.changed();
         let result = catch_unwind(AssertUnwindSafe(cleanup));
         let mut state = self.state();
-        if let Some(entry) = state.entries.remove(&id) {
-            if result.is_err() {
-                state.diagnostics.push(FailedResource {
-                    resource: entry.info,
-                    attempt_id: AttemptId(1),
-                    phase: Phase::Closing,
-                    error: CloseError::Panicked,
-                    retained: false,
-                });
-            }
+        if let Some(entry) = state.entries.remove(&id)
+            && result.is_err()
+        {
+            state.diagnostics.push(FailedResource {
+                resource: entry.info,
+                attempt_id: AttemptId(1),
+                phase: Phase::Closing,
+                error: CloseError::Panicked,
+                retained: false,
+            });
         }
         drop(state);
         self.changed();
@@ -550,20 +572,25 @@ impl<E: Send + Sync + 'static> Scope<E> {
     pub(crate) fn retire_if_empty(&self) {
         let can_retire = {
             let mut state = self.state();
-            let empty = state.phase != ScopePhase::Open
+            let released = state.phase != ScopePhase::Open
                 && state.entries.is_empty()
-                && state.children.is_empty()
+                && state
+                    .children
+                    .iter()
+                    .all(|child| child.state().phase == ScopePhase::Closed)
                 && self.tracker.is_empty();
-            if empty {
+            if released {
                 state.phase = ScopePhase::Closed;
             }
-            empty && state.diagnostics.is_empty()
+            released && state.children.is_empty() && state.diagnostics.is_empty()
         };
-        if can_retire && let Some(parent) = self.parent.upgrade() {
-            let mut state = parent.state();
-            state.children.retain(|child| child.id != self.id);
-            drop(state);
-            parent.changed();
+        if let Some(parent) = self.parent.upgrade() {
+            if can_retire {
+                let mut state = parent.state();
+                state.children.retain(|child| child.id != self.id);
+                drop(state);
+                parent.changed();
+            }
             parent.retire_if_empty();
         }
     }
@@ -639,7 +666,13 @@ impl<E: Send + Sync + 'static> Scope<E> {
         let mut changes = self.tree.changed.subscribe();
         loop {
             self.run_callbacks();
+            let generation = self.generation.value.load(Ordering::SeqCst);
             let report = self.report();
+            if generation != self.generation.value.load(Ordering::SeqCst)
+                && deadline.is_none_or(|deadline| Instant::now() < deadline)
+            {
+                continue;
+            }
             if report.sealed && report.workers_finished && report.pending.is_empty() {
                 return report;
             }
@@ -661,15 +694,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
 
     fn retry_existing(self: &Arc<Self>, selected: Vec<(Arc<Self>, ResourceId, AttemptId)>) {
         for (scope, id, previous) in selected {
-            let matches = {
-                let state = scope.state();
-                state.entries.get(&id).is_some_and(|entry| {
-                    entry.phase == Phase::Failed && entry.attempt_id == previous
-                })
-            };
-            if matches {
-                scope.retry_if_matching(id, previous);
-            }
+            scope.retry_if_matching(id, previous);
         }
     }
 
@@ -702,6 +727,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
         let resource = Arc::clone(resource);
         let attempt_id = entry.attempt_id;
         let tracked = self.tracker.token();
+        self.worker_registered();
         let guard = WorkerGuard::new(Arc::clone(self), id);
         drop(state);
         worker::spawn_cleanup(
@@ -735,7 +761,7 @@ impl<E: Send + Sync + 'static> Drop for OpeningGuard<E> {
     }
 }
 
-/// The unique owner of a scope. Dropping it requests best-effort cleanup.
+/// 作用域的唯一所有者。丢弃时请求尽力而为的清理，不等待异步工作。
 pub struct ScopeOwner<E: Send + Sync + 'static> {
     scope: Arc<Scope<E>>,
 }
@@ -748,7 +774,7 @@ impl<E: Send + Sync + 'static> ScopeOwner<E> {
             changed,
         });
         Self {
-            scope: Scope::create(ScopeId(0), label, runtime, Weak::new(), tree),
+            scope: Scope::create(ScopeId(0), label, runtime, Weak::new(), tree, None),
         }
     }
     pub fn handle(&self) -> ScopeHandle<E> {
@@ -756,19 +782,24 @@ impl<E: Send + Sync + 'static> ScopeOwner<E> {
             scope: Arc::downgrade(&self.scope),
         }
     }
+    /// 封闭作用域并请求取消，不等待清理。
+    /// 同步登记在凭证或所有者丢弃时，或显式等待作用域关闭时执行。
     pub fn request_close(&self) {
         self.scope.seal();
     }
+    /// 使用同一个绝对截止时刻等待本作用域及子作用域；超时不会取消清理工作。
     pub async fn close(&self, deadline: Instant) -> CloseReport<E> {
         self.request_close();
         self.scope.run_callbacks();
         self.scope.wait(Some(deadline)).await
     }
+    /// 无截止时刻地等待本轮工作；失败成员不会令本方法等待未来重试。
     pub async fn wait_closed(&self) -> CloseReport<E> {
         self.request_close();
         self.scope.run_callbacks();
         self.scope.wait(None).await
     }
+    /// 对本次调用选中的已有失败成员各启动一次重试，再等待当前作用域树。
     pub async fn retry_cleanup(&self, deadline: Instant) -> CloseReport<E> {
         let mut selected = Vec::new();
         for scope in self.scope.tree_scopes() {
@@ -800,7 +831,7 @@ impl<E: Send + Sync + 'static> Drop for ScopeOwner<E> {
     }
 }
 
-/// A clonable weak capability to register resources in an open scope.
+/// 可克隆的弱能力，只能向开放作用域登记资源，不能延长所有者的生命周期。
 pub struct ScopeHandle<E: Send + Sync + 'static> {
     scope: Weak<Scope<E>>,
 }
@@ -812,9 +843,11 @@ impl<E: Send + Sync + 'static> Clone for ScopeHandle<E> {
     }
 }
 impl<E: Send + Sync + 'static> ScopeHandle<E> {
+    /// 新建子作用域。子作用域关闭不会关闭父作用域或兄弟作用域。
     pub fn child(&self, label: &'static str) -> Result<ScopeOwner<E>, ScopeClosed> {
         self.scope.upgrade().ok_or(ScopeClosed)?.child(label)
     }
+    /// 登记同步解绑操作；拒绝登记时也会立即执行该操作。
     pub fn on_close<F>(
         &self,
         label: &'static str,
@@ -828,6 +861,7 @@ impl<E: Send + Sync + 'static> ScopeHandle<E> {
             None => registration::reject(Box::new(cleanup)),
         }
     }
+    /// 先登记构造工作再运行工厂。取消等待不会丢弃工厂，迟到资源仍由作用域清理。
     pub async fn open<R, F, Fut>(
         &self,
         label: &'static str,
@@ -839,7 +873,10 @@ impl<E: Send + Sync + 'static> ScopeHandle<E> {
         Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
     {
         let scope = self.scope.upgrade().ok_or(OpenError::ScopeClosed)?;
-        let (receiver, mut guard) = scope
+        let OpenTicket {
+            receiver,
+            mut guard,
+        } = scope
             .begin_open(label, factory)
             .map_err(|_| OpenError::ScopeClosed)?;
         let result = receiver.await.unwrap_or(Err(OpenError::WorkerStopped));

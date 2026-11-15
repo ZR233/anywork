@@ -1,10 +1,8 @@
-//! Resource ownership and observable cleanup for explicitly injected scopes.
+//! 通过显式注入的作用域管理资源归属，并观察真实清理结果。
 //!
-//! An owner controls a scope; its weak handle can register resources without
-//! gaining authority to close the scope. Dropping an owner or managed resource
-//! requests best-effort cleanup. For deterministic shutdown, await the root
-//! before shutting down its Tokio runtime and inspect the report. Scope cleanup
-//! does not determine the domain's writer, process, or database shutdown order.
+//! 所有者控制作用域；弱句柄只能登记资源，不能关闭作用域。丢弃所有者或受管资源会
+//! 发出尽力而为的清理请求。正常退出时，须在关闭 Tokio 运行时之前等待根作用域，
+//! 并检查报告。作用域不决定写入器、进程或数据库的领域关闭顺序。
 //!
 //! ```
 //! use pl_lifecycle::{Handle, Instant, ManagedResource, ScopeOwner};
@@ -22,8 +20,8 @@
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let owner = ScopeOwner::<Infallible>::new("application", Handle::current());
-//! let handle = owner.handle(); // Inject this weak capability into consumers.
-//! let _listener = handle.on_close("listener", || { /* unregister */ }).unwrap();
+//! let handle = owner.handle(); // 将弱句柄注入使用方。
+//! let _listener = handle.on_close("listener", || { /* 解绑监听器 */ }).unwrap();
 //! let closed = Arc::new(AtomicBool::new(false));
 //! let connection = handle.open("connection", {
 //!     let closed = Arc::clone(&closed);
