@@ -31,4 +31,5 @@ if [[ -n ${PURE_REMOTE_HELPER_PREBUILT_DIR:-} ]]; then
     fi
     arguments+=(--env "PURE_REMOTE_HELPER_PREBUILT_DIR=$helper")
 fi
+arguments+=(--env "LINUX_BUILD_IMAGE=$image")
 exec docker "${arguments[@]}" "$image" "$@"

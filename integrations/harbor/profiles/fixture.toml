@@ -1,0 +1,57 @@
+# 仅用于离线合成任务；没有真实模型密钥或外部端点。
+schema_version = 33
+
+[models.accounts.fixture]
+name = "Harbor fixture"
+protocol = "open_ai_compatible"
+authentication = "apiKey"
+billing_kind = "noCharge"
+base_url = "http://127.0.0.1:19321/v1"
+
+[models.accounts.fixture.catalog]
+source = "explicit"
+
+[[models.accounts.fixture.catalog.models]]
+model_id = "vendor/harbor-fixture"
+display_name = "Harbor fixture"
+context_window = 32000
+max_context_window = 32000
+max_output_tokens = 4096
+
+[models.accounts.fixture.catalog.models.pricing]
+kind = "unknown"
+
+[models.accounts.fixture.catalog.models.binding.transport]
+protocol = "responses"
+supported_connection_modes = ["http"]
+default_connection_mode = "http"
+
+[models.accounts.fixture.catalog.models.binding.request.protocol]
+api = "responses"
+programmaticToolCalling = false
+maxTokensField = "max_output_tokens"
+
+[mode_model_routes."mode.simple"]
+account_id = "fixture"
+model_id = "vendor/harbor-fixture"
+
+[mode_model_routes."mode.task"]
+account_id = "fixture"
+model_id = "vendor/harbor-fixture"
+
+[runtime.tool_capabilities]
+mcp = false
+
+[web_search]
+mode = "disabled"
+
+[deepseek_web_search]
+enabled = false
+fetch_enabled = false
+
+[skills]
+auto_learn = false
+external_dirs = []
+
+[skills.system]
+enabled = false

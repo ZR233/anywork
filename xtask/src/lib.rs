@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::ffi::OsString;
 
 mod cli;
+mod cli_bundle;
 mod client;
 mod flutter;
 mod host_mcp;

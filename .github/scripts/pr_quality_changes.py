@@ -183,6 +183,10 @@ def classify_path(path: str) -> frozenset[str]:
     )
     if documentation:
         return frozenset({"docs"})
+    # Harbor is an optional local manual integration. Neither its Python tests
+    # nor its Docker task environments belong to the product PR CI.
+    if path.startswith("integrations/harbor/"):
+        return frozenset({"docs" if path.endswith("README.md") else "manual"})
     if path in _RELEASE_EXACT or path.startswith(".github/scripts/studio-"):
         return frozenset({"release"})
 

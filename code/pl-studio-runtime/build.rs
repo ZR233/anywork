@@ -48,6 +48,15 @@ fn main() {
 }
 
 fn emit_git_commit_env() {
+    println!("cargo:rerun-if-env-changed=PL_GIT_COMMIT");
+    if let Ok(commit) = env::var("PL_GIT_COMMIT") {
+        assert!(
+            commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "PL_GIT_COMMIT must be a full Git commit"
+        );
+        println!("cargo:rustc-env=PL_GIT_COMMIT={commit}");
+        return;
+    }
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     if let Some(git_dir) = find_git_dir(&manifest_dir) {
