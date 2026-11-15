@@ -157,6 +157,22 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertIn("gui-generated", plan["required_jobs"])
         self.assertIn("linux-inputs", plan["required_jobs"])
 
+    def test_app_sources_and_localizations_require_generated_sources(self):
+        for path in (
+            "code/anywork/lib/src/features/settings/accounts/view_models/account_editor_view_model.dart",
+            "code/anywork/lib/src/features/settings/accounts/view_models/account_editor_view_model.g.dart",
+            "code/anywork/lib/src/app/routing/app_route.dart",
+            "code/anywork/lib/l10n/app_zh.arb",
+        ):
+            with self.subTest(path=path):
+                plan = self.plan(path)
+                self.assertEqual(self.enabled(plan), {
+                    "flutter_checks", "gui_generated", "linux_inputs", "linux_environment",
+                })
+                self.assertIn("gui-generated", plan["required_jobs"])
+                self.assertIn("linux-inputs", plan["required_jobs"])
+                self.assertFalse(plan["remote_helpers"])
+
     def test_app_dependencies_keep_native_compilation(self):
         for path in ("code/anywork/pubspec.yaml", "code/anywork/pubspec.lock"):
             plan = self.plan(path)
@@ -209,7 +225,7 @@ class PlanFromPathsTest(unittest.TestCase):
         native = self.plan("code/anywork/lib/src/app/studio_host_lifecycle.dart")
         self.assertTrue(native["linux_native"])
         self.assertFalse(native["linux_desktop"])
-        self.assertFalse(native["gui_generated"])
+        self.assertTrue(native["gui_generated"])
         self.assertTrue(native["windows_gui_build"])
         self.assertTrue(native["macos_gui_build"])
 
@@ -257,6 +273,17 @@ class PlanFromPathsTest(unittest.TestCase):
 
 
 class ChangedPathsTest(unittest.TestCase):
+    def test_deleted_or_moved_app_source_still_requires_generation(self):
+        source = "code/anywork/lib/src/features/removed_view_model.dart"
+        for diff in (
+            ["D", source],
+            ["R100", source, "code/anywork/test/support/removed_view_model.dart"],
+        ):
+            with self.subTest(diff=diff):
+                paths = parse_name_status(diff)
+                plan = plan_from_paths(paths, event_name="pull_request")
+                self.assertIn("gui-generated", plan["required_jobs"])
+
     def test_moves_include_source_and_destination_responsibilities(self):
         paths = parse_name_status([
             "R100", "code/pl-core/tests/old.rs", "code/anywork/integration_test/new_test.dart",

@@ -98,16 +98,22 @@ class GateEvaluateTest(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_gui_generation_requires_inputs_without_helper_job(self):
-        plan = plan_from_paths(
-            ["code/anywork/lib/src/infrastructure/frb/api.dart"],
-            event_name="pull_request",
-        )
-        required = plan["required_jobs"]
-        self.assertIn("gui-generated", required)
-        self.assertIn("linux-inputs", required)
-        self.assertNotIn("remote-helpers", required)
-        results = _results(**{job: "success" for job in required})
-        self.assertEqual(evaluate(required, results), [])
+        for path in (
+            "code/anywork/lib/src/infrastructure/frb/api.dart",
+            "code/anywork/lib/src/features/settings/accounts/view_models/account_editor_view_model.dart",
+            "code/anywork/lib/l10n/app_zh.arb",
+        ):
+            with self.subTest(path=path):
+                plan = plan_from_paths([path], event_name="pull_request")
+                required = plan["required_jobs"]
+                self.assertIn("gui-generated", required)
+                self.assertIn("linux-inputs", required)
+                self.assertNotIn("remote-helpers", required)
+                results = _results(**{job: "success" for job in required})
+                self.assertEqual(evaluate(required, results), [])
+                for status in ("skipped", "failure"):
+                    errors = evaluate(required, {**results, "gui-generated": status})
+                    self.assertTrue(any("gui-generated" in error for error in errors))
 
     def test_desktop_and_native_required_jobs_reject_skip_or_cancel(self):
         for path, job in (
