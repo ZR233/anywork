@@ -71,7 +71,12 @@ ChatItemPresentation _tool(
       bodies ??
       [
         _body('tool.arguments', arguments),
-        _body('tool.result', 'public result'),
+        _body(
+          'tool.result',
+          marker == 'builtin.exec@2'
+              ? '{"stdout":{"content":"public result"},"stderr":{"content":""},"exitCode":0}'
+              : 'public result',
+        ),
       ],
 );
 Widget _host(Widget child) => MaterialApp(
@@ -549,13 +554,17 @@ void main() {
           find.textContaining(l10n.timelineToolExitCode(0)),
           findsOneWidget,
         );
-        for (final key in declared.keys) {
-          expect(find.text('declared:$key'), findsOneWidget);
-        }
         expect(
-          requests.map((request) => request.key).toSet(),
-          declared.keys.toSet(),
+          find.text('declared:${ChatContentRole.toolArguments.name}'),
+          findsNothing,
         );
+        expect(
+          find.text('declared:${ChatContentRole.toolOutput.name}'),
+          findsOneWidget,
+        );
+        expect(requests.map((request) => request.key).toSet(), {
+          ChatContentRole.toolOutput.name,
+        });
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
         unit.expansion.retirement.dispose();
@@ -571,6 +580,21 @@ void main() {
         final item = _tool(
           hidden ? 'builtin.workflow_transition@1' : 'builtin.exec@2',
           name: hidden ? 'workflow_transition' : 'exec',
+          arguments: hidden
+              ? '{"completion":{"reason":"ready","summary":"done","evidence":[]}}'
+              : '{"command":"printf proof"}',
+          bodies: hidden
+              ? [
+                  _body(
+                    'tool.arguments',
+                    '{"completion":{"reason":"ready","summary":"done","evidence":[]}}',
+                  ),
+                  _body(
+                    'tool.result',
+                    '{"accepted":true,"snapshot":{"currentStateId":"internal"}}',
+                  ),
+                ]
+              : null,
         );
         await tester.pumpWidget(
           _host(
@@ -578,7 +602,10 @@ void main() {
               key: ValueKey(hidden),
               item: (item.toolCard as DecodedToolCard).value,
               initiallyExpanded: true,
-              declaredContents: const [Text('declared internal body')],
+              declaredContentIdentity: 'test-declaration',
+              declaredContentBuilder: (_, _) => const [
+                Text('declared internal body'),
+              ],
             ),
           ),
         );
@@ -722,41 +749,82 @@ void main() {
           await tester.tap(find.text('exec · 未知展示格式'));
         }
         await tester.pumpAndSettle();
-        expect(find.textContaining('printf proof'), findsWidgets);
+        if (marker == 'generic@1') {
+          expect(find.textContaining('printf proof'), findsNothing);
+          expect(find.textContaining('public result'), findsWidgets);
+        } else {
+          expect(find.textContaining('printf proof'), findsWidgets);
+        }
         expect(tester.takeException(), isNull);
       }
     },
   );
 
   testWidgets(
-    'tool families reuse existing semantic cards and disclose current argument/result fields',
+    'tool families disclose semantic content and omit duplicate successful mutation receipts',
     (tester) async {
-      final cases = <(String, String, IconData)>[
-        ('stat_path', '{"path":"src/proof.dart"}', Icons.menu_book_outlined),
+      final cases = <(String, String, IconData, String)>[
+        (
+          'stat_path',
+          '{"path":"src/proof.dart"}',
+          Icons.menu_book_outlined,
+          '{"path":"src/proof.dart","exists":true,"type":"file","len":5}',
+        ),
         (
           'write_file',
-          '{"path":"src/proof.dart","content":"proof"}',
+          '{"path":"src/proof.dart","content":"proof","mode":"overwrite"}',
           Icons.edit_outlined,
+          '{"path":"src/proof.dart","mode":"overwrite","bytesWritten":5}',
         ),
-        ('search_session_note', '{"query":"needle"}', Icons.search),
-        ('copy_path', '{"from":"a","to":"b"}', Icons.content_copy_outlined),
+        (
+          'search_session_note',
+          '{"query":"needle"}',
+          Icons.search,
+          '{"query":"needle","matches":[{"line":1,"column":1,"text":"public result","before":[],"after":[]}],"count":1,"nextCursor":null}',
+        ),
+        (
+          'copy_path',
+          '{"from":"a","to":"b","collision":"failIfExists"}',
+          Icons.content_copy_outlined,
+          '{"from":"a","to":"b","collision":"failIfExists"}',
+        ),
         (
           'send_message',
-          '{"agentId":"child","message":"proof"}',
+          '{"target":"child","message":"proof"}',
           Icons.send_outlined,
+          '{"target":"child","messageId":"private-message","sequence":1}',
         ),
         (
           'lsp_query',
           '{"languageId":"dart","filePath":"proof.dart","operation":"hover"}',
           Icons.code,
+          'public result',
         ),
-        ('plan_current', '{}', Icons.checklist_rtl),
-        ('workflow_current', '{}', Icons.route_outlined),
+        (
+          'plan_current',
+          '{}',
+          Icons.checklist_rtl,
+          '{"revision":1,"state":"approved","document":{"version":1,"markdown":"public result","contentHash":"private-hash"},"allowedTransitions":[]}',
+        ),
+        (
+          'workflow_current',
+          '{}',
+          Icons.route_outlined,
+          '{"currentState":{"id":"private-state","title":"public result","instructions":"Perform the task","completionCriteria":[],"kind":"atomic"},"lifecycle":"active"}',
+        ),
       ];
-      for (final (name, arguments, icon) in cases) {
+      for (final (name, arguments, icon, output) in cases) {
         await _show(
           tester,
-          _tool('builtin.$name@1', arguments: arguments, name: name),
+          _tool(
+            'builtin.$name@1',
+            arguments: arguments,
+            name: name,
+            bodies: [
+              _body('tool.arguments', arguments),
+              _body('tool.result', output),
+            ],
+          ),
         );
         expect(find.byType(TimelineToolDetails), findsOneWidget, reason: name);
         final row = tester.widget<TimelineActivityRow>(
@@ -769,8 +837,10 @@ void main() {
         await tester.tap(_rowTap);
         await tester.pumpAndSettle();
         expect(
-          find.textContaining('public result'),
-          findsWidgets,
+          find.textContaining(name == 'stat_path' ? 'file' : 'public result'),
+          const {'write_file', 'copy_path', 'send_message'}.contains(name)
+              ? findsNothing
+              : findsWidgets,
           reason: name,
         );
         expect(tester.takeException(), isNull, reason: name);
@@ -782,7 +852,7 @@ void main() {
           arguments: '{"search_query":[{"q":"actual query"}]}',
         ),
       );
-      expect(find.byType(TimelineWebSearchToolCard), findsOneWidget);
+      expect(find.byType(TimelineToolDetails), findsOneWidget);
       await tester.tap(_rowTap);
       await tester.pumpAndSettle();
       expect(find.textContaining('actual query'), findsWidgets);
@@ -1258,8 +1328,8 @@ void main() {
         ],
       );
       await _show(tester, item);
-      // 折叠行标题继续使用权威 changedFiles，不从补丁猜文件。
-      expect(find.textContaining('a.dart'), findsOneWidget);
+      // 文件身份只在展开后的 diff 中呈现，不在外围重复 changedFiles。
+      expect(find.textContaining('a.dart'), findsNothing);
       await tester.tap(_rowTap);
       await tester.pumpAndSettle();
       expect(find.byType(TimelinePatchDiffView), findsOneWidget);
@@ -1299,7 +1369,7 @@ void main() {
         },
         bodies: [
           _body('tool.arguments', patch),
-          _body('tool.result', 'remove failed'),
+          _body('tool.result', '{"error":"remove failed"}'),
         ],
       );
       await _show(tester, item);
@@ -1425,8 +1495,9 @@ void main() {
         expect(find.text('工具输出'), findsNothing);
         if (truncated) {
           expect(find.byType(TimelinePatchDiffView), findsNothing);
-          expect(find.text('补丁片段不可用：内容不完整或无法完整解析'), findsOneWidget);
-          expect(find.text('下一段'), findsOneWidget);
+          // 首段及其余段均缺少完整归属，滚动模式独立呈现而不拼接伪造补丁。
+          expect(find.text('补丁片段不可用：内容不完整或无法完整解析'), findsNWidgets(2));
+          expect(find.text('下一段'), findsNothing);
         } else {
           expect(find.byType(TimelinePatchDiffView), findsOneWidget);
           final plainText = tester

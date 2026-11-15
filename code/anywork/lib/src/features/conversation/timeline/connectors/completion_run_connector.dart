@@ -1,12 +1,14 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
+import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
 import '../view_models/display_member_controller.dart';
+import '../widgets/completion_run_view.dart';
 import 'timeline_member_atom.dart';
 
 /// Borrows the stable block demand from the original display lease.
@@ -39,6 +41,13 @@ class _MembersState extends State<CompletionRunConnector>
   VoidCallback? _unregister;
   VoidCallback? _unregisterMember;
   final Set<TimelineMemberDisplay> _members = {};
+  final Map<String, GlobalKey> _anchors = {};
+  CompletionRunScrollScope? _scrollScope;
+  DisplayMemberController? _listenedController;
+  (String, double)? _anchor;
+  bool _navigating = false;
+  double _leadingSpace = 0;
+  double _trailingSpace = 0;
   DisplayMemberController? get _controller => widget.unit.expansion.members;
   @override
   String get unitId => widget.unit.id;
@@ -88,6 +97,130 @@ class _MembersState extends State<CompletionRunConnector>
     if (widget.unit.state == DisplayBlockState.sealed) {
       _controller?.requireSealed();
     }
+    _listenedController = _controller;
+    _listenedController?.addListener(_pageChanged);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scope = CompletionRunScrollScope.maybeOf(context);
+    if (identical(scope, _scrollScope)) return;
+    _scrollScope?.notifications.removeListener(_scrolled);
+    _scrollScope = scope;
+    scope?.notifications.addListener(_scrolled);
+  }
+
+  Rect? _rect(String key) {
+    final box = _anchors[key]?.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  double? _contentOffset(String key) {
+    final target = _anchors[key]?.currentContext?.findRenderObject();
+    if (target == null) return null;
+    return RenderAbstractViewport.maybeOf(target)
+        ?.getOffsetToReveal(target, 0)
+        .offset;
+  }
+
+  void _scrolled() {
+    final scope = _scrollScope;
+    final controller = _controller;
+    if (scope == null ||
+        controller == null ||
+        controller.loading ||
+        _navigating ||
+        !isCurrent) {
+      return;
+    }
+    final notification = scope.notifications.value;
+    final delta = switch (notification) {
+      ScrollUpdateNotification(:final scrollDelta) => scrollDelta ?? 0,
+      OverscrollNotification(:final overscroll) => overscroll,
+      _ => 0.0,
+    };
+    if (delta == 0 || !scope.controller.hasClients) return;
+    final entries = controller.page?.entries;
+    if (entries == null || entries.isEmpty) return;
+    final viewport = Scrollable.maybeOf(context)?.context.findRenderObject();
+    if (viewport is! RenderBox) return;
+    final top = viewport.localToGlobal(Offset.zero).dy;
+    final bottom = top + scope.controller.position.viewportDimension;
+    final first = _rect(entries.first.memberKey);
+    final last = _rect(entries.last.memberKey);
+    final older =
+        delta < 0 &&
+        first != null &&
+        first.top >= top - 1 &&
+        controller.page?.before != null;
+    final newer =
+        delta > 0 &&
+        last != null &&
+        last.bottom <= bottom + 1 &&
+        controller.hasNewer;
+    if (!older && !newer && controller.window is! LatestDisplayMembers) return;
+    final visible = entries.where((entry) {
+      final rect = _rect(entry.memberKey);
+      return rect != null && rect.bottom > top && rect.top < bottom;
+    }).toList();
+    if (visible.isEmpty) return;
+    final key = (newer ? visible.last : visible.first).memberKey;
+    final offset = _contentOffset(key);
+    if (offset == null) return;
+    final position = scope.controller.position;
+    final readingPixels =
+        (older || newer) && notification is ScrollUpdateNotification
+        ? position.pixels - delta
+        : position.pixels;
+    // Content coordinates exclude the platform's transient overscroll stretch.
+    // Screen-space deltas would bake that paint transform into the new offset.
+    _anchor = (
+      key,
+      offset -
+          readingPixels.clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
+          ),
+    );
+    _navigating = true;
+    if (older || newer) {
+      setState(() {
+        _leadingSpace = newer ? bottom - top : 0;
+        _trailingSpace = older ? bottom - top : 0;
+      });
+    }
+    if (older) {
+      controller.older();
+    } else if (newer) {
+      controller.newer();
+    } else {
+      controller.holdLatest();
+    }
+  }
+
+  void _pageChanged() {
+    if (_controller?.loading != false || !_navigating) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !isCurrent) return;
+      final scroll = _scrollScope?.controller;
+      final anchor = _anchor;
+      _anchor = null;
+      if (scroll != null && scroll.hasClients && anchor != null) {
+        final offset = _contentOffset(anchor.$1);
+        final position = scroll.position;
+        if (offset != null) {
+          scroll.jumpTo(
+            (offset - anchor.$2).clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            ),
+          );
+        }
+      }
+      _navigating = false;
+    });
   }
 
   @override
@@ -100,6 +233,8 @@ class _MembersState extends State<CompletionRunConnector>
 
   @override
   void dispose() {
+    _scrollScope?.notifications.removeListener(_scrolled);
+    _listenedController?.removeListener(_pageChanged);
     _unregister?.call();
     _unregisterMember?.call();
     _members.clear();
@@ -113,70 +248,71 @@ class _MembersState extends State<CompletionRunConnector>
     if (controller == null) return const Text('成员读取尚未就绪');
     return ListenableBuilder(
       listenable: controller,
-      builder: (_, _) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (controller.error case final error?)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(error.toString()),
-                TextButton(
-                  onPressed: controller.retry,
-                  child: const Text('重试'),
-                ),
-              ],
-            ),
-          if (controller.loading) const LinearProgressIndicator(),
-          Wrap(
+      builder: (_, _) => _memberList(controller),
+    );
+  }
+
+  Widget _memberList(DisplayMemberController controller) {
+    final keys =
+        controller.page?.entries.map((entry) => entry.memberKey).toSet() ??
+        <String>{};
+    _anchors.removeWhere((key, _) => !keys.contains(key));
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (controller.error case final error?)
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (controller.page?.before case final before?)
-                TextButton(
-                  onPressed: () => controller.select(
-                    BeforeDisplayMembers(memberOrder: before),
-                  ),
-                  child: const Text('更早成员'),
-                ),
-              if (controller.window is BeforeDisplayMembers)
-                TextButton(
-                  onPressed: () =>
-                      controller.select(const LatestDisplayMembers()),
-                  child: const Text('最新成员'),
-                ),
+              Text(error.toString()),
+              TextButton(onPressed: controller.retry, child: const Text('重试')),
             ],
           ),
-          for (final entry
-              in controller.page?.entries ?? const <DisplayMemberHead>[])
-            if (controller.awaitingSealed &&
-                entry.record.contentSource is CurrentAtom)
-              const Text('正在读取封存观察…')
-            else
-              TimelineMemberAtom(
-                key: ValueKey((
-                  blockReference,
-                  entry.memberKey,
-                  controller.disclosure(entry.memberKey),
-                )),
-                record: entry.record,
-                displayId: entry.memberKey,
-                disclosure: controller.disclosure(entry.memberKey),
-                executionPresent: widget.unit.executionPresent,
-                content: widget.content,
-                retirement: widget.unit.expansion.retirement,
-                isActive: () =>
-                    isCurrent && widget.unit.expansion.expanded == true,
-                images: widget.images,
-                readAttachment: widget.readAttachment,
-                monotonicMicros: widget.monotonicMicros,
-                onContentLayout: widget.onContentLayout,
-                registerDisplay: (member) {
-                  _members.add(member);
-                  return () => _members.remove(member);
-                },
-              ),
-        ],
-      ),
+        if (controller.loading) const LinearProgressIndicator(),
+        SizedBox(height: _leadingSpace),
+        for (final entry
+            in controller.page?.entries ?? const <DisplayMemberHead>[])
+          KeyedSubtree(
+            key: _anchors.putIfAbsent(entry.memberKey, GlobalKey.new),
+            child: ValueListenableBuilder<DisplayMemberHead?>(
+              valueListenable: controller.member(entry.memberKey),
+              builder: (_, value, _) => value == null
+                  ? const SizedBox.shrink()
+                  : _member(controller, value),
+            ),
+          ),
+        SizedBox(height: _trailingSpace),
+      ],
+    );
+  }
+
+  Widget _member(DisplayMemberController controller, DisplayMemberHead entry) {
+    if (controller.awaitingSealed &&
+        entry.record.contentSource is CurrentAtom) {
+      return const Text('正在读取封存观察…');
+    }
+    return TimelineMemberAtom(
+      key: ValueKey((
+        blockReference,
+        entry.memberKey,
+        controller.disclosure(entry.memberKey),
+      )),
+      record: entry.record,
+      displayId: entry.memberKey,
+      disclosure: controller.disclosure(entry.memberKey),
+      executionPresent: widget.unit.executionPresent,
+      content: widget.content,
+      retirement: widget.unit.expansion.retirement,
+      isActive: () => isCurrent && widget.unit.expansion.expanded == true,
+      images: widget.images,
+      readAttachment: widget.readAttachment,
+      monotonicMicros: widget.monotonicMicros,
+      onContentLayout: widget.onContentLayout,
+      registerDisplay: (member) {
+        _members.add(member);
+        return () => _members.remove(member);
+      },
     );
   }
 }

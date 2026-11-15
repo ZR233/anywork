@@ -531,7 +531,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           output: '',
         ),
         onExpansionChanged: _expand,
-        declaredContents: [_windows()],
+        declaredContentIdentity: _rangeQualification,
+        declaredContentBuilder: (_, _) => [_windows()],
       );
       return atom.wait == null
           ? details

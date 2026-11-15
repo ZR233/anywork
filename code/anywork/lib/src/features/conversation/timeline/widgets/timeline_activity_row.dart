@@ -13,7 +13,7 @@ enum TimelineActivityIndicatorStyle {
   rotating,
 }
 
-/// 活动行共用的轻量基座：固定图标列、单行次级文案、紧邻文案的展开箭头。
+/// 活动行共用的轻量基座：固定图标列、唯一单行文案及展开箭头。
 ///
 /// Timeline 的组摘要、思考、工具、搜索与等候成员统一使用这一行，因此它们的图标与
 /// 文案起点分别对齐，展开后也不出现卡片、多行参数摘要或额外标题缩进
@@ -36,8 +36,6 @@ class TimelineActivityRow extends StatelessWidget {
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
-    this.summary,
-    this.summaryWidget,
     this.meta,
     this.metaKey,
     this.emphasized = false,
@@ -108,13 +106,11 @@ class TimelineActivityRow extends StatelessWidget {
   final bool expandable;
 
   final String? tooltip;
-  final String? summary;
-  final Widget? summaryWidget;
   final String? meta;
   final Key? metaKey;
   final bool emphasized;
 
-  /// 状态与组标题保持全文；摘要可省略，统计在不足时换行。
+  /// 组标题使用固定顶行几何；附属计时不另起第二行。
   final bool header;
 
   @override
@@ -151,22 +147,6 @@ class TimelineActivityRow extends StatelessWidget {
           strutStyle: header ? headerStrutStyle : null,
           style: textStyle,
         );
-    final detail =
-        summaryWidget ??
-        (summary == null
-            ? null
-            : Text(
-                summary!,
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.ellipsis,
-                strutStyle: header ? headerStrutStyle : null,
-                style: textStyle.copyWith(
-                  color: color,
-                  fontSize: header ? 13 : 11.5,
-                  fontWeight: FontWeight.w400,
-                ),
-              ));
     final mark = Icon(
       expanded
           ? Icons.keyboard_arrow_down_rounded
@@ -206,45 +186,24 @@ class TimelineActivityRow extends StatelessWidget {
     Widget row = SelectionContainer.disabled(
       child: LayoutBuilder(
         builder: (context, constraints) {
-          double measure(String value, TextStyle style) {
-            final painter = TextPainter(
-              text: TextSpan(text: value, style: style),
-              textDirection: Directionality.of(context),
-              textScaler: MediaQuery.textScalerOf(context),
-            )..layout();
-            final width = painter.width;
-            painter.dispose();
-            return width;
-          }
-
-          final stacked =
-              !header &&
-              meta != null &&
-              measure(label, textStyle) +
-                      measure(meta!, metaStyle) +
-                      (showLeading ? leadingWidth + rowGap : 0) +
-                      (expandable ? 19 : 0) +
-                      16 >
-                  constraints.maxWidth;
+          // Prefer the primary text on narrow rows. Timing remains available in
+          // the tooltip instead of creating a second description line.
+          final showMeta = meta != null && constraints.maxWidth >= 240;
           final content = Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               if (symbol != null) ...[symbol, SizedBox(width: rowGap)],
               Flexible(child: labelView),
-              if (!stacked && detail != null) ...[
-                const SizedBox(width: 8),
-                Flexible(child: detail),
-              ],
               if (!header && expandable) ...[const SizedBox(width: 4), mark],
             ],
           );
-          final title = (!stacked && meta != null) || (header && expandable)
+          final title = showMeta || (header && expandable)
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Expanded(child: content),
-                    if (!stacked && meta != null) ...[
+                    if (showMeta) ...[
                       const SizedBox(width: 8),
                       Text(
                         meta!,
@@ -267,40 +226,18 @@ class TimelineActivityRow extends StatelessWidget {
             ),
             child: Padding(
               padding: EdgeInsets.symmetric(vertical: header ? 2 : 4),
-              child: stacked
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        title,
-                        Padding(
-                          padding: EdgeInsetsDirectional.only(
-                            start: showLeading ? leadingWidth + rowGap : 0,
-                            top: 2,
-                          ),
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 3,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              ?detail,
-                              Text(meta!, key: metaKey, style: metaStyle),
-                            ],
-                          ),
-                        ),
-                      ],
-                    )
-                  : Align(
-                      alignment: AlignmentDirectional.centerStart,
-                      heightFactor: 1,
-                      child: title,
-                    ),
+              child: Align(
+                alignment: AlignmentDirectional.centerStart,
+                heightFactor: 1,
+                child: title,
+              ),
             ),
           );
         },
       ),
     );
-    if (tooltip != null) row = Tooltip(message: tooltip!, child: row);
+    final accessibleLabel = {label, ?tooltip, ?meta}.join('\n');
+    row = Tooltip(message: accessibleLabel, child: row);
     return ColoredBox(color: Colors.transparent, child: row);
   }
 }

@@ -105,7 +105,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
                 presentationContract: 'builtin.exec@2',
                 statusString: 'transferred',
                 arguments: '{"command":"cargo flutter analyze"}',
-                output: '执行已交接，当前轮次正在请求模型。',
+                output: '',
               ),
             ),
           ),

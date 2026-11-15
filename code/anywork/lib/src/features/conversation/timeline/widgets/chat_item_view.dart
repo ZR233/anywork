@@ -12,12 +12,10 @@ import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
-import '../state/tool_presentation.dart';
+import '../state/tool_display_registry.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
-import 'timeline_lsp_tool_view.dart';
-import 'timeline_patch_diff_view.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_reasoning_view.dart';
 import 'timeline_tool_blocks.dart';
@@ -389,18 +387,30 @@ class _ChatItemViewState extends State<ChatItemView> {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
       final declaredContents = item.atom?.contents;
-      final applyPatch = tool.presentationContract == 'builtin.apply_patch@1';
-      final lspTool = timelineIsLspContract(tool.presentationContract);
-      // apply_patch 成功不重复呈现原始输出；行标题继续使用权威 changedFiles。
-      final suppressSuccessOutput =
-          applyPatch && tool.statusString == 'succeeded';
-      // LSP 工具的请求参数已内联于 DecodedToolCard 并融合进语义上下文头，不重复读取原始参数窗口。
+      final hasDeclaredBodies =
+          declaredContents?.any(
+            (content) =>
+                content.role == ChatContentRole.toolArguments ||
+                content.role == ChatContentRole.toolOutput,
+          ) ??
+          false;
+      final spec = toolDisplayRegistry[tool.presentationContract]!;
+      final outputReference = declaredContents
+          ?.where((content) => content.role == ChatContentRole.toolOutput)
+          .firstOrNull
+          ?.reference;
+      // 只有补丁／文件内容读取输入窗口，查询等纯语义输入已在内联参数中。
       final contents = declaredContents
           ?.where(
-            (content) =>
-                (content.role == ChatContentRole.toolArguments && !lspTool) ||
-                (content.role == ChatContentRole.toolOutput &&
-                    !suppressSuccessOutput),
+            (content) => switch (content.role) {
+              ChatContentRole.toolArguments =>
+                spec.inputBody != ToolInputBody.none,
+              ChatContentRole.toolOutput => spec.readsOutput(
+                tool.statusString,
+                output: tool.output,
+              ),
+              _ => false,
+            },
           )
           .toList();
       final wait = item.atom?.wait ?? tool.wait;
@@ -413,29 +423,37 @@ class _ChatItemViewState extends State<ChatItemView> {
         additionalContentBuilder: item.attachments.isEmpty
             ? null
             : (_) => _media(),
-        declaredContents: contents == null || contents.isEmpty
+        declaredContentIdentity: hasDeclaredBodies
+            ? (
+                outputReference == null
+                    ? null
+                    : contentReferenceIdentity(outputReference),
+                hasDeclaredBodies,
+              )
+            : null,
+        declaredContentBuilder: !hasDeclaredBodies
             ? null
-            : [
-                for (final content in contents)
+            : (onOutputRead, acceptance) => [
+                for (final content in contents!)
                   TimelineBodyReadIntent(
-                    bodyBuilder:
-                        applyPatch &&
-                            content.role == ChatContentRole.toolArguments
-                        ? timelineApplyPatchWindowBody
-                        : lspTool && content.role == ChatContentRole.toolOutput
-                        ? (text) => timelineLspWindowBody(
-                            tool,
-                            text,
-                            markdownBuilder: widget.bodyBuilder,
-                          )
+                    scrollable: true,
+                    onRead: content.role == ChatContentRole.toolOutput
+                        ? onOutputRead
                         : null,
+                    bodyBuilder: (text) => timelineToolWindowBody(
+                      tool,
+                      text,
+                      input: content.role == ChatContentRole.toolArguments,
+                      markdownBuilder: widget.bodyBuilder,
+                      acceptance: acceptance,
+                    ),
                     child:
                         widget.contentRangeBuilder?.call(
                           item.id,
                           content.role.name,
                           content.role == ChatContentRole.toolArguments
-                              ? '工具参数'
-                              : '工具输出',
+                              ? '工具内容'
+                              : '工具结果',
                           content.reference,
                           _contentWitness,
                         ) ??
@@ -452,14 +470,6 @@ class _ChatItemViewState extends State<ChatItemView> {
                 presentation: wait,
                 initiallyExpanded: widget.initiallyExpanded,
                 diagnostics: details,
-                onExpansionChanged: widget.onExpansionChanged,
-              )
-            : timelineIsWebSearch(tool) &&
-                  item.attachments.isEmpty &&
-                  (contents == null || contents.isEmpty)
-            ? TimelineWebSearchToolCard(
-                item: tool,
-                initiallyExpanded: widget.initiallyExpanded,
                 onExpansionChanged: widget.onExpansionChanged,
               )
             : details,

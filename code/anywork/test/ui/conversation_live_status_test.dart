@@ -747,7 +747,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('展开的长工具输出完整增高，窄窗换行并仅由外层滚动到末行', (tester) async {
+    testWidgets('长工具输出在有界工作组内滚动到末行且代码长行可以横向阅读', (tester) async {
       await tester.binding.setSurfaceSize(const Size(360, 480));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       const lastLine = '末行检查完成';
@@ -760,8 +760,12 @@ void main() {
         _wrapWithApp(
           ConversationActivityBar(
             children: [
-              _group(
-                content: TimelineToolDetails(
+              CompletionRunView(
+                id: 'long-output-group',
+                timing: const WorkTiming(startedAt: 100, finishedAt: 200),
+                initiallyExpanded: true,
+                location: WorkDisplayLocation.history,
+                childBuilder: (_) => TimelineToolDetails(
                   initiallyExpanded: true,
                   item: TimelineToolPresentation(
                     id: 'long-output',
@@ -770,7 +774,11 @@ void main() {
                     presentationContract: 'builtin.exec@2',
                     statusString: 'succeeded',
                     arguments: '{"command":"cargo flutter analyze"}',
-                    output: output,
+                    output: jsonEncode({
+                      'stdout': {'content': output},
+                      'stderr': {'content': ''},
+                      'exitCode': 0,
+                    }),
                   ),
                 ),
               ),
@@ -786,22 +794,24 @@ void main() {
       final positions = tester
           .stateList<ScrollableState>(find.byType(Scrollable))
           .map((state) => state.position);
-      final outer = positions.singleWhere(
-        (position) => position.maxScrollExtent > 0,
-      );
+      final groupScroll = tester
+          .widget<CompletionRunScrollScope>(
+            find.byType(CompletionRunScrollScope),
+          )
+          .controller;
+      expect(groupScroll.position.viewportDimension, lessThanOrEqualTo(420));
+      expect(groupScroll.position.maxScrollExtent, greaterThan(280));
       expect(
-        positions.where((position) => position.maxScrollExtent > 0),
-        hasLength(1),
-      );
-      expect(
-        positions.every((position) => position.axis == Axis.vertical),
+        positions.any((position) => position.axis == Axis.horizontal),
         isTrue,
       );
-      expect(outer.maxScrollExtent, greaterThan(280));
-      final header = tester.getRect(find.text('工作中'));
-      outer.jumpTo(outer.maxScrollExtent);
+      final headerFinder = find.byKey(
+        const ValueKey('completion-run-header:long-output-group'),
+      );
+      final header = tester.getRect(headerFinder);
+      groupScroll.jumpTo(groupScroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
-      expect(tester.getRect(find.text('工作中')), header);
+      expect(tester.getRect(headerFinder), header);
       final paragraph = tester.renderObject<RenderParagraph>(
         find.byWidgetPredicate(
           (widget) => widget is RichText && widget.text.toPlainText() == output,
@@ -818,7 +828,13 @@ void main() {
         paragraph.localToGlobal(Offset.zero),
       );
       final viewport = tester
-          .getRect(find.byType(SingleChildScrollView).first)
+          .getRect(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is SingleChildScrollView &&
+                  widget.controller == groupScroll,
+            ),
+          )
           .inflate(1);
       expect(viewport.contains(glyph.topLeft), isTrue);
       expect(viewport.contains(glyph.bottomRight), isTrue);
