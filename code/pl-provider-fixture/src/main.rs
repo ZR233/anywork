@@ -21,6 +21,11 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 struct Args {
+    /// Serve the offline Harbor file task on loopback port 19321.
+    #[arg(long)]
+    harbor_smoke: bool,
+    #[arg(long, default_value = "file", value_parser = ["file", "cancel"])]
+    harbor_case: String,
     #[arg(long)]
     scenario: Option<String>,
     #[arg(long, value_parser = ["stop-background"])]
@@ -112,6 +117,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    if args.harbor_smoke {
+        return pl_provider_fixture::harbor::serve(args.harbor_case == "cancel").await;
+    }
     let realtime_scope = args.realtime_scope()?;
     if args.mcp_stdio {
         let coord_file = args

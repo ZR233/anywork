@@ -509,3 +509,10 @@ History 阅读不冻结完成集合：遵循 [26](./26-timeline-content.md) 的�
 工作量记录 full_context_rows、quick_check、execution_activation、tool_or_ssh_initialization、query_triggered_flush（普通当前格式打开均零）、SQL/pending 候选与返回量、正文/媒体/FRB 字节、writer 事务、未落库引用、controller 操作与构建行数。1、100、10,000、100,000成员工作段请求同样段数，Main 成本不能随成员数线性增长；EXPLAIN QUERY PLAN 证明索引跳转，工作代表正文/媒体字节=0，纯活动历史枚举=0，同段追加只更新尾卡。身份/首次 seed 查询单列，不混入 page SQL。已加载消息随浏览增长，关闭释放；惰性 Widget 不证明缓存恒定。
 
 逐请求证据复用现有诊断与平台观察能力：Rust 读取 span 关联原读取资格、操作和需求，沿真实 pending、SQL、内容及编码入口记录工作；Flutter 使用官方 `integration_test`／`WidgetTester` 读取生产 controller 与实际挂载行，并关联同一会话的选择代次。SQL 候选数指驱动实际返回的索引头，pending 候选数指内存选择实际检查的索引头；头部解码数、最终返回数与实际搬运字节分别报告，不把 SQLite 内部访问页数或完整 payload 声明长度当作已搬运正文。零值须有启用的观察入口及完整请求边界支持，缺失日志、未命中场景或未执行不能补零。执行恢复、完整性检查、执行装配和 flush 保留各自真实入口事件；独立迁移计时从实际迁移开始到返回，成功和失败均保留，不混入已迁移会话的打开样本。诊断只记录身份、计数和时长，不复制业务正文，不形成消息镜像或新的运行控制开关。
+
+
+## 24.14 本地 Harbor 手动验收
+
+`integrations/harbor` 不接入 PR、发布或手动工作流，不安装到项目 Docker 镜像。维护者在 Linux 宿主通过锁定依赖运行 Python 单测、官方 ATIF 验证和真实 Harbor 任务；任务容器只消费 CLI、显式原生配置和共享 `pl-provider-fixture`。正常验收必须由工具实际写文件并由验证器核对，外层取消必须证明超时、仅回收本次进程及验证器启动后无残留写入。损坏产物、账单关系和未知计量另有协议回归。命令与覆盖边界见[本地 Harbor 指南](../integrations/harbor/README.md)。
+
+持续集成沿现有工作区 Rust 检查和桌面发布入口构建、校验 `bin/anywk`，不运行 Harbor 或付费模型。真实开发集和完整官方基准仅由运行者手动执行，不能用合成奖励、解析成功或单平台结果替代模型效果和跨平台安装证据。

@@ -244,8 +244,11 @@ fn discover_linker(target: &str) -> Result<PathBuf> {
 }
 
 fn helper_executable(workspace_root: &Path, target: &str) -> PathBuf {
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
     workspace_root
-        .join("target")
+        .join(target_dir)
         .join(target)
         .join("release")
         .join(HELPER_FILE_NAME)

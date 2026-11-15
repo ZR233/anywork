@@ -1349,7 +1349,14 @@ async fn apply_batch(
     }
     // Includes complete orphan lines left by failed savepoints. No SQL success or receipt
     // can escape before every segment touched by this batch crosses its file barrier.
-    log.sync_pending().await?;
+    if let Err(error) = log.sync_pending().await {
+        // Drop only queues the SQLx rollback. Join it before releasing the log lock
+        // so the next batch cannot race the failed batch's still-held write lock.
+        tx.rollback()
+            .await
+            .with_context(|| format!("{error}; call batch rollback failed"))?;
+        return Err(error);
+    }
     // Keep the final SQLite maintenance and commit adjacent, rather than parking its worker
     // behind log I/O after the last SQL statement. The file barrier still precedes all SQL success.
     if changes.performance {
@@ -2963,12 +2970,24 @@ mod storage_fault_tests {
         let materials = store.subscribe_materials();
         store.writer.log.lock().await.fail_next_sync = true;
         let pending = batch(vec![billing("thread")?]);
-        assert!(apply_batch(&store.writer, &pending).await.is_err());
+        assert_eq!(
+            apply_batch(&store.writer, &pending)
+                .await
+                .err()
+                .map(|error| error.to_string())
+                .as_deref(),
+            Some("injected call log sync failure")
+        );
         assert!(store.recent_performance_samples(100).await?.is_empty());
         assert!(!materials.has_changed()?);
         assert_eq!(store.processed_ticket(), 0);
         let (completed, failures, deferred) = apply_batch(&store.writer, &pending).await?;
-        assert_eq!(completed, 1);
+        assert_eq!(
+            completed,
+            1,
+            "failures={failures:?}, deferred={:?}",
+            deferred.as_ref().map(|failure| &failure.message)
+        );
         assert!(failures.is_empty());
         assert!(deferred.is_none());
         assert_eq!(materials.borrow().versions.performance, 1);

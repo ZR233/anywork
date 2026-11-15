@@ -128,6 +128,11 @@ fn validate_app(app: &Path, version: &Version) -> Result<()> {
         &app.join("Contents/Resources/data/host-mcp"),
         "aarch64-apple-darwin",
     )?;
+    crate::cli_bundle::validate(
+        &app.join("Contents/Resources/bin"),
+        "aarch64-apple-darwin",
+        &version.to_string(),
+    )?;
     let actual = checked(
         Command::new("/usr/libexec/PlistBuddy")
             .args(["-c", "Print :CFBundleShortVersionString"])

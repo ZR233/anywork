@@ -20,6 +20,15 @@ from pr_quality_changes import (  # noqa: E402
 
 
 class PlanFromPathsTest(unittest.TestCase):
+    def test_harbor_is_local_manual_and_does_not_select_product_ci(self):
+        plan = plan_from_paths([
+            "integrations/harbor/src/anywork_harbor/agent.py",
+            "integrations/harbor/tests/test_agent.py",
+            "integrations/harbor/fixtures/tasks/file-task/environment/Dockerfile",
+        ], event_name="pull_request")
+        self.assertFalse(any(plan[name] for name in OUTPUT_FLAGS))
+        self.assertEqual(plan["required_jobs"], ("changes", "pr-title"))
+
     def plan(self, *paths, event="pull_request"):
         return plan_from_paths(paths, event_name=event)
 

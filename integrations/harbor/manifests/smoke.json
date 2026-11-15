@@ -1,0 +1,1 @@
+{"schemaVersion":1,"suite":"smoke","tasks":[{"id":"file-task","path":"../fixtures/tasks/file-task"}]}

@@ -62,9 +62,13 @@ PR 中可复用的工程工具和 remote helper 资源使用同次运行的明�
 
 构建环境中的 Git 与 OpenSSH 必须满足现有工作树和 SSH 消费者的真实能力要求，不能仅以命令存在或基础发行版的默认版本作为验收依据。运行容器保留宿主 UID/GID；该身份不必预置在镜像账户中。需要身份解析的系统工具通过容器内、无特权、临时的用户与组映射运行，不修改或挂载宿主账户文件，不以 root、扩大挂载或放宽权限规避身份问题。相关能力应在镜像冒烟中直接验证，而不是由 CI 消费者临时安装修补。
 
+正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
+
 ## 23.2 Windows 安装包与签名信任根
 
 正式打包入口命令（`stage`、`finalize`、`verify`，参数为规范 `x.y.z` 版本号）要求传入版本与 `pubspec.yaml` 完全一致。`stage` 必须显式提供预构建 bundle，不隐式构建、不解析构建依赖；消费方先验证构件来源与版本，再生成单用户 Inno Setup 安装器（使用稳定 `AppId`，默认安装至 `LocalAppData`，声明 `CloseApplications` 与 `RestartApplications`，支持英语与随源码固定的简体中文界面，并将 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 与 `LICENSE` 打入发行包根目录）。
+
+Windows 安装器默认勾选“将 anywk 添加到用户 PATH”，可取消并由 Inno Setup 保留任务选择。使用当前用户 `HKCU\Environment\Path`，追加安装目录的 `bin`，避免重复并通知系统刷新；已有终端需重新打开。卸载按记录的条目归属移除本安装器所加目录，保留原有 PATH（包括末尾空条目）及安装前已存在的相同目录，不删除整个 PATH 值。便携包不改变 PATH。
 
 Windows 安装器固定使用 `PrivilegesRequired=lowest`，不主动启用 `RedirectionGuard`。在受影响的 Windows 版本上，安装器启用的重定向信任策略会随安装后启动或更新重启传入应用及其命令子进程，阻止普通用户创建的目录链接，破坏 Flutter 等开发工具链。安装器显式使用 Inno Setup 的 `RedirectionGuard=no`，避免在安装链主动附加此策略；不修改系统缓解策略、提权或在运行时尝试撤销已经继承的策略。已受限的旧版应用启动更新时，限制仍可能沿更新进程链继承；升级后须完全退出，再从开始菜单或快捷方式启动一次。由外部宿主或系统配置施加的策略仍由其管理。此选择只适用于当前不提权的单用户安装边界；若未来引入管理员安装，必须重新评估安装器的路径重定向防护与应用启动隔离。
 

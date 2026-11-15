@@ -61,8 +61,19 @@ and `additional_dirs` are not accepted TOML keys.
 Use explicit model catalogs and existing capability settings for an isolated
 evaluation profile. Keep unrelated MCP/model-discovery activity disabled and do
 not put enabled bots in the evaluation home. CLI diagnostics use stderr; stdout
-contains only the final assistant text after shutdown. This stage does not export
-complete trace or usage files.
+contains only the final assistant text after shutdown. Optional `--output-dir`
+writes a version-2 native run archive (`run.json`, `events.jsonl`, `result.json`
+and content-addressed originals). Use a fresh or empty non-symlink directory;
+failed export is an explicit failure. Unknown usage/cost stay null.
+
+Native desktop bundles include `bin/anywk` (`bin/anywk.exe` on Windows;
+`Contents/Resources/bin/anywk` inside the macOS app). Linux package installation
+provides `/usr/bin/anywk`; the Windows user installer offers a PATH task.
+Harbor is an optional local Linux consumer, never installed into the project
+Docker image or run by CI. Its profile renderer consumes this same native
+schema and requires explicit catalogs, environment-only credentials and isolated
+homes. Do not invent benchmark-only TOML keys. Frozen history is a separate
+validated data snapshot, not an alternative configuration file.
 
 ## Accounts and model routes
 

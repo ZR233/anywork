@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anywork-harbor"
+version = "0.1.0"
+description = "Anywork 生产命令行宿主的 Harbor 评测适配"
+requires-python = ">=3.12"
+dependencies = [
+  "harbor @ git+https://github.com/harbor-framework/harbor.git@06d0e86a8cfbac213548e0caec533afc5d81ff31",
+  "jsonschema>=4.23,<5",
+  "tomlkit>=0.13,<1",
+]
+
+[project.scripts]
+anywk-bench = "anywork_harbor.benchmark:main"
+anywk-bench-summary = "anywork_harbor.summarize:main"
+anywk-render-profile = "anywork_harbor.render_profile:main"
+anywk-freeze-history-seed = "anywork_harbor.history_seed:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.25,<1", "ruff>=0.11,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anywork_harbor"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
