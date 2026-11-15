@@ -99,8 +99,9 @@ function Assert-TestPath([string]$Expected) {
 }
 function Uninstall-Fixture {
   $uninstaller = Join-Path $installed 'unins000.exe'
-  $process = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru
-  Wait-Setup $process
+  # Inno's temporary clone deletes the original executable after its exit.
+  # PowerShell's -Wait joins the entire tree before the next installation.
+  $process = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru -Wait
   if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
 }
 $basePath = 'C:\existing tools;%USERPROFILE%\original;;'
