@@ -10616,18 +10616,20 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         assert_eq!(index.assigned(&ack_id), Some(ordinal));
-        projection.publish_prepared(&chat, &mut prepared).await?;
         assert_eq!(history.reader_calls(), reads);
         assert!(matches!(
             entered.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
+        // This test-only recovery publisher deliberately validates history. The production
+        // ConversationStore admission is covered separately with real Core acknowledgements.
+        drop(release);
+        projection.publish_prepared(&chat, &mut prepared).await?;
         assert_eq!(prepared.completions.len(), 1);
         let original = prepared.completions[0].clone();
         assert_eq!(original.header.item_id, ack_id);
         let head = chat.head_seq();
         assert!(sink.0.channel.prepare(prepared));
-        drop(release);
         // Published originals and the original prepared batch survive a failed save and owner handoff.
         let path = store
             .session_paths("project-test", id)?
@@ -10958,73 +10960,85 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
-    async fn real_background_receipts_do_not_read_history(writes: &[ThreadWrite]) -> Result<()> {
-        use pl_core::thread::journal::ContextChange;
+    /// Observes accepted Core batches while preserving the real sink's admission and pressure rules.
+    #[derive(Debug)]
+    struct RecordingSink {
+        inner: ThreadStorageSink,
+        writes: Arc<Mutex<BTreeMap<u64, ThreadWrite>>>,
+    }
 
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "concurrent-results";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let history = store.history(id).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let gate = sink.0.channel.step_lock.lock().await;
-        let mut acknowledgements = 0;
-
-        for write in writes {
-            let receipt_ids = if matches!(write.effect.context, Some(ContextChange::Append { .. }))
-            {
-                crate::studio::thread_projection::order::background_receipts(&write.effect)
-                    .filter(|(_, receipt)| receipt.is_some())
-                    .map(|(task, _)| {
-                        crate::studio::thread_projection::order::tool_background_started_id(
-                            &task.call_id,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            if receipt_ids.is_empty() {
-                drive_live_projection(&mut projection, &chat, &sink, id, write.clone()).await?;
-                continue;
-            }
-
-            let reads = history.reader_calls();
-            let (mut entered, release) = history.arm_completion_read_gate().await;
-            let prepared = tokio::time::timeout(
-                Duration::from_secs(10),
-                drive_live_projection(&mut projection, &chat, &sink, id, write.clone()),
-            )
-            .await;
-            drop(release);
-            let prepared = prepared??;
-            assert_eq!(history.reader_calls(), reads);
-            assert!(matches!(
-                entered.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ));
-            for receipt_id in &receipt_ids {
-                assert!(
-                    prepared
-                        .completions
-                        .iter()
-                        .any(|item| &item.header.item_id == receipt_id),
-                    "the real Core receipt must already be published in RAM"
-                );
-            }
-            acknowledgements += receipt_ids.len();
+    impl ColdStore for RecordingSink {
+        fn fold_usage(
+            &self,
+            summary: &mut pl_core::thread::UsageSummary,
+            effect: &ThreadEffectBatch,
+        ) {
+            self.inner.fold_usage(summary, effect);
         }
-        assert_eq!(acknowledgements, 2);
-        drop(gate);
-        sink.flush(
-            id,
-            writes.last().context("real Core writes")?.effect.sequence,
-        )
-        .await?;
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
+
+        fn reserve_observed_item(
+            &self,
+            thread_id: &str,
+            attempt_id: &str,
+            item_id: &str,
+        ) -> Result<(), ColdStoreError> {
+            self.inner
+                .reserve_observed_item(thread_id, attempt_id, item_id)
+        }
+
+        fn reserve_operation_output(
+            &self,
+            thread_id: &str,
+            operation_id: &str,
+            max_bytes: u64,
+        ) -> Result<u64, ColdStoreError> {
+            self.inner
+                .reserve_operation_output(thread_id, operation_id, max_bytes)
+        }
+
+        fn charge_operation_output(
+            &self,
+            thread_id: &str,
+            operation_id: &str,
+            accepted_bytes: u64,
+        ) -> Result<(), ColdStoreError> {
+            self.inner
+                .charge_operation_output(thread_id, operation_id, accepted_bytes)
+        }
+
+        fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
+            self.inner.release_operation_output(thread_id, operation_id);
+        }
+
+        fn pressure(&self, thread_id: &str) -> StoragePressure {
+            self.inner.pressure(thread_id)
+        }
+
+        fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            self.inner.subscribe_pressure(thread_id)
+        }
+
+        fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+            self.inner.admit(thread_id, write.clone())?;
+            self.writes
+                .lock()
+                .unwrap()
+                .entry(write.effect.sequence)
+                .or_insert(write);
+            Ok(())
+        }
+
+        async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
+            self.inner.flush(thread_id, sequence).await
+        }
+
+        async fn read_tool_task(
+            &self,
+            thread_id: &str,
+            task_id: &str,
+        ) -> Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError> {
+            self.inner.read_tool_task(thread_id, task_id).await
+        }
     }
 
     #[tokio::test]
@@ -11059,11 +11073,13 @@ pub(crate) mod storage_fault_tests {
                     .collect::<Result<Vec<_>>>()?,
             )
             .await?;
+        let captured = Arc::new(Mutex::new(BTreeMap::new()));
         thread
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
+            .attach_storage(ColdStoreHandle::new(RecordingSink {
+                inner: sink.clone(),
+                writes: captured.clone(),
+            }))
             .await?;
-        // Retain the actual Core batches until the real background acknowledgements are captured.
-        let capture_gate = sink.0.channel.step_lock.lock().await;
         let turn = TurnInput {
             turn_id: "both-running".into(),
             attempt_prefix: "both-running".into(),
@@ -11089,15 +11105,15 @@ pub(crate) mod storage_fault_tests {
                 .outcome,
             TurnOutcome::StepLimit
         );
-        let writes = lock_progress(&sink.0)
-            .effects
-            .iter()
-            .map(|queued| (*queued.write).clone())
+        let writes = captured
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
             .collect::<Vec<_>>();
         assert_eq!(writes.first().map(|write| write.effect.sequence), Some(1));
-        drop(capture_gate);
         thread.flush().await?;
-        real_background_receipts_do_not_read_history(&writes).await?;
+        crate::studio::runtime::thread_observation::storage_fault_tests::real_background_receipts_do_not_read_history(&writes).await?;
         let baseline = store
             .history("concurrent-results")
             .await?
