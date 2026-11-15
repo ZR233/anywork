@@ -116,7 +116,7 @@ class ConversationActivityStatus extends StatelessWidget {
     liveRegion: true,
     child: TimelineActivitySection(
       header: TimelineActivityRow(
-        label: context.conversationActivityLabel(view),
+        label: view.errorMessage ?? context.conversationActivityLabel(view),
         icon: view.kind.icon,
         indicatorStyle: resolveLiveHeaderIndicatorStyle(view),
         isIssue: view.kind.isIssue,
@@ -130,9 +130,7 @@ class ConversationActivityStatus extends StatelessWidget {
             view.kind == ConversationActivityKind.planning,
         expandable: false,
         header: true,
-        summary: view.kind == ConversationActivityKind.compacting
-            ? null
-            : view.errorMessage ?? view.summary,
+        tooltip: view.errorMessage ?? view.summary,
         meta:
             view.kind == ConversationActivityKind.thinking &&
                 view.thinkingSeconds != null

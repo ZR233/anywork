@@ -7,6 +7,25 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import 'timeline_activity_row.dart';
 
+/// A presentation owner's stable read epoch; this grants no query permission.
+class TimelineBodyReadQualification extends InheritedWidget {
+  const TimelineBodyReadQualification({
+    required this.value,
+    required super.child,
+    super.key,
+  });
+
+  final Object value;
+
+  static Object? of(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<TimelineBodyReadQualification>()
+      ?.value;
+
+  @override
+  bool updateShouldNotify(TimelineBodyReadQualification oldWidget) =>
+      !identical(value, oldWidget.value);
+}
+
 /// The enclosing semantic disclosure is already the user's read intent.
 /// Mounted bodies therefore do not require a second click. A declared summary
 /// uses the same bounded read, but remains a single line in its member header.
@@ -14,11 +33,18 @@ class TimelineBodyReadIntent extends InheritedWidget {
   const TimelineBodyReadIntent({
     required super.child,
     this.summary = false,
+    this.scrollable = false,
     this.bodyBuilder,
+    this.onRead,
     super.key,
   });
   final bool summary;
+  final bool scrollable;
   final Widget Function(String text)? bodyBuilder;
+  final ValueChanged<ContentWindow>? onRead;
+  static ValueChanged<ContentWindow>? onReadOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
+      ?.onRead;
   static Widget Function(String text)? bodyBuilderOf(BuildContext context) =>
       context
           .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
@@ -31,9 +57,17 @@ class TimelineBodyReadIntent extends InheritedWidget {
           .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
           ?.summary ??
       false;
+  static bool scrollableOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
+          ?.scrollable ??
+      false;
   @override
   bool updateShouldNotify(TimelineBodyReadIntent oldWidget) =>
-      summary != oldWidget.summary || bodyBuilder != oldWidget.bodyBuilder;
+      summary != oldWidget.summary ||
+      scrollable != oldWidget.scrollable ||
+      onRead != oldWidget.onRead ||
+      bodyBuilder != oldWidget.bodyBuilder;
 }
 
 /// Pure presentation for one already-admitted bounded content window.

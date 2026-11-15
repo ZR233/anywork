@@ -52,7 +52,24 @@ TimelineToolPresentation _tool(String id, {required bool webSearch}) =>
       arguments: webSearch
           ? '{"search_query":[{"q":"query-$id"}]}'
           : '{"command":"command-$id"}',
-      output: 'output-$id',
+      output: jsonEncode(
+        webSearch
+            ? {
+                'results': [
+                  {
+                    'type': 'text_result',
+                    'title': 'output-$id',
+                    'url': 'https://example.com/result-$id',
+                    'snippet': 'output-$id',
+                  },
+                ],
+              }
+            : {
+                'stdout': {'content': 'output-$id'},
+                'stderr': {'content': ''},
+                'exitCode': 0,
+              },
+      ),
     );
 
 void main() {
@@ -242,10 +259,10 @@ void main() {
     final item = TimelineToolPresentation(
       id: 'empty',
       toolCallId: 'call-empty',
-      name: 'exec',
-      presentationContract: 'builtin.exec@2',
+      name: 'empty_result',
+      presentationContract: 'generic@1',
       statusString: 'succeeded',
-      arguments: '',
+      arguments: '{}',
       output: '',
     );
     await tester.pumpWidget(

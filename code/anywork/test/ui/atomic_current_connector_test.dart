@@ -334,7 +334,310 @@ ActivityEntry _part(ChatAtom atom) => ActivityEntry(
   atom: atom,
 );
 
+DisplayMemberHead _workRow(int order, {String? text}) {
+  final body = utf8.encode(text ?? '成员 $order');
+  return DisplayMemberHead(
+    memberKey: 'member-$order',
+    memberOrder: order,
+    record: DisplayRecord(
+      contentSource: const CurrentAtom(),
+      atom: ChatAtom(
+        id: 'member-$order',
+        source: _source,
+        sourceOrder: order,
+        kind: ChatAtomKind.text,
+        delivery: ChatDeliveryKind.foreground,
+        textChannel: ThreadTextChannel.finalAnswer,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        contents: const [],
+        payload: InlinePayload(
+          bytes: utf8.encode(
+            jsonEncode({
+              'contract': 'anywork.chat/1',
+              'type': 'text',
+              'data': {'channel': 'final', 'attachments': []},
+              'bodies': [
+                {'key': 'body', 'byteLength': body.length, 'inline': body},
+              ],
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+const _workReference = DisplayBlockRef(databaseId: 'database', blockId: 'work');
+
+Widget _workConnector(
+  TimelineExpansionIntent expansion,
+  _Content content,
+  TimelineImageResources images,
+) => CompletionRunConnector(
+  unit: TimelineDisplayUnit.live(
+    block: const LiveDisplayBlock(
+      id: 'work',
+      blockOrder: 1,
+      state: DisplayBlockState.open,
+      body: WorkDisplayBlock(
+        members: _workReference,
+        timing: WorkTiming(startedAt: 0),
+      ),
+    ),
+    executionPresent: false,
+    expansion: expansion,
+  ),
+  threadId: 'thread',
+  content: content,
+  images: images,
+);
+
 void main() {
+  testWidgets(
+    'work row changes build neither the list nor unchanged rows and preserve State',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      final handle = _FreezeMembers();
+      final expansion = TimelineExpansionIntent()
+        ..expanded = true
+        ..openDisplayMembers = (_, _, _) async => handle;
+      addTearDown(() {
+        expansion.retire();
+        images.release();
+      });
+      await tester.pumpWidget(
+        _host(_workConnector(expansion, content, images)),
+      );
+      DisplayMemberPage page({bool changed = false}) => DisplayMemberPage(
+        block: _workReference,
+        revision: changed ? 2 : 1,
+        sealed: false,
+        entries: [
+          _workRow(1, text: changed ? '更新成员' : null),
+          _workRow(2),
+        ],
+      );
+      handle.send(page());
+      await _flush(tester);
+      final rows = find.byType(TimelineMemberAtom);
+      final first = tester.state(rows.at(0));
+      final second = tester.state(rows.at(1));
+      final builds = <String, int>{};
+      var listBuilds = 0;
+      final previous = debugOnRebuildDirtyWidget;
+      debugOnRebuildDirtyWidget = (element, builtOnce) {
+        previous?.call(element, builtOnce);
+        final widget = element.widget;
+        if (widget is TimelineMemberAtom) {
+          builds.update(
+            widget.displayId,
+            (count) => count + 1,
+            ifAbsent: () => 1,
+          );
+        }
+        if (widget is ListenableBuilder &&
+            identical(widget.listenable, expansion.members)) {
+          listBuilds++;
+        }
+      };
+      addTearDown(() => debugOnRebuildDirtyWidget = previous);
+      handle.send(page(changed: true));
+      await _flush(tester);
+      expect(builds, {'member-1': 1});
+      expect(listBuilds, 0);
+      expect(tester.state(rows.at(0)), same(first));
+      expect(tester.state(rows.at(1)), same(second));
+      builds.clear();
+      handle.send(page(changed: true));
+      await _flush(tester);
+      expect(
+        builds,
+        isEmpty,
+        reason: 'Equal decoded values do not rebuild a row',
+      );
+      expect(listBuilds, 0);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  for (final location in WorkDisplayLocation.values) {
+    testWidgets(
+      'work $location uses natural short height and bounded long scrolling without overflow',
+      (tester) async {
+        Widget scene(double height, {double parentHeight = 190}) => _host(
+          Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              height: parentHeight,
+              width: 500,
+              child: CompletionRunView(
+                id: 'bounded-work',
+                timing: displayTiming(),
+                location: location,
+                initiallyExpanded: true,
+                childBuilder: (_) =>
+                    SizedBox(height: height, child: const Text('内容')),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpWidget(scene(24));
+        await _flush(tester);
+        final scroll = find.descendant(
+          of: find.byType(CompletionRunScrollScope),
+          matching: find.byType(SingleChildScrollView),
+        );
+        expect(tester.getSize(scroll).height, 24);
+        await tester.pumpWidget(scene(900));
+        await _flush(tester);
+        final header = find.byKey(
+          const ValueKey('completion-run-header:bounded-work'),
+        );
+        final available = 190 - tester.getSize(header).height - 8;
+        expect(
+          tester.getSize(scroll).height,
+          closeTo(available.clamp(0, 420), .001),
+        );
+        expect(
+          tester.getRect(scroll).bottom,
+          lessThanOrEqualTo(
+            tester.getRect(find.byType(CompletionRunView)).bottom,
+          ),
+        );
+        final scope = tester.widget<CompletionRunScrollScope>(
+          find.byType(CompletionRunScrollScope),
+        );
+        expect(scope.controller.position.maxScrollExtent, greaterThan(700));
+        await tester.drag(scroll, const Offset(0, -80));
+        await tester.pump();
+        expect(scope.controller.offset, greaterThan(0));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(scene(900, parentHeight: 600));
+        await _flush(tester);
+        expect(tester.getSize(scroll).height, 420);
+        expect(
+          tester.getRect(scroll).bottom,
+          lessThanOrEqualTo(
+            tester.getRect(find.byType(CompletionRunView)).bottom,
+          ),
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
+  testWidgets(
+    'work scroll boundaries read overlapping pages and keep the visible anchor without buttons',
+    (tester) async {
+      final content = _Content();
+      final images = TimelineImageResources(threadId: 'thread');
+      final handles = <_FreezeMembers>[];
+      final requests = <DisplayMemberWindow>[];
+      final expansion = TimelineExpansionIntent()..expanded = true;
+      expansion.openDisplayMembers = (_, window, demand) async {
+        requests.add(window);
+        final end = window is BeforeDisplayMembers
+            ? window.memberOrder - 1
+            : 40;
+        final start = (end - demand.maxItems + 1).clamp(1, 40);
+        final handle = _FreezeMembers()
+          ..send(
+            DisplayMemberPage(
+              block: _workReference,
+              revision: handles.length + 1,
+              sealed: false,
+              entries: [for (var i = start; i <= end; i++) _workRow(i)],
+              before: start > 1 ? start : null,
+            ),
+          );
+        handles.add(handle);
+        return handle;
+      };
+      addTearDown(() {
+        expansion.retire();
+        images.release();
+      });
+      await tester.pumpWidget(
+        _host(
+          Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              height: 260,
+              width: 600,
+              child: CompletionRunView(
+                id: 'scroll-work',
+                timing: displayTiming(),
+                location: WorkDisplayLocation.history,
+                initiallyExpanded: true,
+                childBuilder: (_) => _workConnector(expansion, content, images),
+              ),
+            ),
+          ),
+        ),
+      );
+      await _flush(tester);
+      final scroll = find.descendant(
+        of: find.byType(CompletionRunScrollScope),
+        matching: find.byType(SingleChildScrollView),
+      );
+      final anchor = find.byWidgetPredicate(
+        (widget) =>
+            widget is TimelineMemberAtom && widget.displayId == 'member-29',
+      );
+      final original = tester.state(anchor);
+      final y = tester.getTopLeft(anchor).dy;
+      await tester.drag(scroll, const Offset(0, 70));
+      await _flush(tester);
+      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
+        for (var i = 18; i <= 29; i++) i,
+      ]);
+      expect(tester.state(anchor), same(original));
+      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
+      expect(handles.first.closed, isTrue);
+      // A block revision can advance while this fixed boundary is being read.
+      // Its same-cut bounded page must not return the reader to Latest.
+      handles.last.send(
+        DisplayMemberPage(
+          block: _workReference,
+          revision: 100,
+          sealed: false,
+          entries: [for (var i = 18; i <= 29; i++) _workRow(i)],
+          before: 18,
+        ),
+      );
+      await _flush(tester);
+      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
+      expect(tester.state(anchor), same(original));
+      expect(requests.length, 2);
+      expect(find.text('更早成员'), findsNothing);
+      expect(find.text('最新成员'), findsNothing);
+      await tester.drag(scroll, const Offset(0, -50));
+      await _flush(tester);
+      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
+        for (var i = 29; i <= 40; i++) i,
+      ]);
+      expect(tester.state(anchor), same(original));
+      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
+      expect(requests.length, 3);
+      expect(
+        content.scopes,
+        isEmpty,
+        reason: 'Member pagination does not open body watches',
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      expansion.retire();
+      await _flush(tester);
+      expect(handles.every((handle) => handle.closed), isTrue);
+    },
+  );
+
   for (final bounded in [true, false]) {
     testWidgets(
       '#364 small ${bounded ? 'bounded' : '45-percent'} dock scrolls notices and pagers without replacing the expanded tail owners',
@@ -561,12 +864,21 @@ void main() {
                 .first;
             final position = tester.state<ScrollableState>(scroll).position;
             expect(position.maxScrollExtent, greaterThan(0));
-            for (final target in [
-              find.text('等待执行收束'),
-              find.text('保存已暂停'),
-              find.text('更早实时片段'),
-              find.text('最新实时片段'),
+            expect(find.byTooltip(RegExp('等待执行收束')), findsOneWidget);
+            for (final (description, target) in [
+              (
+                '停止通知',
+                find.byWidgetPredicate(
+                  (widget) =>
+                      widget is ConversationActivityStatus &&
+                      widget.view.identity == 'stopping',
+                ),
+              ),
+              ('保存错误通知', find.text('保存已暂停')),
+              ('更早实时片段入口', find.text('更早实时片段')),
+              ('最新实时片段入口', find.text('最新实时片段')),
             ]) {
+              expect(target, findsOneWidget, reason: '$description 必须实际存在');
               position.jumpTo(0);
               await tester.pump();
               await tester.dragUntilVisible(

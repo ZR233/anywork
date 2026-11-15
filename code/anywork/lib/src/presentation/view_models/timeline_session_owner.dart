@@ -20,6 +20,9 @@ export '../../features/conversation/timeline/state/timeline_view_state.dart';
 
 const Object _unset = Object();
 
+// Keep the wire's signed 64-bit bound exact in both native and web compilers.
+final _maximumDisplayOrder = (BigInt.one << 63) - BigInt.one;
+
 /// Component futures may fail after a partial mutation. Their response cannot be replayed.
 final class _TimelineApplyFailure implements Exception {
   const _TimelineApplyFailure(this.cause);
@@ -733,7 +736,7 @@ final class TimelineSessionOwner {
         update.next != update.after &&
         update.next.value.isNotEmpty &&
         history.throughOrder >= 0 &&
-        history.throughOrder <= 0x7fffffffffffffff &&
+        BigInt.from(history.throughOrder) <= _maximumDisplayOrder &&
         (isSet
             ? read.through == null &&
                   history.fromOrder == null &&
@@ -776,7 +779,7 @@ final class TimelineSessionOwner {
               block.id.isNotEmpty &&
               ids.add(block.id) &&
               block.blockOrder > last &&
-              block.blockOrder <= 0x7fffffffffffffff;
+              BigInt.from(block.blockOrder) <= _maximumDisplayOrder;
           last = block.blockOrder;
           if (block.state == DisplayBlockState.open &&
               block.body is WorkDisplayBlock) {
@@ -1161,7 +1164,7 @@ final class TimelineSessionOwner {
               !ids.add(block.id) ||
               block.blockOrder <= order ||
               block.blockOrder > page.ceiling ||
-              page.ceiling > 0x7fffffffffffffff) {
+              BigInt.from(page.ceiling) > _maximumDisplayOrder) {
             throw const ConversationContinuityError('Invalid history range');
           }
           order = block.blockOrder;

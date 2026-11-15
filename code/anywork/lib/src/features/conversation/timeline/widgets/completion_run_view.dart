@@ -117,14 +117,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               child: TimelineActivityRail(
                 inset: live ? 15.5 : 9.5,
                 contentInset: live ? 25.5 : 17.5,
-                child: live
-                    ? ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 186),
-                        child: SingleChildScrollView(
-                          child: Builder(builder: widget.childBuilder),
-                        ),
-                      )
-                    : Builder(builder: widget.childBuilder),
+                child: _MemberViewport(childBuilder: widget.childBuilder),
               ),
             ),
       expansibleBuilder: (context, header, body, animation) => LayoutBuilder(
@@ -133,7 +126,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             header,
-            if (live && constraints.hasBoundedHeight)
+            if (constraints.hasBoundedHeight)
               Flexible(fit: FlexFit.loose, child: body)
             else
               body,
@@ -142,6 +135,83 @@ class _CompletionRunViewState extends State<CompletionRunView> {
       ),
     );
   }
+}
+
+/// The group owns scrolling; its connector borrows only this UI interaction
+/// channel. Member data and query qualification remain with the display lease.
+class CompletionRunScrollScope extends InheritedWidget {
+  const CompletionRunScrollScope({
+    required this.controller,
+    required this.notifications,
+    required super.child,
+    super.key,
+  });
+  final ScrollController controller;
+  final ValueNotifier<ScrollNotification?> notifications;
+
+  static CompletionRunScrollScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<CompletionRunScrollScope>();
+
+  @override
+  bool updateShouldNotify(CompletionRunScrollScope oldWidget) =>
+      controller != oldWidget.controller ||
+      notifications != oldWidget.notifications;
+}
+
+class _MemberViewport extends StatefulWidget {
+  const _MemberViewport({required this.childBuilder});
+  final WidgetBuilder childBuilder;
+  @override
+  State<_MemberViewport> createState() => _MemberViewportState();
+}
+
+class _MemberViewportState extends State<_MemberViewport> {
+  final _scroll = ScrollController();
+  final _notifications = ValueNotifier<ScrollNotification?>(null);
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _notifications.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final available = constraints.hasBoundedHeight
+          ? constraints.maxHeight
+          : MediaQuery.sizeOf(context).height -
+                MediaQuery.viewInsetsOf(context).bottom;
+      return ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: available.clamp(0, 420).toDouble(),
+        ),
+        child: CompletionRunScrollScope(
+          controller: _scroll,
+          notifications: _notifications,
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification.depth == 0) _notifications.value = notification;
+              return false;
+            },
+            // Member pagination owns edge movement. A stretching overscroll
+            // decoration would independently move the anchored page in paint
+            // coordinates even after its content offset has been restored.
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(context)
+                  .copyWith(overscroll: false),
+              child: SingleChildScrollView(
+                controller: _scroll,
+                primary: false,
+                child: Builder(builder: widget.childBuilder),
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
 }
 
 /// Work alone has a strict single-line header. Other activity rows retain
