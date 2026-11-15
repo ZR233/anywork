@@ -9,6 +9,7 @@ on:
       - 'docker/linux/Dockerfile'
       - 'docker/linux/Dockerfile.dockerignore'
       - 'docker/linux/versions.env'
+      - 'docker/linux/codegen.env'
       - 'docker/linux/scripts/**'
       - '.github/workflows/linux-build-image.yml'
       - '.github/workflows/linux-build-environment.yml'

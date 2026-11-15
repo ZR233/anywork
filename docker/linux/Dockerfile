@@ -57,6 +57,9 @@ RUN bash /opt/anywork-image/scripts/install-tools.sh \
     && git config --system --add safe.directory /opt/flutter \
     && chmod 1777 /opt/cargo \
     && chmod -R a+rwX /opt/flutter/bin/cache
+COPY docker/linux/codegen.env /opt/anywork-image/codegen.env
+COPY docker/linux/scripts/install-codegen.sh /opt/anywork-image/scripts/install-codegen.sh
+RUN bash /opt/anywork-image/scripts/install-codegen.sh
 COPY --from=flutter-tools-env /opt/flutter/packages/flutter_tools/.dart_tool /opt/flutter/packages/flutter_tools/.dart_tool
 COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
 # Native-assets hooks run for headless widget tests too. Keep these explicit

@@ -93,13 +93,9 @@ dirs = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 downlowd = "0.1.6"
-zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 rawzip = "=0.5.2"
 hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
-http-body-util = "0.1.5"
-rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
-tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 h2 = "0.4.20"
 http = "1.5"
 bytes = "1.12"
@@ -189,8 +185,6 @@ pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-update = { path = "code/pl-studio-update" }
 pl-studio-statistics = { path = "code/pl-studio-statistics" }
 pl-studio-mcp = { path = "code/pl-studio-mcp" }
-pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
-pl-studio-server = { path = "code/pl-studio-server" }
 pl-model = { path = "code/pl-model" }
 pl-acp = { path = "code/pl-acp" }
 pl-provider-fixture = { path = "code/pl-provider-fixture" }

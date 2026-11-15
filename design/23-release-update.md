@@ -43,7 +43,7 @@ RC/手动构建沿用编译构件交接与预构建打包契约，并在无生�
 
 ### 工具链固定、构建缓存与 MSVC 环境排障
 
-Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及 `aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl` 交叉编译目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。CI 中的第三方生成工具（如 FRB 生成器与 `cargo-expand`）通过固定版本的 `cargo-binstall --force` 安装预编译二进制包，禁止回退至源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
+Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及 `aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl` 交叉编译目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。Linux CI 使用镜像内固定版本并校验摘要的 FRB 生成器和 `cargo-expand` 预编译包，不在每个作业安装或回退源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
 
 生成检查在同一已解析镜像的独立安装容器中，使用作业的只读 GitHub 令牌下载固定生成工具，避免匿名接口限流。安装容器仅挂载工具输出目录；后续源码生成只消费安装结果，不接收下载令牌。
 
