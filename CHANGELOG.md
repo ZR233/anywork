@@ -13,6 +13,35 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.43.0](https://github.com/ZR233/anywork/compare/v6.42.0...v6.43.0) (2026-11-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 主时间线 HTTP 接口改为 presentation v6 与 reader v1 的显式握手和 next 拉取；删除主时间线 events 路由。FRB、SDK 与界面迁移在关联开发 PR 中继续完成。
+* **studio:** 主时间线 HTTP 接口改为 presentation v6 与 reader v1 的显式握手和 next 拉取；删除主时间线 events 路由。FRB、SDK 与界面迁移在关联开发 PR 中继续完成。
+
+### Features
+
+* **runtime:** 导出完整运行轨迹、用量与关闭结果 ([#445](https://github.com/ZR233/anywork/issues/445)) ([4e3937e](https://github.com/ZR233/anywork/commit/4e3937ec8c1fa0b2b1cd14085d11c87c6a2021f2))
+* **studio:** 后台准备并复用反重力 ACP 服务 ([#447](https://github.com/ZR233/anywork/issues/447)) ([a8b4be7](https://github.com/ZR233/anywork/commit/a8b4be7a59b6cf294469cd4a1221acf5ce0edf4b))
+* **studio:** 重构 ACP 会话创建与输入体验 ([#461](https://github.com/ZR233/anywork/issues/461)) ([0e462e0](https://github.com/ZR233/anywork/commit/0e462e0626f6f698ac9e4ac6fdf27ecd9b50136a))
+
+
+### Bug Fixes
+
+* **lsp:** 修复 Windows 宿主发现远程语言服务配置 ([#460](https://github.com/ZR233/anywork/issues/460)) ([4d822ea](https://github.com/ZR233/anywork/commit/4d822ea19cc054d4cdf5f53184a10e2c0f317036))
+* **studio:** 修复历史分页、后台回执与 SQLite 采样 ([#455](https://github.com/ZR233/anywork/issues/455)) ([ec2234b](https://github.com/ZR233/anywork/commit/ec2234b89e219f28940cd4c76d32293befaa2267))
+* **studio:** 修复旧会话迁移依赖字段顺序导致恢复失败 ([#458](https://github.com/ZR233/anywork/issues/458)) ([96d3c15](https://github.com/ZR233/anywork/commit/96d3c1537f3af384649efc9179b2f6b19f2f51b9))
+* **studio:** 避免未编辑账号切换供应商时误弹确认 ([#452](https://github.com/ZR233/anywork/issues/452)) ([64fe0b6](https://github.com/ZR233/anywork/commit/64fe0b6ad6887721f20c969c9e55bd78459a8f7e))
+
+
+### Refactoring
+
+* **studio:** 将主时间线改为游标拉取 ([#446](https://github.com/ZR233/anywork/issues/446)) ([0918001](https://github.com/ZR233/anywork/commit/09180017cee2683dc3e72abbba9ec128285806b0))
+* **studio:** 收敛历史持久化并迁移业务消费者 ([#450](https://github.com/ZR233/anywork/issues/450)) ([fd37c65](https://github.com/ZR233/anywork/commit/fd37c6512de0fc3bedd91a427c59a0214ef22d2b))
+* **studio:** 重构工作组与工具详情展示 ([#462](https://github.com/ZR233/anywork/issues/462)) ([6c08d6f](https://github.com/ZR233/anywork/commit/6c08d6f41946d01159f1dbb6dc73d7b6921a7ea4))
+
 ## [6.42.0](https://github.com/ZR233/anywork/compare/v6.41.0...v6.42.0) (2026-11-14)
 
 
