@@ -663,3 +663,41 @@ async fn ordinary_factory_error_does_not_leave_a_failed_scope() {
     assert!(matches!(result, Err(OpenError::Resource(error)) if *error == Failure("open")));
     assert!(bounded(root.wait_closed()).await.is_clean());
 }
+
+#[tokio::test]
+async fn stopping_runtime_with_active_resource_requests_cancellation() {
+    let (resource, control, _started, _outcomes) = controlled(0);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let root = ScopeOwner::<Failure>::new("other runtime", Handle::current());
+            let managed = root
+                .handle()
+                .open("active", move |_| async move { Ok(resource) })
+                .await
+                .unwrap();
+            ready_tx.send((root, managed)).ok().unwrap();
+            stop_rx.await.unwrap();
+        });
+    });
+    let (root, managed) = bounded(ready_rx).await.unwrap();
+    assert_eq!(control.requests.load(Ordering::SeqCst), 0);
+    stop_tx.send(()).unwrap();
+    thread.join().unwrap();
+    let report = bounded(root.wait_closed()).await;
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0].retained);
+    assert!(matches!(
+        report.failures[0].error,
+        CloseError::WorkerStopped
+    ));
+    assert!(control.requests.load(Ordering::SeqCst) > 0);
+    assert_eq!(control.attempts.load(Ordering::SeqCst), 0);
+    drop((managed, root));
+    assert_eq!(control.dropped.load(Ordering::SeqCst), 1);
+}

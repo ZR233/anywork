@@ -389,7 +389,13 @@ impl<E: Send + Sync + 'static> Scope<E> {
                 drop(state);
             }
             Phase::Active | Phase::Closing => {
-                let EntryKind::Async { attempt, .. } = &mut entry.kind else {
+                let EntryKind::Async {
+                    attempt,
+                    resource,
+                    token,
+                    ..
+                } = &mut entry.kind
+                else {
                     return;
                 };
                 if entry.phase == Phase::Active {
@@ -398,7 +404,13 @@ impl<E: Send + Sync + 'static> Scope<E> {
                 }
                 entry.phase = Phase::Failed;
                 let attempt = attempt.as_ref().map(Arc::clone);
+                let resource = resource.clone();
+                let token = token.clone();
                 drop(state);
+                if let Some(resource) = resource {
+                    request_resource(&resource);
+                }
+                token.cancel();
                 if let Some(attempt) = attempt {
                     attempt.finish(Err(CloseError::WorkerStopped));
                 }
