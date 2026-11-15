@@ -2354,7 +2354,7 @@ class FrbStudioTransport
           }),
           onError: (Object error, StackTrace stackTrace) =>
               controller.addError(_studioFailure(error), stackTrace),
-          onDone: controller.close,
+          onDone: () => _observeBackground(controller.close()),
         );
       } catch (error, stackTrace) {
         if (!tracked.cancelRequested) {
@@ -2393,7 +2393,7 @@ class FrbStudioTransport
     }
 
     controller = StreamController<StudioShutdownProgress>(
-      onListen: () => unawaited(start()),
+      onListen: () => _observeBackground(start()),
       // 不吞取消错误：owned cancellation 的原始 cause/stack 交给预算内的取消等待
       // （runStudioShutdown 的 `_cancelBounded`）回报为 typed issue 并记录同一 correlation。
       onCancel: () => tracked.beginCancel(),
