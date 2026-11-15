@@ -19,5 +19,5 @@ tar -xJf "$temporary/zigbuild.tar.xz" -C "$temporary/zigbuild" --strip-component
 install -m 755 "$temporary/binstall/cargo-binstall" /opt/cargo/bin/cargo-binstall
 install -m 755 "$temporary/zigbuild/cargo-zigbuild" /opt/cargo/bin/cargo-zigbuild
 zig version
-cargo binstall -V
+cargo-binstall -V
 cargo-zigbuild --version

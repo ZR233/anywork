@@ -11,6 +11,7 @@ def image_key(root: Path) -> str:
         "docker/linux/Dockerfile",
         "docker/linux/Dockerfile.dockerignore",
         "docker/linux/versions.env",
+        "docker/linux/codegen.env",
     ]
     # Keep host orchestration/key logic in the identity too. Tests are not inputs.
     paths.extend(
