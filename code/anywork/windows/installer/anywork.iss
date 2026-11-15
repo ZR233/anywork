@@ -148,8 +148,8 @@ begin
   if Found then Exit;
   if not RegWriteStringValue(HKCU, 'Software\anywork\Installer', 'OwnedCliPath', CliPath) then
     RaiseException('Cannot record the anywk PATH entry.');
-  if Existing <> '' then
-    if Existing[Length(Existing)] <> ';' then Existing := Existing + ';';
+  { Preserve existing empty entries, including a trailing semicolon. }
+  if Existing <> '' then Existing := Existing + ';';
   if not RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Existing + CliPath) then begin
     RegDeleteValue(HKCU, 'Software\anywork\Installer', 'OwnedCliPath');
     RaiseException('Cannot update the user PATH.');
