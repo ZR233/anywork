@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{OnceCell, SetError};
 use tokio_util::sync::CancellationToken;
 
-use super::subscription::BridgeTaskRegistry;
+use super::subscription::factory::BridgeObservationFactory;
 use super::types::BridgeError;
 
 static BRIDGE: OnceCell<BridgeRuntime> = OnceCell::const_new();
@@ -126,7 +126,8 @@ pub(crate) fn current_bridge() -> Option<&'static BridgeRuntime> {
 
 pub(crate) struct BridgeRuntime {
     pub(crate) studio: StudioRuntime,
-    pub(crate) subscriptions: BridgeTaskRegistry,
+    pub(crate) observation_scope: pl_lifecycle::ScopeOwner<BridgeError>,
+    pub(crate) observation_factory: BridgeObservationFactory,
     pub(crate) shutdown: CancellationToken,
 }
 
@@ -153,9 +154,14 @@ impl BridgeRuntime {
             Ok(None) => {}
             Err(error) => tracing::error!(%error, "failed to read installation outcome"),
         }
+        let observation_scope =
+            pl_lifecycle::ScopeOwner::new("bridge-observations", tokio::runtime::Handle::current());
+        let observation_factory =
+            BridgeObservationFactory::new(studio.clone(), observation_scope.handle());
         Ok(Self {
             studio,
-            subscriptions: BridgeTaskRegistry::new(),
+            observation_scope,
+            observation_factory,
             shutdown: CancellationToken::new(),
         })
     }

@@ -1,6 +1,5 @@
 mod convert;
 pub mod feed;
-pub(crate) mod registry;
 pub mod types;
 
 pub use feed::{

@@ -8,7 +8,7 @@
 pl-studio-bridge / pl-studio-server / pl-studio-cli → pl-studio-runtime
 pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-studio-runtime → pl-studio-update / pl-studio-statistics
-pl-studio-bridge → pl-studio-update / pl-studio-statistics
+pl-studio-bridge → pl-studio-update / pl-studio-statistics / pl-lifecycle
 pl-studio-server / pl-studio-cli → pl-studio-update
 pl-studio-cli → pl-tool / pl-protocol
 pl-studio-update → pl-remote-helper

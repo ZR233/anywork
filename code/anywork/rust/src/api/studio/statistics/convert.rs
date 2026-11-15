@@ -1,6 +1,5 @@
 //! Typed bridge conversions for the statistics-only feed protocol.
 
-use super::feed::StatisticsFeedCloseError;
 use super::types::{
     BridgeStatisticsEffortPage, BridgeStatisticsEffortSummary, BridgeStatisticsFeedHeader,
     BridgeStatisticsHistoryPage, BridgeStatisticsModelMatchState, BridgeStatisticsSample,
@@ -167,28 +166,14 @@ pub(super) fn statistics_error(error: StatisticsError) -> BridgeError {
     failure
 }
 
-pub(super) fn statistics_close_error(error: StatisticsFeedCloseError) -> BridgeError {
-    match error {
-        StatisticsFeedCloseError::Feed(feed_error) => statistics_error(feed_error),
-        StatisticsFeedCloseError::SinkStopped => {
-            statistics_close_task_error("sinkStopped", "statistics sink stopped")
-        }
-        StatisticsFeedCloseError::ProducerTaskFailed => {
-            statistics_close_task_error("producerTaskFailed", "statistics producer task failed")
-        }
-        StatisticsFeedCloseError::SinkTaskFailed => {
-            statistics_close_task_error("sinkTaskFailed", "statistics sink task failed")
-        }
-    }
-}
-
-fn statistics_close_task_error(category: &str, message: &str) -> BridgeError {
+pub(super) fn statistics_sink_stopped() -> BridgeError {
     use pl_protocol::studio::{StudioError, StudioErrorCode};
     let mut failure = BridgeError::from(StudioError::new(
         StudioErrorCode::Unavailable,
-        message,
-        true,
+        "statistics sink stopped",
+        false,
     ));
-    failure.details_json = Some(serde_json::json!({"statisticsCloseError": category}).to_string());
+    failure.details_json =
+        Some(serde_json::json!({"statisticsCloseError": "sinkStopped"}).to_string());
     failure
 }

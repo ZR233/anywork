@@ -1,11 +1,8 @@
 //! 关机进度订阅：与 runtime 生命周期共享同一次 shutdown 序列。
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-
 use super::{
-    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, OWNED_PENDING,
-    SubscriptionCompletionFacts, SubscriptionOwner, owned_completion,
+    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, error::open_error,
+    shutdown_progress_scope, task::OwnedTaskSlot,
 };
 use crate::api::studio::bridge_runtime::current_bridge;
 use crate::api::studio::types::{BridgeError, BridgeShutdownProgress};
@@ -21,31 +18,35 @@ use pl_studio_runtime::StudioShutdownProgress;
 /// triggering initialization or surfacing a spurious `NotInitialized`. A second instance whose
 /// startup failed has no owner and must observe a benign "no progress" stream, not a fake error.
 pub async fn subscribe_shutdown_progress() -> Result<BridgeEventSubscription, BridgeError> {
-    let (id, events) = match current_bridge() {
-        Some(bridge) => (
-            bridge.subscriptions.next_id(),
-            bridge.studio.subscribe_shutdown_progress().await,
-        ),
-        None => {
-            // `broadcast::channel(1)` with the sender dropped hands back a receiver that is already
-            // closed, so the shutdown stream ends immediately without owning any runtime.
-            let (sender, receiver) = tokio::sync::broadcast::channel(1);
-            drop(sender);
-            (0, receiver)
-        }
-    };
+    let source = current_bridge().map(|bridge| bridge.studio.clone());
+    let inner = shutdown_progress_scope()
+        .handle()
+        .open("shutdownProgress", move |cancel| async move {
+            let events = match source {
+                Some(source) => source.subscribe_shutdown_progress().await,
+                None => {
+                    // `broadcast::channel(1)` with the sender dropped hands back a receiver that is already
+                    // closed, so the shutdown stream ends immediately without owning any runtime.
+                    let (sender, receiver) = tokio::sync::broadcast::channel(1);
+                    drop(sender);
+                    receiver
+                }
+            };
+            Ok(BridgeSubscriptionInner {
+                kind: BridgeSubscriptionKind::Shutdown,
+                cancel,
+                producer_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
+                sink_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
+                product_topic_receiver: tokio::sync::Mutex::new(None),
+                shutdown_receiver: tokio::sync::Mutex::new(Some(events)),
+                startup_receiver: tokio::sync::Mutex::new(None),
+            })
+        })
+        .await
+        .map_err(open_error)?;
     Ok(BridgeEventSubscription {
-        inner: Arc::new(BridgeSubscriptionInner {
-            id,
-            kind: BridgeSubscriptionKind::Shutdown,
-            cancel: tokio_util::sync::CancellationToken::new(),
-            producer_task: tokio::sync::Mutex::new(None),
-            sink_task: tokio::sync::Mutex::new(None),
-            product_topic_receiver: tokio::sync::Mutex::new(None),
-            shutdown_receiver: tokio::sync::Mutex::new(Some(events)),
-            startup_receiver: tokio::sync::Mutex::new(None),
-            facts: Arc::new(SubscriptionCompletionFacts::default()),
-        }),
+        inner,
+        _scope: None,
     })
 }
 
@@ -58,26 +59,14 @@ impl BridgeEventSubscription {
         &self,
         sink: StreamSink<BridgeShutdownProgress>,
     ) -> Result<(), BridgeError> {
-        let mut events = self
-            .inner
-            .shutdown_receiver
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| {
-                BridgeError::invalid_argument(
-                    "shutdown stream can only be opened once on a shutdown subscription",
-                )
-            })?;
-        let cancel = self.inner.cancel.clone();
-        let id = self.inner.id;
-        let facts = Arc::clone(&self.inner.facts);
-        let mut task = self.inner.sink_task.lock().await;
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-        facts.sink.store(OWNED_PENDING, Ordering::SeqCst);
-        let sink_task = tokio::spawn(async move {
+        let inner = self.inner.get();
+        let mut events = inner.shutdown_receiver.lock().await.take().ok_or_else(|| {
+            BridgeError::invalid_argument(
+                "shutdown stream can only be opened once on a shutdown subscription",
+            )
+        })?;
+        let cancel = inner.cancel.clone();
+        inner.attach_sink(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -92,13 +81,8 @@ impl BridgeEventSubscription {
                     }
                 }
             }
-        });
-        *task = Some(owned_completion(
-            sink_task,
-            id,
-            facts,
-            SubscriptionOwner::Sink,
-        ));
+            Ok(())
+        }).await;
         Ok(())
     }
 }

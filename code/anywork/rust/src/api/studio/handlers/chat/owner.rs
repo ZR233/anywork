@@ -10,10 +10,10 @@ use pl_studio_runtime::{
     ConversationFeed, ConversationReader, ConversationStateFeed, TimelineReader,
 };
 use tokio::sync::{Mutex, Notify};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{close_failures::CloseFailures, content_watch::ContentWatches};
+use super::content_watch::ContentWatches;
+use crate::api::studio::subscription::{close_failures::CloseFailures, task::OwnedTaskSlot};
 use crate::api::studio::types::{BridgeConversationFrame, BridgeError};
 use crate::frb_generated::StreamSink;
 
@@ -31,9 +31,6 @@ pub(crate) struct ConversationOwner {
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
     producer: Mutex<OwnedTaskSlot>,
-    /// Installed by registration before publishing the facade. The task waits with a Weak owner,
-    /// so merely installing it cannot form an uncancelled Arc self-cycle.
-    lifecycle: SyncMutex<Option<Arc<Mutex<OwnedTaskSlot>>>>,
     close_errors: SyncMutex<CloseFailures>,
 }
 
@@ -103,16 +100,8 @@ pub(super) struct DeliveryState {
     pub(super) sent: u64,
     acknowledged: u64,
     pub(super) inflight_bytes: usize,
+    #[cfg(test)]
     settled: bool,
-}
-
-#[flutter_rust_bridge::frb(ignore)]
-#[derive(Default)]
-struct OwnedTaskSlot {
-    task: Option<JoinHandle<Result<(), BridgeError>>>,
-    /// Retained even after a JoinError so later close callers never poll a completed handle or lose
-    /// the first failure. Native close still runs after any owned task failure.
-    outcome: Option<Result<(), BridgeError>>,
 }
 
 impl ConversationOwner {
@@ -175,7 +164,6 @@ impl ConversationOwner {
             credit: Notify::new(),
             gate: Mutex::new(()),
             producer: Mutex::new(OwnedTaskSlot::default()),
-            lifecycle: SyncMutex::new(None),
             close_errors: SyncMutex::new(CloseFailures::default()),
         }
     }
@@ -187,42 +175,6 @@ impl ConversationOwner {
                 "state feed has no content reader",
             )
         })
-    }
-
-    /// Called once while the opening registry holds its publication lock. Even immediate shutdown
-    /// cannot complete unregistration before this task and the owner are both installed there.
-    pub(crate) fn install_lifecycle(
-        self: &Arc<Self>,
-        on_settled: impl FnOnce(&str) + Send + 'static,
-    ) -> Result<(), BridgeError> {
-        let mut slot = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.is_some() {
-            return Err(error(
-                StudioErrorCode::Conflict,
-                "conversation lifecycle is already registered",
-            ));
-        }
-        let owner = Arc::downgrade(self);
-        let cancel = self.cancel.clone();
-        let task = tokio::spawn(async move {
-            cancel.cancelled().await;
-            let Some(owner) = owner.upgrade() else {
-                return Ok(());
-            };
-            // This path only joins the data producer, never its own lifecycle handle. At successful
-            // unregistration every capability and owned producer is already retired; only this
-            // synchronous terminal bookkeeping and returning the retained result remain.
-            let result = owner.finish_close().await;
-            if result.is_ok() {
-                on_settled(&owner.subscription_id);
-            }
-            result
-        });
-        *slot = Some(Arc::new(Mutex::new(OwnedTaskSlot {
-            task: Some(task),
-            outcome: None,
-        })));
-        Ok(())
     }
 
     pub(super) async fn start(
@@ -396,32 +348,7 @@ impl ConversationOwner {
     }
 
     pub(crate) async fn close(&self) -> Result<(), BridgeError> {
-        self.request_close();
-        let lifecycle = self
-            .lifecycle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| {
-                error(
-                    StudioErrorCode::Internal,
-                    "conversation lifecycle was not registered",
-                )
-            })?;
-        let outcome = self
-            .join_task(
-                &lifecycle,
-                "lifecycle",
-                "conversation lifecycle task did not stop cleanly",
-            )
-            .await;
-        if outcome.is_err() {
-            // A panicked lifecycle cannot continue its original cleanup. Retain its failure, but
-            // retry the same resource slots (not a replacement task), under the same close gate.
-            // Cancellation here still leaves the remaining slots and error in the registry owner.
-            self.finish_close().await?;
-        }
-        outcome
+        self.finish_close().await
     }
 
     async fn finish_close(&self) -> Result<(), BridgeError> {
@@ -440,29 +367,46 @@ impl ConversationOwner {
             if let Some(content) = &self.content {
                 let (reader, watches) =
                     tokio::join!(content.reader.close(), content.watches.close_all());
-                if let Err(error) = reader {
-                    self.remember_failure("read", error.into());
-                }
-                for (id, error) in watches {
-                    self.remember_failure(&format!("content-watch:{id}"), error);
-                }
+                (reader.err().map(BridgeError::from), watches)
+            } else {
+                (None, Vec::new())
             }
         };
-        let (feed, ()) = tokio::join!(self.close_native(), close_content);
-        if let Err(error) = feed {
-            self.remember_failure("feed", error);
-        }
-        if let Some(error) = self
+        let (feed, (read, watches)) = tokio::join!(self.close_native(), close_content);
+        // 数据任务的终态不能重做；领域资源的失败属于本次尝试，可以对原件重试。
+        let mut failures = self
             .close_errors
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .outcome()
-        {
+            .clone();
+        if let Err(error) = feed {
+            if !error.retryable {
+                self.remember_failure("feed", error.clone());
+            }
+            failures.record("feed", error);
+        }
+        if let Some(error) = read {
+            if !error.retryable {
+                self.remember_failure("read", error.clone());
+            }
+            failures.record("read", error);
+        }
+        for (id, error) in watches {
+            let resource = format!("content-watch:{id}");
+            if !error.retryable {
+                self.remember_failure(&resource, error.clone());
+            }
+            failures.record(&resource, error);
+        }
+        if let Some(error) = failures.outcome() {
             return Err(error);
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.inflight_bytes = 0;
-        state.settled = true;
+        #[cfg(test)]
+        {
+            state.settled = true;
+        }
         Ok(())
     }
 
@@ -470,27 +414,14 @@ impl ConversationOwner {
         &self,
         task: &Mutex<OwnedTaskSlot>,
         resource: &str,
-        message: &str,
+        message: &'static str,
     ) -> Result<(), BridgeError> {
         let mut slot = task.lock().await;
-        if let Some(task) = slot.task.as_mut() {
-            let result = match task.await {
-                Ok(result) => result,
-                Err(_) => {
-                    let failure = error(StudioErrorCode::Internal, message);
-                    self.remember_failure(resource, failure.clone());
-                    Err(failure)
-                }
-            };
-            slot.task = None;
-            slot.outcome = Some(result);
-        }
-        if resource != "lifecycle"
-            && let Some(Err(error)) = &slot.outcome
-        {
+        let result = slot.join(message).await;
+        if let Err(error) = &result {
             self.remember_failure(resource, error.clone());
         }
-        slot.outcome.clone().unwrap_or(Ok(()))
+        result
     }
 
     pub(super) fn remember_failure(&self, resource: &str, error: BridgeError) {
@@ -500,6 +431,7 @@ impl ConversationOwner {
             .record(resource, error);
     }
 
+    #[cfg(test)]
     pub(crate) fn is_settled(&self) -> bool {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).settled
     }
@@ -527,15 +459,11 @@ mod tests {
     use crate::api::studio::types::{BridgeConversationEvent, BridgeReadDemand};
 
     fn managed(feed: ConversationFeed) -> Arc<ConversationOwner> {
-        let owner = Arc::new(ConversationOwner::new(feed, CancellationToken::new()));
-        owner.install_lifecycle(|_| {}).unwrap();
-        owner
+        Arc::new(ConversationOwner::new(feed, CancellationToken::new()))
     }
 
     fn managed_state(feed: ConversationStateFeed) -> Arc<ConversationOwner> {
-        let owner = Arc::new(ConversationOwner::new_state(feed, CancellationToken::new()));
-        owner.install_lifecycle(|_| {}).unwrap();
-        owner
+        Arc::new(ConversationOwner::new_state(feed, CancellationToken::new()))
     }
 
     async fn start_port(owner: &Arc<ConversationOwner>) -> mpsc::Receiver<BridgeConversationFrame> {
@@ -562,9 +490,7 @@ mod tests {
         let env = Environment::new().await?;
         let result = async {
             let owner = managed(env.feed().await?);
-            let facade = BridgeConversationFeed {
-                inner: Arc::clone(&owner),
-            };
+            let facade = BridgeConversationFeed::from_test_owner(Arc::clone(&owner)).await;
             let mut port = start_port(&owner).await;
             let (sequence, before) = loop {
                 let frame = receive(&mut port).await?;
@@ -923,7 +849,7 @@ mod tests {
             let result = tokio::time::timeout(Duration::from_secs(30), async {
         let content = async {
         let owner = managed(env.feed().await?);
-        let facade = BridgeConversationFeed { inner: Arc::clone(&owner) };
+        let facade = BridgeConversationFeed::from_test_owner(Arc::clone(&owner)).await;
         let mut port = start_port(&owner).await;
         let mut sent = 0;
         let (set_seq, initial) = chat(&owner, &mut port, &mut sent).await?;
@@ -1132,7 +1058,7 @@ mod tests {
 
         env.runtime.synchronize_thread_observation(&env.thread_id).await?;
         let replacement_owner = managed(env.feed().await?);
-        let replacement_facade = BridgeConversationFeed { inner: replacement_owner };
+        let replacement_facade = BridgeConversationFeed::from_test_owner(replacement_owner).await;
         ensure!(replacement_facade.load_older(before.clone(),
             BridgeReadDemand { max_items: 2, max_bytes: 64 * 1024 }).await.is_err());
         let late_watch = facade.open_content_watch(reference.clone(), range.clone()).await?;
@@ -1503,9 +1429,7 @@ mod tests {
                 Err(error) => return env.finish(Err(error)).await,
             };
             let owner = managed(feed);
-            let facade = BridgeConversationFeed {
-                inner: Arc::clone(&owner),
-            };
+            let facade = BridgeConversationFeed::from_test_owner(Arc::clone(&owner)).await;
             let mut port = start_port(&owner).await;
             let state_feed = env
                 .runtime
@@ -2045,9 +1969,8 @@ mod tests {
                         .open_conversation_state_feed(&env.thread_id)
                         .await?,
                 );
-                let facade = BridgeConversationStateFeed {
-                    inner: Arc::clone(&unopened),
-                };
+                let facade =
+                    BridgeConversationStateFeed::from_test_owner(Arc::clone(&unopened)).await;
                 facade.close().await?;
                 facade.close().await?;
                 ensure!(unopened.is_settled());
@@ -2103,7 +2026,6 @@ mod tests {
                     native,
                     CancellationToken::new(),
                 ));
-                owner.install_lifecycle(|_| {})?;
                 let reader = owner.timeline.as_ref().context("timeline capability")?;
                 let first = reader.next(reader.metadata().initial_cursor).await?;
                 ensure!(first.history.placement == pl_protocol::HistoryPlacement::Set);
