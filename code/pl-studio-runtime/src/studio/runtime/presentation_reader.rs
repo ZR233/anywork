@@ -298,7 +298,7 @@ impl ConversationReader {
                 self.ensure()?;
                 return Ok(page);
             }
-            ensure!(heads.len() > start, too_small());
+            ensure!(heads.len() - start > 1, too_small());
             bytes -= sizes[start];
             start += 1;
         }

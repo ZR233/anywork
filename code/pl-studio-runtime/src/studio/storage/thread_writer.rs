@@ -188,6 +188,7 @@ struct ExecutionIdentity {
     retained: bool,
     terminal: bool,
     sealed: bool,
+    /// When unsealed, absence was proved by admission or a history read; not publication.
     completion_checked: bool,
     stamp: Option<ExecutionStamp>,
 }
@@ -489,6 +490,22 @@ impl RuntimeOrderIndex {
                 &turn.turn_id,
             ));
         }
+        let fresh_background = if matches!(
+            effect.context,
+            Some(pl_core::thread::journal::ContextChange::Append { .. })
+        ) {
+            crate::studio::thread_projection::order::background_receipts(effect)
+                .filter(|(_, receipt)| receipt.is_some())
+                .map(|(task, _)| {
+                    crate::studio::thread_projection::order::tool_background_started_id(
+                        &task.call_id,
+                    )
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+        } else {
+            Default::default()
+        };
+        ids.extend(fresh_background.iter().cloned());
         let mut staged = BTreeMap::new();
         let mut ceiling = state.ceiling;
         for id in &ids {
@@ -513,7 +530,7 @@ impl RuntimeOrderIndex {
                 retained: false,
                 terminal: false,
                 sealed: false,
-                completion_checked: false,
+                completion_checked: fresh_background.contains(id),
                 stamp: None,
             };
             staged.insert(id.clone(), entry);
@@ -8188,10 +8205,18 @@ pub(crate) mod storage_fault_tests {
         let history = store.history(id).await?;
         let mut projection = live_projection(&sink).await?;
         let (writer, reader) = history.measurement_connections().await?;
+        let gate = sink.0.channel.step_lock.lock().await;
+        let sqlite_version = writer
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT sqlite_version() AS version",
+            ))
+            .await?
+            .context("SQLite version")?
+            .try_get::<String>("", "version")?;
         let before_pages = occupied(&writer).await?;
         let writer_sample = Sampler::all_statements(&writer).await?;
         let reader_sample = Sampler::all_statements(&reader).await?;
-        let gate = sink.0.channel.step_lock.lock().await;
         let body = "测量正文".repeat(2048);
         let effects = 32u64;
         let mut original_bytes = 0usize;
@@ -8255,10 +8280,12 @@ pub(crate) mod storage_fault_tests {
             .filter(|item| item.strong_count() > 0)
             .count();
         let metrics = serde_json::json!({
+            "sqliteVersion":sqlite_version,
             "effects":effects,"bodyBytesPerEffect":body.len(),
             "sqlStatements":writer_work.statements + reader_work.statements,
             "writerStatements":writer_work.statements,"readerStatements":reader_work.statements,
             "vmSteps":writer_work.vm_steps + reader_work.vm_steps,
+            "fullscanSteps":writer_work.fullscan_steps + reader_work.fullscan_steps,
             "canonicalPayloadMetadataContentBytes":original_bytes,
             "extraMutableItemJsonBytes":mutable_bytes,"phaseOrLifecycleJsonBytes":phase_bytes,
             "sumPreparedBudgetBytes":prepared_bytes,"queueBudgetPeakBytes":queue_peak,
@@ -10449,6 +10476,204 @@ pub(crate) mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn fresh_background_ack_and_unacknowledged_provenance_do_not_read_history() -> Result<()>
+    {
+        use pl_core::{
+            context::{ContextRecord, ContextSnapshot, ContextSource},
+            thread::{
+                journal::ContextChange,
+                task::{TaskAcknowledgement, TaskRecord},
+            },
+        };
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "fresh-background";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let history = store.history(id).await?;
+        let chat = store.chat_session(id).await?;
+        let index = sink.0.channel.order_index();
+        let mut projection = live_projection(&sink).await?;
+        let mut task = TaskRecord {
+            id: "task:call".into(),
+            parent_call_id: None,
+            invocation: None,
+            call_id: "call".into(),
+            tool_id: "tool".into(),
+            turn_id: "turn".into(),
+            revision: 1,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        let mut context = ContextSnapshot {
+            revision: 1,
+            records: Arc::from([ContextRecord {
+                id: "assistant".into(),
+                turn_id: Some("turn".into()),
+                source: ContextSource::Assistant,
+                content: vec![],
+                tool_calls: vec![ModelToolCall {
+                    rejection: None,
+                    presentation_contract: None,
+                    call_id: "call".into(),
+                    tool_id: "tool".into(),
+                    arguments: OpaquePayload::text("arguments"),
+                }],
+            }]),
+        };
+        let mut initial = ticket(id, 1);
+        initial.checkpoint.state.context = context.clone();
+        initial
+            .checkpoint
+            .state
+            .tasks
+            .insert(task.id.clone(), task.clone());
+        Arc::make_mut(&mut initial.effect).context = Some(ContextChange::Replace(context.clone()));
+        Arc::make_mut(&mut initial.effect).tasks = Arc::from([task.clone()]);
+        drive_live_projection(&mut projection, &chat, &sink, id, initial).await?;
+        sink.flush(id, 1).await?;
+        let gate = sink.0.channel.step_lock.lock().await;
+        let (mut entered, release) = history.arm_completion_read_gate().await;
+        let reads = history.reader_calls();
+        let mut running = ticket(id, 2);
+        running.checkpoint.state.context = context.clone();
+        running
+            .checkpoint
+            .state
+            .tasks
+            .insert(task.id.clone(), task.clone());
+        Arc::make_mut(&mut running.effect).tasks = Arc::from([task.clone()]);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            drive_live_projection(&mut projection, &chat, &sink, id, running),
+        )
+        .await??;
+        assert_eq!(history.reader_calls(), reads, "known ack=None provenance");
+        task.revision = 2;
+        task.acknowledgement = Some(TaskAcknowledgement {
+            record_id: "receipt".into(),
+            context_revision: 2,
+        });
+        let receipt = ContextRecord {
+            id: "receipt".into(),
+            turn_id: Some("turn".into()),
+            source: ContextSource::ToolResult {
+                call_id: "call".into(),
+                tool_id: "tool".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: Arc::from("task is running"),
+            }],
+            tool_calls: vec![],
+        };
+        let mut records = context.records.to_vec();
+        records.push(receipt.clone());
+        context.revision = 2;
+        context.records = records.into();
+        let mut ack = ticket(id, 3);
+        ack.checkpoint.state.context = context;
+        ack.checkpoint
+            .state
+            .tasks
+            .insert(task.id.clone(), task.clone());
+        Arc::make_mut(&mut ack.effect).context = Some(ContextChange::Append {
+            revision: 2,
+            records: Arc::from([receipt]),
+        });
+        Arc::make_mut(&mut ack.effect).tasks = Arc::from([task]);
+        let ack_id = crate::studio::thread_projection::order::tool_background_started_id("call");
+        let ceiling = index.inner.lock().unwrap().ceiling;
+        assert!(index.reserve_boundaries(&ack.effect, u64::MAX).is_err());
+        assert_eq!(index.assigned(&ack_id), None);
+        assert_eq!(index.inner.lock().unwrap().ceiling, ceiling);
+        sink.admit(id, ack.clone())?;
+        sink.admit(id, ack)?;
+        let owed = sink
+            .0
+            .channel
+            .next_unprojected()
+            .context("fresh acknowledgement")?;
+        assert!(index.completion_checked(&ack_id) && !index.is_sealed(&ack_id));
+        projection.fail_after_project = true;
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            projection.prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false),
+        )
+        .await?
+        .err()
+        .context("preparation must fail after materialization")?;
+        assert!(error.to_string().contains("injected failure"));
+        let ordinal = index
+            .assigned(&ack_id)
+            .context("materialized acknowledgement")?;
+        assert!(!index.is_new_reservation(&ack_id, 3));
+        assert!(index.completion_checked(&ack_id) && !index.is_sealed(&ack_id));
+        let (_, mut prepared) = tokio::time::timeout(
+            Duration::from_secs(5),
+            projection.prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false),
+        )
+        .await??;
+        assert_eq!(index.assigned(&ack_id), Some(ordinal));
+        projection.publish_prepared(&chat, &mut prepared).await?;
+        assert_eq!(history.reader_calls(), reads);
+        assert!(matches!(
+            entered.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(prepared.completions.len(), 1);
+        let original = prepared.completions[0].clone();
+        assert_eq!(original.header.item_id, ack_id);
+        let head = chat.head_seq();
+        assert!(sink.0.channel.prepare(prepared));
+        drop(release);
+        // Published originals and the original prepared batch survive a failed save and owner handoff.
+        let path = store
+            .session_paths("project-test", id)?
+            .root()
+            .join("history.sqlite");
+        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+        db.execute_unprepared("CREATE TRIGGER reject_fresh_ack BEFORE UPDATE OF applied_write_seq ON history_meta BEGIN SELECT RAISE(ABORT,'controlled ack save failure'); END").await?;
+        let mut status = sink.0.channel.subscribe();
+        drop(gate);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while status.borrow_and_update().fault.is_none() {
+                status.changed().await?;
+            }
+            anyhow::Ok(())
+        })
+        .await??;
+        assert!(sink.flush(id, 3).await.is_err());
+        drop(projection);
+        let replacement = live_projection(&sink).await?;
+        assert_eq!(chat.head_seq(), head);
+        db.execute_unprepared("DROP TRIGGER reject_fresh_ack")
+            .await?;
+        let generation = status.borrow().fault_generation;
+        store
+            .thread_persistence()
+            .retry_history(id, generation)
+            .await?;
+        sink.flush(id, 3).await?;
+        assert_eq!(chat.head_seq(), head);
+        assert_eq!(
+            pl_core::chat::ChatHistory::item(&history, &ack_id).await?,
+            Some((*original).clone())
+        );
+        assert_eq!(index.assigned(&ack_id), None);
+        assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 0);
+        assert_eq!(lock_progress(&sink.0).effect_bytes, 0);
+        // Drop the replacement owner after the shared pending batch reaches its durable barrier.
+        drop(replacement);
+        sink.0.channel.release_projection_retention();
+        db.close().await?;
+        sink.0.channel.stop_and_join().await?;
+        eprintln!("BACKGROUND_ACK_READ_PORTS running=0 acknowledgement=0 materializedRetry=0");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn execution_index_durable_background_ack_replayed_with_other_drafts_after_reclamation()
     -> Result<()> {
         use pl_core::{
@@ -10628,6 +10853,7 @@ pub(crate) mod storage_fault_tests {
                 .channel
                 .next_unprojected()
                 .context("replayed ACK fact is owed")?;
+            let reads_before_recovery = history.reader_calls();
             let before_index = index.retained_bytes();
             let before_process = sink.0.channel.process_bytes.load(Ordering::Acquire);
             let before_thread = sink.pressure(id).thread_bytes;
@@ -10635,6 +10861,10 @@ pub(crate) mod storage_fault_tests {
             let (_, mut prepared) = projection
                 .prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false)
                 .await?;
+            assert!(
+                history.reader_calls() > reads_before_recovery,
+                "Replace and reclaimed ACK still validate history"
+            );
             let new_ids = ["after-ack-a".to_owned(), "after-ack-b".to_owned()]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>();

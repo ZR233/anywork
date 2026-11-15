@@ -1,0 +1,148 @@
+diff --git a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
+index 89d275f5..3360ec6a 100644
+--- a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
++++ b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
+@@ -793,39 +793,7 @@ pub(in crate::studio) mod record_read_tests {
+                 {
+                     let mut connection = pool.acquire().await?;
+                     let mut handle = connection.lock_handle().await?;
+-                    let raw = handle.as_raw_handle().as_ptr();
+-                    let registration = Registration {
+-                        handle_address: raw as usize,
+-                        state: state.clone(),
+-                    };
+-                    // Install ownership before publishing any context pointer to SQLite. There is no
+-                    // await between the three registrations, so partial installation is synchronous.
+-                    handle.set_progress_handler(1_000_000, move || {
+-                        registration.interrupt_at_budget()
+-                    });
+-                    // SAFETY: raw is protected by LockedSqliteHandle. Arc::as_ptr is aligned and stable;
+-                    // the driver-owned registration above retains its strong reference until it removes
+-                    // the callbacks. Callbacks access only shared atomics, not a mutable State reference.
+-                    // This fresh, private fixture has no previous trace/authorizer/progress subscriber.
+-                    let (trace, authorizer) = unsafe {
+-                        let context = Arc::as_ptr(&state).cast_mut().cast::<c_void>();
+-                        (
+-                            libsqlite3_sys::sqlite3_trace_v2(
+-                                raw,
+-                                (libsqlite3_sys::SQLITE_TRACE_PROFILE
+-                                    | libsqlite3_sys::SQLITE_TRACE_ROW)
+-                                    as c_uint,
+-                                Some(trace_callback),
+-                                context,
+-                            ),
+-                            libsqlite3_sys::sqlite3_set_authorizer(raw, Some(authorize), context),
+-                        )
+-                    };
+-                    if trace != libsqlite3_sys::SQLITE_OK || authorizer != libsqlite3_sys::SQLITE_OK
+-                    {
+-                        handle.remove_progress_handler();
+-                        anyhow::bail!("native sampling registration failed: {trace}/{authorizer}");
+-                    }
++                    Self::install_locked(&mut handle, &state)?;
+                 }
+                 let sampler = Self { state };
+                 if matches!(scope, Scope::AllStatements) {
+@@ -852,6 +820,71 @@ pub(in crate::studio) mod record_read_tests {
+                 Ok(sampler)
+             }
+ 
++            fn install_locked(
++                handle: &mut sqlx::sqlite::LockedSqliteHandle<'_>,
++                state: &Arc<State>,
++            ) -> Result<()> {
++                let raw = handle.as_raw_handle().as_ptr();
++                // SAFETY: SQLx owns raw and every statement returned by sqlite3_next_stmt.
++                // LockedSqliteHandle excludes its worker and all native calls for both passes
++                // and registration below. These borrowed pointers never escape the lock; only
++                // counters are reset, never SQLx's execution state or statement ownership.
++                unsafe {
++                    let mut stmt = libsqlite3_sys::sqlite3_next_stmt(raw, std::ptr::null_mut());
++                    while !stmt.is_null() {
++                        ensure!(
++                            libsqlite3_sys::sqlite3_stmt_busy(stmt) == 0,
++                            "cannot install SQLite sampler while a statement is busy"
++                        );
++                        stmt = libsqlite3_sys::sqlite3_next_stmt(raw, stmt);
++                    }
++                    let mut stmt = libsqlite3_sys::sqlite3_next_stmt(raw, std::ptr::null_mut());
++                    while !stmt.is_null() {
++                        libsqlite3_sys::sqlite3_stmt_status(
++                            stmt,
++                            libsqlite3_sys::SQLITE_STMTSTATUS_VM_STEP,
++                            1,
++                        );
++                        libsqlite3_sys::sqlite3_stmt_status(
++                            stmt,
++                            libsqlite3_sys::SQLITE_STMTSTATUS_FULLSCAN_STEP,
++                            1,
++                        );
++                        stmt = libsqlite3_sys::sqlite3_next_stmt(raw, stmt);
++                    }
++                }
++                let registration = Registration {
++                    handle_address: raw as usize,
++                    state: state.clone(),
++                };
++                // Install ownership before publishing any context pointer to SQLite. There is no
++                // await between the three registrations, so partial installation is synchronous.
++                handle.set_progress_handler(1_000_000, move || registration.interrupt_at_budget());
++                // SAFETY: raw is protected by LockedSqliteHandle. Arc::as_ptr is aligned and stable;
++                // the driver-owned registration above retains its strong reference until it removes
++                // the callbacks. Callbacks access only shared atomics, not a mutable State reference.
++                // This fresh, private fixture has no previous trace/authorizer/progress subscriber.
++                let (trace, authorizer) = unsafe {
++                    let context = Arc::as_ptr(state).cast_mut().cast::<c_void>();
++                    (
++                        libsqlite3_sys::sqlite3_trace_v2(
++                            raw,
++                            (libsqlite3_sys::SQLITE_TRACE_PROFILE
++                                | libsqlite3_sys::SQLITE_TRACE_ROW)
++                                as c_uint,
++                            Some(trace_callback),
++                            context,
++                        ),
++                        libsqlite3_sys::sqlite3_set_authorizer(raw, Some(authorize), context),
++                    )
++                };
++                if trace != libsqlite3_sys::SQLITE_OK || authorizer != libsqlite3_sys::SQLITE_OK {
++                    handle.remove_progress_handler();
++                    anyhow::bail!("native sampling registration failed: {trace}/{authorizer}");
++                }
++                Ok(())
++            }
++
+             pub fn lifetime(&self) -> Lifetime {
+                 Lifetime(Arc::downgrade(&self.state))
+             }
+diff --git a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
+index 45533301..044da859 100644
+--- a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
++++ b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
+@@ -8188,10 +8188,12 @@ pub(crate) mod storage_fault_tests {
+         let history = store.history(id).await?;
+         let mut projection = live_projection(&sink).await?;
+         let (writer, reader) = history.measurement_connections().await?;
++        let gate = sink.0.channel.step_lock.lock().await;
++        let sqlite_version = writer.query_one_raw(Statement::from_string(DbBackend::Sqlite,
++            "SELECT sqlite_version() AS version")).await?.context("SQLite version")?.try_get::<String>("", "version")?;
+         let before_pages = occupied(&writer).await?;
+         let writer_sample = Sampler::all_statements(&writer).await?;
+         let reader_sample = Sampler::all_statements(&reader).await?;
+-        let gate = sink.0.channel.step_lock.lock().await;
+         let body = "测量正文".repeat(2048);
+         let effects = 32u64;
+         let mut original_bytes = 0usize;
+@@ -8255,10 +8257,12 @@ pub(crate) mod storage_fault_tests {
+             .filter(|item| item.strong_count() > 0)
+             .count();
+         let metrics = serde_json::json!({
++            "sqliteVersion":sqlite_version,
+             "effects":effects,"bodyBytesPerEffect":body.len(),
+             "sqlStatements":writer_work.statements + reader_work.statements,
+             "writerStatements":writer_work.statements,"readerStatements":reader_work.statements,
+             "vmSteps":writer_work.vm_steps + reader_work.vm_steps,
++            "fullscanSteps":writer_work.fullscan_steps + reader_work.fullscan_steps,
+             "canonicalPayloadMetadataContentBytes":original_bytes,
+             "extraMutableItemJsonBytes":mutable_bytes,"phaseOrLifecycleJsonBytes":phase_bytes,
+             "sumPreparedBudgetBytes":prepared_bytes,"queueBudgetPeakBytes":queue_peak,
