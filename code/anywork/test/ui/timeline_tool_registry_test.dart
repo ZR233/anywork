@@ -101,6 +101,7 @@ TimelineDisplayUnit _declared(
   String output, {
   bool inlineOutput = true,
   String database = 'db',
+  String? failure,
 }) {
   Map<String, Object?> body(String key, String text) => {
     'key': key,
@@ -121,8 +122,13 @@ TimelineDisplayUnit _declared(
           'workingDirectory': '/private/cwd',
         },
         'state': {
-          'kind': 'succeeded',
-          'completedAt': 12,
+          'kind': failure == null ? 'succeeded' : 'failed',
+          if (failure == null)
+            'completedAt': 12
+          else ...{
+            'failedAt': 12,
+            'failure': {'kind': 'execution', 'message': failure},
+          },
           'output': {'attachments': []},
         },
       },
@@ -147,10 +153,12 @@ TimelineDisplayUnit _declared(
             sourceOrder: null,
             kind: ChatAtomKind.toolCall,
             delivery: ChatDeliveryKind.independent,
-            lifecycle: const TerminalChatAtom(
+            lifecycle: TerminalChatAtom(
               started: null,
               ended: null,
-              outcome: ChatTerminalOutcome.completed,
+              outcome: failure == null
+                  ? ChatTerminalOutcome.completed
+                  : ChatTerminalOutcome.failed,
             ),
             payload: InlinePayload(bytes: payload),
             contents: [
@@ -181,6 +189,33 @@ TimelineDisplayUnit _declared(
 }
 
 void main() {
+  testWidgets('image tool exposes its original plain failure diagnostic', (
+    tester,
+  ) async {
+    const message = 'image source is not a regular file';
+    final unit = _declared(
+      'builtin.view_image@1',
+      '{"path":"."}',
+      message,
+      failure: message,
+    );
+    final requests = <String>[];
+    await tester.pumpWidget(
+      _deferredView(unit, (reference, range) async {
+        requests.add((reference.target as BodyContentTarget).key);
+        return _fullWindow(message);
+      }),
+    );
+    await tester.pumpAndSettle();
+    await _expand(tester);
+    await tester.pumpAndSettle();
+    expect(requests, ['tool.result']);
+    expect(find.text(message), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    unit.expansion.dispose();
+  });
+
   testWidgets(
     'true deferred workflow and spawn receipts keep pending rows neutral until qualified acceptance or rejection',
     (tester) async {

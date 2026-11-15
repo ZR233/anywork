@@ -260,6 +260,16 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
       acceptance,
     );
     final diagnostics = _toolDiagnostics(context, item, item);
+    // A structured-result renderer cannot display a plain execution failure.
+    // Keep the authoritative failure message visible when its equal output
+    // cannot be decoded, instead of suppressing both as duplicates.
+    final outputUnavailable =
+        item.error?.trim().isNotEmpty == true &&
+        item.error!.trim() == item.output.trim() &&
+        spec?.outputFormat == ToolOutputFormat.structured &&
+        spec!
+            .decodeOutput(item.output)
+            .any((value) => value is ToolDetailUnavailable);
     final inputValues =
         spec?.decodeInput(item.arguments) ?? const <ToolDetailValue>[];
     final artifactValues = [
@@ -299,6 +309,7 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
       if (item.error case final error?
           when error.trim().isNotEmpty &&
               (error.trim() != item.output.trim() ||
+                  outputUnavailable ||
                   spec?.readsOutput(item.statusString, output: item.output) ==
                       false))
         Text(

@@ -1666,7 +1666,7 @@ final class _RealtimeScene {
       originalOwner = owner;
       final mountedReference = owner.reference;
 
-      TimelineContentRangeView expectAutomaticRead() {
+      TimelineContentRangeView? expectAutomaticRead() {
         expectMain();
         expect(connector, findsOneWidget);
         expect(tester.state(connector), same(state));
@@ -1690,12 +1690,21 @@ final class _RealtimeScene {
           tester.widget<TimelineContentRangeConnector>(connector).reference,
           same(mountedReference),
         );
-        expect(
-          tester
-              .element(connector)
-              .getInheritedWidgetOfExactType<TimelineBodyReadIntent>(),
-          isNotNull,
-        );
+        final intent = element
+            .getInheritedWidgetOfExactType<TimelineBodyReadIntent>();
+        expect(intent, isNotNull);
+        expect(read, findsNothing);
+        if (owner.error case final error?) throw error;
+        if (intent!.scrollable) {
+          // Tool output is presented in its bounded, lazy body viewport.
+          // The connector still owns the accepted window and error state.
+          expect(rangeView, findsNothing);
+          expect(
+            find.descendant(of: connector, matching: find.byType(ListView)),
+            findsOneWidget,
+          );
+          return null;
+        }
         expect(rangeView, findsOneWidget);
         final view = tester.widget<TimelineContentRangeView>(rangeView);
         expect(view.itemId, presentationId);
@@ -1704,9 +1713,7 @@ final class _RealtimeScene {
         expect(view.disclosed, isTrue);
         expect(view.active, isTrue);
         expect(view.canRead, isTrue);
-        if (owner.error case final error?) throw error;
         if (view.error case final error?) throw error;
-        expect(read, findsNothing);
         return view;
       }
 
@@ -1714,10 +1721,11 @@ final class _RealtimeScene {
       // bounded body directly, without a second disclosure or another click.
       await until(() {
         final view = expectAutomaticRead();
-        return owner.window != null && !view.loading;
+        return owner.window != null && view?.loading != true;
       }, 'accepted bounded ${role.name} window');
       final window = owner.window!;
-      expect(expectAutomaticRead().window, same(window));
+      final view = expectAutomaticRead();
+      if (view != null) expect(view.window, same(window));
       expect(window.offset, 0);
       expect(window.sealed, isTrue);
       expect(window.bytes, isNotEmpty);
@@ -2286,18 +2294,18 @@ final class _RealtimeScene {
 
         disclosureFacts = closeFacts;
         if (tool.toolCallId.startsWith('realtime-host-cwd-call:nested:')) {
-          final arguments = await readDeclaredRange(
-            rowId,
-            contentItemId,
-            contents,
-            ChatContentRole.toolArguments,
-            'cwd',
-            single: block,
-            head: head,
+          // Command parameters are part of the card's decoded semantic input;
+          // the renderer does not open a second argument content window.
+          expect(
+            contents.where(
+              (content) => content.role == ChatContentRole.toolArguments,
+            ),
+            hasLength(1),
           );
+          expect(renderedTool.arguments, tool.arguments);
+          expect(tool.arguments, originalTool.arguments);
           final cwd =
-              (jsonDecode(utf8.decode(arguments.bytes)) as Map)['cwd']
-                  as String;
+              (jsonDecode(renderedTool.arguments) as Map)['cwd'] as String;
           expect(cwd, isNotEmpty);
           // The nested original keeps the command receipt, without a model delivery notice.
           // Compare actual directory identity across platform-specific path spellings.
@@ -3102,11 +3110,7 @@ final class _RealtimeScene {
         (widget) =>
             widget is TimelineMemberAtom &&
             widget.isActive() &&
-            heads.any(
-              (head) =>
-                  widget.displayId == head.displayId &&
-                  widget.record == head.record,
-            ) &&
+            heads.any((head) => observed.matchesMountedRecord(widget, head)) &&
             widget.atom.id == atom.id &&
             widget.atom.source == atom.source &&
             (widget.atom.lifecycle is ActiveChatAtom) == active &&
