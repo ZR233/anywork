@@ -1,11 +1,10 @@
-import 'dart:math' as math;
-
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/studio_context_usage_ring.dart';
 import '../../shared/studio_hover_detail.dart';
 import 'status_detail_panel.dart';
 
@@ -56,15 +55,10 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
           child: Container(
             height: 26,
             padding: const EdgeInsets.symmetric(horizontal: 7),
-            child: SizedBox.square(
-              dimension: 16,
-              child: CustomPaint(
-                painter: _ContextUsagePainter(
-                  progress: _clampedProgress(projection),
-                  trackColor: context.colors.outlineVariant,
-                  progressColor: _progressColor(context, projection),
-                ),
-              ),
+            child: ContextUsageRing(
+              progress: _clampedProgress(projection),
+              trackColor: context.colors.outlineVariant,
+              progressColor: _progressColor(context, projection),
             ),
           ),
         ),
@@ -412,59 +406,6 @@ class _ModelIdentityLine extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 4),
       child: Text(modelId.isEmpty ? tokenCountUnknown : modelId, style: style),
     );
-  }
-}
-
-class _ContextUsagePainter extends CustomPainter {
-  const _ContextUsagePainter({
-    required this.progress,
-    required this.trackColor,
-    required this.progressColor,
-  });
-
-  /// `null` 表示阈值未知：只画中性底轨，不表达任何进度。
-  final double? progress;
-  final Color trackColor;
-  final Color progressColor;
-
-  static const _strokeWidth = 2.2;
-  static const _radiusInset = 1.8;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    final center = rect.center;
-    final radius = math.min(size.width, size.height) / 2 - _radiusInset;
-    final trackPaint = Paint()
-      ..color = trackColor.withValues(alpha: 0.74)
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = _strokeWidth;
-    final progressPaint = Paint()
-      ..color = progressColor
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = _strokeWidth;
-
-    canvas.drawCircle(center, radius, trackPaint);
-    final progress = this.progress;
-    if (progress == null || progress <= 0) {
-      return;
-    }
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      -math.pi / 2,
-      math.pi * 2 * progress,
-      false,
-      progressPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _ContextUsagePainter oldDelegate) {
-    return progress != oldDelegate.progress ||
-        trackColor != oldDelegate.trackColor ||
-        progressColor != oldDelegate.progressColor;
   }
 }
 

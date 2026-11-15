@@ -492,9 +492,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   }) {
     _ensureOpen();
     final agent = _agentEntry(threadId);
+    final activity = agent?.activity;
     final frozen = expectedExecutionId;
     if (frozen != null) {
-      if (agent == null || !agent.canStop) {
+      if (activity is! NativeStudioAgentActivity || !activity.canStop) {
         return Future<ThreadStopOutcome>.value(
           StopNotQualified(threadId: threadId),
         );
@@ -506,8 +507,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         requireCurrentCanonical: false,
       );
     }
-    final execution = agent?.execution;
-    if (agent == null || !agent.canStop || execution == null) {
+    final execution = activity is NativeStudioAgentActivity
+        ? activity.execution
+        : null;
+    if (activity is! NativeStudioAgentActivity ||
+        !activity.canStop ||
+        execution == null) {
       return Future<ThreadStopOutcome>.value(
         StopNotQualified(threadId: threadId),
       );
@@ -626,7 +631,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       // identity the server owns that comparison and answers typed staleExecution.
       final current = requireCurrentCanonical
           ? (fromDirectory
-                ? _agentEntry(threadId)?.execution
+                ? switch (_agentEntry(threadId)?.activity) {
+                    NativeStudioAgentActivity(:final execution) => execution,
+                    _ => null,
+                  }
                 : _client.conversations
                       .session(threadId)
                       .state
@@ -1427,7 +1435,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     if (agents == null) return false;
     for (final agent in agents) {
       if (agent.threadId != threadId) continue;
-      return agent.execution?.id != executionId;
+      return switch (agent.activity) {
+        NativeStudioAgentActivity(:final execution) =>
+          execution?.id != executionId,
+        AcpStudioAgentActivity() => false,
+      };
     }
     return false;
   }
@@ -1595,8 +1607,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
               .status
               .blocksNewExecution ==
           true ||
-      switch (_agentEntry(threadId)?.state) {
-        ClosingStudioAgent() || ClosedStudioAgent() => true,
+      switch (_agentEntry(threadId)?.activity) {
+        NativeStudioAgentActivity(
+          state: ClosingStudioAgent() || ClosedStudioAgent(),
+        ) =>
+          true,
+        AcpStudioAgentActivity(:final explicitlyClosed) => explicitlyClosed,
         _ => false,
       };
 

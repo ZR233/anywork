@@ -355,7 +355,9 @@ List<StudioAgentView> _members() => [
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       task: entry.$2,
-      state: const WaitingInteractionStudioAgent('child-turn', 'interaction'),
+      activity: const NativeStudioAgentActivity(
+        state: WaitingInteractionStudioAgent('child-turn', 'interaction'),
+      ),
       updatedAt: DateTime.utc(2026, 1, 1),
     ),
   StudioAgentView(
@@ -367,7 +369,9 @@ List<StudioAgentView> _members() => [
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
     task: 'Alternate member',
-    state: const WaitingInteractionStudioAgent('child-turn', 'interaction'),
+    activity: const NativeStudioAgentActivity(
+      state: WaitingInteractionStudioAgent('child-turn', 'interaction'),
+    ),
     updatedAt: DateTime.utc(2026, 1, 1),
   ),
 ];

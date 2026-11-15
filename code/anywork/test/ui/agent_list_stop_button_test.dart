@@ -87,11 +87,13 @@ StudioAgentView _agent({
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
     task: task,
-    state: state,
+    activity: NativeStudioAgentActivity(
+      state: state,
+      execution: execution,
+      canStop: canStop,
+      awaitingScheduling: awaitingScheduling,
+    ),
     updatedAt: DateTime.utc(2026, 1, 1),
-    execution: execution,
-    canStop: canStop,
-    awaitingScheduling: awaitingScheduling,
   );
 }
 

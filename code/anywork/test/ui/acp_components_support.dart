@@ -41,15 +41,17 @@ final class AcpComponentHarness {
   final AcpConversationSession owner;
 
   static Future<AcpComponentHarness> create({
+    String threadId = 'thread',
     List<AcpSessionConfigOptionView>? options,
     AcpSessionModeStateView? modes,
     List<AcpSessionUpdateView> updates = const [],
     bool resume = false,
+    bool child = false,
   }) async {
     final target = AcpSessionTargetView(
       sessionId: 'session',
       agentId: 'agent',
-      threadId: 'thread',
+      threadId: threadId,
       instance: BigInt.from(19),
     );
     final source = ControlledAcpObservation([
@@ -80,14 +82,15 @@ final class AcpComponentHarness {
         SessionDirectoryRow(
           sessionId: 'session',
           agentId: 'agent',
-          threadId: 'thread',
+          parentAgentId: child ? 'root-agent' : null,
+          threadId: threadId,
           workspaceId: 'workspace',
           title: 'ACP 测试会话',
           mode: null,
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,
           workspacePath: '/project',
-          role: 'root',
+          role: child ? 'executor' : 'root',
           backend: const AcpAgentBackendView(
             reference: AcpSessionReferenceView(
               accountId: 'account',
@@ -116,7 +119,7 @@ final class AcpComponentHarness {
         accountId: 'account',
         expectedConnectionRevision: BigInt.one,
         workspaceId: 'workspace',
-        threadId: 'thread',
+        threadId: threadId,
         intent: resume
             ? const AcpResumeIntentView(acpRemoteFixture)
             : const AcpLoadIntentView(acpRemoteFixture),

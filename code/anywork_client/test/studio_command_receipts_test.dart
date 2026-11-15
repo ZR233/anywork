@@ -670,12 +670,14 @@ StudioAgentView _agent({
   threadId: threadId,
   role: 'executor',
   task: threadId,
-  state: const IdleStudioAgent(),
+  activity: NativeStudioAgentActivity(
+    state: const IdleStudioAgent(),
+    execution: execution,
+    canStop: canStop,
+  ),
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),
-  execution: execution,
-  canStop: canStop,
 );
 
 ChildInteractionSummary _childSummary({
@@ -3434,6 +3436,45 @@ void main() {
     expect(transport.stopCalls, 0);
     expect(client.mutations.latest('stop:unknown-child'), isNull);
   });
+
+  test(
+    'ACP member without a Native execution cannot receive a Native row stop',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 2,
+          values: [
+            StudioAgentView(
+              agentId: 'acp-agent',
+              sessionId: 'thread',
+              parentAgentId: 'thread',
+              threadId: 'acp-child',
+              role: 'executor',
+              task: 'ACP child',
+              delegationMode: DelegationMode.profile,
+              delegationPreference: DelegationPreference.balanced,
+              activity: const AcpStudioAgentActivity(explicitlyClosed: false),
+              updatedAt: DateTime.utc(2026),
+            ),
+          ],
+        ),
+      );
+      expect(
+        await client.threadCommands.stopAgent('acp-child'),
+        isA<StopNotQualified>(),
+      );
+      expect(
+        await client.threadCommands.stopAgent(
+          'acp-child',
+          expectedExecutionId: 'old-native-id',
+        ),
+        isA<StopNotQualified>(),
+      );
+      expect(transport.stopCalls, 0);
+    },
+  );
 
   test('a stop without a canonical execution reports that nothing was sent', () async {
     final transport = _Transport();

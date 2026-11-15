@@ -459,6 +459,8 @@ impl Progress {
 }
 
 struct WorkerState {
+    /// Frozen at observer installation, before any asynchronous history preparation can finish late.
+    native_directory: Option<crate::studio::product_event_bus::NativeAgentObservation>,
     deletion: tokio_util::sync::CancellationToken,
     join_failure: std::sync::Mutex<Option<Arc<anyhow::Error>>>,
     terminal_transfer: Arc<
@@ -918,6 +920,7 @@ impl ThreadObservations {
             .thread_persistence()
             .history_channel(&id);
         let state = Arc::new(WorkerState {
+            native_directory: self.0.projector.events.begin_native_observation(&id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),
@@ -1073,7 +1076,13 @@ impl ThreadObservations {
             // A cold child's interruption is a fact the list must publish: a restart otherwise loses
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
             // reads only the saved checkpoint — no activation, no workspace, no model request.
-            directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
+            directory::publish_cold_scheduling_state(
+                services,
+                &child,
+                &member.agent,
+                &checkpoint.state,
+            )
+            .await?;
             // Match close/retry recovery: keep the owned delivery state out of the parent's
             // subscription future, which also nests checkpoint migration and activation.
             Box::pin(
@@ -1196,6 +1205,7 @@ impl Drop for ProjectionLease {
 }
 
 struct LiveOwner {
+    native_directory: Option<crate::studio::product_event_bus::NativeAgentObservation>,
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
     >,
@@ -1512,6 +1522,7 @@ impl LiveOwner {
         let model_route_published = model_route;
         feed.publish_storage(storage_published.clone());
         let owner = Self {
+            native_directory: state.native_directory.clone(),
             terminal_transfer: state.terminal_transfer.clone(),
             terminal_revocation: state.reconciliation_through.clone(),
             terminal_floor: state.progress.borrow().applied,
@@ -1552,10 +1563,11 @@ impl LiveOwner {
             // already has newer work. Accept the current runtime cut, not a status inferred from
             // that historical Turn, before any subscriber can observe its terminal fact.
             projector.events.patch_thread_runtime(
-                &owner.thread.id,
+                owner.native_directory.as_ref(),
                 crate::studio::thread_projection::status(snapshot),
                 owner.thread.updated_at.max(turn.updated_at),
                 snapshot,
+                None,
             )?;
             owner.feed.publish_last_turn(Arc::new(turn));
         }
@@ -1917,10 +1929,11 @@ impl LiveOwner {
             // Behind/history transfers never acquire the right to regress the current directory.
             let snapshot = &pending.write.checkpoint.state;
             services.events.patch_thread_runtime(
-                &self.thread.id,
+                self.native_directory.as_ref(),
                 crate::studio::thread_projection::status(snapshot),
                 pending.write.effect.committed_at,
                 snapshot,
+                None,
             )?;
         }
         if pending.mode == HandoffMode::Live {
@@ -3015,7 +3028,14 @@ impl ProjectionWorker {
                 .final_text(),
             None => None,
         };
-        directory::publish(services, product, snapshot, summary).await?;
+        directory::publish(
+            services,
+            product,
+            live.native_directory.as_ref(),
+            snapshot,
+            summary,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -3294,6 +3314,7 @@ pub(in crate::studio) mod storage_fault_tests {
             id: child.id.clone(),
             thread: ThreadHandle::resume_without_model(child.id.clone(), None)?,
             state: Arc::new(WorkerState {
+                native_directory: resources.events.begin_native_observation(&child.id),
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -3370,10 +3391,9 @@ pub(in crate::studio) mod storage_fault_tests {
                 .find(|row| row.thread_id == worker.id)
                 .context("the original agent row")?;
             anyhow::ensure!(
-                row.execution.as_ref().is_some_and(|execution| {
-                    execution.id() == "execution:1"
-                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping
-                }),
+                matches!(&row.activity, crate::StudioAgentActivity::Native { execution: Some(execution), .. }
+                    if execution.id() == "execution:1"
+                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping),
                 "the directory must first publish the exact stopping execution"
             );
 
@@ -3395,7 +3415,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 .find(|row| row.thread_id == worker.id)
                 .context("stopping must not remove the original agent row")?;
             anyhow::ensure!(
-                row.execution.is_none() && !row.can_stop,
+                matches!(row.activity, crate::StudioAgentActivity::Native { execution: None, can_stop: false, .. }),
                 "the same committed revision must publish execution retirement"
             );
             anyhow::ensure!(settled.state.revision() > stopping.state.revision());
@@ -3407,6 +3427,18 @@ pub(in crate::studio) mod storage_fault_tests {
                 .await?;
             let preview = worker.services.events.read_agent_directory().await;
             anyhow::ensure!(preview.state.revision() == settled.state.revision());
+            // History preparation may finish after a newer observer was installed. Reopening this
+            // worker retains its original token instead of acquiring a new right to publish.
+            worker.live = None;
+            worker.services.events.begin_native_observation(&worker.id).context("replacement observer")?;
+            let replacement = worker.services.events.read_agent_directory().await;
+            snapshot.observation_revision += 1;
+            snapshot.execution = Some(pl_core::thread::ActiveExecution {
+                id: "late-execution".into(), phase: pl_core::thread::ExecutionPhase::Preparing, turn_id: None,
+            });
+            worker.project(&snapshot, true, None).await?;
+            anyhow::ensure!(worker.services.events.read_agent_directory().await == replacement,
+                "a late old observer must not replace a newer generation when opening history");
             Ok(())
         }
         .await;
@@ -4161,6 +4193,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                native_directory: None,
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -4201,6 +4234,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                native_directory: None,
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -4661,6 +4695,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let snapshot = snapshot.unwrap_or_else(|| handle.snapshot());
         let (progress, owner_progress) = watch::channel(Progress::default());
         let state = Arc::new(WorkerState {
+            native_directory: fixture.services.events.begin_native_observation(&thread.id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),
@@ -5106,7 +5141,11 @@ pub(in crate::studio) mod storage_fault_tests {
                 // Deliberately leave the opposite directory state to prove installation accepts
                 // its snapshot before exposing the durable terminal, without a worker's end pass.
                 fixture.services.events.patch_thread_runtime(
-                    &thread.id,
+                    fixture
+                        .services
+                        .events
+                        .begin_native_observation(&thread.id)
+                        .as_ref(),
                     if newer_running {
                         ThreadStatus::Idle
                     } else {
@@ -5114,6 +5153,7 @@ pub(in crate::studio) mod storage_fault_tests {
                     },
                     1,
                     &installed,
+                    None,
                 )?;
                 if explicitly_closed {
                     fixture
@@ -5139,13 +5179,18 @@ pub(in crate::studio) mod storage_fault_tests {
                         .commit_explicit_close(&thread.id)
                         .await?;
                     fixture.services.events.patch_thread_runtime(
-                        &thread.id,
+                        fixture
+                            .services
+                            .events
+                            .begin_native_observation(&thread.id)
+                            .as_ref(),
                         ThreadStatus::Closed,
                         1,
                         &ThreadSnapshot {
                             lifecycle: ThreadLifecycle::Closed,
                             ..installed.clone()
                         },
+                        None,
                     )?;
                 }
                 let expected = if explicitly_closed {
@@ -6033,6 +6078,7 @@ pub(in crate::studio) mod storage_fault_tests {
             ..Progress::default()
         });
         let state = Arc::new(WorkerState {
+            native_directory: fixture.services.events.begin_native_observation(&child.id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),

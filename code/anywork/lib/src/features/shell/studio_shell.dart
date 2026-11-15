@@ -296,7 +296,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                                         setState(() => _sidebarHidden = false),
                                     icon: const Icon(Icons.chevron_right),
                                   ),
-                                Expanded(child: _Header(state: header)),
+                                Expanded(child: SessionHeader(state: header)),
                               ],
                             ),
                             if (startup.directoryError case final error?)

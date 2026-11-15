@@ -19,11 +19,13 @@ StudioAgentView _agent({
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
     task: 'child task',
-    state: state,
+    activity: NativeStudioAgentActivity(
+      state: state,
+      execution: execution,
+      canStop: canStop,
+      awaitingScheduling: awaitingScheduling,
+    ),
     updatedAt: DateTime.utc(2026, 1, 1),
-    execution: execution,
-    canStop: canStop,
-    awaitingScheduling: awaitingScheduling,
   );
 }
 
@@ -34,6 +36,28 @@ const _execution = AgentExecutionView(
 );
 
 void main() {
+  test('ACP 成员没有 Native 执行身份时不提供停止入口', () {
+    final agent = StudioAgentView(
+      agentId: 'acp-agent',
+      sessionId: 'session',
+      parentAgentId: 'root-agent',
+      threadId: 'acp-thread',
+      role: 'executor',
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      task: 'ACP child',
+      activity: const AcpStudioAgentActivity(explicitlyClosed: false),
+      updatedAt: DateTime.utc(2026),
+    );
+    expect(
+      AgentListStopState.resolve(
+        agent: agent,
+        acceptedExecutionId: 'unrelated-native-execution',
+      ).action,
+      AgentListStopAction.none,
+    );
+  });
+
   test('运行中的成员提供停止入口，目标是该行的执行身份', () {
     for (final phase in const [
       AgentExecutionPhase.preparing,
@@ -311,14 +335,12 @@ void main() {
         awaitingScheduling: true,
       ),
     ]) {
-      final resolved = AgentListStopState.resolve(
-        agent: agent,
-        acceptedExecutionId: agent.state is CancellingStudioAgent ? null : null,
-      );
+      final activity = agent.activity as NativeStudioAgentActivity;
+      final resolved = AgentListStopState.resolve(agent: agent);
       expect(
         resolved.action,
-        agent.execution!.phase.isStopping ||
-                agent.state is CancellingStudioAgent
+        activity.execution!.phase.isStopping ||
+                activity.state is CancellingStudioAgent
             ? AgentListStopAction.stopping
             : AgentListStopAction.stop,
       );

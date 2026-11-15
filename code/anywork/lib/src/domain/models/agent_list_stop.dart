@@ -44,7 +44,7 @@ final class AgentListStopState {
   ///    提供用户停止，即使目录行仍带遗留执行与停止资格）；
   /// 4. 有当前执行，且清理中/阶段为停止/命中已受理目标 → `stopping`；
   /// 5. 有当前执行且具备停止资格 → `stop`；
-  /// 6. [StudioAgentView.awaitingScheduling] → `stoppedWaitingScheduling`（只在没有可
+  /// 6. [NativeStudioAgentActivity.awaitingScheduling] → `stoppedWaitingScheduling`（只在没有可
   ///    停止执行时兜底，不能掩盖准备期或清理中的同一成员）；
   /// 7. 其余 → `none`。
   ///
@@ -62,19 +62,23 @@ final class AgentListStopState {
     if (isRetiredAgentRow(agent)) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
+    final activity = agent.activity;
+    if (activity is! NativeStudioAgentActivity) {
+      return const AgentListStopState(action: AgentListStopAction.none);
+    }
     // 永久关闭是终态：可靠保存的关闭意图优先于任何遗留执行或调度摘要。
-    if (agent.state is ClosedStudioAgent) {
+    if (activity.state is ClosedStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
     // 正在关闭与故障成员没有当前工作：关闭由关闭流程推进，故障成员不会被用户停止
     // 回收。二者即使仍带遗留执行与停止资格，也不提供可点停止或「正在停止」。
-    if (agent.state is ClosingStudioAgent ||
-        agent.state is FaultedStudioAgent) {
+    if (activity.state is ClosingStudioAgent ||
+        activity.state is FaultedStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
-    final execution = agent.execution;
+    final execution = activity.execution;
     if (execution != null &&
-        (agent.state is CancellingStudioAgent ||
+        (activity.state is CancellingStudioAgent ||
             execution.phase.isStopping ||
             execution.id == acceptedExecutionId)) {
       // 停止已受理但清理未结束：目标仍是同一执行，禁止重复点击。
@@ -83,7 +87,7 @@ final class AgentListStopState {
         executionId: execution.id,
       );
     }
-    if (execution != null && agent.canStop) {
+    if (execution != null && activity.canStop) {
       return AgentListStopState(
         action: AgentListStopAction.stop,
         executionId: execution.id,
@@ -91,7 +95,7 @@ final class AgentListStopState {
     }
     // 「等待主智能体调度」只覆盖没有可停止执行的成员；准备期与清理中的同一成员已在
     // 上面处理。
-    if (agent.awaitingScheduling) {
+    if (activity.awaitingScheduling) {
       return const AgentListStopState(
         action: AgentListStopAction.stoppedWaitingScheduling,
       );

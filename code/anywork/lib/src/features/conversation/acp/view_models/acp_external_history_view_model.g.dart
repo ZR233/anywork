@@ -135,7 +135,7 @@ final class AcpExternalHistoryButtonViewModelProvider
 }
 
 String _$acpExternalHistoryButtonViewModelHash() =>
-    r'8c9baad0fe0974d3e28d7c77940ea804ad0bd44f';
+    r'c801ed092640f16f756d96184c72079a9344b52c';
 
 /// Observes ONLY the fields required by the status-bar button so streaming
 /// message chunks never rebuild the external-sessions trigger.

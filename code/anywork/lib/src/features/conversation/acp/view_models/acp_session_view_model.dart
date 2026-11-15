@@ -1,11 +1,22 @@
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:riverpod/riverpod.dart' show Provider, ProviderListenableSelect;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
+import '../../../../presentation/providers/thread_directory_store.dart';
 
 part 'acp_session_view_model.g.dart';
+
+/// A missing directory row is unknown, never evidence that a member is root.
+final acpChildReadOnlyViewModelProvider = Provider.autoDispose
+    .family<bool?, String>((ref, threadId) {
+      return ref.watch(
+        threadMetadataStoreProvider(threadId)
+            .select((state) => state.frame?.row?.isChildRow),
+      );
+    });
 
 /// Admits through the application's exact directory identity. Re-entering a
 /// page borrows the existing Client owner; Ref never closes business membership.

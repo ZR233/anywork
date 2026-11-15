@@ -1007,8 +1007,15 @@ abstract final class StudioDriverState {
                     'threadId': agent.threadId,
                     'role': agent.role,
                     'task': agent.task,
-                    'status': agent.status,
-                    'error': agent.error,
+                    'status': switch (agent.activity) {
+                      NativeStudioAgentActivity(:final state) => state.label,
+                      AcpStudioAgentActivity() => null,
+                    },
+                    'error': switch (agent.activity) {
+                      NativeStudioAgentActivity(:final state) =>
+                        state.errorMessage,
+                      AcpStudioAgentActivity() => null,
+                    },
                   },
               ],
               'historyAttachments': [

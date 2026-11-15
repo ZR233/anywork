@@ -66,14 +66,20 @@ abstract final class AgentDirectoryQueries {
         (index, agents[index]),
     ];
     indexed.sort((left, right) {
-      final status = _statusPriority(left.$2.state)
-          .compareTo(_statusPriority(right.$2.state));
+      final status = _statusPriority(left.$2.activity)
+          .compareTo(_statusPriority(right.$2.activity));
       return status == 0 ? left.$1.compareTo(right.$1) : status;
     });
     return [for (final entry in indexed) entry.$2];
   }
 
-  static int _statusPriority(StudioAgentState state) => switch (state) {
+  static int _statusPriority(StudioAgentActivity activity) =>
+      switch (activity) {
+        AcpStudioAgentActivity() => 2,
+        NativeStudioAgentActivity(:final state) => _nativeStatusPriority(state),
+      };
+
+  static int _nativeStatusPriority(StudioAgentState state) => switch (state) {
     QueuedStudioAgent() ||
     RunningStudioAgent() ||
     WaitingToolStudioAgent() ||

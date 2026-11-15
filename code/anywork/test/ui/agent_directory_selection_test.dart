@@ -37,6 +37,62 @@ void main() {
     },
   );
 
+  for (final acpChild in [false, true]) {
+    test(
+      'ACP root and ${acpChild ? 'ACP' : 'Native'} child retain distinct identities when switching',
+      () async {
+        final fixture = await _fixture(
+          distinctRootIdentity: true,
+          acpRoot: true,
+          acpChild: acpChild,
+        );
+        final client = fixture.graph.client;
+        expect(fixture.root.sessionId, 'S');
+        expect(fixture.root.agentId, 'A');
+        expect(fixture.root.threadId, 'T');
+        expect(fixture.child.threadId, 'C');
+        expect(fixture.agents.first.activity, isA<AcpStudioAgentActivity>());
+        expect(
+          fixture.agents[1].activity,
+          acpChild
+              ? isA<AcpStudioAgentActivity>()
+              : isA<NativeStudioAgentActivity>(),
+        );
+
+        final childMetadata = client.threadDirectory.observeThread('C');
+        addTearDown(childMetadata.release);
+        await childMetadata.state.waitFor((state) => state.frame?.row != null);
+        final container = ProviderContainer(
+          overrides: [appGraphProvider.overrideWithValue(fixture.graph)],
+        );
+        addTearDown(container.dispose);
+        final header = container.listen(headerViewProvider, (_, _) {});
+        addTearDown(header.close);
+
+        await client.directoryCommands.selectAgentThread('C');
+        expect(client.selection.state.selectedThreadId, 'C');
+        await container.pump();
+        expect(header.read().selectedRootRow?.threadId, 'T');
+        if (!acpChild) {
+          final workspace = container.listen(
+            conversationWorkspaceProvider('C', needsOpen: true),
+            (_, _) {},
+          );
+          addTearDown(workspace.close);
+          await container.pump();
+          expect(workspace.read()?.row.threadId, 'C');
+          expect(workspace.read()?.rootRow.threadId, 'T');
+          expect(workspace.read()?.rootRow.backend, isA<AcpAgentBackendView>());
+        }
+        await client.directoryCommands.selectAgentThread('T');
+        expect(client.selection.state.selectedThreadId, 'T');
+        expect(fixture.transport.metadataReads, isNot(contains('S')));
+        expect(fixture.transport.stateReads, isEmpty);
+        expect(fixture.transport.submitCalls, 0);
+      },
+    );
+  }
+
   test('explicit cold selection reads only its metadata and opens only its history', () async {
     final fixture = await _fixture();
     final client = fixture.graph.client;
@@ -502,11 +558,13 @@ void main() {
                   delegationMode: agent.delegationMode,
                   delegationPreference: agent.delegationPreference,
                   frozenModel: agent.frozenModel,
-                  state: agent.state,
+                  activity: NativeStudioAgentActivity(
+                    state: (agent.activity as NativeStudioAgentActivity).state,
+                    execution: execution,
+                    canStop: true,
+                    awaitingScheduling: true,
+                  ),
                   updatedAt: agent.updatedAt,
-                  execution: execution,
-                  canStop: true,
-                  awaitingScheduling: true,
                 )
               else
                 agent,
@@ -518,16 +576,17 @@ void main() {
     final published = client.project.state.agents!.values.firstWhere(
       (agent) => agent.threadId == fixture.child.threadId,
     );
-    expect(published.execution, execution);
-    expect(published.canStop, isTrue);
+    final publishedActivity = published.activity as NativeStudioAgentActivity;
+    expect(publishedActivity.execution, execution);
+    expect(publishedActivity.canStop, isTrue);
     expect(
-      published.awaitingScheduling,
+      publishedActivity.awaitingScheduling,
       isTrue,
       reason: 'A member with an unclaimed continuation waits for its parent',
     );
     expect(
-      published.state,
-      row.state,
+      publishedActivity.state,
+      (row.activity as NativeStudioAgentActivity).state,
       reason: 'The canonical member state is not derived from the execution',
     );
     expect(
@@ -552,10 +611,10 @@ void main() {
                   task: agent.task,
                   delegationMode: agent.delegationMode,
                   delegationPreference: agent.delegationPreference,
-                  state: agent.state,
+                  activity: NativeStudioAgentActivity(
+                    state: (agent.activity as NativeStudioAgentActivity).state,
+                  ),
                   updatedAt: agent.updatedAt,
-                  canStop: false,
-                  awaitingScheduling: false,
                 )
               else
                 agent,
@@ -565,20 +624,32 @@ void main() {
       isFalse,
     );
     expect(
-      client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
+      (client.project.state.agents!.values
+                  .firstWhere(
+                    (agent) => agent.threadId == fixture.child.threadId,
+                  )
+                  .activity
+              as NativeStudioAgentActivity)
           .execution,
       execution,
     );
     expect(
-      client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
+      (client.project.state.agents!.values
+                  .firstWhere(
+                    (agent) => agent.threadId == fixture.child.threadId,
+                  )
+                  .activity
+              as NativeStudioAgentActivity)
           .canStop,
       isTrue,
     );
     expect(
-      client.project.state.agents!.values
-          .firstWhere((agent) => agent.threadId == fixture.child.threadId)
+      (client.project.state.agents!.values
+                  .firstWhere(
+                    (agent) => agent.threadId == fixture.child.threadId,
+                  )
+                  .activity
+              as NativeStudioAgentActivity)
           .awaitingScheduling,
       isTrue,
       reason: 'A stale page never clears the newer scheduling fact',
@@ -601,11 +672,12 @@ void main() {
                   task: agent.task,
                   delegationMode: agent.delegationMode,
                   delegationPreference: agent.delegationPreference,
-                  state: agent.state,
+                  activity: NativeStudioAgentActivity(
+                    state: (agent.activity as NativeStudioAgentActivity).state,
+                    execution: execution,
+                    canStop: true,
+                  ),
                   updatedAt: agent.updatedAt,
-                  execution: execution,
-                  canStop: true,
-                  awaitingScheduling: false,
                 )
               else
                 agent,
@@ -617,9 +689,10 @@ void main() {
     final scheduled = client.project.state.agents!.values.firstWhere(
       (agent) => agent.threadId == fixture.child.threadId,
     );
-    expect(scheduled.awaitingScheduling, isFalse);
+    final scheduledActivity = scheduled.activity as NativeStudioAgentActivity;
+    expect(scheduledActivity.awaitingScheduling, isFalse);
     expect(
-      scheduled.canStop,
+      scheduledActivity.canStop,
       isTrue,
       reason: 'Scheduling state never derives the stop qualification',
     );
@@ -789,7 +862,7 @@ SessionDirectoryRow _secondColdChild(_ColdFixture fixture) {
           threadId: sibling.threadId,
           role: sibling.role,
           task: sibling.title,
-          state: const IdleStudioAgent(),
+          activity: const NativeStudioAgentActivity(state: IdleStudioAgent()),
           delegationMode: sibling.delegationMode,
           delegationPreference: sibling.delegationPreference,
           frozenModel: sibling.frozenModel,
@@ -846,6 +919,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
 Future<_ColdFixture> _fixture({
   bool distinctRootIdentity = false,
   bool acpRoot = false,
+  bool acpChild = false,
 }) async {
   final transport = _ColdSelectionTransport();
   final saved = await transport.savedThreads();
@@ -864,7 +938,7 @@ Future<_ColdFixture> _fixture({
       ),
     );
   }
-  final child = distinctRootIdentity
+  var child = distinctRootIdentity
       ? saved[1].copyWith(
           backend: (saved[1].backend as NativeAgentBackendView).copyWith(
             status: ThreadStatusView.closed,
@@ -878,6 +952,18 @@ Future<_ColdFixture> _fixture({
             status: ThreadStatusView.closed,
           ),
         );
+  if (acpChild) {
+    child = child.copyWith(
+      mode: null,
+      backend: const AcpAgentBackendView(
+        reference: AcpSessionReferenceView(
+          accountId: 'custom-acp-child',
+          acpSessionId: 'external-child-session',
+          cwd: '/project',
+        ),
+      ),
+    );
+  }
   final other = saved[2];
   transport.rowOverrides.addAll({
     saved[0].threadId: root,
@@ -903,12 +989,16 @@ Future<_ColdFixture> _fixture({
         delegationMode: row.delegationMode,
         delegationPreference: row.delegationPreference,
         frozenModel: row.frozenModel,
-        state:
-            row.backend is NativeAgentBackendView &&
-                (row.backend as NativeAgentBackendView).status ==
-                    ThreadStatusView.closed
-            ? const ClosedStudioAgent()
-            : const IdleStudioAgent(),
+        activity: switch (row.backend) {
+          NativeAgentBackendView(:final status) => NativeStudioAgentActivity(
+            state: status == ThreadStatusView.closed
+                ? const ClosedStudioAgent()
+                : const IdleStudioAgent(),
+          ),
+          AcpAgentBackendView() => const AcpStudioAgentActivity(
+            explicitlyClosed: false,
+          ),
+        },
         updatedAt: row.updatedAt,
       );
   final agents = [
@@ -922,7 +1012,7 @@ Future<_ColdFixture> _fixture({
       threadId: 'cold-sibling',
       role: 'executor',
       task: 'Another cold member',
-      state: const IdleStudioAgent(),
+      activity: const NativeStudioAgentActivity(state: IdleStudioAgent()),
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: root.updatedAt,

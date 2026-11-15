@@ -18,22 +18,36 @@ pub(crate) fn bridge_agent_directory_entry(
         frozen_model: agent.frozen_model.map(Into::into),
         task: agent.task,
         summary: agent.summary,
-        state: bridge_agent_state(agent.state),
-        execution: agent.execution.map(|execution| BridgeAgentExecution {
-            turn_id: execution.turn_id().map(str::to_owned),
-            phase: match execution.phase() {
-                AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
-                AgentExecutionPhase::AwaitingStorage => BridgeAgentExecutionPhase::AwaitingStorage,
-                AgentExecutionPhase::AwaitingAdmission => {
-                    BridgeAgentExecutionPhase::AwaitingAdmission
-                }
-                AgentExecutionPhase::Running => BridgeAgentExecutionPhase::Running,
-                AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
+        activity: match agent.activity {
+            StudioAgentActivity::Native {
+                state,
+                execution,
+                can_stop,
+                awaiting_scheduling,
+            } => BridgeAgentActivity::Native {
+                state: bridge_agent_state(state),
+                execution: execution.map(|execution| BridgeAgentExecution {
+                    turn_id: execution.turn_id().map(str::to_owned),
+                    phase: match execution.phase() {
+                        AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
+                        AgentExecutionPhase::AwaitingStorage => {
+                            BridgeAgentExecutionPhase::AwaitingStorage
+                        }
+                        AgentExecutionPhase::AwaitingAdmission => {
+                            BridgeAgentExecutionPhase::AwaitingAdmission
+                        }
+                        AgentExecutionPhase::Running => BridgeAgentExecutionPhase::Running,
+                        AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
+                    },
+                    id: execution.id().to_owned(),
+                }),
+                can_stop,
+                awaiting_scheduling,
             },
-            id: execution.id().to_owned(),
-        }),
-        can_stop: agent.can_stop,
-        awaiting_scheduling: agent.awaiting_scheduling,
+            StudioAgentActivity::Acp { explicitly_closed } => {
+                BridgeAgentActivity::Acp { explicitly_closed }
+            }
+        },
         updated_at: agent.updated_at,
     }
 }
@@ -252,5 +266,67 @@ impl From<pl_protocol::StateOperation> for BridgeStateOperation {
             pl_protocol::StateOperation::Reset => Self::Reset,
             pl_protocol::StateOperation::Shutdown => Self::Shutdown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(activity: StudioAgentActivity) -> StudioAgentDirectoryEntry {
+        StudioAgentDirectoryEntry {
+            agent_id: "agent".into(),
+            session_id: "session".into(),
+            parent_agent_id: Some("parent".into()),
+            thread_id: "thread".into(),
+            role: "executor".into(),
+            delegation_mode: Default::default(),
+            delegation_preference: Default::default(),
+            frozen_model: None,
+            task: "task".into(),
+            summary: None,
+            activity,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn agent_directory_keeps_backend_identity_and_native_stop_qualification() {
+        let native = bridge_agent_directory_entry(member(StudioAgentActivity::Native {
+            state: AgentState::idle(),
+            execution: Some(pl_protocol::AgentExecution::new(
+                "execution",
+                AgentExecutionPhase::Preparing,
+                None,
+            )),
+            can_stop: true,
+            awaiting_scheduling: false,
+        }));
+        assert_eq!(native.agent_id, "agent");
+        assert_eq!(native.session_id, "session");
+        assert_eq!(native.thread_id, "thread");
+        assert!(matches!(
+            native.activity,
+            BridgeAgentActivity::Native {
+                state: BridgeAgentState::Idle(_),
+                execution: Some(BridgeAgentExecution {
+                    ref id,
+                    phase: BridgeAgentExecutionPhase::Preparing,
+                    ..
+                }),
+                can_stop: true,
+                awaiting_scheduling: false,
+            } if id == "execution"
+        ));
+
+        let acp = bridge_agent_directory_entry(member(StudioAgentActivity::Acp {
+            explicitly_closed: true,
+        }));
+        assert!(matches!(
+            acp.activity,
+            BridgeAgentActivity::Acp {
+                explicitly_closed: true
+            }
+        ));
     }
 }

@@ -497,11 +497,13 @@ final class _ConceptScene {
                 AcpAgentBackendView() || null => null,
               },
         'workspaceThreadStatus': state?.workspace?.thread.status.name,
-        'agentStatus': client.project.state.agents?.values
+        'agentStatus': switch (client.project.state.agents?.values
             .where((agent) => agent.threadId == selected)
             .firstOrNull
-            ?.state
-            .label,
+            ?.activity) {
+          NativeStudioAgentActivity(:final state) => state.label,
+          AcpStudioAgentActivity() || null => null,
+        },
       };
       rethrow;
     }

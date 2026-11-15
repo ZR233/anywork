@@ -217,6 +217,54 @@ class AgentStateError {
   int get hashCode => Object.hash(code, message, retryable);
 }
 
+/// 目录运行事实按后端区分；ACP 未观察到的状态不映射为 Native 空闲。
+sealed class StudioAgentActivity {
+  const StudioAgentActivity();
+}
+
+final class NativeStudioAgentActivity extends StudioAgentActivity {
+  const NativeStudioAgentActivity({
+    required this.state,
+    this.execution,
+    this.canStop = false,
+    this.awaitingScheduling = false,
+  });
+
+  final StudioAgentState state;
+  final AgentExecutionView? execution;
+  final bool canStop;
+  final bool awaitingScheduling;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NativeStudioAgentActivity &&
+          state == other.state &&
+          execution == other.execution &&
+          canStop == other.canStop &&
+          awaitingScheduling == other.awaitingScheduling;
+
+  @override
+  int get hashCode =>
+      Object.hash(state, execution, canStop, awaitingScheduling);
+}
+
+/// 显式关闭意图不等于执行或工作树清理已完成。
+final class AcpStudioAgentActivity extends StudioAgentActivity {
+  const AcpStudioAgentActivity({required this.explicitlyClosed});
+
+  final bool explicitlyClosed;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AcpStudioAgentActivity &&
+          explicitlyClosed == other.explicitlyClosed;
+
+  @override
+  int get hashCode => Object.hash(runtimeType, explicitlyClosed);
+}
+
 /// 智能体目录行：成员身份四元组加成员执行事实。
 ///
 /// `sessionId` 是归属判据，`parentAgentId` 是 root/child 判据；两者都只读
@@ -232,12 +280,9 @@ class StudioAgentView {
     this.parentAgentId,
     this.frozenModel,
     required this.task,
-    required this.state,
+    required this.activity,
     required this.updatedAt,
     this.summary,
-    this.execution,
-    this.canStop = false,
-    this.awaitingScheduling = false,
   });
 
   final String agentId;
@@ -250,30 +295,12 @@ class StudioAgentView {
   final NewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
-  final StudioAgentState state;
+  final StudioAgentActivity activity;
   final DateTime updatedAt;
-
-  /// 该成员当前执行；未装载或没有当前执行时为空。
-  ///
-  /// 停止目标来自这里，而不是当前选中会话的轮次。
-  final AgentExecutionView? execution;
-
-  /// 用户是否可对这一行发起精确停止。
-  final bool canStop;
-
-  /// 该成员有未认领的继续点，等待主智能体调度。
-  ///
-  /// 已关闭、正常完成或未装载为 `false`。它是成员行的规范事实，不用于推导
-  /// [canStop]，也不代表用户可以在客户端继续该成员。
-  final bool awaitingScheduling;
 
   bool get isRootAgent => parentAgentId == null;
 
   bool get isChildAgent => parentAgentId != null;
-
-  String get status => state.label;
-
-  String? get error => state.errorMessage;
 
   @override
   bool operator ==(Object other) =>
@@ -289,11 +316,8 @@ class StudioAgentView {
           frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
-          state == other.state &&
-          updatedAt == other.updatedAt &&
-          execution == other.execution &&
-          canStop == other.canStop &&
-          awaitingScheduling == other.awaitingScheduling;
+          activity == other.activity &&
+          updatedAt == other.updatedAt;
 
   @override
   int get hashCode => Object.hash(
@@ -307,10 +331,7 @@ class StudioAgentView {
     frozenModel,
     task,
     summary,
-    state,
+    activity,
     updatedAt,
-    execution,
-    canStop,
-    awaitingScheduling,
   );
 }

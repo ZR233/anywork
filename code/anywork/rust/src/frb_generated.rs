@@ -13304,6 +13304,41 @@ impl SseDecode for crate::api::studio::types::thread_activity::BridgeActivitySna
     }
 }
 
+impl SseDecode for crate::api::studio::types::runtime::BridgeAgentActivity {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_state =
+                    <crate::api::studio::types::runtime::BridgeAgentState>::sse_decode(
+                        deserializer,
+                    );
+                let mut var_execution = <Option<
+                    crate::api::studio::types::runtime::BridgeAgentExecution,
+                >>::sse_decode(deserializer);
+                let mut var_canStop = <bool>::sse_decode(deserializer);
+                let mut var_awaitingScheduling = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::runtime::BridgeAgentActivity::Native {
+                    state: var_state,
+                    execution: var_execution,
+                    can_stop: var_canStop,
+                    awaiting_scheduling: var_awaitingScheduling,
+                };
+            }
+            1 => {
+                let mut var_explicitlyClosed = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::runtime::BridgeAgentActivity::Acp {
+                    explicitly_closed: var_explicitlyClosed,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::studio::types::session_directory::BridgeAgentBackend {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -13415,14 +13450,8 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
         >>::sse_decode(deserializer);
         let mut var_task = <String>::sse_decode(deserializer);
         let mut var_summary = <Option<String>>::sse_decode(deserializer);
-        let mut var_state =
-            <crate::api::studio::types::runtime::BridgeAgentState>::sse_decode(deserializer);
-        let mut var_execution =
-            <Option<crate::api::studio::types::runtime::BridgeAgentExecution>>::sse_decode(
-                deserializer,
-            );
-        let mut var_canStop = <bool>::sse_decode(deserializer);
-        let mut var_awaitingScheduling = <bool>::sse_decode(deserializer);
+        let mut var_activity =
+            <crate::api::studio::types::runtime::BridgeAgentActivity>::sse_decode(deserializer);
         let mut var_updatedAt = <i64>::sse_decode(deserializer);
         return crate::api::studio::types::runtime::BridgeAgentDirectoryEntryDto {
             agent_id: var_agentId,
@@ -13435,10 +13464,7 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
             frozen_model: var_frozenModel,
             task: var_task,
             summary: var_summary,
-            state: var_state,
-            execution: var_execution,
-            can_stop: var_canStop,
-            awaiting_scheduling: var_awaitingScheduling,
+            activity: var_activity,
             updated_at: var_updatedAt,
         };
     }
@@ -32911,6 +32937,45 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::runtime::BridgeAgentActivity {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::runtime::BridgeAgentActivity::Native {
+                state,
+                execution,
+                can_stop,
+                awaiting_scheduling,
+            } => [
+                0.into_dart(),
+                state.into_into_dart().into_dart(),
+                execution.into_into_dart().into_dart(),
+                can_stop.into_into_dart().into_dart(),
+                awaiting_scheduling.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::studio::types::runtime::BridgeAgentActivity::Acp { explicitly_closed } => [
+                1.into_dart(),
+                explicitly_closed.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::runtime::BridgeAgentActivity
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::BridgeAgentActivity>
+    for crate::api::studio::types::runtime::BridgeAgentActivity
+{
+    fn into_into_dart(self) -> crate::api::studio::types::runtime::BridgeAgentActivity {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::session_directory::BridgeAgentBackend
 {
@@ -33052,10 +33117,7 @@ impl flutter_rust_bridge::IntoDart
             self.frozen_model.into_into_dart().into_dart(),
             self.task.into_into_dart().into_dart(),
             self.summary.into_into_dart().into_dart(),
-            self.state.into_into_dart().into_dart(),
-            self.execution.into_into_dart().into_dart(),
-            self.can_stop.into_into_dart().into_dart(),
-            self.awaiting_scheduling.into_into_dart().into_dart(),
+            self.activity.into_into_dart().into_dart(),
             self.updated_at.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -49916,6 +49978,37 @@ impl SseEncode for crate::api::studio::types::thread_activity::BridgeActivitySna
     }
 }
 
+impl SseEncode for crate::api::studio::types::runtime::BridgeAgentActivity {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::runtime::BridgeAgentActivity::Native {
+                state,
+                execution,
+                can_stop,
+                awaiting_scheduling,
+            } => {
+                <i32>::sse_encode(0, serializer);
+                <crate::api::studio::types::runtime::BridgeAgentState>::sse_encode(
+                    state, serializer,
+                );
+                <Option<crate::api::studio::types::runtime::BridgeAgentExecution>>::sse_encode(
+                    execution, serializer,
+                );
+                <bool>::sse_encode(can_stop, serializer);
+                <bool>::sse_encode(awaiting_scheduling, serializer);
+            }
+            crate::api::studio::types::runtime::BridgeAgentActivity::Acp { explicitly_closed } => {
+                <i32>::sse_encode(1, serializer);
+                <bool>::sse_encode(explicitly_closed, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for crate::api::studio::types::session_directory::BridgeAgentBackend {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -50013,13 +50106,10 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeAgentDirectoryEntry
         );
         <String>::sse_encode(self.task, serializer);
         <Option<String>>::sse_encode(self.summary, serializer);
-        <crate::api::studio::types::runtime::BridgeAgentState>::sse_encode(self.state, serializer);
-        <Option<crate::api::studio::types::runtime::BridgeAgentExecution>>::sse_encode(
-            self.execution,
+        <crate::api::studio::types::runtime::BridgeAgentActivity>::sse_encode(
+            self.activity,
             serializer,
         );
-        <bool>::sse_encode(self.can_stop, serializer);
-        <bool>::sse_encode(self.awaiting_scheduling, serializer);
         <i64>::sse_encode(self.updated_at, serializer);
     }
 }
