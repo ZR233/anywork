@@ -53,10 +53,22 @@ void main() {
       );
     }
 
-    List<AcpSessionConfigOptionView> options({bool groupedChanged = false}) => [
+    List<AcpSessionConfigOptionView> options({
+      bool groupedChanged = false,
+      bool booleanChanged = false,
+    }) => [
       select(grouped: false),
       select(grouped: true, changed: groupedChanged),
-      acpBooleanFixture,
+      if (!booleanChanged)
+        acpBooleanFixture
+      else
+        AcpSessionConfigOptionView(
+          id: acpBooleanFixture.id,
+          name: acpBooleanFixture.name,
+          description: acpBooleanFixture.description,
+          category: acpBooleanFixture.category,
+          kind: const AcpBooleanConfigView(currentValue: true),
+        ),
     ];
 
     final harness = await AcpComponentHarness.create(
@@ -124,16 +136,20 @@ void main() {
     final draft = harness.client.drafts.composer('thread');
     expect(draft.state.draft, 'ACP 消息');
 
-    Finder selectAnchorButton(bool grouped) => find.descendant(
-      of: find.byKey(
-        ValueKey(
-          AcpViewKeyValues.configControl(
-            grouped ? 'vendor/grouped' : 'vendor/select',
-          ),
+    Finder configOverflowButton() => find
+        .descendant(
+          of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
+          matching: find.byType(TextButton),
+        )
+        .first;
+    Finder configControl(bool grouped) => find.byKey(
+      ValueKey(
+        AcpViewKeyValues.configControl(
+          grouped ? 'vendor/grouped' : 'vendor/select',
         ),
       ),
-      matching: find.byType(TextButton),
     );
+    Finder selectAnchorButton(bool grouped) => configControl(grouped);
     Finder booleanPill() => find.byKey(
       ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
     );
@@ -150,25 +166,45 @@ void main() {
     Future<void> configure({
       bool? grouped,
       required List<AcpSessionConfigOptionView> canonical,
+      required String retainedDraft,
     }) async {
       final gate = Completer<void>();
       gates.add(gate);
       harness.port.configureResult = gate;
       if (grouped == null) {
+        await tester.tap(configOverflowButton());
+        await tester.pumpAndSettle();
         await tester.tap(booleanPill());
       } else {
+        await tester.tap(configOverflowButton());
+        await tester.pumpAndSettle();
         await tester.tap(selectAnchorButton(grouped));
         await tester.pumpAndSettle();
         if (grouped) expect(find.text('服务端分组'), findsWidgets);
-        await tester.tap(find.text(grouped ? '深入分析' : '请求高质量').last);
+        await tester.tap(
+          find.byKey(
+            ValueKey(
+              AcpViewKeyValues.configChoice(
+                grouped ? 'vendor/grouped' : 'vendor/select',
+                grouped ? 'group/raw:2' : 'flat/raw:2',
+              ),
+            ),
+          ),
+        );
       }
       await flushUi();
       expect(harness.owner.state.configPending, isTrue);
       expect(sendButton().onPressed, isNull);
       // Tapping a disabled production button must not reach the port.
+      final promptCountBeforeConfigLock = harness.port.calls
+          .where((call) => call.$1 == 'prompt')
+          .length;
       await tester.tap(primaryAction());
       await flushUi();
-      expect(harness.port.calls.where((call) => call.$1 == 'prompt'), isEmpty);
+      expect(
+        harness.port.calls.where((call) => call.$1 == 'prompt'),
+        hasLength(promptCountBeforeConfigLock),
+      );
       final request = harness.port.calls.last.$2 as AcpConfigureRequestView;
       expect(request.target, same(harness.owner.state.target));
       expect(
@@ -197,22 +233,38 @@ void main() {
       await tester.pumpAndSettle();
       expect(harness.owner.state.configPending, isFalse);
       expect(sendButton().onPressed, isNotNull);
-      expect(draft.state.draft, 'ACP 消息');
+      expect(draft.state.draft, retainedDraft);
     }
 
-    await configure(grouped: false, canonical: options());
-    expect(find.textContaining('回答质量 · 标准质量'), findsOneWidget);
-    await configure(grouped: true, canonical: options(groupedChanged: true));
-    expect(find.textContaining('分析深度 · 深入分析'), findsOneWidget);
-    await configure(canonical: options(groupedChanged: true));
-    expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: booleanPill(), matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNotNull,
+    await configure(
+      grouped: false,
+      canonical: options(),
+      retainedDraft: 'ACP 消息',
     );
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    expect(find.textContaining('回答质量 · 标准质量'), findsOneWidget);
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    await configure(
+      grouped: true,
+      canonical: options(groupedChanged: true),
+      retainedDraft: 'ACP 消息',
+    );
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    expect(find.textContaining('分析深度 · 深入分析'), findsOneWidget);
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    await configure(
+      canonical: options(groupedChanged: true),
+      retainedDraft: 'ACP 消息',
+    );
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(booleanPill()).onChanged, isNotNull);
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(3),
@@ -237,85 +289,22 @@ void main() {
     expect(draft.state.submissionRevision, greaterThan(0));
     expect(harness.owner.state.activeRun, run);
 
-    // Generation and configuration are independent controls.
-    final runningConfiguration = Completer<void>();
-    gates.add(runningConfiguration);
-    harness.port.configureResult = runningConfiguration;
-    expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: booleanPill(), matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNotNull,
-    );
-    await tester.tap(booleanPill());
-    await flushUi();
+    // Configuration is locked during generation; no command may be emitted.
+    final configureCountBeforeRun = harness.port.calls
+        .where((call) => call.$1 == 'configure')
+        .length;
     expect(harness.owner.state.activeRun, run);
     expect(harness.owner.state.sendPending, isFalse);
-    expect(harness.owner.state.configPending, isTrue);
-    expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: booleanPill(), matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNull,
-    );
-    expect(
-      tester.widget<TextButton>(selectAnchorButton(false)).onPressed,
-      isNull,
-    );
-    final runningRequest =
-        harness.port.calls.last.$2 as AcpConfigureRequestView;
-    expect(runningRequest.target, same(harness.owner.state.target));
-    expect(runningRequest.configId, acpBooleanFixture.id);
-    expect((runningRequest.value as AcpBooleanConfigValueView).value, isTrue);
-    harness.emit(
-      AcpConfiguredEventView(
-        AcpConfiguredResponseView(
-          configOptions: [
-            ...options(groupedChanged: true).take(2),
-            AcpSessionConfigOptionView(
-              id: acpBooleanFixture.id,
-              name: acpBooleanFixture.name,
-              description: acpBooleanFixture.description,
-              category: acpBooleanFixture.category,
-              kind: const AcpBooleanConfigView(currentValue: true),
-            ),
-          ],
-        ),
-      ),
-    );
-    await flushUi();
-    expect(harness.owner.state.activeRun, run);
-    expect(harness.owner.state.configPending, isTrue);
-    runningConfiguration.complete();
-    await tester.pumpAndSettle();
-    expect(harness.owner.state.activeRun, run);
     expect(harness.owner.state.configPending, isFalse);
-    expect(
-      tester
-          .widget<InkWell>(
-            find.descendant(of: booleanPill(), matching: find.byType(InkWell)),
-          )
-          .onTap,
-      isNotNull,
-    );
-    expect(
-      tester.widget<TextButton>(selectAnchorButton(false)).onPressed,
-      isNotNull,
-    );
-    expect(
-      tester.widget<TextButton>(selectAnchorButton(true)).onPressed,
-      isNotNull,
-    );
-    expect(prompts, hasLength(1));
+    expect(tester.widget<TextButton>(configOverflowButton()).onPressed, isNull);
+    await tester.tap(configOverflowButton());
+    await flushUi();
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
-      hasLength(4),
+      hasLength(configureCountBeforeRun),
     );
-    debugPrint('ACP running configuration applied; original run active');
+    expect(prompts, hasLength(1));
+    debugPrint('ACP configuration locked while generation is active');
 
     const permissions = [
       AcpPermissionOptionView(
@@ -499,7 +488,7 @@ void main() {
     expect(find.text('中断'), findsNothing);
     expect(find.byTooltip('中断'), findsOneWidget);
     await tester.tap(primaryAction());
-    await tester.pumpAndSettle();
+    await flushUi();
     final interrupt = harness.port.calls.last.$2 as AcpInterruptRequestView;
     expect(interrupt.target, same(harness.owner.state.target));
     expect(interrupt.run, run);
@@ -517,7 +506,7 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await flushUi();
     expect(harness.owner.state.activeRun, isNull);
     expect(find.byTooltip('中断'), findsNothing);
     expect(sendButton().onPressed, isNotNull);
@@ -527,6 +516,18 @@ void main() {
       harness.port.calls.where((call) => call.$1 == 'interrupt'),
       hasLength(1),
     );
+    await configure(
+      canonical: options(groupedChanged: true, booleanChanged: true),
+      retainedDraft: '下一条草稿',
+    );
+    expect(harness.owner.state.activeRun, isNull);
+    expect(
+      harness.port.calls.where((call) => call.$1 == 'configure'),
+      hasLength(4),
+    );
+    await tester.tap(configOverflowButton());
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(booleanPill()).value, isTrue);
     expect(tester.takeException(), isNull);
   });
 }

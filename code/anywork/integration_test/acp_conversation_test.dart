@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
+import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -35,11 +36,25 @@ void main() {
       requireNativeResize: true,
     );
     debugPrint('ACP native viewport: ${jsonEncode(geometry)}');
-    final config = find.byKey(
+    final configOverflow = find.descendant(
+      of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
+      matching: find.byType(TextButton),
+    );
+    expect(configOverflow.hitTestable(), findsOneWidget);
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    await tester.tap(configOverflow);
+    await tester.pumpAndSettle();
+    final booleanConfig = find.byKey(
       ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
     );
-    expect(config.hitTestable(), findsOneWidget);
-    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(booleanConfig.hitTestable(), findsOneWidget);
+    await tester.tap(booleanConfig);
+    await tester.pumpAndSettle();
+    final configure =
+        harness.port.calls.where((call) => call.$1 == 'configure').single.$2
+            as AcpConfigureRequestView;
+    expect(configure.configId, acpBooleanFixture.id);
+    expect((configure.value as AcpBooleanConfigValueView).value, isTrue);
     expect(tester.takeException(), isNull);
     await capturePresentation(tester, 'acp-native-workspace.png');
   });
