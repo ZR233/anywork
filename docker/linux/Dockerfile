@@ -30,6 +30,19 @@ RUN mkdir -p /opt/git/etc \
     /opt/anywork-image/libnss_wrapper.so
 ENV PATH=/opt/git/bin:$PATH
 
+# Cross-compilers and generators are independent of the Rust toolchain, so a
+# Rust upgrade does not download or install them again.
+FROM build-base AS tools-env
+ENV PATH=/opt/cargo/bin:/opt/zig:$PATH
+COPY docker/linux/scripts/install-tools.sh /opt/anywork-image/scripts/install-tools.sh
+RUN mkdir -p /opt/cargo/bin && bash /opt/anywork-image/scripts/install-tools.sh
+
+FROM build-base AS codegen-env
+ENV PATH=/opt/cargo/bin:$PATH
+COPY docker/linux/codegen.env /opt/anywork-image/codegen.env
+COPY docker/linux/scripts/install-codegen.sh /opt/anywork-image/scripts/install-codegen.sh
+RUN mkdir -p /opt/cargo/bin && bash /opt/anywork-image/scripts/install-codegen.sh
+
 # No dependency on rust-toolchain.toml: a Rust upgrade retains Flutter's layer.
 FROM build-base AS flutter-env
 COPY docker/linux/scripts/install-flutter.sh /opt/anywork-image/scripts/install-flutter.sh
@@ -52,14 +65,13 @@ ENV RUSTUP_AUTO_INSTALL=0
 
 FROM rust-env AS linux-build
 COPY --from=flutter-env /opt/flutter /opt/flutter
-COPY docker/linux/scripts/install-tools.sh /opt/anywork-image/scripts/install-tools.sh
-RUN bash /opt/anywork-image/scripts/install-tools.sh \
-    && git config --system --add safe.directory /opt/flutter \
+COPY --from=tools-env /opt/zig /opt/zig
+COPY --from=tools-env /opt/cargo/bin /opt/cargo/bin
+COPY --from=codegen-env /opt/cargo/bin /opt/cargo/bin
+COPY --from=codegen-env /opt/anywork-image/codegen.env /opt/anywork-image/codegen.env
+RUN git config --system --add safe.directory /opt/flutter \
     && chmod 1777 /opt/cargo \
     && chmod -R a+rwX /opt/flutter/bin/cache
-COPY docker/linux/codegen.env /opt/anywork-image/codegen.env
-COPY docker/linux/scripts/install-codegen.sh /opt/anywork-image/scripts/install-codegen.sh
-RUN bash /opt/anywork-image/scripts/install-codegen.sh
 COPY --from=flutter-tools-env /opt/flutter/packages/flutter_tools/.dart_tool /opt/flutter/packages/flutter_tools/.dart_tool
 COPY --from=flutter-tools-env /opt/flutter-pub-cache /opt/flutter-pub-cache
 # Native-assets hooks run for headless widget tests too. Keep these explicit
