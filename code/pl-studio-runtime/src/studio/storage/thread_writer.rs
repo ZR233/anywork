@@ -10958,6 +10958,75 @@ pub(crate) mod storage_fault_tests {
         Ok(())
     }
 
+    async fn real_background_receipts_do_not_read_history(writes: &[ThreadWrite]) -> Result<()> {
+        use pl_core::thread::journal::ContextChange;
+
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "concurrent-results";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let history = store.history(id).await?;
+        let chat = store.chat_session(id).await?;
+        let mut projection = live_projection(&sink).await?;
+        let gate = sink.0.channel.step_lock.lock().await;
+        let mut acknowledgements = 0;
+
+        for write in writes {
+            let receipt_ids = if matches!(write.effect.context, Some(ContextChange::Append { .. }))
+            {
+                crate::studio::thread_projection::order::background_receipts(&write.effect)
+                    .filter(|(_, receipt)| receipt.is_some())
+                    .map(|(task, _)| {
+                        crate::studio::thread_projection::order::tool_background_started_id(
+                            &task.call_id,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            if receipt_ids.is_empty() {
+                drive_live_projection(&mut projection, &chat, &sink, id, write.clone()).await?;
+                continue;
+            }
+
+            let reads = history.reader_calls();
+            let (mut entered, release) = history.arm_completion_read_gate().await;
+            let prepared = tokio::time::timeout(
+                Duration::from_secs(10),
+                drive_live_projection(&mut projection, &chat, &sink, id, write.clone()),
+            )
+            .await;
+            drop(release);
+            let prepared = prepared??;
+            assert_eq!(history.reader_calls(), reads);
+            assert!(matches!(
+                entered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            for receipt_id in &receipt_ids {
+                assert!(
+                    prepared
+                        .completions
+                        .iter()
+                        .any(|item| &item.header.item_id == receipt_id),
+                    "the real Core receipt must already be published in RAM"
+                );
+            }
+            acknowledgements += receipt_ids.len();
+        }
+        assert_eq!(acknowledgements, 2);
+        drop(gate);
+        sink.flush(
+            id,
+            writes.last().context("real Core writes")?.effect.sequence,
+        )
+        .await?;
+        sink.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn concurrent_tool_results_survive_a_real_writer_failure_without_reexecution()
     -> Result<()> {
@@ -10993,6 +11062,8 @@ pub(crate) mod storage_fault_tests {
         thread
             .attach_storage(ColdStoreHandle::new(sink.clone()))
             .await?;
+        // Retain the actual Core batches until the real background acknowledgements are captured.
+        let capture_gate = sink.0.channel.step_lock.lock().await;
         let turn = TurnInput {
             turn_id: "both-running".into(),
             attempt_prefix: "both-running".into(),
@@ -11018,7 +11089,15 @@ pub(crate) mod storage_fault_tests {
                 .outcome,
             TurnOutcome::StepLimit
         );
+        let writes = lock_progress(&sink.0)
+            .effects
+            .iter()
+            .map(|queued| (*queued.write).clone())
+            .collect::<Vec<_>>();
+        assert_eq!(writes.first().map(|write| write.effect.sequence), Some(1));
+        drop(capture_gate);
         thread.flush().await?;
+        real_background_receipts_do_not_read_history(&writes).await?;
         let baseline = store
             .history("concurrent-results")
             .await?
