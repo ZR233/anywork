@@ -11,8 +11,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `open_statistics`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStatisticsFeedInner`
+// These functions are ignored because they are not marked as `pub`: `ensure_event_admission`, `open_statistics`, `reserve_event_slots`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStatisticsFeedInner`, `StatisticsEventSlots`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
 
 /// Opens one independent latest-value statistics feed from the canonical runtime owner.

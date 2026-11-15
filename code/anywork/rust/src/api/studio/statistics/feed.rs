@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, MutexGuard, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::convert::{
@@ -73,6 +73,42 @@ pub(crate) struct BridgeStatisticsFeedInner {
     terminal_failures: std::sync::Mutex<CloseFailures>,
 }
 
+struct StatisticsEventSlots<'a> {
+    _event_start: MutexGuard<'a, ()>,
+    sink: MutexGuard<'a, OwnedTaskSlot>,
+    producer: MutexGuard<'a, OwnedTaskSlot>,
+}
+
+impl BridgeStatisticsFeedInner {
+    fn ensure_event_admission(&self) -> Result<(), BridgeError> {
+        if self.close_requested.load(Ordering::Acquire) || self.shutdown.is_cancelled() {
+            self.request_close();
+            Err(BridgeError::runtime_stopped())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn reserve_event_slots(&self) -> Result<StatisticsEventSlots<'_>, BridgeError> {
+        let event_start = self.event_start.lock().await;
+        self.ensure_event_admission()?;
+        // 先取得两个槽，之后启动和登记之间不能再等待或失去 owner。
+        let sink = self.sink.lock().await;
+        let producer = self.producer.lock().await;
+        self.ensure_event_admission()?;
+        if self.events_started.swap(true, Ordering::AcqRel) {
+            return Err(BridgeError::invalid_argument(
+                "statistics event stream can only be opened once",
+            ));
+        }
+        Ok(StatisticsEventSlots {
+            _event_start: event_start,
+            sink,
+            producer,
+        })
+    }
+}
+
 impl ManagedResource for BridgeStatisticsFeedInner {
     type Error = BridgeError;
 
@@ -140,16 +176,7 @@ impl BridgeStatisticsFeed {
         sink: StreamSink<BridgeStatisticsFeedEvent>,
     ) -> Result<(), BridgeError> {
         let inner = self.inner.get();
-        let _event_start = inner.event_start.lock().await;
-        if inner.close_requested.load(Ordering::Acquire) || inner.shutdown.is_cancelled() {
-            self.inner.request_close();
-            return Err(BridgeError::runtime_stopped());
-        }
-        if inner.events_started.swap(true, Ordering::AcqRel) {
-            return Err(BridgeError::invalid_argument(
-                "statistics event stream can only be opened once",
-            ));
-        }
+        let mut slots = inner.reserve_event_slots().await?;
 
         let (sender, mut receiver) = mpsc::channel(1);
         let feed = inner.feed.clone();
@@ -157,7 +184,7 @@ impl BridgeStatisticsFeed {
         let cancellation = inner.producer_cancellation.clone();
         let sink_feed = feed.clone();
         let sink_cancellation = cancellation.clone();
-        let sink_task = tokio::spawn(async move {
+        slots.sink.task = Some(tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
                 if sink.add(event).is_err() {
                     sink_cancellation.cancel();
@@ -166,9 +193,9 @@ impl BridgeStatisticsFeed {
                 }
             }
             Ok(())
-        });
+        }));
 
-        let producer_task = tokio::spawn(async move {
+        slots.producer.task = Some(tokio::spawn(async move {
             let mut baseline = true;
             loop {
                 let next = tokio::select! {
@@ -215,10 +242,7 @@ impl BridgeStatisticsFeed {
                     };
                 }
             }
-        });
-
-        inner.sink.lock().await.task = Some(sink_task);
-        inner.producer.lock().await.task = Some(producer_task);
+        }));
         Ok(())
     }
 
@@ -323,10 +347,54 @@ impl BridgeStatisticsReadScope {
 mod tests {
     use super::*;
     use anyhow::{Result, ensure};
+    use futures::poll;
     use pl_lifecycle::ScopeOwner;
     use std::time::Duration;
 
     use crate::api::studio::handlers::chat::tests::Environment;
+
+    #[tokio::test]
+    async fn cancelled_and_closing_event_admissions_never_leave_unowned_tasks() -> Result<()> {
+        let env = Environment::new().await?;
+        let result = async {
+            let scope = ScopeOwner::new("bridge", tokio::runtime::Handle::current());
+            let factory = BridgeObservationFactory::new(env.runtime.clone(), scope.handle());
+            let feed = factory.open_statistics().await?;
+            let inner = feed.inner.get();
+
+            let held = inner.producer.lock().await;
+            let mut opening = Box::pin(inner.reserve_event_slots());
+            ensure!(poll!(opening.as_mut()).is_pending());
+            drop(opening);
+            drop(held);
+            ensure!(!inner.events_started.load(Ordering::Acquire));
+            ensure!(inner.sink.lock().await.task.is_none());
+            ensure!(inner.producer.lock().await.task.is_none());
+
+            let held = inner.producer.lock().await;
+            let mut racing = Box::pin(inner.reserve_event_slots());
+            ensure!(poll!(racing.as_mut()).is_pending());
+            feed.request_close();
+            drop(held);
+            let rejected = match racing.await {
+                Err(error) => error,
+                Ok(_) => anyhow::bail!("closing feed accepted an event task"),
+            };
+            ensure!(rejected.code == crate::api::studio::types::BridgeErrorCode::RuntimeStopped);
+            ensure!(inner.sink.lock().await.task.is_none());
+            ensure!(inner.producer.lock().await.task.is_none());
+            feed.close().await?;
+            ensure!(
+                scope
+                    .close(tokio::time::Instant::now() + Duration::from_secs(5))
+                    .await
+                    .is_clean()
+            );
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
 
     #[tokio::test]
     async fn producer_panic_is_retained_after_join_and_native_feed_still_closes() -> Result<()> {
