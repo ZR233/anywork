@@ -26,7 +26,7 @@ fi
 case "$leader:$sid:$ticks" in *[!0-9:]*|::*|*:|:*) mismatch=true;; esac
 stat_fields() {
     [ -r "/proc/$1/stat" ] || return 1
-    line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    IFS= read -r line 2>/dev/null < "/proc/$1/stat" || return 1
     suffix=${line##*) }
     set -- $suffix
     state=$1 actual_sid=$4
@@ -36,12 +36,14 @@ stat_fields() {
 }
 marker() {
     [ -r "/proc/$1/environ" ] || return 1
-    tr '\000' '\n' 2>/dev/null < "/proc/$1/environ" | grep -Fxq "ANYWK_HARBOR_RUN_ID=$launcher"
+    grep -Fzxq "ANYWK_HARBOR_RUN_ID=$launcher" "/proc/$1/environ" 2>/dev/null
 }
 if [ "$mismatch" = false ] && stat_fields "$leader"; then
     if [ "$actual_sid" = "$sid" ] && [ "$actual_ticks" = "$ticks" ] && marker "$leader"; then
         anchor=true
-        kill -TERM "$leader" 2>/dev/null || true
+        if stat_fields "$leader" && [ "$actual_ticks" = "$ticks" ]; then
+            kill -TERM "$leader" 2>/dev/null || true
+        fi
     else
         mismatch=true
     fi
@@ -49,7 +51,17 @@ fi
 # 保存 PID/starttime 锚点；每次发信号前重新核对，覆盖独立 PGID 和继承标识的独立 SID。
 known="$private/cleanup-known"
 : > "$known"
-if [ "$anchor" = true ]; then printf '%s:%s\n' "$leader" "$ticks" >> "$known"; fi
+known_ids='|'
+is_known() {
+    case "$known_ids" in *"|$1:$2|"*) return 0;; *) return 1;; esac
+}
+remember() {
+    if ! is_known "$1" "$2"; then
+        known_ids="$known_ids$1:$2|"
+        printf '%s:%s\n' "$1" "$2" >> "$known"
+    fi
+}
+if [ "$anchor" = true ]; then remember "$leader" "$ticks"; fi
 sweep() {
     remaining=''
     # 只重查已知 PID/starttime 锚点，不扫描第二遍 /proc。
@@ -69,16 +81,16 @@ sweep() {
         stat_fields "$pid" || continue
         captured=$actual_ticks
         owned=false
-        if marker "$pid"; then
+        if [ "$anchor" = true ] && [ "$actual_sid" = "$sid" ]; then
+            owned=true
+        elif is_known "$pid" "$captured"; then
+            owned=true
+        elif marker "$pid"; then
             owned=true
             if [ "$actual_sid" = "$sid" ]; then anchor=true; fi
-        elif [ "$anchor" = true ] && [ "$actual_sid" = "$sid" ]; then
-            owned=true
-        elif grep -Fxq "$pid:$captured" "$known"; then
-            owned=true
         fi
         [ "$owned" = true ] || continue
-        printf '%s:%s\n' "$pid" "$captured" >> "$known"
+        remember "$pid" "$captured"
         remaining="${remaining}${remaining:+,}$pid"
         if [ "$1" = KILL ] && stat_fields "$pid" && [ "$actual_ticks" = "$captured" ]; then
             kill -KILL "$pid" 2>/dev/null || true

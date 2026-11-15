@@ -99,7 +99,8 @@ class AnyworkInstalledAgent(BaseInstalledAgent):
     async def _check_binary(self, environment):
         command = (
             "test -r /proc/self/stat && test -r /proc/self/environ && "
-            "command -v setsid kill cat tr grep sed date sleep sha256sum mv >/dev/null && "
+            "command -v setsid kill cat grep sed date sleep sha256sum mv >/dev/null && "
+            "printf 'anywk-probe\\000' | grep -Fzxq anywk-probe && "
             "setsid --wait /bin/sh -c 'exit 0' && /installed-agent/anywk --version && "
             "sha256sum /installed-agent/anywk"
         )
