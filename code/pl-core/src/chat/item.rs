@@ -91,35 +91,10 @@ impl ChatKey {
     }
 }
 
-/// Product-independent visibility and adjacent-run membership. Keys are opaque to Core.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ChatReadHint {
-    #[default]
-    Hidden,
-    Single,
-    Adjacent {
-        key: ChatKey,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChatRunPosition {
-    pub start_seq: u64,
-    pub ordinal: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatRunSeed {
-    pub seq: u64,
-    pub hint: ChatReadHint,
-    pub position: ChatRunPosition,
-}
-
-/// One cold snapshot's publication head and last visible record, never a retained group.
+/// 冷读初始化使用的唯一完成序号水位，不含展示分组。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatPublicationSeed {
     pub head_seq: u64,
-    pub last_visible: Option<ChatRunSeed>,
 }
 
 impl ChatPublicationSeed {
@@ -127,145 +102,53 @@ impl ChatPublicationSeed {
         if self.head_seq > i64::MAX as u64 {
             return Err(ChatError::SeqExhausted);
         }
-        if let Some(last) = &self.last_visible {
-            validate_run(last.seq, &last.hint, Some(last.position))?;
-            if last.seq > self.head_seq {
-                return Err(ChatError::Conflict("visible seed exceeds head".into()));
-            }
-        }
         Ok(())
     }
 
-    /// Checked allocation shared by publication and host migrations. Failure leaves the seed intact.
-    pub fn advance(
-        &mut self,
-        hint: &ChatReadHint,
-    ) -> Result<(u64, Option<ChatRunPosition>), ChatError> {
+    /// 检查成功后才推进种子；失败不会消耗序号。
+    pub fn advance(&mut self) -> Result<u64, ChatError> {
         let seq = self
             .head_seq
             .checked_add(1)
             .filter(|seq| *seq <= i64::MAX as u64)
             .ok_or(ChatError::SeqExhausted)?;
-        let run = match hint {
-            ChatReadHint::Hidden => None,
-            ChatReadHint::Single => Some(ChatRunPosition {
-                start_seq: seq,
-                ordinal: 1,
-            }),
-            ChatReadHint::Adjacent { .. } => {
-                let position = match self.last_visible.as_ref().filter(|last| last.hint == *hint) {
-                    Some(last) => ChatRunPosition {
-                        start_seq: last.position.start_seq,
-                        ordinal: last
-                            .position
-                            .ordinal
-                            .checked_add(1)
-                            .filter(|ordinal| *ordinal <= i64::MAX as u64)
-                            .ok_or(ChatError::SeqExhausted)?,
-                    },
-                    None => ChatRunPosition {
-                        start_seq: seq,
-                        ordinal: 1,
-                    },
-                };
-                Some(position)
-            }
-        };
-        if let Some(position) = run {
-            self.last_visible = Some(ChatRunSeed {
-                seq,
-                hint: hint.clone(),
-                position,
-            });
-        }
         self.head_seq = seq;
-        Ok((seq, run))
+        Ok(seq)
     }
-}
-
-fn validate_run(
-    seq: u64,
-    hint: &ChatReadHint,
-    run: Option<ChatRunPosition>,
-) -> Result<(), ChatError> {
-    let valid = seq > 0
-        && seq <= i64::MAX as u64
-        && match (hint, run) {
-            (ChatReadHint::Hidden, None) => true,
-            (ChatReadHint::Single, Some(position)) => {
-                position.start_seq == seq && position.ordinal == 1
-            }
-            (ChatReadHint::Adjacent { .. }, Some(position)) => {
-                position.start_seq > 0
-                    && position.start_seq <= seq
-                    && position.ordinal > 0
-                    && position.ordinal <= seq - position.start_seq + 1
-            }
-            _ => false,
-        };
-    if valid {
-        Ok(())
-    } else {
-        Err(ChatError::Conflict("invalid completion run".into()))
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ChatSelection {
-    /// Every matching completion, including Hidden.
-    #[default]
-    Records,
-    /// Latest visible representative per run in descending pages; every visible record in replay.
-    RunHeads,
-    /// Every member of the exact immutable run.
-    Run { start_seq: u64 },
 }
 
 /// Query membership only. A missing parent selects the whole class, not just NULL parents.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChatQuery {
-    pub query_class: String,
+    pub query_class: Option<String>,
     pub parent_id: Option<ChatKey>,
-    pub selection: ChatSelection,
 }
 
 impl ChatQuery {
     pub fn new(query_class: impl Into<String>, parent_id: Option<ChatKey>) -> Self {
         Self {
-            query_class: query_class.into(),
+            query_class: Some(query_class.into()),
             parent_id,
-            selection: ChatSelection::Records,
         }
     }
 
     pub fn matches(&self, header: &ChatItemHeader) -> bool {
-        self.query_class == header.query_class
+        self.query_class
+            .as_ref()
+            .is_none_or(|class| *class == header.query_class)
             && self
                 .parent_id
                 .as_ref()
                 .is_none_or(|parent| Some(parent) == header.parent_id.as_ref())
-            && match self.selection {
-                ChatSelection::Records => true,
-                ChatSelection::RunHeads => header.run.is_some(),
-                ChatSelection::Run { start_seq } => {
-                    header.run.is_some_and(|run| run.start_seq == start_seq)
-                }
-            }
     }
 
     pub(crate) fn validate(&self) -> Result<(), ChatError> {
-        if self.query_class.is_empty() {
-            return Err(ChatError::InvalidArgument("empty query class".into()));
-        }
-        if self.selection != ChatSelection::Records && self.parent_id.is_some() {
-            return Err(ChatError::InvalidArgument(
-                "run selection cannot have a parent".into(),
-            ));
-        }
-        if let ChatSelection::Run { start_seq } = self.selection
-            && (start_seq == 0 || start_seq > i64::MAX as u64)
+        if self
+            .query_class
+            .as_ref()
+            .is_some_and(|class| class.is_empty())
         {
-            return Err(ChatError::InvalidArgument("invalid run start".into()));
+            return Err(ChatError::InvalidArgument("empty query class".into()));
         }
         Ok(())
     }
@@ -278,18 +161,10 @@ pub struct ChatItemHeader {
     pub item_id: String,
     pub query_class: String,
     pub parent_id: Option<ChatKey>,
-    pub read_hint: ChatReadHint,
-    pub run: Option<ChatRunPosition>,
     pub byte_length: u64,
     /// Producer-owned lightweight atomic provenance; Core never decodes it.
     /// Empty is valid for generic consumers without a product envelope.
     pub metadata: Arc<[u8]>,
-}
-
-impl ChatItemHeader {
-    pub fn validate_run(&self) -> Result<(), ChatError> {
-        validate_run(self.append_seq, &self.read_hint, self.run)
-    }
 }
 
 /// Producer-supplied, immutable content ownership. Normal pages never clone this manifest.
@@ -300,7 +175,6 @@ pub struct ChatDraft {
     pub item_id: String,
     pub query_class: String,
     pub parent_id: Option<ChatKey>,
-    pub read_hint: ChatReadHint,
     pub metadata: Arc<[u8]>,
     pub payload: Arc<[u8]>,
     pub contents: Arc<ChatContents>,
@@ -316,7 +190,6 @@ impl ChatDraft {
             item_id: item_id.into(),
             query_class: query_class.into(),
             parent_id: None,
-            read_hint: ChatReadHint::Hidden,
             metadata: Arc::from([]),
             payload,
             contents: Arc::new(BTreeMap::new()),
@@ -351,17 +224,15 @@ pub struct ChatItem {
 }
 
 impl ChatItem {
-    /// Freeze bytes with the seq/run allocated by the owner (or restored by a history adapter).
+    /// Freeze bytes with the sequence allocated by the owner (or restored by a history adapter).
     /// Only Session publication allocates new positions; adapters restore the original columns.
-    pub fn complete(draft: ChatDraft, append_seq: u64, run: Option<ChatRunPosition>) -> Self {
+    pub fn complete(draft: ChatDraft, append_seq: u64) -> Self {
         Self {
             header: ChatItemHeader {
                 append_seq,
                 item_id: draft.item_id,
                 query_class: draft.query_class,
                 parent_id: draft.parent_id,
-                read_hint: draft.read_hint,
-                run,
                 byte_length: draft.payload.len() as u64,
                 metadata: draft.metadata,
             },
@@ -375,7 +246,6 @@ pub(crate) fn draft_matches_record(draft: &ChatDraft, record: &ChatItem) -> bool
     draft.item_id == record.header.item_id
         && draft.query_class == record.header.query_class
         && draft.parent_id == record.header.parent_id
-        && draft.read_hint == record.header.read_hint
         && draft.metadata == record.header.metadata
         && draft.payload == record.payload
         && draft.contents == record.contents

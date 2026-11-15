@@ -372,8 +372,7 @@ abstract final class TimelinePreviewFixtures {
   static final overlapText = CompletedEntry(
     recordId: 'preview-overlap-T',
     completionSeq: 1,
-    run: const CompletionRunPosition(startSeq: 1, ordinal: 1),
-    mainPresentation: MainPresentation.single,
+
     atom: overlapTextAtom,
   );
   static final overlapActivity = ActivitySnapshot(
@@ -524,8 +523,7 @@ abstract final class TimelinePreviewFixtures {
       CompletedEntry(
         recordId: id,
         completionSeq: seq,
-        run: CompletionRunPosition(startSeq: seq - count + 1, ordinal: count),
-        mainPresentation: MainPresentation.foregroundWork,
+
         atom: ChatAtom(
           id: id,
           completionItemId: id,

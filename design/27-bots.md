@@ -120,7 +120,7 @@ bot 子智能体派发严格沿用上述同一受管执行根，不因 Profile �
 
 机器人根 `Thread` 默认挂载两类 Studio 产品级会话工具：
 
-会话查询工具与桌面、HTTP 消费同一不可变完成读模型，不重建持久化 `ThreadItem` 外壳。`read_session_messages` 从 Main 代表、Run 明细或真实 Children 打开独立 readScope，返回 `CompletedEntry` 分页及 State/Activity；后续正文沿 manifest/ContentRef 范围读取。`get_session.recentExecution` 保持原有数量边界，从完成代表提取真实身份、来源与终态头，不把工作代表当作完整成员清单。Plan/交互读取使用原 reader 的 `read_business_refs` 与 `pageCurrent`，不返回空的旧 current。正文搜索需要检查工作成员时沿 Run 分页，只搜索原允许公开的正文，不把推理、工具输出或敏感问答扩大到正文搜索范围，也不把 Deferred 引用存在本身当作正文被截断。完成、活动与业务引用的详细契约见 [26](./26-timeline-content.md)。
+会话查询工具、桌面与 HTTP 共用不可变完成原件。`read_session_messages` 新读取必须显式给出 Class／All，可选真实 parent，返回统一 `CompletedEntry` 小页及独立 State／Activity；继续读取使用原 readScope，正文沿 manifest／ContentRef 读取。`get_session.recentExecution` 在既有数量边界内返回真实原件头。Plan／交互仍通过 `read_business_refs` 与 `pageCurrent` 获取。搜索沿单个 Records 游标按工作预算推进，不展开展示组，不创建 Run reader；搜索范围继续由原正文角色规则决定，不扩大到推理、工具输出或敏感回答。关闭、取消和跨会话资格检查保持原资源所有者责任，见 [26](./26-timeline-content.md)。
 
 - **跨项目会话查询与代发工具**：包括 `list_sessions`、`get_session`、`search_session_messages`、`read_session_messages` 与 `send_session_message`。查询覆盖所有本地项目，目录与内容复用现有所有者；正文搜索支持中文并按有界游标分页接续，不将截断预览或局部扫描当作全量搜索结果，且只读查询不启动执行所有者。`send_session_message` 走标准用户输入受理链，通过稳定操作身份防止重复执行；附件仅允许引用来源会话已归档的可靠资源并导入目标会话，代发来源保持可见，不赋予系统级或审批级特权。系统不向模型提供创建、停止或归档会话的管理工具。
 - **跨会话待决交互决议工具**：包括 `read_session_interaction`、`approve_session_plan`、`revise_session_plan`、`answer_session_questions` 与 `decide_session_tool_approval`，供可信入站用户在飞书聊天中显式指示时，代为处理其他本地会话的待决交互（具体契约见 §27.7）。

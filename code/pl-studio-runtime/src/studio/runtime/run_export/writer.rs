@@ -20,9 +20,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::reader::export_completions_range;
 use super::types::{
-    BuildInfoV1, CompletionCursorV1, EVENTS_SCHEMA_VERSION, EventBodyV1, EventSourceV1, EventV1,
-    ExecutionErrorStage, ExecutionErrorV1, ExportedBlobV1, MAX_QUEUED_BATCHES,
-    MAX_QUEUED_METADATA_BYTES, SealedMemberCutV1, TraceSummaryV1, format_utc_rfc3339,
+    BuildInfoV2, CompletionCursorV2, EVENTS_SCHEMA_VERSION, EventBodyV2, EventSourceV2, EventV2,
+    ExecutionErrorStage, ExecutionErrorV2, ExportedBlobV2, MAX_QUEUED_BATCHES,
+    MAX_QUEUED_METADATA_BYTES, SealedMemberCutV2, TraceSummaryV2, format_utc_rfc3339,
     validate_export_relative_path,
 };
 use super::usage::{ThreadUsageInput, UsageAccumulator, fold_next_accounting};
@@ -45,7 +45,7 @@ pub trait BlobChunkWriter {
         self,
         media_type: Option<String>,
         encoding: String,
-    ) -> impl Future<Output = Result<ExportedBlobV1>> + Send;
+    ) -> impl Future<Output = Result<ExportedBlobV2>> + Send;
 }
 
 pub struct FsContentBlobSink {
@@ -126,7 +126,7 @@ impl BlobChunkWriter for FsBlobWriter {
         mut self,
         media_type: Option<String>,
         encoding: String,
-    ) -> Result<ExportedBlobV1> {
+    ) -> Result<ExportedBlobV2> {
         let mut writer = self.file.take().context("blob writer already finished")?;
         writer.flush().await?;
         let file = writer.into_inner();
@@ -178,7 +178,7 @@ impl BlobChunkWriter for FsBlobWriter {
             }
         }
 
-        Ok(ExportedBlobV1 {
+        Ok(ExportedBlobV2 {
             path: rel_path,
             byte_length: self.byte_length,
             sha256,
@@ -213,7 +213,7 @@ async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Resu
 /// Commands queued onto the single background writer task.
 pub enum ExportCommand {
     RunStarted {
-        build: BuildInfoV1,
+        build: BuildInfoV2,
         manifest_sha256: String,
     },
     AgentRegistered {
@@ -236,6 +236,7 @@ pub enum ExportCommand {
         thread_id: String,
         effect_seq: u64,
         accounting: PreparedAccounting,
+        lifecycle: Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
         session: Session,
         database_id: Option<String>,
     },
@@ -252,9 +253,9 @@ pub struct FinalizeWriterOutcome {
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV1,
-    pub usage: Option<super::types::UsageExportV1>,
-    pub failure: Option<ExecutionErrorV1>,
+    pub trace: TraceSummaryV2,
+    pub usage: Option<super::types::UsageExportV2>,
+    pub failure: Option<ExecutionErrorV2>,
 }
 
 struct QueuedItem {
@@ -268,7 +269,7 @@ struct QueueState {
     queued_batches: usize,
     queued_bytes: usize,
     admission_closed: bool,
-    fatal_error: Option<ExecutionErrorV1>,
+    fatal_error: Option<ExecutionErrorV2>,
     writer_exited: bool,
     #[cfg(test)]
     paused: bool,
@@ -352,9 +353,9 @@ impl BoundedExportQueue {
         &self,
         cmd: ExportCommand,
         metadata_bytes: usize,
-    ) -> Result<(), Box<ExecutionErrorV1>> {
+    ) -> Result<(), Box<ExecutionErrorV2>> {
         if metadata_bytes > MAX_QUEUED_METADATA_BYTES {
-            let err = ExecutionErrorV1 {
+            let err = ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportBatchTooLarge".to_string(),
                 message: format!(
@@ -376,7 +377,7 @@ impl BoundedExportQueue {
                     return Err(Box::new(fatal.clone()));
                 }
                 if guard.admission_closed || guard.writer_exited {
-                    return Err(Box::new(ExecutionErrorV1 {
+                    return Err(Box::new(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportAdmissionClosed".to_string(),
                         message: "run exporter admission gate is closed".to_string(),
@@ -411,7 +412,7 @@ impl BoundedExportQueue {
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
-    ) -> Result<tokio::sync::oneshot::Receiver<FinalizeWriterOutcome>, Box<ExecutionErrorV1>> {
+    ) -> Result<tokio::sync::oneshot::Receiver<FinalizeWriterOutcome>, Box<ExecutionErrorV2>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
             let mut guard = self
@@ -420,7 +421,7 @@ impl BoundedExportQueue {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if guard.writer_exited {
                 return Err(Box::new(guard.fatal_error.clone().unwrap_or(
-                    ExecutionErrorV1 {
+                    ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriterStopped".to_string(),
                         message: "exporter writer task exited before finalization".to_string(),
@@ -444,11 +445,11 @@ impl BoundedExportQueue {
         Ok(rx)
     }
 
-    pub fn close_admission(&self, reason: ExecutionErrorV1) {
+    pub fn close_admission(&self, reason: ExecutionErrorV2) {
         self.fail_permanently(reason);
     }
 
-    pub fn fail_permanently(&self, err: ExecutionErrorV1) {
+    pub fn fail_permanently(&self, err: ExecutionErrorV2) {
         let mut guard = self
             .state
             .lock()
@@ -465,7 +466,7 @@ impl BoundedExportQueue {
         self.run_cancel.cancel();
     }
 
-    pub fn fatal_error(&self) -> Option<ExecutionErrorV1> {
+    pub fn fatal_error(&self) -> Option<ExecutionErrorV2> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -557,7 +558,7 @@ struct WriterExitGuard {
 impl Drop for WriterExitGuard {
     fn drop(&mut self) {
         if !self.completed && self.queue.fatal_error().is_none() {
-            self.queue.fail_permanently(ExecutionErrorV1 {
+            self.queue.fail_permanently(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportWriterStopped".into(),
                 message: "export writer stopped before finalization".into(),
@@ -646,7 +647,7 @@ impl WriterWorker {
                         continue;
                     }
                     if let Err(err) = self.process_command(other).await {
-                        let diag = ExecutionErrorV1 {
+                        let diag = ExecutionErrorV2 {
                             stage: ExecutionErrorStage::Export,
                             code: "exportWriteFailed".to_string(),
                             message: err.to_string(),
@@ -667,8 +668,8 @@ impl WriterWorker {
             } => {
                 self.write_event(
                     None,
-                    EventSourceV1::default(),
-                    EventBodyV1::RunStarted {
+                    EventSourceV2::default(),
+                    EventBodyV2::RunStarted {
                         run_id: self.run_id.clone(),
                         build,
                         manifest_sha256,
@@ -722,14 +723,14 @@ impl WriterWorker {
                 );
                 self.write_event(
                     Some(thread_id.clone()),
-                    EventSourceV1 {
+                    EventSourceV2 {
                         epoch: initial_completion_epoch.clone(),
                         effect_seq: Some(initial_effect_seq),
                         tool_call_id: spawn_tool_call_id.clone(),
                         completion_seq: Some(initial_completion_seq),
                         ..Default::default()
                     },
-                    EventBodyV1::AgentRegistered {
+                    EventBodyV2::AgentRegistered {
                         agent_id,
                         thread_id,
                         parent_agent_id,
@@ -738,7 +739,7 @@ impl WriterWorker {
                         workspace_id,
                         spawn_tool_call_id,
                         initial_effect_seq,
-                        initial_completion_cursor: CompletionCursorV1 {
+                        initial_completion_cursor: CompletionCursorV2 {
                             epoch: initial_completion_epoch,
                             completion_seq: initial_completion_seq,
                         },
@@ -749,8 +750,8 @@ impl WriterWorker {
             ExportCommand::SkillsDiscovered { thread_id, report } => {
                 self.write_event(
                     Some(thread_id.clone()),
-                    EventSourceV1::default(),
-                    EventBodyV1::SkillsDiscovered {
+                    EventSourceV2::default(),
+                    EventBodyV2::SkillsDiscovered {
                         thread_id,
                         source_fingerprint: report.source_fingerprint,
                         sources: report.sources,
@@ -765,11 +766,19 @@ impl WriterWorker {
                 thread_id,
                 effect_seq,
                 accounting,
+                lifecycle,
                 session,
                 database_id,
             } => {
-                self.handle_live_handoff(thread_id, effect_seq, accounting, session, database_id)
-                    .await?;
+                self.handle_live_handoff(
+                    thread_id,
+                    effect_seq,
+                    accounting,
+                    lifecycle,
+                    session,
+                    database_id,
+                )
+                .await?;
             }
             ExportCommand::Finalize { .. } => {}
         }
@@ -781,6 +790,7 @@ impl WriterWorker {
         thread_id: String,
         effect_seq: u64,
         accounting: PreparedAccounting,
+        lifecycle: Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
         session: Session,
         database_id: Option<String>,
     ) -> Result<()> {
@@ -788,7 +798,7 @@ impl WriterWorker {
             .members
             .get_mut(&thread_id)
             .with_context(|| format!("live handoff arrived for unregistered thread {thread_id}"))?;
-        let effect_fp = accounting.export_fingerprint();
+        let effect_fp = super::types::handoff_fingerprint(&accounting, &lifecycle);
         if let Some(prev_fp) = member.admitted_effects.get(&effect_seq) {
             ensure!(
                 *prev_fp == effect_fp,
@@ -799,6 +809,20 @@ impl WriterWorker {
 
         let turn_id = accounting.primary_turn_id().map(str::to_owned);
         let mut events_to_emit = Vec::new();
+        if !lifecycle.is_empty() {
+            events_to_emit.push((
+                EventSourceV2 {
+                    effect_seq: Some(effect_seq),
+                    ..Default::default()
+                },
+                EventBodyV2::ExecutionLifecycle {
+                    facts: lifecycle
+                        .iter()
+                        .map(super::types::ExecutionLifecycleExportV2::from)
+                        .collect(),
+                },
+            ));
+        }
         for fact in accounting.facts.iter() {
             let fact_fp = fingerprint_billing_fact(fact)?;
             if let Some((prev_effect_seq, prev_fact_fp)) =
@@ -815,12 +839,12 @@ impl WriterWorker {
                 .inferences
                 .insert(fact.record.inference_id.clone(), (effect_seq, fact_fp));
             events_to_emit.push((
-                EventSourceV1 {
+                EventSourceV2 {
                     effect_seq: Some(effect_seq),
                     turn_id: turn_id.clone(),
                     ..Default::default()
                 },
-                EventBodyV1::InferenceFinished {
+                EventBodyV2::InferenceFinished {
                     status: fact.status.as_str().to_string(),
                     auxiliary: fact.auxiliary,
                     billing: fact.record.clone(),
@@ -912,7 +936,7 @@ impl WriterWorker {
                 self.write_event(
                     Some(thread_id.to_string()),
                     record.source,
-                    EventBodyV1::Completion {
+                    EventBodyV2::Completion {
                         header: record.header,
                         atom: record.atom,
                         payload: record.payload,
@@ -962,7 +986,7 @@ impl WriterWorker {
                     missing_final_cut.push(thread_id.clone());
                 }
                 if !self.members.contains_key(thread_id) {
-                    fatal = Some(ExecutionErrorV1 {
+                    fatal = Some(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "missingMemberRegistration".to_string(),
                         message: format!(
@@ -992,7 +1016,7 @@ impl WriterWorker {
                         if let Some(expected) = expected_head
                             && session.head_seq() < expected
                         {
-                            fatal = Some(ExecutionErrorV1 {
+                            fatal = Some(ExecutionErrorV2 {
                                 stage: ExecutionErrorStage::Export,
                                 code: "completionHeadRegressed".to_string(),
                                 message: format!(
@@ -1012,7 +1036,7 @@ impl WriterWorker {
                             )
                             .await
                         {
-                            fatal = Some(ExecutionErrorV1 {
+                            fatal = Some(ExecutionErrorV2 {
                                 stage: ExecutionErrorStage::Export,
                                 code: "completionBackfillFailed".to_string(),
                                 message: err.to_string(),
@@ -1022,7 +1046,7 @@ impl WriterWorker {
                         }
                     }
                     Err(err) => {
-                        fatal = Some(ExecutionErrorV1 {
+                        fatal = Some(ExecutionErrorV2 {
                             stage: ExecutionErrorStage::Export,
                             code: "sessionOpenFailed".to_string(),
                             message: err.to_string(),
@@ -1079,7 +1103,7 @@ impl WriterWorker {
         let built_usage = self.usage.finish(accounting_complete, &member_usage_inputs);
 
         if fatal.is_none() && !built_usage.reconciled {
-            fatal = Some(ExecutionErrorV1 {
+            fatal = Some(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "usageReconcileFailed".to_string(),
                 message: built_usage
@@ -1143,16 +1167,16 @@ impl WriterWorker {
                 && let Err(err) = self
                     .write_event(
                         Some(thread_id.clone()),
-                        EventSourceV1 {
+                        EventSourceV2 {
                             epoch: cut_epoch.clone(),
                             effect_seq: Some(through_effect_seq),
                             completion_seq: Some(cut_seq),
                             ..Default::default()
                         },
-                        EventBodyV1::ThreadSealed {
+                        EventBodyV2::ThreadSealed {
                             thread_id: thread_id.clone(),
                             through_effect_seq,
-                            completion_cut: CompletionCursorV1 {
+                            completion_cut: CompletionCursorV2 {
                                 epoch: cut_epoch.clone(),
                                 completion_seq: cut_seq,
                             },
@@ -1166,7 +1190,7 @@ impl WriterWorker {
             {
                 sealed_write_ok = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV1 {
+                    fatal = Some(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriteFailed".to_string(),
                         message: err.to_string(),
@@ -1175,13 +1199,13 @@ impl WriterWorker {
                 }
             }
 
-            sealed_member_cuts.push(SealedMemberCutV1 {
+            sealed_member_cuts.push(SealedMemberCutV2 {
                 thread_id: thread_id.clone(),
                 agent_id: snap.agent_id.clone(),
                 parent_agent_id: snap.parent_agent_id.clone(),
                 role: snap.role.clone(),
                 through_effect_seq,
-                completion_cut: CompletionCursorV1 {
+                completion_cut: CompletionCursorV2 {
                     epoch: cut_epoch,
                     completion_seq: cut_seq,
                 },
@@ -1194,8 +1218,8 @@ impl WriterWorker {
             if let Err(err) = self
                 .write_event(
                     None,
-                    EventSourceV1::default(),
-                    EventBodyV1::RunSealed {
+                    EventSourceV2::default(),
+                    EventBodyV2::RunSealed {
                         members: sealed_member_cuts,
                         reconciled: built_usage.reconciled,
                         reconcile_error: built_usage.reconcile_error.clone(),
@@ -1207,7 +1231,7 @@ impl WriterWorker {
                 .await
             {
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV1 {
+                    fatal = Some(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriteFailed".to_string(),
                         message: err.to_string(),
@@ -1222,7 +1246,7 @@ impl WriterWorker {
         if let Err(err) = self.flush_and_close_events_file().await {
             self.sealed = false;
             if fatal.is_none() {
-                fatal = Some(ExecutionErrorV1 {
+                fatal = Some(ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Export,
                     code: "exportFlushFailed".to_string(),
                     message: err.to_string(),
@@ -1238,7 +1262,7 @@ impl WriterWorker {
             Err(error) => {
                 self.sealed = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV1 {
+                    fatal = Some(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportMeasureFailed".into(),
                         message: error.to_string(),
@@ -1270,7 +1294,7 @@ impl WriterWorker {
             trace_complete,
             usage_complete: final_usage.usage_complete,
             cost_complete: final_usage.cost_complete,
-            trace: TraceSummaryV1 {
+            trace: TraceSummaryV2 {
                 events_path: EVENTS_REL_PATH.to_string(),
                 events_sha256,
                 event_count,
@@ -1286,8 +1310,8 @@ impl WriterWorker {
     async fn write_event(
         &mut self,
         thread_id: Option<String>,
-        source: EventSourceV1,
-        body: EventBodyV1,
+        source: EventSourceV2,
+        body: EventBodyV2,
     ) -> Result<()> {
         if self.events_file.is_none() {
             let file = OpenOptions::new()
@@ -1299,7 +1323,7 @@ impl WriterWorker {
             self.events_file = Some(BufWriter::new(file));
         }
         let event_seq = self.next_event_seq;
-        let event = EventV1 {
+        let event = EventV2 {
             schema_version: EVENTS_SCHEMA_VERSION,
             run_id: self.run_id.clone(),
             event_seq,
@@ -1308,7 +1332,7 @@ impl WriterWorker {
             thread_id,
             source,
         };
-        let mut line = serde_json::to_vec(&event).context("serialize EventV1 line")?;
+        let mut line = serde_json::to_vec(&event).context("serialize EventV2 line")?;
         line.push(b'\n');
         let writer = self
             .events_file
@@ -1378,7 +1402,7 @@ pub async fn await_finalize_with_budget(
         },
         Some(limit) => {
             if Instant::now() >= limit {
-                queue.close_admission(ExecutionErrorV1 {
+                queue.close_admission(ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Export,
                     code: "exportDeadlineExceeded".to_string(),
                     message: "shutdown cleanup deadline expired before export finalization"
@@ -1390,7 +1414,7 @@ pub async fn await_finalize_with_budget(
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(_)) => crashed_outcome(queue),
                 Err(_) => {
-                    let err = ExecutionErrorV1 {
+                    let err = ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportDeadlineExceeded".to_string(),
                         message: "exporter finalization exceeded shared shutdown deadline"
@@ -1402,7 +1426,7 @@ pub async fn await_finalize_with_budget(
                         trace_complete: false,
                         usage_complete: false,
                         cost_complete: false,
-                        trace: TraceSummaryV1 {
+                        trace: TraceSummaryV2 {
                             events_path: EVENTS_REL_PATH.to_string(),
                             events_sha256: None,
                             event_count: 0,
@@ -1420,7 +1444,7 @@ pub async fn await_finalize_with_budget(
 }
 
 fn crashed_outcome(queue: &BoundedExportQueue) -> FinalizeWriterOutcome {
-    let err = queue.fatal_error().unwrap_or(ExecutionErrorV1 {
+    let err = queue.fatal_error().unwrap_or(ExecutionErrorV2 {
         stage: ExecutionErrorStage::Export,
         code: "exportWriterStopped".to_string(),
         message: "exporter writer dropped finalize response channel".to_string(),
@@ -1430,7 +1454,7 @@ fn crashed_outcome(queue: &BoundedExportQueue) -> FinalizeWriterOutcome {
         trace_complete: false,
         usage_complete: false,
         cost_complete: false,
-        trace: TraceSummaryV1 {
+        trace: TraceSummaryV2 {
             events_path: EVENTS_REL_PATH.to_string(),
             events_sha256: None,
             event_count: 0,

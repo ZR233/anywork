@@ -199,26 +199,24 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
                 "history owner differs from observed Thread"
             );
             let mut result = serde_json::Map::new();
-            for (key, sql) in [
-                (
-                    "items",
-                    "SELECT payload FROM history_items ORDER BY ordinal",
-                ),
-                (
-                    "context",
-                    "SELECT payload FROM current_context ORDER BY ordinal",
-                ),
-            ] {
-                let rows = sea_orm::sqlx::query(sql).fetch_all(&mut connection).await?;
-                let values = rows
-                    .into_iter()
-                    .map(|row| -> Result<Value> {
-                        let payload: String = row.try_get("payload")?;
-                        Ok(serde_json::from_str(&payload)?)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                result.insert(key.to_owned(), json!(values));
+            let rows:Vec<(String,Vec<u8>,Vec<u8>)>=sea_orm::sqlx::query_as("SELECT item_id,payload,metadata FROM conversation_items ORDER BY seq").fetch_all(&mut connection).await?;
+            let mut originals=Vec::new();
+            for (id,payload,metadata) in rows {
+                let atom:pl_protocol::ChatAtom=serde_json::from_slice(&metadata)?;
+                let mut bodies=Vec::new();
+                for body in &atom.contents {
+                    let pl_protocol::ContentTarget::Body { owner:pl_protocol::ContentOwner::Item { item_id },key }=&body.reference.target else {anyhow::bail!("original has a mutable content owner")};
+                    ensure!(item_id==&id,"original body owner differs");
+                    let chunks:Vec<Vec<u8>>=sea_orm::sqlx::query_scalar("SELECT data FROM conversation_content_chunks WHERE owner_key=?1 AND content_key=?2 ORDER BY byte_offset")
+                        .bind(format!("4:item{id}")).bind(key).fetch_all(&mut connection).await?;
+                    let bytes=chunks.into_iter().flatten().collect::<Vec<_>>();
+                    bodies.push(json!({"key":key,"bytes":bytes,"text":String::from_utf8(bytes.clone())?}));
+                }
+                originals.push(json!({"recordId":id,"metadata":atom,"payloadBytes":payload,"bodies":bodies}));
             }
+            result.insert("items".into(),json!(originals));
+            let rows:Vec<String>=sea_orm::sqlx::query_scalar("SELECT payload FROM current_context ORDER BY ordinal").fetch_all(&mut connection).await?;
+            result.insert("context".into(),Value::Array(rows.into_iter().map(|payload|serde_json::from_str(&payload)).collect::<serde_json::Result<Vec<_>>>()?));
             connection.close().await?;
             Ok(Value::Object(result))
         })
@@ -231,7 +229,11 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     for item in items {
         ensure!(
-            ids.insert(item["id"].as_str().context("history item id missing")?),
+            ids.insert(
+                item["recordId"]
+                    .as_str()
+                    .context("history item id missing")?
+            ),
             "duplicate history identity"
         );
     }
@@ -240,7 +242,9 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
             ensure!(
                 items
                     .iter()
-                    .filter(|item| item["state"]["data"]["text"] == body)
+                    .filter(|item| item["bodies"]
+                        .as_array()
+                        .is_some_and(|bodies| bodies.iter().any(|field| field["text"] == body)))
                     .count()
                     == 1,
                 "native history lost or duplicated {body}"
@@ -263,10 +267,15 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
     ] {
         let matching = items
             .iter()
-            .filter(|item| item["state"]["kind"] == "text" && item["state"]["data"]["text"] == body)
+            .filter(|item| {
+                item["metadata"]["kind"] == "text"
+                    && item["bodies"]
+                        .as_array()
+                        .is_some_and(|bodies| bodies.iter().any(|field| field["text"] == body))
+            })
             .collect::<Vec<_>>();
         ensure!(
-            matching.len() == 1 && matching[0]["state"]["data"]["lifecycle"]["kind"] == lifecycle,
+            matching.len() == 1 && matching[0]["metadata"]["lifecycle"]["outcome"] == lifecycle,
             "{body} lost its independent {lifecycle} lifecycle"
         );
     }

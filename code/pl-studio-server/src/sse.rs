@@ -238,61 +238,26 @@ pub(crate) struct ConversationQuery {
     max_items: u32,
     max_bytes: u32,
     parent_id: Option<String>,
-    run_database_id: Option<String>,
-    run_index_version: Option<u32>,
-    run_start_seq: Option<u64>,
+    query_class: String,
 }
 
 impl ConversationQuery {
     fn scope_demand(self) -> Result<(pl_protocol::ChatScope, pl_protocol::ReadDemand), ApiError> {
-        let scope = match (
-            self.parent_id,
-            self.run_database_id,
-            self.run_index_version,
-            self.run_start_seq,
-        ) {
-            (None, None, None, None) => pl_protocol::ChatScope::Main,
-            (Some(parent_id), None, None, None) => pl_protocol::ChatScope::Children { parent_id },
-            (None, Some(database_id), Some(index_version), Some(start_seq)) => {
-                if index_version != pl_protocol::COMPLETED_READ_INDEX_VERSION {
-                    return Err(ApiError(
-                        pl_protocol::studio::StudioError::new(
-                            pl_protocol::studio::StudioErrorCode::Protocol,
-                            "Unsupported completion run index version",
-                            false,
-                        )
-                        .with_reason(
-                            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
-                            serde_json::json!({
-                                "expected": pl_protocol::COMPLETED_READ_INDEX_VERSION,
-                                "actual": index_version,
-                            }),
-                        ),
-                    ));
-                }
-                if database_id.is_empty() || start_seq == 0 || start_seq > i64::MAX as u64 {
-                    return Err(ApiError(
-                        pl_protocol::studio::StudioError::invalid_argument(
-                            "A completion run reference requires a database ID and positive start sequence",
-                        ),
-                    ));
-                }
-                pl_protocol::ChatScope::Run {
-                    reference: pl_protocol::CompletionRunRef {
-                        database_id,
-                        index_version,
-                        start_seq,
-                    },
-                }
-            }
-            _ => {
-                return Err(ApiError(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::InvalidArgument,
-                    "Use Main, a real parentId, or a complete completion run reference, never mixed scopes",
-                    false,
-                )));
-            }
+        let query_class = serde_json::from_str::<pl_protocol::ChatClassFilter>(&self.query_class)
+            .map_err(|error| {
+            ApiError(pl_protocol::studio::StudioError::invalid_argument(format!(
+                "queryClass requires an explicit Class or All filter: {error}"
+            )))
+        })?;
+        let scope = pl_protocol::ChatScope {
+            query_class,
+            parent_id: self.parent_id,
         };
+        if !scope.is_valid() {
+            return Err(ApiError(
+                pl_protocol::studio::StudioError::invalid_argument("Invalid record filter"),
+            ));
+        }
         let demand = pl_protocol::ReadDemand {
             max_items: self.max_items,
             max_bytes: self.max_bytes,
@@ -310,10 +275,8 @@ impl ConversationQuery {
         ("thread_id" = String, Path, description = "Thread ID"),
         ("maxItems" = u32, Query, description = "Requested bounded item count"),
         ("maxBytes" = u32, Query, description = "Requested encoded byte budget"),
-        ("parentId" = Option<String>, Query, description = "Real business Children parent; cannot be combined with run fields"),
-        ("runDatabaseId" = Option<String>, Query, description = "Completion run databaseId; all run fields are required together"),
-        ("runIndexVersion" = Option<u32>, Query, description = "Completion run indexVersion (currently 1)"),
-        ("runStartSeq" = Option<u64>, Query, description = "Completion run startSeq")
+        ("parentId" = Option<String>, Query, description = "Optional real business ChatKey parent"),
+        ("queryClass" = String, Query, description = "Required JSON ChatClassFilter: kind=class with value, or explicit kind=all")
     ),
     responses(StudioApiErrors, (status = 200, description = "Thread content stream", body = String, content_type = "text/event-stream",
         headers(("X-Anywork-Conversation" = String, description = "Original feed read capability"))))
@@ -858,8 +821,8 @@ mod tests {
     use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
     use pl_protocol::{
         ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatFactPosition,
-        ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, CompletedEntry,
-        CompletionRunPosition, MainPresentation, PayloadData, ReadDemand, studio::StudioErrorCode,
+        ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, CompletedEntry, PayloadData,
+        ReadDemand, studio::StudioErrorCode,
     };
 
     use super::*;
@@ -948,65 +911,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conversation_query_requires_demand_and_accepts_only_complete_scope_references() {
-        assert!(matches!(
-            conversation_query("/?maxItems=7&maxBytes=4096").await,
-            Ok((
-                ChatScope::Main,
-                ReadDemand {
-                    max_items: 7,
-                    max_bytes: 4096
-                }
-            ))
-        ));
-        assert!(matches!(
-            conversation_query("/?maxItems=3&maxBytes=4096&parentId=parent-a").await,
-            Ok((ChatScope::Children { parent_id }, _)) if parent_id == "parent-a"
-        ));
-        assert!(matches!(
-            conversation_query("/?maxItems=3&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=17").await,
-            Ok((ChatScope::Run { reference }, _))
-                if reference.database_id == "db"
-                    && reference.index_version == 1
-                    && reference.start_seq == 17
-        ));
-        for uri in [
-            "/",
-            "/?maxItems=7",
-            "/?maxBytes=4096",
-            "/?maxItems=-1&maxBytes=4096",
-            "/?maxItems=7&maxBytes=4096&timelineEpoch=epoch-a",
-            "/?maxItems=7&maxBytes=4096&appendSeq=7",
-            "/?maxItems=7&maxBytes=4096&currentMaxItems=3&currentMaxBytes=4096",
-            "/?maxItems=7&maxBytes=4096&parent_id=parent-a",
-            "/?maxItems=7&maxBytes=4096&unknown=1",
-            "/?maxItems=7&maxItems=8&maxBytes=4096",
-            "/?maxItems=7&maxBytes=4096&runDatabaseId=db",
-            "/?maxItems=7&maxBytes=4096&runDatabaseId=db&runIndexVersion=1",
-            "/?maxItems=7&maxBytes=4096&parentId=parent-a&runDatabaseId=db&runIndexVersion=1&runStartSeq=7",
-            "/?maxItems=7&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=0",
-        ] {
-            let Err(error) = conversation_query(uri).await else {
-                panic!("invalid conversation query admitted: {uri}");
-            };
-            assert_eq!(error.0.code, StudioErrorCode::InvalidArgument, "{uri}");
-        }
-    }
-
-    #[tokio::test]
-    async fn unsupported_run_index_is_a_typed_protocol_version_mismatch() {
-        let Err(error) = conversation_query(
-            "/?maxItems=3&maxBytes=4096&runDatabaseId=db&runIndexVersion=2&runStartSeq=17",
-        )
-        .await
-        else {
-            panic!("unsupported completion run index version was accepted");
-        };
-        assert_eq!(error.0.code, StudioErrorCode::Protocol);
+    async fn conversation_query_requires_explicit_filter_demand_and_real_parent() {
+        let class = "%7B%22kind%22%3A%22class%22%2C%22value%22%3A%22conversation%22%7D";
+        let all = "%7B%22kind%22%3A%22all%22%7D";
+        let (scope, demand) =
+            conversation_query(&format!("/?queryClass={class}&maxItems=7&maxBytes=4096"))
+                .await
+                .unwrap_or_else(|error| panic!("{}", error.0));
+        assert_eq!(scope, ChatScope::conversation(None));
         assert_eq!(
-            error.0.reason(),
-            Some(pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch.label())
+            demand,
+            ReadDemand {
+                max_items: 7,
+                max_bytes: 4096
+            }
         );
+        let (scope, _) = conversation_query(&format!(
+            "/?queryClass={all}&maxItems=3&maxBytes=4096&parentId=4%3Aturnparent-a"
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{}", error.0));
+        assert_eq!(
+            scope,
+            ChatScope {
+                query_class: pl_protocol::ChatClassFilter::All {},
+                parent_id: Some("4:turnparent-a".into())
+            }
+        );
+        for tail in [
+            "",
+            "maxItems=7",
+            "maxBytes=4096",
+            "maxItems=-1&maxBytes=4096",
+            "maxItems=7&maxBytes=4096&timelineEpoch=a",
+            "maxItems=7&maxBytes=4096&appendSeq=7",
+            "maxItems=7&maxBytes=4096&parent_id=a",
+            "maxItems=7&maxBytes=4096&unknown=1",
+            "maxItems=7&maxItems=8&maxBytes=4096",
+            "maxItems=7&maxBytes=4096&runDatabaseId=db",
+            "maxItems=7&maxBytes=4096&runDatabaseId=db&runIndexVersion=1&runStartSeq=1",
+        ] {
+            let uri = format!("/?queryClass={class}&{tail}");
+            assert_eq!(
+                conversation_query(&uri).await.unwrap_err().0.code,
+                StudioErrorCode::InvalidArgument,
+                "{uri}"
+            );
+        }
+        for uri in [
+            "/?maxItems=7&maxBytes=4096",
+            "/?queryClass=all&maxItems=7&maxBytes=4096",
+            "/?queryClass=%7B%22kind%22%3A%22all%22%2C%22extra%22%3Atrue%7D&maxItems=7&maxBytes=4096",
+        ] {
+            assert_eq!(
+                conversation_query(uri).await.unwrap_err().0.code,
+                StudioErrorCode::InvalidArgument,
+                "{uri}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1016,11 +978,6 @@ mod tests {
             entries: vec![CompletedEntry {
                 record_id: "message-a".into(),
                 completion_seq: 7,
-                run: Some(CompletionRunPosition {
-                    start_seq: 7,
-                    ordinal: 1,
-                }),
-                main_presentation: MainPresentation::Single,
                 atom: ChatAtom {
                     id: "member-a".into(),
                     completion_item_id: Some("message-a".into()),
@@ -1061,9 +1018,7 @@ mod tests {
             from_seq: None,
             through_seq: 7,
         };
-        batch.validate_for(&ChatScope::Children {
-            parent_id: "parent-a".into(),
-        })?;
+        batch.validate_for(&ChatScope::conversation(Some("parent-a".into())))?;
         let event = encode_conversation_event(&ConversationEvent::Chat {
             batch: Box::new(batch.clone()),
         })?;
@@ -1182,18 +1137,21 @@ mod tests {
                 .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
         );
         assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
-        for name in ["runDatabaseId", "runIndexVersion", "runStartSeq"] {
-            assert!(
-                params
-                    .iter()
-                    .any(|param| param["name"] == name && param["required"] == false)
-            );
-        }
+        assert!(
+            params
+                .iter()
+                .any(|param| param["name"] == "queryClass" && param["required"] == true)
+        );
+        assert!(!params.iter().any(|param| {
+            param["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("run"))
+        }));
         let schemas = &document["components"]["schemas"];
         assert!(schemas["CompletedEntry"].is_object());
-        assert!(schemas["CompletionRunRef"].is_object());
+        assert!(schemas.get("CompletionRunRef").is_none());
         assert!(schemas["ActivitySnapshot"].is_object());
-        assert!(schemas["MainPresentation"].is_object());
+        assert!(schemas.get("MainPresentation").is_none());
         assert!(schemas["ChatBatch"]["properties"]["fromSeq"].is_object());
         assert!(schemas["ChatBatch"]["properties"]["throughSeq"].is_object());
         assert!(schemas["ChatBatch"]["properties"].get("current").is_none());
@@ -1381,16 +1339,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_sse_encodes_typed_completed_entries_without_legacy_display_shapes() -> Result<()>
-    {
+    async fn records_sse_encodes_typed_completed_entries_without_legacy_display_shapes()
+    -> Result<()> {
         let batch: ChatBatch = serde_json::from_value(serde_json::json!({
             "placement": "set",
             "entries": [
                 {
                     "recordId": "record-a",
                     "completionSeq": 8,
-                    "run": {"startSeq": 8, "ordinal": 1},
-                    "mainPresentation": "single",
                     "atom": {
                         "id": "atom-a",
                         "completionItemId": "record-a",
@@ -1407,11 +1363,11 @@ mod tests {
                     }
                 }
             ],
-            "before": "opaque-run-page",
+            "before": "opaque-record-page",
             "fromSeq": null,
             "throughSeq": 8
         }))?;
-        batch.validate_for(&ChatScope::Main)?;
+        batch.validate_for(&ChatScope::conversation(None))?;
         let event = encode_conversation_event(&ConversationEvent::Chat {
             batch: Box::new(batch.clone()),
         })?;
@@ -1422,10 +1378,12 @@ mod tests {
         let data = wire
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
-            .context("missing Main chat")?;
+            .context("missing records chat")?;
         let decoded: ChatBatch = serde_json::from_str(data)?;
         assert_eq!(decoded, batch);
         assert!(!wire.contains("currentMembers"));
+        assert!(!wire.contains("\"run\""));
+        assert!(!wire.contains("mainPresentation"));
         Ok(())
     }
 

@@ -161,33 +161,16 @@ impl ChatTail {
                 }
             }
             let session = subscription.session.clone();
-            let main = self
-                .query
-                .as_ref()
-                .is_some_and(|query| query.selection == ChatSelection::RunHeads);
-            let mut query = self.query.clone();
-            if main {
-                query.as_mut().expect("main query").selection = ChatSelection::Records;
-            }
-            let main_budget = super::read::RunHeadBudget(self.budget.as_ref());
-            let budget: &dyn ChatBudget = if main {
-                &main_budget
-            } else {
-                self.budget.as_ref()
-            };
-            let mut batch = session
+            let batch = session
                 .completed_after(
                     ChatCompletionCursor::new(session.epoch(), self.delivered),
-                    query,
+                    self.query.clone(),
                     None,
                     self.demand,
-                    budget,
+                    self.budget.as_ref(),
                 )
                 .await?;
             self.delivered = batch.through_seq;
-            if main {
-                batch.items.retain(|item| item.header.run.is_some());
-            }
             if !batch.items.is_empty() {
                 return Ok(ChatTailUpdate::Batch(batch));
             }

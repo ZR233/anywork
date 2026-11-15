@@ -36,8 +36,7 @@ use crate::support::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::{
-    ChatAtomKind, ChatBatch, ChatScope, CompletedEntry, ContentRange, ContentRef, MainPresentation,
-    ReadDemand,
+    ChatAtomKind, ChatBatch, ChatScope, CompletedEntry, ContentRange, ContentRef, ReadDemand,
 };
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
@@ -1676,7 +1675,7 @@ async fn target_timeline(session: &Session, bot_id: &str, message_id: &str) -> R
     );
     let (read, batch) = session
         .http()?
-        .open_chat(&thread_id, ChatScope::Main, CHAT_DEMAND)
+        .open_chat(&thread_id, ChatScope::conversation(None), CHAT_DEMAND)
         .await?;
     let mut remaining = CHAT_OBSERVATION_BYTES;
     charge_chat_batch(&batch, &mut remaining)?;
@@ -1700,7 +1699,7 @@ async fn inbound_target_timeline(
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
     let (read, batch) = session
         .http()?
-        .open_chat(&thread_id, ChatScope::Main, CHAT_DEMAND)
+        .open_chat(&thread_id, ChatScope::conversation(None), CHAT_DEMAND)
         .await?;
     ensure!(
         batch.before.is_none(),
@@ -1975,14 +1974,12 @@ async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<s
     Ok(item)
 }
 
-/// Main yields visible representatives; only standalone text/receipt records
-/// are decoded here. Work representatives require explicit Run traversal.
+/// Decode the requested text and receipt kinds from immutable conversation records.
 fn terminal_entries(batch: &ChatBatch) -> impl Iterator<Item = &CompletedEntry> {
     batch.entries.iter().filter(|entry| {
-        matches!(entry.main_presentation, MainPresentation::Single)
-            && matches!(
-                entry.atom.kind,
-                ChatAtomKind::Text | ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
-            )
+        matches!(
+            entry.atom.kind,
+            ChatAtomKind::Text | ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
+        )
     })
 }

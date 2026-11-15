@@ -144,19 +144,12 @@ impl HistoryStore {
             let mut checkpoint = checkpoint.clone();
             for row in tx
                 .query_all_raw(statement(
-                    "SELECT payload FROM history_items WHERE kind='inference' ORDER BY ordinal",
+                    "SELECT DISTINCT attempt_id,turn_id FROM execution_lifecycle WHERE attempt_id IS NOT NULL AND turn_id IS NOT NULL",
                     vec![],
                 ))
                 .await?
             {
-                let item: pl_protocol::ThreadItem =
-                    serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-                if let pl_protocol::ThreadItemState::Inference(inference) = item.state() {
-                    checkpoint
-                        .state
-                        .attempt_ids
-                        .insert(inference.inference_id().to_owned(), item.turn_id.clone());
-                }
+                checkpoint.state.attempt_ids.insert(row.try_get("", "attempt_id")?, row.try_get("", "turn_id")?);
             }
             for row in tx
                 .query_all_raw(statement(

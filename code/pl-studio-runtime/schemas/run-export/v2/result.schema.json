@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://anywork.dev/schemas/run-export/v1/result.schema.json",
-  "title": "ResultV1",
+  "$id": "https://anywork.dev/schemas/run-export/v2/result.schema.json",
+  "title": "ResultV2",
   "description": "Terminal result report written atomically to result.json after shutdown flush and exporter closure.",
   "type": "object",
   "additionalProperties": false,
@@ -28,7 +28,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "runId": {
       "type": "string",
@@ -72,10 +72,10 @@
       "$ref": "#/$defs/utcTimestamp"
     },
     "build": {
-      "$ref": "#/$defs/BuildInfoV1"
+      "$ref": "#/$defs/BuildInfoV2"
     },
     "timing": {
-      "$ref": "#/$defs/TimingReportV1"
+      "$ref": "#/$defs/TimingReportV2"
     },
     "finalText": {
       "type": ["string", "null"]
@@ -90,11 +90,11 @@
       "type": "boolean"
     },
     "trace": {
-      "$ref": "#/$defs/TraceSummaryV1"
+      "$ref": "#/$defs/TraceSummaryV2"
     },
     "usage": {
       "oneOf": [
-        { "$ref": "#/$defs/UsageExportV1" },
+        { "$ref": "#/$defs/UsageExportV2" },
         { "type": "null" }
       ]
     },
@@ -103,13 +103,13 @@
     },
     "error": {
       "oneOf": [
-        { "$ref": "#/$defs/ExecutionErrorV1" },
+        { "$ref": "#/$defs/ExecutionErrorV2" },
         { "type": "null" }
       ]
     },
     "executionError": {
       "oneOf": [
-        { "$ref": "#/$defs/ExecutionErrorV1" },
+        { "$ref": "#/$defs/ExecutionErrorV2" },
         { "type": "null" }
       ]
     }
@@ -123,7 +123,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "BuildInfoV1": {
+    "BuildInfoV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["version", "gitCommit", "target"],
@@ -139,7 +139,7 @@
         "target": { "type": "string", "minLength": 1 }
       }
     },
-    "TimingReportV1": {
+    "TimingReportV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -157,7 +157,7 @@
         "exportFinalizeMs": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
-    "TraceSummaryV1": {
+    "TraceSummaryV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -197,7 +197,7 @@
         "estimatedCostUsd"
       ]
     },
-    "UsageTotalsV1": {
+    "UsageTotalsV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -221,7 +221,7 @@
         "estimatedCostUsd": { "type": ["number", "null"], "minimum": 0 }
       }
     },
-    "UsageKnownTotalsV1": {
+    "UsageKnownTotalsV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -245,7 +245,7 @@
         "estimatedCostUsd": { "type": "number", "minimum": 0 }
       }
     },
-    "ModelUsageExportV1": {
+    "ModelUsageExportV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -262,15 +262,15 @@
         "modelId": { "type": ["string", "null"] },
         "coverage": { "$ref": "#/$defs/UsageCoverage" },
         "hasUnknownValues": { "type": "boolean" },
-        "totals": { "$ref": "#/$defs/UsageTotalsV1" },
-        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV1" },
+        "totals": { "$ref": "#/$defs/UsageTotalsV2" },
+        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV2" },
         "unknownFields": {
           "type": "array",
           "items": { "$ref": "#/$defs/UsageMetricKey" }
         }
       }
     },
-    "ThreadUsageExportV1": {
+    "ThreadUsageExportV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["threadId", "throughEffectSeq", "summary"],
@@ -282,7 +282,7 @@
         }
       }
     },
-    "UsageExportV1": {
+    "UsageExportV2": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -296,15 +296,15 @@
       "properties": {
         "coverage": { "$ref": "#/$defs/UsageCoverage" },
         "hasUnknownValues": { "type": "boolean" },
-        "totals": { "$ref": "#/$defs/UsageTotalsV1" },
-        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV1" },
+        "totals": { "$ref": "#/$defs/UsageTotalsV2" },
+        "knownTotals": { "$ref": "#/$defs/UsageKnownTotalsV2" },
         "byModel": {
           "type": "array",
-          "items": { "$ref": "#/$defs/ModelUsageExportV1" }
+          "items": { "$ref": "#/$defs/ModelUsageExportV2" }
         },
         "byThread": {
           "type": "array",
-          "items": { "$ref": "#/$defs/ThreadUsageExportV1" }
+          "items": { "$ref": "#/$defs/ThreadUsageExportV2" }
         }
       }
     },
@@ -377,7 +377,7 @@
         "retry": { "type": "object" }
       }
     },
-    "ExecutionErrorV1": {
+    "ExecutionErrorV2": {
       "type": "object",
       "additionalProperties": false,
       "required": ["stage", "code", "message", "turnFailure"],

@@ -781,10 +781,6 @@ mod production {
                 .read_completed(&completion.header.item_id, demand(1))
                 .await?;
             assert_eq!(entry.atom.content_present, Some(false));
-            assert_eq!(
-                entry.main_presentation,
-                pl_protocol::MainPresentation::Hidden
-            );
             let body = entry
                 .atom
                 .contents
@@ -1341,7 +1337,7 @@ mod production {
                 .await?;
             let mut completed = env
                 .runtime
-                .open_conversation_feed(&h.thread.id, ChatScope::Main, demand(1))
+                .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand(1))
                 .await?;
             assert_eq!(atomic(&mut completed).await?.through_seq, 0);
             let initial = timeline(&mut feed).await?;

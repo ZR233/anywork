@@ -27,21 +27,19 @@ void main() {
 
   test('members use record IDs; prepend and append preserve existing message objects', () async {
     await adapter.applyBatch(
-      completedBatch([
-        completionEntry('middle', 2, presentation: MainPresentation.single),
-      ], through: 2),
+      completedBatch([completionEntry('middle', 2, isText: true)], through: 2),
     );
     final message = stock.messages.single;
     await adapter.applyBatch(
       completedBatch(
-        [completionEntry('older', 1, presentation: MainPresentation.single)],
+        [completionEntry('older', 1, isText: true)],
         placement: ChatPlacement.prepend,
         through: 2,
       ),
     );
     await adapter.applyBatch(
       completedBatch(
-        [completionEntry('newer', 3, presentation: MainPresentation.single)],
+        [completionEntry('newer', 3, isText: true)],
         placement: ChatPlacement.append,
         from: 2,
       ),

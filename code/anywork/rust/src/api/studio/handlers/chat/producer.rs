@@ -194,8 +194,7 @@ mod tests {
     use crate::api::studio::types::{
         BridgeChatAtom, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatBatch,
         BridgeChatDeliveryKind, BridgeChatPlacement, BridgeChatSourceId, BridgeChatTerminalOutcome,
-        BridgeCompletedEntry, BridgeCompletionRunPosition, BridgeErrorCode, BridgeMainPresentation,
-        BridgePayloadData,
+        BridgeCompletedEntry, BridgeErrorCode, BridgePayloadData,
     };
 
     fn data(payload_bytes: usize) -> BridgeConversationFrame {
@@ -209,11 +208,7 @@ mod tests {
                     entries: vec![BridgeCompletedEntry {
                         record_id: "frozen-completion".into(),
                         completion_seq: 3,
-                        run: Some(BridgeCompletionRunPosition {
-                            start_seq: 3,
-                            ordinal: 1,
-                        }),
-                        main_presentation: BridgeMainPresentation::Single,
+
                         atom: BridgeChatAtom {
                             id: "member".into(),
                             completion_item_id: Some("frozen-completion".into()),

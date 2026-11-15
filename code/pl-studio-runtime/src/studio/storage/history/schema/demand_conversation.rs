@@ -380,6 +380,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| {
@@ -415,6 +416,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| {
@@ -564,7 +566,6 @@ mod tests {
         Ok(pl_core::chat::ChatItem::complete(
             draft,
             u64::try_from(row.try_get::<i64>("", "seq")?)?,
-            None,
         ))
     }
 
@@ -1050,15 +1051,8 @@ mod tests {
             let mut draft =
                 pl_core::chat::ChatDraft::new(id, "conversation", Arc::from(b"{}".as_slice()));
             draft.metadata = super::super::super::conversation::tests::metadata(id);
-            draft.read_hint = pl_core::chat::ChatReadHint::Single;
-            Arc::new(pl_core::chat::ChatItem::complete(
-                draft,
-                seq,
-                Some(pl_core::chat::ChatRunPosition {
-                    start_seq: seq,
-                    ordinal: 1,
-                }),
-            ))
+
+            Arc::new(pl_core::chat::ChatItem::complete(draft, seq))
         };
         let completions1 = [completion("first", 1)];
         let completions2 = [completion("second", 2)];
@@ -1068,7 +1062,8 @@ mod tests {
             empty: &'a std::collections::BTreeSet<String>,
         ) -> EffectCommit<'a> {
             EffectCommit {
-                items: &[],
+                turns: &[],
+                execution_order: 0,
                 completions,
                 current,
                 rolled_back_turns: empty,

@@ -258,19 +258,19 @@ ChatGPT 安装身份保存在 `<Studio home>/data/chatgpt-host.toml`，具有独
 
 Store 已初始化且真实绑定有效时，普通新 effect 的完成 draft 经过同步内存准入：原批次先被唯一可靠通道接纳，全部冻结、序列化、身份、计数、报告和预算准备成功后，才共同发布完成原件、当前状态与展示结果。正常新完成不逐项查询历史正文；未知外部身份、导入和重放仍走明确的历史验证入口。同批重试复用原 `PreparedEffect` 与 `Arc<ChatItem>`，已落盘 effect 以真实通道水位及回执识别，不因 pending 回收重新分配序号。
 
-完成 Session 从已提交 conversation_items 取得序号上界，在每次完成发布时递增 seq；writer 仅持久化已分配的序号。内部 history_items 的 ordinal/revision 仍归执行投影，消费 Turn 绑定与资源修复不修改冻结完成项。进程重建的读取代次拒绝可能重用 RAM 尾部序号的旧游标，代次与水位留 Rust。
+完成 Session 从已提交 conversation_items 取得序号上界并为新完成分配 append_seq；writer 保存同一原件。执行位置独立保存在 history_meta.execution_order 与 typed Turn／生命周期中，随 effect 水位原子提交。输入消费绑定和资源修复不能修改冻结完成项，旧代次游标在进程重建后明确失效。
 
 模型传输层透明恢复产生的展示事实随模型所有者的最终调用回执一并持久化（观察契约见 [16](./16-core-contracts.md) §16.3）。引入观察代次扩展不会重写既有时间线条目的身份或历史排序号；早期 `v2` 回执若缺少观察代次与失败子尝试字段，在其生产者迁移边界按该版本约定转换为“首次尝试且无透明恢复记录”，原有回复正文与计费数据保持不变，正常运行只读取转换后的当前回执。任何新增持久化字段均须明确定义缺省值或版本迁移规则，禁止因旧记录缺少新增恢复字段而清空历史库、重置默认配置或回退读取已隔离的旧版本数据根。
 
-唯一 writer 在真实事务提交后向同一 Store 确认数据库身份、effect 区间与实际完成前缀；该同步确认同时回收对应 pending 和符合条件的展示引用，不改变历史载荷、不发布内容更新。运行预览留在 Runtime 活动所有者，按各自执行生命周期收束；完成快照不得引用可覆盖的 history_items 正文或临时文件。读取与提交交错的证明归 [26](./26-timeline-content.md)。
+唯一 writer 在真实事务提交后向同一 Store 确认数据库身份、effect 区间与实际完成前缀；该同步确认同时回收对应 pending 和符合条件的展示引用，不改变历史载荷、不发布内容更新。运行预览留在 Runtime 活动所有者，按各自执行生命周期收束；完成快照不得引用可覆盖的可变正文或临时文件。读取与提交交错的证明归 [26](./26-timeline-content.md)。
 
-对于已先行写入 `history_items` 但当时尚未关联具体轮次的独立消息条目，后续模型消费该消息时可使用原条目身份与原 `ordinal` 将其绑定至消费它的轮次（`turn_id`）。若该消息条目的 `ordinal` 小于目标轮次在 `history_turns` 表中已记录的 `first_ordinal`，历史写入器必须在更新该消息条目的同一 SQLite 事务中将 `history_turns.first_ordinal` 向前扩展至该消息的 `ordinal`；除这一合法的消费绑定扩展外，任何轮次的首条序号均禁止被随意改写。
+独立输入／消息接纳后即保存不可变完成原件；实际消费时，只在同一业务事务中补 execution_lifecycle 的真实 turn_id。轮次的稳定 turn_order 不因早先消息绑定而移动，不再维护展示成员的首尾 ordinal。
 
-history_input_identities 与内部执行事实同事务保存输入展示属性；可见输入在 history_items 保留执行恢复记录，隐藏续接只保留明确隐藏身份。不能因缺记录猜隐藏，冲突/缺身份按失败关闭。旧标记只在迁移边界回填；普通 reader 不恢复执行。公开完成历史唯一读取 conversation_items，其输入完成项不随后续消费绑定修改。
+history_input_identities 与原 effect 同事务保存输入身份及明确展示属性；隐藏续接不制造完成原件。缺失可见输入仍须明确失败，不能凭空猜测隐藏。公开完成历史唯一读取 conversation_items，输入原件不会随后续消费绑定修改。
 
 Studio 产品投影一次准备业务事实与不可变完成项，在 Store 的同步边界共同可见，并由同一 PreparedEffect 经原 writer 将完成记录、内容/current、执行事实、checkpoint、上下文和回执合批同事务提交，附件先过 blob fence。不增加第二队列或独立保存计时器；原 writer 合批与 flush 语义见 [15](./15-session-storage.md)，SQLite 同步保证不降低。
 
-history_items、任务、checkpoint、输入身份和工具交付索引保留执行恢复及审查职责；conversation_items 是对外完成历史唯一读模型，不能把内部执行表改成只存完成项。冻结快照的必要重复是不可变语义成本；资源共享以真正不可变为前提。
+任务、checkpoint、输入／消息身份、交付、业务回执及 typed Turn／生命周期各保存其所属事实；正常运行不再读写 history_items。必要冻结展示观察证明当时可见内容，与完整业务正文职责不同，不能将两者混为一个可变底表。
 
 实时状态与新增完成项经相应事件流直接交付，历史和冻结详情通过统一 Session 独立查询；冷历史准备不激活执行。前端只保留本次加载的展示选择，SDK 不持历史镜像，接口与预算见 [26](./26-timeline-content.md)。
 
@@ -617,23 +617,23 @@ Workspaces 根版本 2 为每条记录新增必填的 `kind`，明确区分 `pro
 
 ## 17.18 按需聊天内容、当前投影与迁移
 
-按需完成历史沿既有 SeaORM 序列追加不可变连续段索引迁移；原已发布来源分类、后台结果身份、完成边界步骤的名称和语义不改。当前格式只消费新索引，不双读双写旧组模型。本文描述目标，不是迁移或验收已完成声明。
+当前历史库为 schema 24，沿既有 SeaORM 具名迁移顺序升级。完成原件 wire／index 为版本 2，展示 presentation v6 与 reader v1 独立。正常 reader 只接受当前结构，旧解码器仅在正式 preparation 内使用，不双读双写旧组模型。
 
-完成原件仍是 `conversation_items`、完整正文/工具输出与真实来源事实。每条记录首次 INSERT 确定 display_run_start/display_run_ordinal，之后内容与索引不更新；该原完成读取能力保留给完成级消费者。GUI 使用 §17.19 的增量展示快照，不能把原完成 run 当成当前展示组。Inference 与真实执行/调用历史不因 Main 隐藏而删除。
+完成原件保留在 conversation_items 与现有内容表。header 保存完成序号、身份、类别、真实 parent、payload 和冻结 metadata，不保存 Run 或读取提示。GUI 使用 §17.19 的展示快照；All 原件查询包括被界面隐藏的执行记录，常规对话显式选择 conversation。
 
 后台结果的历史身份纠正在同一序列中拥有独立具名步骤，位于原子元数据迁移之后、展示项迁移之前。它以已保存的工具收件箱投递和消息身份账本证明最终结果的消息身份及受理序号，区分原工具移交回执与独立后台结果，保留完成项原身份、序号、载荷、正文引用、检查点和工具投递。缺失或冲突的消息证明使该步骤回滚并保源，不推导新消息身份。对已有完整展示项的库，仅在实际发生纠正时，在同一事务中保留无关真实开始／终态事实并重建派生展示及恢复头；无需纠正时保留原代际。内容准备以具名迁移账本判断待执行步骤，不能仅因物理格式号已是当前值就跳过新增纠正；已应用迁移的缺表、缺恢复头或账本冲突仍明确拒绝。
 
-原完成索引保留原记录两个可空 run 列及可见 seq/段 seq 索引，提示由原 typed metadata 经唯一 Native v1 分类还原。完成级 Main/Run 查询继续按这些索引读取；GUI 历史改读冻结展示头，见 [26](./26-timeline-content.md)。缺列/索引、坏引用或已应用迁移账本矛盾明确拒绝，不自动修复或切旧组路径。
+完成原件按 (query_class,seq)、(parent_id,seq) 和 (parent_id,query_class,seq) 索引作 keyset 查询；工具定位及 Text 过滤使用相应表达式／部分索引。选择的小页不逐项补查来源状态，不读取无关正文，不扫描整组或使用 OFFSET。索引、身份比较语义、必要列或迁移账本损坏均明确拒绝，不自动修复。
 
 普通工具结果的展示形态升级使用后续具名迁移，仅按 [26](./26-timeline-content.md) 将目标 Single 派生头转换为单成员 Work。迁移保留原块身份、既有显示顺序和成员 key、来源边界及原件引用，不修改完成原件、原子事实、内容和执行恢复状态；不通过重排或删除已发布块实现合组。独立文件展示等非目标内容保持不变，转换与迁移账本在同一事务提交，失败回滚并保源。
 
-普通 Records 按原 class/真实 parent 读取；Main RunHeads 按可见 seq 索引递归选代表并跳 start-1；Run 按 `(display_run_start,seq)` 页读。Main 工作代表不读 payload/正文/媒体，不 COUNT 或全组聚合。真实来源生命周期沿原可靠 effect 保存，不为 UI 新增保存链路。
+原件 Records 统一按显式 Class／All 与可选真实 parent 选择集合，精确完成身份和范围读取共用原 reader 资格。来源状态通过独立执行来源查询明确读取，展示快照不反向改写原件。
 
 来源分类、后台尾组合并和完成边界分别沿正式具名步骤执行，已发布步骤的真实语义及 Applied 记录保持不变。完成边界迁移位于后台尾组合并之后，先在同一事务内封存旧 `conversation_view_state/entries`、开放组行及其成员、旧恢复快照等独有材料，再从可靠事实重建新版派生索引及恢复切点；混存于正文目录中的旧半成品块原样留存。受管归档只供迁移核查和原件保全，正常业务不读取或激活；不得因新版不用半成品就按表名、owner 前缀或 unsealed 标志删除数据。完成原件、身份、序号、水位、来源位置、checkpoint/context 和旧 Applied 均保留；无终态证明的旧前缀不转换为完成历史，旧开放组内已完成成员也不得丢失。归档、重建、新代际和 Applied 一次提交，失败或取消完整回滚。
 
 旧半成品还必须与新版正常完成正文的键空间隔离：正式迁移逐项核实未封口材料的真实 owner、原完成记录和冻结内容引用，只有证明尚未被完成事实引用的材料，才将其完整 manifest 和全部 chunks 连同原 owner/key/offset 映射移入受管归档，并释放正常正文键。归档保留原始字节、代次、封口标志与身份，不将前缀封口或转换成完成记录；不是删除原件，也不复制全部完成正文。若未封口材料已被完成事实引用或引用证据矛盾，迁移明确失败并回滚，不能猜测后搬走。已完成正文及其引用保持原位、不改身份。这样旧活动工具后续依据自身真实恢复终态写入完整参数/结果时，可以从完整材料首次保存，不被归档前缀占键阻塞；正常 writer 仍拒绝半成品接管和不可变身份冲突，不增加运行期迁移兜底。非空迁移验收须贯通真实工具终态保存及冷重开，同时核对旧原件归档和原完成水位保全。
 
-来源的 as-of 读取结果由 reader 附在普通 Atom 的 `source_state` 上，不作为冻结 metadata 或额外分页行保存；current-only 来源已包含在原 current 信封中。Children 只查询其已选择普通页涉及的来源，不附带或预读 Main 全局 current 的来源。两类读取都使用原切面与原预算，不异时拼接、裁剪 current 或以越限后拒绝代替正确的选页计量。
+conversation_sources 保留每来源真实开始／结束位置、observed 标志及 outcome。其读写入口归 execution provenance；原件页不动态附加 source_state，当前状态和冻结时可见状态分别归实时 State 与既有 frozen observation。
 
 ```sql
 CREATE TABLE conversation_items (
@@ -642,13 +642,7 @@ CREATE TABLE conversation_items (
     query_class TEXT NOT NULL,
     parent_id   TEXT,
     payload     BLOB NOT NULL,
-    metadata    BLOB NOT NULL,
-    display_run_start INTEGER,
-    display_run_ordinal INTEGER CHECK (
-        (display_run_start IS NULL AND display_run_ordinal IS NULL) OR
-        (display_run_start IS NOT NULL AND display_run_ordinal IS NOT NULL
-         AND display_run_start > 0 AND display_run_start <= seq
-         AND display_run_ordinal > 0))
+    metadata    BLOB NOT NULL
 );
 CREATE INDEX conversation_items_by_class
     ON conversation_items(query_class, seq);
@@ -671,34 +665,36 @@ CREATE TABLE conversation_content_chunks (
         REFERENCES conversation_contents(owner_key, content_key)
 ) WITHOUT ROWID;
 
--- 轻量真实来源事实，不保存 token、展示组或正文；随原可靠 effect 保存。
-CREATE TABLE conversation_atom_facts (
-    effect_seq INTEGER NOT NULL,
-    suborder   INTEGER NOT NULL,
-    atom_id    TEXT NOT NULL,
-    phase      TEXT NOT NULL,
-    fact_order INTEGER NOT NULL,
-    metadata   BLOB NOT NULL,
-    PRIMARY KEY (effect_seq, suborder, atom_id, phase),
-    UNIQUE (atom_id, phase)
+-- 原件没有的执行来源证据，不保存正文或 token。
+CREATE TABLE execution_lifecycle (
+ identity TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL,
+ source_kind TEXT NOT NULL, source_identity TEXT NOT NULL,
+ turn_id TEXT, attempt_id TEXT, call_id TEXT, tool_name TEXT, text_channel TEXT,
+ delivery TEXT NOT NULL, source_order INTEGER, execution_order INTEGER CHECK(execution_order>0),
+ started_effect INTEGER, started_suborder INTEGER, started_at INTEGER,
+ ended_effect INTEGER, ended_suborder INTEGER, finished_at INTEGER, outcome TEXT,
+ completion_item_id TEXT, last_write_seq INTEGER NOT NULL,
+ CHECK ((started_effect IS NULL)=(started_suborder IS NULL)),
+ CHECK ((ended_effect IS NULL)=(ended_suborder IS NULL)),
+ CHECK (ended_effect IS NULL OR outcome IS NOT NULL),
+ CHECK (completion_item_id IS NULL OR outcome IS NOT NULL)
 ) WITHOUT ROWID;
-
--- 仅有不可变完成记录上的读取索引，无持久工作组表。
-CREATE INDEX conversation_items_visible_seq
-    ON conversation_items(seq) WHERE display_run_start IS NOT NULL;
-CREATE INDEX conversation_items_by_run_seq
-    ON conversation_items(display_run_start, seq) WHERE display_run_start IS NOT NULL;
+CREATE INDEX execution_lifecycle_active ON execution_lifecycle(identity)
+ WHERE ended_effect IS NULL AND outcome IS NULL;
+CREATE INDEX execution_lifecycle_turn ON execution_lifecycle(turn_id,source_order,identity);
+CREATE INDEX execution_lifecycle_call ON execution_lifecycle(call_id,identity)
+ WHERE call_id IS NOT NULL;
 ```
 
 item 表保存普通查询/排序/身份、原始 UTF-8 JSON payload 及轻量原子 metadata；每会话已有独立库，不重复 thread_id。metadata 由产品 producer 冻结，含无需解码 payload 即可取得的真实归属、顺序、生命周期和内容引用，不复制正文，也不含展示 item 或成员归属；Core 仅将其视为 opaque header bytes，产品按实际编码计入单页预算。不另设工具名、状态、时间、格式或无索引用途的 payload_bytes 列；BLOB 长度由 length(payload) 取得。query_class 和带类型 parent 的含义归 [26](./26-timeline-content.md)，不以当前 renderer 能否解释决定是否保存/返回。parent 可能引用真实 Turn/Call，不加指向 item_id 的自关联外键。
 
-`conversation_atom_facts` 只保存规范来源实际接纳的开始/终态及必要身份、位置、计时、内容存在性和引用，不保存正文、工具 payload 或 token。原完成 payload/内容仍各只有一份；同一真实身份/阶段重试幂等、冲突拒绝。旧事实只在正式准备边界规范化，缺少的开始/时间保持未知。重建按已索引的可靠位置逐批读小元信息，不先读全 payload 再排序，也不把最新 `history_items` 或检查点当完整日志。
+execution_lifecycle 每真实 identity 至多一行，保存原始来源、所属 Turn／attempt／call、分类、真实开始／结束位置及可选完成引用。source_order 与 Runtime execution_order 分开，未知时间、位置与 completion 保持为空；不保存正文、contents、wait、source_state 或展示修订。active 部分索引只恢复未终态项，逐页最多 128，继续受 LIVE_ITEM_WINDOW 上限约束。
 
-schema17→18 新增具名 `m20261110_000001_history_immutable_completion_runs`，注册在 completion_boundary 之后。原初始化锁与 SeaORM Applied 是唯一执行依据。单事务新增两列和索引，按原 seq 每批最多128条轻量 metadata/class 调用唯一 v1 分类并回填；不改 item_id、seq、query_class、parent、payload/metadata 原字节、内容引用和归档。只在本次迁移有界验证段首、连续 ordinal、真实引用和原件可读性，不移到每次冷打开。
+schema23→24 使用具名 m20261114_000001_execution_facts。迁移首先核对旧结构、数据库身份及 checkpoint／context 哈希与真实 history fence，再将原阶段事实转为 typed 单行生命周期，将旧轮次转为稳定业务索引，保留原执行顺序上界。旧格式没有真实开始证据的字段继续为空，不用迁移时间、显示顺序或 append_seq 补齐。
 
-回填后删除 `timeline_items`、`timeline_item_members`、`timeline_projection_state` 前，证明其材料已由保留的完成/来源/Core 中断事实或受管归档覆盖。无 receipt 中断占位不伪造完成记录；无法证明覆盖则整个迁移失败保全原库。回填、验证、DROP、schema18 和本次 Applied 在同一事务提交，故障/取消完整回滚；二次正常打开不回填。旧 fold 类型只供冻结迁移，不由普通 reader/writer 引用。
+逐类证明旧可变条目已被原件／业务事实覆盖后，才删除 history_items、conversation_atom_facts 与旧轮次结构，并去除 conversation_items 的 Run 列。不能证明覆盖或无法解码的旧字节，原样归入既有内容分块和 legacy_execution_record 回执；导出头保留源 schema／表、原行的顺序／轮次／时间等列与摘要，可在原会话授权、取消和 reader 资格下按窗口只读导出。归档不转换为普通完成项，也不在正常恢复中启用旧 decoder。
 
-历史13→14→15等准备仍按原发布语义保留原始事实：legacyAdmission/legacySourceEnd 只表达有证据的结构位置，不补造开始/终态/时间，不覆盖已知 effect/suborder。这些旧转换仅在冻结迁移中使用；最终按保留的完成 seq 和新索引显示，不恢复来源顺序工作组。
+正式升级前后核对完成 payload／metadata、内容 manifest／chunks、输入身份、既有回执及 checkpoint／context 原字节摘要。新归档、typed 索引、删旧结构、schema 24 与 Applied 在同一事务中提交；失败、取消或身份矛盾完整回滚并保留原库，修复后允许重新运行。旧 schema 的既有具名步骤仍按冻结契约先行执行，不改写其 Applied 记录。
 
 contents 的 owner_key 为带类型通用身份，content_key 不透明，目录 payload 只含有界通用描述；长度/媒体类型不再拆无查询用途的列。producer 在记录完成时提交完整共享内容及 manifest，不从未知 payload 猜引用，不要求预存 active 块。块有大小上限，按 byte_offset 索引顺序读取预算范围，不先恢复全文；首次写入分块保存完整材料，重放或冲突才核既有内容。目录/chunk 在原 writer 事务/附件屏障下公开，不能发永久缺失引用。完成内容随 item 保留；原执行活动内容由原内存 owner 保有并允许短读结束。§17.19 的边界派生观察另以独立命名空间保存 sealed 切面并共享 immutable chunks，不覆盖原活动内容，不另建全局 GC。
 

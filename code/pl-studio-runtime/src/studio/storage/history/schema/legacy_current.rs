@@ -1,5 +1,5 @@
 //! Frozen current snapshot codec used only by published content migrations.
-use super::super::conversation::sources;
+use super::super::execution_sources as sources;
 use super::super::{integer, statement};
 use super::legacy_content;
 use super::legacy_timeline_types::CurrentProjection;

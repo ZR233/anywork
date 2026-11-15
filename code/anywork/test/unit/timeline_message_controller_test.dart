@@ -21,12 +21,7 @@ void main() {
       await adapter.applyFixtureUpdate(
         displayBatch([
           displaySingle(
-            completionEntry(
-              'completion',
-              1,
-              presentation: MainPresentation.single,
-              text: '中文 🐱',
-            ),
+            completionEntry('completion', 1, isText: true, text: '中文 🐱'),
           ),
         ]),
       );

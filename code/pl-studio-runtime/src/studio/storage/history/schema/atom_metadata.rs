@@ -1,8 +1,11 @@
 //! Schema 13 → 14: immutable lightweight atom metadata and actual source lifecycle only.
 //! Published payloads are decoded here, never by normal storage reads or a current tool renderer.
-use super::super::conversation::{self, sources};
+use super::super::conversation;
+use super::super::execution_sources as sources;
 use super::legacy_timeline_types::CurrentProjection;
 use super::*;
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 use anyhow::Result;
 use pl_core::chat::ChatKey;
 use pl_protocol::*;
@@ -758,6 +761,7 @@ mod tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !matches!(step.name(), ATOM_METADATA | TIMELINE_ITEMS))
@@ -811,7 +815,7 @@ mod tests {
     }
 
     fn turn_payload(state: TurnState) -> Result<Vec<u8>> {
-        let item = ThreadItem::new(
+        let item = ExecutionItem::new(
             "turn-receipt".into(),
             THREAD.into(),
             "turn".into(),
@@ -819,7 +823,7 @@ mod tests {
             1,
             1,
             10,
-            ThreadItemState::Turn(ThreadTurnItem::new(state)),
+            ExecutionShape::Turn(ThreadTurnItem::new(state)),
         );
         Ok(
             crate::studio::runtime::chat_item::completion_draft(&item, 5, "fixture")?
@@ -936,8 +940,8 @@ mod tests {
         };
         db.query_all_raw(statement(
             &format!(
-                "SELECT json_array(owner_key,content_key,hex(payload)) AS original FROM {manifests}
-         UNION ALL SELECT json_array(owner_key,content_key,byte_offset,hex(data)) FROM {chunks}
+                "SELECT json_array(owner_key,content_key,hex(payload)) AS original FROM {manifests} WHERE owner_key NOT GLOB '23:legacy-execution-record*'
+         UNION ALL SELECT json_array(owner_key,content_key,byte_offset,hex(data)) FROM {chunks} WHERE owner_key NOT GLOB '23:legacy-execution-record*'
          UNION ALL SELECT json_array(collection,position,entry_id,hex(payload)) FROM {entries}
          ORDER BY original"
             ),
@@ -1245,15 +1249,11 @@ mod tests {
             .await?
             .unwrap();
         assert_eq!(row.try_get::<Vec<u8>>("", "data")?, body);
-        assert_eq!(
-            db.query_one_raw(statement(
-                "SELECT payload FROM history_items WHERE item_id='diagnostic'",
-                vec![]
-            ))
-            .await?
-            .unwrap()
-            .try_get::<String>("", "payload")?,
-            "{\"diagnostic\":\"original\"}"
+        let old =
+            super::super::legacy_execution_item::fixture_facts(&db, &["payload"], true).await?;
+        assert!(
+            old.iter()
+                .any(|value| value == "{\"diagnostic\":\"original\"}")
         );
         assert_eq!(
             db.query_one_raw(statement(
@@ -1466,6 +1466,7 @@ mod background_tests {
                         | IMMUTABLE_COMPLETION_RUNS
                         | WORK_SNAPSHOTS
                         | DISPLAY_BLOCK_ORDER
+                        | EXECUTION_FACTS
                 )
             })
             .filter(|step| !is_lifecycle_migration(step.name()))
@@ -1514,7 +1515,7 @@ mod background_tests {
                 .upsert_item(
                     &db,
                     7,
-                    ThreadItem::new(
+                    ExecutionItem::new(
                         item.clone(),
                         THREAD.into(),
                         "synthetic-turn".into(),
@@ -1522,7 +1523,7 @@ mod background_tests {
                         1,
                         10,
                         12,
-                        ThreadItemState::Tool(ThreadToolItem::new(
+                        ExecutionShape::Tool(ThreadToolItem::new(
                             ThreadToolInvocation::new(CALL.into(), "exec".into(), "{}".into()),
                             ThreadToolState::Succeeded(SucceededThreadTool::new(
                                 12,
@@ -1594,14 +1595,21 @@ mod background_tests {
     async fn originals(db: &DatabaseConnection, completions: bool) -> Result<Vec<String>> {
         let mut values = Vec::new();
         for sql in [
-            "SELECT json_array(ordinal,item_id,payload,last_write_seq) AS original FROM history_items ORDER BY ordinal",
-            "SELECT json_array(call_id,revision,task_payload,delivery_payload,last_write_seq) AS original FROM history_tool_tasks ORDER BY call_id",
+            "SELECT json_array(call_id,revision,json_remove(task_payload,'$.invocation'),delivery_payload,last_write_seq) AS original FROM history_tool_tasks ORDER BY call_id",
             "SELECT json_array(message_id,item_id,sequence,digest,last_write_seq) AS original FROM history_message_identities ORDER BY message_id",
         ] {
             for row in db.query_all_raw(statement(sql, vec![])).await? {
                 values.push(row.try_get("", "original")?);
             }
         }
+        values.extend(
+            super::super::legacy_execution_item::fixture_facts(
+                db,
+                &["ordinal", "item_id", "payload", "last_write_seq"],
+                false,
+            )
+            .await?,
+        );
         if completions {
             // query_class is derived and the published 13→14 step legitimately reclassifies it.
             for row in db.query_all_raw(statement(
@@ -1661,15 +1669,7 @@ mod background_tests {
                 assert_eq!(handoff.delivery, ChatDeliveryKind::BackgroundHandoff);
             }
             assert_eq!(originals(&db, format >= 13).await?, before);
-            let run = db.query_one_raw(statement(
-            "SELECT seq,display_run_start,display_run_ordinal FROM conversation_items WHERE item_id=?",
-            vec![order::tool_id(CALL).into()],
-        )).await?.context("background completion")?;
-            assert_eq!(
-                run.try_get::<i64>("", "display_run_start")?,
-                run.try_get::<i64>("", "seq")?
-            );
-            assert_eq!(run.try_get::<i64>("", "display_run_ordinal")?, 1);
+            assert!(db.query_one_raw(statement("SELECT 1 FROM pragma_table_info('conversation_items') WHERE name LIKE 'display_run_%'",vec![])).await?.is_none());
             db.close().await?;
         }
         Ok(())

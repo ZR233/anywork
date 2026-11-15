@@ -81,7 +81,7 @@ void main() {
                 atom: completionEntry(
                   'member',
                   1,
-                  presentation: MainPresentation.single,
+                  isText: true,
                   text: '已完成成员仍在组内',
                 ).atom,
                 contentSource: CompletedOriginal(completionId: 'member'),

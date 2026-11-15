@@ -49,7 +49,8 @@ pub(super) struct ReplyWatch {
 
 impl ReplyWatch {
     pub(super) async fn open(runtime: &StudioRuntime, thread_id: &str) -> Result<Self, FinalError> {
-        let (feed, state_feed) = open_pair(runtime, thread_id, ChatScope::Main).await?;
+        let (feed, state_feed) =
+            open_pair(runtime, thread_id, ChatScope::conversation(None)).await?;
         // No await after both acquisitions: the caller immediately owns every close duty.
         Ok(Self {
             feed,
@@ -162,13 +163,13 @@ impl ReplyWatch {
     }
 
     fn scope(&self) -> Result<ChatScope, FinalError> {
-        self.turn_id.as_ref().map_or(Ok(ChatScope::Main), |turn| {
-            let parent = pl_core::chat::ChatKey::new("turn", turn)
-                .map_err(|error| gap(&format!("invalid reply Turn parent: {error}")))?;
-            Ok(ChatScope::Children {
-                parent_id: parent.as_str().to_owned(),
+        self.turn_id
+            .as_ref()
+            .map_or(Ok(ChatScope::conversation(None)), |turn| {
+                let parent = pl_core::chat::ChatKey::new("turn", turn)
+                    .map_err(|error| gap(&format!("invalid reply Turn parent: {error}")))?;
+                Ok(ChatScope::conversation(Some(parent.as_str().to_owned())))
             })
-        })
     }
 
     /// Both futures remain task-owned; observation failure cancels new platform
@@ -552,8 +553,8 @@ mod tests {
     use crate::bots::commands::archive_tests::Fixture;
     use pl_protocol::{
         ActivitySnapshot, ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle,
-        ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, CompletedEntry, CompletionRunPosition,
-        ContentOwner, ContentRef, ContentTarget, MainPresentation, PayloadData, ThreadTextChannel,
+        ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, CompletedEntry, ContentOwner,
+        ContentRef, ContentTarget, PayloadData, ThreadTextChannel,
     };
     use std::time::Duration;
 
@@ -591,11 +592,7 @@ mod tests {
         CompletedEntry {
             record_id: id.into(),
             completion_seq: 1,
-            run: Some(CompletionRunPosition {
-                start_seq: 1,
-                ordinal: 1,
-            }),
-            main_presentation: MainPresentation::Single,
+
             atom: ChatAtom {
                 id: id.into(),
                 completion_item_id: Some(id.into()),
@@ -652,10 +649,6 @@ mod tests {
             let seq = from + index as u64 + 1;
             entry.completion_seq = seq;
             entry.atom.completion_seq = Some(seq);
-            entry.run = Some(CompletionRunPosition {
-                start_seq: seq,
-                ordinal: 1,
-            });
         }
         ChatBatch {
             placement,
@@ -936,7 +929,7 @@ mod tests {
             env.runtime.synchronize_thread_observation(&id).await?;
             let mut first = env
                 .runtime
-                .open_conversation_feed(&id, ChatScope::Main, demand())
+                .open_conversation_feed(&id, ChatScope::conversation(None), demand())
                 .await?;
             let Some(ConversationEvent::Chat { batch: first_page }) = first.recv().await? else {
                 anyhow::bail!("missing accepted input page");
@@ -965,7 +958,7 @@ mod tests {
             env.runtime.synchronize_thread_observation(&id).await?;
             let mut final_feed = env
                 .runtime
-                .open_conversation_feed(&id, ChatScope::Main, demand())
+                .open_conversation_feed(&id, ChatScope::conversation(None), demand())
                 .await?;
             let Some(ConversationEvent::Chat { batch: final_page }) = final_feed.recv().await?
             else {

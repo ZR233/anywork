@@ -177,6 +177,10 @@ pub(super) async fn validate(db: &impl ConnectionTrait) -> Result<()> {
         "display block order format is not current"
     );
     immutable_completion_runs::validate_preserved(db).await?;
+    validate_display(db).await
+}
+
+pub(super) async fn validate_display(db: &impl ConnectionTrait) -> Result<()> {
     super::validate_keys(
         db,
         "conversation_display_blocks",
@@ -478,7 +482,7 @@ mod tests {
             .await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        validate(&db).await?;
+        super::super::execution_facts::validate(&db).await?;
         let heads = conversation::display::block_page(&db, 0, 4, 10, true).await?;
         assert_eq!(
             heads

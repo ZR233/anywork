@@ -290,7 +290,7 @@ void main() {
     }
   }
 
-  for (final version in <int?>[null, 0, 2]) {
+  for (final version in <int?>[null, 0, 1, completedHistoryVersion + 1]) {
     test(
       'missing or unsupported completedHistoryVersion=$version fails without decoder fallback or retry',
       () async {

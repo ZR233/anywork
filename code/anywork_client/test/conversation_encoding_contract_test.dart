@@ -63,15 +63,11 @@ void main() {
     final entry = CompletedEntry(
       recordId: '实际载荷',
       completionSeq: 7,
-      run: const CompletionRunPosition(startSeq: 1, ordinal: 7),
-      mainPresentation: MainPresentation.foregroundWork,
       atom: value,
     );
     expect(completedEntryToJson(entry), {
       'recordId': '实际载荷',
       'completionSeq': 7,
-      'run': {'startSeq': 1, 'ordinal': 7},
-      'mainPresentation': 'foregroundWork',
       'atom': inlineEntry['value'],
     });
   });

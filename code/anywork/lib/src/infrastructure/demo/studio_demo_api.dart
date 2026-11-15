@@ -6029,7 +6029,6 @@ class DemoStudioTransport extends StudioTransport
         updatedAt: now,
         content: (
           kind: _DemoContentKind.completed,
-          mainPresentation: MainPresentation.single,
           contentPresent: null,
           textChannel: null,
           descriptor: {

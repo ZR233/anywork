@@ -52,7 +52,7 @@ Future<void> _baseline(ConversationFixture fixture, ThreadBusinessRefs refs) =>
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(refs),
         ),
       ),
@@ -352,7 +352,7 @@ void main() {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(_refs()).copyWith(interactions: [pending]),
         ),
       ),
@@ -412,7 +412,7 @@ void main() {
           ConversationStateEvent(
             frame: ThreadSnapshotFrame(
               schemaVersion: version,
-              completedHistoryVersion: 1,
+              completedHistoryVersion: completedHistoryVersion,
               workspace: _workspace(_refs()),
             ),
           ),

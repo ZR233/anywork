@@ -27,14 +27,14 @@ pub use manifest::{
     write_run_manifest,
 };
 pub use types::{
-    BuildInfoV1, ChatItemHeaderExportV1, ChatReadHintExportV1, ChatRunPositionExportV1,
-    CompletionCursorV1, ConfigInputEntryV1, EVENTS_SCHEMA_VERSION, EventBodyV1, EventSourceV1,
-    EventV1, ExecutionErrorStage, ExecutionErrorV1, ExecutionOutcome, ExportSchemaV1,
-    ExportedBlobV1, ExportedContentV1, ModelUsageExportV1, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV1, RunExportOptions, RunExportReport,
-    RunInvocationV1, RunManifestV1, SealedMemberCutV1, SkillSearchManifestV1, ThreadUsageExportV1,
-    TimingReportV1, TraceSummaryV1, UsageCoverage, UsageExportV1, UsageKnownTotalsV1,
-    UsageMetricKey, UsageTotalsV1, format_utc_rfc3339,
+    BuildInfoV2, ChatItemHeaderExportV2, CompletionCursorV2, ConfigInputEntryV2,
+    EVENTS_SCHEMA_VERSION, EventBodyV2, EventSourceV2, EventV2, ExecutionErrorStage,
+    ExecutionErrorV2, ExecutionLifecycleExportV2, ExecutionOutcome, ExportSchemaV2, ExportedBlobV2,
+    ExportedContentV2, ModelUsageExportV2, RESULT_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION,
+    ResultOutcome, ResultV2, RunExportOptions, RunExportReport, RunInvocationV2, RunManifestV2,
+    SealedMemberCutV2, SkillSearchManifestV2, ThreadUsageExportV2, TimingReportV2, TraceSummaryV2,
+    UsageCoverage, UsageExportV2, UsageKnownTotalsV2, UsageMetricKey, UsageTotalsV2,
+    format_utc_rfc3339,
 };
 use writer::{
     BoundedExportQueue, ExportCommand, FinalizeWriterOutcome, MemberFinalCut, MemberSnapshot,
@@ -90,7 +90,7 @@ pub(in crate::studio) struct RunExportCoordinator {
     run_id: String,
     started_at: String,
     output_dir: PathBuf,
-    manifest: RunManifestV1,
+    manifest: RunManifestV2,
     manifest_sha256: String,
     queue: Arc<BoundedExportQueue>,
     shared_members: Arc<Mutex<SharedMemberState>>,
@@ -168,7 +168,7 @@ impl RunExporter {
     }
 
     /// Returns the written startup manifest (`run.json`).
-    pub fn manifest(&self) -> &RunManifestV1 {
+    pub fn manifest(&self) -> &RunManifestV2 {
         &self.inner.manifest
     }
 
@@ -199,7 +199,7 @@ impl RunExporter {
     }
 
     /// Atomically writes `result.json` into `<output-dir>/result.json`.
-    pub fn write_result(&self, result: &ResultV1) -> Result<()> {
+    pub fn write_result(&self, result: &ResultV2) -> Result<()> {
         write_result_atomic(&self.inner.output_dir, result)
     }
 }
@@ -281,7 +281,7 @@ impl RunExportCoordinator {
                     && existing.session.epoch() == reg.session.epoch()
                     && existing.initial_completion_seq == initial_head_seq;
                 if !matches {
-                    self.queue.fail_permanently(ExecutionErrorV1 {
+                    self.queue.fail_permanently(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "memberIdentityConflict".to_string(),
                         message: format!(
@@ -374,7 +374,7 @@ impl RunExportCoordinator {
         let report = match catalog.discovery_report() {
             Ok(report) => report,
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV1 {
+                self.queue.fail_permanently(ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Export,
                     code: "skillsDiscoveryReportFailed".to_string(),
                     message: format!(
@@ -392,7 +392,7 @@ impl RunExportCoordinator {
                 .saturating_add(thread_id.len())
                 .saturating_add(std::mem::size_of::<ExportCommand>()),
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV1 {
+                self.queue.fail_permanently(ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Export,
                     code: "skillsDiscoveryReportFailed".to_string(),
                     message: error.to_string(),
@@ -433,6 +433,7 @@ impl RunExportCoordinator {
         &self,
         thread_id: &str,
         accounting: &PreparedAccounting,
+        lifecycle: &Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
         latest_usage: &UsageSummary,
         session: &Session,
         database_id: Option<&str>,
@@ -450,7 +451,7 @@ impl RunExportCoordinator {
                 return;
             }
         }
-        let effect_fp = accounting.export_fingerprint();
+        let effect_fp = types::handoff_fingerprint(accounting, lifecycle);
         {
             let mut guard = self
                 .state
@@ -465,7 +466,7 @@ impl RunExportCoordinator {
                     return;
                 }
                 drop(guard);
-                self.queue.fail_permanently(ExecutionErrorV1 {
+                self.queue.fail_permanently(ExecutionErrorV2 {
                     stage: ExecutionErrorStage::Export,
                     code: "effectRedeliveryConflict".to_string(),
                     message: format!(
@@ -496,11 +497,18 @@ impl RunExportCoordinator {
         }
 
         let metadata_bytes = estimate_handoff_metadata_bytes(accounting)
-            .saturating_add(database_id.map_or(0, str::len));
+            .saturating_add(database_id.map_or(0, str::len))
+            .saturating_add(
+                lifecycle
+                    .iter()
+                    .map(|fact| usize::try_from(fact.retained_bytes()).unwrap_or(usize::MAX))
+                    .fold(0usize, usize::saturating_add),
+            );
         let cmd = ExportCommand::LiveHandoff {
             thread_id: thread_id.to_string(),
             effect_seq,
             accounting: accounting.clone(),
+            lifecycle: lifecycle.clone(),
             session: session.clone(),
             database_id: database_id.map(str::to_owned),
         };
@@ -528,7 +536,7 @@ impl RunExportCoordinator {
             return;
         };
         if member.session.epoch() != cut.session.epoch() {
-            self.queue.fail_permanently(ExecutionErrorV1 {
+            self.queue.fail_permanently(ExecutionErrorV2 {
                 stage: ExecutionErrorStage::Export,
                 code: "completionEpochConflict".into(),
                 message: format!(
@@ -576,7 +584,7 @@ impl RunExportCoordinator {
             tokio::select! {
                 () = cancel.cancelled() => {}
                 () = tokio::time::sleep_until(deadline) => {
-                    queue.close_admission(ExecutionErrorV1 {
+                    queue.close_admission(ExecutionErrorV2 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportShutdownDeadline".to_string(),
                         message: "shared shutdown deadline expired while exporter queue had pending backpressure".to_string(),
@@ -602,7 +610,7 @@ impl RunExportCoordinator {
 
     /// Closes admission if producer drain itself failed/timed out so no dangling awaits remain.
     pub fn close_admission_on_producer_timeout(&self) {
-        self.queue.close_admission(ExecutionErrorV1 {
+        self.queue.close_admission(ExecutionErrorV2 {
             stage: ExecutionErrorStage::Export,
             code: "producerDrainIncomplete".to_string(),
             message: "producer drain did not acknowledge before export finalization".to_string(),
@@ -643,7 +651,7 @@ impl RunExportCoordinator {
                     trace_complete: false,
                     usage_complete: false,
                     cost_complete: false,
-                    trace: TraceSummaryV1 {
+                    trace: TraceSummaryV2 {
                         events_path: "events.jsonl".to_string(),
                         events_sha256: None,
                         event_count: 0,

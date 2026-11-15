@@ -536,7 +536,7 @@ async fn native_signals_cancel_the_same_runtime_and_release_its_lock() -> Result
 #[tokio::test]
 async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Result<()> {
     use pl_studio_runtime::{
-        EventBodyV1, EventV1, ExecutionOutcome, ResultOutcome, ResultV1, RunManifestV1,
+        EventBodyV2, EventV2, ExecutionOutcome, ResultOutcome, ResultV2, RunManifestV2,
     };
 
     const CHILD_INPUT: &str = "child-export-input";
@@ -731,7 +731,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     }
 
     let run_bytes = std::fs::read(export_dir.join("run.json"))?;
-    let manifest: RunManifestV1 = serde_json::from_slice(&run_bytes)?;
+    let manifest: RunManifestV2 = serde_json::from_slice(&run_bytes)?;
     let manifest_sha = pl_studio_runtime::export_sha256_hex(&run_bytes);
     let manifest_text = String::from_utf8(run_bytes)?;
     assert!(!manifest_text.contains("synthetic-secret-should-not-leak"));
@@ -742,12 +742,12 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             .all(|entry| entry.redacted_summary.is_none())
     );
     uuid::Uuid::parse_str(&manifest.run_id)?;
-    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.schema_version, 2);
 
     let events_bytes = std::fs::read(export_dir.join("events.jsonl"))?;
     let events_sha = pl_studio_runtime::export_sha256_hex(&events_bytes);
     let events_text = String::from_utf8(events_bytes)?;
-    let events: Vec<EventV1> = events_text
+    let events: Vec<EventV2> = events_text
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<Vec<_>, _>>()?;
@@ -766,7 +766,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let (child_thread, parent_thread) = events
         .iter()
         .find_map(|event| match &event.body {
-            EventBodyV1::AgentRegistered {
+            EventBodyV2::AgentRegistered {
                 thread_id,
                 parent_thread_id: Some(parent_thread),
                 parent_agent_id: Some(_),
@@ -781,12 +781,12 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
         assert_eq!(ev.event_seq, idx as u64 + 1);
         assert_eq!(ev.run_id, manifest.run_id);
         match &ev.body {
-            EventBodyV1::RunStarted {
+            EventBodyV2::RunStarted {
                 manifest_sha256, ..
             } => {
                 assert_eq!(manifest_sha256, &manifest_sha);
             }
-            EventBodyV1::AgentRegistered {
+            EventBodyV2::AgentRegistered {
                 parent_agent_id,
                 spawn_tool_call_id,
                 ..
@@ -797,7 +797,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                     seen_child_spawn = true;
                 }
             }
-            EventBodyV1::SkillsDiscovered {
+            EventBodyV2::SkillsDiscovered {
                 winners, complete, ..
             } => {
                 assert!(*complete);
@@ -805,8 +805,8 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                     seen_skills = true;
                 }
             }
-            EventBodyV1::InferenceFinished { .. } => seen_inference += 1,
-            EventBodyV1::Completion {
+            EventBodyV2::InferenceFinished { .. } => seen_inference += 1,
+            EventBodyV2::Completion {
                 atom,
                 payload,
                 contents,
@@ -858,8 +858,25 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                     }
                 }
             }
-            EventBodyV1::ThreadSealed { .. } => sealed_threads += 1,
-            EventBodyV1::RunSealed {
+            EventBodyV2::ExecutionLifecycle { facts } => {
+                assert!(!facts.is_empty());
+                for fact in facts {
+                    assert!(
+                        fact.last_write_seq == ev.source.effect_seq.context("lifecycle effect")?
+                    );
+                    assert!(
+                        fact.started
+                            .is_none_or(|at| at.effect_seq <= fact.last_write_seq)
+                    );
+                    assert!(
+                        fact.ended
+                            .is_none_or(|at| at.effect_seq <= fact.last_write_seq)
+                    );
+                    assert!(fact.completion_item_id.is_none() || fact.outcome.is_some());
+                }
+            }
+            EventBodyV2::ThreadSealed { .. } => sealed_threads += 1,
+            EventBodyV2::RunSealed {
                 reconciled,
                 trace_complete,
                 members,
@@ -888,7 +905,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     assert!(sealed_threads >= 2);
     assert!(seen_run_sealed);
 
-    let result_doc: ResultV1 =
+    let result_doc: ResultV2 =
         serde_json::from_slice(&std::fs::read(export_dir.join("result.json"))?)?;
     assert_eq!(result_doc.outcome, ResultOutcome::Completed);
     assert_eq!(
@@ -918,7 +935,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
 
 #[tokio::test]
 async fn export_keeps_exit_zero_when_provider_omits_usage_or_pricing() -> Result<()> {
-    use pl_studio_runtime::{ExecutionOutcome, ResultOutcome, ResultV1};
+    use pl_studio_runtime::{ExecutionOutcome, ResultOutcome, ResultV2};
 
     let no_usage_sse = Reply::Sse(vec![
         serde_json::json!({"type":"response.created","response":{"id":"no-usage","model":MODEL}}),
@@ -950,7 +967,7 @@ async fn export_keeps_exit_zero_when_provider_omits_usage_or_pricing() -> Result
     );
     assert_eq!(String::from_utf8(res.stdout)?, "unreported ok\n");
 
-    let result_doc: ResultV1 =
+    let result_doc: ResultV2 =
         serde_json::from_slice(&std::fs::read(export_dir.join("result.json"))?)?;
     assert_eq!(result_doc.outcome, ResultOutcome::Completed);
     assert_eq!(
@@ -1027,7 +1044,7 @@ async fn export_preflight_rejects_bad_output_dir_without_modifying_files() -> Re
 #[cfg(unix)]
 #[tokio::test]
 async fn export_records_startup_failure_and_sigterm_partial_run() -> Result<()> {
-    use pl_studio_runtime::{ResultOutcome, ResultV1};
+    use pl_studio_runtime::{ResultOutcome, ResultV2};
 
     // 1. Corrupt config.toml triggers StartupFailed(2) while still writing run.json + result.json.
     let server = FixtureServer::start(Vec::new()).await?;
@@ -1045,7 +1062,7 @@ async fn export_records_startup_failure_and_sigterm_partial_run() -> Result<()> 
     .await?;
     assert_eq!(r_bad.status.code(), Some(2));
     assert!(out_bad.join("run.json").exists());
-    let res_bad: ResultV1 = serde_json::from_slice(&std::fs::read(out_bad.join("result.json"))?)?;
+    let res_bad: ResultV2 = serde_json::from_slice(&std::fs::read(out_bad.join("result.json"))?)?;
     assert_eq!(res_bad.outcome, ResultOutcome::StartupFailed);
     assert_eq!(res_bad.exit_code, 2);
     assert!(!res_bad.trace_complete);
@@ -1084,7 +1101,7 @@ async fn export_records_startup_failure_and_sigterm_partial_run() -> Result<()> 
     );
     assert!(out_sig.join("run.json").exists());
     assert!(out_sig.join("events.jsonl").exists());
-    let res_sig: ResultV1 = serde_json::from_slice(&std::fs::read(out_sig.join("result.json"))?)?;
+    let res_sig: ResultV2 = serde_json::from_slice(&std::fs::read(out_sig.join("result.json"))?)?;
     assert_eq!(res_sig.outcome, ResultOutcome::Cancelled);
     assert_eq!(res_sig.exit_code, 143);
     assert_eq!(

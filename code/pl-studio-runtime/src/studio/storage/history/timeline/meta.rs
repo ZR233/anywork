@@ -11,12 +11,13 @@ use super::super::descriptor::{
     TimelineUserInputState,
 };
 use super::super::frozen::ChatItem;
+use crate::{ExecutionItem, ExecutionShape};
 use anyhow::Result;
 use pl_core::chat::ChatError;
 use pl_protocol::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ThreadAgentState, ThreadContentLifecycle,
-    ThreadInferenceState, ThreadItem, ThreadItemState, ThreadToolOutput, ThreadToolState,
-    ThreadToolUserInput, ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
+    ThreadInferenceState, ThreadToolOutput, ThreadToolState, ThreadToolUserInput,
+    ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,9 +39,9 @@ pub(in crate::studio::storage::history) struct PlanCompletion {
 
 /// Extract only facts belonging to this completed interaction, never the current Plan.
 pub(in crate::studio::storage::history) fn plan_completion(
-    item: &ThreadItem,
+    item: &ExecutionItem,
 ) -> Result<Option<PlanCompletion>> {
-    let ThreadItemState::Tool(tool) = item.state() else {
+    let ExecutionShape::Tool(tool) = item.state() else {
         return Ok(None);
     };
     if tool.invocation().name() != TOOL_PLAN_SUBMIT {
@@ -137,7 +138,7 @@ pub(in crate::studio::storage::history) struct TimelineMeta {
 }
 
 impl TimelineMeta {
-    pub(crate) fn from_item(item: &ThreadItem) -> Result<Self> {
+    pub(crate) fn from_item(item: &ExecutionItem) -> Result<Self> {
         validate_counts(item.state())?;
         Ok(Self {
             id: item.id.clone(),
@@ -174,16 +175,16 @@ pub(crate) fn count(value: usize) -> Result<u32> {
 
 /// 所有带位置的字段都必须能由 wire 的 u32 无损寻址。
 /// 同时验证问答关联，避免一个未关联答案在拆分时被静默丢弃。
-pub(crate) fn validate_counts(state: &ThreadItemState) -> Result<()> {
+pub(crate) fn validate_counts(state: &ExecutionShape) -> Result<()> {
     match state {
-        ThreadItemState::Thinking(thinking) => {
+        ExecutionShape::Thinking(thinking) => {
             count(thinking.summary().len())?;
             count(thinking.content().len())?;
         }
-        ThreadItemState::Raw(raw) => {
+        ExecutionShape::Raw(raw) => {
             count(raw.payloads.len())?;
         }
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             if let Some(input) = tool.user_input() {
                 count(input.questions().len())?;
                 for question in input.questions() {
@@ -211,19 +212,19 @@ pub(crate) fn validate_counts(state: &ThreadItemState) -> Result<()> {
     Ok(())
 }
 
-fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescriptor> {
+fn descriptor(state: &ExecutionShape, thread_id: &str) -> Result<TimelineDescriptor> {
     Ok(match state {
-        ThreadItemState::Text(text) => TimelineDescriptor::Text(TimelineTextDescriptor {
+        ExecutionShape::Text(text) => TimelineDescriptor::Text(TimelineTextDescriptor {
             channel: text.channel(),
             attachments: text.attachments().to_vec(),
             outcome: content_outcome(text.lifecycle())?,
         }),
-        ThreadItemState::Thinking(thinking) => {
+        ExecutionShape::Thinking(thinking) => {
             TimelineDescriptor::Thinking(TimelineThinkingDescriptor {
                 outcome: content_outcome(thinking.lifecycle())?,
             })
         }
-        ThreadItemState::Raw(raw) => TimelineDescriptor::Raw(TimelineRawDescriptor {
+        ExecutionShape::Raw(raw) => TimelineDescriptor::Raw(TimelineRawDescriptor {
             origin: raw.origin,
             payloads: raw
                 .payloads
@@ -236,7 +237,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescri
             notice: raw.notice.clone(),
             recorded_at: raw.recorded_at,
         }),
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             let invocation = tool.invocation();
             TimelineDescriptor::Tool(TimelineToolDescriptor {
                 invocation: TimelineToolInvocation {
@@ -255,7 +256,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescri
                 wait: tool.wait().cloned().map(Box::new),
             })
         }
-        ThreadItemState::Agent(value) => TimelineDescriptor::Agent(TimelineAgentDescriptor {
+        ExecutionShape::Agent(value) => TimelineDescriptor::Agent(TimelineAgentDescriptor {
             identity: value.identity().clone(),
             outcome: match value.state() {
                 ThreadAgentState::Succeeded(v) => TimelineAgentOutcome::Succeeded(v.clone()),
@@ -265,7 +266,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescri
                 _ => return Err(nonterminal()),
             },
         }),
-        ThreadItemState::Turn(value) => TimelineDescriptor::Turn(TimelineTurnDescriptor {
+        ExecutionShape::Turn(value) => TimelineDescriptor::Turn(TimelineTurnDescriptor {
             input_id: value.input_id().map(str::to_owned),
             outcome: match value.state() {
                 TurnState::Completed(v) => TimelineTurnOutcome::Completed(v.clone()),
@@ -275,7 +276,7 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescri
                 _ => return Err(nonterminal()),
             },
         }),
-        ThreadItemState::Inference(value) => {
+        ExecutionShape::Inference(value) => {
             TimelineDescriptor::Inference(TimelineInferenceDescriptor {
                 inference_id: value.inference_id().to_owned(),
                 model: value.model().to_owned(),
@@ -291,9 +292,9 @@ fn descriptor(state: &ThreadItemState, thread_id: &str) -> Result<TimelineDescri
                 },
             })
         }
-        ThreadItemState::Skill(value) => TimelineDescriptor::Skill(value.clone()),
-        ThreadItemState::File(value) => TimelineDescriptor::File(value.clone()),
-        ThreadItemState::ContextCompaction(value) => {
+        ExecutionShape::Skill(value) => TimelineDescriptor::Skill(value.clone()),
+        ExecutionShape::File(value) => TimelineDescriptor::File(value.clone()),
+        ExecutionShape::ContextCompaction(value) => {
             TimelineDescriptor::ContextCompaction(value.clone())
         }
     })

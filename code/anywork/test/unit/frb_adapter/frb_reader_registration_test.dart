@@ -72,7 +72,7 @@ void main() {
       await expectLater(
         transport.openConversationFeed(
           'missing-$index',
-          scope: const MainChatScope(),
+          scope: const ChatScope.conversation(),
           demand: chatDemand,
         ),
         throwsA(_originalFailure),
@@ -97,7 +97,7 @@ void main() {
     };
     final opening = transport.openConversationFeed(
       'late-missing',
-      scope: const MainChatScope(),
+      scope: const ChatScope.conversation(),
       demand: chatDemand,
     );
     final rejected = expectLater(opening, throwsA(_originalFailure));

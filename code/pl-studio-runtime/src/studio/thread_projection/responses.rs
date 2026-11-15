@@ -1,5 +1,6 @@
 //! Saved model output projection, without rerunning an adapter or advancing a session.
 use super::{ProjectionError, content::text_content};
+use crate::{ExecutionItem, ExecutionShape};
 use pl_core::{
     context::ContextContent,
     model::{
@@ -12,10 +13,7 @@ use pl_model::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind,
 };
-use pl_protocol::{
-    ThreadContentLifecycle, ThreadItem, ThreadItemState, ThreadTextChannel, ThreadTextItem,
-    ThreadThinkingItem,
-};
+use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Terminal streaming identities an attempt actually started.
@@ -85,8 +83,8 @@ pub(super) fn finalize_missing_presentation(
     revision: u64,
     updated_at: i64,
     finalize: &BTreeSet<String>,
-    existing: &BTreeMap<String, ThreadItem>,
-    items: &mut Vec<ThreadItem>,
+    existing: &BTreeMap<String, ExecutionItem>,
+    items: &mut Vec<ExecutionItem>,
 ) -> Result<(), ProjectionError> {
     let lifecycle = match &attempt.outcome {
         AttemptOutcome::Running => return Ok(()),
@@ -126,14 +124,14 @@ pub(super) fn finalize_missing_presentation(
             continue;
         }
         let state = match previous.state() {
-            ThreadItemState::Text(text) => ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
                 text.channel(),
                 text.text().to_owned(),
                 text.attachments().to_vec(),
                 lifecycle.clone(),
             )),
-            ThreadItemState::Thinking(thinking) => {
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(thinking) => {
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     thinking.summary().to_vec(),
                     thinking.content().to_vec(),
                     lifecycle.clone(),
@@ -145,7 +143,7 @@ pub(super) fn finalize_missing_presentation(
                 ));
             }
         };
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             id.clone(),
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -169,7 +167,7 @@ pub(super) fn project_attempt(
     revision: u64,
     updated_at: i64,
     finalize: &BTreeSet<String>,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let mut items = vec![inference_item(
         thread_id, attempt, created_at, updated_at, revision,
     )?];
@@ -215,7 +213,7 @@ pub(super) fn project_attempt(
                 });
             }
         }
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             super::order::response_id(&attempt.attempt_id, "text"),
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -223,7 +221,7 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+            ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
                 payloads, notice, updated_at,
             )),
         ));
@@ -330,7 +328,7 @@ pub(super) fn project_attempt(
         // The legacy preview has only two aggregate identities. When one was already started,
         // finalize it without repeating the provider's aggregate text or reasoning.
         if terminates_live_channels && finalize.contains(&reasoning_id) {
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 reasoning_id.clone(),
                 thread_id.into(),
                 attempt.turn_id.clone(),
@@ -338,7 +336,7 @@ pub(super) fn project_attempt(
                 revision,
                 created_at,
                 updated_at,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     Vec::new(),
                     lifecycle.clone(),
@@ -346,7 +344,7 @@ pub(super) fn project_attempt(
             ));
         }
         if terminates_live_channels && finalize.contains(&text_id) {
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 text_id.clone(),
                 thread_id.into(),
                 attempt.turn_id.clone(),
@@ -354,7 +352,7 @@ pub(super) fn project_attempt(
                 revision,
                 created_at,
                 updated_at,
-                ThreadItemState::Text(ThreadTextItem::new(
+                ExecutionShape::Text(ThreadTextItem::new(
                     ThreadTextChannel::Commentary,
                     String::new(),
                     Vec::new(),
@@ -383,7 +381,7 @@ pub(super) fn project_attempt(
         ));
     }
     if let Some(reasoning) = response.reasoning.filter(|text| !text.is_empty()) {
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             reasoning_id.clone(),
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -391,14 +389,14 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 Vec::new(),
                 vec![reasoning],
                 lifecycle.clone(),
             )),
         ));
     } else if terminates_live_channels && finalize.contains(&reasoning_id) {
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             reasoning_id.clone(),
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -406,7 +404,7 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 Vec::new(),
                 Vec::new(),
                 lifecycle.clone(),
@@ -414,7 +412,7 @@ pub(super) fn project_attempt(
         ));
     }
     if !response.text.is_empty() {
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             text_id.clone(),
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -422,7 +420,7 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 response.text,
                 Vec::new(),
@@ -430,7 +428,7 @@ pub(super) fn project_attempt(
             )),
         ));
     } else if terminates_live_channels && finalize.contains(&text_id) {
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             text_id,
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -438,7 +436,7 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 String::new(),
                 Vec::new(),
@@ -467,7 +465,7 @@ pub(super) fn project_model_member(
     member: &pl_core::model::ModelCompletedMember,
     revision: u64,
     committed_at: i64,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let receipt = pl_model::runtime::model_member_receipt(member)
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
     let lifecycle = match receipt.state {
@@ -498,7 +496,7 @@ pub(super) fn project_model_member(
 fn project_presentation_items(
     stamp: PresentationStamp<'_>,
     presentation_items: &[CompletionPresentationItem],
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let PresentationStamp {
         thread_id,
         turn_id,
@@ -546,7 +544,7 @@ fn project_presentation_items(
                         }
                         pl_protocol::trace::TraceTextChannel::Final => ThreadTextChannel::Final,
                     };
-                    ThreadItemState::Text(ThreadTextItem::new(
+                    ExecutionShape::Text(ThreadTextItem::new(
                         channel,
                         part.map_or_else(String::new, |part| part.text.clone()),
                         Vec::new(),
@@ -560,7 +558,7 @@ fn project_presentation_items(
                         kind: CompletionPresentationPartKind::ReasoningText,
                         ..
                     }),
-                ) => ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ) => ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     part.map_or_else(Vec::new, |part| vec![part.text.clone()]),
                     lifecycle.clone(),
@@ -572,7 +570,7 @@ fn project_presentation_items(
                         text,
                         ..
                     }),
-                ) => ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ) => ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![text.clone()],
                     Vec::new(),
                     lifecycle.clone(),
@@ -583,7 +581,7 @@ fn project_presentation_items(
                     ));
                 }
             };
-            projected.push(ThreadItem::new(
+            projected.push(ExecutionItem::new(
                 id,
                 thread_id.into(),
                 turn_id.into(),
@@ -646,7 +644,7 @@ fn project_recovery(
     revision: u64,
     updated_at: i64,
     observation: &pl_core::model::ModelObservation,
-) -> Result<Vec<ThreadItem>, ProjectionError> {
+) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let mut items = Vec::new();
     for failed in &observation.failed {
         let lifecycle = ThreadContentLifecycle::failed(updated_at, failed.message.to_string());
@@ -665,13 +663,13 @@ fn project_recovery(
                 ));
             };
             let state = match shape {
-                ThreadItemState::Text(text) => ThreadItemState::Text(ThreadTextItem::new(
+                ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
                     text.channel(),
                     part.text(),
                     Vec::new(),
                     lifecycle.clone(),
                 )),
-                ThreadItemState::Thinking(_) => {
+                ExecutionShape::Thinking(_) => {
                     let (summary, reasoning) = if matches!(
                         field,
                         crate::studio::runtime::chat_item::BodyKey::Part(
@@ -682,7 +680,7 @@ fn project_recovery(
                     } else {
                         (Vec::new(), vec![part.text()])
                     };
-                    ThreadItemState::Thinking(ThreadThinkingItem::new(
+                    ExecutionShape::Thinking(ThreadThinkingItem::new(
                         summary,
                         reasoning,
                         lifecycle.clone(),
@@ -694,7 +692,7 @@ fn project_recovery(
                     ));
                 }
             };
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 id,
                 thread_id.into(),
                 attempt.turn_id.clone(),
@@ -707,7 +705,7 @@ fn project_recovery(
         }
     }
     for (id, message) in recovery_notices(&attempt.attempt_id, observation) {
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             id,
             thread_id.into(),
             attempt.turn_id.clone(),
@@ -715,7 +713,7 @@ fn project_recovery(
             revision,
             created_at,
             updated_at,
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Commentary,
                 message,
                 Vec::new(),
@@ -732,7 +730,7 @@ fn inference_item(
     created_at: i64,
     updated_at: i64,
     revision: u64,
-) -> Result<ThreadItem, ProjectionError> {
+) -> Result<ExecutionItem, ProjectionError> {
     use pl_protocol::{ThreadInferenceItem, ThreadInferenceState as State};
     let model = attempt
         .request_metadata
@@ -784,7 +782,7 @@ fn inference_item(
             ))
         }
     };
-    Ok(ThreadItem::new(
+    Ok(ExecutionItem::new(
         super::order::response_id(&attempt.attempt_id, "inference"),
         thread_id.into(),
         attempt.turn_id.clone(),
@@ -792,7 +790,7 @@ fn inference_item(
         revision,
         created_at,
         updated_at,
-        ThreadItemState::Inference(ThreadInferenceItem::new(
+        ExecutionShape::Inference(ThreadInferenceItem::new(
             attempt.attempt_id.clone(),
             model,
             state,

@@ -4165,7 +4165,7 @@ mod standalone_tests {
                 let feed = runtime
                     .open_conversation_feed(
                         &root.id,
-                        pl_protocol::ChatScope::Main,
+                        pl_protocol::ChatScope::conversation(None),
                         pl_protocol::ReadDemand {
                             max_items: 16,
                             max_bytes: 65536,

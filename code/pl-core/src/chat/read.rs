@@ -3,27 +3,9 @@
 
 use crate::chat::*;
 use std::{
-    collections::BTreeMap,
     ops::Bound::{Excluded, Included, Unbounded},
     sync::Arc,
 };
-
-/// The host can use the same policy on Records catch-up. Only Single may inline on Main.
-pub(crate) struct RunHeadBudget<'a>(pub &'a dyn ChatBudget);
-impl ChatBudget for RunHeadBudget<'_> {
-    fn fixed_bytes(&self) -> usize {
-        self.0.fixed_bytes()
-    }
-    fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
-        self.0.item_bytes(header, mode)
-    }
-    fn manifest_bytes(&self, descriptor: &ContentDescriptor) -> usize {
-        self.0.manifest_bytes(descriptor)
-    }
-    fn allow_inline(&self, header: &ChatItemHeader) -> bool {
-        header.read_hint == ChatReadHint::Single && self.0.allow_inline(header)
-    }
-}
 
 struct Selection {
     records: Vec<(Arc<ChatItem>, PayloadMode)>,
@@ -60,32 +42,6 @@ fn select_records<'a>(
         selection.remaining.max_items -= 1;
         selection.records.push((record.clone(), mode));
     }
-}
-
-fn select_run_heads(
-    index: Option<&BTreeMap<u64, Arc<ChatItem>>>,
-    lower: u64,
-    mut upper: u64,
-    demand: ReadDemand,
-    budget: &dyn ChatBudget,
-) -> Selection {
-    // Each lookup jumps to start-1. Never enumerate the members of a run, even across D.
-    let records = std::iter::from_fn(|| {
-        if upper <= lower {
-            return None;
-        }
-        let (_, record) = index?
-            .range((Excluded(lower), Included(upper)))
-            .next_back()?;
-        upper = record
-            .header
-            .run
-            .expect("visible index contains runs")
-            .start_seq
-            - 1;
-        Some(record)
-    });
-    select_records(records, demand, budget)
 }
 
 fn project(records: Vec<(Arc<ChatItem>, PayloadMode)>) -> Vec<ChatPageItem> {
@@ -125,14 +81,11 @@ fn validate_history(
     page: &ChatHistoryPage,
     request: &ChatHistoryRequest,
     budget: &dyn ChatBudget,
-    run_heads: bool,
 ) -> Result<ReadDemand, ChatError> {
     let mut remaining = request.demand;
     let mut previous = request.after;
-    let mut previous_run_end = None;
     for item in &page.items {
         let header = &item.header;
-        header.validate_run()?;
         if header.append_seq <= previous
             || header.append_seq > request.ceiling
             || (request.query.is_none() && header.append_seq != previous + 1)
@@ -151,17 +104,6 @@ fn validate_history(
             return Err(ChatError::Conflict(
                 "history inlined a header-only payload".into(),
             ));
-        }
-        if run_heads {
-            let run = header
-                .run
-                .ok_or_else(|| ChatError::Conflict("hidden run head".into()))?;
-            if previous_run_end.is_some_and(|end| run.start_seq <= end) {
-                return Err(ChatError::Conflict(
-                    "overlapping run representatives".into(),
-                ));
-            }
-            previous_run_end = Some(header.append_seq);
         }
         match &item.payload {
             PayloadData::Inline(bytes) if bytes.len() as u64 == header.byte_length => {}
@@ -261,7 +203,6 @@ impl Session {
         let Some(item) = self.0.history.read_item(&history_request, budget).await? else {
             return Ok(None);
         };
-        item.header.validate_run()?;
         if item.header.item_id != history_request.item_id
             || item.header.append_seq > history_request.ceiling
         {
@@ -293,12 +234,6 @@ impl Session {
         budget: &dyn ChatBudget,
     ) -> Result<ChatPage, ChatError> {
         request.query.validate()?;
-        let run_budget = RunHeadBudget(budget);
-        let budget: &dyn ChatBudget = if request.query.selection == ChatSelection::RunHeads {
-            &run_budget
-        } else {
-            budget
-        };
         let demand = reserve(request.demand, budget)?;
         if let Some(before) = &request.before {
             self.validate_epoch(&before.epoch)?;
@@ -342,8 +277,6 @@ impl Session {
                         exhausted: true,
                         candidates: 0,
                     }
-                } else if request.query.selection == ChatSelection::RunHeads {
-                    select_run_heads(records, state.durable, upper, demand, budget)
                 } else {
                     select_records(
                         records.into_iter().flat_map(|index| {
@@ -356,18 +289,9 @@ impl Session {
                         budget,
                     )
                 };
-                let sql_upper = if request.query.selection == ChatSelection::RunHeads {
-                    selection
-                        .records
-                        .last()
-                        .and_then(|(record, _)| record.header.run)
-                        .map_or(upper, |run| upper.min(run.start_seq - 1))
-                } else {
-                    upper
-                };
                 Ok((
                     head,
-                    state.durable.min(head).min(sql_upper),
+                    state.durable.min(head).min(upper),
                     selection,
                     state.head,
                     state.durable,
@@ -405,12 +329,7 @@ impl Session {
                 demand: selected.remaining,
             };
             let page = self.0.history.page(&history_request, budget).await?;
-            validate_history(
-                &page,
-                &history_request,
-                budget,
-                request.query.selection == ChatSelection::RunHeads,
-            )?;
+            validate_history(&page, &history_request, budget)?;
             stored_exhausted = page.exhausted;
             stored_items = page.items;
         }
@@ -430,11 +349,7 @@ impl Session {
                 epoch: self.epoch(),
                 query: request.query.clone(),
                 ceiling: head,
-                append_seq: if request.query.selection == ChatSelection::RunHeads {
-                    item.header.run.expect("validated run head").start_seq
-                } else {
-                    item.header.append_seq
-                },
+                append_seq: item.header.append_seq,
             })
         };
         Ok(ChatPage {
@@ -446,7 +361,6 @@ impl Session {
     }
 
     /// Bounded internal replay from a fixed epoch/position. Filtered sequences may have gaps.
-    /// RunHeads replay delivers EVERY visible completion, never just the newest representative.
     pub async fn completed_after(
         &self,
         after: ChatCompletionCursor,
@@ -459,15 +373,6 @@ impl Session {
         if let Some(query) = &query {
             query.validate()?;
         }
-        let run_budget = RunHeadBudget(budget);
-        let budget: &dyn ChatBudget = if query
-            .as_ref()
-            .is_some_and(|query| query.selection == ChatSelection::RunHeads)
-        {
-            &run_budget
-        } else {
-            budget
-        };
         let demand = reserve(demand, budget)?;
         self.ensure_initialized().await?;
         let (head, durable, captured) = self.with_timeline(|state| {
@@ -505,7 +410,7 @@ impl Session {
                 demand: remaining,
             };
             let stored = self.0.history.page_after(&request, budget).await?;
-            remaining = validate_history(&stored, &request, budget, false)?;
+            remaining = validate_history(&stored, &request, budget)?;
             if !stored.exhausted {
                 if stored.items.is_empty() {
                     return Err(ChatError::InvalidDemand(

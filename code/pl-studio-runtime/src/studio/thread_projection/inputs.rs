@@ -3,11 +3,9 @@ use super::{
     ProjectionError,
     content::{InputView, input_view},
 };
+use crate::{ExecutionItem, ExecutionShape};
 use pl_core::thread::input::InputState;
-use pl_protocol::{
-    MessagePresentation, ThreadContentLifecycle, ThreadItem, ThreadItemState, ThreadTextChannel,
-    ThreadTextItem,
-};
+use pl_protocol::{MessagePresentation, ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 
 pub(super) fn project_input(
     thread_id: &str,
@@ -16,7 +14,7 @@ pub(super) fn project_input(
     created_at: i64,
     revision: u64,
     updated_at: i64,
-) -> Result<Option<ThreadItem>, ProjectionError> {
+) -> Result<Option<ExecutionItem>, ProjectionError> {
     let view = input_view(input);
     if matches!(
         &view,
@@ -40,7 +38,7 @@ pub(super) fn project_input(
         ),
     };
     let state = match view {
-        Ok(InputView::Content(content)) => ThreadItemState::Text(ThreadTextItem::new(
+        Ok(InputView::Content(content)) => ExecutionShape::Text(ThreadTextItem::new(
             ThreadTextChannel::User,
             content.text,
             content.attachments,
@@ -49,16 +47,16 @@ pub(super) fn project_input(
         // A continuation's control input is framework control, not saved user content: it projects as
         // one runtime notice with no payload to expand, so the framework encoding never reaches the
         // transcript and no user question is repeated.
-        Ok(InputView::ControlNotice { notice }) => ThreadItemState::Raw(
+        Ok(InputView::ControlNotice { notice }) => ExecutionShape::Raw(
             pl_protocol::ThreadRawItem::runtime_control(notice, updated_at),
         ),
-        Err(error) => ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+        Err(error) => ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
             vec![super::raw_payload(&input.input.payload)],
             error.to_string(),
             updated_at,
         )),
     };
-    Ok(Some(ThreadItem::new(
+    Ok(Some(ExecutionItem::new(
         input.input.id.clone(),
         thread_id.into(),
         turn_id,

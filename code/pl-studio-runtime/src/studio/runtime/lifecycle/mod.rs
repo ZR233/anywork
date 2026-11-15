@@ -1112,7 +1112,7 @@ mod startup_fault_tests {
         let paths = seed(temp.path()).await?;
         let path = cold_session(&paths)?.history_database();
         let history = HistoryStore::open(&path, "cold").await?;
-        let mut item = pl_protocol::ThreadItem::completed_user_message(
+        let mut item = crate::ExecutionItem::completed_user_message(
             "input-detail-first".into(),
             "cold".into(),
             "".into(),
@@ -1122,7 +1122,9 @@ mod startup_fault_tests {
         );
         item.ordinal = 1;
         item.revision = 1;
-        history.commit(1, std::slice::from_ref(&item), &[]).await?;
+        history
+            .commit_legacy_fixture(1, std::slice::from_ref(&item), &[])
+            .await?;
         drop(history);
         let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
         crate::studio::storage::history::discard_empty_demand_fixture(&db).await?;
@@ -1146,7 +1148,7 @@ mod startup_fault_tests {
             max_bytes: 64 * 1024,
         };
         let mut feed = runtime
-            .open_conversation_feed("cold", pl_protocol::ChatScope::Main, demand)
+            .open_conversation_feed("cold", pl_protocol::ChatScope::conversation(None), demand)
             .await?;
         let reader = feed.reader().clone();
         let manifest = reader.list_contents(&item.id, None, demand).await?;

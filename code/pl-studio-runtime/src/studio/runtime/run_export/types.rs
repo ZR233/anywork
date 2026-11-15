@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, ensure};
-use pl_core::chat::{ChatItemHeader, ChatReadHint, ChatRunPosition};
+use pl_core::chat::ChatItemHeader;
 use pl_core::thread::UsageSummary;
 use pl_protocol::{ChatAtom, ChatContentRole, ContentRef, InferenceBillingRecord, TurnFailure};
 use pl_tool::skill::{SkillDiscoverySourceSummary, SkillWinnerSummary};
@@ -13,11 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::StudioShutdownReport;
 
 /// Schema version for `run.json`.
-pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 2;
 /// Schema version for `events.jsonl`.
-pub const EVENTS_SCHEMA_VERSION: u32 = 1;
+pub const EVENTS_SCHEMA_VERSION: u32 = 2;
 /// Schema version for `result.json`.
-pub const RESULT_SCHEMA_VERSION: u32 = 1;
+pub const RESULT_SCHEMA_VERSION: u32 = 2;
 
 /// Bound constants for the exporter bounded admission queue and content streaming.
 pub const MAX_QUEUED_BATCHES: usize = 256;
@@ -44,13 +44,13 @@ pub struct RunExportOptions {
 /// Exporter build metadata recorded in `run.json`, `runStarted`, and `result.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BuildInfoV1 {
+pub struct BuildInfoV2 {
     pub version: String,
     pub git_commit: Option<String>,
     pub target: String,
 }
 
-impl BuildInfoV1 {
+impl BuildInfoV2 {
     /// Captures the compile-time build identity without running `git` at runtime.
     pub fn current() -> Self {
         let version = pl_studio_update::STUDIO_VERSION.trim().to_string();
@@ -122,7 +122,7 @@ pub fn validate_export_relative_path(path: &str) -> Result<()> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportSchemaV1 {
+pub struct ExportSchemaV2 {
     pub manifest: u32,
     pub events: u32,
     pub result: u32,
@@ -131,7 +131,7 @@ pub struct ExportSchemaV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunInvocationV1 {
+pub struct RunInvocationV2 {
     pub cwd: String,
     pub studio_home: String,
     pub account_id: Option<String>,
@@ -144,7 +144,7 @@ pub struct RunInvocationV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SkillSearchManifestV1 {
+pub struct SkillSearchManifestV2 {
     pub include_default_user_dir: bool,
     pub additional_dirs: Vec<String>,
     pub external_dirs: Vec<String>,
@@ -154,7 +154,7 @@ pub struct SkillSearchManifestV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigInputEntryV1 {
+pub struct ConfigInputEntryV2 {
     pub logical_name: String,
     pub present: bool,
     pub sha256: Option<String>,
@@ -164,15 +164,15 @@ pub struct ConfigInputEntryV1 {
 /// Immutable startup manifest written atomically to `<output-dir>/run.json` before runtime init.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunManifestV1 {
+pub struct RunManifestV2 {
     pub schema_version: u32,
     pub run_id: String,
     pub started_at: String,
-    pub build: BuildInfoV1,
-    pub invocation: RunInvocationV1,
-    pub skill_search: SkillSearchManifestV1,
-    pub config_inputs: Vec<ConfigInputEntryV1>,
-    pub export_schema: ExportSchemaV1,
+    pub build: BuildInfoV2,
+    pub invocation: RunInvocationV2,
+    pub skill_search: SkillSearchManifestV2,
+    pub config_inputs: Vec<ConfigInputEntryV2>,
+    pub export_schema: ExportSchemaV2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,7 +211,7 @@ pub enum ExecutionErrorStage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExecutionErrorV1 {
+pub struct ExecutionErrorV2 {
     pub stage: ExecutionErrorStage,
     pub code: String,
     pub message: String,
@@ -220,7 +220,7 @@ pub struct ExecutionErrorV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TimingReportV1 {
+pub struct TimingReportV2 {
     pub total_wall_ms: u64,
     pub initialize_wall_ms: Option<u64>,
     pub agent_wall_ms: Option<u64>,
@@ -230,7 +230,7 @@ pub struct TimingReportV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TraceSummaryV1 {
+pub struct TraceSummaryV2 {
     pub events_path: String,
     pub events_sha256: Option<String>,
     pub event_count: u64,
@@ -261,7 +261,7 @@ pub enum UsageMetricKey {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageTotalsV1 {
+pub struct UsageTotalsV2 {
     pub inference_count: Option<u64>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -274,7 +274,7 @@ pub struct UsageTotalsV1 {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageKnownTotalsV1 {
+pub struct UsageKnownTotalsV2 {
     pub inference_count: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -287,19 +287,19 @@ pub struct UsageKnownTotalsV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ModelUsageExportV1 {
+pub struct ModelUsageExportV2 {
     pub account_id: Option<String>,
     pub model_id: Option<String>,
     pub coverage: UsageCoverage,
     pub has_unknown_values: bool,
-    pub totals: UsageTotalsV1,
-    pub known_totals: UsageKnownTotalsV1,
+    pub totals: UsageTotalsV2,
+    pub known_totals: UsageKnownTotalsV2,
     pub unknown_fields: Vec<UsageMetricKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThreadUsageExportV1 {
+pub struct ThreadUsageExportV2 {
     pub thread_id: String,
     pub through_effect_seq: u64,
     pub summary: UsageSummary,
@@ -307,19 +307,19 @@ pub struct ThreadUsageExportV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageExportV1 {
+pub struct UsageExportV2 {
     pub coverage: UsageCoverage,
     pub has_unknown_values: bool,
-    pub totals: UsageTotalsV1,
-    pub known_totals: UsageKnownTotalsV1,
-    pub by_model: Vec<ModelUsageExportV1>,
-    pub by_thread: Vec<ThreadUsageExportV1>,
+    pub totals: UsageTotalsV2,
+    pub known_totals: UsageKnownTotalsV2,
+    pub by_model: Vec<ModelUsageExportV2>,
+    pub by_thread: Vec<ThreadUsageExportV2>,
 }
 
 /// Terminal result file written atomically to `<output-dir>/result.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResultV1 {
+pub struct ResultV2 {
     pub schema_version: u32,
     pub run_id: String,
     pub root_thread_id: Option<String>,
@@ -328,22 +328,22 @@ pub struct ResultV1 {
     pub exit_code: i32,
     pub started_at: String,
     pub finished_at: String,
-    pub build: BuildInfoV1,
-    pub timing: TimingReportV1,
+    pub build: BuildInfoV2,
+    pub timing: TimingReportV2,
     pub final_text: Option<String>,
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV1,
-    pub usage: Option<UsageExportV1>,
+    pub trace: TraceSummaryV2,
+    pub usage: Option<UsageExportV2>,
     pub shutdown: StudioShutdownReport,
-    pub error: Option<ExecutionErrorV1>,
-    pub execution_error: Option<ExecutionErrorV1>,
+    pub error: Option<ExecutionErrorV2>,
+    pub execution_error: Option<ExecutionErrorV2>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventSourceV1 {
+pub struct EventSourceV2 {
     pub epoch: Option<String>,
     pub effect_seq: Option<u64>,
     pub turn_id: Option<String>,
@@ -355,72 +355,28 @@ pub struct EventSourceV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompletionCursorV1 {
+pub struct CompletionCursorV2 {
     pub epoch: Option<String>,
     pub completion_seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ChatReadHintExportV1 {
-    Hidden,
-    Single,
-    Adjacent { key: String },
-}
-
-impl From<&ChatReadHint> for ChatReadHintExportV1 {
-    fn from(value: &ChatReadHint) -> Self {
-        match value {
-            ChatReadHint::Hidden => Self::Hidden,
-            ChatReadHint::Single => Self::Single,
-            ChatReadHint::Adjacent { key } => Self::Adjacent {
-                key: key.as_str().to_string(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ChatRunPositionExportV1 {
-    pub start_seq: u64,
-    pub ordinal: u64,
-}
-
-impl From<ChatRunPosition> for ChatRunPositionExportV1 {
-    fn from(value: ChatRunPosition) -> Self {
-        Self {
-            start_seq: value.start_seq,
-            ordinal: value.ordinal,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ChatItemHeaderExportV1 {
+pub struct ChatItemHeaderExportV2 {
     pub append_seq: u64,
     pub item_id: String,
     pub query_class: String,
     pub parent_id: Option<String>,
-    pub read_hint: ChatReadHintExportV1,
-    pub run: Option<ChatRunPositionExportV1>,
     pub byte_length: u64,
 }
 
-impl ChatItemHeaderExportV1 {
+impl ChatItemHeaderExportV2 {
     pub fn from_core(header: &ChatItemHeader) -> Self {
         Self {
             append_seq: header.append_seq,
             item_id: header.item_id.clone(),
             query_class: header.query_class.clone(),
             parent_id: header.parent_id.as_ref().map(|k| k.as_str().to_string()),
-            read_hint: ChatReadHintExportV1::from(&header.read_hint),
-            run: header.run.map(ChatRunPositionExportV1::from),
             byte_length: header.byte_length,
         }
     }
@@ -428,7 +384,7 @@ impl ChatItemHeaderExportV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportedBlobV1 {
+pub struct ExportedBlobV2 {
     pub path: String,
     pub byte_length: u64,
     pub sha256: String,
@@ -438,7 +394,7 @@ pub struct ExportedBlobV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportedContentV1 {
+pub struct ExportedContentV2 {
     pub native_ref: ContentRef,
     pub role: Option<ChatContentRole>,
     pub path: String,
@@ -450,18 +406,78 @@ pub struct ExportedContentV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SealedMemberCutV1 {
+pub struct SealedMemberCutV2 {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_agent_id: Option<String>,
     pub role: Option<String>,
     pub through_effect_seq: u64,
-    pub completion_cut: CompletionCursorV1,
+    pub completion_cut: CompletionCursorV2,
     pub aborted: bool,
     pub sealed: bool,
 }
 
-/// Typed `EventV1` payload variants (`type` + `data`).
+/// 执行来源的最小可靠事实；不包含正文、展示组或活动进度。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionLifecycleExportV2 {
+    pub identity: String,
+    pub kind: pl_protocol::ChatAtomKind,
+    pub source: pl_protocol::ChatSourceId,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub tool: Option<pl_protocol::ChatToolIdentity>,
+    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
+    pub delivery: pl_protocol::ChatDeliveryKind,
+    pub source_order: Option<u64>,
+    pub execution_order: Option<u64>,
+    pub started: Option<pl_protocol::ChatFactPosition>,
+    pub started_at: Option<i64>,
+    pub ended: Option<pl_protocol::ChatFactPosition>,
+    pub finished_at: Option<i64>,
+    pub outcome: Option<pl_protocol::ChatTerminalOutcome>,
+    pub completion_item_id: Option<String>,
+    pub last_write_seq: u64,
+}
+impl From<&crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle>
+    for ExecutionLifecycleExportV2
+{
+    fn from(
+        value: &crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle,
+    ) -> Self {
+        Self {
+            identity: value.identity.clone(),
+            kind: value.kind,
+            source: value.source.clone(),
+            turn_id: value.turn_id.clone(),
+            attempt_id: value.attempt_id.clone(),
+            tool: value.tool.clone(),
+            text_channel: value.text_channel,
+            delivery: value.delivery,
+            source_order: value.source_order,
+            execution_order: value.execution_order,
+            started: value.started,
+            started_at: value.started_at,
+            ended: value.ended,
+            finished_at: value.finished_at,
+            outcome: value.outcome,
+            completion_item_id: value.completion_item_id.clone(),
+            last_write_seq: value.last_write_seq,
+        }
+    }
+}
+pub(super) fn handoff_fingerprint(
+    accounting: &crate::studio::thread_projection::PreparedAccounting,
+    lifecycle: &[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle],
+) -> String {
+    let facts = lifecycle
+        .iter()
+        .map(ExecutionLifecycleExportV2::from)
+        .collect::<Vec<_>>();
+    crate::hash::canonical_json_hash(&serde_json::json!([accounting.export_fingerprint(), facts]))
+}
+
+/// Typed `EventV2` payload variants (`type` + `data`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -469,10 +485,10 @@ pub struct SealedMemberCutV1 {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum EventBodyV1 {
+pub enum EventBodyV2 {
     RunStarted {
         run_id: String,
-        build: BuildInfoV1,
+        build: BuildInfoV2,
         manifest_sha256: String,
     },
     AgentRegistered {
@@ -484,7 +500,7 @@ pub enum EventBodyV1 {
         workspace_id: String,
         spawn_tool_call_id: Option<String>,
         initial_effect_seq: u64,
-        initial_completion_cursor: CompletionCursorV1,
+        initial_completion_cursor: CompletionCursorV2,
     },
     SkillsDiscovered {
         thread_id: String,
@@ -499,23 +515,26 @@ pub enum EventBodyV1 {
         auxiliary: bool,
         billing: InferenceBillingRecord,
     },
+    ExecutionLifecycle {
+        facts: Vec<ExecutionLifecycleExportV2>,
+    },
     Completion {
-        header: ChatItemHeaderExportV1,
+        header: ChatItemHeaderExportV2,
         atom: ChatAtom,
-        payload: ExportedBlobV1,
-        contents: Vec<ExportedContentV1>,
+        payload: ExportedBlobV2,
+        contents: Vec<ExportedContentV2>,
     },
     ThreadSealed {
         thread_id: String,
         through_effect_seq: u64,
-        completion_cut: CompletionCursorV1,
+        completion_cut: CompletionCursorV2,
         summary: UsageSummary,
         status: Option<String>,
         aborted: bool,
         error: Option<String>,
     },
     RunSealed {
-        members: Vec<SealedMemberCutV1>,
+        members: Vec<SealedMemberCutV2>,
         reconciled: bool,
         reconcile_error: Option<String>,
         trace_complete: bool,
@@ -527,15 +546,15 @@ pub enum EventBodyV1 {
 /// One JSONL record written to `<output-dir>/events.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EventV1 {
+pub struct EventV2 {
     pub schema_version: u32,
     pub run_id: String,
     pub event_seq: u64,
     #[serde(flatten)]
-    pub body: EventBodyV1,
+    pub body: EventBodyV2,
     pub emitted_at: String,
     pub thread_id: Option<String>,
-    pub source: EventSourceV1,
+    pub source: EventSourceV2,
 }
 
 /// Final exporter report isolated from native `StudioShutdownReport`.
@@ -548,8 +567,8 @@ pub struct RunExportReport {
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV1,
-    pub usage: Option<UsageExportV1>,
+    pub trace: TraceSummaryV2,
+    pub usage: Option<UsageExportV2>,
     pub export_finalize_ms: Option<u64>,
-    pub failure: Option<ExecutionErrorV1>,
+    pub failure: Option<ExecutionErrorV2>,
 }

@@ -1,10 +1,7 @@
 //! Passive scoped completion delivery. One Set, monotonic Append prefixes, latest activity.
 use super::{
     ConversationReader, StudioRuntime,
-    conversation_reader::{
-        JsonBudget, ReadResources, annotate_atoms, annotate_sources, core_demand, entries, query,
-        resync,
-    },
+    conversation_reader::{JsonBudget, ReadResources, core_demand, entries, query, resync},
     thread_observation::ConversationSource,
 };
 
@@ -39,8 +36,6 @@ struct CompletionTarget {
     session: core::Session,
     head: u64,
     activity: Arc<ActivitySnapshot>,
-    sources: Arc<[ChatSourceState]>,
-    effect: u64,
 }
 impl From<&ConversationSource> for CompletionTarget {
     fn from(source: &ConversationSource) -> Self {
@@ -49,8 +44,6 @@ impl From<&ConversationSource> for CompletionTarget {
             session: source.session.clone(),
             head: source.head,
             activity: source.activity.clone(),
-            sources: source.current.source_states().clone(),
-            effect: source.current.projection().source_effect_seq,
         }
     }
 }
@@ -107,9 +100,7 @@ impl StudioRuntime {
             entries: Vec::new(),
         });
         let mut initial_serial = 0;
-        let mut source_states = Vec::new();
-        let mut cold_sources = None;
-        let (session, database_id, head, effect_cut, items, boundary) =
+        let (session, database_id, head, items, boundary) =
             if let crate::studio::conversation_store::ReadCut::Ready { source, .. } = cut {
                 let database_id = history
                     .conversation_database_id()
@@ -123,9 +114,7 @@ impl StudioRuntime {
                         &database_id,
                         source.session.epoch().as_str(),
                     ),
-                )
-                .for_scope(&scope);
-                validate_run(&scope, &database_id, &source.session, source.head, &budget).await?;
+                );
                 let page = if completed {
                     Some(
                         source
@@ -146,10 +135,6 @@ impl StudioRuntime {
                 };
                 initial_serial = source.serial;
                 initial_activity = source.activity.clone();
-                if completed {
-                    source_states = source.current.source_states().to_vec();
-                }
-                let effect_cut = source.current.projection().source_effect_seq;
                 let (items, boundary) = page.map_or_else(
                     || (Vec::new(), None),
                     |page| (page.items, page.before.map(|cursor| cursor.append_seq)),
@@ -158,7 +143,6 @@ impl StudioRuntime {
                     source.session.clone(),
                     Some(database_id),
                     source.head,
-                    effect_cut,
                     items,
                     boundary,
                 )
@@ -178,8 +162,7 @@ impl StudioRuntime {
                         database_id.as_deref().unwrap_or_default(),
                         session.epoch().as_str(),
                     ),
-                )
-                .for_scope(&scope);
+                );
                 // The existing cold facade reads actual business state without installing execution.
                 let cold = match snapshot {
                     Some(snapshot) if completed => {
@@ -208,20 +191,10 @@ impl StudioRuntime {
                                 )
                                 .await?;
                         }
-                        validate_run(&scope, &cold.database_id, &session, cold.head, &budget)
-                            .await?;
                         let boundary = if cold.page.exhausted {
                             None
                         } else {
-                            cold.page.items.first().map(|item| {
-                                if matches!(scope, ChatScope::Main) {
-                                    item.header
-                                        .run
-                                        .map_or(item.header.append_seq, |run| run.start_seq)
-                                } else {
-                                    item.header.append_seq
-                                }
-                            })
+                            cold.page.items.first().map(|item| item.header.append_seq)
                         };
                         initial_activity = Arc::new(ActivitySnapshot {
                             completed_through: cold.head,
@@ -229,40 +202,23 @@ impl StudioRuntime {
                             execution_present: false,
                             entries: Vec::new(),
                         });
-                        cold_sources = Some(cold.sources);
                         (
                             session,
                             Some(cold.database_id),
                             cold.head,
-                            cold.current.source_effect_seq,
                             cold.page.items,
                             boundary,
                         )
                     }
-                    None => {
-                        ensure!(
-                            !matches!(scope, ChatScope::Run { .. }),
-                            core::ChatError::InvalidArgument("unknown completion run".into())
-                        );
-                        (session, None, 0, 0, Vec::new(), None)
-                    }
+                    None => (session, None, 0, Vec::new(), None),
                 }
             };
-        let mut initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
-        if !completed {
-            // The presentation facade shares read resources, never reads/annotates an
-            // atomic completion page as an intermediate representation.
-        } else if let Some(sources) = cold_sources {
-            annotate_atoms(&mut initial_entries, &sources)?;
-        } else {
-            annotate_sources(&mut initial_entries, &history, &source_states, effect_cut).await?;
-        }
+        let initial_entries = entries(items, database_id.as_deref().unwrap_or_default())?;
         conversation.bind_database(database_id.as_deref())?;
         let reader = ConversationReader::new(
             id,
             scope,
             head,
-            effect_cut,
             slot,
             self.thread_observations.read_lifetime(),
             ReadResources {
@@ -303,49 +259,6 @@ impl StudioRuntime {
         feed.reader.ensure()?;
         Ok(feed)
     }
-}
-async fn validate_run(
-    scope: &ChatScope,
-    database_id: &str,
-    session: &core::Session,
-    head: u64,
-    budget: &JsonBudget,
-) -> Result<()> {
-    let ChatScope::Run { reference } = scope else {
-        return Ok(());
-    };
-    ensure!(
-        reference.database_id == database_id,
-        core::ChatError::StaleContent
-    );
-    ensure!(
-        reference.index_version == COMPLETED_READ_INDEX_VERSION
-            && reference.start_seq > 0
-            && reference.start_seq <= head,
-        core::ChatError::InvalidArgument("invalid completion run reference".into())
-    );
-    let headers = JsonBudget::new(budget.database_id.clone(), String::new()).headers_only();
-    let page = session
-        .page(
-            core::ChatPageRequest {
-                query: query(scope)?,
-                demand: core::ReadDemand::new(1, CHAT_BATCH_MAX_BYTES as usize),
-                before: None,
-                ceiling: Some(reference.start_seq),
-            },
-            &headers,
-        )
-        .await?;
-    ensure!(
-        page.items.len() == 1
-            && page.items[0].header.append_seq == reference.start_seq
-            && page.items[0]
-                .header
-                .run
-                .is_some_and(|run| run.start_seq == reference.start_seq && run.ordinal == 1),
-        core::ChatError::InvalidArgument("unknown completion run start".into())
-    );
-    Ok(())
 }
 fn continuation_reserve(lease: &str, scope: &ChatScope, database: &str, epoch: &str) -> String {
     serde_json::json!({"version":2,
@@ -434,15 +347,8 @@ impl ConversationFeed {
             self.take_progress()?;
             if let Some(target) = self.target.clone() {
                 if target.head > self.delivered {
-                    let mut replay_query = query(&self.reader.inner.scope)?;
-                    if matches!(self.reader.inner.scope, ChatScope::Main) {
-                        replay_query.selection = core::ChatSelection::Records;
-                    }
-                    let budget = self
-                        .reader
-                        .budget()
-                        .await?
-                        .for_scope(&self.reader.inner.scope);
+                    let replay_query = query(&self.reader.inner.scope)?;
+                    let budget = self.reader.budget().await?;
                     let batch = target
                         .session
                         .completed_after(
@@ -457,25 +363,13 @@ impl ConversationFeed {
                         batch.through_seq > self.delivered && batch.through_seq <= target.head,
                         resync()
                     );
-                    let mut product = ChatBatch {
+                    let product = ChatBatch {
                         placement: ChatPlacement::Append,
                         entries: entries(batch.items, &budget.database_id)?,
                         before: None,
                         from_seq: Some(self.delivered),
                         through_seq: batch.through_seq,
                     };
-                    if matches!(self.reader.inner.scope, ChatScope::Main) {
-                        product
-                            .entries
-                            .retain(|entry| entry.main_presentation != MainPresentation::Hidden);
-                    }
-                    self.reader
-                        .annotate_source_states(
-                            &mut product.entries,
-                            &target.sources,
-                            target.effect,
-                        )
-                        .await?;
                     let product = self.reader.finish_batch(product, self.demand)?;
                     self.delivered = product.through_seq;
                     // Empty Appends still accept filtered completion progress and unblock Activity.
@@ -829,9 +723,9 @@ pub(super) mod tests {
                 .runtime
                 .open_conversation_feed(
                     id,
-                    ChatScope::Children {
-                        parent_id: ChatKey::new("turn", "binding-echo-turn")?.as_str().into(),
-                    },
+                    ChatScope::conversation(Some(
+                        ChatKey::new("turn", "binding-echo-turn")?.as_str().into(),
+                    )),
                     demand(),
                 )
                 .await?;
@@ -967,11 +861,11 @@ pub(super) mod tests {
                 .runtime
                 .open_conversation_feed(
                     id,
-                    ChatScope::Children {
-                        parent_id: ChatKey::new("turn", "binding-failure-turn")?
+                    ChatScope::conversation(Some(
+                        ChatKey::new("turn", "binding-failure-turn")?
                             .as_str()
                             .into(),
-                    },
+                    )),
                     demand(),
                 )
                 .await?;
@@ -1300,7 +1194,7 @@ pub(super) mod tests {
             support::reached(&stage).await?;
             let mut feed = env
                 .runtime
-                .open_conversation_feed(id, ChatScope::Main, demand())
+                .open_conversation_feed(id, ChatScope::conversation(None), demand())
                 .await?;
             let mut state = env.runtime.open_conversation_state_feed(id).await?;
             let snapshot = initial_snapshot(&mut state).await?;
@@ -1520,7 +1414,7 @@ pub(super) mod tests {
         support::reached(stage).await?;
         let mut live = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         let mut live_state = env.runtime.open_conversation_state_feed(id).await?;
         assert_eq!(chat(&mut live).await?.placement, ChatPlacement::Set);
@@ -1568,7 +1462,7 @@ pub(super) mod tests {
     ) -> Result<()> {
         let mut reopened = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         assert_eq!(chat(&mut reopened).await?.placement, ChatPlacement::Set);
         let mut reopened_state = env.runtime.open_conversation_state_feed(id).await?;
@@ -1644,7 +1538,7 @@ pub(super) mod tests {
         );
         let mut cold = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         assert_eq!(chat(&mut cold).await?.placement, ChatPlacement::Set);
         let mut cold_state = env.runtime.open_conversation_state_feed(id).await?;
@@ -1765,7 +1659,7 @@ pub(super) mod tests {
         assert_eq!(env.root_provider.recorded().len(), 2);
         let mut approved = env
             .runtime
-            .open_conversation_feed(id, ChatScope::Main, demand())
+            .open_conversation_feed(id, ChatScope::conversation(None), demand())
             .await?;
         assert_eq!(chat(&mut approved).await?.placement, ChatPlacement::Set);
         let mut approved_state = env.runtime.open_conversation_state_feed(id).await?;
@@ -2491,7 +2385,8 @@ pub(super) mod tests {
                 .commit_effect(
                     prepared.sequence,
                     EffectCommit {
-                        items: &prepared.items,
+                        turns: &prepared.turns,
+                        execution_order: prepared.execution_order,
                         completions: &prepared.completions,
                         current: &prepared.current,
                         rolled_back_turns: &Default::default(),
@@ -2543,7 +2438,7 @@ pub(super) mod tests {
                     .runtime
                     .open_conversation_feed(
                         &h.thread.id,
-                        ChatScope::Main,
+                        ChatScope::conversation(None),
                         ReadDemand {
                             max_items: 1,
                             ..demand()
@@ -2569,7 +2464,7 @@ pub(super) mod tests {
                 assert_eq!(first.entries[0].record_id, b_id);
                 assert!(matches!(
                     first.entries[0].atom.payload,
-                    Some(PayloadData::Deferred { .. })
+                    Some(PayloadData::Inline { .. })
                 ));
                 let retired = crate::studio::thread_projection::completed_activity_identity(
                     &first.entries[0],
@@ -2614,7 +2509,7 @@ pub(super) mod tests {
                 let mut h = Harness::new(&env).await?;
                 let mut feed = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 h.effect(vec![start("long", true)], vec![]).await?;
                 let prepared = h
@@ -2659,7 +2554,7 @@ pub(super) mod tests {
                 assert_eq!(append.entries.len(), 1);
                 assert!(matches!(
                     append.entries[0].atom.payload,
-                    Some(PayloadData::Deferred { .. })
+                    Some(PayloadData::Inline { .. })
                 ));
                 assert!(activity(&mut feed).await?.entries.is_empty());
                 feed.close().await?;
@@ -2672,8 +2567,7 @@ pub(super) mod tests {
 
         /// I13/I20: original handle/cursor qualifications cannot rebound during A→B→A.
         #[tokio::test]
-        async fn run_reference_older_cut_and_read_lease_are_independent_of_live_delivery()
-        -> Result<()> {
+        async fn record_older_cut_and_read_lease_are_independent_of_live_delivery() -> Result<()> {
             let env = support::Environment::new(vec![], vec![]).await?;
             let result = async {
                 let mut h = Harness::new(&env).await?;
@@ -2688,37 +2582,20 @@ pub(super) mod tests {
                 h.save(&second).await?;
                 let mut main = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 let set = chat(&mut main).await?;
-                assert_eq!(set.entries.len(), 1);
-                let representative = &set.entries[0];
-                assert_eq!(
-                    representative.main_presentation,
-                    MainPresentation::ForegroundWork
+                assert_eq!(set.entries.len(), 2);
+                assert!(
+                    set.entries
+                        .iter()
+                        .all(|entry| entry.atom.source_state.is_none())
                 );
-                assert_eq!(representative.run.context("run")?.ordinal, 2);
-                assert!(matches!(
-                    representative.atom.payload,
-                    Some(PayloadData::Deferred { .. })
-                ));
-                let database_id = h
-                    .history
-                    .conversation_database_id()
-                    .await?
-                    .context("database")?;
-                let reference = CompletionRunRef {
-                    database_id: database_id.clone(),
-                    index_version: COMPLETED_READ_INDEX_VERSION,
-                    start_seq: representative.run.unwrap().start_seq,
-                };
                 let mut run = env
                     .runtime
                     .open_conversation_feed(
                         &h.thread.id,
-                        ChatScope::Run {
-                            reference: reference.clone(),
-                        },
+                        ChatScope::conversation(None),
                         ReadDemand {
                             max_items: 1,
                             ..demand()
@@ -2734,13 +2611,7 @@ pub(super) mod tests {
                 assert_eq!(older.through_seq, 2);
                 let mut reopened = env
                     .runtime
-                    .open_conversation_feed(
-                        &h.thread.id,
-                        ChatScope::Run {
-                            reference: reference.clone(),
-                        },
-                        demand(),
-                    )
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 assert!(
                     reopened
@@ -2751,27 +2622,6 @@ pub(super) mod tests {
                 );
                 run.reader().close().await?;
                 assert!(run.reader().load_older(&cursor, demand()).await.is_err());
-                for bad in [
-                    CompletionRunRef {
-                        database_id: "another database".into(),
-                        ..reference.clone()
-                    },
-                    CompletionRunRef {
-                        start_seq: 2,
-                        ..reference.clone()
-                    },
-                ] {
-                    assert!(
-                        env.runtime
-                            .open_conversation_feed(
-                                &h.thread.id,
-                                ChatScope::Run { reference: bad },
-                                demand()
-                            )
-                            .await
-                            .is_err()
-                    );
-                }
                 reopened.close().await?;
                 reopened.reader().close().await?;
                 main.close().await?;
@@ -2789,9 +2639,9 @@ pub(super) mod tests {
             let env = support::Environment::new(vec![], vec![]).await?;
             let result = async {
                 let mut h = Harness::new(&env).await?;
-                let scope = ChatScope::Children {
-                    parent_id: ChatKey::new("turn", "unrelated")?.as_str().into(),
-                };
+                let scope = ChatScope::conversation(Some(
+                    ChatKey::new("turn", "unrelated")?.as_str().into(),
+                ));
                 let mut feed = env
                     .runtime
                     .open_conversation_feed(&h.thread.id, scope, demand())
@@ -2824,7 +2674,7 @@ pub(super) mod tests {
                 let mut h = Harness::new(&env).await?;
                 let mut feed = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut feed).await?;
                 activity(&mut feed).await?;
@@ -2854,10 +2704,6 @@ pub(super) mod tests {
                 let finished = h.background_result(1).await?;
                 let final_batch = chat(&mut feed).await?;
                 assert_eq!(final_batch.entries.len(), 1);
-                assert_eq!(
-                    final_batch.entries[0].main_presentation,
-                    MainPresentation::BackgroundResults
-                );
                 assert_eq!(
                     crate::studio::thread_projection::completed_activity_identity(
                         &final_batch.entries[0]
@@ -2890,7 +2736,7 @@ pub(super) mod tests {
                 .await?;
                 let mut feed = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut feed).await?;
                 activity(&mut feed).await?;
@@ -2938,7 +2784,7 @@ pub(super) mod tests {
                     batch
                         .entries
                         .iter()
-                        .map(|entry| entry.run.unwrap().start_seq)
+                        .map(|entry| entry.completion_seq)
                         .collect::<Vec<_>>(),
                     vec![1, 2, 3]
                 );
@@ -2962,7 +2808,7 @@ pub(super) mod tests {
                     .observation_slot(&h.thread.id);
                 let mut old = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut old).await?;
                 let reader = old.reader().clone();
@@ -2979,7 +2825,7 @@ pub(super) mod tests {
                 reader.ensure()?;
                 let mut new = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut new).await?;
                 old.close().await?;
@@ -3167,7 +3013,7 @@ pub(super) mod tests {
         }
         let mut feed = env
             .runtime
-            .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+            .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
             .await?;
         assert!(chat(&mut feed).await?.entries.is_empty());
         activity(&mut feed).await?;
@@ -3235,12 +3081,8 @@ pub(super) mod tests {
             crate::studio::thread_projection::order::tool_id(&a.call_id),
         ];
         let ordinal = |id: &str| {
-            prepared
-                .items
-                .iter()
-                .find(|item| item.id == id)
-                .expect("original tool item")
-                .ordinal
+            prepared.current.lifecycle.iter().find(|fact|fact.identity==id)
+                .expect("real execution placement").source_order.expect("known execution order")
         };
         assert!(ordinal(&expected[3]) < ordinal(&expected[2]));
         assert_eq!(prepared.completions.len(), 4);
@@ -3321,7 +3163,7 @@ pub(super) mod tests {
             .retire(&h.source);
         let mut cold = env
             .runtime
-            .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+            .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
             .await?;
         let baseline = chat(&mut cold).await?;
         assert_eq!(baseline.placement, ChatPlacement::Set);
@@ -3332,7 +3174,7 @@ pub(super) mod tests {
                 .iter()
                 .map(|entry| &entry.record_id)
                 .collect::<Vec<_>>(),
-            [0, 1, 3].map(|index| &expected[index]).to_vec()
+            expected.iter().collect::<Vec<_>>()
         );
         for record in frozen.iter() {
             let item = cold
@@ -3485,7 +3327,7 @@ pub(super) mod tests {
         assert_eq!(h.session.head_seq(), 3);
         let mut feed = env
             .runtime
-            .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+            .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
             .await?;
         let page = chat(&mut feed).await?;
         assert_eq!(page.entries.len(), 3);
@@ -3688,7 +3530,7 @@ pub(super) mod tests {
                 assert_eq!(first.kind, ThreadActivityKind::Thinking);
                 let mut feed = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 let set = chat(&mut feed).await?;
                 assert!(set.entries.is_empty());
@@ -3747,7 +3589,7 @@ pub(super) mod tests {
                 expect_update(&mut feed, &mut state_feed, None, 0).await?;
                 let mut reopened = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut reopened).await?;
                 let mut reopened_state = env
@@ -3780,7 +3622,7 @@ pub(super) mod tests {
                 let mut h = Harness::new(&env).await?;
                 let mut old = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut old).await?;
                 let mut old_state = env
@@ -3836,7 +3678,7 @@ pub(super) mod tests {
                 assert!(old_state.recv().await.is_err());
                 let mut new = env
                     .runtime
-                    .open_conversation_feed(&h.thread.id, ChatScope::Main, demand())
+                    .open_conversation_feed(&h.thread.id, ChatScope::conversation(None), demand())
                     .await?;
                 chat(&mut new).await?;
                 let mut new_state = env

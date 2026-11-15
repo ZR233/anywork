@@ -15,24 +15,26 @@ final class ReadDemand {
   final int maxBytes;
 }
 
-sealed class ChatScope {
-  const ChatScope();
+sealed class ChatClassFilter {
+  const ChatClassFilter();
 }
 
-final class MainChatScope extends ChatScope {
-  const MainChatScope();
+final class ExactChatClass extends ChatClassFilter {
+  const ExactChatClass(this.value);
+  final String value;
 }
 
-final class ChildrenChatScope extends ChatScope {
-  const ChildrenChatScope({required this.parentId});
-
-  final String parentId;
+final class AllChatClasses extends ChatClassFilter {
+  const AllChatClasses();
 }
 
-final class RunChatScope extends ChatScope {
-  const RunChatScope({required this.reference});
-
-  final CompletionRunRef reference;
+/// 原件业务过滤；All 必须由调用者明确指定。
+final class ChatScope {
+  const ChatScope({required this.queryClass, this.parentId});
+  const ChatScope.conversation({this.parentId})
+    : queryClass = const ExactChatClass('conversation');
+  final ChatClassFilter queryClass;
+  final String? parentId;
 }
 
 sealed class PayloadData {

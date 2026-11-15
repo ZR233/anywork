@@ -8,6 +8,7 @@
 //! verification and safe public projection in the format owner; this module only maps the verified
 //! question, the authoritative lifecycle and the accepted answers onto the shared typed structure.
 //! The private receipt keeps its original payload; only the public projection is redacted.
+use crate::{ExecutionItem, ExecutionShape};
 use std::collections::HashMap;
 
 use pl_core::{
@@ -17,8 +18,8 @@ use pl_core::{
 
 use pl_protocol::{
     InteractionContent, InteractionResolution, InteractionStatus, ResolvedThreadToolUserInput,
-    ThreadItem, ThreadItemState, ThreadToolUserInput, ThreadToolUserInputAnswer,
-    ThreadToolUserInputState, UserInputAnswer, UserQuestion,
+    ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserInputAnswer,
+    UserQuestion,
 };
 
 use super::ProjectionError;
@@ -149,10 +150,10 @@ fn project_plan(
 /// # Errors
 /// Rejects a non-tool item or an identity that does not name the item's own call.
 pub(in crate::studio) fn attach(
-    item: &mut ThreadItem,
+    item: &mut ExecutionItem,
     user_input: ThreadToolUserInput,
 ) -> Result<(), ProjectionError> {
-    let ThreadItemState::Tool(tool) = item.state() else {
+    let ExecutionShape::Tool(tool) = item.state() else {
         return Err(ProjectionError::UserInput(format!(
             "item `{}` is not a tool call and cannot own a user-input history",
             item.id
@@ -166,7 +167,7 @@ pub(in crate::studio) fn attach(
             item.id
         )));
     }
-    let state = ThreadItemState::Tool(
+    let state = ExecutionShape::Tool(
         tool.clone()
             .with_user_input(Some(user_input))
             .with_wait(tool.wait().cloned()),

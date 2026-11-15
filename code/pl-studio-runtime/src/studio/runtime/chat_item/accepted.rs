@@ -1,6 +1,7 @@
 //! Frozen facts from the original reliable admission. Consumption never changes this shape.
 use super::*;
 use crate::studio::thread_projection::{ContentError, InputView, ProjectionError, input_view};
+use crate::{ExecutionItem, ExecutionShape};
 use pl_core::{
     context::OpaquePayload,
     thread::{inbox::InboxRecord, input::InputRecord},
@@ -33,7 +34,7 @@ pub(in crate::studio) fn accepted_input_draft(
             if content.presentation == MessagePresentation::Hidden {
                 return Ok(None);
             }
-            ThreadItemState::Text(ThreadTextItem::new(
+            ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::User,
                 content.text,
                 content.attachments,
@@ -42,7 +43,7 @@ pub(in crate::studio) fn accepted_input_draft(
         }
         Ok(InputView::ControlNotice { .. }) => return Ok(None),
         Err(error @ ContentError::Unsupported { .. }) => {
-            ThreadItemState::Raw(ThreadRawItem::stored(
+            ExecutionShape::Raw(ThreadRawItem::stored(
                 vec![original_payload(&record.input.payload)],
                 error.to_string(),
                 timestamp,
@@ -50,7 +51,7 @@ pub(in crate::studio) fn accepted_input_draft(
         }
         Err(error) => return Err(ProjectionError::UserInput(error.to_string())),
     };
-    let item = ThreadItem::new(
+    let item = ExecutionItem::new(
         record.input.id.clone(),
         thread.id.clone(),
         String::new(),
@@ -97,20 +98,20 @@ pub(in crate::studio) fn accepted_inbox_draft(
     }
     let id = crate::studio::thread_projection::order::message_id(&message.id);
     let state = if message.payload.format() == "text/plain" && message.payload.version() == 1 {
-        ThreadItemState::Text(ThreadTextItem::new(
+        ExecutionShape::Text(ThreadTextItem::new(
             ThreadTextChannel::ParentAgent,
             message.payload.content().into(),
             vec![],
             ThreadContentLifecycle::completed(timestamp),
         ))
     } else {
-        ThreadItemState::Raw(ThreadRawItem::stored(
+        ExecutionShape::Raw(ThreadRawItem::stored(
             vec![original_payload(&message.payload)],
             "Opaque accepted parent message",
             timestamp,
         ))
     };
-    let item = ThreadItem::new(
+    let item = ExecutionItem::new(
         id,
         thread.id.clone(),
         String::new(),
@@ -160,7 +161,7 @@ fn validate_admission(
 }
 
 fn freeze_accepted(
-    item: &ThreadItem,
+    item: &ExecutionItem,
     source: ChatSourceId,
     original: &OpaquePayload,
     accepted_at: ChatFactPosition,
@@ -263,7 +264,7 @@ mod tests {
         let first = accepted_input_draft(&thread, &record, at(), 123, "database")?.unwrap();
         let atom: ChatAtom = serde_json::from_slice(&first.metadata)?;
         assert_eq!(first.item_id, "queued");
-        assert_eq!(first.read_hint, pl_core::chat::ChatReadHint::Single);
+
         assert_eq!(atom.kind, ChatAtomKind::Input);
         assert_eq!(
             atom.source,
@@ -343,7 +344,7 @@ mod tests {
         let atom: ChatAtom = serde_json::from_slice(&draft.metadata)?;
         assert_eq!(atom.content_present, Some(false));
         // Admission remains a Single fact even when its visible text is empty.
-        assert_eq!(draft.read_hint, pl_core::chat::ChatReadHint::Single);
+
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
         let reference: ContentRef =
             serde_json::from_value(envelope["data"]["acceptedPayload"]["reference"].clone())?;
@@ -391,7 +392,7 @@ mod tests {
         );
         assert_eq!(atom.kind, ChatAtomKind::Text);
         assert!(atom.tool.is_none() && atom.turn_id.is_none() && atom.attempt_id.is_none());
-        assert_eq!(draft.read_hint, pl_core::chat::ChatReadHint::Single);
+
         assert_eq!(
             draft.contents.len(),
             1,
@@ -433,7 +434,7 @@ mod tests {
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
         assert_eq!(envelope["data"]["attachments"][0]["id"], "asset");
         assert_eq!(envelope["data"]["attachments"][0]["byteSize"], 31);
-        assert_eq!(draft.read_hint, pl_core::chat::ChatReadHint::Single);
+
         Ok(())
     }
 }

@@ -1367,11 +1367,11 @@ mod tests {
                 .await?;
             let mut a1 = env
                 .runtime
-                .open_conversation_feed(&thread_a.id, ChatScope::Main, demand(1))
+                .open_conversation_feed(&thread_a.id, ChatScope::conversation(None), demand(1))
                 .await?;
             let mut b = env
                 .runtime
-                .open_conversation_feed(&thread_b.id, ChatScope::Main, demand(1))
+                .open_conversation_feed(&thread_b.id, ChatScope::conversation(None), demand(1))
                 .await?;
             a1.reader().bind_presentation_ceiling(12)?;
             b.reader().bind_presentation_ceiling(12)?;
@@ -1447,7 +1447,7 @@ mod tests {
             a1.reader().close().await?;
             let mut a2 = env
                 .runtime
-                .open_conversation_feed(&thread_a.id, ChatScope::Main, demand(1))
+                .open_conversation_feed(&thread_a.id, ChatScope::conversation(None), demand(1))
                 .await?;
             a2.reader().bind_presentation_ceiling(12)?;
             assert!(a1.reader().display_boundary(&history).await.is_err());

@@ -1,4 +1,6 @@
 //! Incremental display ownership. Only reliable, admitted facts enter this fold.
+#[cfg(test)]
+use crate::{ExecutionItem, ExecutionShape};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
@@ -115,7 +117,7 @@ pub(in crate::studio) struct DisplayMemberWrite {
 #[derive(Clone)]
 pub(in crate::studio) struct ObservationInput {
     pub atom: ChatAtom,
-    pub state: pl_protocol::ThreadItemState,
+    pub state: crate::ExecutionShape,
     pub thread_id: String,
     pub contents: Vec<Arc<ChatContent>>,
 }
@@ -125,12 +127,12 @@ impl ObservationInput {
     pub fn for_test(atom: ChatAtom, contents: Vec<Arc<ChatContent>>) -> Self {
         use pl_protocol::*;
         let state = if atom.kind == ChatAtomKind::ToolCall {
-            ThreadItemState::Tool(ThreadToolItem::new(
+            ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new(atom.id.clone(), "test".into(), String::new()),
                 ThreadToolState::Running(RunningThreadTool::new(String::new())),
             ))
         } else {
-            ThreadItemState::Thinking(ThreadThinkingItem::new(
+            ExecutionShape::Thinking(ThreadThinkingItem::new(
                 Vec::new(),
                 Vec::new(),
                 ThreadContentLifecycle::streaming(),
@@ -442,11 +444,17 @@ pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
 }
 
 fn hidden(atom: &ChatAtom) -> bool {
-    atom.kind != ChatAtomKind::Text
-        && matches!(
-            crate::studio::runtime::chat_item::native_read_hint_v1("conversation", atom),
-            pl_core::chat::ChatReadHint::Hidden
-        )
+    // 展示隐藏只在展示所有者决定；原件读取永远保留这些完成事实。
+    !matches!(atom.source, ChatSourceId::InboxMessage { .. })
+        && (atom.kind == ChatAtomKind::Inference
+            || (atom.kind == ChatAtomKind::TurnReceipt
+                && matches!(
+                    atom.lifecycle,
+                    ChatAtomLifecycle::Terminal {
+                        outcome: ChatTerminalOutcome::Completed,
+                        ..
+                    }
+                )))
 }
 
 fn evidence(atom: &ChatAtom) -> Option<ChatFactPosition> {
@@ -2498,13 +2506,12 @@ mod tests {
                 |member| {
                     let mut input =
                         ObservationInput::for_test(member.head.record.atom.clone(), Vec::new());
-                    input.state = pl_protocol::ThreadItemState::Thinking(
-                        pl_protocol::ThreadThinkingItem::new(
+                    input.state =
+                        crate::ExecutionShape::Thinking(pl_protocol::ThreadThinkingItem::new(
                             Vec::new(),
                             Vec::new(),
                             pl_protocol::ThreadContentLifecycle::completed(20),
-                        ),
-                    );
+                        ));
                     Ok(input)
                 },
             )
@@ -2895,14 +2902,6 @@ mod tests {
                     .find(|m| m.head.record.atom.id == result.id)
                     .unwrap();
                 assert_eq!(result_member.head.record.atom, result);
-                assert_eq!(
-                    crate::studio::runtime::chat_item::native_read_class_v1(
-                        "conversation",
-                        &result
-                    )
-                    .main_presentation,
-                    pl_protocol::MainPresentation::BackgroundResults
-                );
                 assert_eq!(result_member.head.record.start_fact, None);
                 assert_eq!(result_member.head.record.end_fact, Some(at(2)));
                 if name == pl_tool::file_display::TOOL_SHOW_FILES {
@@ -3411,9 +3410,7 @@ mod tests {
     fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across_boundary()
     -> Result<()> {
         use pl_core::chat::{ChatDraft, ChatItem};
-        use pl_protocol::{
-            ThreadContentLifecycle, ThreadItem, ThreadItemState, ThreadThinkingItem,
-        };
+        use pl_protocol::{ThreadContentLifecycle, ThreadThinkingItem};
 
         fn completed_reasoning(
             id: &str,
@@ -3423,7 +3420,7 @@ mod tests {
             contents: Vec<String>,
             append_seq: u64,
         ) -> Result<(ChatAtom, Arc<ChatItem>)> {
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 id.into(),
                 "thread".into(),
                 "turn".into(),
@@ -3431,7 +3428,7 @@ mod tests {
                 1,
                 10,
                 20,
-                ThreadItemState::Thinking(ThreadThinkingItem::new(
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
                     summaries,
                     contents,
                     ThreadContentLifecycle::completed(20),
@@ -3447,7 +3444,7 @@ mod tests {
             };
             atom.started_at = Some(10);
             atom.finished_at = Some(20);
-            Ok((atom, Arc::new(ChatItem::complete(draft, append_seq, None))))
+            Ok((atom, Arc::new(ChatItem::complete(draft, append_seq))))
         }
 
         let mut s = state();

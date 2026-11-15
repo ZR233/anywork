@@ -1,9 +1,10 @@
 //! Incremental durable history projection from one core effect and its matching current state.
 
+use crate::{ExecutionItem, ExecutionShape};
 use std::collections::{BTreeMap, BTreeSet};
 
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, ThreadSnapshot, input::InputChange};
-use pl_protocol::{ThreadItem, ThreadItemState, ThreadRawItem, ThreadTurnItem};
+use pl_protocol::{ThreadRawItem, ThreadTurnItem};
 
 use super::{ProjectionError, order};
 
@@ -18,7 +19,7 @@ use super::{ProjectionError, order};
 /// item is already durable, so enumeration must not fail: the identity is reported here and the
 /// durable pass decides from the durable item itself whether the fact is complete.
 pub(in crate::studio) struct EffectProjection {
-    pub(in crate::studio) items: Vec<ThreadItem>,
+    pub(in crate::studio) items: Vec<ExecutionItem>,
     /// Pruned inputs without either a visible item or a proven hidden identity.
     pub(in crate::studio) unresolved_inputs: BTreeSet<String>,
     /// Calls whose producing attempt was pruned; the original invocation belongs to history.
@@ -58,7 +59,7 @@ pub(in crate::studio) fn project_effect_items(
     thread: &pl_protocol::Thread,
     state: &ThreadSnapshot,
     effect: &ThreadEffectBatch,
-    existing: &BTreeMap<String, ThreadItem>,
+    existing: &BTreeMap<String, ExecutionItem>,
     reserved: &BTreeMap<String, u64>,
     hidden_inputs: &BTreeSet<String>,
 ) -> Result<EffectProjection, ProjectionError> {
@@ -141,7 +142,7 @@ pub(in crate::studio) fn project_effect_items(
                 .unwrap_or_default();
             let payload = &record.message.payload;
             let state = if payload.format() == "text/plain" && payload.version() == 1 {
-                ThreadItem::completed_parent_agent_message(
+                ExecutionItem::completed_parent_agent_message(
                     id.clone(),
                     thread.id.clone(),
                     turn_id.clone(),
@@ -152,13 +153,13 @@ pub(in crate::studio) fn project_effect_items(
                 .state()
                 .clone()
             } else {
-                ThreadItemState::Raw(ThreadRawItem::stored(
+                ExecutionShape::Raw(ThreadRawItem::stored(
                     vec![super::raw_payload(payload)],
                     "Unsupported saved parent message encoding",
                     created_at,
                 ))
             };
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 id,
                 thread.id.clone(),
                 turn_id,
@@ -288,7 +289,7 @@ pub(in crate::studio) fn project_effect_items(
             .then(|| existing.get(&tool_id))
             .flatten()
             .filter(|saved| {
-                matches!(saved.state(), ThreadItemState::Tool(tool) if tool.terminal_output().is_some())
+                matches!(saved.state(), ExecutionShape::Tool(tool) if tool.terminal_output().is_some())
             });
         let (turn_id, mut projected) = if let Some(saved) = repaired_target {
             (
@@ -399,7 +400,7 @@ pub(in crate::studio) fn project_effect_items(
         if let pl_core::thread::ContextCompactionEvent::Finished { operation_id, .. } = event {
             let item_id = order::compaction_id(operation_id);
             let (ordinal, created_at) = stamp(existing, reserved, &item_id, effect.committed_at);
-            items.push(ThreadItem::new(
+            items.push(ExecutionItem::new(
                 item_id,
                 thread.id.clone(),
                 String::new(),
@@ -407,7 +408,7 @@ pub(in crate::studio) fn project_effect_items(
                 effect.sequence,
                 created_at,
                 effect.committed_at,
-                ThreadItemState::ContextCompaction(pl_protocol::ThreadContextCompactionItem::new(
+                ExecutionShape::ContextCompaction(pl_protocol::ThreadContextCompactionItem::new(
                     None,
                     None,
                     effect.committed_at,
@@ -427,7 +428,7 @@ pub(in crate::studio) fn project_effect_items(
         // compare its business state with the frozen terminal's original clock.
         // Actual state/input/usage changes still produce a changed candidate.
         let terminal_stamp = existing.get(&id).filter(|item| {
-            matches!(item.state(), ThreadItemState::Turn(_))
+            matches!(item.state(), ExecutionShape::Turn(_))
                 && item.is_terminal()
                 && record.state != pl_core::thread::TurnState::Running
         });
@@ -439,7 +440,7 @@ pub(in crate::studio) fn project_effect_items(
             terminal_stamp.map_or(effect.committed_at, |item| item.updated_at),
             terminal_stamp.map_or(effect.sequence, |item| item.revision),
         )?;
-        items.push(ThreadItem::new(
+        items.push(ExecutionItem::new(
             id,
             thread.id.clone(),
             turn.id.clone(),
@@ -447,7 +448,7 @@ pub(in crate::studio) fn project_effect_items(
             turn.revision,
             created_at,
             turn.updated_at,
-            ThreadItemState::Turn(ThreadTurnItem::new(turn.state).with_input_id(turn.input_id)),
+            ExecutionShape::Turn(ThreadTurnItem::new(turn.state).with_input_id(turn.input_id)),
         ));
     }
 
@@ -468,7 +469,7 @@ pub(in crate::studio) fn project_effect_items(
 /// A call re-projected from its execution facts (a fresh attempt record, a delivery, a repaired
 /// output) is rebuilt from the call, not from the interaction, so the committed Q&A body has to be
 /// carried over here. The interaction projection of the same effect then supersedes it in place.
-fn preserve_user_input(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadItem>) {
+fn preserve_user_input(items: &mut [ExecutionItem], existing: &BTreeMap<String, ExecutionItem>) {
     for item in items {
         if item.tool().is_none_or(|tool| tool.user_input().is_some()) {
             continue;
@@ -482,7 +483,7 @@ fn preserve_user_input(items: &mut [ThreadItem], existing: &BTreeMap<String, Thr
         let Some(tool) = item.tool() else {
             continue;
         };
-        let state = ThreadItemState::Tool(
+        let state = ExecutionShape::Tool(
             tool.clone()
                 .with_user_input(Some(user_input))
                 .with_wait(tool.wait().cloned()),
@@ -492,7 +493,7 @@ fn preserve_user_input(items: &mut [ThreadItem], existing: &BTreeMap<String, Thr
 }
 
 /// Keeps one call's committed wait presentation when a later projection rebuilds the same call.
-fn preserve_wait(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadItem>) {
+fn preserve_wait(items: &mut [ExecutionItem], existing: &BTreeMap<String, ExecutionItem>) {
     for item in items {
         if item.tool().is_none_or(|tool| tool.wait().is_some()) {
             continue;
@@ -509,7 +510,7 @@ fn preserve_wait(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadIte
         if tool.state().is_terminal() {
             continue;
         }
-        let state = ThreadItemState::Tool(
+        let state = ExecutionShape::Tool(
             tool.clone()
                 .with_user_input(tool.user_input().cloned())
                 .with_wait(Some(wait)),
@@ -521,7 +522,7 @@ fn preserve_wait(items: &mut [ThreadItem], existing: &BTreeMap<String, ThreadIte
 /// Ordinal phase of one identity: the committed item, an in-memory Session assignment, or zero
 /// while building an unpublished candidate. The Runtime's metadata commit replaces zero.
 fn stamp(
-    existing: &BTreeMap<String, ThreadItem>,
+    existing: &BTreeMap<String, ExecutionItem>,
     reserved: &BTreeMap<String, u64>,
     id: &str,
     fallback: i64,
@@ -533,8 +534,8 @@ fn stamp(
 }
 
 fn canonicalize(
-    items: &mut [ThreadItem],
-    existing: &BTreeMap<String, ThreadItem>,
+    items: &mut [ExecutionItem],
+    existing: &BTreeMap<String, ExecutionItem>,
     reserved: &BTreeMap<String, u64>,
     fallback: i64,
 ) {

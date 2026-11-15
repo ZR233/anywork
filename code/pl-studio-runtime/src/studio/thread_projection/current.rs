@@ -710,9 +710,6 @@ impl CurrentState {
     pub fn frozen_projection(&self) -> &Arc<FrozenCurrentProjection> {
         &self.projection
     }
-    pub fn source_states(&self) -> &Arc<[ChatSourceState]> {
-        &self.source_states
-    }
     pub fn contents(&self) -> &Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>> {
         &self.contents
     }

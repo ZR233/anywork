@@ -120,7 +120,7 @@ final class _DraftTransport extends AccountsTestTransport
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: turn.revision,
             turn: turn,
@@ -353,8 +353,6 @@ final class _DraftConnection extends ScriptedConversationFeed {
     final entry = CompletedEntry(
       recordId: item.recordId,
       completionSeq: _completedThrough,
-      run: CompletionRunPosition(startSeq: _completedThrough, ordinal: 1),
-      mainPresentation: item.mainPresentation,
       atom: item.atom,
     );
     await deliver(

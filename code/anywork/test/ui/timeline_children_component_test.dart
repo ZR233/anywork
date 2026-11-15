@@ -31,9 +31,9 @@ ThreadDirectoryStore _threadDirectory() =>
     ThreadDirectoryStore(feed: RecordingDemoTransport());
 
 void main() {
-  for (final run in [false, true]) {
+  {
     testWidgets(
-      '${run ? 'Run' : 'Children'} accepts Activity barriers then pages and closes without touching Main',
+      'parent records accept Activity then page and close independently',
       (tester) async {
         final transport = _Transport();
         final repository = ConversationRepositoryImpl(
@@ -41,27 +41,11 @@ void main() {
           directory: _threadDirectory(),
           onRevision: (_, _) {},
         );
-        const reference = CompletionRunRef(
-          databaseId: 'database',
-          indexVersion: 1,
-          startSeq: 1,
-        );
-        CompletedEntry runEntry(String id, int sequence) => CompletedEntry(
-          recordId: id,
-          completionSeq: sequence,
-          run: CompletionRunPosition(startSeq: 1, ordinal: sequence),
-          mainPresentation: MainPresentation.foregroundWork,
-          atom: memberMessage(id: id),
-        );
         transport.feed.reader.onOlder = (before, _) async {
           expect(before, 'before');
           return ChatBatch(
             placement: ChatPlacement.prepend,
-            entries: [
-              run
-                  ? runEntry('older', 1)
-                  : memberEntry(memberMessage(id: 'older')),
-            ],
+            entries: [memberEntry(memberMessage(id: 'older'))],
             throughSeq: 100,
           );
         };
@@ -76,33 +60,16 @@ void main() {
             supportedLocales: AppLocalizations.supportedLocales,
             home: Scaffold(
               body: TimelineChildrenConnector(
-                repository: run ? null : repository,
+                repository: repository,
                 threadId: 'thread',
                 parentId: 'parent',
-                runReference: run ? reference : null,
-                openRun: run
-                    ? (reference, demand) => repository.openRun(
-                        threadId: 'thread',
-                        reference: reference,
-                        demand: demand,
-                      )
-                    : null,
               ),
             ),
           ),
         );
         await tester.pump();
         transport.feed.send(
-          ConversationChatEvent(
-            batch: run
-                ? ChatBatch(
-                    placement: ChatPlacement.set,
-                    entries: [runEntry('item', 100)],
-                    before: 'before',
-                    throughSeq: 100,
-                  )
-                : memberSet(before: 'before'),
-          ),
+          ConversationChatEvent(batch: memberSet(before: 'before')),
         );
         await pumpClientUntil(
           tester,
@@ -606,8 +573,8 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(transport.feed.acknowledgements, [1]);
-      expect(transport.scope, isA<ChildrenChatScope>());
-      expect((transport.scope as ChildrenChatScope).parentId, 'opaque-parent');
+      expect(transport.scope, isA<ChatScope>());
+      expect((transport.scope as ChatScope).parentId, 'opaque-parent');
       expect(transport.demand!.maxItems, greaterThan(0));
       expect(transport.demand!.maxBytes, 256 * 1024);
       final controller = tester.widget<Chat>(find.byType(Chat)).chatController;
@@ -1002,14 +969,14 @@ final class _RecordingRepository extends Fake
   final ConversationRepository delegate;
   final contents = <ConversationContent>[];
   @override
-  Future<ConversationContent> openChildren({
+  Future<ConversationContent> openRecords({
     required String threadId,
-    required String parentId,
+    required ChatScope scope,
     required ReadDemand demand,
   }) async {
-    final content = await delegate.openChildren(
+    final content = await delegate.openRecords(
       threadId: threadId,
-      parentId: parentId,
+      scope: scope,
       demand: demand,
     );
     contents.add(content);
@@ -1020,13 +987,13 @@ final class _RecordingRepository extends Fake
 final class _PendingRepository extends Fake implements ConversationRepository {
   final requests = <(String, Completer<ConversationContent>)>[];
   @override
-  Future<ConversationContent> openChildren({
+  Future<ConversationContent> openRecords({
     required String threadId,
-    required String parentId,
+    required ChatScope scope,
     required ReadDemand demand,
   }) {
     final completion = Completer<ConversationContent>();
-    requests.add((parentId, completion));
+    requests.add((scope.parentId!, completion));
     return completion.future;
   }
 }
@@ -1096,8 +1063,7 @@ final class _Transport implements ConversationTransport {
 CompletedEntry memberEntry(ChatAtom atom, {int sequence = 1}) => CompletedEntry(
   recordId: atom.completionItemId ?? atom.id,
   completionSeq: sequence,
-  run: CompletionRunPosition(startSeq: sequence, ordinal: 1),
-  mainPresentation: MainPresentation.single,
+
   atom: atom,
 );
 ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(

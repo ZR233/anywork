@@ -1453,8 +1453,7 @@ final class _Controls implements TimelineUiControllers {
 sdk.CompletedEntry _mainEntry(sdk.ChatAtom atom) => sdk.CompletedEntry(
   recordId: atom.completionItemId ?? atom.id,
   completionSeq: 1,
-  run: const sdk.CompletionRunPosition(startSeq: 1, ordinal: 1),
-  mainPresentation: sdk.MainPresentation.single,
+
   atom: atom,
 );
 

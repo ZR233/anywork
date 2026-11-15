@@ -1,9 +1,8 @@
 //! Final text emitted by the explicit completion tool, decoded from the saved producer receipt.
 use super::order;
+use crate::{ExecutionItem, ExecutionShape};
 use pl_core::thread::ToolOutcome;
-use pl_protocol::{
-    ThreadContentLifecycle, ThreadItem, ThreadItemState, ThreadTextChannel, ThreadTextItem,
-};
+use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 
 pub(super) fn project_completion(
     thread_id: &str,
@@ -11,9 +10,9 @@ pub(super) fn project_completion(
     delivery: &pl_core::thread::ToolDelivery,
     revision: u64,
     at: i64,
-) -> Option<ThreadItem> {
+) -> Option<ExecutionItem> {
     let summary = completion_summary(delivery)?;
-    Some(ThreadItem::new(
+    Some(ExecutionItem::new(
         order::completion_id(&delivery.call_id),
         thread_id.into(),
         turn_id.into(),
@@ -21,7 +20,7 @@ pub(super) fn project_completion(
         revision,
         at,
         at,
-        ThreadItemState::Text(ThreadTextItem::new(
+        ExecutionShape::Text(ThreadTextItem::new(
             ThreadTextChannel::Final,
             summary,
             Vec::new(),

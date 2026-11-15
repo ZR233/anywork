@@ -1,48 +1,16 @@
 part of 'chat_models.dart';
 
-const completedHistoryVersion = 1;
-const completedReadIndexVersion = 1;
-
-final class CompletionRunPosition {
-  const CompletionRunPosition({required this.startSeq, required this.ordinal});
-  final int startSeq;
-  final int ordinal;
-}
-
-final class CompletionRunRef {
-  const CompletionRunRef({
-    required this.databaseId,
-    required this.indexVersion,
-    required this.startSeq,
-  });
-  final String databaseId;
-  final int indexVersion;
-  final int startSeq;
-
-  @override
-  bool operator ==(Object other) =>
-      other is CompletionRunRef &&
-      databaseId == other.databaseId &&
-      indexVersion == other.indexVersion &&
-      startSeq == other.startSeq;
-  @override
-  int get hashCode => Object.hash(databaseId, indexVersion, startSeq);
-}
-
-enum MainPresentation { hidden, single, foregroundWork, backgroundResults }
+const completedHistoryVersion = 2;
+const completedReadIndexVersion = 2;
 
 final class CompletedEntry {
   const CompletedEntry({
     required this.recordId,
     required this.completionSeq,
-    required this.run,
-    required this.mainPresentation,
     required this.atom,
   });
   final String recordId;
   final int completionSeq;
-  final CompletionRunPosition? run;
-  final MainPresentation mainPresentation;
   final ChatAtom atom;
 }
 

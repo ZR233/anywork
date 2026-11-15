@@ -50,7 +50,7 @@ struct HistoryAudit {
     distinct_seed_text_ids: i64,
     growth_text_items: i64,
     distinct_growth_text_ids: i64,
-    history_items: i64,
+    execution_lifecycles: i64,
     history_turns: i64,
     applied_write_seq: i64,
     database_bytes: u64,
@@ -62,7 +62,7 @@ struct HistoryAudit {
     #[serde(skip)]
     content_chunks: Vec<String>,
     #[serde(skip)]
-    history_item_records: Vec<String>,
+    execution_lifecycle_records: Vec<String>,
     #[serde(skip)]
     history_turn_records: Vec<String>,
 }
@@ -78,7 +78,7 @@ impl fmt::Debug for HistoryAudit {
             .field("distinct_seed_text_ids", &self.distinct_seed_text_ids)
             .field("growth_text_items", &self.growth_text_items)
             .field("distinct_growth_text_ids", &self.distinct_growth_text_ids)
-            .field("history_items", &self.history_items)
+            .field("execution_lifecycles", &self.execution_lifecycles)
             .field("history_turns", &self.history_turns)
             .field("applied_write_seq", &self.applied_write_seq)
             .field("database_bytes", &self.database_bytes)
@@ -86,7 +86,7 @@ impl fmt::Debug for HistoryAudit {
             .field("conversation_record_rows", &self.conversation_records.len())
             .field("content_manifest_rows", &self.content_manifests.len())
             .field("content_chunk_rows", &self.content_chunks.len())
-            .field("history_item_rows", &self.history_item_records.len())
+            .field("history_item_rows", &self.execution_lifecycle_records.len())
             .field("history_turn_rows", &self.history_turn_records.len())
             .finish()
     }
@@ -679,7 +679,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
                        WHERE item_id GLOB ?),
                     (SELECT COUNT(DISTINCT item_id) FROM conversation_items
                        WHERE item_id GLOB ?),
-                    (SELECT COUNT(*) FROM history_items),
+                    (SELECT COUNT(*) FROM execution_lifecycle),
                     (SELECT COUNT(*) FROM history_turns),
                     (SELECT applied_write_seq FROM history_meta WHERE id=1)",
         )
@@ -691,7 +691,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         .await
         .with_context(|| format!("failed to audit {}", display.display()))?;
         let conversation_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload))
+            "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),hex(metadata))
              FROM conversation_items ORDER BY seq",
         )
         .fetch_all(&mut connection)
@@ -713,15 +713,15 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
              ORDER BY c.owner_key,c.content_key,c.byte_offset",
         ).fetch_all(&mut connection).await
             .context("failed to audit completed content chunks")?;
-        let history_item_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq)
-             FROM history_items ORDER BY ordinal",
+        let execution_lifecycle_records = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_effect,started_suborder,started_at,ended_effect,ended_suborder,finished_at,outcome,completion_item_id,last_write_seq)
+             FROM execution_lifecycle ORDER BY identity",
         )
         .fetch_all(&mut connection)
         .await
         .with_context(|| format!("failed to read exact item inventory from {}", display.display()))?;
         let history_turn_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(turn_id,first_ordinal,last_ordinal,revision,payload,last_write_seq)
+            "SELECT json_array(turn_id,turn_order,admitted_effect,updated_effect,terminal_effect,payload,context_disposition)
              FROM history_turns ORDER BY turn_id",
         )
         .fetch_all(&mut connection)
@@ -735,7 +735,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
             distinct_seed_text_ids: row.4,
             growth_text_items: row.5,
             distinct_growth_text_ids: row.6,
-            history_items: row.7,
+            execution_lifecycles: row.7,
             history_turns: row.8,
             applied_write_seq: row.9,
             database_bytes: 0,
@@ -743,7 +743,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
             conversation_records,
             content_manifests,
             content_chunks,
-            history_item_records,
+            execution_lifecycle_records,
             history_turn_records,
         })
     })?;
@@ -764,12 +764,12 @@ fn same_persisted_inventory(seed: &HistoryAudit, cold: &HistoryAudit) -> bool {
         && seed.distinct_seed_text_ids == cold.distinct_seed_text_ids
         && seed.growth_text_items == cold.growth_text_items
         && seed.distinct_growth_text_ids == cold.distinct_growth_text_ids
-        && seed.history_items == cold.history_items
+        && seed.execution_lifecycles == cold.execution_lifecycles
         && seed.history_turns == cold.history_turns
         && seed.conversation_records == cold.conversation_records
         && seed.content_manifests == cold.content_manifests
         && seed.content_chunks == cold.content_chunks
-        && seed.history_item_records == cold.history_item_records
+        && seed.execution_lifecycle_records == cold.execution_lifecycle_records
         && seed.history_turn_records == cold.history_turn_records
 }
 
@@ -862,7 +862,7 @@ mod tests {
             distinct_seed_text_ids: 1,
             growth_text_items: 0,
             distinct_growth_text_ids: 0,
-            history_items: 2,
+            execution_lifecycles: 2,
             history_turns: 1,
             applied_write_seq,
             database_bytes: 100,
@@ -873,7 +873,7 @@ mod tests {
             ],
             content_manifests: vec![r#"["4:itemitem-1","body","manifest"]"#.into()],
             content_chunks: vec![r#"["4:itemitem-1","body",0,"61"]"#.into()],
-            history_item_records: vec![
+            execution_lifecycle_records: vec![
                 r#"[1,"item-1","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into(),
                 r#"[2,"turn-1","turn-1","turn",0,"terminal",1,1,{"state":"completed"},1]"#.into(),
             ],
@@ -951,7 +951,7 @@ mod tests {
         assert!(!same_persisted_inventory(&seed, &changed_payload));
 
         let mut changed_identity = seed.clone();
-        changed_identity.history_item_records[0] =
+        changed_identity.execution_lifecycle_records[0] =
             r#"[1,"other-item","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into();
         assert!(!same_persisted_inventory(&seed, &changed_identity));
 

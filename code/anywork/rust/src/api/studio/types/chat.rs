@@ -34,39 +34,21 @@ pub struct BridgeReadDemand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeChatScope {
-    Main,
-    Run { reference: BridgeCompletionRunRef },
-    Children { parent_id: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BridgeCompletionRunPosition {
-    pub start_seq: u64,
-    pub ordinal: u64,
+pub enum BridgeChatClassFilter {
+    Class { value: String },
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCompletionRunRef {
-    pub database_id: String,
-    pub index_version: u32,
-    pub start_seq: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeMainPresentation {
-    Hidden,
-    Single,
-    ForegroundWork,
-    BackgroundResults,
+pub struct BridgeChatScope {
+    pub query_class: BridgeChatClassFilter,
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct BridgeCompletedEntry {
     pub record_id: String,
     pub completion_seq: u64,
-    pub run: Option<BridgeCompletionRunPosition>,
-    pub main_presentation: BridgeMainPresentation,
     pub atom: BridgeChatAtom,
 }
 

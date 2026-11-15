@@ -16,6 +16,7 @@
 //! succeeded — so hot reads, reconnects and cold restores observe one cumulative value and a saved
 //! checkpoint never carries a summary its own commit did not include.
 
+use crate::ExecutionItem;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -30,7 +31,7 @@ use pl_core::thread::{
     ThreadCheckpoint, ThreadSnapshot, UsageSummary,
     cold::{ColdStore, ColdStoreError, StoragePressure, ThreadWrite},
 };
-use pl_protocol::ThreadItem;
+
 use tokio::time::Instant;
 
 use crate::studio::StudioStore;
@@ -118,7 +119,7 @@ pub(in crate::studio) struct ExecutionMaterialization<'a> {
 }
 
 impl<'a> ExecutionMaterialization<'a> {
-    pub fn from_item(item: &'a ThreadItem) -> Self {
+    pub fn from_item(item: &'a ExecutionItem) -> Self {
         Self {
             item_id: &item.id,
             ordinal: (item.ordinal > 0).then_some(item.ordinal),
@@ -547,7 +548,7 @@ impl RuntimeOrderIndex {
 
     pub(in crate::studio) fn materialize(
         &self,
-        item: &pl_protocol::ThreadItem,
+        item: &crate::ExecutionItem,
         effect: u64,
     ) -> Result<()> {
         let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
@@ -835,14 +836,14 @@ impl RuntimeOrderIndex {
         &self,
         id: &str,
         thread_id: &str,
-    ) -> Option<pl_protocol::ThreadItem> {
+    ) -> Option<crate::ExecutionItem> {
         let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.assigned.get(id)?;
         if !entry.effect.is_some_and(|seq| seq > state.durable) {
             return None;
         }
         let stamp = entry.stamp.as_ref()?;
-        Some(pl_protocol::ThreadItem::new(
+        Some(crate::ExecutionItem::new(
             id.to_owned(),
             thread_id.to_owned(),
             stamp.turn_id.clone(),
@@ -850,7 +851,7 @@ impl RuntimeOrderIndex {
             stamp.revision,
             stamp.created_at,
             stamp.updated_at,
-            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
                 Vec::new(),
                 "Pending execution body belongs to its prepared batch.",
                 stamp.created_at,
@@ -2685,7 +2686,7 @@ impl ThreadStorageSink {
             {
                 let id = crate::studio::thread_projection::order::turn_id(&turn.turn_id);
                 if channel.order_index.assigned(&id).is_none()
-                    && let Some(item) = history.item(&id).await?
+                    && let Some(item) = history.execution_item(&id).await?
                 {
                     channel.order_index.materialize(&item, 0)?;
                 }
@@ -4351,7 +4352,7 @@ mod batch_tests {
             assert_eq!(receipt.payload, serde_json::to_string(record)?);
         }
         assert_eq!(history.accounting().await?.unwrap().purpose_costs.len(), 2);
-        let cold = history
+        let _cold = history
             .cold_conversation(
                 ChatQuery::new("conversation", None),
                 ReadDemand::new(8, 1024 * 1024),
@@ -4359,7 +4360,14 @@ mod batch_tests {
             )
             .await?
             .unwrap();
-        assert_eq!(cold.current.source_effect_seq, 3);
+        assert_eq!(
+            history
+                .conversation_current()
+                .await?
+                .unwrap()
+                .source_effect_seq,
+            3
+        );
         let applied = db
             .query_all_raw(sea_orm::Statement::from_string(
                 sea_orm::DatabaseBackend::Sqlite,
@@ -6736,7 +6744,7 @@ pub(crate) mod storage_fault_tests {
             order, 32,
             "retiring a source cannot rewind the scalar ceiling"
         );
-        let item = pl_protocol::ThreadItem::new(
+        let item = crate::ExecutionItem::new(
             "completed".into(),
             "thread".into(),
             "turn".into(),
@@ -6744,11 +6752,7 @@ pub(crate) mod storage_fault_tests {
             9,
             10,
             20,
-            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
-                Vec::new(),
-                "done",
-                20,
-            )),
+            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         index.materialize(&item, 7)?;
         index.mark_completion("completed", true);
@@ -6801,7 +6805,7 @@ pub(crate) mod storage_fault_tests {
         let probe = RuntimeOrderIndex::new(Arc::new(AtomicU64::new(0)), 40);
         probe.assign(id)?;
         let placement_bytes = probe.retained_bytes();
-        let item = pl_protocol::ThreadItem::new(
+        let item = crate::ExecutionItem::new(
             id.into(),
             "thread".into(),
             "original-turn".into(),
@@ -6809,7 +6813,7 @@ pub(crate) mod storage_fault_tests {
             9,
             10,
             20,
-            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
                 Vec::new(),
                 "completed",
                 20,
@@ -6898,7 +6902,14 @@ pub(crate) mod storage_fault_tests {
             }
             // This is the old placement a later reliable fact captured through live.resolve.
             let old_placement = index.pending_placement("racing-identity", id).unwrap();
-            let mut next_item = old_prepared.items[0].clone();
+            let mut next_item = crate::ExecutionItem::completed_user_message(
+                "racing-identity".into(),
+                id.into(),
+                String::new(),
+                String::new(),
+                vec![],
+                old_placement.created_at,
+            );
             next_item.ordinal = old_placement.ordinal;
             next_item.created_at = old_placement.created_at;
             next_item.revision = old_placement.revision + 1;
@@ -7006,17 +7017,12 @@ pub(crate) mod storage_fault_tests {
             // The later fact has also left the live window; only its new unsaved obligation
             // must keep the reconstructed identity resident until the writer reaches it.
             index.retain::<()>(&Default::default(), vec!["racing-identity".into()]);
-            let mut next_prepared = old_prepared.clone();
-            next_prepared.sequence = 3;
-            next_prepared.current = next_current.current.clone();
-            next_prepared.current_state = next_current.current_state.clone();
-            next_prepared.accounting = Arc::new(
-                crate::studio::thread_projection::PreparedAccounting::prepare(&next_write.effect)?,
-            );
-            next_prepared.items = Arc::from([next_item.clone()]);
-            next_prepared.completions = Arc::from([]);
+            let mut next_prepared = next_current;
+            projection
+                .publish_prepared(&chat, &mut next_prepared)
+                .await?;
             sink.admit(id, next_write)?;
-            assert!(sink.0.channel.prepare(Arc::new(next_prepared)));
+            assert!(sink.0.channel.prepare(next_prepared));
             sink.0
                 .channel
                 .set_projection_retention(ProjectionRetention {
@@ -7037,10 +7043,10 @@ pub(crate) mod storage_fault_tests {
             })
             .await??;
             let history = store.history(id).await?;
-            let saved = history.item("racing-identity").await?.unwrap();
-            assert_eq!(saved.ordinal, old_placement.ordinal);
-            assert_eq!(saved.revision, next_item.revision);
-            assert_eq!(saved.created_at, old_placement.created_at);
+            let saved = pl_core::chat::ChatHistory::item(&history, "racing-identity")
+                .await?
+                .context("immutable admitted input")?;
+            assert_eq!(saved, *old_prepared.completions[0]);
             assert_eq!(history.watermark().await?, 3);
             assert_eq!(index.retained_bytes(), 0);
             // Saving releases the writer/index, not the still-live current projection owner.
@@ -7238,9 +7244,14 @@ pub(crate) mod storage_fault_tests {
             prepared.completions.is_empty(),
             "a later execution binding cannot reseal completion"
         );
-        assert_eq!(prepared.items[0].ordinal, first.items[0].ordinal);
-        assert_eq!(prepared.items[0].created_at, first.items[0].created_at);
-        assert!(prepared.items[0].revision > first.items[0].revision);
+        assert!(
+            prepared
+                .current
+                .lifecycle
+                .iter()
+                .all(|fact| fact.identity != "late-input")
+        );
+        assert_eq!(first.completions[0].header.item_id, "late-input");
         sink.flush(id, 2).await?;
         assert_eq!(chat.head_seq(), 1);
         assert_eq!(
@@ -7412,7 +7423,7 @@ pub(crate) mod storage_fault_tests {
         let index = original.0.channel.order_index();
         let weak = Arc::downgrade(&index);
         let reserved = index.reserve_observed("still-running", "unmaterialized-part")?;
-        assert!(reserved > first.items[0].ordinal);
+        assert!(reserved > first.execution_order);
         let replacement =
             ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
         assert!(Arc::ptr_eq(&index, &replacement.0.channel.order_index()));
@@ -7739,7 +7750,7 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         let history = store.history("hidden-input").await?;
-        assert!(history.existing_items([input_id.into()]).await?.is_empty());
+        assert!(history.execution_seeds([input_id.into()]).await?.is_empty());
         assert!(history.input_identity(input_id).await?.is_some());
 
         let mut later = ticket("hidden-input", 2);
@@ -7833,7 +7844,7 @@ pub(crate) mod storage_fault_tests {
             .await?,
         )
         .await?;
-        db.execute_unprepared("DELETE FROM history_items WHERE item_id='visible-input'")
+        db.execute_unprepared("DELETE FROM conversation_items WHERE item_id='visible-input'")
             .await?;
 
         // The owner this Thread gets on re-activation never folded the input, and the durable row
@@ -7917,7 +7928,7 @@ pub(crate) mod storage_fault_tests {
             let saved = store
                 .history(id)
                 .await?
-                .existing_items(["pending-input".into()])
+                .execution_seeds(["pending-input".into()])
                 .await?;
             assert!(saved["pending-input"].turn_id.is_empty());
         }
@@ -7942,7 +7953,7 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         let history = store.history(id).await?;
-        let saved = history.existing_items(["pending-input".into()]).await?;
+        let saved = history.execution_seeds(["pending-input".into()]).await?;
         assert_eq!(saved["pending-input"].turn_id, "second-turn");
         assert_eq!(history.watermark().await?, 5);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
@@ -8147,6 +8158,125 @@ pub(crate) mod storage_fault_tests {
         Ok((*prepared).clone())
     }
 
+    /// Manual comparison of the same production admission/projection/writer workload on both revisions.
+    /// This is deliberately excluded from ordinary CI: it emits measurements, not timing assertions.
+    #[tokio::test]
+    #[ignore = "manual before/after history write measurement"]
+    async fn measure_history_write_cost() -> Result<()> {
+        use crate::studio::storage::history::conversation::record_read_tests::sqlite_work::Sampler;
+        use sea_orm::{DbBackend, Statement};
+        async fn occupied(db: &sea_orm::DatabaseConnection) -> Result<i64> {
+            let mut values = Vec::new();
+            for pragma in ["page_count", "freelist_count", "page_size"] {
+                let row = db
+                    .query_one_raw(Statement::from_string(
+                        DbBackend::Sqlite,
+                        format!("PRAGMA {pragma}"),
+                    ))
+                    .await?
+                    .context("missing SQLite page counter")?;
+                values.push(row.try_get_by_index::<i64>(0)?);
+            }
+            Ok((values[0] - values[1]) * values[2])
+        }
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "history-write-measurement";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let chat = store.chat_session(id).await?;
+        let history = store.history(id).await?;
+        let mut projection = live_projection(&sink).await?;
+        let (writer, reader) = history.measurement_connections().await?;
+        let before_pages = occupied(&writer).await?;
+        let writer_sample = Sampler::all_statements(&writer).await?;
+        let reader_sample = Sampler::all_statements(&reader).await?;
+        let gate = sink.0.channel.step_lock.lock().await;
+        let body = "测量正文".repeat(2048);
+        let effects = 32u64;
+        let mut original_bytes = 0usize;
+        let mut phase_bytes = 0usize;
+        let mutable_bytes = 0usize;
+        let mut prepared_bytes = 0u64;
+        let mut originals = Vec::new();
+        for seq in 1..=effects {
+            let mut write = visible_input_ticket(id, seq, &format!("input-{seq}"))?;
+            let mut input = write.checkpoint.state.inputs[0].clone();
+            input.input.payload = OpaquePayload::new(
+                "pl.studio.prompt",
+                1,
+                serde_json::json!({"text":body,"presentation":"visible","attachments":[]})
+                    .to_string(),
+            )?;
+            input.input.context = vec![ContextContent::Text {
+                text: body.clone().into(),
+            }];
+            write.checkpoint.state.inputs = Arc::from([input.clone()]);
+            Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
+            let prepared = drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
+            prepared_bytes += prepared.retained_bytes();
+            for fact in prepared.current.lifecycle.iter() {
+                phase_bytes += serde_json::to_vec(&fact.kind)?.len()
+                    + serde_json::to_vec(&fact.delivery)?.len();
+                if let Some(value) = fact.text_channel {
+                    phase_bytes += serde_json::to_vec(&value)?.len();
+                }
+                if let Some(value) = fact.outcome {
+                    phase_bytes += serde_json::to_vec(&value)?.len();
+                }
+                if let pl_protocol::ChatSourceId::InboxMessage {
+                    source_id,
+                    message_id,
+                } = &fact.source
+                {
+                    phase_bytes += serde_json::to_vec(&(source_id, message_id))?.len();
+                }
+            }
+            for item in prepared.completions.iter() {
+                original_bytes += item.payload.len()
+                    + item.header.metadata.len()
+                    + item
+                        .contents
+                        .values()
+                        .map(|content| content.data.len())
+                        .sum::<usize>();
+                originals.push(Arc::downgrade(item));
+            }
+        }
+        let queue_peak = sink.pressure(id).thread_bytes;
+        let resident_before = projection.retained_bytes();
+        drop(gate);
+        sink.flush(id, effects).await?;
+        let writer_work = writer_sample.finish(&writer).await?;
+        let reader_work = reader_sample.finish(&reader).await?;
+        let occupied_growth = occupied(&writer).await? - before_pages;
+        let retained_originals = originals
+            .iter()
+            .filter(|item| item.strong_count() > 0)
+            .count();
+        let metrics = serde_json::json!({
+            "effects":effects,"bodyBytesPerEffect":body.len(),
+            "sqlStatements":writer_work.statements + reader_work.statements,
+            "writerStatements":writer_work.statements,"readerStatements":reader_work.statements,
+            "vmSteps":writer_work.vm_steps + reader_work.vm_steps,
+            "canonicalPayloadMetadataContentBytes":original_bytes,
+            "extraMutableItemJsonBytes":mutable_bytes,"phaseOrLifecycleJsonBytes":phase_bytes,
+            "sumPreparedBudgetBytes":prepared_bytes,"queueBudgetPeakBytes":queue_peak,
+            "queueBudgetAfterDurableBytes":sink.pressure(id).thread_bytes,
+            "projectionBudgetBeforeDurableBytes":resident_before,
+            "projectionBudgetAfterDurableBytes":projection.retained_bytes(),
+            "retainedCanonicalRecordsAfterDurable":retained_originals,
+            "occupiedDatabasePageGrowthBytes":occupied_growth,
+        });
+        eprintln!("HISTORY_WRITE_METRICS {metrics}");
+        ensure!(
+            retained_originals == 0,
+            "durable original records remained resident"
+        );
+        sink.0.channel.stop_and_join().await?;
+        Ok(())
+    }
+
     /// A delayed Running acknowledgement must not retire provider observations published after
     /// its batch was prepared. The writer step lock fixes the interleaving without timing sleeps.
     #[tokio::test]
@@ -8238,7 +8368,7 @@ pub(crate) mod storage_fault_tests {
             store
                 .history(id)
                 .await?
-                .existing_items([failed_id.clone(), current_id.clone()])
+                .execution_seeds([failed_id.clone(), current_id.clone()])
                 .await?
                 .is_empty(),
             "Running saved only its prepared start facts, not these later observations"
@@ -8322,24 +8452,19 @@ pub(crate) mod storage_fault_tests {
             .await?;
         assert!(sink.0.channel.prepare(accepted_batch.clone()));
         let original = accepted_batch
-            .items
+            .completions
             .iter()
-            .find(|item| item.id == item_id)
-            .context("accepted parent message")?
+            .find(|item| item.header.item_id == item_id)
+            .context("accepted parent original")?
             .clone();
-        // Lost publication acknowledgement reuses the frozen handoff; it cannot fold the
-        // same journal effect again or allocate a new identity/content version.
         let mut repeat = accepted_batch.clone();
         projection.publish_prepared(&chat, &mut repeat).await?;
         assert!(Arc::ptr_eq(&accepted_batch, &repeat));
-        assert_eq!(
+        assert!(
             repeat
-                .items
+                .completions
                 .iter()
-                .find(|item| item.id == item_id)
-                .context("the re-observation still projects the identity")?
-                .revision,
-            original.revision
+                .any(|record| Arc::ptr_eq(record, &original))
         );
 
         let (attempt, update) = committed_parts_attempt("child-turn", "child-attempt", 1)?;
@@ -8358,16 +8483,19 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         let history = store.history(id).await?;
-        let saved = history.existing_items([item_id.clone()]).await?;
+        let saved = history.execution_seeds([item_id.clone()]).await?;
         let item = saved.get(&item_id).context("saved parent message")?;
-        assert_eq!(item.ordinal, original.ordinal);
-        assert_eq!(item.turn_id, "child-turn");
-        assert!(item.revision > original.revision);
-        assert!(
-            matches!(item.state(), pl_protocol::ThreadItemState::Text(text)
-            if text.channel() == pl_protocol::ThreadTextChannel::ParentAgent
-                && text.text() == "implement the assigned task")
+        assert_eq!(
+            item.ordinal,
+            serde_json::from_slice::<pl_protocol::ChatAtom>(&original.header.metadata)?
+                .source_order
+                .context("known original source order")?
         );
+        assert_eq!(item.turn_id, "child-turn");
+        assert_eq!(item.id, original.header.item_id);
+        assert!(matches!(item.state(), crate::ExecutionShape::Text(text)
+            if text.channel() == pl_protocol::ThreadTextChannel::ParentAgent
+                && text.text() == "implement the assigned task"));
         assert_eq!(history.watermark().await?, 2);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
 
@@ -8389,7 +8517,7 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
         let followup_id = crate::studio::thread_projection::order::message_id(&record.message.id);
-        let saved = history.existing_items([followup_id.clone()]).await?;
+        let saved = history.execution_seeds([followup_id.clone()]).await?;
         let original = saved[&followup_id].clone();
         projection = live_projection(&sink).await?;
         projection.seed(saved.into_values().collect(), Default::default());
@@ -8408,10 +8536,13 @@ pub(crate) mod storage_fault_tests {
             || channel_facts(&sink),
         )
         .await??;
-        let saved = history.existing_items([followup_id.clone()]).await?;
+        let saved = history.execution_seeds([followup_id.clone()]).await?;
         assert_eq!(saved[&followup_id].ordinal, original.ordinal);
         assert_eq!(saved[&followup_id].turn_id, "next-turn");
-        assert!(saved[&followup_id].revision > original.revision);
+        assert_eq!(
+            saved[&followup_id].revision, original.revision,
+            "binding supplements execution ownership without rewriting the original completion"
+        );
         assert_eq!(history.watermark().await?, 4);
         Ok(())
     }
@@ -8565,27 +8696,22 @@ pub(crate) mod storage_fault_tests {
         projection
             .publish_prepared(&sink.0.chat, &mut prepared)
             .await?;
-        assert!(prepared.items.is_empty() && prepared.completions.is_empty());
+        assert!(prepared.turns.is_empty() && prepared.completions.is_empty());
         // The real handoff also retains current metadata. Isolate the accounting charge without
         // changing the batch submitted below, so omitting accounting still fails this assertion.
         let mut accounting_only = prepared.as_ref().clone();
         accounting_only.current_state = None;
+        let mut without_accounting = accounting_only.clone();
+        without_accounting.accounting = Arc::new(
+            crate::studio::thread_projection::PreparedAccounting::prepare(
+                &ThreadEffectBatch::default(),
+            )?,
+        );
         assert_eq!(
-            accounting_only.retained_bytes(),
+            accounting_only.retained_bytes() - without_accounting.retained_bytes(),
             accounting_only.accounting.retained_bytes()
-                + serde_json::to_vec(accounting_only.current.projection())?.len() as u64
-                + std::mem::size_of::<std::sync::OnceLock<u64>>() as u64
-                + 3 * std::mem::size_of::<usize>() as u64
-                + serde_json::to_vec(accounting_only.current.source_changes.as_ref())?.len() as u64
-                + accounting_only.current.operation_bytes()
-                + serde_json::to_vec(accounting_only.current.atom_facts.as_ref())?.len() as u64
-                + accounting_only.display.as_ref().context("frozen display handoff")?.retained_bytes
-                // Publication consumed the effect-local member updates, but their empty
-                // Arc collection remains part of PreparedEffect's retained shell.
-                + serde_json::to_vec(&[] as &[pl_protocol::ChatAtom])?.len() as u64
-                // Empty first-content evidence and observation plans are also retained.
-                + 2 * b"[]".len() as u64,
-            "content-empty handoffs still own their accounting and persisted current material"
+                - without_accounting.accounting.retained_bytes(),
+            "empty content handoffs must still charge the complete accounting contribution"
         );
         assert!(
             prepared.retained_bytes() > accounting_only.retained_bytes(),
@@ -8769,34 +8895,29 @@ pub(crate) mod storage_fault_tests {
         assert_eq!(chat.head_seq(), 0);
         assert!(!sink.0.channel.prepare(prepared.clone()));
         projection.publish_prepared(&chat, &mut prepared).await?;
-        assert_eq!(prepared.items.len(), 3);
-        assert!(
-            prepared
-                .items
-                .iter()
-                .all(|item| item.revision == 1 && item.ordinal > 0)
-        );
         let actual_ids = prepared
-            .items
+            .completions
             .iter()
-            .map(|item| item.id.clone())
+            .map(|record| record.header.item_id.clone())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(actual_ids, ids.iter().cloned().collect());
-        let ordinals = prepared
-            .items
+        let orders = prepared
+            .current
+            .lifecycle
             .iter()
-            .map(|item| item.ordinal)
+            .filter_map(|fact| fact.source_order)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(ordinals, [1, 2, 3].into_iter().collect());
+        assert_eq!(orders, [1, 2, 3].into_iter().collect());
         assert_eq!(index.inner.lock().unwrap().ceiling, 3);
-        // The third execution identity is inference accounting, not a conversation completion.
-        assert_eq!(prepared.completions.len(), 2);
-        assert!(prepared.completions.iter().all(|record| {
-            prepared.items.iter().any(|item| {
-                item.id == record.header.item_id
-                    && !matches!(item.state(), pl_protocol::ThreadItemState::Inference(_))
-            })
-        }));
+        assert_eq!(prepared.completions.len(), 3);
+        assert_eq!(
+            prepared
+                .completions
+                .iter()
+                .filter(|record| record.header.query_class == "execution")
+                .count(),
+            1
+        );
         for (offset, completion) in prepared.completions.iter().enumerate() {
             assert_eq!(completion.header.append_seq, offset as u64 + 1);
         }
@@ -8805,19 +8926,14 @@ pub(crate) mod storage_fault_tests {
         assert!(Arc::ptr_eq(&published, &prepared));
         assert_eq!(
             chat.head_seq(),
-            2,
+            3,
             "publication retry cannot append duplicate identities"
         );
         assert!(sink.0.channel.prepare(prepared));
         sink.flush(id, 1).await?;
-        assert_eq!(chat.head_seq(), 2);
+        assert_eq!(chat.head_seq(), 3);
         assert_eq!(
-            store
-                .history(id)
-                .await?
-                .items_for_turn(turn_id)
-                .await?
-                .len(),
+            store.history(id).await?.latest_execution_ordinal().await?,
             3
         );
         sink.0.channel.stop_and_join().await?;
@@ -9203,16 +9319,16 @@ pub(crate) mod storage_fault_tests {
         sink.flush(id, 1).await?;
         let turn_id = crate::studio::thread_projection::order::turn_id("visible-turn");
         let original_turn = original
-            .items
+            .turns
             .iter()
-            .find(|item| item.id == turn_id)
+            .find(|write| write.turn.id == "visible-turn")
             .unwrap();
         let history = store.history(id).await?;
         let source_ids = [pl_protocol::ChatSourceId::ForegroundTurn {
             turn_id: "visible-turn".into(),
         }];
         let original_source = history
-            .conversation_sources(&source_ids, 1)
+            .execution_sources(&source_ids, 1)
             .await?
             .pop()
             .context("saved running source")?;
@@ -9232,7 +9348,7 @@ pub(crate) mod storage_fault_tests {
             ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
         assert_eq!(
             sink.0.channel.order_index.assigned(&turn_id),
-            Some(original_turn.ordinal)
+            Some(original_turn.turn_order)
         );
         let mut projection = live_projection(&sink).await?;
         let mut update = ticket(id, 2);
@@ -9248,14 +9364,14 @@ pub(crate) mod storage_fault_tests {
         update.checkpoint.state.turns = Arc::from([running.clone()]);
         Arc::make_mut(&mut update.effect).turn = Some(running);
         let prepared = drive_live_projection(&mut projection, &chat, &sink, id, update).await?;
-        assert_eq!(prepared.items[0].ordinal, original_turn.ordinal);
+        assert_eq!(prepared.execution_order, original_turn.turn_order);
         sink.flush(id, 2).await?;
         assert_eq!(
-            history.item(&turn_id).await?.unwrap().ordinal,
-            original_turn.ordinal
+            history.execution_item(&turn_id).await?.unwrap().ordinal,
+            original_turn.turn_order
         );
         assert_eq!(
-            history.conversation_sources(&source_ids, 2).await?,
+            history.execution_sources(&source_ids, 2).await?,
             vec![original_source],
             "cold activation must retain the original source start, not start the Turn again"
         );
@@ -9296,12 +9412,11 @@ pub(crate) mod storage_fault_tests {
         let opening_batch =
             drive_live_projection(&mut projection, &chat, &sink, id, opening).await?;
         sink.flush(id, 1).await?;
-        let first = opening_batch
-            .items
-            .iter()
-            .map(|item| item.ordinal)
-            .min()
-            .unwrap();
+        let first = serde_json::from_slice::<pl_protocol::ChatAtom>(
+            &opening_batch.completions[0].header.metadata,
+        )?
+        .source_order
+        .context("original execution order")?;
         let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, 1)?;
         let mut step = ticket(id, 2);
         step.checkpoint.state.turns = Arc::from([running]);
@@ -9311,11 +9426,13 @@ pub(crate) mod storage_fault_tests {
         sink.flush(id, 2).await?;
         assert!(
             batch
-                .items
+                .current
+                .lifecycle
                 .iter()
-                .find(|item| item.id == part_id)
+                .find(|fact| fact.identity == part_id)
                 .unwrap()
-                .ordinal
+                .source_order
+                .unwrap()
                 > first
         );
         let finished = turn_record(
@@ -9344,12 +9461,15 @@ pub(crate) mod storage_fault_tests {
             state: input.state,
         }]);
         let late_batch = drive_live_projection(&mut projection, &chat, &sink, id, late).await?;
-        assert_eq!(late_batch.items[0].ordinal, first);
+        assert!(late_batch.completions.is_empty());
         assert!(late_batch.completions.is_empty());
         sink.flush(id, 5).await?;
         assert_eq!(chat.head_seq(), head);
         let history = store.history(id).await?;
-        assert_eq!(history.items_for_turn(turn_id).await?[0].ordinal, first);
+        assert_eq!(
+            history.execution_item(input_id).await?.unwrap().ordinal,
+            first
+        );
         let checkpoint = history.checkpoint().await?.context("saved late fact")?;
         drop(projection);
         // Run the actual Core close, whose Closing/Closed commits are additional reliable facts,
@@ -9366,7 +9486,10 @@ pub(crate) mod storage_fault_tests {
         );
         assert!(closed.history_fence > 5);
         assert_eq!(history.watermark().await?, closed.history_fence);
-        assert_eq!(history.items_for_turn(turn_id).await?[0].ordinal, first);
+        assert_eq!(
+            history.execution_item(input_id).await?.unwrap().ordinal,
+            first
+        );
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
         sink.0.channel.stop_and_join().await?;
         tokio::time::timeout(Duration::from_secs(5), observer).await??;
@@ -9447,7 +9570,7 @@ pub(crate) mod storage_fault_tests {
             Some(crate::studio::thread_projection::order::PresentationPart::OutputText(0)),
         );
         let mut rows = history
-            .existing_items([
+            .execution_seeds([
                 input_id.to_owned(),
                 turn_item_id.clone(),
                 last_part_id.clone(),
@@ -9457,14 +9580,14 @@ pub(crate) mod storage_fault_tests {
             .remove(input_id)
             .expect("the live Turn's consumed input stays a complete durable row");
         match input_row.state() {
-            pl_protocol::ThreadItemState::Text(text) => assert_eq!(text.text(), "hello"),
+            crate::ExecutionShape::Text(text) => assert_eq!(text.text(), "hello"),
             other => panic!("the input row keeps its visible body, got {other:?}"),
         }
         let turn_row = rows
             .remove(&turn_item_id)
             .expect("the Turn row is re-projected onto its own content version");
         match turn_row.state() {
-            pl_protocol::ThreadItemState::Turn(turn) => {
+            crate::ExecutionShape::Turn(turn) => {
                 assert!(matches!(turn.state(), pl_protocol::TurnState::Completed(_)))
             }
             other => panic!("the Turn row keeps its Turn state, got {other:?}"),
@@ -9473,7 +9596,7 @@ pub(crate) mod storage_fault_tests {
             .remove(&last_part_id)
             .expect("the receipt's provider parts are durable rows");
         match part_row.state() {
-            pl_protocol::ThreadItemState::Text(text) => {
+            crate::ExecutionShape::Text(text) => {
                 assert_eq!(text.text(), format!("chunk-{}", parts - 1).as_str())
             }
             other => panic!("the provider part keeps its text, got {other:?}"),
@@ -9642,7 +9765,7 @@ pub(crate) mod storage_fault_tests {
             height: None,
             byte_size: 64 * 1024 * 1024,
         };
-        let tool = pl_protocol::ThreadItem::new(
+        let tool = crate::ExecutionItem::new(
             "tool-item".to_owned(),
             "retained-budget".to_owned(),
             "turn".to_owned(),
@@ -9650,7 +9773,7 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+            crate::ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                 pl_protocol::ThreadToolInvocation::new(
                     "call".to_owned(),
                     "shell".to_owned(),
@@ -9667,7 +9790,7 @@ pub(crate) mod storage_fault_tests {
                 )),
             )),
         );
-        let raw = pl_protocol::ThreadItem::new(
+        let raw = crate::ExecutionItem::new(
             "raw-item".to_owned(),
             "retained-budget".to_owned(),
             "turn".to_owned(),
@@ -9675,7 +9798,7 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
                 vec![pl_protocol::ThreadRawPayload {
                     format: "pl.model.receipt".to_owned(),
                     version: 1,
@@ -9685,7 +9808,7 @@ pub(crate) mod storage_fault_tests {
                 1,
             )),
         );
-        let failed_text = pl_protocol::ThreadItem::new(
+        let failed_text = crate::ExecutionItem::new(
             "failed-text".to_owned(),
             "retained-budget".to_owned(),
             "turn".to_owned(),
@@ -9693,7 +9816,7 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Text(pl_protocol::ThreadTextItem::new(
+            crate::ExecutionShape::Text(pl_protocol::ThreadTextItem::new(
                 pl_protocol::ThreadTextChannel::Commentary,
                 "visible".to_owned(),
                 vec![attachment],
@@ -10412,6 +10535,19 @@ pub(crate) mod storage_fault_tests {
             let first =
                 drive_live_projection(&mut projection, &chat, &sink, id, initial.clone()).await?;
             sink.flush(id, 1).await?;
+            // 此夹具从后台 ACK 开始，补入生产中更早的模型完成已保存的同一 invocation。
+            // 只改测试种子，不增加运行期从上下文扫描参数的后备路径。
+            let saved_path = store
+                .session_paths("project-test", id)?
+                .root()
+                .join("history.sqlite");
+            let saved_db =
+                Database::connect(format!("sqlite://{}?mode=rw", saved_path.display())).await?;
+            saved_db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
+                "UPDATE history_tool_tasks SET task_payload=json_set(task_payload,'$.invocation',json(?)) WHERE call_id=?",
+                vec![serde_json::to_string(&context.records[0].tool_calls[0])?.into(),call_id.into()])).await?;
+            saved_db.close().await?;
+
             let ack_id =
                 crate::studio::thread_projection::order::tool_background_started_id(call_id);
             let tool_item_id = crate::studio::thread_projection::order::tool_id(call_id);
@@ -10431,7 +10567,7 @@ pub(crate) mod storage_fault_tests {
             );
             assert!(!index.is_sealed(&ack_id));
             let original_tool = history
-                .item(&tool_item_id)
+                .execution_item(&tool_item_id)
                 .await?
                 .context("saved running tool")?;
             if cold_projection {
@@ -10525,14 +10661,10 @@ pub(crate) mod storage_fault_tests {
                 sink.0.channel.process_bytes.load(Ordering::Acquire),
                 before_process - before_index + after_index
             );
-            assert!(prepared.items.iter().all(|item| item.ordinal > 0));
-            let tool = prepared
-                .items
-                .iter()
-                .find(|item| item.id == tool_item_id)
-                .unwrap();
+            let tool = index
+                .pending_placement(&tool_item_id, id)
+                .context("reused original tool placement")?;
             assert_eq!(tool.ordinal, original_tool.ordinal);
-            assert_eq!(tool.revision, original_tool.revision);
             sink.0
                 .channel
                 .set_projection_retention(ProjectionRetention {
@@ -11523,29 +11655,14 @@ pub(crate) mod storage_fault_tests {
             first.display.as_ref().context("original display")?,
             second.display.as_ref().context("replayed display")?,
         ));
-        assert_eq!(
-            first.items[0].revision, 1,
-            "a first delivery takes the projection's own content version, not the commit sequence"
-        );
-        assert_eq!(
-            serde_json::to_vec(&first.items)?,
-            serde_json::to_vec(&second.items)?,
-            "redelivery of the frozen effect is byte-identical, so one version never names two payloads"
-        );
+        assert_eq!(first.completions.len(), 1);
+        assert!(Arc::ptr_eq(&first.completions[0], &second.completions[0]));
         Ok(())
     }
 
-    /// The durable row carries the item's own **content version**, never the effect sequence that
-    /// committed it, and a cold read of the same history file observes the same value.
-    ///
-    /// A save receipt is a fact about one exact `(identity, content version)` pair. Substituting the
-    /// commit sequence for the version would let an acknowledgement vouch for a payload the store
-    /// never wrote, so both ends are pinned here: the shared session confirms exactly the revision
-    /// the projection published, and a separate history handle — the cold path, which decodes the
-    /// durable row itself instead of reading live projection state — returns that same revision.
+    /// Cold reads preserve the exact published original across the real writer acknowledgement.
     #[tokio::test]
-    async fn the_durable_row_keeps_the_items_own_content_version_across_a_cold_read() -> Result<()>
-    {
+    async fn the_durable_original_keeps_the_published_bytes_across_a_cold_read() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         register_test_thread(&store, &test_thread("revision-fence")).await?;
@@ -11586,37 +11703,19 @@ pub(crate) mod storage_fault_tests {
         )
         .await??;
 
-        // The real allocation entry point is pinned, not just "different from the commit sequence":
-        // a fresh projection's first delivery of a new identity is that identity's content version 1.
-        let published = prepared
-            .items
-            .iter()
-            .find(|item| item.id == "revision-input")
-            .context("the accepted input is part of the prepared batch")?;
-        assert_eq!(
-            published.revision, 1,
-            "a first delivery takes the projection's own content version, not the commit sequence"
-        );
-        assert_ne!(
-            published.revision, 9,
-            "a content version is the item's own fact, never the commit sequence"
-        );
         assert_eq!(prepared.completions.len(), 1);
-        assert_eq!(prepared.completions[0].header.item_id, "revision-input");
-
+        let published = &prepared.completions[0];
+        assert_eq!(published.header.item_id, "revision-input");
         let path = store
             .session_paths("project-test", "revision-fence")?
             .root()
             .join("history.sqlite");
         let cold =
             crate::studio::storage::history::HistoryStore::open(&path, "revision-fence").await?;
-        let durable = cold.items_for_turn("visible-turn").await?;
-        assert_eq!(durable.len(), 1);
-        assert_eq!(durable[0].id, "revision-input");
-        assert_eq!(
-            durable[0].revision, published.revision,
-            "the persisted row carries the same content version the projection allocated"
-        );
+        let durable = pl_core::chat::ChatHistory::item(&cold, "revision-input")
+            .await?
+            .context("cold original")?;
+        assert_eq!(&durable, published.as_ref());
         Ok(())
     }
 
@@ -11970,21 +12069,10 @@ pub(crate) mod storage_fault_tests {
             expected.as_slice(),
             "the archive stores the accepted bytes verbatim, once, without the partial write"
         );
-        let items = history.items_for_turn("capture-turn").await?;
-        let output = items
-            .iter()
-            .find_map(|item| match item.state() {
-                pl_protocol::ThreadItemState::Tool(tool) => tool.terminal_output(),
-                _ => None,
-            })
-            .context("the repaired call keeps its durable terminal result")?;
+        let output = &delivery.delivered_context;
         let referenced = serde_json::to_value(&reference)?;
         assert_eq!(
-            output
-                .output_artifacts()
-                .iter()
-                .filter(|artifact| *artifact == &referenced)
-                .count(),
+            output.iter().filter(|content|matches!(content,ContextContent::Resource { reference:actual } if serde_json::to_value(actual).ok().as_ref()==Some(&referenced))).count(),
             1,
             "the durable item carries the repaired reference exactly once"
         );
@@ -12034,7 +12122,7 @@ pub(crate) mod storage_fault_tests {
             )
             .await?;
         let off_window_id = format!("tool:{}:capture-2", "capture-2".len());
-        let off_window_item = pl_protocol::ThreadItem::new(
+        let off_window_item = crate::ExecutionItem::new(
             off_window_id.clone(),
             "archive-repair".to_owned(),
             "capture-turn".to_owned(),
@@ -12042,7 +12130,7 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Tool(pl_protocol::ThreadToolItem::new(
+            crate::ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
                 pl_protocol::ThreadToolInvocation::new(
                     "capture-2".to_owned(),
                     "capture".to_owned(),
@@ -12074,15 +12162,44 @@ pub(crate) mod storage_fault_tests {
             .commit_effect(
                 1_000_000,
                 EffectCommit {
-                    items: std::slice::from_ref(&off_window_item),
+                    turns: &[],
+                    execution_order: off_window_item.ordinal,
                     completions: &original_completion,
                     current: &frozen_current.current,
                     rolled_back_turns: &Default::default(),
                     identities: &[],
                     messages: &[],
                     receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
+                    tasks: &[pl_core::thread::task::TaskRecord {
+                        id: "task:capture-2".into(),
+                        parent_call_id: None,
+                        invocation: Some(ModelToolCall {
+                            call_id: "capture-2".into(),
+                            tool_id: "capture".into(),
+                            arguments: OpaquePayload::text("{}"),
+                            presentation_contract: None,
+                            rejection: None,
+                        }),
+                        call_id: "capture-2".into(),
+                        tool_id: "capture".into(),
+                        turn_id: "capture-turn".into(),
+                        revision: 1,
+                        status: TaskStatus::Succeeded,
+                        cancel_requested: false,
+                        acknowledgement: None,
+                        started_sequence: Some(999_999),
+                    }],
+                    deliveries: &[pl_core::thread::ToolDelivery {
+                        target: pl_core::thread::ToolDeliveryTarget::CallResult,
+                        call_id: "capture-2".into(),
+                        tool_id: "capture".into(),
+                        output: pl_core::tool::ToolOutput::new(
+                            OpaquePayload::text("accepted so far"),
+                            vec![],
+                        ),
+                        delivered_context: vec![],
+                        outcome: pl_core::thread::ToolOutcome::Succeeded,
+                    }],
                     delivery_repairs: &[],
                     attempt: None,
                 },
@@ -12133,22 +12250,44 @@ pub(crate) mod storage_fault_tests {
             pl_core::chat::ChatHistory::item(&history, &off_window_id).await?,
             Some((*original_completion[0]).clone())
         );
-        let repackaged = packaged
-            .items
-            .iter()
-            .find(|item| item.id == off_window_id)
-            .context("the off-window repair is projected at its original identity")?;
-        assert_eq!(
-            repackaged.ordinal, off_window_item.ordinal,
-            "the supplement keeps the committed position instead of taking a new one"
+        assert!(
+            packaged
+                .current
+                .lifecycle
+                .iter()
+                .all(|fact| fact.identity != off_window_id
+                    || fact.source_order == Some(off_window_item.ordinal))
         );
-        assert_eq!(
-            repackaged.revision,
-            off_window_item.revision + 1,
-            "the single projection owner assigns the content version; the writer never invents one"
-        );
-        let repackaged_output = match repackaged.state() {
-            pl_protocol::ThreadItemState::Tool(tool) => tool.terminal_output(),
+        let repackaged = off_window_channel
+            .order_index()
+            .pending_placement(&off_window_id, "archive-repair")
+            .context("original repaired placement")?;
+        assert_eq!(repackaged.ordinal, off_window_item.ordinal);
+        history
+            .commit_effect(
+                repair_only.sequence,
+                EffectCommit {
+                    turns: &packaged.turns,
+                    execution_order: packaged.execution_order,
+                    completions: &packaged.completions,
+                    current: &packaged.current,
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[],
+                    receipts: &[],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &repair_only.delivery_repairs,
+                    attempt: None,
+                },
+            )
+            .await?;
+        let recovered = history
+            .execution_item(&off_window_id)
+            .await?
+            .context("saved tool original")?;
+        let repackaged_output = match recovered.state() {
+            crate::ExecutionShape::Tool(tool) => tool.terminal_output(),
             _ => None,
         }
         .context("the off-window supplement keeps the terminal tool result")?;

@@ -27,7 +27,7 @@ extension ConversationTestDelivery on ConversationSession {
       ConversationStateEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: 17,
-          completedHistoryVersion: 1,
+          completedHistoryVersion: completedHistoryVersion,
           workspace: workspace,
         ),
       ),

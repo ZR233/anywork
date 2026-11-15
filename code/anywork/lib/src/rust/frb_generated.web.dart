@@ -877,15 +877,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeCompletionRunPosition
-  dco_decode_box_autoadd_bridge_completion_run_position(dynamic raw);
-
-  @protected
-  BridgeCompletionRunRef dco_decode_box_autoadd_bridge_completion_run_ref(
-    dynamic raw,
-  );
-
-  @protected
   BridgeContentOwner dco_decode_box_autoadd_bridge_content_owner(dynamic raw);
 
   @protected
@@ -2383,6 +2374,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeChatBatch dco_decode_bridge_chat_batch(dynamic raw);
 
   @protected
+  BridgeChatClassFilter dco_decode_bridge_chat_class_filter(dynamic raw);
+
+  @protected
   BridgeChatContentRole dco_decode_bridge_chat_content_role(dynamic raw);
 
   @protected
@@ -2489,14 +2483,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCompletedEntry dco_decode_bridge_completed_entry(dynamic raw);
-
-  @protected
-  BridgeCompletionRunPosition dco_decode_bridge_completion_run_position(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeCompletionRunRef dco_decode_bridge_completion_run_ref(dynamic raw);
 
   @protected
   BridgeConnectionModeDescriptor dco_decode_bridge_connection_mode_descriptor(
@@ -2788,9 +2774,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeLspStateSnapshot dco_decode_bridge_lsp_state_snapshot(dynamic raw);
-
-  @protected
-  BridgeMainPresentation dco_decode_bridge_main_presentation(dynamic raw);
 
   @protected
   BridgeMcpCatalogEntry dco_decode_bridge_mcp_catalog_entry(dynamic raw);
@@ -4543,10 +4526,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeCompletionRunPosition?
-  dco_decode_opt_box_autoadd_bridge_completion_run_position(dynamic raw);
-
-  @protected
   BridgeContentRef? dco_decode_opt_box_autoadd_bridge_content_ref(dynamic raw);
 
   @protected
@@ -5772,17 +5751,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCodexAccountInfo sse_decode_box_autoadd_bridge_codex_account_info(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCompletionRunPosition
-  sse_decode_box_autoadd_bridge_completion_run_position(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCompletionRunRef sse_decode_box_autoadd_bridge_completion_run_ref(
     SseDeserializer deserializer,
   );
 
@@ -7790,6 +7758,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeChatBatch sse_decode_bridge_chat_batch(SseDeserializer deserializer);
 
   @protected
+  BridgeChatClassFilter sse_decode_bridge_chat_class_filter(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeChatContentRole sse_decode_bridge_chat_content_role(
     SseDeserializer deserializer,
   );
@@ -7924,16 +7897,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCompletedEntry sse_decode_bridge_completed_entry(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCompletionRunPosition sse_decode_bridge_completion_run_position(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCompletionRunRef sse_decode_bridge_completion_run_ref(
     SseDeserializer deserializer,
   );
 
@@ -8315,11 +8278,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeLspStateSnapshot sse_decode_bridge_lsp_state_snapshot(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeMainPresentation sse_decode_bridge_main_presentation(
     SseDeserializer deserializer,
   );
 
@@ -10440,12 +10398,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeCompletionRunPosition?
-  sse_decode_opt_box_autoadd_bridge_completion_run_position(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeContentRef? sse_decode_opt_box_autoadd_bridge_content_ref(
     SseDeserializer deserializer,
   );
@@ -11908,18 +11860,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_codex_account_info(
     BridgeCodexAccountInfo self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_completion_run_position(
-    BridgeCompletionRunPosition self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_completion_run_ref(
-    BridgeCompletionRunRef self,
     SseSerializer serializer,
   );
 
@@ -14261,6 +14201,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_chat_class_filter(
+    BridgeChatClassFilter self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_chat_content_role(
     BridgeChatContentRole self,
     SseSerializer serializer,
@@ -14425,18 +14371,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_completed_entry(
     BridgeCompletedEntry self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_completion_run_position(
-    BridgeCompletionRunPosition self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_completion_run_ref(
-    BridgeCompletionRunRef self,
     SseSerializer serializer,
   );
 
@@ -14902,12 +14836,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_lsp_state_snapshot(
     BridgeLspStateSnapshot self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_main_presentation(
-    BridgeMainPresentation self,
     SseSerializer serializer,
   );
 
@@ -17452,12 +17380,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_codex_account_info(
     BridgeCodexAccountInfo? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_bridge_completion_run_position(
-    BridgeCompletionRunPosition? self,
     SseSerializer serializer,
   );
 

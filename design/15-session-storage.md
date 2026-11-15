@@ -96,7 +96,7 @@ Session 统一读取不可变完成 pending 与已持久化历史，完成发布
 
 投影移交与终态对外通知的责任亦须分开：批次已经 prepared 或 durable，不代表原父报告发布及审查裁决已接管。Studio 在原投影与既有受管 operation 之间保持连续、可取消等待的责任移交，保存故障或登记所需容量不足后仍能按真实恢复条件自动接续；不能依赖重投影同一批次、公开查询或关闭扫描补洞。该产品交付操作不负责重新生成内容投影，可按原身份读取已保存消息与成功工具交付；正常内容投影的热路径不因此增加历史回读。具体所有权、预算与恢复边界见 [17.15](./17-studio-storage.md#1715-审查结论与独立投递异常的可靠交付)。
 
-产品观察任务直接消费内存中的状态副作用来投影计费、目录摘要与轮次终态事实，不逐批刷盘等待：每条状态副作用由该会话唯一的实时投影所有者投影一次，终态报告与目录摘要直接取自这份可靠内存投影结果，从而使跨越多次状态提交的长轮次能够完整携带此前已提交的正文，而非仅包含收束轮次的最后一条提交。终态报告仅纳入**已正式提交**的条目身份：流式预览仅属界面展示事实，未经提交收束的预览正文不进入父会话报告或目录摘要；同一 `(item_id, part_id)` 的正式提交条目直接原地替换流式预览，不追加第二条记录。内存投影无法证明自身覆盖该轮次自起点以来全部条目时，才在投影安装或无常驻投影的冷恢复边界按 `items_for_turn` 重建有界切片，并遵守必要的持久化屏障。常规正文变化命中当前投影，不按 token 回读 SQL；已回收身份被迟到可靠事实重新引用时，允许按该事实的精确身份读取现有 `history_items` 和完成集合，恢复原 ordinal、revision 与已完成判定，不扫描整段历史、不等待 flush、不重新封口。内存投影从轮次起点连续折叠时，终态报告与目录摘要完全由内存生成。
+产品观察任务直接消费内存中的状态副作用来投影计费、目录摘要与轮次终态事实，不逐批刷盘等待：每条状态副作用由该会话唯一的实时投影所有者投影一次，终态报告与目录摘要直接取自这份可靠内存投影结果，从而使跨越多次状态提交的长轮次能够完整携带此前已提交的正文，而非仅包含收束轮次的最后一条提交。终态报告仅纳入**已正式提交**的条目身份：流式预览仅属界面展示事实，未经提交收束的预览正文不进入父会话报告或目录摘要；同一 `(item_id, part_id)` 的正式提交条目直接原地替换流式预览，不追加第二条记录。内存投影无法证明自身覆盖该轮次自起点以来全部条目时，才在投影安装或无常驻投影的冷恢复边界按 typed Turn 与真实 parent 的原件范围重建有界切片，并遵守必要的持久化屏障。常规正文变化命中当前投影，不按 token 回读 SQL；已回收身份被迟到可靠事实重新引用时，允许按该事实的精确身份读取完成原件、typed 生命周期及必要的 Task／业务回执，恢复真实执行位置与已完成判定，不扫描整段历史、不等待 flush、不重新封口。内存投影从轮次起点连续折叠时，终态报告与目录摘要完全由内存生成。
 
 实时投影为生成终态报告维护**有界的报告累积器**：按条目身份归并的终态文本、有数量上限的可见旁白（`commentary`）兜底摘要、最新工具调用条目，以及当前仍需的已提交身份。同一条目更高内容版本原地替换，不随词元或修订次数膨胀。可变正文只在仍可能被后续提交引用时驻留；其余已完成正文归完成 `Session` 的有界 pending 与磁盘历史库，不存在第二份尾部历史缓存。可选的历史位置元数据最多保留 `LIVE_ITEM_WINDOW` 条，当前运行中轮次、尝试、输入、工具交付实际仍引用的身份和未持久化事实不随窗口淘汰；这些必须保留的居民同样受可靠字节预算约束。终态记忆和已封口身份只保留相同的有界职责范围，不以整个进程或会话累计身份数为上限。脱离活跃引用且已可靠保存后回收，迟到预览先校验当前来源生命周期，不能复活已结束成员；迟到可靠事实在精确身份冷读边界恢复。报告、索引、终态记忆和驻留内容的实际内存均计入所属预算（见 §15.3），保存完成后无活跃义务的身份必须使预算回落。
 
@@ -196,104 +196,41 @@ Session 统一读取不可变完成 pending 与已持久化历史，完成发布
 
 通用 SQLite 后端删除已停止的会话时，通过 `delete_session` 在独占数据库锁下于同一事务内删除该会话的检查点、当前资源与历史记录；若存在活跃写入器则拒绝删除，其他会话的数据不受影响。产品目录索引、物理工作树资源与用户工作区文件不属于该通用数据库删除操作，由宿主按自身的可恢复清理流程协调。
 
-Studio 每会话的 `history.sqlite` 同时保存执行恢复事实与唯一完成读模型 `conversation_items`，不保存完整内核 effect 日志。物理布局、安全目录摘要键、统一 Workspace 归属、可靠资源、完成内容/current 表及正式迁移统一归 [17](./17-studio-storage.md)，不另维护第二份布局。下列 `history_items` 等表是内部执行/恢复结构，不是公开聊天分页协议；完成消息、预算和读取归 [26](./26-timeline-content.md)。
+Studio 每会话的 `history.sqlite` 同时保存执行恢复事实与唯一完成读模型 `conversation_items`，不保存完整内核 effect 日志。物理布局、安全目录摘要键、统一 Workspace 归属、可靠资源、完成内容/current 表及正式迁移统一归 [17](./17-studio-storage.md)，不另维护第二份布局。当前 schema 24 将事实按所有者分开保存：完成原件归 `conversation_items` 与内容表，当前执行归 checkpoint、Task、delivery、身份及业务回执，轮次检索归 typed `history_turns`，原件无法重建的开始／结束证据归 `execution_lifecycle`。表和索引的完整契约见 [17](./17-studio-storage.md)。正常读写不再使用 `history_items` 或完整 ChatAtom 阶段 JSON。
 
 ```sql
-CREATE TABLE history_meta (
-    id                INTEGER PRIMARY KEY CHECK (id = 1),
-    schema_version    INTEGER NOT NULL,
-    database_id       TEXT NOT NULL,
-    thread_id         TEXT NOT NULL,
-    applied_write_seq INTEGER NOT NULL
-);
-
-CREATE TABLE history_items (
-    ordinal         INTEGER PRIMARY KEY,
-    item_id         TEXT NOT NULL UNIQUE,
-    turn_id         TEXT NOT NULL,
-    kind            TEXT NOT NULL,
-    revision        INTEGER NOT NULL,
-    lifecycle       TEXT NOT NULL,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    payload         TEXT NOT NULL CHECK (json_valid(payload)),
-    last_write_seq  INTEGER NOT NULL
-);
-
-CREATE INDEX history_items_by_turn               ON history_items(turn_id, ordinal);
-CREATE INDEX history_items_by_kind_lifecycle     ON history_items(kind, lifecycle, ordinal);
-CREATE INDEX history_terminal_turns_by_write_seq ON history_items(last_write_seq, ordinal)
-    WHERE kind='turn' AND lifecycle='terminal';
-CREATE INDEX history_items_by_kind               ON history_items(kind, ordinal);
-
--- 终态 Turn 首次提交时的 last_write_seq 作为终态通知身份，后续修订不得改写该序号。
-
+-- 其他已有身份、模型路由和展示水位列保持其各自契约。
+-- execution_order 是执行位置上界，与 applied_write_seq 一起原子提交。
 CREATE TABLE history_turns (
-    turn_id         TEXT PRIMARY KEY,
-    first_ordinal   INTEGER NOT NULL,
-    last_ordinal    INTEGER NOT NULL,
-    revision        INTEGER NOT NULL,
-    payload         TEXT NOT NULL CHECK (json_valid(payload)),
-    last_write_seq  INTEGER NOT NULL
-);
-
-CREATE INDEX history_turns_by_last_ordinal ON history_turns(last_ordinal);
-
-CREATE TABLE history_input_identities (  -- submitPrompt 跨重启幂等身份索引
-    item_id        TEXT PRIMARY KEY,
-    ordinal        INTEGER NOT NULL,
-    revision       INTEGER NOT NULL,
-    digest         TEXT NOT NULL,
-    request_digest TEXT,
-    payload        TEXT NOT NULL CHECK (json_valid(payload)),
-    last_write_seq INTEGER NOT NULL
-);
-
-CREATE TABLE history_fact_receipts (     -- 交互、权限及产品可靠消息事实（与所属状态副作用同事务写入）
-    item_id        TEXT NOT NULL,
-    revision       INTEGER NOT NULL,
-    kind           TEXT NOT NULL,
-    digest         TEXT NOT NULL,
-    payload        TEXT NOT NULL CHECK (json_valid(payload)),
-    last_write_seq INTEGER NOT NULL,
-    PRIMARY KEY(item_id, revision)
-);
-
-CREATE TABLE history_message_identities ( -- 已受理消息最小身份索引；digest 可空
-    message_id     TEXT PRIMARY KEY,
-    item_id        TEXT NOT NULL,
-    sequence       INTEGER NOT NULL,
-    digest         TEXT,
-    last_write_seq INTEGER NOT NULL
-);
+    turn_id TEXT PRIMARY KEY NOT NULL,
+    turn_order INTEGER NOT NULL CHECK(turn_order > 0),
+    admitted_effect INTEGER,
+    updated_effect INTEGER,
+    terminal_effect INTEGER,
+    payload TEXT NOT NULL CHECK(json_valid(payload)),
+    context_disposition TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX history_turns_order ON history_turns(turn_order, turn_id);
+CREATE INDEX history_turns_terminal
+    ON history_turns(terminal_effect, turn_order, turn_id)
+    WHERE terminal_effect IS NOT NULL;
 ```
 
-`ordinal` 在条目首次创建时分配，后续完成次序不会改变该顺序号；`revision` 表示同一条目的内容修订版本，`last_write_seq` 表示持久化协调水位。条目更新必须满足以下不变式：
+`turn_order` 是真实执行位置，不能充当展示成员范围；轮次不再保存 `first_ordinal`／`last_ordinal`。终态 effect 是实际业务终态身份，后续相同事实重试不能改写。输入／消息在接纳时冻结原件，之后实际消费只补生命周期索引的真实轮次绑定，不改原件内容、序号或修订。隐藏续接保留明确身份，不能凭原件缺失猜测隐藏。
 
-- 相同 `(item_id, revision)` 且内容逐字节相同时保持幂等；相同 `(item_id, revision)` 但内容不同则判定为版本冲突；
-- 较低的旧 `revision` 不得覆盖较高的新 `revision`；
-- 条目的所属会话、`turn_id`、`ordinal` 与 `kind` 一经写入不可更改；
-- 已处于终态（`terminal`）的条目拒绝迟到的流式草稿或增量分片（`delta`）。
+实时投影可以临时使用 crate 内的 typed 执行值，但 `PreparedEffect` 不保留完整可变条目集合。它交付共享的 `Arc<ChatItem>`、typed Turn／生命周期增量及原业务事实；writer 与 pending 持有同一完成原件。流式进度只更新已有内存内容所有者，不逐 token 保存，不额外建立正文日志。
 
-实时投影侧对第一条幂等性不变式负有直接保证责任：同一个 `(item_id, revision)` 产出的载荷必须**逐字节严格一致**。条目内容版本由实时投影自身的计数器维护（与状态副作用提交序号及保存水位无关），唯有当轮次绑定、正文内容、结构形态或终态形状发生实质变化时才递增 `revision`；若重复投影未改变上述实质内容，则必须沿用上一次交付的位置元数据与时间戳，将每次投影时的当前墙钟时间排除在“内容变化”之外，防止同一 `revision` 产出两份时间戳不同的载荷而触发保存冲突故障。
+后台工具恢复按精确 call 身份读取真实 Task invocation、delivery、修复与交互回执；必要的完成正文从规范原件读取。尚无完成原件的工具与独立操作由真实业务状态及最小生命周期证据恢复，不制造空完成或假开始时间。资源修复补充可靠交付记录，不能重新封口或修改已经发布的完成原件。
 
-后台工具任务可在所属轮次已结束、且会话所有者已裁剪该轮模型尝试记录之后才完成并交付结果。此时结果状态副作用仍完整携带工具任务与交付事实；实时投影必须从已提交的同一 `tool` 条目回读原始调用身份、调用参数与所属 `turn_id` 后再更新其终态，既不能要求会话检查点永久保留已结束的模型尝试，也不得猜测或重新生成工具调用记录。实时视图优先从会话内存窗口读取该工具条目身份，滑出窗口时回读历史库；历史写入器按 `write_seq` 顺序保证先落盘工具调用再落盘工具结果。若内存窗口与历史库均未找到对应的已受理调用，则持久化保存明确失败并保留待保存结果以供恢复，绝不静默丢弃或将其当作新的工具调用插入。
-
-`history_items.payload` 存储条目自身的 JSON 正文，表结构不设独立的 `payload_format` 或 `payload_version` 列：当需要保存无法按现有结构解释的原始载荷时，统一存为 `kind = 'raw'` 的条目，将其格式与版本随 `ThreadRawPayload` 封装在 `payload` JSON 内部（见 [16](./16-core-contracts.md)）。`history_meta` 中的 `thread_id`、`database_id` 与 `applied_write_seq` 共同构成游标与水位身份；`history_message_identities.digest` 允许为空，仅用于兼容历史迁移回填留下的“身份已知但原始正文不可验证”的记录（读取方对此按失败关闭处理）。
-
-内部执行投影在接管输入或供应商条目时分配 ordinal，writer 消费该键；它不是公开完成 seq 或 UI 顺序。watch 可合并当前观察，可靠成员完成仍走 effect 准入。流式 delta 只更新原内存内容 owner，不写 history_items 或定时保存草稿；UI 使用有界 current/内容窗口，不直接拼 delta。成功/失败/取消事实随同一 ThreadEffectBatch 保存内部最终 revision，输入/消息回执同事务生效。公开完成按可靠结束另行发布到 Session，无需等待 SQLite；不持久化逐 token 日志，检查点不越过可靠水位栅栏。
-
-Runtime 执行顺序索引由现有 `HistoryChannel` 强持有并显式注入实时投影，不使用进程级强注册表。writer 替换复用同一活动 channel 的分配上界与未决预留；停止并真实汇合全部所有者后释放，冷重开从 `history_items` 最大执行 ordinal 恢复。同步原始展示预留显式携带真实 attempt 身份，不解析 item ID 推断生命周期。索引只保留活跃来源、仍被引用或待保存的身份；事务确认和来源退役共同触发回收，保存失败不得提前丢失预留。持久化身份重新引用从原事实恢复顺序，不新分配；可丢弃的未物化预览预留在来源结束后释放，但标量分配上界不回退。索引居民计入线程可靠预算，不能靠取消计费掩盖增长。
-
-父智能体或跨会话输入受理后生成冻结的可见输入事实；尚未知的消费 Turn 不在之后补写历史。收件箱和内部 history_items 保留正文/身份与执行 ordinal/revision，消费绑定可更新内部事实但不得修改完成原子。恢复按原身份幂等，不重新发布同一可见输入。
+Runtime 执行顺序索引由现有 `HistoryChannel` 持有并注入投影。冷重开使用 `history_meta.execution_order`，精确身份的 placement 来自 typed Turn／生命周期及原件；完成 `append_seq`、来源顺序与 GUI `BlockOrder` 都不能替代执行位置。事务确认与来源退役共同回收 RAM 中的未决索引；保存失败保留原预留及可靠预算，标量上界不回退。
 
 实时投影初始化时的历史读取范围同时涵盖当前检查点状态、内核瞬态窗口保留的未落盘提交，以及可靠保存队列中尚未完成投影移交的批次引用。当存储背压导致部分提交暂存于内核窗口尚未进入保存队列时，初始化过程仍须从内核保留窗口获取引用。恢复提交可能已收束早期轮次，且最新检查点已裁剪该轮次及对应输入正文，但此类状态裁剪不得抹去保存队列中待投影批次所需的历史依赖。投影初始化必须完整加载相关的轮次、工具调用、消息条目及隐藏输入身份，再按队列提交顺序依次投影；禁止因找不到展示条目而将缺失输入猜测为隐藏输入，也不在投影报错后执行事后补查或重放。
 
 ## 15.6 完成读取与内部执行查询
 
-对外完成读取由原 Session 按 scope、需求和不透明 before 统一提供，见 [26](./26-timeline-content.md)。Main 段代表、Run 明细、Children 与按 ID 读取共用 conversation_items/contents；捕获 RAM 切点后才开新 SQLite 快照补不足前缀。保留完成 through 前缀，不保留旧展示 Item/Update、字段 patch 或旧表 fallback；真实 current 业务查询独立。
+对外完成读取由原 Session 按 scope、需求和不透明 before 统一提供，见 [26](./26-timeline-content.md)。所有完成读取统一使用原件 Records，以显式 Class／All 和可选真实 parent 选择集合；按 ID 读取共用 conversation_items/contents；捕获 RAM 切点后才开新 SQLite 快照补不足前缀。保留完成 through 前缀，不保留旧展示 Item/Update、字段 patch 或旧表 fallback；真实 current 业务查询独立。
 
-history_items、history_turns、输入身份、工具交付和 checkpoint 保留执行恢复及子智能体审查职责。其内部按 ordinal/write_seq/身份读取不得作为第二 Timeline 正文源；仍有独立执行消费者的查询保留其真实领域名称，不以转发别名维持旧 UI API。数据表和载荷升级只能在 [17](./17-studio-storage.md) 的正式迁移 preparation 内完成，正常 reader 不解码旧格式或自动清库。
+typed history_turns、execution_lifecycle、输入身份、工具交付和 checkpoint 保留执行恢复及子智能体审查职责。其内部按 ordinal/write_seq/身份读取不得作为第二 Timeline 正文源；仍有独立执行消费者的查询保留其真实领域名称，不以转发别名维持旧 UI API。数据表和载荷升级只能在 [17](./17-studio-storage.md) 的正式迁移 preparation 内完成，正常 reader 不解码旧格式或自动清库。
 
 `read_agent_session` 只读取原 `HistoryStore::agent_page` 中已提交的执行历史，尚未保存内容可能不在本页；不保证实时完整，不在读取前后、下一页或错误重试中促发 flush，也不激活执行、恢复、SSH 或模型。原 detail/order、条目形状、祖先权限与 cursor 目标/ceiling/through/anchor 校验保持。单页水位、ceiling 和内容使用同一短读事务；cursor 沿既有 ordinal keyset 冻结读取范围，不承诺多次请求持有同一个数据库事务或旧修订版本。throughSequence 表达该保存读取范围，空页不证明执行已结束。原调用 cancellation 贯通只读 Future，取消释放事务及读取资格，真实错误不吞成空页，不 spawn 后台补查或建立 RAM/SQLite 合并器。
 

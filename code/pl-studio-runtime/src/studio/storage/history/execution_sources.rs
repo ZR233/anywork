@@ -3,8 +3,9 @@ use super::*;
 use pl_protocol::{
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
+use sea_orm::QueryResult;
 
-pub(in super::super) const CREATE_SCHEMA: &str = "
+pub(in crate::studio::storage::history) const CREATE_SCHEMA: &str = "
 CREATE TABLE conversation_sources (
  source_key TEXT PRIMARY KEY NOT NULL,
  started_effect INTEGER, started_suborder INTEGER,
@@ -106,42 +107,6 @@ pub(crate) async fn read(
                 cut,
             ));
         }
-    }
-    Ok(result)
-}
-
-/// Only the already selected page and, for Main, bounded current participate in this snapshot.
-/// Payloads, checkpoints and sources outside this selection are deliberately not read.
-pub(in super::super) async fn read_selected(
-    db: &impl ConnectionTrait,
-    page: &ChatHistoryPage,
-    current: &pl_protocol::CurrentProjection,
-    include_current: bool,
-) -> Result<Vec<ChatSourceState>> {
-    let mut selected = std::collections::BTreeSet::new();
-    for item in &page.items {
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&item.header.metadata)
-            .with_context(|| format!("invalid atom metadata for {}", item.header.item_id))?;
-        selected.insert(atom.source);
-    }
-    if include_current {
-        selected.extend(current.sources.iter().map(|state| state.source.clone()));
-        selected.extend(current.atoms.iter().map(|atom| atom.source.clone()));
-        if let Some(turn) = &current.active_turn {
-            selected.insert(ChatSourceId::ForegroundTurn {
-                turn_id: turn.id.clone(),
-            });
-        }
-    }
-    // Each individual input is bounded already. Query one distinct source at a time so
-    // the union of current and a full page is not mistaken for a new page demand.
-    let mut result = Vec::with_capacity(selected.len());
-    for source in selected {
-        result.push(at_cut(
-            source.clone(),
-            stored(db, &source).await?.unwrap_or_default(),
-            current.source_effect_seq,
-        ));
     }
     Ok(result)
 }
@@ -364,218 +329,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cold_selected_sources_share_current_page_snapshot_and_ignore_unselected_metadata()
-    -> Result<()> {
-        use pl_core::chat::{ChatDraft, ChatItem, ChatQuery, ReadDemand};
-        use pl_protocol::{CurrentProjection, ThreadStatus};
+    async fn original_pages_do_not_query_unrelated_or_current_source_rows() -> Result<()> {
+        use crate::studio::storage::history::{HistoryStore, conversation};
+        use pl_core::chat::{ChatDraft, ChatItem, ChatKey, ChatQuery, ReadDemand};
         let dir = tempfile::tempdir()?;
-        let store = crate::studio::storage::history::HistoryStore::open(
-            &dir.path().join("history.sqlite"),
-            "source-snapshot",
-        )
-        .await?;
-        assert!(store.conversation_current().await?.is_none());
+        let store =
+            HistoryStore::open(&dir.path().join("history.sqlite"), "source-snapshot").await?;
         store.prepare_write().await?;
         let writer = store.writer().await?;
-        let mut item = ChatItem::complete(
-            ChatDraft::new("selected", "conversation", Arc::from([255; 8192])),
-            1,
-            Some(pl_core::chat::ChatRunPosition {
-                start_seq: 1,
-                ordinal: 1,
-            }),
-        );
-        item.header.metadata = super::super::tests::metadata("selected");
-        item.header.read_hint = pl_core::chat::ChatReadHint::Single;
-        let parent = pl_core::chat::ChatKey::new("turn", "actual-parent")?;
-        item.header.parent_id = Some(parent.clone());
-        let mut skipped = ChatItem::complete(
-            ChatDraft::new("not-selected", "diagnostic", Arc::from([])),
-            2,
-            None,
-        );
-        skipped.header.metadata = super::super::tests::metadata("not-selected");
-        let source = ChatSourceId::Receipt {
-            receipt_id: "selected".into(),
-        };
+        let parent = ChatKey::new("turn", "actual-parent")?;
+        let mut draft = ChatDraft::new("selected", "conversation", Arc::from([255; 8192]));
+        draft.metadata = conversation::tests::metadata("selected");
+        draft.parent_id = Some(parent.clone());
+        let item = ChatItem::complete(draft, 1);
+        let mut draft = ChatDraft::new("not-selected", "diagnostic", Arc::from([]));
+        draft.metadata = Arc::from(br#"{"unrecognized":"opaque"}"#.as_slice());
+        let skipped = ChatItem::complete(draft, 2);
+        conversation::append_records(&writer.db, [&item, &skipped], true).await?;
         let started = ChatSourceState {
-            source: source.clone(),
-            lifecycle: ChatSourceLifecycle::Active,
-            started: Some(at(1)),
-            ended: None,
-        };
-        let current_source = ChatSourceState {
             source: origin(),
             lifecycle: ChatSourceLifecycle::Active,
-            started: Some(at(2)),
+            started: Some(at(1)),
             ended: None,
         };
-        let mut current = CurrentProjection::empty(2, ThreadStatus::Running);
-        current.sources.push(current_source.clone());
-        current.active_turn = Some(pl_protocol::CurrentTurnHead {
-            id: "turn".into(),
-            phase: pl_protocol::TurnPhase::Thinking,
-        });
-        let mut active: pl_protocol::ChatAtom =
-            serde_json::from_slice(&super::super::tests::metadata("active-member"))?;
-        active.completion_item_id = None;
-        active.source = origin();
-        active.lifecycle = pl_protocol::ChatAtomLifecycle::Active {
-            started: Some(at(2)),
-            status: pl_protocol::ChatActiveStatus::Running,
-        };
-        current.atoms.push(active);
-        let tx = writer.db.begin().await?;
-        super::super::append_records(&tx, [&item, &skipped], true).await?;
-        tx.execute_unprepared(
-            "UPDATE conversation_items SET metadata=X'FF' WHERE item_id='not-selected'",
-        )
-        .await?;
-        super::super::completed::apply(&tx, 2, &{
-            let mut prepared = super::super::current::PreparedCurrent::new(
-                crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
-                Arc::from([]),
-            );
-            prepared.source_changes = Arc::from([started.clone(), current_source.clone()]);
-            prepared
-        })
-        .await?;
-        tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
+        apply(&writer.db, 1, std::slice::from_ref(&started)).await?;
+        writer
+            .db
+            .execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
             .await?;
-        let checkpoint = pl_core::thread::ThreadCheckpoint::capture(
-            "source-snapshot".into(),
-            2,
-            pl_core::thread::ThreadSnapshot {
-                commit_sequence: 2,
-                turns: vec![pl_core::thread::TurnRecord {
-                    turn_id: "turn".into(),
-                    input_id: None,
-                    state: pl_core::thread::TurnState::Running,
-                    elapsed_ms: None,
-                    model_steps: 0,
-                }]
-                .into(),
-                ..Default::default()
-            },
-        )?;
-        // The running turn is an independent checkpoint fact, not a saved product current.
-        super::super::super::checkpoint::write(&tx, &checkpoint, None, None).await?;
-        tx.commit().await?;
-
-        let reader = store.reader().await?.unwrap();
-        let snapshot = reader.db.begin().await?;
-        let captured = current.clone();
-        let request = pl_core::chat::ChatHistoryRequest {
-            query: Some(ChatQuery::new("conversation", None)),
-            after: 0,
-            before: None,
-            ceiling: super::super::latest_append_seq(&snapshot).await?,
-            demand: ReadDemand::new(10, 4096),
-        };
-        let page =
-            super::super::page(&snapshot, &request, &super::super::tests::Budget, false).await?;
-        let ended = ChatSourceState {
-            source: source.clone(),
-            lifecycle: ChatSourceLifecycle::Ended {
-                outcome: ChatTerminalOutcome::Completed,
-            },
-            started: Some(at(1)),
-            ended: Some(at(3)),
-        };
-        current.source_effect_seq = 3;
-        let tx = writer.db.begin().await?;
-        super::super::completed::apply(&tx, 3, &{
-            let mut prepared = super::super::current::PreparedCurrent::new(
-                crate::studio::thread_projection::FrozenCurrentProjection::new(current.clone()),
-                Arc::from([]),
-            );
-            prepared.source_changes = Arc::from([ended.clone()]);
-            prepared
-        })
-        .await?;
-        tx.execute_unprepared("UPDATE history_meta SET applied_write_seq=3")
-            .await?;
-        tx.commit().await?;
-        let old_states = read_selected(&snapshot, &page, &captured, true).await?;
-        assert_eq!(old_states.len(), 2);
-        assert!(old_states.contains(&started));
-        assert!(old_states.contains(&current_source));
+        let snapshot = writer.db.begin().await?;
         assert_eq!(
-            read_selected(&snapshot, &page, &captured, false)
-                .await?
-                .as_slice(),
+            read(&snapshot, &[origin()], 1).await?.as_slice(),
             std::slice::from_ref(&started)
         );
         snapshot.commit().await?;
+        writer.db.execute_raw(statement("UPDATE conversation_sources SET ended_observed=2,outcome='invalid lifecycle JSON' WHERE source_key=?",vec![source_key(&origin())?.into()])).await?;
+        assert!(store.execution_sources(&[origin()], 2).await.is_err());
         let cold = store
-            .cold_conversation(
-                ChatQuery::new("conversation", None),
-                ReadDemand::new(10, 4096),
-                &super::super::tests::Budget,
-            )
-            .await?
-            .unwrap();
-        assert_eq!(cold.head, 2);
-        assert_eq!(cold.current.source_effect_seq, 3);
-        assert_eq!(
-            store.conversation_current().await?,
-            Some(cold.current.clone())
-        );
-        assert_eq!(cold.page.items.len(), 1);
-        assert!(cold.sources.contains(&ended));
-        // Cold completion reads do not restore a live product current from its checkpoint.
-        // The independently stored lifecycle still exists, but this selection must not
-        // invent a current-only source without an execution owner.
-        assert!(cold.current.atoms.is_empty() && cold.current.sources.is_empty());
-        assert!(!cold.sources.contains(&current_source));
-        assert_eq!(
-            store
-                .conversation_sources(std::slice::from_ref(&origin()), 3)
-                .await?,
-            vec![current_source]
-        );
-        assert_eq!(
-            cold.sources.len(),
-            1,
-            "neither unselected nor unowned current-only sources expand the cold read"
-        );
-        // A malformed unrelated global lifecycle is observable if (and only if) it is queried.
-        // Children must use the same captured current cut without reading this current-only row.
-        writer.db.execute_raw(statement(
-        "UPDATE conversation_sources SET ended_observed=3,outcome='invalid lifecycle JSON' WHERE source_key=?",
-        vec![source_key(&origin())?.into()],
-    )).await?;
-        let children = store
             .cold_conversation(
                 ChatQuery::new("conversation", Some(parent)),
                 ReadDemand::new(10, 4096),
-                &super::super::tests::Budget,
+                &conversation::tests::Budget,
             )
             .await?
-            .unwrap();
-        assert_eq!(children.current.source_effect_seq, 3);
-        assert_eq!(children.page.items.len(), 1);
-        assert_eq!(children.sources.as_slice(), std::slice::from_ref(&ended));
-        assert!(
-            read_selected(&writer.db, &children.page, &captured, true)
-                .await
-                .is_err(),
-            "a live Main's captured current still queries its real lifecycle evidence"
-        );
-        assert_eq!(
-            store
-                .conversation_sources(&[source.clone(), source], 2)
-                .await?,
-            [started]
-        );
-        writer
-            .db
-            .execute_unprepared("DELETE FROM history_meta WHERE id=1")
-            .await?;
-        assert!(
-            store.conversation_current().await.is_err(),
-            "a missing authoritative effect cut is not None or checkpoint fallback"
-        );
+            .context("original cut")?;
+        assert_eq!(cold.head, 2);
+        assert_eq!(cold.page.items.len(), 1);
+        assert_eq!(cold.page.items[0].header.item_id, "selected");
+        store.close_for_deletion().await?;
         Ok(())
     }
 
@@ -584,11 +385,12 @@ mod tests {
     -> Result<()> {
         use crate::studio::storage::history::{EffectCommit, HistoryStore, test_current};
         fn commit<'a>(
-            current: &'a super::super::current::PreparedCurrent,
+            current: &'a super::conversation::current::PreparedCurrent,
             empty: &'a std::collections::BTreeSet<String>,
         ) -> EffectCommit<'a> {
             EffectCommit {
-                items: &[],
+                turns: &[],
+                execution_order: 0,
                 completions: &[],
                 current,
                 rolled_back_turns: empty,
@@ -645,7 +447,7 @@ mod tests {
             );
         }
         assert_eq!(store.watermark().await?, 2);
-        assert_eq!(store.conversation_sources(&[origin()], 2).await?, [end]);
+        assert_eq!(store.execution_sources(&[origin()], 2).await?, [end]);
         Ok(())
     }
 }

@@ -890,11 +890,9 @@ mod mixed_tests {
         assert_eq!(history.parent_report(terminal_sequence).await?, Some(report.clone()));
         let child = owner.observed_thread(identity.thread_id.as_str()).context("Native child owner")?;
         assert!(child.snapshot().execution.is_none());
-        let saved_items = history.items_for_turn(turn_id).await?;
-        assert!(saved_items.iter().any(|item| matches!(item.state(),
-            pl_protocol::ThreadItemState::Turn(turn)
-                if matches!(turn.state(), pl_protocol::TurnState::Failed(_)))),
-            "the child's original failed Turn must remain in its durable history");
+        let original=history.read_chat_item(&crate::studio::thread_projection::order::turn_id(turn_id)).await?.context("original failed Turn")?;
+        let atom:pl_protocol::ChatAtom=serde_json::from_slice(&original.header.metadata)?;
+        assert!(matches!(atom.lifecycle,pl_protocol::ChatAtomLifecycle::Terminal { outcome:pl_protocol::ChatTerminalOutcome::Failed,.. }),"the child's original failure remains durable");
         let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
         let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
             &fixture.runtime.store, &record.into(),

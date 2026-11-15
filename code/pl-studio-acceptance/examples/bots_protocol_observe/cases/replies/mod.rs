@@ -130,7 +130,7 @@ pub(super) async fn wait_cancelled_turn(
         loop {
             let (read, page) = session
                 .http()?
-                .open_chat(thread_id, ChatScope::Main, CHAT_DEMAND)
+                .open_chat(thread_id, ChatScope::conversation(None), CHAT_DEMAND)
                 .await?;
             charge_chat_batch(&page, &mut remaining)?;
             for item in page.entries.iter().rev() {

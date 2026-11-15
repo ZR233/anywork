@@ -1,5 +1,6 @@
 //! Frozen published v9/v11 conversion codec, copied from cb222f6a. Migration-only.
-// Canonical `ThreadItem` → typed `ChatItem`/`ChatDraft` 适配。
+use crate::{ExecutionItem, ExecutionShape};
+// Canonical `ExecutionItem` → typed `ChatItem`/`ChatDraft` 适配。
 //
 // core 的内容条目是「静态结构 + 若干共享 `ContentBlock` 内容域」。宿主把 canonical 条目的**静态部分**
 // （身份、kind、时间戳、附件、工具身份……）编码一次进 `meta`，把**动态正文**按 [`ChatField`] 放进
@@ -7,7 +8,7 @@
 //
 // 完成草稿经 `Session::publish_batch` 冻结为不可变完成记录；读取 DTO 直接解码头部与描述并遍历
 // 有界字段。完成记录不携带执行 ordinal/revision/时间戳——它们是 Runtime 的内部执行事实，因此这里
-// 不存在“从完成记录重建 canonical ThreadItem”的方向；实时预览的权威重建由 live 投影用自身
+// 不存在“从完成记录重建 canonical ExecutionItem”的方向；实时预览的权威重建由 live 投影用自身
 // 的运行事实直接完成，不经过完成 meta。
 // `static_state` 仅服务投影判等，不是内存 meta 或读取 DTO。
 
@@ -20,8 +21,8 @@ use pl_core::chat::PresentationPart;
 use pl_core::model::ContentBlock;
 
 use pl_protocol::{
-    ThreadItem, ThreadItemState, ThreadThinkingItem, ThreadToolState, ThreadToolUserInput,
-    ThreadToolUserInputState, UserQuestion,
+    ThreadThinkingItem, ThreadToolState, ThreadToolUserInput, ThreadToolUserInputState,
+    UserQuestion,
 };
 
 use self::meta::{
@@ -54,7 +55,7 @@ pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
 // 调用方只在该条目的可靠完成边界构造一次草稿：`sealed_at` 取执行事实的落章时间，`turn_id`
 // 为空表示发布时消费 Turn 未知（之后不得回补修改已发布原子）。执行 ordinal/revision 不进入
 // 完成记录——它们是 Runtime 的内部执行索引。
-pub(crate) fn completion_draft(item: &ThreadItem, source_effect_seq: u64) -> Result<ChatDraft> {
+pub(crate) fn completion_draft(item: &ExecutionItem, source_effect_seq: u64) -> Result<ChatDraft> {
     let meta = static_meta(item)?;
     let fields = if let Some(plan) = plan_completion(item)? {
         let mut fields = BTreeMap::new();
@@ -86,7 +87,7 @@ pub(crate) fn completion_draft(item: &ThreadItem, source_effect_seq: u64) -> Res
 }
 
 // 仅编码完成身份与独立描述；执行 revision 不进入完成记录。
-pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
+pub(crate) fn static_meta(item: &ExecutionItem) -> Result<Arc<[u8]>> {
     Ok(Arc::from(serde_json::to_vec(&TimelineMeta::from_item(
         item,
     )?)?))
@@ -96,15 +97,15 @@ pub(crate) fn static_meta(item: &ThreadItem) -> Result<Arc<[u8]>> {
 //
 // 超出 u32 的位置/数量返回 Overloaded；问答关联缺失明确失败，不静默丢弃答案。
 pub(crate) fn content_fields(
-    state: &ThreadItemState,
+    state: &ExecutionShape,
 ) -> Result<BTreeMap<ChatField, Arc<ContentBlock>>> {
     validate_counts(state)?;
     let mut fields = BTreeMap::new();
     match state {
-        ThreadItemState::Text(text) => {
+        ExecutionShape::Text(text) => {
             fields.insert(ChatField::Body, ContentBlock::from_text(text.text()));
         }
-        ThreadItemState::Thinking(thinking) => {
+        ExecutionShape::Thinking(thinking) => {
             for (index, chunk) in thinking.summary().iter().enumerate() {
                 fields.insert(
                     ChatField::Part(PresentationPart::SummaryText(count(index)?)),
@@ -118,7 +119,7 @@ pub(crate) fn content_fields(
                 );
             }
         }
-        ThreadItemState::Tool(tool) => {
+        ExecutionShape::Tool(tool) => {
             fields.insert(
                 ChatField::host(TOOL_ARGUMENTS_FIELD),
                 ContentBlock::from_text(tool.invocation().arguments()),
@@ -178,7 +179,7 @@ pub(crate) fn content_fields(
                 }
             }
         }
-        ThreadItemState::Raw(raw) => {
+        ExecutionShape::Raw(raw) => {
             // Original producer payloads are shown as正文, so they are one field each instead of a
             // static blob that bypasses every preview budget.
             for (index, payload) in raw.payloads.iter().enumerate() {
@@ -199,7 +200,7 @@ pub(crate) fn content_fields(
 // （streaming→completed/failed/cancelled）都是载荷变化，必须递增内容版本，否则旧的保存回执
 // 会张冠李戴地确认新载荷。读取 DTO 和内存 meta 不消费这里的空正文结构。
 //
-// 它**不含** `ThreadItem` 上会随每次投影变化的易变时间戳（`created_at`/`updated_at`），因此同一条目
+// 它**不含** `ExecutionItem` 上会随每次投影变化的易变时间戳（`created_at`/`updated_at`），因此同一条目
 // 重复投影不会无意义地抬高内容版本；但生命周期自带的 `completed_at`/`failed_at` 属于真实转移，保留。
 
 // 一个问题标题的内容域身份。

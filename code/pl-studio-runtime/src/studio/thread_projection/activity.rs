@@ -1438,7 +1438,7 @@ mod tests {
         )
         .unwrap();
         let item =
-            pl_protocol::ThreadItem::new(id, "thread".into(), "turn".into(), 1, 1, 10, 10, shape);
+            crate::ExecutionItem::new(id, "thread".into(), "turn".into(), 1, 1, 10, 10, shape);
         let mut atom = crate::studio::runtime::chat_item::atom(&item);
         atom.attempt_id = Some("attempt".into());
         let thinking = project_activity_using(
@@ -1461,7 +1461,7 @@ mod tests {
         )
         .unwrap();
         let item =
-            pl_protocol::ThreadItem::new(id, "thread".into(), "turn".into(), 2, 1, 11, 11, shape);
+            crate::ExecutionItem::new(id, "thread".into(), "turn".into(), 2, 1, 11, 11, shape);
         let mut atom = crate::studio::runtime::chat_item::atom(&item);
         atom.attempt_id = Some("attempt".into());
         state.model_progress = None;

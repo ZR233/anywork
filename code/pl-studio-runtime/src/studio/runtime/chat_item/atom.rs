@@ -1,31 +1,32 @@
 //! Product provenance derived from typed facts, never from a frozen/deferred payload.
+use crate::{ExecutionItem, ExecutionShape};
 use pl_protocol::*;
 
-pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
+pub(crate) fn atom(item: &ExecutionItem) -> ChatAtom {
     let kind = match item.state() {
-        ThreadItemState::Text(text) if text.channel() == ThreadTextChannel::User => {
+        ExecutionShape::Text(text) if text.channel() == ThreadTextChannel::User => {
             ChatAtomKind::Input
         }
-        ThreadItemState::Text(_) => ChatAtomKind::Text,
-        ThreadItemState::Thinking(_) => ChatAtomKind::Reasoning,
-        ThreadItemState::Tool(tool)
+        ExecutionShape::Text(_) => ChatAtomKind::Text,
+        ExecutionShape::Thinking(_) => ChatAtomKind::Reasoning,
+        ExecutionShape::Tool(tool)
             if tool.invocation().name() == crate::plan_tool::TOOL_PLAN_SUBMIT =>
         {
             ChatAtomKind::Plan
         }
-        ThreadItemState::Tool(tool)
+        ExecutionShape::Tool(tool)
             if tool.invocation().name() == "request_user_input" || tool.user_input().is_some() =>
         {
             ChatAtomKind::Interaction
         }
-        ThreadItemState::Tool(_) => ChatAtomKind::ToolCall,
-        ThreadItemState::File(_) => ChatAtomKind::FileChange,
-        ThreadItemState::Skill(_) => ChatAtomKind::Skill,
-        ThreadItemState::Turn(_) => ChatAtomKind::TurnReceipt,
-        ThreadItemState::ContextCompaction(_) => ChatAtomKind::Compaction,
-        ThreadItemState::Raw(_) => ChatAtomKind::Raw,
-        ThreadItemState::Agent(_) => ChatAtomKind::Agent,
-        ThreadItemState::Inference(_) => ChatAtomKind::Inference,
+        ExecutionShape::Tool(_) => ChatAtomKind::ToolCall,
+        ExecutionShape::File(_) => ChatAtomKind::FileChange,
+        ExecutionShape::Skill(_) => ChatAtomKind::Skill,
+        ExecutionShape::Turn(_) => ChatAtomKind::TurnReceipt,
+        ExecutionShape::ContextCompaction(_) => ChatAtomKind::Compaction,
+        ExecutionShape::Raw(_) => ChatAtomKind::Raw,
+        ExecutionShape::Agent(_) => ChatAtomKind::Agent,
+        ExecutionShape::Inference(_) => ChatAtomKind::Inference,
     };
     let source = if kind == ChatAtomKind::Input {
         ChatSourceId::Input {
@@ -46,23 +47,23 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         _ => ChatTerminalOutcome::Completed,
     };
     let outcome = match item.state() {
-        ThreadItemState::Text(text) => content_outcome(text.lifecycle()),
-        ThreadItemState::Thinking(thinking) => content_outcome(thinking.lifecycle()),
-        ThreadItemState::Tool(tool)
+        ExecutionShape::Text(text) => content_outcome(text.lifecycle()),
+        ExecutionShape::Thinking(thinking) => content_outcome(thinking.lifecycle()),
+        ExecutionShape::Tool(tool)
             if tool.user_input().is_some_and(|input| {
                 matches!(input.state(), ThreadToolUserInputState::Cancelled)
             }) =>
         {
             ChatTerminalOutcome::Cancelled
         }
-        ThreadItemState::Tool(tool) => match tool.state() {
+        ExecutionShape::Tool(tool) => match tool.state() {
             ThreadToolState::Failed(_) | ThreadToolState::Denied(_) => ChatTerminalOutcome::Failed,
             ThreadToolState::Cancelled(_) | ThreadToolState::Interrupted(_) => {
                 ChatTerminalOutcome::Cancelled
             }
             _ => ChatTerminalOutcome::Completed,
         },
-        ThreadItemState::Turn(turn) => match turn.state() {
+        ExecutionShape::Turn(turn) => match turn.state() {
             TurnState::Failed(_) => ChatTerminalOutcome::Failed,
             TurnState::Cancelled(_) => ChatTerminalOutcome::Cancelled,
             _ => ChatTerminalOutcome::Completed,
@@ -83,7 +84,7 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         delivery: match item.state() {
             // Explicit user output is not implementation work to hide in a folded Run.
             // Keep the original Turn source and let the existing Independent rule classify it.
-            ThreadItemState::Tool(tool)
+            ExecutionShape::Tool(tool)
                 if tool.invocation().presentation_contract()
                     == Some(pl_tool::file_display::FILE_DISPLAY_PRESENTATION) =>
             {
@@ -106,18 +107,18 @@ pub(crate) fn atom(item: &ThreadItem) -> ChatAtom {
         turn_id: (!item.turn_id.is_empty()).then(|| item.turn_id.clone()),
         attempt_id: None,
         tool: match item.state() {
-            ThreadItemState::Tool(tool) => Some(ChatToolIdentity {
+            ExecutionShape::Tool(tool) => Some(ChatToolIdentity {
                 call_id: tool.invocation().tool_call_id().into(),
                 name: tool.invocation().name().into(),
             }),
             _ => None,
         },
         wait: match item.state() {
-            ThreadItemState::Tool(tool) if !item.is_terminal() => tool.wait().cloned(),
+            ExecutionShape::Tool(tool) if !item.is_terminal() => tool.wait().cloned(),
             _ => None,
         },
         text_channel: match item.state() {
-            ThreadItemState::Text(text) => Some(text.channel()),
+            ExecutionShape::Text(text) => Some(text.channel()),
             _ => None,
         },
         started_at: None,
@@ -135,15 +136,15 @@ mod tests {
     fn typed_sources_keep_kind_origin_and_foreground_identity() -> anyhow::Result<()> {
         let cases = [
             (
-                ThreadItemState::Raw(ThreadRawItem::stored(vec![], "undecodable", 7)),
+                ExecutionShape::Raw(ThreadRawItem::stored(vec![], "undecodable", 7)),
                 ChatAtomKind::Raw,
             ),
             (
-                ThreadItemState::Raw(ThreadRawItem::runtime_control("control", 7)),
+                ExecutionShape::Raw(ThreadRawItem::runtime_control("control", 7)),
                 ChatAtomKind::Raw,
             ),
             (
-                ThreadItemState::Agent(ThreadAgentItem::new(
+                ExecutionShape::Agent(ThreadAgentItem::new(
                     ThreadAgentIdentity::new(
                         "child".into(),
                         "root/child".into(),
@@ -156,7 +157,7 @@ mod tests {
                 ChatAtomKind::Agent,
             ),
             (
-                ThreadItemState::Inference(ThreadInferenceItem::new(
+                ExecutionShape::Inference(ThreadInferenceItem::new(
                     "call".into(),
                     "model".into(),
                     ThreadInferenceState::Running(RunningThreadInference),
@@ -166,7 +167,7 @@ mod tests {
         ];
         for (index, (state, kind)) in cases.into_iter().enumerate() {
             let original = state.clone();
-            let item = ThreadItem::new(
+            let item = ExecutionItem::new(
                 format!("item-{index}"),
                 "thread".into(),
                 "turn".into(),
@@ -185,7 +186,7 @@ mod tests {
                 }
             );
             assert_eq!(item.state(), &original);
-            if let ThreadItemState::Raw(raw) = item.state() {
+            if let ExecutionShape::Raw(raw) = item.state() {
                 let draft = super::super::completion_draft(&item, 1, "database")?;
                 let envelope: serde_json::Value = serde_json::from_slice(draft.payload.as_ref())?;
                 assert_eq!(envelope["type"], "raw");
