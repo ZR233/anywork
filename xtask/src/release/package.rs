@@ -24,7 +24,7 @@ pub(super) fn stage(
         return super::macos::stage(release_dir, version, source_bundle);
     }
     ensure_windows()?;
-    validate_bundle(source_bundle)?;
+    validate_bundle(source_bundle, version)?;
     reject_existing_release(release_dir)?;
     fs::create_dir_all(release_dir)
         .with_context(|| format!("failed to create {}", release_dir.display()))?;
@@ -48,7 +48,7 @@ pub(super) fn stage(
     Ok(())
 }
 
-fn validate_bundle(bundle: &Path) -> Result<()> {
+fn validate_bundle(bundle: &Path, version: &Version) -> Result<()> {
     if !bundle.is_dir() {
         bail!(
             "prebuilt Windows bundle directory not found: {}",
@@ -83,6 +83,11 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
     crate::host_mcp::validate_bundle_resources(
         &bundle.join("data/host-mcp"),
         "x86_64-pc-windows-msvc",
+    )?;
+    crate::cli_bundle::validate(
+        &bundle.join("bin"),
+        "x86_64-pc-windows-msvc",
+        &version.to_string(),
     )?;
     Ok(())
 }

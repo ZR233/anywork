@@ -213,3 +213,8 @@ AI 也能使用统一的文件展示工具，把明确选择的图片或文件�
 - **[外部机器人与飞书接入](design/27-bots.md)**：扫码首配、最小权限、发送结果与安全边界。
 - **[项目协作与开发规范（AGENTS.md）](AGENTS.md)**：开发命令、构建要求与贡献指南。
 - **[无头实验与验证](.agents/skills/flutter-studio-build/references/experiments.md)**：纯界面调整与截图优先使用官方 Widget Previewer，不编译 Rust bridge；只有真实跨层行为才选择隔离原生应用及 Dart MCP，按同一方法操作、取证和回收资源。
+
+
+## 命令行与本地评测
+
+原生桌面发布包包含生产命令 `bin/anywk`（Windows 为 `bin/anywk.exe`，macOS 位于应用的 `Contents/Resources/bin/`）。Linux 安装包直接提供终端命令，Windows 安装器可添加用户 PATH。`anywk exec` 使用显式原生配置执行任务，可导出版本 2 的完整运行轨迹；Harbor 仅支持本地手动评测，不进入项目构建镜像或持续集成。安装、无付费验收、开发与完整基准命令见[本地 Harbor 指南](integrations/harbor/README.md)，所有权与结果契约见[命令行宿主与 Harbor 接入](design/29-cli-harbor.md)。

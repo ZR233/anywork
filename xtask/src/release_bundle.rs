@@ -33,18 +33,19 @@ fn copy_windows_bundle(source: &Path, destination: &Path) -> Result<()> {
         let file_type = entry
             .file_type()
             .with_context(|| format!("failed to inspect {}", source_path.display()))?;
-        let is_data_directory = file_type.is_dir() && entry.file_name() == "data";
+        let is_resource_directory =
+            file_type.is_dir() && (entry.file_name() == "data" || entry.file_name() == "bin");
         let is_runtime_file = file_type.is_file()
             && (entry.file_name() == "anywork.exe"
                 || source_path
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("dll")));
-        if !is_data_directory && !is_runtime_file {
+        if !is_resource_directory && !is_runtime_file {
             continue;
         }
 
         let destination_path = destination.join(entry.file_name());
-        if is_data_directory {
+        if is_resource_directory {
             copy_tree(&source_path, &destination_path)?;
         } else {
             copy_file(&source_path, &destination_path)?;
@@ -112,6 +113,27 @@ mod tests {
     use super::{BundleKind, copy};
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn windows_copy_preserves_cli_beside_flutter_resources() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("source");
+        let destination = root.path().join("copy");
+        fs::create_dir_all(source.join("bin"))?;
+        fs::create_dir_all(source.join("data"))?;
+        fs::write(source.join("bin/anywk.exe"), b"cli")?;
+        fs::write(source.join("bin/build-info.json"), b"identity")?;
+        fs::write(source.join("anywork.exe"), b"gui")?;
+        fs::write(source.join("anywork.pdb"), b"symbols")?;
+        copy(&source, &destination, BundleKind::Windows)?;
+        assert_eq!(fs::read(destination.join("bin/anywk.exe"))?, b"cli");
+        assert_eq!(
+            fs::read(destination.join("bin/build-info.json"))?,
+            b"identity"
+        );
+        assert!(!destination.join("anywork.pdb").exists());
+        Ok(())
+    }
 
     /// A copied macOS framework must retain its version links and runnable binary.
     #[test]

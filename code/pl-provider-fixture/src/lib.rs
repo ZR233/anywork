@@ -92,6 +92,7 @@ pub use stdio_peer::proc_start_ticks;
 mod lsp_stdio;
 pub use lsp_stdio::{LspStdioOptions, run_lsp_stdio};
 
+pub mod harbor;
 pub mod markdown_layout;
 
 mod tool_peer;

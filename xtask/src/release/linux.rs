@@ -45,7 +45,7 @@ pub(super) fn stage(
         "release staging directory already exists; refusing to overwrite {}",
         release_dir.display()
     );
-    validate_bundle(bundle)?;
+    validate_bundle(bundle, version)?;
     // tempfile and dpkg-deb both honor TMPDIR; nothing is installed in user directories.
     let temp = tempfile::Builder::new().prefix("anywork-deb-").tempdir()?;
     let package = temp.path().join("debian/anywork");
@@ -70,9 +70,10 @@ pub(super) fn stage(
     for resource in [DESKTOP, ICON, UPDATE_POLICY] {
         copy_file(&app.join(resource), &package.join("usr").join(resource))?;
     }
-    validate_bundle(&app)?;
+    validate_bundle(&app, version)?;
     fs::create_dir_all(package.join("usr/bin"))?;
     symlink("/opt/anywork/anywork", package.join("usr/bin/anywork"))?;
+    symlink("/opt/anywork/bin/anywk", package.join("usr/bin/anywk"))?;
     fs::create_dir_all(package.join("DEBIAN"))?;
     // dpkg-shlibdeps identifies private libraries belonging to this same package
     // using DEBIAN/control, rather than requiring fabricated shlibs metadata.
@@ -118,7 +119,7 @@ fn control(version: &Version, depends: Option<&str>) -> String {
         .map(|value| format!("{value}, "))
         .unwrap_or_default();
     format!(
-        "Package: anywork\nVersion: {version}\nArchitecture: amd64\nSection: utils\nPriority: optional\nMaintainer: anywork maintainers <maintainers@anywork.invalid>\nDepends: {depends}libegl1, libgl1, libgles2, packagekit, pkexec, shared-mime-info\nDescription: anywork desktop application\n"
+        "Package: anywork\nVersion: {version}\nArchitecture: amd64\nSection: utils\nPriority: optional\nMaintainer: anywork maintainers <maintainers@anywork.invalid>\nDepends: {depends}ca-certificates, libegl1, libgl1, libgles2, packagekit, pkexec, shared-mime-info\nDescription: anywork desktop application\n"
     )
 }
 
@@ -182,13 +183,17 @@ pub(super) fn verify(release_dir: &Path, version: &Version) -> Result<()> {
             .arg(&deb)
             .arg(temp.path()),
     )?;
-    checked_tree(temp.path(), Some(&temp.path().join("usr/bin/anywork")))?;
+    checked_tree(temp.path(), true)?;
     let app = temp.path().join("opt/anywork");
-    validate_bundle(&app)?;
+    validate_bundle(&app, version)?;
     inspect_elfs(&app)?;
     ensure!(
         fs::read_link(temp.path().join("usr/bin/anywork"))? == Path::new("/opt/anywork/anywork"),
         "invalid /usr/bin/anywork symlink"
+    );
+    ensure!(
+        fs::read_link(temp.path().join("usr/bin/anywk"))? == Path::new("/opt/anywork/bin/anywk"),
+        "invalid /usr/bin/anywk symlink"
     );
     for resource in [DESKTOP, ICON, UPDATE_POLICY] {
         let installed = temp.path().join("usr").join(resource);
@@ -220,9 +225,9 @@ fn require_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_bundle(bundle: &Path) -> Result<()> {
+fn validate_bundle(bundle: &Path, version: &Version) -> Result<()> {
     ensure!(bundle.is_dir(), "bundle not found: {}", bundle.display());
-    checked_tree(bundle, None)?;
+    checked_tree(bundle, false)?;
     for required in [
         "anywork",
         "data/icudtl.dat",
@@ -250,6 +255,11 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
         &bundle.join("data/host-mcp"),
         "x86_64-unknown-linux-gnu",
     )?;
+    crate::cli_bundle::validate(
+        &bundle.join("bin"),
+        "x86_64-unknown-linux-gnu",
+        &version.to_string(),
+    )?;
     for executable in ["anywork", UPDATE_HELPER] {
         ensure!(
             fs::metadata(bundle.join(executable))?.permissions().mode() & 0o111 != 0,
@@ -266,12 +276,12 @@ fn validate_bundle(bundle: &Path) -> Result<()> {
 }
 
 /// Do not follow directory links or allow a payload link to escape its tree.
-/// The sole absolute link is the fixed system command entry, checked separately.
-fn checked_tree(root: &Path, command_link: Option<&Path>) -> Result<Vec<PathBuf>> {
+/// Only the two fixed system command entries may use absolute links.
+fn checked_tree(root: &Path, system_commands: bool) -> Result<Vec<PathBuf>> {
     fn visit(
         root: &Path,
         dir: &Path,
-        command_link: Option<&Path>,
+        system_commands: bool,
         files: &mut Vec<PathBuf>,
     ) -> Result<()> {
         for entry in fs::read_dir(dir)? {
@@ -279,9 +289,16 @@ fn checked_tree(root: &Path, command_link: Option<&Path>) -> Result<Vec<PathBuf>
             let path = entry.path();
             let kind = entry.file_type()?;
             if kind.is_symlink() {
-                if Some(path.as_path()) == command_link {
+                if system_commands
+                    && (path == root.join("usr/bin/anywork") || path == root.join("usr/bin/anywk"))
+                {
                     ensure!(
-                        fs::read_link(&path)? == Path::new("/opt/anywork/anywork"),
+                        fs::read_link(&path)?
+                            == if path == root.join("usr/bin/anywk") {
+                                Path::new("/opt/anywork/bin/anywk")
+                            } else {
+                                Path::new("/opt/anywork/anywork")
+                            },
                         "invalid command link"
                     );
                     continue;
@@ -300,7 +317,7 @@ fn checked_tree(root: &Path, command_link: Option<&Path>) -> Result<Vec<PathBuf>
                 );
                 files.push(path);
             } else if kind.is_dir() {
-                visit(root, &path, command_link, files)?;
+                visit(root, &path, system_commands, files)?;
             } else {
                 ensure!(kind.is_file(), "special payload file: {}", path.display());
                 files.push(path);
@@ -309,9 +326,8 @@ fn checked_tree(root: &Path, command_link: Option<&Path>) -> Result<Vec<PathBuf>
         Ok(())
     }
     let root = root.canonicalize()?;
-    let command_link = command_link.map(Path::to_path_buf);
     let mut files = Vec::new();
-    visit(&root, &root, command_link.as_deref(), &mut files)?;
+    visit(&root, &root, system_commands, &mut files)?;
     files.sort();
     Ok(files)
 }
@@ -324,7 +340,7 @@ fn is_elf(path: &Path) -> Result<bool> {
 
 fn inspect_elfs(app: &Path) -> Result<Vec<PathBuf>> {
     let mut dynamic = Vec::new();
-    for file in checked_tree(app, None)? {
+    for file in checked_tree(app, false)? {
         if !is_elf(&file)? {
             continue;
         }
@@ -564,6 +580,18 @@ mod tests {
                     "sha256": sha256_file(&bundle.join("anywork"))?,
                 }))?,
             )?;
+            let cli = bundle.join("bin");
+            fs::create_dir_all(&cli)?;
+            fs::copy(bundle.join("anywork"), cli.join("anywk"))?;
+            fs::write(
+                cli.join("build-info.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": "1.2.3", "gitCommit": null, "target": "x86_64-unknown-linux-gnu",
+                    "buildEnvironment": "test",
+                    "binarySha256": sha256_file(&cli.join("anywk"))?,
+                    "resultSchemaVersions": [2], "eventSchemaVersions": [2]
+                }))?,
+            )?;
             // Retain an internal library symlink rather than flattening it.
             symlink("libpl_studio_bridge.so", bundle.join("lib/bridge-alias.so"))?;
             fs::create_dir_all(bundle.join("libexec"))?;
@@ -642,6 +670,11 @@ mod tests {
             fs::read_link(unpack.join("usr/bin/anywork"))?,
             Path::new("/opt/anywork/anywork")
         );
+        assert_eq!(
+            fs::read_link(unpack.join("usr/bin/anywk"))?,
+            Path::new("/opt/anywork/bin/anywk")
+        );
+        assert!(unpack.join("opt/anywork/bin/anywk").is_file());
         assert_eq!(
             fs::read_link(unpack.join("opt/anywork/lib/bridge-alias.so"))?,
             Path::new("libpl_studio_bridge.so")
