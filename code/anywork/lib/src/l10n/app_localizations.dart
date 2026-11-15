@@ -2699,6 +2699,24 @@ abstract class AppLocalizations {
   /// **'Describe what you need...'**
   String get composerHint;
 
+  /// No description provided for @composerModelSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search models or agents'**
+  String get composerModelSearch;
+
+  /// No description provided for @composerModelSearchEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching models or agents'**
+  String get composerModelSearchEmpty;
+
+  /// No description provided for @composerManageModels.
+  ///
+  /// In en, this message translates to:
+  /// **'Manage models and agents'**
+  String get composerManageModels;
+
   /// No description provided for @composerSend.
   ///
   /// In en, this message translates to:
@@ -11577,35 +11595,11 @@ abstract class AppLocalizations {
   /// **'Enabled'**
   String get acpBackendReadyBadge;
 
-  /// No description provided for @acpStartDraftHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Optional initial draft (carried into the new ACP session without auto-sending)…'**
-  String get acpStartDraftHint;
-
-  /// No description provided for @acpStartHandshakeNote.
-  ///
-  /// In en, this message translates to:
-  /// **'ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.'**
-  String get acpStartHandshakeNote;
-
-  /// No description provided for @acpStartCreateAction.
-  ///
-  /// In en, this message translates to:
-  /// **'Start ACP session'**
-  String get acpStartCreateAction;
-
   /// No description provided for @acpStartCreatingAction.
   ///
   /// In en, this message translates to:
   /// **'Starting…'**
   String get acpStartCreatingAction;
-
-  /// No description provided for @acpStartExistingAttachmentsHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.'**
-  String get acpStartExistingAttachmentsHint;
 
   /// No description provided for @acpSessionConnectingTitle.
   ///

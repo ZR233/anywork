@@ -4,6 +4,7 @@ import '../../../../presentation/providers/attachment_drafts.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/start_session_controller.dart';
 import '../state/acp_view_state.dart';
+import '../../composer/view_models/start_backend_view_model.dart';
 import 'acp_session_view_model.dart';
 
 part 'acp_start_composer_view_model.g.dart';
@@ -20,12 +21,17 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
     final composer = ref.watch(attachmentDraftsProvider).newThread(workspaceId);
     final failure = composer.failure;
     final accountId = draft.project.acpAccountId;
+    final service = ref
+        .watch(startBackendViewModelProvider(workspaceId))
+        .selectedService;
     return AcpStartComposerViewState(
       workspaceId: workspaceId,
       text: draft.project.text,
       accountId: accountId,
+      serviceName: service?.name,
+      brandKey: service?.brandKey,
       submitting: draft.submitting,
-      serviceEnabled: accountId != null,
+      serviceEnabled: service?.enabled == true,
       stagedAttachments: composer.attachments,
       failureMessage: failure == null ? null : formatAcpError(failure),
     );
@@ -46,4 +52,10 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
         .startDraft
         .submit(workspaceId);
   }
+
+  Future<void> removeAttachment(String draftId) => ref
+      .read(anyworkClientProvider)
+      .drafts
+      .attachments
+      .removeNewThreadDraft(workspaceId, draftId);
 }

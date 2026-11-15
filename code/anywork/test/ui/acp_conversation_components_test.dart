@@ -356,14 +356,13 @@ void main() {
     field.controller!.selection = const TextSelection.collapsed(offset: 2);
     final configuration = Completer<void>();
     harness.port.configureResult = configuration;
-    await tester.tap(
-      find.byKey(
-        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
-      ),
-    );
+    await tester.tap(find.byTooltip('更多设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
     await tester.pump();
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-    expect(find.text('正在应用配置，完成前不能发送消息'), findsOneWidget);
+    expect(find.byTooltip('正在应用配置，完成前不能发送消息'), findsOneWidget);
+    expect(find.text('正在应用配置，完成前不能发送消息'), findsNothing);
     harness.update(
       const AcpAgentMessageChunkView(
         AcpContentChunkView(content: AcpTextContentView(text: '异步内容')),
@@ -428,6 +427,123 @@ void main() {
     expect(find.byTooltip('中断'), findsOneWidget);
   });
 
+  for (final completionFirst in [false, true]) {
+    testWidgets('发送和停止期间继续编辑，${completionFirst ? '运行先结束' : '中断先返回'}仍等真实双边完成', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(300, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final harness = await AcpComponentHarness.create(
+        options: [acpBooleanFixture],
+      );
+      addTearDown(() => harness.close(tester));
+      final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
+      harness.port.run = run;
+      final sending = Completer<AcpRunIdView>();
+      harness.port.promptResult = sending;
+      final interrupting = Completer<void>();
+      harness.port.interruptResult = interrupting;
+      final draft = harness.client.drafts.composer('thread');
+      draft.updateDraft('本次发送');
+      await tester.pumpWidget(
+        harness.scope(const AcpComposerConnector(threadId: 'thread')),
+      );
+      await tester.pumpAndSettle();
+      final input = find.byKey(
+        ValueKey(AcpViewKeyValues.composerInput('thread')),
+      );
+      final action = find.byKey(
+        ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
+      );
+      final originalRect = tester.getRect(action);
+      expect(originalRect.size, const Size(34, 34));
+      final tuning = find.descendant(
+        of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
+        matching: find.byType(TextButton),
+      );
+      final tuningSize = tester.getSize(tuning);
+      await tester.tap(action);
+      await tester.pump();
+      expect(tester.widget<TextField>(input).enabled, isNot(false));
+      expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
+      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      await tester.enterText(input, '下一条草稿');
+      await tester.pump();
+      final controller = tester.widget<TextField>(input).controller!;
+      controller.value = const TextEditingValue(
+        text: '下一条草稿',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 1, end: 3),
+      );
+      sending.complete(run);
+      await tester.pump();
+      expect(harness.owner.state.activeRun, run);
+      expect(draft.state.draft, '下一条草稿');
+      expect(controller.value.composing, const TextRange(start: 1, end: 3));
+      expect(controller.selection.baseOffset, 3);
+      expect(tester.getRect(action), originalRect);
+      expect(tester.getSize(tuning), tuningSize);
+      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      expect(
+        harness.port.calls.where((call) => call.$1 == 'prompt'),
+        hasLength(1),
+      );
+      await tester.tap(action);
+      await tester.pump();
+      expect(find.byTooltip('正在中断'), findsWidgets);
+      expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      // A second stop intent must not escape while the first is pending.
+      await tester.tap(action);
+      await tester.pump();
+      expect(
+        harness.port.calls.where((call) => call.$1 == 'interrupt'),
+        hasLength(1),
+      );
+      await tester.enterText(input, '停止时继续编辑');
+      await tester.pump();
+      void completeRun() => harness.emit(
+        AcpCompletedEventView(
+          AcpCompletedRunView(
+            run: run,
+            completionSequence: BigInt.one,
+            result: const AcpSuccessView(
+              AcpPromptResponseView(stopReason: AcpStopReasonView.cancelled),
+            ),
+            summary: '',
+            truncated: false,
+          ),
+        ),
+      );
+      if (completionFirst) {
+        completeRun();
+      } else {
+        interrupting.complete();
+      }
+      await tester.pump();
+      expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
+      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.getRect(action), originalRect);
+      if (completionFirst) {
+        interrupting.complete();
+      } else {
+        completeRun();
+      }
+      await tester.pumpAndSettle();
+      expect(harness.owner.state.activeRun, isNull);
+      expect(_sendButtonWidget(tester, 'thread').onPressed, isNotNull);
+      expect(tester.widget<TextButton>(tuning).onPressed, isNotNull);
+      expect(draft.state.draft, '停止时继续编辑');
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(
+        harness.port.calls.where((call) => call.$1 == 'prompt'),
+        hasLength(1),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('配置失败明确显示并保留草稿，不能按旧配置发送', (tester) async {
     final harness = await AcpComponentHarness.create(
       options: [acpBooleanFixture],
@@ -443,11 +559,9 @@ void main() {
     );
     await tester.pumpAndSettle();
     harness.port.commandError = StateError('server rejected config');
-    await tester.tap(
-      find.byKey(
-        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
-      ),
-    );
+    await tester.tap(find.byTooltip('更多设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
     expect(find.textContaining('配置失败：'), findsWidgets);
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
@@ -456,6 +570,7 @@ void main() {
   });
 
   testWidgets('ACP 输入不因相同草稿刷新而重置选择和输入法组合', (tester) async {
+    var submissions = 0;
     Widget input() => acpTestApp(
       AcpConversationComposerView(
         state: const AcpComposerViewState(
@@ -464,7 +579,7 @@ void main() {
           canSend: true,
         ),
         onDraftChanged: (_) {},
-        onSubmit: () {},
+        onSubmit: () => submissions++,
         onInterrupt: () {},
         onPickLocalAttachments: (_) async {},
         onAddRemoteAttachment: (_) async {},
@@ -472,6 +587,7 @@ void main() {
       ),
     );
     await tester.pumpWidget(input());
+    await tester.showKeyboard(find.byType(TextField));
     final controller = tester
         .widget<TextField>(find.byType(TextField))
         .controller!;
@@ -483,5 +599,20 @@ void main() {
     await tester.pumpWidget(input());
     expect(controller.selection.baseOffset, 3);
     expect(controller.value.composing, const TextRange(start: 1, end: 3));
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    expect(submissions, 0);
+    expect(controller.value.composing, const TextRange(start: 1, end: 3));
+    controller.value = controller.value.copyWith(composing: TextRange.empty);
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    expect(submissions, 1);
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    expect(controller.text, '输入中\n的草稿');
+    expect(submissions, 1);
   });
 }

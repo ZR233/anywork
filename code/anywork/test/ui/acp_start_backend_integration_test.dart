@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
-import 'package:anywork/src/features/conversation/composer/widgets/start_backend_selector.dart';
+import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
+import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
+import 'package:anywork/src/features/conversation/acp/state/acp_view_state.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -155,7 +157,7 @@ Future<({AppGraph graph, _Transport transport, String workspaceId})> _mount(
 }
 
 Finder _backendButton() => find.descendant(
-  of: find.byType(StartBackendSelector),
+  of: find.byType(StartModelSelector),
   matching: find.byType(TextButton),
 );
 
@@ -176,6 +178,16 @@ void main() {
       final fixture = await _mount(tester);
       final draft = fixture.graph.client.drafts.startDraft;
       final workspaceId = fixture.workspaceId;
+      final start =
+          ProviderScope.containerOf(tester.element(find.byType(Composer)))
+              .read(
+                composerViewModelProvider(
+                  ComposerTarget.start(workspaceId: workspaceId),
+                ),
+              )
+              .requireValue
+              .start!;
+      final nativeRoute = start.displayRoute(start.mode)!;
       await tester.enterText(find.byType(TextField), 'Native original draft');
       draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
       await tester.pumpAndSettle();
@@ -186,6 +198,11 @@ void main() {
 
       // The real service selector invokes the real setAcpService command.
       await tester.tap(_backendButton());
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('start-model-search')),
+        'Local',
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text('Local ACP service'));
       await tester.pumpAndSettle();
@@ -218,7 +235,16 @@ void main() {
       await tester.enterText(find.byType(TextField), 'Edited through ACP');
       expect(draft.state.forProject(workspaceId).text, 'Edited through ACP');
 
-      draft.setAcpService(workspaceId, null);
+      await tester.tap(_backendButton());
+      await tester.pumpAndSettle();
+      final nativeOption = find.byKey(
+        StudioDriverKeys.modelOption(
+          nativeRoute.accountId,
+          nativeRoute.modelId,
+        ),
+      );
+      await tester.ensureVisible(nativeOption);
+      await tester.tap(nativeOption);
       await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
@@ -265,9 +291,12 @@ void main() {
       draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
       draft.setAcpService(workspaceId, 'test-acp');
       await tester.pumpAndSettle();
-      // An empty prompt remains a valid ACP session/new, even though Native
-      // mode/worktree draft choices are retained for a later switch back.
-      await tester.tap(find.text('创建 ACP 会话'));
+      // Only a first message creates ACP; Native worktree intent stays separate.
+      await tester.enterText(find.byType(TextField), '检查远程项目');
+      await tester.pump();
+      await tester.tap(
+        find.byKey(ValueKey(AcpViewKeyValues.startSubmit(workspaceId))),
+      );
       await pumpClientUntil(
         tester,
         () => port.calls.isNotEmpty,
@@ -281,7 +310,7 @@ void main() {
       expect(request.workspaceId, workspaceId);
       expect(workspaceId, 'remote-acp-project');
       expect(request.intent, isA<AcpNewIntentView>());
-      expect(find.textContaining('ACP 服务在本机运行'), findsOneWidget);
+      expect(find.textContaining('ACP 服务在本机运行'), findsNothing);
       expect(find.text('/srv/workspace'), findsNothing);
       expect(fixture.transport.submissions, isEmpty);
       expect(

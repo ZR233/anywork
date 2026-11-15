@@ -765,6 +765,7 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     required ComposerDraftBinding destination,
     required String Function() text,
     required bool Function() isCurrent,
+    List<AttachmentDraftView>? frozenAttachments,
   }) => runLocked(attachmentLaneKeyForNewThread(workspaceId), () async {
     if (_closed || !destination.mounted() || !isCurrent()) return;
     final incoming = state.newThread(workspaceId);
@@ -773,7 +774,8 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
       throw StateError('The created conversation already has a draft');
     }
     final incomingText = text();
-    final ids = incoming.attachments.map((item) => item.id).toList();
+    final transferred = frozenAttachments ?? incoming.attachments;
+    final ids = transferred.map((item) => item.id).toList();
     _ownership.adopt(destination.draftId, ids);
     _ownership.detach('start:$workspaceId', ids);
     for (final id in ids) {
@@ -787,13 +789,23 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
         );
       }
     }
-    _newThreadGenerations[workspaceId] =
-        (_newThreadGenerations[workspaceId] ?? 0) + 1;
-    _clearNewThread(workspaceId);
+    if (frozenAttachments == null) {
+      _newThreadGenerations[workspaceId] =
+          (_newThreadGenerations[workspaceId] ?? 0) + 1;
+      _clearNewThread(workspaceId);
+    } else {
+      _putNewThread(
+        workspaceId,
+        incoming.updateAttachments([
+          for (final attachment in incoming.attachments)
+            if (!ids.contains(attachment.id)) attachment,
+        ]),
+      );
+    }
     destination.write(
       ComposerThreadState.idle(
         draft: incomingText,
-        attachments: incoming.attachments,
+        attachments: transferred,
         attachmentGeneration: incoming.attachmentGeneration,
         cleanupFailureDraftIds: incoming.cleanupFailureDraftIds,
       ),

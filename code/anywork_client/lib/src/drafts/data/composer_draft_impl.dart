@@ -42,6 +42,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
   DraftStamp? _unknownStamp;
   DirectoryObservation<ThreadMetadataFrame>? _metadata;
   bool _acpUnknown = false;
+  Future<bool>? _initialAcpPending;
+  Completer<void>? _initialAcpReadyWait;
 
   void _observeAcpMetadata() {
     if (_closed || _metadata != null) return;
@@ -150,6 +152,79 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
 
   void updateDraft(String value) => apply(state.updateDraft(value));
   void reportFailure(Object error) => apply(state.reportFailure(error));
+
+  /// The start-draft owner has already handed off this frozen first input.
+  /// Directory readiness is independent of ACP's original Ready observation.
+  Future<bool> submitInitialAcp() {
+    final pending = _initialAcpPending;
+    if (pending != null) return pending;
+    final completion = Completer<bool>();
+    final task = completion.future.whenComplete(
+      () => _initialAcpPending = null,
+    );
+    _initialAcpPending = task;
+    unawaited(
+      _submitInitialAcp().then(
+        completion.complete,
+        onError: completion.completeError,
+      ),
+    );
+    return task;
+  }
+
+  Future<bool> _submitInitialAcp() async {
+    final initialText = state.draft;
+    final initialAttachments = List<AttachmentDraftView>.unmodifiable(
+      state.attachments,
+    );
+    final initialStamp = stamp;
+    final initialGeneration = _generation;
+    if (initialText.trim().isEmpty && initialAttachments.isEmpty) return false;
+    try {
+      _observeAcpMetadata();
+      final metadata = _metadata;
+      if (metadata == null) {
+        throw StateError('Thread directory metadata is unavailable');
+      }
+      final ready = Completer<void>();
+      _initialAcpReadyWait = ready;
+      void check() {
+        final value = metadata.state.value;
+        if (!ready.isCompleted &&
+            (value.frame != null || value.closed || value.error != null)) {
+          ready.complete();
+        }
+      }
+
+      final observation = metadata.state.watch((_) => check());
+      check();
+      try {
+        await ready.future;
+      } finally {
+        observation.cancel();
+        _initialAcpReadyWait = null;
+      }
+      final snapshot = metadata.state.value;
+      if (_closed || _dependencies.isClosed) return false;
+      final row = snapshot.frame?.row;
+      if (snapshot.closed ||
+          snapshot.error != null ||
+          row?.backend is! AcpAgentBackendView) {
+        throw snapshot.error ??
+            StateError('Thread directory metadata is unavailable');
+      }
+      return await _submitAcp(
+        row!,
+        initialText: initialText,
+        initialAttachments: initialAttachments,
+        initialStamp: initialStamp,
+        initialGeneration: initialGeneration,
+      );
+    } catch (error) {
+      if (!_closed) reportFailure(error);
+      return false;
+    }
+  }
 
   Future<void> addLocalAttachments(List<String> paths) =>
       _dependencies.attachments.admitThread(
@@ -267,6 +342,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
 
   /// 提交一次已冻结的输入。
   Future<void> submit() {
+    final initial = _initialAcpPending;
+    if (initial != null) return initial.then<void>((_) {});
     if (_closed || (state.draft.trim().isEmpty && state.attachments.isEmpty))
       return Future<void>.value();
     final submissionStamp = stamp;
@@ -297,8 +374,9 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         _dependencies.directory?.observedThread(threadId);
     if (row?.backend is AcpAgentBackendView) {
       unawaited(
-        _submitAcp(row!)
-            .then(completion.complete, onError: completion.completeError),
+        _submitAcp(
+          row!,
+        ).then((_) => completion.complete(), onError: completion.completeError),
       );
       return pending;
     }
@@ -374,16 +452,23 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
   }
 
-  Future<void> _submitAcp(SessionDirectoryRow row) async {
+  Future<bool> _submitAcp(
+    SessionDirectoryRow row, {
+    String? initialText,
+    List<AttachmentDraftView>? initialAttachments,
+    DraftStamp? initialStamp,
+    int? initialGeneration,
+  }) async {
     OperationId? operationId;
     var accepted = false;
     var clear = false;
+    var consumeInitialAttachments = false;
     var dispatched = false;
-    final frozenStamp = stamp;
-    final generation = _generation;
-    final text = state.draft;
+    final frozenStamp = initialStamp ?? stamp;
+    final generation = initialGeneration ?? _generation;
+    final text = initialText ?? state.draft;
     final attachments = List<AttachmentDraftView>.unmodifiable(
-      state.attachments,
+      initialAttachments ?? state.attachments,
     );
     try {
       final owner = _dependencies.acpSessions?.conversationForThread(threadId);
@@ -425,11 +510,21 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       await owner.send(content);
       accepted = true;
       clear = !_closed && stamp == frozenStamp && _generation == generation;
+      consumeInitialAttachments =
+          initialStamp != null && !_closed && _generation == generation;
+      final sentIds = attachments.map((item) => item.id).toSet();
       if (!_closed) {
         apply(
           ComposerThreadState.idle(
             draft: clear ? '' : state.draft,
-            attachments: clear ? const [] : state.attachments,
+            attachments: clear
+                ? const []
+                : [
+                    for (final attachment in state.attachments)
+                      if (!consumeInitialAttachments ||
+                          !sentIds.contains(attachment.id))
+                        attachment,
+                  ],
             submissionRevision: state.submissionRevision,
             attachmentGeneration: state.attachmentGeneration,
             cleanupFailureDraftIds: state.cleanupFailureDraftIds,
@@ -456,12 +551,13 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         await _dependencies.attachments.completeFrozen(
           operationId: operationId,
           accepted: accepted,
-          clearCurrent: clear,
+          clearCurrent: clear || consumeInitialAttachments,
           workspaceId: row.workspaceId,
           threadId: threadId,
         );
       }
     }
+    return accepted;
   }
 
   Future<List<AcpContentBlockView>> _acpContent(
@@ -834,6 +930,10 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
 
   Future<void> _close() async {
     _closed = true;
+    final initialWait = _initialAcpReadyWait;
+    if (initialWait != null && !initialWait.isCompleted) {
+      initialWait.completeError(StateError('The composer is closed'));
+    }
     Object? failure;
     StackTrace? failureStack;
     Future<void> waitFor(Iterable<Future<void>> tasks) async {
@@ -845,6 +945,8 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       }
     }
 
+    final initial = _initialAcpPending;
+    if (initial != null) await waitFor([initial.then<void>((_) {})]);
     await waitFor(_pendingByStamp.values);
     await waitFor(_retryByInput.values);
     await waitFor(_removeTasks.values);

@@ -1475,6 +1475,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerHint => 'Describe what you need...';
 
   @override
+  String get composerModelSearch => 'Search models or agents';
+
+  @override
+  String get composerModelSearchEmpty => 'No matching models or agents';
+
+  @override
+  String get composerManageModels => 'Manage models and agents';
+
+  @override
   String get composerSend => 'Send';
 
   @override
@@ -6510,22 +6519,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get acpBackendReadyBadge => 'Enabled';
 
   @override
-  String get acpStartDraftHint =>
-      'Optional initial draft (carried into the new ACP session without auto-sending)…';
-
-  @override
-  String get acpStartHandshakeNote =>
-      'ACP runs on this device; remote project operations run on the SSH host through Host MCP tools.';
-
-  @override
-  String get acpStartCreateAction => 'Start ACP session';
-
-  @override
   String get acpStartCreatingAction => 'Starting…';
-
-  @override
-  String get acpStartExistingAttachmentsHint =>
-      'Staged attachments from the start draft are preserved for built-in sessions and are not sent on ACP creation.';
 
   @override
   String get acpSessionConnectingTitle => 'Connecting to ACP service…';

@@ -17,6 +17,7 @@ import '../composer.dart' show ComposerSubmissionControls;
 import '../state/composer_input_state.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
+import '../widgets/start_composer_selectors.dart';
 import 'composer_dock_view.dart';
 import 'composer_route_selectors.dart';
 import 'composer_support_views.dart';
@@ -34,7 +35,6 @@ class ComposerContentView extends StatefulWidget {
     required this.actions,
     this.compact = false,
     this.onAddProject,
-    this.startBackendSelector,
     super.key,
   });
 
@@ -43,7 +43,6 @@ class ComposerContentView extends StatefulWidget {
   final ComposerViewModel actions;
   final bool compact;
   final VoidCallback? onAddProject;
-  final Widget? startBackendSelector;
 
   @override
   State<ComposerContentView> createState() => _ComposerContentViewState();
@@ -142,10 +141,8 @@ class _ComposerContentViewState extends State<ComposerContentView> {
             ),
           StartPageComposerView(
             environmentBar: StartEnvironmentBar(
-              state: state,
-              actions: actions,
+              workspaceId: (widget.target as StartComposerTarget).workspaceId,
               onAddProject: widget.onAddProject,
-              backendSelector: widget.startBackendSelector,
             ),
             composer: input,
           ),
@@ -201,37 +198,8 @@ class _ComposerContentViewState extends State<ComposerContentView> {
     final actions = widget.actions;
     final start = widget.state.start;
     if (start != null) {
-      final mode = start.mode;
-      final route = start.displayRoute(mode);
-      final enabled = start.settingsLoaded && !start.submitting;
-      return Wrap(
-        key: StudioDriverKeys.startPageSelectors,
-        spacing: 6,
-        runSpacing: 4,
-        children: [
-          SessionModeSelector(
-            catalog: widget.state.modeCatalog,
-            mode: mode,
-            enabled: enabled && start.project != null,
-            lockedHint: start.project == null
-                ? context.l10n.statusModeNeedsProject
-                : context.l10n.statusSelectorsNotReady,
-            onSelected: actions.setMode,
-          ),
-          ...modelRouteSelectorChildren(
-            accounts: start.accounts,
-            accountId: route?.accountId,
-            modelId: route?.modelId,
-            effort: route?.effort,
-            pending: start.routePending(mode),
-            enabled: enabled,
-            unavailableReason:
-                start.routeFailure(mode) ??
-                context.l10n.statusModelRouteUnavailableFallback,
-            onModelSelected: actions.setModel,
-            onEffortSelected: actions.setEffort,
-          ),
-        ],
+      return StartComposerSelectors(
+        workspaceId: (widget.target as StartComposerTarget).workspaceId,
       );
     }
     final view = widget.state.thread!;

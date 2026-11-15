@@ -1,116 +1,121 @@
-import 'package:anywork/src/features/conversation/acp/connectors/acp_start_composer_connector.dart';
-import 'package:anywork/src/presentation/providers/attachment_drafts.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork/src/features/conversation/acp/state/acp_view_state.dart';
+import 'package:anywork/src/features/conversation/acp/views/acp_start_composer_view.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'acp_components_support.dart';
 
 void main() {
-  testWidgets('ACP 创建允许空输入，编辑使用真实 startDraft 并保留既有附件', (tester) async {
-    final harness = await AcpComponentHarness.create();
-    addTearDown(() => harness.close(tester));
-    harness.client.drafts.startDraft.setAcpService('workspace', 'account');
+  testWidgets('首条消息才可发送，提交期间仍可拟稿且主按钮尺寸不变', (tester) async {
+    var state = const AcpStartComposerViewState(
+      workspaceId: 'workspace',
+      text: '',
+      accountId: 'account',
+      serviceName: 'Codex',
+      serviceEnabled: true,
+    );
+    var sends = 0;
     await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          anyworkClientProvider.overrideWithValue(harness.client),
-          attachmentDraftsProvider.overrideWith(
-            (ref) => const AttachmentDraftBoard(
-              newThreadDrafts: {
-                'workspace': ComposerThreadState.idle(
-                  attachments: [
-                    AttachmentDraftView(
-                      id: 'existing',
-                      modality: AttachmentModalityView.file,
-                      mediaType: 'text/plain',
-                      filename: 'existing.txt',
-                      byteSize: 12,
-                    ),
-                  ],
-                ),
-              },
-            ),
+      acpTestApp(
+        StatefulBuilder(
+          builder: (context, setState) => AcpStartComposerView(
+            state: state,
+            onDraftChanged: (value) =>
+                setState(() => state = state.copyWith(text: value)),
+            onSubmit: () => setState(() {
+              sends++;
+              state = state.copyWith(submitting: true);
+            }),
           ),
-        ],
-        child: acpTestApp(
-          const AcpStartComposerConnector(workspaceId: 'workspace'),
         ),
       ),
     );
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNotNull,
-      reason: 'session/new is valid without an initial prompt',
+    final send = find.byKey(
+      ValueKey(AcpViewKeyValues.startSubmit('workspace')),
     );
-    expect(find.text('existing.txt'), findsOneWidget);
-    expect(find.byIcon(Icons.attach_file), findsNothing);
-    await tester.enterText(find.byType(TextField), '保留新会话输入');
+    final size = tester.getSize(send);
     expect(
-      harness.client.drafts.startDraft.state.forProject('workspace').text,
-      '保留新会话输入',
+      tester.getRect(find.byType(AcpStartComposerView)).right -
+          tester.getRect(send).right,
+      lessThanOrEqualTo(20),
+      reason: 'The primary action stays at the trailing edge of the input card',
     );
-    final controller = tester
-        .widget<TextField>(find.byType(TextField))
-        .controller!;
-    controller.selection = const TextSelection.collapsed(offset: 2);
-    harness.client.drafts.startDraft.setAcpService('workspace', 'other');
-    await tester.pumpAndSettle();
-    expect(controller.text, '保留新会话输入');
-    expect(controller.selection.baseOffset, 2);
-    expect(find.text('existing.txt'), findsOneWidget);
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.pump();
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(find.byType(TextField), '检查当前仓库');
+    await tester.pump();
+    await tester.tap(send);
+    await tester.pump();
+    expect(sends, 1);
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    expect(tester.getSize(send), size);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    await tester.enterText(find.byType(TextField), '接下来检查错误处理');
+    await tester.pump();
+    expect(state.text, '接下来检查错误处理');
+    expect(sends, 1);
+    expect(find.textContaining('协议'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('ACP SSH 项目可创建，项目源更新不丢失草稿', (tester) async {
-    final harness = await AcpComponentHarness.create();
-    addTearDown(() => harness.close(tester));
-    harness.client.drafts.startDraft.setAcpService('workspace', 'account');
-    harness.client.project.applyProjectDirectory(
-      ProjectDirectoryState(
-        revision: 2,
-        values: const [
-          StudioProject(
-            id: 'workspace',
-            name: '远端项目',
-            path: '/project',
-            sshAlias: 'server',
-          ),
-        ],
-      ),
+  testWidgets('组词回车不发、Shift+Enter换行，服务状态更新保留选区', (tester) async {
+    var state = const AcpStartComposerViewState(
+      workspaceId: 'workspace',
+      text: '检查仓库',
+      accountId: 'account',
+      serviceName: 'Codex',
+      serviceEnabled: true,
     );
+    late StateSetter rebuild;
+    var sends = 0;
     await tester.pumpWidget(
-      harness.scope(const AcpStartComposerConnector(workspaceId: 'workspace')),
-    );
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), '远程 ACP 草稿');
-    expect(
-      harness.client.drafts.startDraft.state.forProject('workspace').text,
-      '远程 ACP 草稿',
-    );
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNotNull,
-    );
-    harness.client.project.applyProjectDirectory(
-      ProjectDirectoryState(
-        revision: 3,
-        values: const [
-          StudioProject(id: 'workspace', name: '本地项目', path: '/project'),
-        ],
+      acpTestApp(
+        StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return AcpStartComposerView(
+              state: state,
+              onDraftChanged: (value) =>
+                  setState(() => state = state.copyWith(text: value)),
+              onSubmit: () => sends++,
+            );
+          },
+        ),
       ),
     );
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      '远程 ACP 草稿',
+    final input = find.byType(TextField);
+    await tester.tap(input);
+    final controller = tester.widget<TextField>(input).controller!;
+    controller.value = const TextEditingValue(
+      text: '检查仓库',
+      selection: TextSelection.collapsed(offset: 2),
+      composing: TextRange(start: 0, end: 2),
     );
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNotNull,
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(sends, 0);
+    controller.value = controller.value.copyWith(composing: TextRange.empty);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(controller.text, contains('\n'));
+    expect(sends, 0);
+    controller.selection = const TextSelection.collapsed(offset: 1);
+    rebuild(() => state = state.copyWith(serviceEnabled: false));
+    await tester.pump();
+    expect(controller.selection.baseOffset, 1);
+    final send = find.byKey(
+      ValueKey(AcpViewKeyValues.startSubmit('workspace')),
     );
-    expect(harness.port.calls.map((call) => call.$1), ['open']);
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    rebuild(() => state = state.copyWith(serviceEnabled: true));
+    await tester.pump();
+    await tester.tap(send);
+    expect(sends, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }
