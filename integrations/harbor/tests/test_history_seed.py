@@ -136,3 +136,11 @@ def test_wal_snapshot_keeps_committed_samples_without_modifying_source(
         assert not list((output / "data").rglob("*-wal"))
         validate_seed(output, config=home / "config.toml", expected_version="1.0.0-test")
         assert tree_hashes(output / "data") == seed["files"]
+
+
+def test_seed_output_cannot_recursively_copy_its_own_source(source_home, archive):
+    home, development = source_home
+    output = home / "data/seed"
+    with pytest.raises(ValueError, match="之外"):
+        freeze(home, archive, development, output)
+    assert not output.exists()

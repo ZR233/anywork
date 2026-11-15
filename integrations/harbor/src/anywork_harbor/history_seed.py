@@ -182,6 +182,9 @@ def _snapshot_databases(data: Path):
 
 def freeze(home: Path, artifacts: Path, development_manifest: Path, output: Path) -> dict:
     home = home.resolve()
+    output = output.resolve()
+    if output.is_relative_to(home):
+        raise ValueError("种子输出必须位于源 home 之外")
     # 不创建源锁文件；缺失说明尚未形成可证明清洁的原生 home。
     with (home / "studio/runtime.lock").open("r+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
