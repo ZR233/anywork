@@ -31,6 +31,10 @@ AttachmentDraftView _attachmentDraftFromFrb(
   );
 }
 
+void _observeBackground(Future<void> future) {
+  unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+}
+
 /// Dart 侧一次 FRB 订阅的取消句柄（native 句柄 + 派生 Dart stream 的单一 owner）。
 ///
 /// 取消只启动一条 owned future：normal `stream.onCancel` 与关闭协调器复用同一 future，
@@ -85,7 +89,7 @@ class _DartSubscription {
   /// 句柄同样走这条释放路径。若取消已请求则立即启动 owned cancellation。
   void markCreated() {
     if (!_created.isCompleted) _created.complete();
-    if (_cancelRequested) unawaited(_ownedCancellation());
+    if (_cancelRequested) requestCancel();
   }
 
   /// 启动（或复用）唯一一条 owned cancellation future。
@@ -129,6 +133,9 @@ class _DartSubscription {
     if (_drained) return Future<void>.value();
     return _ownedCancellation();
   }
+
+  /// 后台触发方观察错误；调用方仍可通过 [beginCancel] 获取原始失败。
+  void requestCancel() => _observeBackground(beginCancel());
 
   /// 有界等待 owned cancellation 收敛；返回是否排空与真实（脱敏）错误、堆栈。
   Future<_DartCancelResult> settle(Duration bound) async {
@@ -762,7 +769,7 @@ class FrbStudioTransport
     // 外部协调的 owner（进度流）不在 seal 时抢先 cancel：它按本地显示策略先 create，再由
     // 协调器在预算内取消并取 ACK；registry 在这里只负责强持有（阻止 GC）。
     if (_dartSubscriptionsSealed && !subscription.externallyCoordinated) {
-      unawaited(subscription.beginCancel());
+      subscription.requestCancel();
     }
   }
 
@@ -773,7 +780,7 @@ class FrbStudioTransport
   static void _trackStartupSubscription(_DartSubscription subscription) {
     _startupSubscriptions.add(subscription);
     _liveDartSubscriptions += 1;
-    if (_closing) unawaited(subscription.beginCancel());
+    if (_closing) subscription.requestCancel();
   }
 
   static void _forgetStartupSubscription(_DartSubscription subscription) {
@@ -796,7 +803,7 @@ class FrbStudioTransport
         if (!entry.externallyCoordinated) entry,
     ];
     for (final entry in entries) {
-      unawaited(entry.beginCancel());
+      entry.requestCancel();
     }
     final watch = Stopwatch()..start();
     final remaining = budgetMs - watch.elapsedMilliseconds;
@@ -1093,7 +1100,7 @@ class FrbStudioTransport
       tracked.markCreated();
       // 本订阅只服务本次启动尝试：无论成功、失败还是退出都启动唯一 owned cancellation，
       // 异步注销以免重试累积；退出路径由 registry 在预算内 join 并写入关闭报告。
-      unawaited(tracked.beginCancel());
+      tracked.requestCancel();
     }
   }
 
@@ -2592,7 +2599,7 @@ class FrbStudioTransport
           (envelope) {
             if (envelope
                 is frb_topic_types.BridgeProductTopicStreamEnvelope_Closed) {
-              controller.close();
+              _observeBackground(controller.close());
               return;
             }
             final frame = productTopicFrameFromEnvelope(topic, envelope);
@@ -2600,7 +2607,7 @@ class FrbStudioTransport
           },
           onError: (Object error, StackTrace stackTrace) =>
               controller.addError(_studioFailure(error), stackTrace),
-          onDone: controller.close,
+          onDone: () => _observeBackground(controller.close()),
         );
       } catch (error, stackTrace) {
         if (!tracked.cancelRequested) {
@@ -2614,7 +2621,7 @@ class FrbStudioTransport
         // 封闭/退出中：即使本 entry 尚未收到取消请求，也启动唯一 owned cancellation，
         // 保证任何已建立（或迟到）的 native 句柄都被释放，绝不让 owner 逃逸 settle 检查。
         if (_dartSubscriptionsSealed || _closing) {
-          unawaited(tracked.beginCancel());
+          tracked.requestCancel();
         }
         // 无论是否创建成功都完成创建闩：取消不必永远等待一个不会发生的创建。
         tracked.markCreated();
@@ -2622,15 +2629,8 @@ class FrbStudioTransport
     }
 
     controller = StreamController<ProductTopicFrame>(
-      onListen: () => unawaited(start()),
-      onCancel: () async {
-        try {
-          await tracked.beginCancel();
-        } on Object {
-          // 具体（脱敏）错因与堆栈已由 owner 保留，用于关闭报告的同步诊断；onCancel
-          // 不抛出，避免未 await 的 cancel 变成未处理异步错误。失败即保留 pending owner。
-        }
-      },
+      onListen: () => _observeBackground(start()),
+      onCancel: () => tracked.beginCancel(),
     );
     return controller.stream;
   }
