@@ -775,16 +775,21 @@ void main() {
   );
 
   testWidgets(
-    'Main tool disclosure owns one automatic bounded read per declared reference',
+    'Main tool disclosure reads output once without rereading inline arguments',
     (tester) async {
       final controls = _Controls();
       const presentationId = 'status:main-range';
       const contentItemId = 'original-main-result';
       const lastLine = 'bounded-output-line-080';
-      final outputText = [
+      final stdoutText = [
         for (var line = 1; line < 80; line++) 'bounded output line $line',
         lastLine,
       ].join('\n');
+      final outputText = jsonEncode({
+        'exitCode': 0,
+        'stdout': {'content': stdoutText},
+        'stderr': {'content': ''},
+      });
       final argumentsText = jsonEncode({'command': 'printf bounded output'});
       const argumentsRef = sdk.ContentRef(
         databaseId: 'main-range-db',
@@ -878,18 +883,13 @@ void main() {
             isActive: () => !controls.isRetired,
             read: (reference, range) {
               reads.add((reference, range.offset, range.maxBytes));
-              if (identical(reference, outputRef)) return output.future;
-              expect(reference, same(argumentsRef));
-              final bytes = utf8.encode(argumentsText);
-              return Future.value(
-                sdk.ContentWindow(
-                  bytes: bytes,
-                  offset: 0,
-                  generation: 'original-arguments',
-                  availableThrough: bytes.length,
-                  sealed: true,
-                ),
+              expect(
+                reference,
+                same(outputRef),
+                reason:
+                    'The command is already available from inline arguments',
               );
+              return output.future;
             },
           ),
         );
@@ -936,16 +936,16 @@ void main() {
         final originalState = tester.state(connector);
         final owner = originalState as TimelineCurrentWindowDisplay;
         expect(owner.reference, same(outputRef));
-        expect(
-          tester
-              .element(connector)
-              .getInheritedWidgetOfExactType<TimelineBodyReadIntent>(),
-          isNotNull,
-        );
-        final rangeView = find.descendant(
+        final bodyIntent = tester
+            .element(connector)
+            .getInheritedWidgetOfExactType<TimelineBodyReadIntent>();
+        expect(bodyIntent, isNotNull);
+        expect(bodyIntent!.scrollable, isTrue);
+        final toolBody = find.descendant(
           of: connector,
-          matching: find.byType(TimelineContentRangeView),
+          matching: find.byType(ListView),
         );
+        expect(toolBody, findsOneWidget);
         final disclosure = find.descendant(
           of: connector,
           matching: find.byKey(
@@ -955,13 +955,13 @@ void main() {
             ),
           ),
         );
-        final pending = tester.widget<TimelineContentRangeView>(rangeView);
-        expect(pending.initiallyExpanded, isTrue);
         expect(
-          (pending.loading, pending.active, pending.canRead),
-          (true, true, true),
+          find.descendant(
+            of: connector,
+            matching: find.byType(LinearProgressIndicator),
+          ),
+          findsOneWidget,
         );
-        expect(pending.disclosed, isTrue);
         expect(
           disclosure,
           findsNothing,
@@ -969,12 +969,10 @@ void main() {
         );
         expect(owner.window, isNull);
         expect(owner.error, isNull);
-        expect(reads, [
-          (argumentsRef, 0, 64 * 1024),
-          (outputRef, 0, 64 * 1024),
-        ]);
+        expect(find.text('printf bounded output'), findsOneWidget);
+        expect(reads, [(outputRef, 0, 64 * 1024)]);
         await Scrollable.ensureVisible(
-          tester.element(rangeView),
+          tester.element(toolBody),
           alignment: 0.5,
         );
         await tester.pump();
@@ -984,34 +982,40 @@ void main() {
         await tester.pumpAndSettle();
         expect(owner.window, same(accepted));
         expect(owner.error, isNull);
-        final ready = tester.widget<TimelineContentRangeView>(rangeView);
-        expect(ready.initiallyExpanded, isTrue);
         expect(
-          (ready.loading, ready.active, ready.canRead),
-          (false, true, true),
+          find.descendant(
+            of: connector,
+            matching: find.byType(LinearProgressIndicator),
+          ),
+          findsNothing,
         );
-        expect(ready.window, same(accepted));
-        expect(ready.disclosed, isTrue);
+        expect(tester.getSize(toolBody).height, lessThanOrEqualTo(320));
         expect(disclosure, findsNothing);
         expect(tester.state(connector), same(originalState));
         expect(owner.reference, same(outputRef));
         expect(controls.controller, same(mainController));
         expect(controls.scrollController.position, same(mainPosition));
         expect(controls.adapter.generation, generation);
-        final text = find.byKey(
+        final window = find.byKey(
           StudioDriverKeys.timelineContentWindow(
             presentationId,
             sdk.ChatContentRole.toolOutput.name,
           ),
         );
-        expect(tester.widget<Text>(text).data, outputText);
+        expect(window, findsOneWidget);
+        final text = find.descendant(
+          of: window,
+          matching: find.text(stdoutText),
+        );
+        expect(text, findsOneWidget);
+        expect(find.text(outputText), findsNothing);
         final rich = find.descendant(of: text, matching: find.byType(RichText));
         expect(rich, findsOneWidget);
         final paragraph = tester.renderObject<RenderParagraph>(rich);
         final boxes = paragraph.getBoxesForSelection(
           TextSelection(
-            baseOffset: outputText.indexOf(lastLine),
-            extentOffset: outputText.length,
+            baseOffset: stdoutText.indexOf(lastLine),
+            extentOffset: stdoutText.length,
           ),
         );
         expect(boxes, hasLength(1));
@@ -1029,6 +1033,9 @@ void main() {
         final viewport = tester.getRect(main).inflate(1);
         expect(viewport.contains(glyph.topLeft), isTrue);
         expect(viewport.contains(glyph.bottomRight), isTrue);
+        final bodyViewport = tester.getRect(toolBody).inflate(1);
+        expect(bodyViewport.contains(glyph.topLeft), isTrue);
+        expect(bodyViewport.contains(glyph.bottomRight), isTrue);
         await Scrollable.ensureVisible(
           tester.element(outerTitle),
           alignment: 0.5,
@@ -1041,10 +1048,7 @@ void main() {
         expect(originalState.mounted, isFalse);
         expect(connector, findsNothing);
         expect(text, findsNothing);
-        expect(reads, [
-          (argumentsRef, 0, 64 * 1024),
-          (outputRef, 0, 64 * 1024),
-        ]);
+        expect(reads, [(outputRef, 0, 64 * 1024)]);
         expect(tester.takeException(), isNull);
       } finally {
         if (!output.isCompleted) output.complete(accepted);

@@ -93,7 +93,13 @@ void main() {
       );
       await tester.pump();
       expect(find.text('已完成成员仍在组内'), findsOneWidget);
-      expect(find.text('更早成员'), findsOneWidget);
+      expect(find.text('更早成员'), findsNothing);
+      expect(find.text('最新成员'), findsNothing);
+      expect(find.byType(Scrollable), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(Scrollable)).height,
+        lessThanOrEqualTo(420),
+      );
       final demand = intent.members;
       final history = TimelineDisplayUnit(
         block: DisplayBlock(id: 'work', blockOrder: 1, body: body),
@@ -106,6 +112,12 @@ void main() {
       expect(opens, 1);
       expect(native.requested, isFalse);
       expect(find.text('已完成成员仍在组内'), findsOneWidget);
+      expect(find.text('更早成员'), findsNothing);
+      expect(find.byType(Scrollable), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(Scrollable)).height,
+        lessThanOrEqualTo(420),
+      );
       await tester.tap(
         find.byKey(const ValueKey('completion-run-header:work')),
       );
