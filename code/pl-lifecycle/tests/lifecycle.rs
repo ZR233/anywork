@@ -733,3 +733,46 @@ async fn synchronous_callback_is_not_preempted_by_scope_deadline() {
     thread.join().unwrap();
     drop(registration);
 }
+
+#[tokio::test]
+async fn panics_while_creating_factory_or_close_futures_are_observed() {
+    fn panicking_factory(_: CancellationToken) -> std::future::Ready<Result<Resource, Failure>> {
+        panic!("factory did not return a future")
+    }
+    struct PanickingClose(Arc<AtomicUsize>);
+    impl ManagedResource for PanickingClose {
+        type Error = Failure;
+        fn request_close(&self) {}
+        fn close(&self) -> impl Future<Output = Result<(), Failure>> + Send {
+            assert!(
+                self.0.fetch_add(1, Ordering::SeqCst) != 0,
+                "close did not return a future"
+            );
+            std::future::ready(Ok(()))
+        }
+    }
+
+    let root = ScopeOwner::<Failure>::new("root", Handle::current());
+    let opening = root.handle().open("factory panic", panicking_factory).await;
+    assert!(matches!(opening, Err(OpenError::Panicked)));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let resource_calls = Arc::clone(&calls);
+    let managed = root
+        .handle()
+        .open("close panic", move |_| async move {
+            Ok(PanickingClose(resource_calls))
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        bounded(managed.close()).await,
+        Err(CloseError::Panicked)
+    ));
+    assert!(bounded(managed.retry_close()).await.is_ok());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let report = bounded(root.wait_closed()).await;
+    assert!(report.workers_finished);
+    assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].phase, Phase::Opening);
+    assert!(!report.failures[0].retained);
+}
