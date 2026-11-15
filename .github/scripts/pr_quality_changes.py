@@ -212,7 +212,12 @@ def classify_path(path: str) -> frozenset[str]:
             tags.add("flutter")
     if path in _GUI_DEPENDENCIES:
         tags.add("bridge")
-    if path in _GUI_GENERATORS:
+    # Any app library may define or influence Riverpod, Freezed, or router
+    # output; localization resources feed gen-l10n. Classify by path rather
+    # than reading the current file so deletions and renames remain covered.
+    if path in _GUI_GENERATORS or (
+        path.startswith("code/anywork/lib/") and path.endswith((".dart", ".arb"))
+    ):
         tags.add("generated")
     if path in _NATIVE_EXACT:
         tags.add("native_exact")

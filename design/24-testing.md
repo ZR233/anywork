@@ -25,7 +25,7 @@ Cargo 缓存；同一 job 的步骤自然共享本地编译目录，不额外归
 | 独立工具接口与作者特性 | 无默认特性和 typed-only 独立运行，typed+macros 与宏诊断由 workspace 测试覆盖一次；外部 downstream 保留重命名依赖与脱离 workspace 的消费证明。工具集合 downstream 用一次 `cargo test --all-targets` 覆盖编译与媒体执行，不先重复 check。真实 binding 保存重开证明原参数、完整结果、错误阶段、冻结展示与不重执行；Linux MCP peer/生命周期用例不由其他平台的零用例替代 |
 | Flutter 静态、Client、应用单元和组件集成 | 在项目 Linux Docker 镜像内安装锁定 Pub 依赖。`pr-quality-flutter.sh --client` 执行 SDK-only 依赖边界、格式、分析和 Client 测试；`--app` 执行 App 格式、分析、Client/UI 导入闭包及一次 `flutter test --no-pub test/unit test/ui`。Client 生产接口或被 App 复用的 `test/support/` 变化同时检查 App，单改 Client 用例或 App 时只运行所属范围。无参数仍检查两者；应用测试无设备、无 Rust bridge |
 | Rust 质量与公共语义 | Rust 或共享构建输入受影响时，Linux 执行 fmt/clippy、无数据库的 core 检查与 workspace SQLite 测试；Windows/macOS 只执行各自宿主的 clippy，不运行 Rust 测试 |
-| GUI 生成一致性 | 桥接或生成输入受影响时，在 Linux 经 canonical 入口检查一次；应用编译不重复生成检查 |
+| GUI 生成一致性 | 桥接、生成配置、App `lib/` 下的 Dart 源码及生成文件或本地化资源受影响时，在 Linux 经 canonical 入口检查一次；按路径覆盖删除和重命名，应用编译不重复生成检查。仅 App 测试或预览源码变化不触发该检查 |
 | Linux 构建输入 | 生成检查需要工程工具；原生集成和 GUI 编译才需要双架构 helper。仅平台 Clippy 不触发准备作业，也不因其 skipped 而连带跳过。工程工具与所需 helper 复用一次镜像恢复与构建缓存，分别归档并保留源码、摘要和环境身份校验；消费者不以缓存或重新编译替代同次运行的交付产物 |
 | Linux 桌面与原生集成 | desktop full 确定性分片到独立 runner，native full 同步独立运行；与工程工具并行的准备作业集中编译 acceptance、开发配置 bridge、release 模拟供应商进程及原生 Host MCP，经既有受控构件交接供各 runner 只读消费。显式选择的独立 release/profile 场景仍自行编译对应 bridge，不进入默认 CI 消费者路线。各 runner 内顺序执行，不并发改写同一 Flutter 工作树。功能与生命周期信号独立，不因共用 harness 删除独特断言 |
 | Windows/macOS 应用检查 | 仅包含宿主 Rust clippy 与 `cargo xtask build-gui` 两类检查，按路径分别选择。Rust 生产输入改动选择两者；crate 根 `tests/` 下测试及其专用数据改动只选择 Clippy；仅平台 runner 等非 Rust 改动只选择相应编译。默认构建 Release/AOT App 和 release Rust bridge，编译真实插件并暂存双架构 helper；沿用发布检查点归档 `dist/anywork-release` 与独立工程工具，记录源码、版本、平台、配置及摘要，供检查和后续显式打包使用。helper 与 Flutter 工具链只在 GUI 编译时恢复，不运行各平台重复业务测试 |
