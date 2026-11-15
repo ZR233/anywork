@@ -23,7 +23,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
     outputs:
+      release_only: ${{ steps.plan.outputs.release_only }}
       docs_policy: ${{ steps.plan.outputs.docs_policy }}
       release_configuration: ${{ steps.plan.outputs.release_configuration }}
       rust_checks: ${{ steps.plan.outputs.rust_checks }}
@@ -49,19 +51,26 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Prove path classification and gate rules
-        env:
-          PR_HANDOFF_TEST_SCRATCH: ${{ runner.temp }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 -m unittest discover -s .github/scripts -p 'test_pr_quality_*.py' -v
-
       - name: Classify applicable jobs from Git paths
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/pr_quality_changes.py
+
+      - name: Explain skipped release checks
+        if: steps.plan.outputs.release_only == 'true'
+        run: |
+          echo 'Release Please version-only change: quality checks were skipped.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prove path classification and gate rules
+        if: steps.plan.outputs.release_only != 'true'
+        env:
+          PR_HANDOFF_TEST_SCRATCH: ${{ runner.temp }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s .github/scripts -p 'test_pr_quality_*.py' -v
 
   docs-policy:
     name: docs-policy
@@ -82,7 +91,8 @@ jobs:
 
   pr-title:
     name: Conventional PR title
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.release_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -881,7 +891,7 @@ jobs:
   # Configure this stable aggregate as the repository required check.
   ci-gate:
     name: ci-gate
-    if: always()
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.release_only != 'true')
     needs:
       - changes
       - docs-policy

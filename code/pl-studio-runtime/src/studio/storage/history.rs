@@ -1033,7 +1033,7 @@ impl HistoryStore {
         for turn in turns {
             turns::apply(tx, turn, &self.state.thread_id).await?;
         }
-        turns::rollback(tx, rolled_back_turns).await?;
+        turns::rollback(tx, rolled_back_turns, u64::try_from(write_seq)?).await?;
         heads.pending_execution_order = heads.pending_execution_order.max(execution_order);
         for identity in identities {
             write_input_identity(tx, write_seq, identity).await?;
@@ -5733,7 +5733,20 @@ mod storage_fault_tests {
                 )),
             )
         };
-        persist_completed(&store, 30, &[terminal("first", 1)]).await?;
+        let mut first_items = vec![terminal("first", 1)];
+        for n in 0..=TURN_PAGE_ITEM_LIMIT {
+            let mut item = ExecutionItem::completed_user_message(
+                format!("member-{n}"),
+                "child".into(),
+                "first".into(),
+                "large Turn member".into(),
+                vec![],
+                1,
+            );
+            item.ordinal = n as u64 + 10;
+            first_items.push(item);
+        }
+        persist_completed(&store, 30, &first_items).await?;
         persist_completed(&store, 80, &[terminal("second", 2), terminal("third", 3)]).await?;
         assert_eq!(store.latest_terminal_report_sequence().await?, Some(80));
         assert_eq!(store.terminal_report_sequences(30).await?, vec![80]);
@@ -5758,6 +5771,167 @@ mod storage_fault_tests {
         let mut revised = terminal("second", 2);
         revised.revision = 2;
         assert!(persist_completed(&store, 90, &[revised]).await.is_err());
+        async fn change(
+            store: &HistoryStore,
+            seq: u64,
+            turns: &[turns::TurnWrite],
+            ids: &[&str],
+        ) -> Result<()> {
+            store
+                .commit_effect(
+                    seq,
+                    EffectCommit {
+                        current: &test_current(seq),
+                        completions: &[],
+                        turns,
+                        execution_order: 0,
+                        rolled_back_turns: &ids.iter().map(|id| (*id).to_owned()).collect(),
+                        identities: &[],
+                        messages: &[],
+                        receipts: &[],
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await
+        }
+        let third_page = store.turn_page(None, 1).await?;
+        let third_cursor = third_page.next_cursor.context("second Turn")?;
+        let second_page = store.turn_page(Some(&third_cursor), 1).await?;
+        let second_cursor = second_page.next_cursor.context("first Turn")?;
+        let first_page = store.turn_page(Some(&second_cursor), 1).await?;
+        let member_cursor = first_page
+            .next_cursor
+            .context("large first Turn continuation")?;
+        assert_eq!(first_page.turns[0].turn.id, "first");
+        let token: serde_json::Value = serde_json::from_str(&member_cursor)?;
+        assert_eq!(token["version"], 4);
+        assert!(token["recordBefore"].is_number());
+        change(&store, 81, &[], &["first"]).await?;
+        // An unrelated new effect must not invalidate the unchanged second Turn.
+        assert_eq!(
+            store.turn_page(Some(&third_cursor), 1).await?.turns,
+            second_page.turns
+        );
+        assert!(store.turn_page(Some(&second_cursor), 1).await.is_err());
+        assert!(store.turn_page(Some(&member_cursor), 1).await.is_err());
+        let fresh_second = store
+            .turn_page(None, 2)
+            .await?
+            .next_cursor
+            .context("fresh first Turn")?;
+        let fresh = store.turn_page(Some(&fresh_second), 1).await?;
+        assert_eq!(
+            fresh.turns[0].context_disposition,
+            pl_protocol::ThreadContextDisposition::RolledBack
+        );
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(fresh.next_cursor.as_ref().unwrap())?;
+        legacy["version"] = 3.into();
+        assert!(store.turn_page(Some(&legacy.to_string()), 1).await.is_err());
+        change(&store, 81, &[], &["first"]).await?; // lost confirmation retry
+        change(&store, 82, &[], &["first"]).await?;
+        let original_turn = test_turns(30, &first_items);
+        change(&store, 83, &original_turn, &["first"]).await?;
+        change(&store, 83, &original_turn, &["first"]).await?;
+        let db = store.writer().await?;
+        let first = turns::read(&db.db, "first").await?.unwrap();
+        assert_eq!(first.updated_effect, Some(81));
+        assert_eq!(first.terminal_effect, Some(30));
+        assert_eq!(first.turn, original_turn[0].turn);
+        // Legacy active rows with no update evidence acquire the first real rollback effect.
+        db.db
+            .execute_unprepared(
+                "UPDATE history_turns SET updated_effect=100 WHERE turn_id='second'",
+            )
+            .await?;
+        assert!(change(&store, 84, &[], &["second"]).await.is_err());
+        assert_eq!(store.watermark().await?, 83);
+        assert_eq!(
+            turns::read(&db.db, "second")
+                .await?
+                .unwrap()
+                .context_disposition,
+            pl_protocol::ThreadContextDisposition::Active
+        );
+        assert!(
+            change(&store, 84, &[], &["third", "missing"])
+                .await
+                .is_err()
+        );
+        assert_eq!(store.watermark().await?, 83);
+        assert_eq!(
+            turns::read(&db.db, "third")
+                .await?
+                .unwrap()
+                .context_disposition,
+            pl_protocol::ThreadContextDisposition::Active
+        );
+        db.db
+            .execute_unprepared(
+                "UPDATE history_turns SET updated_effect=NULL WHERE turn_id='second'",
+            )
+            .await?;
+        change(&store, 84, &[], &["second"]).await?;
+        assert_eq!(
+            turns::read(&db.db, "second").await?.unwrap().updated_effect,
+            Some(84)
+        );
+
+        let sample =
+            conversation::record_read_tests::sqlite_work::Sampler::all_statements(&db.db).await?;
+        turns::rollback(
+            &db.db,
+            &std::collections::BTreeSet::from(["first".into()]),
+            90,
+        )
+        .await?;
+        assert_eq!(
+            sample.finish(&db.db).await?.statements,
+            1,
+            "idempotent rollback must not SELECT per ID"
+        );
+        db.db
+            .execute_unprepared("UPDATE history_turns SET updated_effect=30 WHERE turn_id='first'")
+            .await?;
+        let fresh_second = store.turn_page(None, 2).await?.next_cursor.unwrap();
+        assert_eq!(
+            store.turn_page(Some(&fresh_second), 1).await?.turns[0].context_disposition,
+            pl_protocol::ThreadContextDisposition::RolledBack
+        );
+        assert_eq!(
+            turns::read(&db.db, "first").await?.unwrap().updated_effect,
+            Some(30),
+            "no fabricated legacy rollback effect"
+        );
+
+        let mut running = original_turn[0].clone();
+        running.turn.id = "running".into();
+        running.turn_order = 1000;
+        running.turn.state = pl_protocol::TurnState::Running(pl_protocol::RunningTurnState::new(
+            1,
+            pl_protocol::TurnPhase::Thinking,
+        ));
+        running.updated_effect = Some(85);
+        running.terminal_effect = None;
+        change(&store, 85, &[running.clone()], &[]).await?;
+        change(&store, 86, &[], &["running"]).await?;
+        running.updated_effect = Some(87);
+        running.turn.revision = 87;
+        running.turn.state = pl_protocol::TurnState::Running(pl_protocol::RunningTurnState::new(
+            1,
+            pl_protocol::TurnPhase::Responding,
+        ));
+        change(&store, 87, &[running], &["running"]).await?;
+        let updated = turns::read(&db.db, "running").await?.unwrap();
+        assert_eq!(updated.updated_effect, Some(87));
+        assert_eq!(
+            updated.context_disposition,
+            pl_protocol::ThreadContextDisposition::RolledBack
+        );
+
         Ok(())
     }
 

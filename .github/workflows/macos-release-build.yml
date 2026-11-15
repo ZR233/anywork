@@ -15,6 +15,10 @@ on:
       artifactPrefix:
         required: true
         type: string
+      verifyPackage:
+        required: false
+        type: boolean
+        default: true
     outputs:
       artifactId:
         value: ${{ jobs.package.outputs.artifactId }}
@@ -133,9 +137,10 @@ jobs:
       - name: Verify and restore prebuilt inputs
         run: bash .github/scripts/studio-macos-handoff.sh restore-inputs
       - name: Package without rebuilding or modifying signed app
-        run: |
-          "$STUDIO_MACOS_TOOL" release-gui stage --version "$RELEASE_VERSION" --bundle "$STUDIO_MACOS_BUNDLE"
-          "$STUDIO_MACOS_TOOL" release-gui verify --version "$RELEASE_VERSION"
+        run: '"$STUDIO_MACOS_TOOL" release-gui stage --version "$RELEASE_VERSION" --bundle "$STUDIO_MACOS_BUNDLE"'
+      - name: Verify packaged app
+        if: inputs.verifyPackage
+        run: '"$STUDIO_MACOS_TOOL" release-gui verify --version "$RELEASE_VERSION"'
       - name: Archive final macOS assets
         id: archive
         run: bash .github/scripts/studio-macos-handoff.sh archive-assets

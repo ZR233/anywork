@@ -3092,7 +3092,7 @@ mod readiness_tests {
 }
 
 #[cfg(test)]
-mod storage_fault_tests {
+pub(in crate::studio) mod storage_fault_tests {
     use super::*;
     use crate::studio::storage::history::{EffectCommit, FactReceiptWrite};
     use crate::studio::storage::thread_writer::ThreadStorageSink;
@@ -4687,6 +4687,109 @@ mod storage_fault_tests {
         )
         .await?;
         Ok((handle, feed, live))
+    }
+
+    /// Replay batches produced by a real Core background task through the production Store owner.
+    pub(in crate::studio) async fn real_background_receipts_do_not_read_history(
+        writes: &[ThreadWrite],
+    ) -> Result<()> {
+        use pl_core::{
+            chat::{ChatItemRequest, ReadDemand},
+            thread::journal::ContextChange,
+        };
+
+        let fixture = observation_fixture().await?;
+        let thread = bound_thread("concurrent-results");
+        register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
+        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+        let channel = fixture
+            .store
+            .thread_persistence()
+            .history_channel(&thread.id);
+        let (handle, feed, mut owner) =
+            state_observation_owner(&fixture, &thread, &channel, None).await?;
+        let binding = Arc::new(sink.binding());
+        let store = binding.conversation.clone();
+        store.attach_execution(&binding).await?;
+        owner.binding = Some(binding.clone());
+        let history = fixture.store.history(&thread.id).await?;
+        let writer = channel.hold_writer().await;
+        let mut acknowledgements = 0;
+
+        for original in writes {
+            sink.admit(&thread.id, original.clone())?;
+            let write = channel.next_unprojected().context("accepted Core batch")?;
+            let receipt_ids = if matches!(write.effect.context, Some(ContextChange::Append { .. }))
+            {
+                crate::studio::thread_projection::order::background_receipts(&write.effect)
+                    .filter(|(_, receipt)| receipt.is_some())
+                    .map(|(task, _)| {
+                        crate::studio::thread_projection::order::tool_background_started_id(
+                            &task.call_id,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            if receipt_ids.is_empty() {
+                owner.advance(&fixture.services, &thread.id, &write).await?;
+                continue;
+            }
+
+            let reads = history.reader_calls();
+            let (mut entered, release) = history.arm_completion_read_gate().await;
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                owner.advance(&fixture.services, &thread.id, &write),
+            )
+            .await;
+            if result.is_err() {
+                drop(release);
+                anyhow::bail!("real background acknowledgement waited for history");
+            }
+            result??;
+            let session = store.session();
+            let budget =
+                super::super::conversation_reader::JsonBudget::new(String::new(), String::new());
+            for receipt_id in &receipt_ids {
+                let item = session
+                    .read_item(
+                        ChatItemRequest {
+                            epoch: session.epoch(),
+                            item_id: receipt_id.clone(),
+                            ceiling: None,
+                            demand: ReadDemand::new(1, 256 * 1024),
+                        },
+                        &budget,
+                    )
+                    .await?
+                    .context("real background receipt was not published")?;
+                assert_eq!(item.header.item_id, *receipt_id);
+            }
+            assert_eq!(history.reader_calls(), reads);
+            assert!(matches!(
+                entered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            drop(release);
+            acknowledgements += receipt_ids.len();
+        }
+        assert_eq!(acknowledgements, 2);
+        drop(writer);
+        sink.flush(
+            &thread.id,
+            writes.last().context("real Core writes")?.effect.sequence,
+        )
+        .await?;
+        drop(owner);
+        drop(binding);
+        drop(store);
+        channel.stop_and_join().await?;
+        handle.close().await?;
+        drop(feed);
+        Ok(())
     }
 
     #[tokio::test]

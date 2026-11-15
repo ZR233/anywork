@@ -32,12 +32,12 @@ pub(super) async fn page(
     let mut cursor = token.map(serde_json::from_str::<PageCursor>).transpose()?;
     if let Some(cursor) = &cursor {
         ensure!(
-            cursor.version == 3
+            cursor.version == 4
                 && cursor.thread_id == thread
                 && cursor.database_id == database
                 && cursor.through <= through
                 && cursor.ceiling <= ceiling,
-            "Turn cursor belongs to another database, owner or durable cut"
+            "Turn cursor version or database, owner or durable cut is invalid; restart from the first page"
         );
     }
     let fixed_through = cursor.as_ref().map_or(through, |cursor| cursor.through);
@@ -73,7 +73,7 @@ pub(super) async fn page(
             context_disposition: turn.context_disposition,
         };
         let mut next = PageCursor {
-            version: 3,
+            version: 4,
             thread_id: thread.into(),
             database_id: database.into(),
             through: fixed_through,
@@ -310,16 +310,29 @@ pub(super) async fn terminal(db: &impl ConnectionTrait) -> Result<Option<Turn>> 
 pub(super) async fn rollback(
     db: &impl ConnectionTrait,
     ids: &std::collections::BTreeSet<String>,
+    effect: u64,
 ) -> Result<()> {
+    let effect = integer(effect)?;
+    let active = serde_json::to_string(&ThreadContextDisposition::Active)?;
     let disposition = serde_json::to_string(&ThreadContextDisposition::RolledBack)?;
     for id in ids {
         let written = db
             .execute_raw(statement(
-                "UPDATE history_turns SET context_disposition=? WHERE turn_id=?",
-                vec![disposition.clone().into(), id.clone().into()],
+                "UPDATE history_turns SET updated_effect=CASE WHEN context_disposition=? THEN ? ELSE updated_effect END,
+                 context_disposition=? WHERE turn_id=? AND (context_disposition=? OR
+                 (context_disposition=? AND (updated_effect IS NULL OR updated_effect<=?)))",
+                vec![active.clone().into(), effect.into(), disposition.clone().into(), id.clone().into(),
+                    disposition.clone().into(), active.clone().into(), effect.into()],
             ))
             .await?;
-        ensure!(written.rows_affected() == 1, "rolled-back Turn is missing");
+        if written.rows_affected() == 0 {
+            let old = read(db, id).await?.context("rolled-back Turn is missing")?;
+            ensure!(
+                old.context_disposition == ThreadContextDisposition::Active,
+                "rolled-back Turn has invalid context disposition"
+            );
+            anyhow::bail!("Turn rollback effect moved backwards");
+        }
     }
     Ok(())
 }

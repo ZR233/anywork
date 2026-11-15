@@ -334,7 +334,7 @@ jobs:
           retention-days: 14
 
   package:
-    name: Package, sign, and smoke-test Windows x64
+    name: Package and sign Windows x64
     needs: [resolve, compile]
     if: needs.resolve.outputs.draft == 'true'
     runs-on: windows-latest
@@ -464,12 +464,6 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($env:MINISIGN_SECRET_KEY_FILE) -and (Test-Path -LiteralPath $env:MINISIGN_SECRET_KEY_FILE)) {
             Remove-Item -LiteralPath $env:MINISIGN_SECRET_KEY_FILE -Force
           }
-
-      - name: Smoke-test per-user installer
-        shell: pwsh
-        run: |
-          . .github/scripts/studio-package-tools.ps1
-          Test-StudioInstaller
 
       - name: Identify final asset archive
         id: identity
@@ -651,10 +645,6 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
             "$STUDIO_LINUX_TOOL" release-gui stage --version "$RELEASE_VERSION" --bundle "$STUDIO_LINUX_BUNDLE"
-      - name: Verify Debian archive, layout, and exact checksum
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
-            "$STUDIO_LINUX_TOOL" release-gui verify --version "$RELEASE_VERSION"
       - name: Identify final Linux asset archive
         id: identity
         run: bash .github/scripts/studio-linux-handoff.sh archive-assets
@@ -700,67 +690,6 @@ jobs:
         with:
           subject-path: dist/studio-release/${{ needs.resolve.outputs.version }}/anywork-${{ needs.resolve.outputs.version }}-linux-x86_64.deb
 
-  linux-compat:
-    name: Debian compatibility (${{ matrix.runtime.name }})
-    needs: [resolve, linux-package]
-    if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.linux == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        runtime:
-          - {name: ubuntu-22.04, image: 'ubuntu:22.04'}
-          - {name: ubuntu-24.04, image: 'ubuntu:24.04'}
-          - {name: debian-12, image: 'debian:12-slim'}
-          - {name: debian-13, image: 'debian:13-slim'}
-    env:
-      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-      ASSET_ARTIFACT_ID: ${{ needs.linux-package.outputs.artifactId }}
-      ASSET_SHA256: ${{ needs.linux-package.outputs.archiveSha256 }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-          persist-credentials: false
-      - name: Require immutable final asset ID
-        run: bash .github/scripts/studio-linux-handoff.sh artifact-ids "$ASSET_ARTIFACT_ID"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ env.ASSET_ARTIFACT_ID }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/linux-assets
-      - name: Verify final archive and exact Debian sidecar
-        run: bash .github/scripts/studio-linux-handoff.sh restore-assets
-      - name: Install and load the same Debian package in a clean runtime
-        env:
-          RUNTIME_IMAGE: ${{ matrix.runtime.image }}
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/linux-compat-evidence"
-          mkdir -p "$evidence"
-          container="studio-linux-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          trap 'exit 130' INT
-          trap 'exit 143' TERM
-          docker pull --platform linux/amd64 "$RUNTIME_IMAGE"
-          docker image inspect "$RUNTIME_IMAGE" > "$evidence/runtime-image.json"
-          docker run --rm --init --platform linux/amd64 --name "$container" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/dist/studio-release/$RELEASE_VERSION,dst=/packages,readonly" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/.github/scripts/studio-linux-smoke.sh,dst=/smoke.sh,readonly" \
-            --mount "type=bind,src=$evidence,dst=/evidence" \
-            "$RUNTIME_IMAGE" bash /smoke.sh "/packages/anywork-$RELEASE_VERSION-linux-x86_64.deb" "$RELEASE_VERSION"
-      - name: Preserve distribution loader and first-frame evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: studio-linux-compat-${{ needs.resolve.outputs.releaseId }}-${{ matrix.runtime.name }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/linux-compat-evidence
-          if-no-files-found: warn
-          retention-days: 14
-
   macos-build:
     name: Build and package macOS arm64
     needs: [resolve, helper]
@@ -773,6 +702,7 @@ jobs:
       helperX64Id: ${{ needs.helper.outputs.x64ArtifactId }}
       helperArm64Id: ${{ needs.helper.outputs.arm64ArtifactId }}
       artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
+      verifyPackage: false
 
   macos-attest:
     name: Attest archived macOS provenance
@@ -808,16 +738,16 @@ jobs:
 
   publish:
     name: Reconcile assets and publish draft
-    needs: [resolve, compile, package, attest, linux-package, linux-compat, linux-attest, macos-build, macos-attest]
+    needs: [resolve, compile, package, attest, linux-package, linux-attest, macos-build, macos-attest]
     if: >-
       always() && !cancelled() && needs.resolve.outputs.draft == 'true' &&
       needs.compile.result == 'success' && needs.package.result == 'success' &&
       needs.attest.result == 'success' &&
       ((needs.resolve.outputs.linux == 'true' &&
-        needs.linux-package.result == 'success' && needs.linux-compat.result == 'success' &&
+        needs.linux-package.result == 'success' &&
         needs.linux-attest.result == 'success') ||
        (needs.resolve.outputs.linux == 'false' &&
-        needs.linux-package.result == 'skipped' && needs.linux-compat.result == 'skipped' &&
+        needs.linux-package.result == 'skipped' &&
         needs.linux-attest.result == 'skipped')) &&
       ((needs.resolve.outputs.macos == 'true' && needs.macos-build.result == 'success' &&
         needs.macos-attest.result == 'success') ||

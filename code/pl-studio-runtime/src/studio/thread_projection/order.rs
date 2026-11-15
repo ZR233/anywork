@@ -115,3 +115,33 @@ pub(super) fn presentation_ids<'a>(
             )
     })
 }
+
+/// Resolve one batch's acknowledgement evidence, including Replace for recovery. A missing or
+/// ambiguous receipt remains unproven; callers must retain their existing history/error path.
+pub(in crate::studio) fn background_receipts(
+    effect: &pl_core::thread::ThreadEffectBatch,
+) -> impl Iterator<
+    Item = (
+        &pl_core::thread::task::TaskRecord,
+        Option<&pl_core::context::ContextRecord>,
+    ),
+> {
+    effect.context.iter().flat_map(move |context| {
+        let (revision, records) = match context {
+            pl_core::thread::journal::ContextChange::Append { revision, records } => (*revision, records.as_ref()),
+            pl_core::thread::journal::ContextChange::Replace(snapshot) => (snapshot.revision, snapshot.records.as_ref()),
+        };
+        effect.tasks.iter().filter_map(move |task| {
+            let ack = task.acknowledgement.as_ref()?;
+            if ack.context_revision != revision { return None; }
+            let mut matches = records.iter().filter(|record| record.id == ack.record_id);
+            let receipt = matches.next().filter(|record| {
+                matches.next().is_none()
+                    && record.turn_id.as_deref() == Some(task.turn_id.as_str())
+                    && matches!(&record.source, pl_core::context::ContextSource::ToolResult { call_id, tool_id }
+                        if call_id == &task.call_id && tool_id == &task.tool_id)
+            });
+            Some((task, receipt))
+        })
+    })
+}
