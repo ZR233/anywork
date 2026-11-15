@@ -2136,18 +2136,54 @@ final class _ConceptScene {
     );
     final firstWork = observed.unit(g1);
     expect(firstWork.memberReference, initialWork.memberReference);
-    final firstMembers = await observed.readFixtureAtoms(
-      firstWork,
-      expectedCount: 7,
-    );
-    expect(firstMembers, hasLength(7));
-    expect(firstMembers.every((atom) => atom.source == source), isTrue);
+    final firstMembers = await observed.readFixtureAtoms(firstWork);
     expect(
       firstMembers.every((atom) => atom.lifecycle is TerminalChatAtom),
       isTrue,
     );
+    // A slow host can hand an exec to the background before the fixture sees
+    // its result. Its wait and independent result are additional real members,
+    // not replacements for the original foreground records.
+    final coreMembers = firstMembers
+        .where((atom) => atom.source == source && atom.tool?.name != 'wait')
+        .toList();
+    final waits = firstMembers.where((atom) => atom.tool?.name == 'wait');
+    final results = firstMembers
+        .where((atom) => atom.delivery == ChatDeliveryKind.independent)
+        .toList();
+    final handoffs = coreMembers
+        .where((atom) => atom.delivery == ChatDeliveryKind.backgroundHandoff)
+        .toList();
+    expect(coreMembers, hasLength(7));
     expect(
-      firstMembers
+      firstMembers,
+      hasLength(coreMembers.length + waits.length + results.length),
+    );
+    for (final wait in waits) {
+      expect(wait.source, source);
+      expect(wait.tool!.callId, startsWith('scroll-wait-'));
+      expect(wait.delivery, ChatDeliveryKind.foreground);
+      expect(handoffs, isNotEmpty);
+    }
+    for (final handoff in handoffs) {
+      final result = results.singleWhere(
+        (atom) => atom.tool?.callId == handoff.tool?.callId,
+      );
+      expect(result.source, isA<BackgroundResultChatSource>());
+      expect(result.turnId, handoff.turnId);
+      expect(result.id, isNot(handoff.id));
+      expect(
+        (handoff.lifecycle as TerminalChatAtom).outcome,
+        ChatTerminalOutcome.transferred,
+      );
+      expect(
+        (result.lifecycle as TerminalChatAtom).outcome,
+        ChatTerminalOutcome.completed,
+      );
+    }
+    expect(results, hasLength(handoffs.length));
+    expect(
+      coreMembers
           .where((atom) => atom.tool?.name == 'exec')
           .map((atom) => atom.tool!.callId),
       unorderedEquals([
@@ -2156,7 +2192,7 @@ final class _ConceptScene {
         'concept-command-b',
       ]),
     );
-    final commands = firstMembers.where(
+    final commands = coreMembers.where(
       (atom) => atom.tool?.name == 'exec_command',
     );
     expect(commands, hasLength(3));
@@ -2379,7 +2415,9 @@ final class _ConceptScene {
       expect(
         find.byWidgetPredicate(
           (widget) =>
-              widget is ChatItemView && widget.item.atom?.tool?.callId == call,
+              widget is ChatItemView &&
+              widget.item.atom?.tool?.callId == call &&
+              widget.item.atom?.delivery != ChatDeliveryKind.independent,
         ),
         findsOneWidget,
       );
