@@ -692,6 +692,11 @@ impl<E: Send + Sync + 'static> Scope<E> {
             if report.sealed && report.workers_finished && report.pending.is_empty() {
                 return report;
             }
+            // A watch receiver can remain ready under a stream of unrelated
+            // notifications. Check the absolute deadline before waiting again.
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return report;
+            }
             match deadline {
                 Some(deadline) => {
                     if tokio::time::timeout_at(deadline, changes.changed())
