@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     strategy:
       fail-fast: false
       matrix:
@@ -38,10 +40,31 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Locate the dedicated container Cargo cache
+        run: printf 'CARGO_HOME=%s/ci-cargo-home\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Pull and verify published environment
         env:
           LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
         run: bash .github/scripts/linux-build-handoff.sh
+
+      - name: Restore engineering-tool dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-xtask-${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: false
+          cache-bin: false
+          workspaces: |
+            . -> target/xtask
+      - name: Restore remote-helper cross-compilation dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-${{ matrix.target }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: false
+          cache-bin: false
+          workspaces: |
+            . -> target/${{ matrix.target }}
 
       - name: Build remote helper architecture
         env:

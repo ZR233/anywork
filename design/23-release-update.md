@@ -43,11 +43,11 @@ RC/手动构建沿用编译构件交接与预构建打包契约，并在无生�
 
 ### 工具链固定、构建缓存与 MSVC 环境排障
 
-Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及 `aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl` 交叉编译目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。Linux CI 使用镜像内固定版本并校验摘要的 FRB 生成器和 `cargo-expand` 预编译包，不在每个作业安装或回退源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
+Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及两个 Linux musl 目标和 `aarch64-apple-darwin` 目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。Linux CI 使用镜像内固定版本并校验摘要的 FRB 生成器和 `cargo-expand` 预编译包，不在每个作业安装或回退源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
 
-生成检查在同一已解析镜像的独立安装容器中，使用作业的只读 GitHub 令牌下载固定生成工具，避免匿名接口限流。安装容器仅挂载工具输出目录；后续源码生成只消费安装结果，不接收下载令牌。
+生成检查直接使用已解析镜像中经过版本和摘要校验的生成工具，作业不再单独下载工具，也不向源码生成容器传递下载令牌。
 
-依赖缓存优先用于 Windows，Linux 构建与测试不读写持久依赖缓存；Windows Rust 缓存仅由默认分支运行保存，PR 与非默认分支只恢复可访问的基线缓存。Flutter SDK/pub 沿用固定组件的原生缓存契约，不额外维护平行缓存。缓存丢失只能影响速度，不能影响确定性或绕过验证；不依赖自动删除旧缓存或提高配额保证容量。工作流构件是有期限的交付检查点，与依赖缓存分离，不受依赖缓存命中与否控制。直接执行已校验发布工具进行预构建打包、定稿与核验时不再触发 Rust 工具链同步。
+Linux 工作区、工程工具与远端辅助进程的不同目标分别维护依赖缓存，检查、构建和发布作业可恢复环境及工具链匹配的缓存；同一缓存由指定作业保存，避免并行写入。Windows Rust 缓存仅由默认分支运行保存，PR 与非默认分支只恢复可访问的基线缓存。Flutter SDK/pub 沿用固定组件的原生缓存契约，不额外维护平行缓存。缓存丢失只能影响速度，不能影响确定性或绕过验证；不依赖自动删除旧缓存或提高配额保证容量。工作流构件是有期限的交付检查点，与依赖缓存分离，不受依赖缓存命中与否控制。直接执行已校验发布工具进行预构建打包、定稿与核验时不再触发 Rust 工具链同步。
 
 Windows 本机编译第三方 C 依赖（如 `zstd-sys`）若遇到 MSVC `D8050` 错误（`cannot execute 'c1xx.dll': failed to get command line into debug records`），属于本机 MSVC 临时目录权限、路径长度或杀毒软件拦截等环境问题，而非代码缺陷。排查时可开启 `CC_ENABLE_DEBUG_OUTPUT` 获取完整编译器输出并修复 `%TMP%`/`%TEMP%` 环境；仅在本机环境短期无法修复时，才可在不入库的 `.cargo/config.local.toml` 中配置 `[profile.dev.package.zstd-sys] debug = 0` 作为个人本地临时绕过。
 
