@@ -11,6 +11,7 @@ members = [
     "code/pl-output",
     "code/pl-patch",
     "code/pl-skill-core",
+    "code/pl-lifecycle",
     "code/pl-core",
     "code/pl-dev-support",
     "code/pl-tool",
