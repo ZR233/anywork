@@ -213,8 +213,13 @@ class _MembersState extends State<CompletionRunConnector>
       final rect = _rect(entry.memberKey);
       return rect != null && rect.bottom > top && rect.top < bottom;
     }).toList();
-    if (visible.isEmpty) return false;
-    final key = (newer ? visible.last : visible.first).memberKey;
+    // A retained edge spacer can temporarily occupy the whole viewport after
+    // returning through overlapping pages. Its nearest member is still the
+    // stable boundary anchor, even before it becomes visible again.
+    if (visible.isEmpty && !older && !newer) return false;
+    final key = visible.isEmpty
+        ? (newer ? entries.last : entries.first).memberKey
+        : (newer ? visible.last : visible.first).memberKey;
     final offset = _contentOffset(key);
     if (offset == null) return false;
     final position = scope.controller.position;

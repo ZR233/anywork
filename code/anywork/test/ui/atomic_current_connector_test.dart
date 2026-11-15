@@ -791,6 +791,16 @@ void main() {
       expect(tester.state(anchor), same(original));
       expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
       expect(requests.length, 3);
+      // After navigating back to Latest, a large reverse gesture can reach
+      // the retained leading spacer before any member intersects the viewport.
+      await tester.drag(scroll, const Offset(0, -1000));
+      await _flush(tester);
+      expect(expansion.members!.window, isA<LatestDisplayMembers>());
+      await tester.drag(scroll, const Offset(0, 1000));
+      await _flush(tester);
+      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
+        for (var i = 18; i <= 29; i++) i,
+      ]);
       expect(
         content.scopes,
         isEmpty,

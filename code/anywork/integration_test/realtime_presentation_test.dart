@@ -2294,18 +2294,18 @@ final class _RealtimeScene {
 
         disclosureFacts = closeFacts;
         if (tool.toolCallId.startsWith('realtime-host-cwd-call:nested:')) {
-          final arguments = await readDeclaredRange(
-            rowId,
-            contentItemId,
-            contents,
-            ChatContentRole.toolArguments,
-            'cwd',
-            single: block,
-            head: head,
+          // Command parameters are part of the card's decoded semantic input;
+          // the renderer does not open a second argument content window.
+          expect(
+            contents.where(
+              (content) => content.role == ChatContentRole.toolArguments,
+            ),
+            hasLength(1),
           );
+          expect(renderedTool.arguments, tool.arguments);
+          expect(tool.arguments, originalTool.arguments);
           final cwd =
-              (jsonDecode(utf8.decode(arguments.bytes)) as Map)['cwd']
-                  as String;
+              (jsonDecode(renderedTool.arguments) as Map)['cwd'] as String;
           expect(cwd, isNotEmpty);
           // The nested original keeps the command receipt, without a model delivery notice.
           // Compare actual directory identity across platform-specific path spellings.
