@@ -685,7 +685,7 @@ void main() {
     expect(h.editorState(key).acp!.accountKey, isNull);
     expect(
       (h.editorState(key).acp!.saveAndConnect, h.editorState(key).dirty),
-      (true, true),
+      (true, false),
     );
     final acpKey = h.editorState(key).acpKey!;
     owner.changeSetDefaultOnCreate(true);

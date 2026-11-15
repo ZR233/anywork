@@ -2958,6 +2958,14 @@ void main() {
     );
     final key = session.currentEditor!;
     final owner = await h.editor(key);
+    expect(
+      (h.editorState(key).dirty, h.editorState(key).canSave),
+      (false, true),
+    );
+    owner.changeSetDefaultOnCreate(true);
+    expect(h.editorState(key).dirty, isTrue);
+    owner.changeSetDefaultOnCreate(false);
+    expect(h.editorState(key).dirty, isFalse);
     AccountBillingPresentation billing() => h.editorState(key).native!.billing;
     expect(
       (billing().billingKindOverride, billing().effective),
@@ -2965,6 +2973,7 @@ void main() {
     );
     const changedEndpoint = 'https://different-endpoint.example/v2';
     owner.changeField(NativeAccountField.endpoint, changedEndpoint);
+    expect(h.editorState(key).dirty, isTrue);
     expect(
       (billing().billingKindOverride, billing().effective),
       (null, AccountBilling.unknown),
@@ -3001,6 +3010,10 @@ void main() {
       (null, AccountBilling.subscription),
     );
     expect(h.accounts.mutationCalls, isEmpty);
+    expect(
+      (h.editorState(key).dirty, h.editorState(key).canSave),
+      (false, true),
+    );
     expect(h.accounts.billing, isEmpty);
     expect(
       (
@@ -3026,6 +3039,12 @@ void main() {
     expect(created.secret.action, AccountSecretAction.preserve);
     expect(created.customModels, isEmpty);
     expect(created.initialBillingKind, isNull);
+    expect(
+      (h.editorState(key).dirty, h.editorState(key).canSave),
+      (false, false),
+    );
+    expect(await owner.save(), isFalse);
+    expect(h.accounts.creates, hasLength(1));
     expect(
       (billing().billingKindOverride, billing().effective),
       (null, AccountBilling.unknown),

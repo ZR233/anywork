@@ -15,6 +15,7 @@ import 'package:anywork/src/features/settings/accounts/view_models/accounts_view
 import 'package:anywork/src/features/settings/accounts/views/account_dialogs.dart';
 import 'package:anywork/src/features/settings/accounts/views/account_details_view.dart';
 import 'package:anywork/src/features/settings/accounts/views/native_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/widgets/account_template_selector.dart';
 import 'package:anywork/src/features/settings/settings_section.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
@@ -40,6 +41,153 @@ import '../support/test_statistics_feed.dart';
 // Only domain publications and the non-native host environment are supplied.
 // This is an adapter contract, not a widget-layout or native-GUI gate.
 void main() {
+  testWidgets(
+    'new templates are pristine, reverted input leaves freely, and real changes remain protected',
+    (tester) async {
+      final h = await _mountRouter(tester);
+      Object? caseFailure;
+      StackTrace? caseStack;
+      try {
+        const create = AccountCreateRoute();
+        const native = AccountTemplateKey(
+          kind: AccountKind.native,
+          id: 'native',
+        );
+        const custom = AccountTemplateKey(
+          kind: AccountKind.native,
+          id: 'custom',
+        );
+        const command = AccountTemplateKey(
+          kind: AccountKind.acp,
+          id: 'command',
+        );
+        h.router.go(create.location);
+        await _at(tester, h.router, create.location);
+        await pumpClientUntil(
+          tester,
+          () => find.byType(AccountTemplateSelector).evaluate().isNotEmpty,
+          'initial create template',
+        );
+        final entry = _actualEditorEntry(tester);
+        final session = _captureMountedOwner(h.container, entry);
+        AccountEditorViewState draft() => h.container
+            .read(accountEditorViewModelProvider(session.currentEditor!))
+            .requireValue;
+        Future<void> select(AccountTemplateKey template) async {
+          // Exercise the production selector -> Connector -> guard -> owner
+          // contract; menu filtering/layout is not the behavior under test.
+          tester
+              .widget<AccountTemplateSelector>(
+                find.byType(AccountTemplateSelector),
+              )
+              .onSelected(template);
+          await tester.pumpAndSettle();
+        }
+
+        expect((draft().dirty, draft().canSave), (false, true));
+        final originalEditor = session.currentEditor!;
+        await tester.tap(_editorInput(originalEditor.editorId, 'name'));
+        await tester.pump();
+        expect(draft().dirty, isFalse);
+        await select(custom);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        expect(session.currentEditor!.template, custom);
+        expect((draft().dirty, draft().canSave), (false, false));
+        expect(draft().native!.endpoint.raw, isEmpty);
+        await select(native);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        expect((draft().dirty, draft().canSave), (false, true));
+        final source = session.currentEditor!;
+        await tester.enterText(
+          _editorInput(source.editorId, 'name'),
+          'My account',
+        );
+        await tester.enterText(
+          _editorInput(source.editorId, 'credential'),
+          'source-template-secret',
+        );
+        await tester.pump();
+        expect(draft().dirty, isTrue);
+        await select(custom);
+        await _accountDialog(tester);
+        await _chooseAccount(tester, AccountLeaveChoice.cancel);
+        await tester.pumpAndSettle();
+        expect(session.currentEditor, source);
+        expect(draft().native!.name.raw, 'My account');
+        expect(draft().native!.credential.raw, 'source-template-secret');
+        await select(custom);
+        await _accountDialog(tester);
+        await _chooseAccount(tester, AccountLeaveChoice.discard);
+        await tester.pumpAndSettle();
+        expect(session.currentEditor!.template, custom);
+        expect(draft().native!.credential.raw, isEmpty);
+        expect(draft().native!.name.raw, customTemplate.displayName);
+        expect(draft().dirty, isFalse);
+        await select(command);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        expect(session.currentEditor!.template, command);
+        expect((draft().dirty, draft().canSave), (false, true));
+        final acp = session.currentEditor!;
+        final acpName = draft().acp!.name.raw;
+        await tester.enterText(_editorInput(acp.editorId, 'name'), 'My ACP');
+        await tester.pump();
+        expect(draft().dirty, isTrue);
+        await select(native);
+        await _accountDialog(tester);
+        await _chooseAccount(tester, AccountLeaveChoice.cancel);
+        await tester.pumpAndSettle();
+        expect(session.currentEditor, acp);
+        await tester.enterText(_editorInput(acp.editorId, 'name'), acpName);
+        await tester.pump();
+        expect(draft().dirty, isFalse);
+        final cancel = find.byKey(const ValueKey('account-cancel'));
+        await tester.ensureVisible(cancel);
+        await tester.tap(cancel);
+        await _at(tester, h.router, const SettingsRoute().location);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+
+        h.router.go(create.location);
+        await _at(tester, h.router, create.location);
+        await pumpClientUntil(
+          tester,
+          () => find.byType(AccountTemplateSelector).evaluate().isNotEmpty,
+          'fresh native create',
+        );
+        final fresh = _captureMountedOwner(
+          h.container,
+          _actualEditorEntry(tester),
+        );
+        final editor = fresh.currentEditor!;
+        await tester.enterText(
+          _editorInput(editor.editorId, 'name'),
+          'Temporary',
+        );
+        await tester.enterText(
+          _editorInput(editor.editorId, 'name'),
+          nativeTemplate.displayName,
+        );
+        await tester.pump();
+        expect(
+          h.container
+              .read(accountEditorViewModelProvider(editor))
+              .requireValue
+              .dirty,
+          isFalse,
+        );
+        h.router.go(const SettingsRoute().location);
+        await _at(tester, h.router, const SettingsRoute().location);
+        expect(find.byType(AccountUnsavedChangesDialog), findsNothing);
+        expect(h.accounts.creates, isEmpty);
+        expect(h.accounts.patches, isEmpty);
+      } catch (error, stack) {
+        caseFailure = error;
+        caseStack = stack;
+        rethrow;
+      } finally {
+        await _closeAfterCase(h.close, caseFailure, caseStack);
+      }
+    },
+  );
   testWidgets(
     'model tabs and typed parents retain the account draft; leaving the account asks once',
     (tester) async {
