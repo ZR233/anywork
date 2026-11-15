@@ -248,6 +248,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
                   key: StudioDriverKeys.composerInput,
                   controller: _controller,
                   focusNode: _inputFocus,
+                  autofocus: widget.creationCard,
                   enabled: widget.state.enabled,
                   minLines: widget.compact ? 2 : 3,
                   maxLines: 8,

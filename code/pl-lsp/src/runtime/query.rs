@@ -81,7 +81,17 @@ impl LspRuntimeRegistry {
             .workspaces
             .iter()
             .filter(|(root, workspace)| {
-                let configuration = root.join(".anywork/lsp");
+                let configuration = match crate::host::join_path(
+                    root,
+                    ".anywork/lsp",
+                    workspace.host.as_deref(),
+                ) {
+                    Ok(configuration) => configuration,
+                    Err(error) => {
+                        tracing::warn!(root = %root.display(), %error, "cannot resolve LSP configuration directory");
+                        return false;
+                    }
+                };
                 path.starts_with(&configuration)
                     || configuration.starts_with(path)
                     || workspace

@@ -6,6 +6,8 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/timeline/state/patch_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/composer/state/start_backend_view_state.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 
 Widget _acpPreviewShell(Widget child) => MaterialApp(
   debugShowCheckedModeBanner: false,
@@ -49,72 +51,166 @@ const List<AcpConfigControlPresentation> _sampleControls = [
     ],
   ),
   AcpConfigControlPresentation.select(
+    id: 'runtime-model',
+    name: 'Model',
+    description: 'Sample runtime selection supplied by the connected agent',
+    category: AcpConfigCategoryKind.model,
+    currentValue: 'sample-model',
+    currentLabel: 'Sample model',
+    flatOptions: [
+      AcpSelectChoicePresentation(value: 'sample-model', name: 'Sample model'),
+      AcpSelectChoicePresentation(
+        value: 'alternate-model',
+        name: 'Alternate model',
+      ),
+    ],
+  ),
+  AcpConfigControlPresentation.select(
     id: 'model-tier',
-    name: '推理档位',
+    name: 'Thought level',
     category: AcpConfigCategoryKind.thoughtLevel,
     currentValue: 'deep',
-    currentLabel: '深度思考',
+    currentLabel: 'High',
     flatOptions: [
-      AcpSelectChoicePresentation(value: 'standard', name: '标准'),
-      AcpSelectChoicePresentation(value: 'deep', name: '深度思考'),
+      AcpSelectChoicePresentation(value: 'low', name: 'Low'),
+      AcpSelectChoicePresentation(value: 'high', name: 'High'),
     ],
   ),
   AcpConfigControlPresentation.boolean(
     id: 'citations',
-    name: '引用来源',
-    description: '回复中附带代码与文档引用定位',
+    name: 'Include references',
+    description: 'Example boolean setting from the agent',
     category: AcpConfigCategoryKind.other,
     currentValue: true,
   ),
   AcpConfigControlPresentation.boolean(
     id: 'auto-verify',
-    name: '自动自检',
+    name: 'Review changes',
     category: AcpConfigCategoryKind.other,
     currentValue: false,
   ),
 ];
 
-@Preview(name: 'ACP 启动页创建卡片', group: 'ACP', size: Size(720, 260))
+const _sampleAcpService = StartBackendServiceItem(
+  id: 'preview-agent',
+  name: '代码助手',
+  enabled: true,
+);
+
+StartBackendViewState _startBackendState({bool enabled = true}) =>
+    StartBackendViewState(
+      services: const [_sampleAcpService],
+      accountId: _sampleAcpService.id,
+      modelAccountId: null,
+      modelId: null,
+      nativeEnabled: false,
+      enabled: enabled,
+      loading: false,
+    );
+
+Widget _startModelSelector({bool enabled = true}) => StartModelSelectorView(
+  state: _startBackendState(enabled: enabled),
+  onSelectModel: (_, _) {},
+  onSelectService: (_) {},
+  onManageServices: () {},
+);
+
+@Preview(name: 'ACP 新会话输入', group: 'ACP', size: Size(720, 260))
 Widget acpStartComposerPreview() => _acpPreviewShell(
   AcpStartComposerView(
     state: const AcpStartComposerViewState(
       workspaceId: 'preview-workspace',
       text: '梳理当前仓库的 ACP 会话状态流转，并检查组件边界。',
-      accountId: 'agy-local',
-      serviceName: 'Antigravity CLI',
-      brandKey: 'google',
+      accountId: 'preview-agent',
       serviceEnabled: true,
     ),
+    modelSelector: _startModelSelector(),
     onDraftChanged: (_) {},
     onSubmit: () {},
   ),
 );
 
-@Preview(name: 'ACP 服务端配置栏 · 宽窗', group: 'ACP', size: Size(760, 140))
-Widget acpConfigurationWidePreview() => _acpPreviewShell(
-  AcpConfigurationBar(
-    state: const AcpConfigurationViewState(
-      controls: _sampleControls,
-      enabled: true,
+@Preview(
+  name: 'ACP 新会话输入 · 窄窗大字与锁定',
+  group: 'ACP',
+  size: Size(380, 300),
+  textScaleFactor: 1.3,
+)
+Widget acpStartComposerLockedPreview() => _acpPreviewShell(
+  AcpStartComposerView(
+    state: const AcpStartComposerViewState(
+      workspaceId: 'preview-workspace-locked',
+      text: '补充检查失败重试路径。',
+      accountId: 'preview-agent',
+      serviceEnabled: true,
+      submitting: true,
     ),
-    onSelectValue: (_, _) {},
-    onBooleanChanged: (_, _) {},
-    onSelectLegacyMode: (_) {},
+    modelSelector: _startModelSelector(enabled: false),
+    onDraftChanged: (_) {},
+    onSubmit: () {},
   ),
 );
 
-@Preview(name: 'ACP 服务端配置栏 · 窄窗收纳', group: 'ACP', size: Size(340, 160))
-Widget acpConfigurationNarrowPreview() => _acpPreviewShell(
-  AcpConfigurationBar(
-    state: const AcpConfigurationViewState(
-      controls: _sampleControls,
-      enabled: true,
+@Preview(name: 'ACP 运行期输入与服务配置', group: 'ACP', size: Size(760, 240))
+Widget acpConversationComposerPreview() => _acpPreviewShell(
+  AcpConversationComposerView(
+    state: const AcpComposerViewState(
+      threadId: 'preview-thread',
+      draftText: '继续检查这些配置选项在运行期的呈现。',
+      canSend: true,
+      isRunning: false,
+      canInterrupt: false,
     ),
-    onSelectValue: (_, _) {},
-    onBooleanChanged: (_, _) {},
-    onSelectLegacyMode: (_) {},
+    onDraftChanged: (_) {},
+    onSubmit: () {},
+    onInterrupt: () {},
+    onPickLocalAttachments: (_) async {},
+    onAddRemoteAttachment: (_) async {},
+    onRemoveAttachment: (_) {},
+    configurationBar: _acpConfigurationBar(enabled: true),
   ),
 );
+
+@Preview(
+  name: 'ACP 运行期输入 · 窄窗大字与中断锁定',
+  group: 'ACP',
+  size: Size(380, 280),
+  textScaleFactor: 1.3,
+)
+Widget acpConversationComposerLockedPreview() => _acpPreviewShell(
+  AcpConversationComposerView(
+    state: const AcpComposerViewState(
+      threadId: 'preview-thread-locked',
+      draftText: '正在等待中断操作完成',
+      canSend: false,
+      isRunning: true,
+      canInterrupt: false,
+      interrupting: true,
+    ),
+    onDraftChanged: (_) {},
+    onSubmit: () {},
+    onInterrupt: () {},
+    onPickLocalAttachments: (_) async {},
+    onAddRemoteAttachment: (_) async {},
+    onRemoveAttachment: (_) {},
+    configurationBar: _acpConfigurationBar(enabled: false),
+  ),
+);
+
+Widget _acpConfigurationBar({required bool enabled}) => AcpConfigurationBar(
+  state: AcpConfigurationViewState(controls: _sampleControls, enabled: enabled),
+  onSelectValue: (_, _) {},
+  onBooleanChanged: (_, _) {},
+  onSelectLegacyMode: (_) {},
+);
+
+@Preview(name: 'ACP 服务端配置栏 · 宽窗', group: 'ACP', size: Size(760, 140))
+Widget acpConfigurationWidePreview() =>
+    _acpPreviewShell(_acpConfigurationBar(enabled: true));
+
+@Preview(name: 'ACP 服务端配置栏 · 窄窗收纳', group: 'ACP', size: Size(340, 160))
+Widget acpConfigurationNarrowPreview() =>
+    _acpPreviewShell(_acpConfigurationBar(enabled: true));
 
 @Preview(name: 'ACP 执行计划卡片', group: 'ACP', size: Size(680, 240))
 Widget acpPlanCardPreview() => _acpPreviewShell(

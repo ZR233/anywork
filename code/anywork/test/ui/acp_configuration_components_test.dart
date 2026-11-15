@@ -10,13 +10,179 @@ import 'package:material_ui/material_ui.dart';
 import 'acp_components_support.dart';
 
 void main() {
-  testWidgets('窄窗配置栏收纳更多设置，保留未知 category、分组说明和原始 id/value', (tester) async {
+  testWidgets('主槽位按 category 排列，重复项和未知类别只进入同一调优菜单', (tester) async {
+    AcpConfigControlPresentation select(
+      String id,
+      AcpConfigCategoryKind category,
+    ) => AcpConfigControlPresentation.select(
+      id: id,
+      name: '名称$id',
+      category: category,
+      currentValue: id,
+      currentLabel: '当前$id',
+    );
+    final controls = [
+      select('unknown', AcpConfigCategoryKind.other),
+      select('thought', AcpConfigCategoryKind.thoughtLevel),
+      select('model', AcpConfigCategoryKind.model),
+      select('model-duplicate', AcpConfigCategoryKind.model),
+      select('mode', AcpConfigCategoryKind.mode),
+      const AcpConfigControlPresentation.boolean(
+        id: 'toggle',
+        name: '开关',
+        category: AcpConfigCategoryKind.mode,
+        currentValue: true,
+      ),
+    ];
+    Widget bar({bool enabled = true}) => acpTestApp(
+      AcpConfigurationBar(
+        state: AcpConfigurationViewState(controls: controls, enabled: enabled),
+        onSelectValue: (_, _) {},
+        onBooleanChanged: (_, _) {},
+        onSelectLegacyMode: (_) {},
+      ),
+    );
+    await tester.pumpWidget(bar());
+    expect(find.text('当前unknown'), findsNothing);
+    expect(find.text('当前model-duplicate'), findsNothing);
+    expect(find.text('开关'), findsNothing);
+    expect(find.text('名称model'), findsNothing);
+    final mode = tester.getRect(find.text('当前mode'));
+    final model = tester.getRect(find.text('当前model'));
+    final thought = tester.getRect(find.text('当前thought'));
+    expect(mode.left, lessThan(model.left));
+    expect(model.left, lessThan(thought.left));
+    final primarySize = tester.getSize(
+      find.byKey(ValueKey(AcpViewKeyValues.configControl('model'))),
+    );
+    await tester.pumpWidget(bar(enabled: false));
+    expect(
+      tester.getSize(
+        find.byKey(ValueKey(AcpViewKeyValues.configControl('model'))),
+      ),
+      primarySize,
+    );
+    expect(find.byIcon(Icons.keyboard_arrow_down), findsNWidgets(4));
+    for (final button in tester.widgetList<TextButton>(
+      find.byType(TextButton),
+    )) {
+      expect(button.onPressed, isNull);
+    }
+    await tester.pumpWidget(bar());
+    await tester.tap(find.byTooltip('更多设置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubmenuButton), findsNWidgets(2));
+    expect(find.text('名称unknown · 当前unknown'), findsOneWidget);
+    expect(find.text('名称model-duplicate · 当前model-duplicate'), findsOneWidget);
+    expect(find.byType(Switch), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.binding.setSurfaceSize(const Size(260, 680));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      acpTestApp(
+        MediaQuery(
+          data: const MediaQueryData(
+            size: Size(260, 680),
+            textScaler: TextScaler.linear(2),
+          ),
+          child: SizedBox(
+            width: 120,
+            child: AcpConfigurationBar(
+              state: AcpConfigurationViewState(
+                controls: controls,
+                enabled: true,
+              ),
+              onSelectValue: (_, _) {},
+              onBooleanChanged: (_, _) {},
+              onSelectLegacyMode: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(TextButton), findsOneWidget);
+    await tester.tap(find.byTooltip('更多设置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SubmenuButton), findsNWidgets(5));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('长配置列表搜索名称和原始 ID，保留服务端分组及顺序', (tester) async {
+    final selected = <(String, String)>[];
+    final groups = [
+      for (var group = 0; group < 2; group++)
+        AcpSelectGroupPresentation(
+          id: 'group/$group',
+          name: group == 0 ? 'Z 组' : 'A 组',
+          options: [
+            for (var index = group * 6; index < (group + 1) * 6; index++)
+              AcpSelectChoicePresentation(
+                value: 'raw/value:$index',
+                name: '选择 $index',
+              ),
+          ],
+        ),
+    ];
+    await tester.pumpWidget(
+      acpTestApp(
+        AcpConfigurationBar(
+          state: AcpConfigurationViewState(
+            enabled: true,
+            controls: [
+              AcpConfigControlPresentation.select(
+                id: 'vendor/model',
+                name: '模型',
+                category: AcpConfigCategoryKind.model,
+                currentValue: 'raw/value:0',
+                currentLabel: '选择 0',
+                groups: groups,
+              ),
+            ],
+          ),
+          onSelectValue: (id, value) => selected.add((id, value)),
+          onBooleanChanged: (_, _) {},
+          onSelectLegacyMode: (_) {},
+        ),
+      ),
+    );
+    await tester.tap(find.text('选择 0'));
+    await tester.pumpAndSettle();
+    final search = find.byKey(const ValueKey('acp-config-search-vendor/model'));
+    expect(search, findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Z 组')).dy,
+      lessThan(tester.getTopLeft(find.text('A 组')).dy),
+    );
+    await tester.enterText(search, 'Z 组');
+    await tester.pumpAndSettle();
+    expect(find.text('A 组'), findsNothing);
+    expect(find.byType(MenuItemButton), findsNWidgets(6));
+    await tester.enterText(search, 'raw/value:10');
+    await tester.pumpAndSettle();
+    expect(find.text('Z 组'), findsNothing);
+    expect(find.byType(MenuItemButton), findsOneWidget);
+    await tester.tap(
+      find.byKey(
+        ValueKey(AcpViewKeyValues.configChoice('vendor/model', 'raw/value:10')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(selected.single, ('vendor/model', 'raw/value:10'));
+    expect(find.text('选择 0'), findsOneWidget);
+  });
+
+  testWidgets('窄窗配置栏收纳调优选项，保留分组、Tooltip 和原始 id/value', (tester) async {
     await tester.binding.setSurfaceSize(const Size(320, 640));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final selected = <(String, Object)>[];
     final select = AcpSessionConfigOptionView(
       id: const AcpConfigId('vendor/quality'),
       name: '质量',
+      category: const AcpConfigCategoryView.known(
+        AcpConfigCategoryKindView.thoughtLevel,
+      ),
       description: '服务端优先级说明',
       kind: AcpSelectConfigView(
         currentValue: const AcpConfigValueId('raw:value/1'),
@@ -66,9 +232,10 @@ void main() {
     );
     await tester.tap(selectTrigger);
     await tester.pumpAndSettle();
-    expect(find.text('服务端优先级说明'), findsOneWidget);
+    expect(find.byTooltip('质量\n服务端优先级说明'), findsOneWidget);
     expect(find.text('服务分组'), findsWidgets);
-    expect(find.text('更深入地回答'), findsOneWidget);
+    expect(find.text('更深入地回答'), findsNothing);
+    expect(find.byTooltip('更深入地回答'), findsOneWidget);
     await tester.tap(
       find.byKey(
         ValueKey(
@@ -79,14 +246,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(selected.single, ('vendor/quality', 'raw:value/2'));
 
-    // At 320px width, the second option moves cleanly into the overflow menu.
+    // Unknown categories, including booleans, always belong to the tuning menu.
     final overflowTrigger = find.descendant(
       of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
       matching: find.byType(TextButton),
     );
     await tester.tap(overflowTrigger);
     await tester.pumpAndSettle();
-    expect(find.text('保留服务器提供的来源'), findsOneWidget);
+    expect(find.byTooltip('保留引用\n保留服务器提供的来源'), findsOneWidget);
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
     expect(selected.last, (acpBooleanFixture.id.value, true));
@@ -152,6 +319,9 @@ void main() {
           final option = AcpSessionConfigOptionView(
             id: const AcpConfigId('server-choice'),
             name: '服务端选择',
+            category: const AcpConfigCategoryView.known(
+              AcpConfigCategoryKindView.model,
+            ),
             kind: AcpSelectConfigView(
               currentValue: oldValue,
               options: AcpUngroupedOptionsView(const [

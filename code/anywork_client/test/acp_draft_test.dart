@@ -166,22 +166,23 @@ final class _Harness {
               revision: 1,
             ),
             accounts: [
-              AccountSummary(
-                identity: const AcpAccountIdentity('account'),
-                name: 'Agent',
-                isDefault: false,
-                acpEnabled: enabled,
-                acpConnectionRevision: 17,
-                capabilities: const AccountCapabilities(
-                  setDefault: false,
-                  edit: true,
-                  remove: true,
-                  queryUsage: false,
-                  syncModels: false,
-                  editModels: false,
-                  acpAuth: true,
+              for (final accountId in ['account', 'other-account'])
+                AccountSummary(
+                  identity: AcpAccountIdentity(accountId),
+                  name: 'Agent',
+                  isDefault: false,
+                  acpEnabled: enabled,
+                  acpConnectionRevision: 17,
+                  capabilities: const AccountCapabilities(
+                    setDefault: false,
+                    edit: true,
+                    remove: true,
+                    queryUsage: false,
+                    syncModels: false,
+                    editModels: false,
+                    acpAuth: true,
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -249,8 +250,330 @@ final class _Harness {
 }
 
 void main() {
-  test('failed attachment removal follows the transferred draft for explicit cleanup', () async {
+  test('empty ACP input cannot create a session', () async {
     final h = _Harness();
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', '  \n ');
+    expect(await start.submit('workspace'), isFalse);
+    expect(h.calls('open'), isEmpty);
+    expect(h.calls('prompt'), isEmpty);
+  });
+
+  test(
+    'explicit creation failure preserves the start input and attachments',
+    () async {
+      final h = _Harness(ready: false);
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      start.updateDraft('workspace', 'preserved');
+      h.repository.attachments.seedNewThreadIfEmpty(
+        'workspace',
+        ComposerThreadState.idle(
+          attachments: [_attachment('blob', AttachmentModalityView.file)],
+        ),
+      );
+      final creating = start.submit('workspace');
+      await h.source.enteredRead.future;
+      h.push(
+        AcpEventFrameView(
+          AcpFailedEventView(
+            AcpBusinessFailureView(
+              kind: AcpBusinessFailureKindView.invalidOption,
+              message: 'new rejected',
+            ),
+          ),
+        ),
+      );
+      expect(await creating, isFalse);
+      expect(start.state.forProject('workspace').text, 'preserved');
+      expect(
+        h.repository.attachments.state
+            .newThread('workspace')
+            .attachments
+            .single
+            .id,
+        'blob',
+      );
+      expect(h.calls('prompt'), isEmpty);
+      expect(h.transport.removed, isEmpty);
+      expect(h.selection.state.selectedThreadId, isNull);
+    },
+  );
+
+  for (final unknown in [false, true]) {
+    test(
+      'created session survives ${unknown ? 'unknown outcome' : 'prompt rejection'} after leaving and returning to the same draft without another new',
+      () async {
+        final h = _Harness();
+        final start = h.repository.startDraft;
+        start.setAcpService('workspace', 'account');
+        start.updateDraft('workspace', 'first');
+        h.port.commandError = unknown
+            ? const AcpCommandOutcomeUnknown(command: 'prompt', cause: 'lost')
+            : AcpBusinessFailureView(
+                kind: AcpBusinessFailureKindView.invalidOption,
+                message: 'prompt rejected',
+              );
+        expect(await start.submit('workspace'), isFalse);
+        final composer = await h.composer();
+        expect(composer.state.draft, 'first');
+        expect(composer.state.failure, isNotNull);
+        expect(h.selection.state.selectedThreadId, 'thread');
+        start.updateDraft('workspace', 'later draft');
+        h.selection.selectProject('other');
+        h.selection.selectProject('workspace');
+        h.port.commandError = null;
+        expect(await start.submit('workspace'), !unknown);
+        expect(h.calls('open'), hasLength(1));
+        expect(h.calls('prompt'), hasLength(unknown ? 1 : 2));
+        expect(composer.state.draft, unknown ? 'first' : 'later draft');
+        expect(
+          start.state.forProject('workspace').text,
+          unknown ? 'later draft' : isEmpty,
+        );
+        expect(h.selection.state.selectedThreadId, 'thread');
+      },
+    );
+  }
+
+  test('late retry of a created session cannot reclaim a newer navigation or draft edit', () async {
+    final h = _Harness();
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', 'first');
+    h.port.commandError = AcpBusinessFailureView(
+      kind: AcpBusinessFailureKindView.invalidOption,
+      message: 'rejected',
+    );
+    expect(await start.submit('workspace'), isFalse);
+    h.selection.selectProject('other');
+    h.selection.selectProject('workspace');
+    h.port.commandError = null;
+    h.port.promptResult = Completer<AcpRunIdView>();
+    final retrying = start.submit('workspace');
+    await Future<void>.delayed(Duration.zero);
+    expect(h.calls('prompt'), hasLength(2));
+    h.selection.selectProject('other');
+    h.selection.selectProject('workspace');
+    start.updateDraft('workspace', 'new page draft');
+    h.port.promptResult!.complete(h.port.run);
+    expect(await retrying, isTrue);
+    expect(h.calls('open'), hasLength(1));
+    expect(h.selection.state.selectedThreadId, isNull);
+    expect(start.state.forProject('workspace').text, 'new page draft');
+    expect(h.repository.composer('thread').state.draft, isEmpty);
+  });
+
+  for (final replacement in ['service', 'draft', 'project']) {
+    test(
+      'explicit $replacement replacement does not reuse the old created session',
+      () async {
+        final h = _Harness();
+        final start = h.repository.startDraft;
+        start.setAcpService('workspace', 'account');
+        start.updateDraft('workspace', 'first');
+        h.port.commandError = AcpBusinessFailureView(
+          kind: AcpBusinessFailureKindView.invalidOption,
+          message: 'rejected',
+        );
+        expect(await start.submit('workspace'), isFalse);
+        final oldComposer = await h.composer();
+        h.selection.selectProject('workspace');
+        if (replacement == 'service') {
+          start.setAcpService('workspace', 'other-account');
+        } else if (replacement == 'draft') {
+          await start.discardProject('workspace');
+          start.setAcpService('workspace', 'account');
+        } else {
+          h.project.applyProjectDirectory(
+            ProjectDirectoryState(
+              values: const [
+                StudioProject(
+                  id: 'workspace',
+                  name: 'Replacement',
+                  path: '/replacement',
+                ),
+              ],
+              revision: 2,
+            ),
+          );
+        }
+        start.updateDraft('workspace', 'replacement input');
+        final accountId = replacement == 'service'
+            ? 'other-account'
+            : 'account';
+        final path = replacement == 'project' ? '/replacement' : '/project';
+        final target = AcpSessionTargetView(
+          sessionId: 'replacement-session',
+          agentId: 'replacement-agent',
+          threadId: 'replacement-thread',
+          instance: BigInt.two,
+        );
+        h.transport.seedThread(
+          _row().copyWith(
+            sessionId: target.sessionId,
+            agentId: target.agentId,
+            threadId: target.threadId,
+            workspacePath: path,
+            backend: AcpAgentBackendView(
+              reference: AcpSessionReferenceView(
+                accountId: accountId,
+                acpSessionId: 'remote',
+                cwd: path,
+              ),
+            ),
+          ),
+        );
+        h.port.sources.add(
+          ControlledAcpObservation([
+            AcpAcceptedFrameView(target: target, hasObservation: true),
+            const AcpEventFrameView(AcpInitializedEventView(_capabilities)),
+            _ready,
+            _accepted,
+          ]),
+        );
+        h.port.commandError = null;
+        expect(await start.submit('workspace'), isTrue);
+        expect(h.calls('open'), hasLength(2));
+        expect(
+          (h.calls('open').last as OpenAcpSessionRequestView).accountId,
+          accountId,
+        );
+        expect(h.calls('prompt'), hasLength(2));
+        final prompt = h.calls('prompt').last as AcpPromptRequestView;
+        expect(prompt.target, target);
+        expect(
+          (prompt.content.single as AcpTextContentView).text,
+          'replacement input',
+        );
+        expect(oldComposer.state.draft, 'first');
+        expect(h.selection.state.selectedThreadId, target.threadId);
+      },
+    );
+  }
+
+  test('directory wait cannot replace the frozen first input or admit a second submit', () async {
+    final h = _Harness();
+    final metadataGate = Completer<void>();
+    h.transport.metadataOpenGates['thread'] = metadataGate;
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', 'first');
+    h.repository.attachments.seedNewThreadIfEmpty(
+      'workspace',
+      ComposerThreadState.idle(
+        attachments: [
+          _attachment('first-attachment', AttachmentModalityView.file),
+        ],
+      ),
+    );
+    final creating = start.submit('workspace');
+    await h.transport.metadataOpenStarted('thread');
+    final composer = h.repository.composer('thread');
+    await composer.source.waitFor((value) => value.draft == 'first');
+    await Future<void>.delayed(Duration.zero);
+    composer.updateDraft('later conversation edit');
+    final repeated = composer.submit();
+    expect(h.calls('prompt'), isEmpty);
+    metadataGate.complete();
+    expect(await creating, isTrue);
+    await repeated;
+    expect(h.calls('open'), hasLength(1));
+    expect(h.calls('prompt'), hasLength(1));
+    expect(
+      (h.calls('prompt').single as AcpPromptRequestView).content.first,
+      isA<AcpTextContentView>().having((value) => value.text, 'text', 'first'),
+    );
+    expect(composer.state.draft, 'later conversation edit');
+    expect(composer.state.attachments, isEmpty);
+    expect(h.transport.removed, ['first-attachment']);
+  });
+
+  test(
+    'frozen attachment survives removal while waiting for ACP Ready',
+    () async {
+      final h = _Harness(ready: false);
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      h.repository.attachments.seedNewThreadIfEmpty(
+        'workspace',
+        ComposerThreadState.idle(
+          attachments: [_attachment('frozen', AttachmentModalityView.file)],
+        ),
+      );
+      final creating = start.submit('workspace');
+      await h.source.enteredRead.future;
+      await h.repository.attachments.removeNewThreadDraft(
+        'workspace',
+        'frozen',
+      );
+      expect(h.transport.removed, isEmpty);
+      h.push(const AcpEventFrameView(AcpInitializedEventView(_capabilities)));
+      h.push(_ready);
+      h.push(_accepted);
+      expect(await creating, isTrue);
+      expect(h.calls('prompt'), hasLength(1));
+      expect(h.transport.reads, ['frozen']);
+      expect(h.transport.removed, ['frozen']);
+    },
+  );
+
+  test('retired start draft sends only its frozen input and leaves the replacement untouched', () async {
+    final h = _Harness(ready: false);
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', 'first');
+    final creating = start.submit('workspace');
+    await h.source.enteredRead.future;
+    await start.discardProject('workspace');
+    start.updateDraft('workspace', 'replacement');
+    h.push(_ready);
+    h.push(_accepted);
+    expect(await creating, isTrue);
+    expect(start.state.forProject('workspace').text, 'replacement');
+    expect(h.selection.state.selectedThreadId, isNull);
+    expect(
+      (h.calls('prompt').single as AcpPromptRequestView).content.single,
+      isA<AcpTextContentView>().having((value) => value.text, 'text', 'first'),
+    );
+    expect(h.calls('closeMember'), isEmpty);
+  });
+
+  test('first prompt rejection preserves later typing until explicit retry succeeds in the same session', () async {
+    final h = _Harness();
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', 'first');
+    h.port.promptResult = Completer<AcpRunIdView>();
+    final creating = start.submit('workspace');
+    await h.source.enteredRead.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(h.calls('prompt'), hasLength(1));
+    start.updateDraft('workspace', 'next input');
+    h.port.promptResult!.completeError(
+      AcpBusinessFailureView(
+        kind: AcpBusinessFailureKindView.invalidOption,
+        message: 'prompt rejected',
+      ),
+    );
+    expect(await creating, isFalse);
+    final composer = await h.composer();
+    expect(composer.state.draft, 'first');
+    expect(start.state.forProject('workspace').text, 'next input');
+    h.port.promptResult = null;
+    await composer.submit();
+    await start.source.waitFor(
+      (value) => value.forProject('workspace').text.isEmpty,
+    );
+    expect(h.calls('open'), hasLength(1));
+    expect(h.calls('prompt'), hasLength(2));
+    expect(composer.state.draft, 'next input');
+    expect(start.state.forProject('workspace').text, isEmpty);
+  });
+
+  test('failed attachment removal follows the transferred draft for explicit cleanup', () async {
+    final h = _Harness(capabilities: null);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
     h.repository.attachments.seedNewThreadIfEmpty(
@@ -262,7 +585,7 @@ void main() {
     h.transport.removeSucceeds = false;
     await h.repository.attachments.removeNewThreadDraft('workspace', 'blob');
     expect(h.repository.attachments.unresolvedAttachmentIds, ['blob']);
-    expect(await start.submit('workspace'), isTrue);
+    expect(await start.submit('workspace'), isFalse);
     final composer = await h.composer();
     expect(composer.state.attachments.single.id, 'blob');
     h.transport.removeSucceeds = true;
@@ -271,11 +594,12 @@ void main() {
     expect(h.repository.attachments.unresolvedAttachmentIds, isEmpty);
   });
 
-  test('creation waits for original ready and settled, transfers newest draft without prompt', () async {
+  test('creation waits for Ready and settled, sends frozen input once and retains later edits', () async {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
     start.updateDraft('workspace', 'first');
+    h.port.promptResult = Completer<AcpRunIdView>();
     h.repository.attachments.seedNewThreadIfEmpty(
       'workspace',
       ComposerThreadState.idle(
@@ -287,17 +611,25 @@ void main() {
     await h.source.enteredRead.future;
     await Future<void>.delayed(Duration.zero);
     start.updateDraft('workspace', 'edited while opening');
+    start.setAcpService('workspace', null);
+    expect(start.state.forProject('workspace').acpAccountId, 'account');
     var finished = false;
     unawaited(created.then((_) => finished = true));
     h.push(const AcpEventFrameView(AcpInitializedEventView(_capabilities)));
     h.push(_ready);
     await Future<void>.delayed(Duration.zero);
     expect(finished, isFalse);
+    expect(h.calls('prompt'), isEmpty);
     h.push(_accepted);
+    await h.transport.readEntered.future;
+    await Future<void>.delayed(Duration.zero);
+    start.updateDraft('workspace', 'edited while sending');
+    expect(await start.submit('workspace'), isFalse);
+    h.port.promptResult!.complete(h.port.run);
     expect(await created, isTrue);
     final composer = h.repository.composer('thread');
-    expect(composer.state.draft, 'edited while opening');
-    expect(composer.state.attachments.single.id, 'old');
+    expect(composer.state.draft, 'edited while sending');
+    expect(composer.state.attachments, isEmpty);
     expect(h.selection.state.selectedThreadId, 'thread');
     expect(h.calls('open'), hasLength(1));
     expect(
@@ -305,11 +637,15 @@ void main() {
           .expectedConnectionRevision,
       BigInt.from(17),
     );
-    expect(h.calls('prompt'), isEmpty);
-    expect(h.transport.removed, isEmpty);
+    final content = (h.calls('prompt').single as AcpPromptRequestView).content;
+    expect((content.first as AcpTextContentView).text, 'first');
+    expect(content.last, isA<AcpEmbeddedResourceView>());
+    expect(h.transport.removed, ['old']);
     expect(start.state.forProject('workspace').text, isEmpty);
     await composer.discard();
-    expect(h.transport.removed, ['old'], reason: 'ownership moved, not copied');
+    expect(h.transport.removed, [
+      'old',
+    ], reason: 'consumed attachment is released only once');
   });
 
   test(
@@ -354,13 +690,20 @@ void main() {
       await h.source.enteredRead.future;
       await Future<void>.delayed(Duration.zero);
       h.selection.beginNewThread();
+      start.updateDraft('workspace', 'new page draft');
       h.push(_ready);
       h.push(_accepted);
       expect(await creating, isTrue);
       expect(h.selection.state.selectedThreadId, isNull);
+      expect(start.state.forProject('workspace').text, 'new page draft');
+      expect(h.repository.composer('thread').state.draft, isEmpty);
       expect(
-        h.repository.composer('thread').state.draft,
-        'preserved in created composer',
+        (h.calls('prompt').single as AcpPromptRequestView).content.single,
+        isA<AcpTextContentView>().having(
+          (value) => value.text,
+          'text',
+          'preserved in created composer',
+        ),
       );
     },
   );
@@ -466,6 +809,7 @@ void main() {
       final creating = _Harness();
       final start = creating.repository.startDraft;
       start.setAcpService('workspace', 'account');
+      start.updateDraft('workspace', 'preserved');
       Future<void>? closeStart;
       final startWatch = start.source.watch((value) {
         if (value.submitting) closeStart ??= start.close();
@@ -495,6 +839,7 @@ void main() {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
+    start.updateDraft('workspace', 'first');
     final creating = start.submit('workspace');
     await h.source.enteredRead.future;
     await Future<void>.delayed(Duration.zero);
@@ -521,6 +866,7 @@ void main() {
     ]);
     h.port.sources.add(otherSource);
     start.setAcpService('other', 'account');
+    start.updateDraft('other', 'second');
     final otherCreating = start.submit('other');
     await otherSource.enteredRead.future;
     await Future<void>.delayed(Duration.zero);
@@ -616,7 +962,7 @@ void main() {
         ),
       );
       h.repository.startDraft.setAcpService('workspace', 'account');
-      expect(await h.repository.startDraft.submit('workspace'), isTrue);
+      expect(await h.repository.startDraft.submit('workspace'), isFalse);
       final composer = await h.composer();
       await composer.submit();
       expect(composer.state.attachments.single.id, 'unsupported');
@@ -633,9 +979,10 @@ void main() {
       final start = h.repository.startDraft;
       start.setAcpService('workspace', 'account');
       start.setWorkspaceMode('workspace', ThreadWorkspaceMode.worktree);
+      start.updateDraft('workspace', 'first');
       expect(await start.submit('workspace'), isTrue);
       expect(h.calls('open'), hasLength(1));
-      expect(h.calls('prompt'), isEmpty);
+      expect(h.calls('prompt'), hasLength(1));
       expect(h.native.calls, 0);
     },
   );
@@ -654,7 +1001,7 @@ void main() {
   );
 
   test(
-    'SSH creation and explicit prompt use ACP without Native state',
+    'SSH creation sends the first prompt through ACP without Native state',
     () async {
       final h = _Harness();
       final start = h.repository.startDraft;
@@ -679,10 +1026,9 @@ void main() {
         (h.calls('open').single as OpenAcpSessionRequestView).workspaceId,
         'workspace',
       );
-      expect(h.calls('prompt'), isEmpty);
       final composer = await h.composer();
-      expect(composer.state.draft, 'remote draft');
-      await composer.submit();
+      expect(composer.state.draft, isEmpty);
+      expect(await start.submit('workspace'), isFalse);
       expect(h.calls('prompt'), hasLength(1));
       expect(
         (h.calls('prompt').single as AcpPromptRequestView).content.single,

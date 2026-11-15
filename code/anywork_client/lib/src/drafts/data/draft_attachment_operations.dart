@@ -35,6 +35,7 @@ abstract interface class DraftAttachmentOperations
     required ComposerDraftBinding destination,
     required String Function() text,
     required bool Function() isCurrent,
+    List<AttachmentDraftView>? frozenAttachments,
   });
   void retainFrozen({
     required OperationId operationId,

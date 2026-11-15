@@ -39,7 +39,7 @@ class ImageKeyTest(unittest.TestCase):
                 self.assertEqual(key(), baseline, relative)
             for relative in ("rust-toolchain.toml", "docker/linux/Dockerfile",
                              "docker/linux/Dockerfile.dockerignore",
-                             "docker/linux/versions.env",
+                             "docker/linux/versions.env", "docker/linux/codegen.env",
                              "docker/linux/scripts/run.sh",
                              "docker/linux/scripts/image-key.py"):
                 path = root / relative

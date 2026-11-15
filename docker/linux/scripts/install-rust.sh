@@ -10,6 +10,7 @@ chmod +x "$temporary/rustup-init"
 "$temporary/rustup-init" -y --no-modify-path --default-toolchain none
 # rustup reads channel/profile/components/targets directly from the original file.
 cd /opt/anywork-toolchain
+rustup install --no-self-update
 rustup show
 rustc --version
 cargo --version

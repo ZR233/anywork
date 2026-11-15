@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/models.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -58,6 +59,9 @@ AcpComposerBlocker? _computeBlocker({
 
 @riverpod
 class AcpComposerViewModel extends _$AcpComposerViewModel {
+  AcpRunIdView? _interruptRun;
+  bool _interruptCommandPending = false;
+
   @override
   AcpComposerViewState build(String threadId) {
     final client = ref.watch(anyworkClientProvider);
@@ -69,6 +73,10 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
     );
     final asyncState = ref.watch(acpConversationStateProvider(threadId));
     final state = asyncState.value;
+    if (!_interruptCommandPending && state?.activeRun != _interruptRun) {
+      _interruptRun = null;
+    }
+    final interrupting = _interruptCommandPending || _interruptRun != null;
     final caps = state?.capabilities;
     final session = (
       hasState: state != null,
@@ -128,10 +136,12 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
       localCapabilities: localCapabilities,
       remoteCapabilities: remoteCapabilities,
       supportsImagePaste: canAttach && session.imageCap,
-      canSend: blocker == null && !draft.isSubmissionPending,
+      canSend: blocker == null && !draft.isSubmissionPending && !interrupting,
       isRunning: session.isRunning,
+      interrupting: interrupting,
       canInterrupt:
           session.isRunning &&
+          !interrupting &&
           !session.disconnected &&
           !session.observationEnded,
       canAttach: canAttach && !draft.isSubmissionPending,
@@ -154,6 +164,7 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
   }
 
   Future<void> submit() async {
+    if (!state.canSend || !state.hasSendableInput) return;
     final draft = ref.read(anyworkClientProvider).drafts.composer(threadId);
     try {
       await draft.submit();
@@ -162,11 +173,39 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
     }
   }
 
-  Future<void> interrupt() => coordinateAcpSessionCommand(
-    ref.read(anyworkClientProvider),
-    threadId,
-    (owner) => owner.interrupt(),
-  );
+  Future<void> interrupt() async {
+    if (!state.canInterrupt ||
+        _interruptCommandPending ||
+        _interruptRun != null) {
+      return;
+    }
+    final client = ref.read(anyworkClientProvider);
+    final run = client.acpSessions
+        .conversationForThread(threadId)
+        ?.state
+        .activeRun;
+    if (run == null) return;
+    _interruptRun = run;
+    _interruptCommandPending = true;
+    state = state.copyWith(
+      interrupting: true,
+      canInterrupt: false,
+      canSend: false,
+    );
+    try {
+      await coordinateAcpSessionCommand(client, threadId, (owner) async {
+        try {
+          await owner.interrupt();
+        } catch (_) {
+          _interruptRun = null;
+          rethrow;
+        }
+      });
+    } finally {
+      _interruptCommandPending = false;
+      if (ref.mounted) ref.invalidateSelf();
+    }
+  }
 
   Future<void> pickLocalAttachments(
     Future<List<String>> Function() choosePaths,

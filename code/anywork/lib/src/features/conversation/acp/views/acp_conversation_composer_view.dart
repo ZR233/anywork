@@ -58,6 +58,19 @@ class _AcpConversationComposerViewState
     text: widget.state.draftText,
   );
 
+  void _submit() {
+    final state = widget.state;
+    if (!state.canSend ||
+        state.submitting ||
+        state.interrupting ||
+        state.isRunning ||
+        !state.hasSendableInput ||
+        !_controller.value.composing.isCollapsed) {
+      return;
+    }
+    widget.onSubmit();
+  }
+
   @override
   void didUpdateWidget(covariant AcpConversationComposerView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -152,7 +165,12 @@ class _AcpConversationComposerViewState
     final l10n = context.l10n;
     final state = widget.state;
     final colors = context.colors;
-    final canSubmitNow = state.canSend && state.hasSendableInput;
+    final canSubmitNow =
+        state.canSend &&
+        state.hasSendableInput &&
+        !state.submitting &&
+        !state.interrupting &&
+        !state.isRunning;
     final blockerText = _blockerMessage(context, state.blocker);
     final isErrorBlocker =
         state.blocker?.kind == AcpComposerBlockerKind.configError ||
@@ -163,16 +181,12 @@ class _AcpConversationComposerViewState
       child: TextField(
         key: ValueKey(AcpViewKeyValues.composerInput(state.threadId)),
         controller: _controller,
-        enabled: !state.submitting,
         minLines: widget.compact ? 1 : 2,
         maxLines: widget.compact ? 4 : 8,
         textInputAction: TextInputAction.send,
         onChanged: widget.onDraftChanged,
-        onSubmitted: (_) {
-          if (canSubmitNow) {
-            widget.onSubmit();
-          }
-        },
+        onEditingComplete: () {},
+        onSubmitted: (_) => _submit(),
         style: context.text.bodyMedium?.copyWith(height: 1.5),
         decoration: InputDecoration(
           hintText: l10n.acpComposerHint,
@@ -193,7 +207,7 @@ class _AcpConversationComposerViewState
       editor = Actions(
         actions: <Type, Action<Intent>>{
           PasteTextIntent: ComposerPasteAction(
-            canPaste: () => !widget.state.submitting,
+            canPaste: () => true,
             paste: (pasteText) {
               final controller = _controller;
               unawaited(
@@ -212,7 +226,7 @@ class _AcpConversationComposerViewState
     return StudioPanel(
       backgroundColor: colors.surfaceContainerLowest,
       borderColor: widget.dragging ? colors.primary : colors.outlineVariant,
-      radius: StudioRadii.lg,
+      radius: 14,
       padding: widget.compact
           ? const EdgeInsets.fromLTRB(12, 8, 10, 6)
           : const EdgeInsets.fromLTRB(14, 10, 10, 8),
@@ -229,7 +243,7 @@ class _AcpConversationComposerViewState
             const SizedBox(height: 8),
           ],
           editor,
-          if (blockerText != null) ...[
+          if (blockerText != null && isErrorBlocker) ...[
             const SizedBox(height: 6),
             StudioInlineMessage(
               icon: isErrorBlocker
@@ -272,7 +286,9 @@ class _AcpConversationComposerViewState
                 canInterrupt: state.canInterrupt,
                 canSend: canSubmitNow,
                 submitting: state.submitting,
-                onSend: widget.onSubmit,
+                interrupting: state.interrupting,
+                disabledTooltip: blockerText,
+                onSend: _submit,
                 onInterrupt: widget.onInterrupt,
               ),
             ],
@@ -290,6 +306,8 @@ class _PrimaryComposerButton extends StatelessWidget {
     required this.canInterrupt,
     required this.canSend,
     required this.submitting,
+    required this.interrupting,
+    this.disabledTooltip,
     required this.onSend,
     required this.onInterrupt,
   });
@@ -298,6 +316,8 @@ class _PrimaryComposerButton extends StatelessWidget {
   final bool canInterrupt;
   final bool canSend;
   final bool submitting;
+  final bool interrupting;
+  final String? disabledTooltip;
   final VoidCallback onSend;
   final VoidCallback onInterrupt;
 
@@ -305,37 +325,52 @@ class _PrimaryComposerButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     return SizedBox.square(
-      dimension: 36,
+      dimension: 34,
       child: IconButton.filled(
-        tooltip: isRunning
+        tooltip: interrupting
+            ? l10n.acpStatusStopping
+            : isRunning
             ? l10n.acpComposerInterruptTooltip
             : submitting
             ? l10n.acpComposerBlockerSending
-            : l10n.acpComposerSendTooltip,
-        style: isRunning
-            ? IconButton.styleFrom(
-                backgroundColor: context.colors.surfaceContainerHighest,
-                foregroundColor: context.colors.onSurface,
-              )
-            : null,
-        onPressed: isRunning
+            : disabledTooltip ?? l10n.acpComposerSendTooltip,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          minimumSize: const Size.square(34),
+          maximumSize: const Size.square(34),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          backgroundColor: isRunning
+              ? context.colors.surfaceContainerHighest
+              : null,
+          foregroundColor: isRunning ? context.colors.onSurface : null,
+        ),
+        onPressed: submitting || interrupting
+            ? null
+            : isRunning
             ? canInterrupt
                   ? onInterrupt
                   : null
             : canSend
             ? onSend
             : null,
-        icon: submitting
+        icon: submitting || interrupting
             ? SizedBox.square(
                 dimension: 15,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: context.colors.onPrimary,
+                  color: context.colors.onSurfaceVariant,
                 ),
               )
             : Icon(
                 isRunning ? Icons.stop_rounded : Icons.arrow_upward_rounded,
                 size: 18,
+                color: isRunning
+                    ? context.colors.onSurface
+                    : canSend
+                    ? context.colors.onPrimary
+                    : context.colors.onSurfaceVariant.withValues(alpha: 0.38),
               ),
       ),
     );

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source /opt/anywork-image/versions.env
+source /opt/anywork-image/codegen.env
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/anywork-linux-smoke.XXXXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 cp /opt/anywork-toolchain/rust-toolchain.toml "$temporary/rust-toolchain.toml"
@@ -33,6 +34,8 @@ rust-analyzer --version
 test "$(zig version)" = "$ZIG_VERSION"
 test "$(cargo binstall -V)" = "$CARGO_BINSTALL_VERSION"
 cargo-zigbuild --version | grep -Fx "cargo-zigbuild $CARGO_ZIGBUILD_VERSION"
+flutter_rust_bridge_codegen --version | grep -Fx "flutter_rust_bridge_codegen $FRB_CODEGEN_VERSION"
+cargo-expand --version | grep -Fx "cargo-expand $CARGO_EXPAND_VERSION"
 flutter --version
 dart --version
 # No hosted dependencies: this must work offline in a fresh non-root HOME.

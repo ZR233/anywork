@@ -253,7 +253,9 @@ jobs:
       - name: Cache container Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ needs.linux-environment.outputs.key }}
+          # One writer preserves the broad workspace build; other jobs restore
+          # this exact domain without racing to save a partial cache.
+          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
@@ -325,13 +327,39 @@ jobs:
       - name: Cache container Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ needs.linux-environment.outputs.key }}
+          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          save-if: false
+          cache-bin: false
+      - name: Cache the separate engineering-tool target directory
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-xtask-${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
           workspaces: |
-            . -> target
             . -> target/xtask
+      - name: Cache the x64 remote-helper cross-compilation target
+        if: needs.changes.outputs.remote_helpers == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-x86_64-unknown-linux-musl
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+          workspaces: |
+            . -> target/x86_64-unknown-linux-musl
+      - name: Cache the arm64 remote-helper cross-compilation target
+        if: needs.changes.outputs.remote_helpers == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-aarch64-unknown-linux-musl
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+          workspaces: |
+            . -> target/aarch64-unknown-linux-musl
       - name: Build xtask and selected helper targets in one container
         env:
           BUILD_HELPERS: ${{ needs.changes.outputs.remote_helpers }}
@@ -413,9 +441,9 @@ jobs:
       - name: Cache container Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ needs.linux-environment.outputs.key }}
+          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          save-if: false
           cache-bin: false
       - name: Compile acceptance tool and debug bridge together
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-acceptance -p pl-studio-bridge
@@ -480,25 +508,8 @@ jobs:
           source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
           workspace: ${{ needs.linux-inputs.outputs.workspace }}
           environment: ${{ needs.linux-inputs.outputs.environment }}
-      - name: Install pinned code generators with authenticated downloads
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          tools="$GITHUB_WORKSPACE/output/ci-codegen-tools"
-          mkdir -p "$tools"
-          # Keep the read-only token in the installer container, away from source execution.
-          docker run --rm --init --pull=never --user "$(id -u):$(id -g)" \
-            --env GITHUB_TOKEN --workdir /opt/anywork-toolchain \
-            --mount "type=bind,src=$tools,dst=/tools" \
-            "$LINUX_BUILD_IMAGE" \
-            cargo binstall --root /tools --no-confirm --force --disable-strategies compile \
-              flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
       - name: Check generated sources once without repeating Rust quality or UI tests
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PWD/output/ci-codegen-tools/bin:$PATH"
-            "$1" check-gui-generated
-          ' -- "$PR_QUALITY_XTASK"
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" "$PR_QUALITY_XTASK" check-gui-generated
 
   linux-desktop:
     name: Desktop integration (Linux, shard ${{ matrix.shard }})
@@ -767,6 +778,9 @@ jobs:
       - name: Verify native Windows long-path identity
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked -p pl-remote-helper --test windows_paths
+      - name: Verify POSIX LSP configuration paths on Windows
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked -p pl-lsp --test posix_configuration
       - name: Verify Windows installer handoff from published and current clients
         if: needs.changes.outputs.windows_gui_build == 'true'
         shell: pwsh

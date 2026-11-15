@@ -3,10 +3,18 @@ description: Install the pinned compiler and cache build outputs without an unre
 runs:
   using: composite
   steps:
+    - name: Read the source Rust toolchain
+      id: rust-version
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        printf 'channel=%s\n' "$version" >> "$GITHUB_OUTPUT"
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       with:
-        toolchain: 1.99.1
+        toolchain: ${{ steps.rust-version.outputs.channel }}
     # rust-cache includes installed toolchains in its key. Keep the pre-existing
     # policy of removing only unused stable on this disposable hosted runner.
     - name: Remove unused preinstalled stable Rust toolchain
@@ -28,7 +36,7 @@ runs:
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         shared-key: ${{ runner.os == 'Windows' && 'gui-windows' || 'gui-macos' }}
-        save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
         workspaces: |
           . -> target
           . -> target/xtask

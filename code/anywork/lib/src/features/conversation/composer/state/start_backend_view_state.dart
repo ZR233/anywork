@@ -1,3 +1,4 @@
+import 'package:anywork_client/model_directory.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 part 'start_backend_view_state.freezed.dart';
@@ -30,6 +31,11 @@ abstract class StartBackendViewState with _$StartBackendViewState {
     @Default(<StartBackendDiagnosticItem>[])
     List<StartBackendDiagnosticItem> diagnostics,
     String? accountId,
+    @Default(<ModelSelectionAccount>[])
+    List<ModelSelectionAccount> modelAccounts,
+    String? modelAccountId,
+    String? modelId,
+    @Default(false) bool nativeEnabled,
     @Default(false) bool enabled,
     @Default(true) bool loading,
     String? failure,

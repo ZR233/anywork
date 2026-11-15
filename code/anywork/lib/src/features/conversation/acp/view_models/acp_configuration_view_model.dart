@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../state/acp_view_state.dart';
+import 'acp_composer_view_model.dart';
 import 'acp_session_view_model.dart';
 
 part 'acp_configuration_view_model.g.dart';
@@ -128,6 +129,8 @@ List<AcpConfigControlPresentation> mapAcpConfigControls({
 class AcpConfigurationViewModel extends _$AcpConfigurationViewModel {
   @override
   AcpConfigurationViewState build(String threadId) {
+    final composer = ref.watch(acpComposerViewModelProvider(threadId));
+    final composerBusy = composer.submitting || composer.interrupting;
     final asyncState = ref.watch(acpConversationStateProvider(threadId));
     final state = asyncState.value;
     final error = state?.configError;
@@ -141,35 +144,45 @@ class AcpConfigurationViewModel extends _$AcpConfigurationViewModel {
           state != null &&
           state.ready &&
           !state.openPending &&
+          !state.sendPending &&
+          state.activeRun == null &&
+          !composerBusy &&
           !state.disconnected &&
           !state.observationEnded,
       errorMessage: error == null ? null : formatAcpError(error),
     );
   }
 
-  Future<void> selectValue(String configId, String valueId) =>
-      coordinateAcpSessionCommand(
-        ref.read(anyworkClientProvider),
-        threadId,
-        (owner) => owner.configure(
-          AcpConfigId(configId),
-          AcpSelectConfigValueView(AcpConfigValueId(valueId)),
-        ),
-      );
+  Future<void> selectValue(String configId, String valueId) async {
+    if (!state.enabled || state.pending) return;
+    await coordinateAcpSessionCommand(
+      ref.read(anyworkClientProvider),
+      threadId,
+      (owner) => owner.configure(
+        AcpConfigId(configId),
+        AcpSelectConfigValueView(AcpConfigValueId(valueId)),
+      ),
+    );
+  }
 
-  Future<void> setBoolean(String configId, bool value) =>
-      coordinateAcpSessionCommand(
-        ref.read(anyworkClientProvider),
-        threadId,
-        (owner) => owner.configure(
-          AcpConfigId(configId),
-          AcpBooleanConfigValueView(value),
-        ),
-      );
+  Future<void> setBoolean(String configId, bool value) async {
+    if (!state.enabled || state.pending) return;
+    await coordinateAcpSessionCommand(
+      ref.read(anyworkClientProvider),
+      threadId,
+      (owner) => owner.configure(
+        AcpConfigId(configId),
+        AcpBooleanConfigValueView(value),
+      ),
+    );
+  }
 
-  Future<void> selectLegacyMode(String modeId) => coordinateAcpSessionCommand(
-    ref.read(anyworkClientProvider),
-    threadId,
-    (owner) => owner.setMode(AcpModeId(modeId)),
-  );
+  Future<void> selectLegacyMode(String modeId) async {
+    if (!state.enabled || state.pending) return;
+    await coordinateAcpSessionCommand(
+      ref.read(anyworkClientProvider),
+      threadId,
+      (owner) => owner.setMode(AcpModeId(modeId)),
+    );
+  }
 }

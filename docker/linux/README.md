@@ -15,7 +15,9 @@ bash docker/linux/scripts/run.sh anywork-linux-build:local cargo xtask build-gui
 ```
 
 仅验证 Rust 环境时，可构建 `--target rust-env`。完整镜像额外提供 Flutter、
-Zig/cargo-zigbuild、GTK/C++ 原生构建和 Debian 打包工具。容器内仍使用仓库正式入口；
+Zig/cargo-zigbuild、FRB 生成器、cargo-expand、GTK/C++ 原生构建和 Debian 打包工具。
+生成器使用固定版本及已校验摘要的预编译文件，在镜像中准备，CI 不再逐作业安装。
+容器内仍使用仓库正式入口；
 不要绕过 xtask 直接构建 Flutter Linux 工程。
 
 Linux 前端 CI 也使用同次解析并校验的完整镜像，直接运行官方 Flutter/Dart 检查与
@@ -30,6 +32,12 @@ hook 所需 GTK 3、X11、Xi 头文件与 C++ 工具统一预装在镜像中；�
 显式设置 `CARGO_HOME` 时，运行脚本会创建并挂载该专用缓存目录，保持宿主与容器路径一致。
 该目录只用于构建缓存，不应包含个人凭据。CI 将其放在 runner 临时目录，位于 checkout
 之外：`rust-cache` 按路径识别外部依赖，放在 checkout 内会在保存时被误当作工作区源码清理。
+Cargo 1.100 的中间产物仍保存在默认 `target/`，但其内部布局已经改变；CI 使用支持新布局的
+`rust-cache`，由工作区检查作业保存共享依赖缓存，其他 Linux 作业恢复同一缓存。xtask 使用的
+`target/xtask` 和两个远端辅助进程交叉目标分别缓存；同次运行中需要精确复用的
+可执行文件仍通过经校验的构件传递。
+RC 和发布的辅助进程构建恢复相同环境、工具链及依赖的缓存，不修改已保存的缓存。
+缓存按工具链、环境、依赖和平台区分；并行作业不会等待同一次运行的缓存写入。
 宿主须支持 Linux amd64 容器、可读写的 checkout 挂载、`/proc` 与子进程 subreaper；
 建议以普通开发用户运行脚本，容器使用相同 UID/GID，避免留下 root 所有的产物。
 镜像包含固定版本的 Git 与系统 OpenSSH 客户端，并验证 NUL 分隔的工作树清单及 SSH
@@ -54,11 +62,12 @@ rustup 安装其 channel、profile、components 和 targets，不另设 `RUST_VE
 运行时禁止自动安装其他 Rust 工具链；源码工具链与镜像不匹配时，应制作对应环境，
 不能临时安装后继续使用错误镜像。
 
-非 Rust 工具的固定版本和下载摘要集中在 `versions.env`。基础镜像固定 digest。
+非 Rust 工具的固定版本和下载摘要位于 `versions.env`，生成器独立位于 `codegen.env`，
+以便升级生成器时复用其他镜像层。基础镜像固定 digest。
 当前 Flutter 基线为 stable 3.50.0，随附 Dart 3.14.0；Windows/macOS CI 与发布构建
 使用同一 Flutter 版本。升级时同步应用的 SDK 约束与 Pub 锁文件，并从 Flutter 官方
 release metadata 核对 Linux SDK 的 SHA-256。
-Flutter 与 Rust 使用独立制作阶段，避免升级 Rust 时无理由重复下载 Flutter。
+Flutter、交叉编译工具、生成器与 Rust 使用独立制作阶段，升级 Rust 时可复用其余工具层。
 Flutter SDK 自用的工具依赖及其原生配置随镜像交付，供非 root 用户读取；这不包含本项目的
 pub 依赖缓存，也不引用镜像制作者的 `/root` 私有目录。
 固定 Git 的对应源码归档、许可证及构建输入保留在镜像内
