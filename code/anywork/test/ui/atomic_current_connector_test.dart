@@ -532,6 +532,71 @@ void main() {
     );
   }
 
+  testWidgets('short work pages can scroll to older and newer members', (
+    tester,
+  ) async {
+    final content = _Content();
+    final images = TimelineImageResources(threadId: 'thread');
+    final requests = <DisplayMemberWindow>[];
+    final expansion = TimelineExpansionIntent()..expanded = true;
+    expansion.openDisplayMembers = (_, window, _) async {
+      requests.add(window);
+      final end = window is BeforeDisplayMembers ? window.memberOrder - 1 : 4;
+      final start = (end - 1).clamp(1, 4);
+      return _FreezeMembers()..send(
+        DisplayMemberPage(
+          block: _workReference,
+          revision: requests.length,
+          sealed: false,
+          entries: [for (var i = start; i <= end; i++) _workRow(i)],
+          before: start > 1 ? start : null,
+        ),
+      );
+    };
+    addTearDown(() {
+      expansion.retire();
+      images.release();
+    });
+    await tester.pumpWidget(
+      _host(
+        Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            height: 600,
+            width: 600,
+            child: CompletionRunView(
+              id: 'short-scroll-work',
+              timing: displayTiming(),
+              location: WorkDisplayLocation.history,
+              initiallyExpanded: true,
+              childBuilder: (_) => _workConnector(expansion, content, images),
+            ),
+          ),
+        ),
+      ),
+    );
+    await _flush(tester);
+    final scope = tester.widget<CompletionRunScrollScope>(
+      find.byType(CompletionRunScrollScope),
+    );
+    final scroll = find.descendant(
+      of: find.byType(CompletionRunScrollScope),
+      matching: find.byType(SingleChildScrollView),
+    );
+    expect(scope.controller.position.maxScrollExtent, 0);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
+
+    await tester.drag(scroll, const Offset(0, 70));
+    await _flush(tester);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [2, 3]);
+    await tester.drag(scroll, const Offset(0, -70));
+    await _flush(tester);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
+    expect(requests, hasLength(3));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'work scroll boundaries read overlapping pages and keep the visible anchor without buttons',
     (tester) async {
