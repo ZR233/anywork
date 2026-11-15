@@ -185,6 +185,9 @@ pub trait LspHostBackend: std::fmt::Debug + Send + Sync {
     /// 标识逻辑执行会话与目录；传输重挂和临时句柄不改变身份，实际会话替换才改变。
     fn identity(&self) -> String;
 
+    /// Join paths using the execution machine's rules, not the client OS rules.
+    fn join_path(&self, base: &Path, path: &str) -> Result<PathBuf, LspHostError>;
+
     /// 读取一个 workspace 内文件的原始字节。
     fn read_file<'a>(
         &'a self,
