@@ -442,6 +442,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
         };
         let mut request = None;
         let mut spawn = None;
+        let mut previous_attempt = None;
         match entry.phase {
             Phase::Opening => {
                 *close_requested = true;
@@ -451,7 +452,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
                 entry.phase = Phase::Closing;
                 entry.attempt_id = AttemptId(1);
                 let cell = Attempt::new();
-                *attempt = Some(Arc::clone(&cell));
+                previous_attempt = attempt.replace(Arc::clone(&cell));
                 request = Some((resource.clone(), token.clone()));
             }
             Phase::Failed if retry => {
@@ -464,7 +465,7 @@ impl<E: Send + Sync + 'static> Scope<E> {
                         .expect("attempt ID space exhausted"),
                 );
                 let cell = Attempt::new();
-                *attempt = Some(Arc::clone(&cell));
+                previous_attempt = attempt.replace(Arc::clone(&cell));
                 let tracked = self.tracker.token();
                 self.worker_registered();
                 let guard = WorkerGuard::new(Arc::clone(self), id);
@@ -480,6 +481,9 @@ impl<E: Send + Sync + 'static> Scope<E> {
         }
         let result = attempt.clone();
         drop(state);
+        // The old result can contain an arbitrary E whose Drop re-enters this
+        // scope, so release its last reference only after leaving the gate.
+        drop(previous_attempt);
         if let Some((resource, token)) = request {
             if let Some(resource) = resource {
                 request_resource(&resource);
@@ -735,13 +739,14 @@ impl<E: Send + Sync + 'static> Scope<E> {
                 .expect("attempt ID space exhausted"),
         );
         let cell = Attempt::new();
-        *attempt = Some(Arc::clone(&cell));
+        let previous_attempt = attempt.replace(Arc::clone(&cell));
         let resource = Arc::clone(resource);
         let attempt_id = entry.attempt_id;
         let tracked = self.tracker.token();
         self.worker_registered();
         let guard = WorkerGuard::new(Arc::clone(self), id);
         drop(state);
+        drop(previous_attempt);
         worker::spawn_cleanup(
             Arc::clone(self),
             id,

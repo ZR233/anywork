@@ -776,3 +776,88 @@ async fn panics_while_creating_factory_or_close_futures_are_observed() {
     assert_eq!(report.failures[0].phase, Phase::Opening);
     assert!(!report.failures[0].retained);
 }
+
+#[tokio::test]
+async fn retry_drops_previous_error_outside_the_scope_gate() {
+    struct ReentrantError {
+        handle: pl_lifecycle::ScopeHandle<ReentrantError>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl std::fmt::Debug for ReentrantError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("ReentrantError")
+        }
+    }
+    impl Drop for ReentrantError {
+        fn drop(&mut self) {
+            // Even a rejected registration must acquire the same scope gate.
+            assert!(self.handle.on_close("reenter", || {}).is_err());
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct ReentrantResource {
+        handle: pl_lifecycle::ScopeHandle<ReentrantError>,
+        attempts: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl ManagedResource for ReentrantResource {
+        type Error = ReentrantError;
+        fn request_close(&self) {}
+        async fn close(&self) -> Result<(), ReentrantError> {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(ReentrantError {
+                    handle: self.handle.clone(),
+                    drops: Arc::clone(&self.drops),
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
+    async fn exercise(scope_retry: bool) {
+        let root = ScopeOwner::<ReentrantError>::new("root", Handle::current());
+        let handle = root.handle();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let resource = ReentrantResource {
+            handle: handle.clone(),
+            attempts: Arc::clone(&attempts),
+            drops: Arc::clone(&drops),
+        };
+        let managed = handle
+            .open("resource", move |_| async move { Ok(resource) })
+            .await
+            .unwrap();
+        let failure = managed.close().await;
+        assert!(matches!(&failure, Err(CloseError::Resource(_))));
+        drop(failure);
+        let report = root.wait_closed().await;
+        assert_eq!(report.failures.len(), 1);
+        drop(report);
+        if scope_retry {
+            assert!(root.retry_cleanup(deadline()).await.is_clean());
+        } else {
+            assert!(managed.retry_close().await.is_ok());
+            assert!(root.wait_closed().await.is_clean());
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    // Keep a regression from blocking the test runtime if it deadlocks while
+    // polling: the result channel remains subject to the outer timeout.
+    let (done_tx, done_rx) = oneshot::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            exercise(false).await;
+            exercise(true).await;
+        });
+        done_tx.send(()).unwrap();
+    });
+    bounded(done_rx).await.unwrap();
+    thread.join().unwrap();
+}
