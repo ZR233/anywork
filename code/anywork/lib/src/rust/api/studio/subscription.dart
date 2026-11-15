@@ -26,8 +26,8 @@ import 'types/thread_lsp.dart';
 import 'types/thread_stream.dart';
 import 'types/updater.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attach_sink`, `close_startup_scope`, `send_or_cancel`, `shutdown_progress_scope`, `startup_child_scope`, `wait_startup_scope`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`
+// These functions are ignored because they are not marked as `pub`: `attach_sink`, `child`, `close_startup_scope`, `prepare_startup_scope`, `prepare`, `send_or_cancel`, `shutdown_progress_scope`, `startup_child_scope`, `wait_startup_scope`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `StartupScopes`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `close`, `fmt`, `request_close`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>>

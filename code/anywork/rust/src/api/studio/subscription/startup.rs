@@ -23,7 +23,7 @@ use crate::frb_generated::StreamSink;
 pub async fn subscribe_startup_progress(
     attempt: u64,
 ) -> Result<BridgeEventSubscription, BridgeError> {
-    let scope = startup_child_scope()?;
+    let scope = startup_child_scope(attempt)?;
     let inner = scope
         .handle()
         .open("startupProgress", move |cancel| async move {

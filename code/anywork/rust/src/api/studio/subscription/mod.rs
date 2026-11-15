@@ -134,29 +134,87 @@ pub(crate) async fn send_or_cancel<T>(
     }
 }
 
-static STARTUP_CLOSED: SyncMutex<bool> = SyncMutex::new(false);
+struct StartupScopes {
+    closed: bool,
+    attempt: Option<u64>,
+    owner: Option<ScopeOwner<BridgeError>>,
+}
+
+impl StartupScopes {
+    fn prepare(&mut self, attempt: u64) -> Option<ScopeOwner<BridgeError>> {
+        self.attempt = Some(attempt);
+        self.owner.take()
+    }
+
+    fn child(
+        &mut self,
+        root: &ScopeOwner<BridgeError>,
+        attempt: u64,
+    ) -> Result<ScopeOwner<BridgeError>, BridgeError> {
+        if self.closed {
+            return Err(BridgeError::runtime_stopped());
+        }
+        if self.attempt != Some(attempt) {
+            return Err(BridgeError::invalid_argument(
+                "startup attempt is no longer active",
+            ));
+        }
+        if self.owner.is_none() {
+            self.owner = Some(
+                root.handle()
+                    .child("startup-attempt")
+                    .map_err(|_| BridgeError::runtime_stopped())?,
+            );
+        }
+        self.owner
+            .as_ref()
+            .expect("attempt owner was installed")
+            .handle()
+            .child("startup-observer")
+            .map_err(|_| BridgeError::runtime_stopped())
+    }
+}
+
+static STARTUP_SCOPES: SyncMutex<StartupScopes> = SyncMutex::new(StartupScopes {
+    closed: false,
+    attempt: None,
+    owner: None,
+});
 static STARTUP_ROOT: OnceLock<ScopeOwner<BridgeError>> = OnceLock::new();
 
-fn startup_child_scope() -> Result<ScopeOwner<BridgeError>, BridgeError> {
-    let closed = STARTUP_CLOSED
+/// 与启动令牌的发布同步更新；旧尝试在新令牌可见前封门。
+pub(crate) fn prepare_startup_scope(attempt: u64) {
+    let previous = STARTUP_SCOPES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .prepare(attempt);
+    drop(previous);
+}
+
+fn startup_child_scope(attempt: u64) -> Result<ScopeOwner<BridgeError>, BridgeError> {
+    let mut scopes = STARTUP_SCOPES
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if *closed {
+    if scopes.closed {
         return Err(BridgeError::runtime_stopped());
+    }
+    if scopes.attempt != Some(attempt) {
+        return Err(BridgeError::invalid_argument(
+            "startup attempt is no longer active",
+        ));
     }
     let root =
         STARTUP_ROOT.get_or_init(|| ScopeOwner::new("startup", tokio::runtime::Handle::current()));
-    root.handle()
-        .child("startup-attempt")
-        .map_err(|_| BridgeError::runtime_stopped())
+    scopes.child(root, attempt)
 }
 
 /// 与启动令牌一起同步封门，不依赖 bridge 是否已经安装。
 pub(crate) fn close_startup_scope() {
-    let mut closed = STARTUP_CLOSED
+    let mut scopes = STARTUP_SCOPES
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    *closed = true;
+    scopes.closed = true;
+    drop(scopes);
     if let Some(root) = STARTUP_ROOT.get() {
         root.request_close();
     }
@@ -200,6 +258,29 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn new_startup_attempt_seals_even_unconsumed_previous_observers() {
+        let root = ScopeOwner::new("startup-test", tokio::runtime::Handle::current());
+        let mut scopes = StartupScopes {
+            closed: false,
+            attempt: None,
+            owner: None,
+        };
+        drop(scopes.prepare(1));
+        let old_scope = scopes.child(&root, 1).unwrap();
+        let old = subscription(&old_scope).await;
+        assert!(!old.get().cancel.is_cancelled());
+
+        drop(scopes.prepare(2));
+        assert!(old.get().cancel.is_cancelled());
+        assert!(scopes.child(&root, 1).is_err());
+        let new_scope = scopes.child(&root, 2).unwrap();
+        let new = subscription(&new_scope).await;
+        assert!(!new.get().cancel.is_cancelled());
+        old.close().await.unwrap();
+        new.close().await.unwrap();
     }
 
     #[tokio::test]

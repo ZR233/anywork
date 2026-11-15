@@ -604,6 +604,7 @@ impl StartupOwner {
             StartupPhase::Initial | StartupPhase::Prepared { .. } | StartupPhase::Failed { .. } => {
                 let attempt = self.next_attempt.fetch_add(1, Ordering::Relaxed);
                 *phase = StartupPhase::Prepared { attempt };
+                crate::api::studio::subscription::prepare_startup_scope(attempt);
                 // 新尝试的站立阶段：订阅首帧是本尝试的真实阶段，绝不会先拿到旧终态。
                 self.sender.send_replace(StartupFrame {
                     attempt,
