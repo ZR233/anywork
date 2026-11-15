@@ -1,7 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart' show HardwareKeyboard;
 import 'package:material_ui/material_ui.dart';
 
 import '../state/timeline_display_diagnostics.dart';
@@ -127,25 +129,69 @@ class _MembersState extends State<CompletionRunConnector>
 
   void _scrolled() {
     final scope = _scrollScope;
-    final controller = _controller;
-    if (scope == null ||
-        controller == null ||
-        controller.loading ||
-        _navigating ||
-        !isCurrent) {
-      return;
-    }
+    if (scope == null) return;
     final notification = scope.notifications.value;
     final delta = switch (notification) {
       ScrollUpdateNotification(:final scrollDelta) => scrollDelta ?? 0,
       OverscrollNotification(:final overscroll) => overscroll,
       _ => 0.0,
     };
-    if (delta == 0 || !scope.controller.hasClients) return;
+    _navigate(delta, fromUpdate: notification is ScrollUpdateNotification);
+  }
+
+  void _pointerScrolled(PointerSignalEvent event) {
+    final scope = _scrollScope;
+    final controller = _controller;
+    if (event is! PointerScrollEvent ||
+        scope == null ||
+        controller == null ||
+        controller.loading ||
+        _navigating ||
+        !isCurrent ||
+        !scope.controller.hasClients) {
+      return;
+    }
+    if (event.kind == PointerDeviceKind.mouse &&
+        HardwareKeyboard.instance.logicalKeysPressed.any(
+          ScrollConfiguration.of(context).pointerAxisModifiers.contains,
+        )) {
+      return;
+    }
+    final delta = event.scrollDelta.dy;
+    final position = scope.controller.position;
+    final older =
+        delta < 0 &&
+        position.pixels <= position.minScrollExtent &&
+        controller.page?.before != null;
+    final newer =
+        delta > 0 &&
+        position.pixels >= position.maxScrollExtent &&
+        controller.hasNewer;
+    if (!older && !newer) return;
+    // Flutter's Scrollable yields a wheel event at its boundary. Compete for
+    // that event only when another member page exists, so inner scrollables
+    // keep priority and the outer timeline can scroll when no page is due.
+    GestureBinding.instance.pointerSignalResolver.register(event, (event) {
+      event.respond(allowPlatformDefault: !_navigate(delta, fromUpdate: false));
+    });
+  }
+
+  bool _navigate(double delta, {required bool fromUpdate}) {
+    final scope = _scrollScope;
+    final controller = _controller;
+    if (scope == null ||
+        controller == null ||
+        controller.loading ||
+        _navigating ||
+        !isCurrent ||
+        delta == 0 ||
+        !scope.controller.hasClients) {
+      return false;
+    }
     final entries = controller.page?.entries;
-    if (entries == null || entries.isEmpty) return;
+    if (entries == null || entries.isEmpty) return false;
     final viewport = Scrollable.maybeOf(context)?.context.findRenderObject();
-    if (viewport is! RenderBox) return;
+    if (viewport is! RenderBox) return false;
     final top = viewport.localToGlobal(Offset.zero).dy;
     final bottom = top + scope.controller.position.viewportDimension;
     final first = _rect(entries.first.memberKey);
@@ -160,18 +206,19 @@ class _MembersState extends State<CompletionRunConnector>
         last != null &&
         last.bottom <= bottom + 1 &&
         controller.hasNewer;
-    if (!older && !newer && controller.window is! LatestDisplayMembers) return;
+    if (!older && !newer && controller.window is! LatestDisplayMembers) {
+      return false;
+    }
     final visible = entries.where((entry) {
       final rect = _rect(entry.memberKey);
       return rect != null && rect.bottom > top && rect.top < bottom;
     }).toList();
-    if (visible.isEmpty) return;
+    if (visible.isEmpty) return false;
     final key = (newer ? visible.last : visible.first).memberKey;
     final offset = _contentOffset(key);
-    if (offset == null) return;
+    if (offset == null) return false;
     final position = scope.controller.position;
-    final readingPixels =
-        (older || newer) && notification is ScrollUpdateNotification
+    final readingPixels = (older || newer) && fromUpdate
         ? position.pixels - delta
         : position.pixels;
     // Content coordinates exclude the platform's transient overscroll stretch.
@@ -198,6 +245,7 @@ class _MembersState extends State<CompletionRunConnector>
     } else {
       controller.holdLatest();
     }
+    return true;
   }
 
   void _pageChanged() {
@@ -257,33 +305,40 @@ class _MembersState extends State<CompletionRunConnector>
         controller.page?.entries.map((entry) => entry.memberKey).toSet() ??
         <String>{};
     _anchors.removeWhere((key, _) => !keys.contains(key));
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (controller.error case final error?)
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(error.toString()),
-              TextButton(onPressed: controller.retry, child: const Text('重试')),
-            ],
-          ),
-        if (controller.loading) const LinearProgressIndicator(),
-        SizedBox(height: _leadingSpace),
-        for (final entry
-            in controller.page?.entries ?? const <DisplayMemberHead>[])
-          KeyedSubtree(
-            key: _anchors.putIfAbsent(entry.memberKey, GlobalKey.new),
-            child: ValueListenableBuilder<DisplayMemberHead?>(
-              valueListenable: controller.member(entry.memberKey),
-              builder: (_, value, _) => value == null
-                  ? const SizedBox.shrink()
-                  : _member(controller, value),
+    return Listener(
+      onPointerSignal: _pointerScrolled,
+      behavior: HitTestBehavior.translucent,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (controller.error case final error?)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(error.toString()),
+                TextButton(
+                  onPressed: controller.retry,
+                  child: const Text('重试'),
+                ),
+              ],
             ),
-          ),
-        SizedBox(height: _trailingSpace),
-      ],
+          if (controller.loading) const LinearProgressIndicator(),
+          SizedBox(height: _leadingSpace),
+          for (final entry
+              in controller.page?.entries ?? const <DisplayMemberHead>[])
+            KeyedSubtree(
+              key: _anchors.putIfAbsent(entry.memberKey, GlobalKey.new),
+              child: ValueListenableBuilder<DisplayMemberHead?>(
+                valueListenable: controller.member(entry.memberKey),
+                builder: (_, value, _) => value == null
+                    ? const SizedBox.shrink()
+                    : _member(controller, value),
+              ),
+            ),
+          SizedBox(height: _trailingSpace),
+        ],
+      ),
     );
   }
 

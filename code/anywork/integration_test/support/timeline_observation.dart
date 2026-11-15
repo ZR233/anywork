@@ -1762,7 +1762,13 @@ final class TimelineObservation {
     await Scrollable.ensureVisible(tester.element(viewport), alignment: .5);
     await tester.pump();
     expect(display.isCurrent && display.expanded, isTrue);
-    await tester.drag(viewport, Offset(0, distance));
+    // A tool body may contain its own scrollable. Start in the Work's leading
+    // gutter so this gesture reaches the member viewport, not that body.
+    final bounds = tester.getRect(viewport);
+    await tester.dragFrom(
+      Offset(bounds.left + 4, bounds.center.dy),
+      Offset(0, distance),
+    );
     await tester.pump();
     expect(tester.takeException(), isNull);
   }
