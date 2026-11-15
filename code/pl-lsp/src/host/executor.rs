@@ -40,6 +40,11 @@ impl LspHostBackend for ExecutorLspHost {
     fn identity(&self) -> String {
         format!("executor:{:?}:{}", self.executor.id(), self.root.as_str())
     }
+    fn join_path(&self, base: &Path, path: &str) -> Result<std::path::PathBuf, LspHostError> {
+        let base = self.path(base)?;
+        let joined = self.executor.join_path(&base, path).map_err(host_error)?;
+        Ok(joined.as_str().into())
+    }
     fn read_file<'a>(
         &'a self,
         path: &'a Path,

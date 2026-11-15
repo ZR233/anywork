@@ -193,14 +193,24 @@ impl LspRuntimeRegistry {
                 if let Some(directory) = directory {
                     scan_directory(&directory, None, &mut sources, &mut errors, &mut count).await;
                 }
-                scan_directory(
-                    &root.join(".anywork/lsp"),
-                    host.as_deref(),
-                    &mut sources,
-                    &mut errors,
-                    &mut count,
-                )
-                .await;
+                match crate::host::join_path(&root, ".anywork/lsp", host.as_deref()) {
+                    Ok(directory) => {
+                        scan_directory(
+                            &directory,
+                            host.as_deref(),
+                            &mut sources,
+                            &mut errors,
+                            &mut count,
+                        )
+                        .await;
+                    }
+                    Err(error) => errors.push(configuration_error(
+                        "_configuration",
+                        Some(root.display().to_string()),
+                        LspLifecyclePhase::Failed,
+                        &error.to_string(),
+                    )),
+                }
                 let mut members = BTreeMap::new();
                 for (id, source) in sources {
                     match source.config {
@@ -529,7 +539,18 @@ async fn scan_directory(
             ));
             break;
         }
-        let path = directory.join(&name);
+        let path = match crate::host::join_path(directory, &name, host) {
+            Ok(path) => path,
+            Err(error) => {
+                errors.push(configuration_error(
+                    id,
+                    Some(directory.display().to_string()),
+                    LspLifecyclePhase::Failed,
+                    &error.to_string(),
+                ));
+                continue;
+            }
+        };
         let result = async {
             validate_server_id(id).map_err(|error| error.to_string())?;
             let bytes = read_document(&path, host).await?;
@@ -645,13 +666,18 @@ async fn workspace_matches(
                 }) {
                     return Ok(true);
                 }
-            } else if host
-                .stat(&root.join(rule))
-                .await
-                .map_err(|error| error.to_string())?
-                .is_some()
-            {
-                return Ok(true);
+            } else {
+                let path = host
+                    .join_path(root, rule)
+                    .map_err(|error| error.to_string())?;
+                if host
+                    .stat(&path)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)

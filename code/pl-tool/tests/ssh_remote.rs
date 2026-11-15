@@ -1172,7 +1172,16 @@ root = "{workspaceRoot}/init"
             LspQuery {
                 server_id: None,
                 operation: LspQueryOperation::DocumentSymbol,
-                file_path: Some(workspace_root.join("fixture.py")),
+                file_path: Some(
+                    files
+                        .executor()
+                        .join_path(
+                            &files.executor().path(files.canonical_path())?,
+                            "fixture.py",
+                        )?
+                        .as_str()
+                        .into(),
+                ),
                 line: None,
                 character: None,
                 query: None,
