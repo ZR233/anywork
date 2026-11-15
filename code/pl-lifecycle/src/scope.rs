@@ -800,6 +800,7 @@ impl<E: Send + Sync + 'static> ScopeOwner<E> {
         self.scope.seal();
     }
     /// 使用同一个绝对截止时刻等待本作用域及子作用域；超时不会取消清理工作。
+    /// 此方法执行的同步解绑回调一旦开始，不能被截止时刻中断；回调必须快速、非阻塞。
     pub async fn close(&self, deadline: Instant) -> CloseReport<E> {
         self.request_close();
         self.scope.run_callbacks();
@@ -859,7 +860,11 @@ impl<E: Send + Sync + 'static> ScopeHandle<E> {
     pub fn child(&self, label: &'static str) -> Result<ScopeOwner<E>, ScopeClosed> {
         self.scope.upgrade().ok_or(ScopeClosed)?.child(label)
     }
-    /// 登记同步解绑操作；拒绝登记时也会立即执行该操作。
+    /// 登记快速、非阻塞的同步解绑操作；拒绝登记时也会立即执行该操作。
+    ///
+    /// 作用域或凭证释放时，回调直接在释放方的线程执行，不创建后台工作。
+    /// 回调一旦开始不能被截止时刻中断。可能阻塞的清理应使用 `ManagedResource`。
+    /// 回调应只捕获弱句柄和必要依赖，不要捕获 `ScopeOwner` 形成引用环。
     pub fn on_close<F>(
         &self,
         label: &'static str,

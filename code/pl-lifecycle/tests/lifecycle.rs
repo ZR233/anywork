@@ -701,3 +701,35 @@ async fn stopping_runtime_with_active_resource_requests_cancellation() {
     drop((managed, root));
     assert_eq!(control.dropped.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn synchronous_callback_is_not_preempted_by_scope_deadline() {
+    let root = ScopeOwner::<Failure>::new("root", Handle::current());
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let registration = root
+        .handle()
+        .on_close("callback", move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+    let (result_tx, mut result_rx) = oneshot::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let report = runtime.block_on(root.close(Instant::now()));
+        result_tx.send(report).ok().unwrap();
+    });
+    bounded(started_rx).await.unwrap();
+    assert!(matches!(
+        result_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    release_tx.send(()).unwrap();
+    assert!(bounded(result_rx).await.unwrap().is_clean());
+    thread.join().unwrap();
+    drop(registration);
+}
