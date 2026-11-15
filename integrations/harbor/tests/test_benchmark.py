@@ -2,6 +2,9 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+from harbor.utils.env import resolve_env_vars
+
 from anywork_harbor.benchmark import atomic_json, digest_object, job_config, run_plan
 from anywork_harbor.errors import ERROR_POLICY
 from anywork_harbor.render_profile import load_profile, render_profile
@@ -80,10 +83,16 @@ def test_task_level_bootstrap_aggregates_repeats_and_is_reproducible():
     assert quantile([1, 3], 0.95) == 2.9
 
 
-def test_standard_policy_is_present_in_every_generated_job(tmp_path):
+@pytest.mark.parametrize("env_name", [None, "BENCHMARK_ACCESS"])
+def test_generated_jobs_keep_error_policy_and_credential_references(
+    tmp_path, monkeypatch, env_name
+):
+    secret = "synthetic-environment-value"
+    if env_name:
+        monkeypatch.setenv(env_name, secret)
     plan = {
         "tasks": [{"id": "task", "path": str(ROOT / "fixtures/tasks/file-task")}],
-        "envNames": [],
+        "envNames": [env_name] if env_name else [],
         "binaryPath": "/binary",
         "profiles": {"B": {"path": "/config"}},
         "model": "vendor/model",
@@ -101,6 +110,10 @@ def test_standard_policy_is_present_in_every_generated_job(tmp_path):
     assert {
         key: value.model_dump() for key, value in config.override_error_policy.items()
     } == ERROR_POLICY
+    assert secret not in config.model_dump_json()
+    if env_name:
+        assert config.agents[0].env == {env_name: f"${{{env_name}}}"}
+        assert resolve_env_vars(config.agents[0].env) == {env_name: secret}
 
 
 async def test_interrupted_admission_is_not_automatically_retried(tmp_path, monkeypatch):

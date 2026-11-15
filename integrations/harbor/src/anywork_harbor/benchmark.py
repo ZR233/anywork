@@ -359,7 +359,7 @@ def job_config(plan, slot, output: Path, job_name: str) -> JobConfig:
     for name in plan["envNames"]:
         if not os.environ.get(name):
             raise ValueError(f"缺少显式注入的凭据环境变量：{name}")
-        env[name] = os.environ[name]
+        env[name] = f"${{{name}}}"
     if slot["variant"] == "A":
         agent = {
             "name": plan["baselineAgent"],
