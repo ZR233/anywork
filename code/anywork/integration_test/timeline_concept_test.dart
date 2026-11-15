@@ -1670,8 +1670,7 @@ final class _ConceptScene {
         );
         ids.addAll(display.atoms.map((atom) => atom.id));
         if (display.before == null) break;
-        // SDK admission precedes the frame that installs the enabled control.
-        // Keep the original window and cursor while waiting for that same UI.
+        // Scroll the original Work viewport to request its next older page.
         await observed.loadOlderMemberPage(display, timeout: remaining());
         olderPageCommands++;
       }

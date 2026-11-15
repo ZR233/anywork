@@ -3102,11 +3102,7 @@ final class _RealtimeScene {
         (widget) =>
             widget is TimelineMemberAtom &&
             widget.isActive() &&
-            heads.any(
-              (head) =>
-                  widget.displayId == head.displayId &&
-                  widget.record == head.record,
-            ) &&
+            heads.any((head) => observed.matchesMountedRecord(widget, head)) &&
             widget.atom.id == atom.id &&
             widget.atom.source == atom.source &&
             (widget.atom.lifecycle is ActiveChatAtom) == active &&
