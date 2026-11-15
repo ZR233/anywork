@@ -10,6 +10,8 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from pr_quality_release import is_release_only
+
 OUTPUT_FLAGS = (
     "docs_policy",
     "release_configuration",
@@ -384,6 +386,7 @@ def _finish(
         "required_jobs": tuple(required),
         "plan": plan,
         "reason": reason,
+        "release_only": False,
     }
 
 
@@ -439,6 +442,25 @@ def write_github_output(plan: dict[str, object], stream) -> None:
     stream.write("required_jobs=" + ",".join(plan["required_jobs"]) + "\n")
     stream.write(f"plan={plan['plan']}\n")
     stream.write(f"reason={plan['reason']}\n")
+    stream.write(f"release_only={'true' if plan['release_only'] else 'false'}\n")
+
+
+def plan_for_event(
+    paths: list[str], *, event_name: str, base: str, head: str, repository: str,
+    ref: str, event_path: str, git_dir: str | None = None,
+) -> dict[str, object]:
+    if is_release_only(
+        event_name=event_name, base=base, head=head, paths=paths,
+        repository=repository, ref=ref, event_path=event_path, git_dir=git_dir,
+    ):
+        return {
+            **_empty_flags(),
+            "required_jobs": ("changes",),
+            "plan": "release-only",
+            "reason": "verified Release Please version-only change; quality jobs are skipped",
+            "release_only": True,
+        }
+    return plan_from_paths(paths, event_name=event_name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -463,7 +485,12 @@ def main(argv: list[str] | None = None) -> int:
         if paths is None:
             paths = []
 
-    plan = plan_from_paths(paths, event_name=args.event_name)
+    plan = plan_for_event(
+        paths, event_name=args.event_name, base=args.base_sha, head=args.head_sha,
+        repository=os.environ.get("GITHUB_REPOSITORY", ""),
+        ref=os.environ.get("GITHUB_REF", ""),
+        event_path=os.environ.get("GITHUB_EVENT_PATH", ""),
+    )
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with open(output_path, "a", encoding="utf-8") as handle:
