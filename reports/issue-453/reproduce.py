@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import statistics
 import subprocess
 
 BASELINES = {
@@ -14,6 +15,7 @@ BASELINES = {
 }
 TEST = "studio::storage::thread_writer::storage_fault_tests::measure_history_write_cost"
 CONFIG = ["--config", "profile.test.package.pl-studio-runtime.debug=0", "--config", "profile.test.package.pl-studio-runtime.incremental=false"]
+DIFF = ["git", "diff", "HEAD", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/"]
 
 
 def run(args, cwd):
@@ -29,7 +31,7 @@ def main():
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--target-dir", type=Path, help="optional shared Cargo cache")
+    parser.add_argument("--target-dir", type=Path, help="optional parent directory for separate Cargo caches")
     parser.add_argument("--existing", action="store_true", help="use already patched baseline worktrees")
     args = parser.parse_args()
     if args.samples < 1:
@@ -41,6 +43,8 @@ def main():
     environment = {
         "platform": platform.platform(),
         "machine": platform.machine(),
+        "processor": platform.processor(),
+        "logicalCpus": os.cpu_count(),
         "rustc": run(["rustc", "-Vv"], repo),
         "cargo": run(["cargo", "-V"], repo),
         "cc": run(["cc", "--version"], repo),
@@ -59,10 +63,16 @@ def main():
             run(["git", "apply", str(patch)], checkout)
         if run(["git", "rev-parse", "HEAD"], checkout).strip() != sha:
             raise RuntimeError(f"wrong baseline: {checkout}")
-        actual_patch = subprocess.check_output(["git", "diff", "--binary"], cwd=checkout)
+        untracked = run(["git", "ls-files", "--others", "--exclude-standard"], checkout)
+        if untracked:
+            raise RuntimeError(f"untracked baseline files: {checkout}\n{untracked}")
+        actual_patch = subprocess.check_output(DIFF, cwd=checkout)
         if actual_patch != patch.read_bytes():
             raise RuntimeError(f"unreviewed baseline changes: {checkout}")
-        build = ["cargo", "test", "--locked", "--target-dir", str(args.target_dir.resolve() if args.target_dir else work / "measurement-target"), "--jobs", "1", *CONFIG,
+        # Cargo's package fingerprints are not a cross-checkout cache identity: S3 and S4
+        # have different local crates with the same names and versions. Never mix them.
+        target_parent = args.target_dir.resolve() if args.target_dir else work / "measurement-target"
+        build = ["cargo", "test", "--locked", "--target-dir", str(target_parent / label), "--jobs", "1", *CONFIG,
                  "-p", "pl-studio-runtime", "--lib", "--no-run", "--message-format=json"]
         built = subprocess.run(build, cwd=checkout, text=True, capture_output=True)
         (output / (label + "-build.log")).write_text(built.stderr)
@@ -93,12 +103,17 @@ def main():
         (output / (label + ".json")).write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n")
         environment["baselines"][label] = {"sha": sha, "patchSha256": hashlib.sha256(patch.read_bytes()).hexdigest(), "buildCommand": build, "sampleCommand": command}
         (output / "environment.json").write_text(json.dumps(environment, ensure_ascii=False, indent=2) + "\n")
-    first = {label: json.loads((output / (label + ".json")).read_text())[0] for label in BASELINES}
+    samples = {label: json.loads((output / (label + ".json")).read_text()) for label in BASELINES}
+    for field in ("sqliteVersion", "effects", "bodyBytesPerEffect"):
+        values = {sample[field] for group in samples.values() for sample in group}
+        if len(values) != 1:
+            raise RuntimeError(f"baselines disagree on {field}: {values}")
     differences = {}
-    for key in first["s3"]:
-        before, after = first["s3"][key], first["s4"][key]
-        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
-            differences[key] = {"s3": before, "s4": after, "difference": after - before, "percent": (after / before - 1) * 100 if before else None}
+    for key in samples["s3"][0]:
+        values = {label: [sample[key] for sample in group] for label, group in samples.items()}
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool) for group in values.values() for value in group):
+            before, after = (statistics.median(values[label]) for label in BASELINES)
+            differences[key] = {"s3": before, "s4": after, "difference": after - before, "percent": (after / before - 1) * 100 if before else None, "s3Range": [min(values["s3"]), max(values["s3"])], "s4Range": [min(values["s4"]), max(values["s4"])]}
     (output / "comparison.json").write_text(json.dumps(differences, ensure_ascii=False, indent=2) + "\n")
 
 

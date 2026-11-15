@@ -1,11 +1,11 @@
 diff --git a/code/pl-studio-runtime/src/studio/storage/history.rs b/code/pl-studio-runtime/src/studio/storage/history.rs
-index 4d5601f0..f93fdcfe 100644
+index 4d5601f08bb54254ba3381f4c4986090cff8c6fc..4ab8bb1c264bf15a768bfa6c79b2c2437824d65d 100644
 --- a/code/pl-studio-runtime/src/studio/storage/history.rs
 +++ b/code/pl-studio-runtime/src/studio/storage/history.rs
-@@ -165,6 +165,21 @@ struct HistoryStoreState {
-     closed: std::sync::atomic::AtomicBool,
-     path: PathBuf,
-     thread_id: String,
+@@ -372,6 +372,21 @@ impl std::fmt::Debug for HistoryStore {
+ }
+ 
+ impl HistoryStore {
 +    #[cfg(test)]
 +    pub(in crate::studio) async fn measurement_connections(
 +        &self,
@@ -21,13 +21,22 @@ index 4d5601f0..f93fdcfe 100644
 +        Ok((writer, reader))
 +    }
 +
-     /// The single writer connection, opened on the first write.
-     ///
-     /// Effect batches use one connection for short single-writer transactions. The Session owns
+     pub(in crate::studio) async fn conversation_snapshot(
+         &self,
+     ) -> Result<Option<ConversationSnapshot>> {
 diff --git a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
-index fe4efe03..01bdb734 100644
+index fe4efe037f6318717b51ae0ded6f8d65daf7290a..bf3acf0d3dcee6b93794d2b2e0e7f512c234622a 100644
 --- a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
 +++ b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
+@@ -465,7 +465,7 @@ async fn materialize(
+ }
+ 
+ #[cfg(test)]
+-mod run_read_tests {
++pub(in crate::studio) mod run_read_tests {
+     use super::*;
+     use pl_core::chat::{ChatDraft, ChatQuery, ReadDemand};
+     use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
 @@ -891,7 +891,7 @@ mod run_read_tests {
          Ok(())
      }
@@ -248,7 +257,7 @@ index fe4efe03..01bdb734 100644
                  let allowed = table == b"conversation_display_blocks"
                      || (matches!(state.scope, Scope::DisplayMembers)
 diff --git a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
-index 71554283..cabc7485 100644
+index 71554283c1f2b31ef5b2db0f60fe53eb79dcb9d0..e43b96900c6fd9b0eda076e40c36f2fb6fb19150 100644
 --- a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
 +++ b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
 @@ -8147,6 +8147,120 @@ pub(crate) mod storage_fault_tests {
@@ -260,7 +269,7 @@ index 71554283..cabc7485 100644
 +    #[tokio::test]
 +    #[ignore = "manual before/after history write measurement"]
 +    async fn measure_history_write_cost() -> Result<()> {
-+        use crate::studio::storage::history::conversation::record_read_tests::sqlite_work::Sampler;
++        use crate::studio::storage::history::conversation::run_read_tests::sqlite_work::Sampler;
 +        use sea_orm::{DbBackend, Statement};
 +        async fn occupied(db: &sea_orm::DatabaseConnection) -> Result<i64> {
 +            let mut values = Vec::new();

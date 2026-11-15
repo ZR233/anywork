@@ -1,5 +1,5 @@
 diff --git a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
-index 89d275f5..3360ec6a 100644
+index 89d275f5a93e34567b96bb383e71fd1e70c49234..3360ec6abef019e291e5187130c5070c834386a9 100644
 --- a/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
 +++ b/code/pl-studio-runtime/src/studio/storage/history/conversation.rs
 @@ -793,39 +793,7 @@ pub(in crate::studio) mod record_read_tests {
@@ -116,7 +116,7 @@ index 89d275f5..3360ec6a 100644
                  Lifetime(Arc::downgrade(&self.state))
              }
 diff --git a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
-index 45533301..044da859 100644
+index 455333013e74392eded80b4d935f3f2482035eee..044da8590ef293fa8aad2e4646d360a8b75406d9 100644
 --- a/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
 +++ b/code/pl-studio-runtime/src/studio/storage/thread_writer.rs
 @@ -8188,10 +8188,12 @@ pub(crate) mod storage_fault_tests {
