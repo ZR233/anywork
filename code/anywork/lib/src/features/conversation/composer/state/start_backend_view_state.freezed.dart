@@ -555,7 +555,7 @@ as String,
 /// @nodoc
 mixin _$StartBackendViewState {
 
- List<StartBackendServiceItem> get services; List<StartBackendDiagnosticItem> get diagnostics; String? get accountId; bool get enabled; bool get loading; String? get failure;
+ List<StartBackendServiceItem> get services; List<StartBackendDiagnosticItem> get diagnostics; String? get accountId; List<ModelSelectionAccount> get modelAccounts; String? get modelAccountId; String? get modelId; bool get nativeEnabled; bool get enabled; bool get loading; String? get failure;
 /// Create a copy of StartBackendViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -567,20 +567,20 @@ $StartBackendViewStateCopyWith<StartBackendViewState> get copyWith => _$StartBac
 @override
 bool operator ==(Object other) {
   final _this = this as StartBackendViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StartBackendViewState&&const DeepCollectionEquality().equals(other.services, _this.services)&&const DeepCollectionEquality().equals(other.diagnostics, _this.diagnostics)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.enabled, _this.enabled) || other.enabled == _this.enabled)&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.failure, _this.failure) || other.failure == _this.failure));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StartBackendViewState&&const DeepCollectionEquality().equals(other.services, _this.services)&&const DeepCollectionEquality().equals(other.diagnostics, _this.diagnostics)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&const DeepCollectionEquality().equals(other.modelAccounts, _this.modelAccounts)&&(identical(other.modelAccountId, _this.modelAccountId) || other.modelAccountId == _this.modelAccountId)&&(identical(other.modelId, _this.modelId) || other.modelId == _this.modelId)&&(identical(other.nativeEnabled, _this.nativeEnabled) || other.nativeEnabled == _this.nativeEnabled)&&(identical(other.enabled, _this.enabled) || other.enabled == _this.enabled)&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.failure, _this.failure) || other.failure == _this.failure));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StartBackendViewState;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.services),const DeepCollectionEquality().hash(_this.diagnostics),_this.accountId,_this.enabled,_this.loading,_this.failure);
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.services),const DeepCollectionEquality().hash(_this.diagnostics),_this.accountId,const DeepCollectionEquality().hash(_this.modelAccounts),_this.modelAccountId,_this.modelId,_this.nativeEnabled,_this.enabled,_this.loading,_this.failure);
 }
 
 @override
 String toString() {
   final _this = this as StartBackendViewState;
-  return 'StartBackendViewState(services: ${_this.services}, diagnostics: ${_this.diagnostics}, accountId: ${_this.accountId}, enabled: ${_this.enabled}, loading: ${_this.loading}, failure: ${_this.failure})';
+  return 'StartBackendViewState(services: ${_this.services}, diagnostics: ${_this.diagnostics}, accountId: ${_this.accountId}, modelAccounts: ${_this.modelAccounts}, modelAccountId: ${_this.modelAccountId}, modelId: ${_this.modelId}, nativeEnabled: ${_this.nativeEnabled}, enabled: ${_this.enabled}, loading: ${_this.loading}, failure: ${_this.failure})';
 }
 
 
@@ -591,7 +591,7 @@ abstract mixin class $StartBackendViewStateCopyWith<$Res>  {
   factory $StartBackendViewStateCopyWith(StartBackendViewState value, $Res Function(StartBackendViewState) _then) = _$StartBackendViewStateCopyWithImpl;
 @useResult
 $Res call({
- List<StartBackendServiceItem> services, List<StartBackendDiagnosticItem> diagnostics, String? accountId, bool enabled, bool loading, String? failure
+ List<StartBackendServiceItem> services, List<StartBackendDiagnosticItem> diagnostics, String? accountId, List<ModelSelectionAccount> modelAccounts, String? modelAccountId, String? modelId, bool nativeEnabled, bool enabled, bool loading, String? failure
 });
 
 
@@ -608,12 +608,16 @@ class _$StartBackendViewStateCopyWithImpl<$Res>
 
 /// Create a copy of StartBackendViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? services = null,Object? diagnostics = null,Object? accountId = freezed,Object? enabled = null,Object? loading = null,Object? failure = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? services = null,Object? diagnostics = null,Object? accountId = freezed,Object? modelAccounts = null,Object? modelAccountId = freezed,Object? modelId = freezed,Object? nativeEnabled = null,Object? enabled = null,Object? loading = null,Object? failure = freezed,}) {
   return _then(StartBackendViewState(
 services: null == services ? _self.services : services // ignore: cast_nullable_to_non_nullable
 as List<StartBackendServiceItem>,diagnostics: null == diagnostics ? _self.diagnostics : diagnostics // ignore: cast_nullable_to_non_nullable
 as List<StartBackendDiagnosticItem>,accountId: freezed == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
-as String?,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
+as String?,modelAccounts: null == modelAccounts ? _self.modelAccounts : modelAccounts // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,modelAccountId: freezed == modelAccountId ? _self.modelAccountId : modelAccountId // ignore: cast_nullable_to_non_nullable
+as String?,modelId: freezed == modelId ? _self.modelId : modelId // ignore: cast_nullable_to_non_nullable
+as String?,nativeEnabled: null == nativeEnabled ? _self.nativeEnabled : nativeEnabled // ignore: cast_nullable_to_non_nullable
+as bool,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
 as bool,loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,failure: freezed == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
 as String?,
@@ -701,10 +705,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  bool enabled,  bool loading,  String? failure)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  List<ModelSelectionAccount> modelAccounts,  String? modelAccountId,  String? modelId,  bool nativeEnabled,  bool enabled,  bool loading,  String? failure)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StartBackendViewState() when $default != null:
-return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_that.loading,_that.failure);case _:
+return $default(_that.services,_that.diagnostics,_that.accountId,_that.modelAccounts,_that.modelAccountId,_that.modelId,_that.nativeEnabled,_that.enabled,_that.loading,_that.failure);case _:
   return orElse();
 
 }
@@ -722,10 +726,10 @@ return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  bool enabled,  bool loading,  String? failure)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  List<ModelSelectionAccount> modelAccounts,  String? modelAccountId,  String? modelId,  bool nativeEnabled,  bool enabled,  bool loading,  String? failure)  $default,) {final _that = this;
 switch (_that) {
 case _StartBackendViewState():
-return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_that.loading,_that.failure);case _:
+return $default(_that.services,_that.diagnostics,_that.accountId,_that.modelAccounts,_that.modelAccountId,_that.modelId,_that.nativeEnabled,_that.enabled,_that.loading,_that.failure);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -742,10 +746,10 @@ return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  bool enabled,  bool loading,  String? failure)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<StartBackendServiceItem> services,  List<StartBackendDiagnosticItem> diagnostics,  String? accountId,  List<ModelSelectionAccount> modelAccounts,  String? modelAccountId,  String? modelId,  bool nativeEnabled,  bool enabled,  bool loading,  String? failure)?  $default,) {final _that = this;
 switch (_that) {
 case _StartBackendViewState() when $default != null:
-return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_that.loading,_that.failure);case _:
+return $default(_that.services,_that.diagnostics,_that.accountId,_that.modelAccounts,_that.modelAccountId,_that.modelId,_that.nativeEnabled,_that.enabled,_that.loading,_that.failure);case _:
   return null;
 
 }
@@ -757,7 +761,7 @@ return $default(_that.services,_that.diagnostics,_that.accountId,_that.enabled,_
 
 
 class _StartBackendViewState extends StartBackendViewState {
-  const _StartBackendViewState({ List<StartBackendServiceItem> services = const <StartBackendServiceItem>[],  List<StartBackendDiagnosticItem> diagnostics = const <StartBackendDiagnosticItem>[], this.accountId, this.enabled = false, this.loading = true, this.failure}): _services = services,_diagnostics = diagnostics,super._();
+  const _StartBackendViewState({ List<StartBackendServiceItem> services = const <StartBackendServiceItem>[],  List<StartBackendDiagnosticItem> diagnostics = const <StartBackendDiagnosticItem>[], this.accountId,  List<ModelSelectionAccount> modelAccounts = const <ModelSelectionAccount>[], this.modelAccountId, this.modelId, this.nativeEnabled = false, this.enabled = false, this.loading = true, this.failure}): _services = services,_diagnostics = diagnostics,_modelAccounts = modelAccounts,super._();
 
 
  final  List<StartBackendServiceItem> _services;
@@ -775,6 +779,16 @@ class _StartBackendViewState extends StartBackendViewState {
 }
 
 @override final  String? accountId;
+ final  List<ModelSelectionAccount> _modelAccounts;
+@override@JsonKey() List<ModelSelectionAccount> get modelAccounts {
+  if (_modelAccounts is EqualUnmodifiableListView) return _modelAccounts;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_modelAccounts);
+}
+
+@override final  String? modelAccountId;
+@override final  String? modelId;
+@override@JsonKey() final  bool nativeEnabled;
 @override@JsonKey() final  bool enabled;
 @override@JsonKey() final  bool loading;
 @override final  String? failure;
@@ -789,18 +803,18 @@ _$StartBackendViewStateCopyWith<_StartBackendViewState> get copyWith => __$Start
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StartBackendViewState&&const DeepCollectionEquality().equals(other.services, _services)&&const DeepCollectionEquality().equals(other.diagnostics, _diagnostics)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.enabled, enabled) || other.enabled == enabled)&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.failure, failure) || other.failure == failure));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StartBackendViewState&&const DeepCollectionEquality().equals(other.services, _services)&&const DeepCollectionEquality().equals(other.diagnostics, _diagnostics)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&const DeepCollectionEquality().equals(other.modelAccounts, _modelAccounts)&&(identical(other.modelAccountId, modelAccountId) || other.modelAccountId == modelAccountId)&&(identical(other.modelId, modelId) || other.modelId == modelId)&&(identical(other.nativeEnabled, nativeEnabled) || other.nativeEnabled == nativeEnabled)&&(identical(other.enabled, enabled) || other.enabled == enabled)&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.failure, failure) || other.failure == failure));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_services),const DeepCollectionEquality().hash(_diagnostics),accountId,enabled,loading,failure);
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_services),const DeepCollectionEquality().hash(_diagnostics),accountId,const DeepCollectionEquality().hash(_modelAccounts),modelAccountId,modelId,nativeEnabled,enabled,loading,failure);
 }
 
 @override
 String toString() {
-    return 'StartBackendViewState(services: $services, diagnostics: $diagnostics, accountId: $accountId, enabled: $enabled, loading: $loading, failure: $failure)';
+    return 'StartBackendViewState(services: $services, diagnostics: $diagnostics, accountId: $accountId, modelAccounts: $modelAccounts, modelAccountId: $modelAccountId, modelId: $modelId, nativeEnabled: $nativeEnabled, enabled: $enabled, loading: $loading, failure: $failure)';
 }
 
 
@@ -811,7 +825,7 @@ abstract mixin class _$StartBackendViewStateCopyWith<$Res> implements $StartBack
   factory _$StartBackendViewStateCopyWith(_StartBackendViewState value, $Res Function(_StartBackendViewState) _then) = __$StartBackendViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- List<StartBackendServiceItem> services, List<StartBackendDiagnosticItem> diagnostics, String? accountId, bool enabled, bool loading, String? failure
+ List<StartBackendServiceItem> services, List<StartBackendDiagnosticItem> diagnostics, String? accountId, List<ModelSelectionAccount> modelAccounts, String? modelAccountId, String? modelId, bool nativeEnabled, bool enabled, bool loading, String? failure
 });
 
 
@@ -828,12 +842,16 @@ class __$StartBackendViewStateCopyWithImpl<$Res>
 
 /// Create a copy of StartBackendViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? services = null,Object? diagnostics = null,Object? accountId = freezed,Object? enabled = null,Object? loading = null,Object? failure = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? services = null,Object? diagnostics = null,Object? accountId = freezed,Object? modelAccounts = null,Object? modelAccountId = freezed,Object? modelId = freezed,Object? nativeEnabled = null,Object? enabled = null,Object? loading = null,Object? failure = freezed,}) {
   return _then(_StartBackendViewState(
 services: null == services ? _self._services : services // ignore: cast_nullable_to_non_nullable
 as List<StartBackendServiceItem>,diagnostics: null == diagnostics ? _self._diagnostics : diagnostics // ignore: cast_nullable_to_non_nullable
 as List<StartBackendDiagnosticItem>,accountId: freezed == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
-as String?,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
+as String?,modelAccounts: null == modelAccounts ? _self._modelAccounts : modelAccounts // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,modelAccountId: freezed == modelAccountId ? _self.modelAccountId : modelAccountId // ignore: cast_nullable_to_non_nullable
+as String?,modelId: freezed == modelId ? _self.modelId : modelId // ignore: cast_nullable_to_non_nullable
+as String?,nativeEnabled: null == nativeEnabled ? _self.nativeEnabled : nativeEnabled // ignore: cast_nullable_to_non_nullable
+as bool,enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
 as bool,loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,failure: freezed == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
 as String?,

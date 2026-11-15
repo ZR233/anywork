@@ -1827,7 +1827,7 @@ class _EnvironmentHost extends ConsumerWidget {
     final provider = composerViewModelProvider(target);
     final state = ref.watch(provider).value;
     if (state == null) return const SizedBox.shrink();
-    return StartEnvironmentBar(
+    return StartEnvironmentBarView(
       state: state,
       actions: ref.read(provider.notifier),
       enabled: enabled,

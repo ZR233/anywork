@@ -67,9 +67,13 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
     String? failureMessage,
   }) = _AcpStartComposerViewState;
 
-  bool get canEditDraft => !submitting;
+  bool get canEditDraft => true;
 
-  bool get canCreate => accountId != null && serviceEnabled && !submitting;
+  bool get canCreate =>
+      accountId != null &&
+      serviceEnabled &&
+      !submitting &&
+      (text.trim().isNotEmpty || stagedAttachments.isNotEmpty);
 }
 
 enum AcpCapabilityKind {
@@ -368,6 +372,28 @@ abstract class AcpConfigurationViewState with _$AcpConfigurationViewState {
   }) = _AcpConfigurationViewState;
 
   bool get isVisible => controls.isNotEmpty || pending || errorMessage != null;
+
+  List<AcpConfigControlPresentation> get primaryControls => [
+    for (final category in const [
+      AcpConfigCategoryKind.mode,
+      AcpConfigCategoryKind.model,
+      AcpConfigCategoryKind.thoughtLevel,
+    ])
+      ?controls
+          .where(
+            (control) =>
+                control is AcpSelectConfigControl &&
+                    control.category == category ||
+                control is AcpLegacyModeConfigControl &&
+                    category == AcpConfigCategoryKind.mode,
+          )
+          .firstOrNull,
+  ];
+
+  List<AcpConfigControlPresentation> get extraControls {
+    final primary = primaryControls;
+    return controls.where((control) => !primary.contains(control)).toList();
+  }
 }
 
 enum AcpComposerBlockerKind {
@@ -406,6 +432,7 @@ abstract class AcpComposerViewState with _$AcpComposerViewState {
     @Default(false) bool canSend,
     @Default(false) bool isRunning,
     @Default(false) bool canInterrupt,
+    @Default(false) bool interrupting,
     @Default(false) bool canAttach,
     @Default(false) bool submitting,
     AcpComposerBlocker? blocker,

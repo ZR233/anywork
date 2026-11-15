@@ -5925,7 +5925,7 @@ as String?,
 /// @nodoc
 mixin _$AcpComposerViewState {
 
- String get threadId; String get draftText; List<AttachmentDraftView> get attachments; List<ModelInputCapabilityView> get localCapabilities; List<ModelInputCapabilityView> get remoteCapabilities; bool get supportsImagePaste; bool get canSend; bool get isRunning; bool get canInterrupt; bool get canAttach; bool get submitting; AcpComposerBlocker? get blocker; String? get draftError;
+ String get threadId; String get draftText; List<AttachmentDraftView> get attachments; List<ModelInputCapabilityView> get localCapabilities; List<ModelInputCapabilityView> get remoteCapabilities; bool get supportsImagePaste; bool get canSend; bool get isRunning; bool get canInterrupt; bool get interrupting; bool get canAttach; bool get submitting; AcpComposerBlocker? get blocker; String? get draftError;
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -5937,20 +5937,20 @@ $AcpComposerViewStateCopyWith<AcpComposerViewState> get copyWith => _$AcpCompose
 @override
 bool operator ==(Object other) {
   final _this = this as AcpComposerViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpComposerViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.draftText, _this.draftText) || other.draftText == _this.draftText)&&const DeepCollectionEquality().equals(other.attachments, _this.attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _this.localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _this.remoteCapabilities)&&(identical(other.supportsImagePaste, _this.supportsImagePaste) || other.supportsImagePaste == _this.supportsImagePaste)&&(identical(other.canSend, _this.canSend) || other.canSend == _this.canSend)&&(identical(other.isRunning, _this.isRunning) || other.isRunning == _this.isRunning)&&(identical(other.canInterrupt, _this.canInterrupt) || other.canInterrupt == _this.canInterrupt)&&(identical(other.canAttach, _this.canAttach) || other.canAttach == _this.canAttach)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&(identical(other.blocker, _this.blocker) || other.blocker == _this.blocker)&&(identical(other.draftError, _this.draftError) || other.draftError == _this.draftError));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpComposerViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.draftText, _this.draftText) || other.draftText == _this.draftText)&&const DeepCollectionEquality().equals(other.attachments, _this.attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _this.localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _this.remoteCapabilities)&&(identical(other.supportsImagePaste, _this.supportsImagePaste) || other.supportsImagePaste == _this.supportsImagePaste)&&(identical(other.canSend, _this.canSend) || other.canSend == _this.canSend)&&(identical(other.isRunning, _this.isRunning) || other.isRunning == _this.isRunning)&&(identical(other.canInterrupt, _this.canInterrupt) || other.canInterrupt == _this.canInterrupt)&&(identical(other.interrupting, _this.interrupting) || other.interrupting == _this.interrupting)&&(identical(other.canAttach, _this.canAttach) || other.canAttach == _this.canAttach)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&(identical(other.blocker, _this.blocker) || other.blocker == _this.blocker)&&(identical(other.draftError, _this.draftError) || other.draftError == _this.draftError));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpComposerViewState;
-  return Object.hash(runtimeType,_this.threadId,_this.draftText,const DeepCollectionEquality().hash(_this.attachments),const DeepCollectionEquality().hash(_this.localCapabilities),const DeepCollectionEquality().hash(_this.remoteCapabilities),_this.supportsImagePaste,_this.canSend,_this.isRunning,_this.canInterrupt,_this.canAttach,_this.submitting,_this.blocker,_this.draftError);
+  return Object.hash(runtimeType,_this.threadId,_this.draftText,const DeepCollectionEquality().hash(_this.attachments),const DeepCollectionEquality().hash(_this.localCapabilities),const DeepCollectionEquality().hash(_this.remoteCapabilities),_this.supportsImagePaste,_this.canSend,_this.isRunning,_this.canInterrupt,_this.interrupting,_this.canAttach,_this.submitting,_this.blocker,_this.draftError);
 }
 
 @override
 String toString() {
   final _this = this as AcpComposerViewState;
-  return 'AcpComposerViewState(threadId: ${_this.threadId}, draftText: ${_this.draftText}, attachments: ${_this.attachments}, localCapabilities: ${_this.localCapabilities}, remoteCapabilities: ${_this.remoteCapabilities}, supportsImagePaste: ${_this.supportsImagePaste}, canSend: ${_this.canSend}, isRunning: ${_this.isRunning}, canInterrupt: ${_this.canInterrupt}, canAttach: ${_this.canAttach}, submitting: ${_this.submitting}, blocker: ${_this.blocker}, draftError: ${_this.draftError})';
+  return 'AcpComposerViewState(threadId: ${_this.threadId}, draftText: ${_this.draftText}, attachments: ${_this.attachments}, localCapabilities: ${_this.localCapabilities}, remoteCapabilities: ${_this.remoteCapabilities}, supportsImagePaste: ${_this.supportsImagePaste}, canSend: ${_this.canSend}, isRunning: ${_this.isRunning}, canInterrupt: ${_this.canInterrupt}, interrupting: ${_this.interrupting}, canAttach: ${_this.canAttach}, submitting: ${_this.submitting}, blocker: ${_this.blocker}, draftError: ${_this.draftError})';
 }
 
 
@@ -5961,7 +5961,7 @@ abstract mixin class $AcpComposerViewStateCopyWith<$Res>  {
   factory $AcpComposerViewStateCopyWith(AcpComposerViewState value, $Res Function(AcpComposerViewState) _then) = _$AcpComposerViewStateCopyWithImpl;
 @useResult
 $Res call({
- String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
+ String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
 });
 
 
@@ -5978,7 +5978,7 @@ class _$AcpComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
   return _then(AcpComposerViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,draftText: null == draftText ? _self.draftText : draftText // ignore: cast_nullable_to_non_nullable
@@ -5989,6 +5989,7 @@ as List<ModelInputCapabilityView>,supportsImagePaste: null == supportsImagePaste
 as bool,canSend: null == canSend ? _self.canSend : canSend // ignore: cast_nullable_to_non_nullable
 as bool,isRunning: null == isRunning ? _self.isRunning : isRunning // ignore: cast_nullable_to_non_nullable
 as bool,canInterrupt: null == canInterrupt ? _self.canInterrupt : canInterrupt // ignore: cast_nullable_to_non_nullable
+as bool,interrupting: null == interrupting ? _self.interrupting : interrupting // ignore: cast_nullable_to_non_nullable
 as bool,canAttach: null == canAttach ? _self.canAttach : canAttach // ignore: cast_nullable_to_non_nullable
 as bool,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
 as bool,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable
@@ -6090,10 +6091,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState() when $default != null:
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
   return orElse();
 
 }
@@ -6111,10 +6112,10 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)  $default,) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState():
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -6131,10 +6132,10 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState() when $default != null:
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
   return null;
 
 }
@@ -6146,7 +6147,7 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 
 
 class _AcpComposerViewState extends AcpComposerViewState {
-  const _AcpComposerViewState({required this.threadId, this.draftText = '',  List<AttachmentDraftView> attachments = const <AttachmentDraftView>[],  List<ModelInputCapabilityView> localCapabilities = const <ModelInputCapabilityView>[],  List<ModelInputCapabilityView> remoteCapabilities = const <ModelInputCapabilityView>[], this.supportsImagePaste = false, this.canSend = false, this.isRunning = false, this.canInterrupt = false, this.canAttach = false, this.submitting = false, this.blocker, this.draftError}): _attachments = attachments,_localCapabilities = localCapabilities,_remoteCapabilities = remoteCapabilities,super._();
+  const _AcpComposerViewState({required this.threadId, this.draftText = '',  List<AttachmentDraftView> attachments = const <AttachmentDraftView>[],  List<ModelInputCapabilityView> localCapabilities = const <ModelInputCapabilityView>[],  List<ModelInputCapabilityView> remoteCapabilities = const <ModelInputCapabilityView>[], this.supportsImagePaste = false, this.canSend = false, this.isRunning = false, this.canInterrupt = false, this.interrupting = false, this.canAttach = false, this.submitting = false, this.blocker, this.draftError}): _attachments = attachments,_localCapabilities = localCapabilities,_remoteCapabilities = remoteCapabilities,super._();
 
 
 @override final  String threadId;
@@ -6176,6 +6177,7 @@ class _AcpComposerViewState extends AcpComposerViewState {
 @override@JsonKey() final  bool canSend;
 @override@JsonKey() final  bool isRunning;
 @override@JsonKey() final  bool canInterrupt;
+@override@JsonKey() final  bool interrupting;
 @override@JsonKey() final  bool canAttach;
 @override@JsonKey() final  bool submitting;
 @override final  AcpComposerBlocker? blocker;
@@ -6191,18 +6193,18 @@ _$AcpComposerViewStateCopyWith<_AcpComposerViewState> get copyWith => __$AcpComp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpComposerViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.draftText, draftText) || other.draftText == draftText)&&const DeepCollectionEquality().equals(other.attachments, _attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _remoteCapabilities)&&(identical(other.supportsImagePaste, supportsImagePaste) || other.supportsImagePaste == supportsImagePaste)&&(identical(other.canSend, canSend) || other.canSend == canSend)&&(identical(other.isRunning, isRunning) || other.isRunning == isRunning)&&(identical(other.canInterrupt, canInterrupt) || other.canInterrupt == canInterrupt)&&(identical(other.canAttach, canAttach) || other.canAttach == canAttach)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&(identical(other.blocker, blocker) || other.blocker == blocker)&&(identical(other.draftError, draftError) || other.draftError == draftError));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpComposerViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.draftText, draftText) || other.draftText == draftText)&&const DeepCollectionEquality().equals(other.attachments, _attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _remoteCapabilities)&&(identical(other.supportsImagePaste, supportsImagePaste) || other.supportsImagePaste == supportsImagePaste)&&(identical(other.canSend, canSend) || other.canSend == canSend)&&(identical(other.isRunning, isRunning) || other.isRunning == isRunning)&&(identical(other.canInterrupt, canInterrupt) || other.canInterrupt == canInterrupt)&&(identical(other.interrupting, interrupting) || other.interrupting == interrupting)&&(identical(other.canAttach, canAttach) || other.canAttach == canAttach)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&(identical(other.blocker, blocker) || other.blocker == blocker)&&(identical(other.draftError, draftError) || other.draftError == draftError));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,threadId,draftText,const DeepCollectionEquality().hash(_attachments),const DeepCollectionEquality().hash(_localCapabilities),const DeepCollectionEquality().hash(_remoteCapabilities),supportsImagePaste,canSend,isRunning,canInterrupt,canAttach,submitting,blocker,draftError);
+    return Object.hash(runtimeType,threadId,draftText,const DeepCollectionEquality().hash(_attachments),const DeepCollectionEquality().hash(_localCapabilities),const DeepCollectionEquality().hash(_remoteCapabilities),supportsImagePaste,canSend,isRunning,canInterrupt,interrupting,canAttach,submitting,blocker,draftError);
 }
 
 @override
 String toString() {
-    return 'AcpComposerViewState(threadId: $threadId, draftText: $draftText, attachments: $attachments, localCapabilities: $localCapabilities, remoteCapabilities: $remoteCapabilities, supportsImagePaste: $supportsImagePaste, canSend: $canSend, isRunning: $isRunning, canInterrupt: $canInterrupt, canAttach: $canAttach, submitting: $submitting, blocker: $blocker, draftError: $draftError)';
+    return 'AcpComposerViewState(threadId: $threadId, draftText: $draftText, attachments: $attachments, localCapabilities: $localCapabilities, remoteCapabilities: $remoteCapabilities, supportsImagePaste: $supportsImagePaste, canSend: $canSend, isRunning: $isRunning, canInterrupt: $canInterrupt, interrupting: $interrupting, canAttach: $canAttach, submitting: $submitting, blocker: $blocker, draftError: $draftError)';
 }
 
 
@@ -6213,7 +6215,7 @@ abstract mixin class _$AcpComposerViewStateCopyWith<$Res> implements $AcpCompose
   factory _$AcpComposerViewStateCopyWith(_AcpComposerViewState value, $Res Function(_AcpComposerViewState) _then) = __$AcpComposerViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
+ String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
 });
 
 
@@ -6230,7 +6232,7 @@ class __$AcpComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
   return _then(_AcpComposerViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,draftText: null == draftText ? _self.draftText : draftText // ignore: cast_nullable_to_non_nullable
@@ -6241,6 +6243,7 @@ as List<ModelInputCapabilityView>,supportsImagePaste: null == supportsImagePaste
 as bool,canSend: null == canSend ? _self.canSend : canSend // ignore: cast_nullable_to_non_nullable
 as bool,isRunning: null == isRunning ? _self.isRunning : isRunning // ignore: cast_nullable_to_non_nullable
 as bool,canInterrupt: null == canInterrupt ? _self.canInterrupt : canInterrupt // ignore: cast_nullable_to_non_nullable
+as bool,interrupting: null == interrupting ? _self.interrupting : interrupting // ignore: cast_nullable_to_non_nullable
 as bool,canAttach: null == canAttach ? _self.canAttach : canAttach // ignore: cast_nullable_to_non_nullable
 as bool,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
 as bool,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable

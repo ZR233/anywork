@@ -541,6 +541,10 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
           resolved ==
               'code/anywork/lib/src/features/conversation/composer/views/composer_dock_view.dart' ||
           resolved ==
+              'code/anywork/lib/src/features/conversation/composer/state/start_backend_view_state.dart' ||
+          resolved ==
+              'code/anywork/lib/src/features/conversation/composer/views/start_model_selector_view.dart' ||
+          resolved ==
               'code/anywork/lib/src/features/conversation/composer/widgets/composer_attachments.dart' ||
           resolved ==
               'code/anywork/lib/src/features/conversation/composer/widgets/multiline_enter_shortcuts.dart' ||
