@@ -3,7 +3,30 @@ use std::{future::Future, sync::Arc};
 use futures::future::BoxFuture;
 use tokio::sync::watch;
 
-use crate::{CloseError, ResourceId, scope::Scope};
+use tokio_util::sync::CancellationToken;
+
+use crate::{
+    AttemptId, CloseError, Phase, ResourceId, ResourceInfo, registration::Cleanup, scope::Scope,
+};
+
+pub(crate) enum EntryKind<E> {
+    Async {
+        token: CancellationToken,
+        resource: Option<Arc<dyn ErasedResource<E>>>,
+        attempt: Option<Arc<Attempt<E>>>,
+        close_requested: bool,
+    },
+    Sync {
+        cleanup: Option<Cleanup>,
+    },
+}
+
+pub(crate) struct Entry<E> {
+    pub(crate) info: ResourceInfo,
+    pub(crate) phase: Phase,
+    pub(crate) attempt_id: AttemptId,
+    pub(crate) kind: EntryKind<E>,
+}
 
 /// 能够报告真实清理结果的资源。
 ///

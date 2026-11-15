@@ -18,12 +18,11 @@ use crate::{
     AttemptId, CloseError, CloseReport, FailedResource, Managed, ManagedResource, OpenError,
     PendingResource, Phase, Registration, RegistrationError, ResourceId, ResourceInfo, ScopeClosed,
     ScopeId,
-    member::{Attempt, ErasedResource},
-    registration,
+    member::{Attempt, Entry, EntryKind, ErasedResource},
+    registration::{self, Cleanup},
     worker::{self, WorkerGuard},
 };
 
-type Cleanup = Box<dyn FnOnce() + Send + 'static>;
 type CleanupAttempt<E> = (AttemptId, Arc<Attempt<E>>, Arc<dyn ErasedResource<E>>);
 
 struct OpenTicket<R: ManagedResource> {
@@ -38,31 +37,12 @@ enum ScopePhase {
     Closed,
 }
 
-pub(crate) enum EntryKind<E> {
-    Async {
-        token: CancellationToken,
-        resource: Option<Arc<dyn ErasedResource<E>>>,
-        attempt: Option<Arc<Attempt<E>>>,
-        close_requested: bool,
-    },
-    Sync {
-        cleanup: Option<Cleanup>,
-    },
-}
-
-pub(crate) struct Entry<E> {
-    info: ResourceInfo,
-    phase: Phase,
-    attempt_id: AttemptId,
-    kind: EntryKind<E>,
-}
-
-struct State<E: Send + Sync + 'static> {
+pub(crate) struct State<E: Send + Sync + 'static> {
     phase: ScopePhase,
     next_resource: u64,
-    entries: BTreeMap<ResourceId, Entry<E>>,
-    diagnostics: Vec<FailedResource<E>>,
-    children: Vec<Arc<Scope<E>>>,
+    pub(crate) entries: BTreeMap<ResourceId, Entry<E>>,
+    pub(crate) diagnostics: Vec<FailedResource<E>>,
+    pub(crate) children: Vec<Arc<Scope<E>>>,
 }
 
 struct Tree {
@@ -87,7 +67,7 @@ pub(crate) struct Scope<E: Send + Sync + 'static> {
 }
 
 impl<E: Send + Sync + 'static> Scope<E> {
-    fn state(&self) -> MutexGuard<'_, State<E>> {
+    pub(crate) fn state(&self) -> MutexGuard<'_, State<E>> {
         self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -529,60 +509,6 @@ impl<E: Send + Sync + 'static> Scope<E> {
         }
         self.changed();
         self.retire_if_empty();
-    }
-
-    fn run_registration(&self, id: ResourceId) {
-        let mut state = self.state();
-        let Some(entry) = state.entries.get_mut(&id) else {
-            return;
-        };
-        let EntryKind::Sync { cleanup } = &mut entry.kind else {
-            return;
-        };
-        let Some(cleanup) = cleanup.take() else {
-            return;
-        };
-        entry.phase = Phase::Closing;
-        drop(state);
-        self.changed();
-        let result = catch_unwind(AssertUnwindSafe(cleanup));
-        let mut state = self.state();
-        if let Some(entry) = state.entries.remove(&id)
-            && result.is_err()
-        {
-            state.diagnostics.push(FailedResource {
-                resource: entry.info,
-                attempt_id: AttemptId(1),
-                phase: Phase::Closing,
-                error: CloseError::Panicked,
-                retained: false,
-            });
-        }
-        drop(state);
-        self.changed();
-        self.retire_if_empty();
-    }
-
-    fn run_callbacks(&self) {
-        let (ids, children) = {
-            let state = self.state();
-            (
-                state
-                    .entries
-                    .iter()
-                    .filter_map(|(&id, entry)| {
-                        matches!(entry.kind, EntryKind::Sync { .. }).then_some(id)
-                    })
-                    .collect::<Vec<_>>(),
-                state.children.clone(),
-            )
-        };
-        for id in ids {
-            self.run_registration(id);
-        }
-        for child in children {
-            child.run_callbacks();
-        }
     }
 
     pub(crate) fn retire_if_empty(&self) {
