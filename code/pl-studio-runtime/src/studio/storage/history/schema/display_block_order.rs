@@ -4,6 +4,8 @@ use crate::studio::storage::history::conversation::display::validate_header;
 use crate::studio::thread_projection::presentation::DisplayHeader;
 
 pub(super) struct DisplayBlockOrder;
+const MEMBER_COLUMNS: &str = "block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata";
+
 impl MigrationName for DisplayBlockOrder {
     fn name(&self) -> &str {
         DISPLAY_BLOCK_ORDER
@@ -108,7 +110,7 @@ async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
     let mut block = String::new();
     let mut member = 0i64;
     loop {
-        let rows=db.query_all_raw(statement("SELECT * FROM conversation_display_members WHERE (block_id,member_order)>(?,?) ORDER BY block_id,member_order LIMIT 128",vec![block.clone().into(),member.into()])).await?;
+        let rows=db.query_all_raw(statement(&format!("SELECT {MEMBER_COLUMNS} FROM conversation_display_members WHERE (block_id,member_order)>(?,?) ORDER BY block_id,member_order LIMIT 128"),vec![block.clone().into(),member.into()])).await?;
         if rows.is_empty() {
             break;
         }
@@ -120,7 +122,7 @@ async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
         let last = rows.last().expect("nonempty page");
         let next_block: String = last.try_get("", "block_id")?;
         let next_member: i64 = last.try_get("", "member_order")?;
-        db.execute_raw(statement("INSERT INTO conversation_display_members_v23 SELECT * FROM conversation_display_members WHERE (block_id,member_order)>(?,?) AND (block_id,member_order)<=(?,?)",vec![block.into(),member.into(),next_block.clone().into(),next_member.into()])).await?;
+        db.execute_raw(statement(&format!("INSERT INTO conversation_display_members_v23({MEMBER_COLUMNS}) SELECT {MEMBER_COLUMNS} FROM conversation_display_members WHERE (block_id,member_order)>(?,?) AND (block_id,member_order)<=(?,?)"),vec![block.into(),member.into(),next_block.clone().into(),next_member.into()])).await?;
         block = next_block;
         member = next_member;
     }
@@ -133,7 +135,7 @@ async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
         (
             "conversation_display_members",
             "conversation_display_members_v23",
-            "*",
+            MEMBER_COLUMNS,
         ),
     ] {
         for (left, right) in [(old, new), (new, old)] {
@@ -290,6 +292,13 @@ mod tests {
         };
         migrator.up(&db, Some(1)).await?;
         assert_eq!(version(&db).await?, 22);
+        // Published older snapshots gained this column through ALTER TABLE, so its physical
+        // position is last even after their content has been upgraded to schema22.
+        db.execute_unprepared(
+            "ALTER TABLE conversation_display_members DROP COLUMN association_key;
+             ALTER TABLE conversation_display_members ADD COLUMN association_key TEXT NOT NULL DEFAULT '';",
+        )
+        .await?;
         for seq in 1..=2i64 {
             db.execute_raw(statement("INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal) VALUES(?,?,'conversation',NULL,?,?,NULL,NULL)",vec![seq.into(),format!("original-{seq}").into(),vec![0u8,255,seq as u8].into(),conversation::tests::metadata(&format!("original-{seq}")).to_vec().into()])).await?;
         }
