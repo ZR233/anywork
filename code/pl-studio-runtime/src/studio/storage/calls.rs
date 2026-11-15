@@ -2152,6 +2152,11 @@ mod storage_fault_tests {
         expected.extend_from_slice(&incomplete);
         tokio::fs::write(&log_path, on_disk).await?;
 
+        // Keep a second, inactive dispatch alive while capturing. Otherwise
+        // tracing-core 0.1.36 can cache Interest::never when another test first
+        // registers this callsite without a subscriber (tokio-rs/tracing#3611).
+        let _callsite_interest_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new());
         let captured = CapturedCallLog::default();
         let dispatch = tracing::Dispatch::new(captured.clone());
         let _capture = tracing::dispatcher::set_default(&dispatch);
@@ -2316,6 +2321,9 @@ mod storage_fault_tests {
         let log_dir = temp.path().join("logs");
         tokio::fs::remove_dir_all(&log_dir).await?;
 
+        // See the scoped-subscriber workaround in the malformed-record test above.
+        let _callsite_interest_guard =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new());
         let captured = CapturedCallLog::default();
         let dispatch = tracing::Dispatch::new(captured.clone());
         let _capture = tracing::dispatcher::set_default(&dispatch);
