@@ -444,6 +444,7 @@ impl LiveProjection {
     pub(super) async fn complete_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
+        state: &ThreadSnapshot,
         items: &[ExecutionItem],
         drafts: &mut [ChatDraft],
         changes: &mut Changes,
@@ -456,14 +457,29 @@ impl LiveProjection {
                 )
         }) {
             if let ExecutionShape::Tool(tool) = item.state() {
-                if tool.invocation().task_id().is_some()
-                    && self
-                        .completion_exists(&super::super::order::tool_background_started_id(
-                            tool.invocation().tool_call_id(),
-                        ))
-                        .await?
-                {
-                    continue;
+                if let Some(task_id) = tool.invocation().task_id() {
+                    let task = effect
+                        .tasks
+                        .iter()
+                        .find(|task| task.id == task_id)
+                        .or_else(|| state.tasks.get(task_id))
+                        .or_else(|| state.terminal_tasks.iter().find(|task| task.id == task_id))
+                        .filter(|task| {
+                            task.call_id == tool.invocation().tool_call_id()
+                                && task.tool_id == tool.invocation().name()
+                                && task.turn_id == item.turn_id
+                        });
+                    let known_unacknowledged =
+                        task.is_some_and(|task| task.acknowledgement.is_none());
+                    if !known_unacknowledged
+                        && self
+                            .completion_exists(&super::super::order::tool_background_started_id(
+                                tool.invocation().tool_call_id(),
+                            ))
+                            .await?
+                    {
+                        continue;
+                    }
                 }
                 if !self.previews.contains_key(&item.id) {
                     let mut fields =

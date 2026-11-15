@@ -1284,6 +1284,8 @@ mod observations;
 mod provenance;
 
 pub(in crate::studio) struct LiveProjection {
+    #[cfg(test)]
+    pub(in crate::studio) fail_after_project: bool,
     atom_starts: BTreeMap<String, pl_protocol::ChatAtom>,
     source_states: BTreeMap<pl_protocol::ChatSourceId, pl_protocol::ChatSourceState>,
     provenance_restored: bool,
@@ -1390,6 +1392,8 @@ impl LiveProjection {
     /// observation, once, before any commit is projected.
     pub(in crate::studio) fn new() -> Self {
         Self {
+            #[cfg(test)]
+            fail_after_project: false,
             atom_starts: BTreeMap::new(),
             source_states: BTreeMap::new(),
             provenance_restored: false,
@@ -1761,8 +1765,20 @@ impl LiveProjection {
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
-        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)
-            .await?;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_after_project) {
+            return Err(ProjectionError::History(
+                "injected failure after materialization".into(),
+            ));
+        }
+        self.complete_provenance(
+            effect,
+            state,
+            &items,
+            &mut completion_drafts,
+            &mut provenance,
+        )
+        .await?;
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
@@ -1866,8 +1882,14 @@ impl LiveProjection {
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
-        self.complete_provenance(effect, &items, &mut completion_drafts, &mut provenance)
-            .await?;
+        self.complete_provenance(
+            effect,
+            state,
+            &items,
+            &mut completion_drafts,
+            &mut provenance,
+        )
+        .await?;
         self.retire_effect_source(effect)?;
         let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
         let display_facts = provenance
@@ -2315,56 +2337,35 @@ impl LiveProjection {
             }
         }
 
-        // An acknowledgement is an explicit Core context fact. Neither a running task nor a
-        // task_id alone proves that a background receipt was actually returned.
-        if let Some(context) = &effect.context {
-            let (revision, records) = match context {
-                pl_core::thread::journal::ContextChange::Append { revision, records } => {
-                    (*revision, records.as_ref())
-                }
-                pl_core::thread::journal::ContextChange::Replace(snapshot) => {
-                    (snapshot.revision, snapshot.records.as_ref())
-                }
-            };
-            for task in effect.tasks.iter() {
-                let Some(ack) = &task.acknowledgement else {
-                    continue;
-                };
-                let id = super::order::tool_background_started_id(&task.call_id);
-                // Use the same durable-filtered candidates as metadata materialization.
-                // A durable completion may have no resident index entry after pruning;
-                // checking only is_sealed again would recreate an unordered draft.
-                if ack.context_revision != revision
-                    || !background_ids.iter().any(|(_, candidate)| candidate == &id)
-                {
-                    continue;
-                }
-                let receipt = records.iter().find(|record| {
-                    record.id == ack.record_id
-                        && record.turn_id.as_deref() == Some(task.turn_id.as_str())
-                        && matches!(&record.source, pl_core::context::ContextSource::ToolResult {
-                            call_id, tool_id
-                        } if call_id == &task.call_id && tool_id == &task.tool_id)
-                }).ok_or_else(|| ProjectionError::History(
-                    "background acknowledgement does not match its committed context fact".into()
-                ))?;
-                let item = items
-                    .iter()
-                    .find(|item| item.id == super::order::tool_id(&task.call_id))
-                    .ok_or_else(|| ProjectionError::MissingDurableToolCall(task.call_id.clone()))?;
-                let draft = background_started_draft(
-                    item,
-                    &task.id,
-                    &super::content::text_content(&receipt.content),
-                    effect.sequence,
-                    effect.committed_at,
-                    self.current.database_id().ok_or_else(|| {
-                        ProjectionError::History("missing database identity".into())
-                    })?,
-                )
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-                drafts.push(draft);
+        // Share the exact receipt/identity matching rule with fresh admission. Replace still
+        // materializes restored facts, but never grants a fresh reservation.
+        for (task, receipt) in super::order::background_receipts(effect) {
+            let id = super::order::tool_background_started_id(&task.call_id);
+            if !background_ids.iter().any(|(_, candidate)| candidate == &id) {
+                continue;
             }
+            let receipt = receipt.ok_or_else(|| {
+                ProjectionError::History(
+                    "background acknowledgement does not match its unique committed context fact"
+                        .into(),
+                )
+            })?;
+            let item = items
+                .iter()
+                .find(|item| item.id == super::order::tool_id(&task.call_id))
+                .ok_or_else(|| ProjectionError::MissingDurableToolCall(task.call_id.clone()))?;
+            let draft = background_started_draft(
+                item,
+                &task.id,
+                &super::content::text_content(&receipt.content),
+                effect.sequence,
+                effect.committed_at,
+                self.current
+                    .database_id()
+                    .ok_or_else(|| ProjectionError::History("missing database identity".into()))?,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            drafts.push(draft);
         }
         for item in items {
             if crate::studio::runtime::chat_item::atom(item).kind

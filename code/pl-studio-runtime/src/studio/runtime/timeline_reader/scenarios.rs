@@ -1649,6 +1649,35 @@ mod production {
                     .reader()
                     .load_timeline_older(&before, demand(1))
                     .await?;
+                let bytes = serde_json::to_vec(&older)?.len();
+                let cursor = cold_feed.after.clone();
+                let error = cold_feed
+                    .reader()
+                    .load_timeline_older(
+                        &before,
+                        ReadDemand {
+                            max_items: 1,
+                            max_bytes: (bytes - 1) as u32,
+                        },
+                    )
+                    .await
+                    .expect_err("one required head must not become empty EOF");
+                assert!(matches!(
+                    error.downcast_ref::<ChatError>(),
+                    Some(ChatError::InvalidDemand(_))
+                ));
+                let retry = cold_feed
+                    .reader()
+                    .load_timeline_older(
+                        &before,
+                        ReadDemand {
+                            max_items: 1,
+                            max_bytes: bytes as u32,
+                        },
+                    )
+                    .await?;
+                assert_eq!(retry, older);
+                assert_eq!(cold_feed.after, cursor);
                 assert_eq!(older.presentation_version, PRESENTATION_VERSION);
                 assert_eq!(older.ceiling, 4);
                 assert_eq!(&older.blocks[0], expected);
@@ -1657,6 +1686,52 @@ mod production {
                 } else {
                     assert!(older.before.is_none());
                 }
+            }
+            let empty_before = cold_feed
+                .reader()
+                .presentation_tokens()
+                .await?
+                .before(4, 1)?;
+            let empty = cold_feed
+                .reader()
+                .load_timeline_older(&empty_before, demand(1))
+                .await?;
+            assert!(empty.blocks.is_empty() && empty.before.is_none());
+            let bytes = serde_json::to_vec(&empty)?.len();
+            let cursor = cold_feed.after.clone();
+            let error = cold_feed
+                .reader()
+                .load_timeline_older(
+                    &empty_before,
+                    ReadDemand {
+                        max_items: 1,
+                        max_bytes: (bytes - 1) as u32,
+                    },
+                )
+                .await
+                .expect_err("empty envelope also has a byte budget");
+            assert!(matches!(
+                error.downcast_ref::<ChatError>(),
+                Some(ChatError::InvalidDemand(_))
+            ));
+            assert_eq!(
+                cold_feed
+                    .reader()
+                    .load_timeline_older(
+                        &empty_before,
+                        ReadDemand {
+                            max_items: 1,
+                            max_bytes: bytes as u32
+                        }
+                    )
+                    .await?,
+                empty
+            );
+            assert_eq!(cold_feed.after, cursor);
+            {
+                let next = cold_feed.inner.next(cursor);
+                tokio::pin!(next);
+                assert!(futures::poll!(&mut next).is_pending());
             }
             let mut cold_members = cold_feed
                 .reader()

@@ -546,6 +546,39 @@ pub(in crate::studio) mod record_read_tests {
     }
 
     #[tokio::test]
+    async fn sampler_excludes_cached_statement_warmup_for_vm_and_fullscan() -> Result<()> {
+        let (_dir, db) = super::tests::fixture().await?;
+        db.execute_unprepared("CREATE TABLE sampler_scan(value INTEGER); INSERT INTO sampler_scan VALUES(1),(2),(3),(4),(5),(6),(7),(8)").await?;
+        let sql = "SELECT sum(value) FROM sampler_scan";
+        let sample = sqlite_work::Sampler::all_statements(&db).await?;
+        db.query_all_raw(statement(sql, vec![])).await?;
+        let baseline = sample.finish(&db).await?;
+        assert_eq!(baseline.statements, 1);
+        assert!(baseline.vm_steps > 0 && baseline.fullscan_steps > 0);
+        for _ in 0..3 {
+            db.query_all_raw(statement(sql, vec![])).await?;
+        }
+        let sample = sqlite_work::Sampler::all_statements(&db).await?;
+        for _ in 0..2 {
+            db.query_all_raw(statement(sql, vec![])).await?;
+        }
+        let warm = sample.finish(&db).await?;
+        assert_eq!(warm.statements, 2);
+        assert_eq!(warm.vm_steps, baseline.vm_steps * 2);
+        assert_eq!(warm.fullscan_steps, baseline.fullscan_steps * 2);
+        let sample = sqlite_work::Sampler::all_statements(&db).await?;
+        db.query_all_raw(statement(
+            &format!("{sql} -- new prepared statement"),
+            vec![],
+        ))
+        .await?;
+        let new = sample.finish(&db).await?;
+        assert_eq!(new.vm_steps, baseline.vm_steps);
+        assert_eq!(new.fullscan_steps, baseline.fullscan_steps);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn explicit_item_detail_obeys_cut_and_budget_without_reading_contents() -> Result<()> {
         let (_dir, db) = super::tests::fixture().await?;
         let one = record(1, atom("one", ChatAtomKind::ToolCall, "F"));
@@ -793,39 +826,7 @@ pub(in crate::studio) mod record_read_tests {
                 {
                     let mut connection = pool.acquire().await?;
                     let mut handle = connection.lock_handle().await?;
-                    let raw = handle.as_raw_handle().as_ptr();
-                    let registration = Registration {
-                        handle_address: raw as usize,
-                        state: state.clone(),
-                    };
-                    // Install ownership before publishing any context pointer to SQLite. There is no
-                    // await between the three registrations, so partial installation is synchronous.
-                    handle.set_progress_handler(1_000_000, move || {
-                        registration.interrupt_at_budget()
-                    });
-                    // SAFETY: raw is protected by LockedSqliteHandle. Arc::as_ptr is aligned and stable;
-                    // the driver-owned registration above retains its strong reference until it removes
-                    // the callbacks. Callbacks access only shared atomics, not a mutable State reference.
-                    // This fresh, private fixture has no previous trace/authorizer/progress subscriber.
-                    let (trace, authorizer) = unsafe {
-                        let context = Arc::as_ptr(&state).cast_mut().cast::<c_void>();
-                        (
-                            libsqlite3_sys::sqlite3_trace_v2(
-                                raw,
-                                (libsqlite3_sys::SQLITE_TRACE_PROFILE
-                                    | libsqlite3_sys::SQLITE_TRACE_ROW)
-                                    as c_uint,
-                                Some(trace_callback),
-                                context,
-                            ),
-                            libsqlite3_sys::sqlite3_set_authorizer(raw, Some(authorize), context),
-                        )
-                    };
-                    if trace != libsqlite3_sys::SQLITE_OK || authorizer != libsqlite3_sys::SQLITE_OK
-                    {
-                        handle.remove_progress_handler();
-                        anyhow::bail!("native sampling registration failed: {trace}/{authorizer}");
-                    }
+                    Self::install_locked(&mut handle, &state)?;
                 }
                 let sampler = Self { state };
                 if matches!(scope, Scope::AllStatements) {
@@ -850,6 +851,71 @@ pub(in crate::studio) mod record_read_tests {
                 }
                 sampler.state.denied_reads.store(0, Relaxed);
                 Ok(sampler)
+            }
+
+            fn install_locked(
+                handle: &mut sqlx::sqlite::LockedSqliteHandle<'_>,
+                state: &Arc<State>,
+            ) -> Result<()> {
+                let raw = handle.as_raw_handle().as_ptr();
+                // SAFETY: SQLx owns raw and every statement returned by sqlite3_next_stmt.
+                // LockedSqliteHandle excludes its worker and all native calls for both passes
+                // and registration below. These borrowed pointers never escape the lock; only
+                // counters are reset, never SQLx's execution state or statement ownership.
+                unsafe {
+                    let mut stmt = libsqlite3_sys::sqlite3_next_stmt(raw, std::ptr::null_mut());
+                    while !stmt.is_null() {
+                        ensure!(
+                            libsqlite3_sys::sqlite3_stmt_busy(stmt) == 0,
+                            "cannot install SQLite sampler while a statement is busy"
+                        );
+                        stmt = libsqlite3_sys::sqlite3_next_stmt(raw, stmt);
+                    }
+                    let mut stmt = libsqlite3_sys::sqlite3_next_stmt(raw, std::ptr::null_mut());
+                    while !stmt.is_null() {
+                        libsqlite3_sys::sqlite3_stmt_status(
+                            stmt,
+                            libsqlite3_sys::SQLITE_STMTSTATUS_VM_STEP,
+                            1,
+                        );
+                        libsqlite3_sys::sqlite3_stmt_status(
+                            stmt,
+                            libsqlite3_sys::SQLITE_STMTSTATUS_FULLSCAN_STEP,
+                            1,
+                        );
+                        stmt = libsqlite3_sys::sqlite3_next_stmt(raw, stmt);
+                    }
+                }
+                let registration = Registration {
+                    handle_address: raw as usize,
+                    state: state.clone(),
+                };
+                // Install ownership before publishing any context pointer to SQLite. There is no
+                // await between the three registrations, so partial installation is synchronous.
+                handle.set_progress_handler(1_000_000, move || registration.interrupt_at_budget());
+                // SAFETY: raw is protected by LockedSqliteHandle. Arc::as_ptr is aligned and stable;
+                // the driver-owned registration above retains its strong reference until it removes
+                // the callbacks. Callbacks access only shared atomics, not a mutable State reference.
+                // This fresh, private fixture has no previous trace/authorizer/progress subscriber.
+                let (trace, authorizer) = unsafe {
+                    let context = Arc::as_ptr(state).cast_mut().cast::<c_void>();
+                    (
+                        libsqlite3_sys::sqlite3_trace_v2(
+                            raw,
+                            (libsqlite3_sys::SQLITE_TRACE_PROFILE
+                                | libsqlite3_sys::SQLITE_TRACE_ROW)
+                                as c_uint,
+                            Some(trace_callback),
+                            context,
+                        ),
+                        libsqlite3_sys::sqlite3_set_authorizer(raw, Some(authorize), context),
+                    )
+                };
+                if trace != libsqlite3_sys::SQLITE_OK || authorizer != libsqlite3_sys::SQLITE_OK {
+                    handle.remove_progress_handler();
+                    anyhow::bail!("native sampling registration failed: {trace}/{authorizer}");
+                }
+                Ok(())
             }
 
             pub fn lifetime(&self) -> Lifetime {
@@ -955,6 +1021,73 @@ pub(in crate::studio) mod record_read_tests {
             } else {
                 Kind::Unexpected
             }
+        }
+
+        #[tokio::test]
+        async fn busy_install_rejects_without_interruption_or_registration() -> Result<()> {
+            let (_dir, db) = super::super::tests::fixture().await?;
+            let mut connection = db.get_sqlite_connection_pool().acquire().await?;
+            let mut handle = connection.lock_handle().await?;
+            struct Statement(*mut libsqlite3_sys::sqlite3_stmt);
+            impl Drop for Statement {
+                fn drop(&mut self) {
+                    // SAFETY: this test owns the statement, declared after the exclusive handle;
+                    // all normal/error paths finalize it before releasing that lock or connection.
+                    unsafe {
+                        libsqlite3_sys::sqlite3_finalize(self.0);
+                    }
+                }
+            }
+            let state = Arc::new(State {
+                scope: Scope::AllStatements,
+                ..Default::default()
+            });
+            {
+                let mut stmt = Statement(std::ptr::null_mut());
+                // SAFETY: the connection is live and exclusively locked, SQL is NUL-terminated,
+                // and stmt is a valid output slot owned by the guard above until finalization.
+                unsafe {
+                    assert_eq!(
+                        libsqlite3_sys::sqlite3_prepare_v2(
+                            handle.as_raw_handle().as_ptr(),
+                            c"SELECT 1 UNION ALL SELECT 2".as_ptr(),
+                            -1,
+                            &mut stmt.0,
+                            std::ptr::null_mut()
+                        ),
+                        libsqlite3_sys::SQLITE_OK
+                    );
+                    assert_eq!(
+                        libsqlite3_sys::sqlite3_step(stmt.0),
+                        libsqlite3_sys::SQLITE_ROW
+                    );
+                    let error = Sampler::install_locked(&mut handle, &state)
+                        .expect_err("busy statement must reject installation");
+                    assert!(error.to_string().contains("busy"));
+                    assert_eq!(
+                        Arc::strong_count(&state),
+                        1,
+                        "no driver registration may remain"
+                    );
+                    assert_eq!(
+                        libsqlite3_sys::sqlite3_step(stmt.0),
+                        libsqlite3_sys::SQLITE_ROW
+                    );
+                    assert_eq!(libsqlite3_sys::sqlite3_column_int(stmt.0, 0), 2);
+                    assert_eq!(
+                        libsqlite3_sys::sqlite3_step(stmt.0),
+                        libsqlite3_sys::SQLITE_DONE
+                    );
+                }
+                assert_eq!(state.statements.load(Relaxed), 0);
+            }
+            Sampler::install_locked(&mut handle, &state)?;
+            drop(handle);
+            drop(connection);
+            db.query_all_raw(statement("SELECT 3", vec![])).await?;
+            let sample = Sampler { state };
+            assert_eq!(sample.finish(&db).await?.statements, 1);
+            Ok(())
         }
 
         unsafe extern "C" fn trace_callback(
