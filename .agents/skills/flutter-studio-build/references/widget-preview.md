@@ -37,6 +37,9 @@ flutter widget-preview start --headless --no-devtools
 - 启动准备完成后，全部 CLI 参数及终端输入输出直接交给 Flutter，xtask 不处理 DTD 消息或 reload。也可以进入 `code/anywork_previews` 直接执行
   `flutter widget-preview start --headless --no-devtools`；更新依赖或清理 scaffold 后重新准备一次。
   通用 `--packages` 不解决该边界：当前 SDK 的预览编译固定读取 scaffold 自己的 package config。
+- 为启动和首帧渲染设置有界预算，以本次可响应页面和实际组件为就绪证据。长驻命令在编译失败后
+  仍可能存活，进程存在或编译器有 CPU 活动不能代证编译继续推进；没有页面时检查同次完整
+  stdout/stderr，必要时先安全收束以取得终态日志，不延长等待或重复启动掩盖原始编译错误。
 - 出现 DTD 断连或 live updates 暂停警告时，先区分 daemon 连接与预览清单查询是否超时，
   不把警告文案直接当作进程已死。保留原 stdout/stderr；没有时间戳的双流不能倒推出先后因果。
   按当前 SDK 官方诊断参数有界取证，日志放本会话 scratch，不默认切换 legacy、延长超时或反复清缓存。

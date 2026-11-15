@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../view_models/acp_start_composer_view_model.dart';
 import '../views/acp_start_composer_view.dart';
+import '../../composer/widgets/start_model_selector.dart';
 
 /// Thin Riverpod connector binding [AcpStartComposerViewModel] to the pure
 /// [AcpStartComposerView] start-page creation card.
@@ -19,8 +20,11 @@ class AcpStartComposerConnector extends ConsumerWidget {
     final state = ref.watch(provider);
     return AcpStartComposerView(
       state: state,
+      modelSelector: StartModelSelector(workspaceId: workspaceId),
       onDraftChanged: ref.read(provider.notifier).updateDraft,
       onSubmit: () => unawaited(ref.read(provider.notifier).submit()),
+      onRemoveAttachment: (id) =>
+          unawaited(ref.read(provider.notifier).removeAttachment(id)),
     );
   }
 }

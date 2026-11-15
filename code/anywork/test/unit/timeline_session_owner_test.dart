@@ -30,6 +30,19 @@ TailSnapshot _tail(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('signed-64 maximum display order retains its full precision', () async {
+    final maximum = int.parse('9223372036854775807');
+    final h = _Harness();
+    h.transport.initial = displayBatch(
+      [displayWork('signed-maximum', maximum)],
+      through: maximum,
+      live: _tail(maximum),
+    );
+    await h.open();
+    expect(h.readerThrough, maximum);
+    expect(h.lease.controller.messages.single.id, 'signed-maximum');
+  });
+
   test(
     'selection opens no reader until an actual viewport declares its demand',
     () async {

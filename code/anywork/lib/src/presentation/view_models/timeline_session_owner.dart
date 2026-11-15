@@ -733,7 +733,7 @@ final class TimelineSessionOwner {
         update.next != update.after &&
         update.next.value.isNotEmpty &&
         history.throughOrder >= 0 &&
-        history.throughOrder <= 0x7fffffffffffffff &&
+        history.throughOrder.bitLength <= 63 &&
         (isSet
             ? read.through == null &&
                   history.fromOrder == null &&
@@ -776,7 +776,7 @@ final class TimelineSessionOwner {
               block.id.isNotEmpty &&
               ids.add(block.id) &&
               block.blockOrder > last &&
-              block.blockOrder <= 0x7fffffffffffffff;
+              block.blockOrder.bitLength <= 63;
           last = block.blockOrder;
           if (block.state == DisplayBlockState.open &&
               block.body is WorkDisplayBlock) {
@@ -1161,7 +1161,7 @@ final class TimelineSessionOwner {
               !ids.add(block.id) ||
               block.blockOrder <= order ||
               block.blockOrder > page.ceiling ||
-              page.ceiling > 0x7fffffffffffffff) {
+              page.ceiling.bitLength > 63) {
             throw const ConversationContinuityError('Invalid history range');
           }
           order = block.blockOrder;

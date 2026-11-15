@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
-import 'package:anywork/src/features/conversation/composer/widgets/start_backend_selector.dart';
+import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -246,12 +246,12 @@ void main() {
         sshAlias: remote?.alias,
       );
       await scene.until(
-        () => find.byType(StartBackendSelector).evaluate().length == 1,
-        'project start page exposes backend selector',
+        () => find.byType(StartModelSelector).evaluate().length == 1,
+        'project start page exposes the unified model selector',
       );
       await tester.tap(
         find.descendant(
-          of: find.byType(StartBackendSelector),
+          of: find.byType(StartModelSelector),
           matching: find.byType(TextButton),
         ),
       );
@@ -266,16 +266,23 @@ void main() {
           remote?.promptA('${marker}A') ??
           'Reply with exactly $marker and nothing else. Do not call tools, '
               'run commands, use the network, or read or write any files.';
+      final startupMarker = '${marker}READY';
+      final startupPrompt =
+          'Reply with exactly $startupMarker and nothing else. '
+          'Do not call tools, run commands, use the network, or read or write any files.';
       await tester.enterText(
         find.descendant(
           of: find.byType(AcpStartComposerView),
           matching: find.byType(TextField),
         ),
-        prompt,
+        startupPrompt,
       );
       await tester.pumpAndSettle();
       await scene.capture('agy-live-start-card');
-      await tester.tap(find.widgetWithText(FilledButton, '创建 ACP 会话'));
+      evidence['promptCount'] = 1;
+      await tester.tap(
+        find.byKey(ValueKey(AcpViewKeyValues.startSubmit(project.id))),
+      );
       await scene.until(
         () {
           final failure = graph.client.drafts.attachments.state
@@ -284,7 +291,7 @@ void main() {
           if (failure != null) throw StateError('ACP create failed: $failure');
           return find.byType(AcpComposerConnector).evaluate().length == 1;
         },
-        'explicit session/new completes without prompting',
+        'the first send creates a session and admits its prompt',
         // A live server starts its external harness here. It can take longer
         // than the local fixture's default deadline; this never retries new.
         timeout: const Duration(seconds: 90),
@@ -305,19 +312,34 @@ void main() {
       }
 
       checkOwner();
-      expect(owner.state.activeRun, isNull);
-      expect(owner.state.lastCompleted, isNull);
+      await scene.until(
+        () =>
+            owner.state.lastCompleted != null &&
+            owner.state.activeRun == null &&
+            !owner.state.sendPending,
+        'startup prompt completes before configuring the next request',
+        timeout: const Duration(seconds: 120),
+      );
+      checkOwner();
+      final startupCompletion = owner.state.lastCompleted;
       expect(
         owner.state.content.whereType<AcpConversationMessageItem>(),
-        isEmpty,
+        isNotEmpty,
       );
       expect(owner.state.content.whereType<AcpConversationToolItem>(), isEmpty);
-      evidence['initialNotifications'] = owner.state.content
+      evidence['startupNotifications'] = owner.state.content
           .whereType<AcpConversationUpdateItem>()
           .map((item) => item.update.runtimeType.toString())
           .toList();
       final draft = graph.client.drafts.composer(threadId);
-      expect(draft.state.draft, prompt);
+      expect(draft.state.draft, isEmpty);
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AcpConversationComposerView),
+          matching: find.byType(TextField),
+        ),
+        prompt,
+      );
       final caps = owner.state.capabilities!;
       evidence['capabilities'] = {
         'image': caps.image,
@@ -328,7 +350,7 @@ void main() {
         'resumeSession': caps.resumeSession,
       };
       evidence['initialConfig'] = _configuration(owner.state);
-      await record('created-ready-no-prompt-draft-retained');
+      await record('first-send-created-and-startup-prompt-completed');
 
       var pendingObserved = false;
       final configWatch = owner.source.watch((state) {
@@ -433,7 +455,7 @@ void main() {
       }
       checkOwner();
       expect(draft.state.draft, prompt);
-      expect(owner.state.lastCompleted, isNull);
+      expect(owner.state.lastCompleted, startupCompletion);
       evidence['configPendingObserved'] = pendingObserved;
       evidence['confirmedConfig'] = _configuration(owner.state);
       await scene.capture('agy-live-configured-shell');
@@ -457,7 +479,7 @@ void main() {
         closeHarness: closeHarness,
       );
     },
-    // Three independently bounded 240-second prompts, plus setup and closure.
+    // A bounded startup prompt, then three 240-second phases, setup and closure.
     timeout: const Timeout(Duration(minutes: 16)),
   );
 }

@@ -418,6 +418,8 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../state/fixture.dart';
+import '../../composer/state/start_backend_view_state.dart';
+import '../../composer/views/start_model_selector_view.dart';
 ''',
         ),
         (

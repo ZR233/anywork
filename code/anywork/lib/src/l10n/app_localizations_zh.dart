@@ -1388,6 +1388,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerHint => '描述你的需求…';
 
   @override
+  String get composerModelSearch => '搜索模型或智能体';
+
+  @override
+  String get composerModelSearchEmpty => '没有匹配的模型或智能体';
+
+  @override
+  String get composerManageModels => '管理模型与智能体';
+
+  @override
   String get composerSend => '发送';
 
   @override
@@ -6149,21 +6158,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpBackendReadyBadge => '可用';
 
   @override
-  String get acpStartDraftHint => '可选：输入初始草稿（创建后带入新会话输入框，不会自动发送）…';
-
-  @override
-  String get acpStartHandshakeNote =>
-      'ACP 服务在本机运行；远程项目操作通过 Host MCP 在 SSH 主机上执行。';
-
-  @override
-  String get acpStartCreateAction => '创建 ACP 会话';
-
-  @override
   String get acpStartCreatingAction => '正在创建…';
-
-  @override
-  String get acpStartExistingAttachmentsHint =>
-      '当前项目草稿中的附件已保留供内置会话使用，创建 ACP 会话时不会发送。';
 
   @override
   String get acpSessionConnectingTitle => '正在连接 ACP 服务…';

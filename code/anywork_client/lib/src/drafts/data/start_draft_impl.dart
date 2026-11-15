@@ -25,6 +25,16 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   final Set<String> _acpUnknown = {};
   final Map<String, int> _acpGenerations = {};
   final Map<String, Completer<void>> _acpReadyWaits = {};
+  final Map<
+    String,
+    ({
+      int generation,
+      String workspacePath,
+      String? sshAlias,
+      ComposerDraftImpl composer,
+    })
+  >
+  _acpCreatedByWorkspace = {};
   final LatestValue<Map<String, List<ComposerSubmission>>> _submissions =
       LatestValue<Map<String, List<ComposerSubmission>>>(
         const <String, List<ComposerSubmission>>{},
@@ -133,6 +143,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   }
 
   void setAcpService(String workspaceId, String? accountId) {
+    if (_pendingByWorkspace.containsKey(workspaceId)) return;
     if (accountId != null && accountId.trim().isEmpty) {
       throw ArgumentError.value(accountId, 'accountId');
     }
@@ -418,7 +429,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   Future<bool> _createAcpSession(String workspaceId) async {
     var dispatched = false;
-    var accepted = false;
+    var created = false;
+    OperationId? frozenId;
+    String? createdThreadId;
     try {
       if (_closed || _dependencies.isClosed) {
         throw StateError('The start draft is closed');
@@ -428,17 +441,80 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       }
       final selection = _dependencies.selection.value;
       final navigation = _dependencies.selectionNavigationGeneration?.call();
-      if (selection.selectedProjectId != workspaceId ||
-          selection.selectedThreadId != null) {
-        throw StateError('New Thread submission target is no longer available');
-      }
+      final generation = _acpGenerations[workspaceId] ?? 0;
       final workspace = _dependencies.project.value.projects?.values
           .where((value) => value.id == workspaceId)
           .firstOrNull;
       if (workspace == null || workspace.path.isEmpty) {
         throw StateError('Project is no longer available');
       }
+      bool current() =>
+          !_closed &&
+          !_dependencies.isClosed &&
+          (_acpGenerations[workspaceId] ?? 0) == generation &&
+          (_dependencies.project.value.projects?.values.any(
+                (value) =>
+                    value.id == workspaceId &&
+                    value.path == workspace.path &&
+                    value.sshAlias == workspace.sshAlias,
+              ) ??
+              false);
+      bool originalDraft() =>
+          current() &&
+          navigation == _dependencies.selectionNavigationGeneration?.call();
+      final previous = _acpCreatedByWorkspace[workspaceId];
+      if (selection.selectedProjectId != workspaceId ||
+          (selection.selectedThreadId != null &&
+              selection.selectedThreadId != previous?.composer.threadId)) {
+        throw StateError('New Thread submission target is no longer available');
+      }
+      if (previous != null &&
+          previous.generation == generation &&
+          previous.workspacePath == workspace.path &&
+          previous.sshAlias == workspace.sshAlias) {
+        state = state.copyWith(submitting: true);
+        if (!current()) return false;
+        final sent = await previous.composer.submitInitialAcp();
+        if (sent) {
+          await _transferAcpFollowup(
+            workspaceId,
+            previous.composer,
+            originalDraft,
+          );
+        }
+        var followupNavigation = navigation;
+        if (originalDraft() &&
+            identical(selection, _dependencies.selection.value)) {
+          _dependencies.selectCreatedThread?.call(
+            workspaceId,
+            previous.composer.threadId,
+          );
+          followupNavigation = _dependencies.selectionNavigationGeneration
+              ?.call();
+        }
+        if (!sent && current()) {
+          _observeAcpFollowup(
+            workspaceId,
+            previous.composer,
+            () =>
+                current() &&
+                followupNavigation ==
+                    _dependencies.selectionNavigationGeneration?.call(),
+          );
+        }
+        return sent;
+      }
+      if (selection.selectedProjectId != workspaceId ||
+          selection.selectedThreadId != null) {
+        throw StateError('New Thread submission target is no longer available');
+      }
       final project = state.forProject(workspaceId);
+      final attachments = List<AttachmentDraftView>.unmodifiable(
+        _dependencies.attachments.state.newThread(workspaceId).attachments,
+      );
+      if (project.text.trim().isEmpty && attachments.isEmpty) {
+        throw StateError('Cannot submit an empty draft');
+      }
       final recoveryIssue = recoveryIssueBlockingExecution(
         _dependencies.recovery.value.value?.values ?? const [],
         workspaceId: workspaceId,
@@ -458,15 +534,12 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           revision == null) {
         throw StateError('The ACP service is not available');
       }
-      final generation = _acpGenerations[workspaceId] ?? 0;
-      bool current() =>
-          !_closed &&
-          !_dependencies.isClosed &&
-          (_acpGenerations[workspaceId] ?? 0) == generation &&
-          (_dependencies.project.value.projects?.values.any(
-                (value) => value.id == workspaceId,
-              ) ??
-              false);
+      frozenId = OperationId(newPromptInputId());
+      _dependencies.attachments.retainFrozen(
+        operationId: frozenId,
+        binding: _dependencies.attachments.newThreadBinding(workspaceId),
+        attachmentIds: attachments.map((item) => item.id),
+      );
       state = state.copyWith(submitting: true);
       if (!current()) {
         throw StateError('ACP creation cancelled before backend dispatch');
@@ -480,43 +553,140 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           intent: const AcpNewIntentView(),
         ),
       );
-      accepted = true;
       await _waitForAcpReady(workspaceId, owner);
-      if (!current()) return false;
+      created = true;
       final target = owner.state.target!;
+      createdThreadId = target.threadId;
       final composer =
           _dependencies.composer(target.threadId) as ComposerDraftImpl;
-      StartSessionProjectDraft? transferred;
+      _acpCreatedByWorkspace[workspaceId] = (
+        generation: generation,
+        workspacePath: workspace.path,
+        sshAlias: workspace.sshAlias,
+        composer: composer,
+      );
       await _dependencies.attachments.transferNewThread(
         workspaceId: workspaceId,
         threadId: target.threadId,
         destination: composer.binding,
-        text: () {
-          transferred = state.forProject(workspaceId);
-          return transferred!.text;
-        },
-        isCurrent: current,
+        text: () => project.text,
+        // A retired start draft cannot cancel the accepted business session.
+        isCurrent: () => !_closed && !_dependencies.isClosed,
+        frozenAttachments: attachments,
       );
-      if (!current()) return false;
-      if (identical(state.forProject(workspaceId), transferred)) {
+      if (_closed || _dependencies.isClosed) return false;
+      if (originalDraft() &&
+          identical(state.forProject(workspaceId), project)) {
         state = state.copyWith(
-          projects: {...state.projects}..remove(workspaceId),
+          projects: {
+            ...state.projects,
+            workspaceId: project.copyWith(text: ''),
+          },
           revision: state.revision + 1,
         );
       }
-      if (identical(selection, _dependencies.selection.value) &&
+      final sent = await composer.submitInitialAcp();
+      if (sent) {
+        await _transferAcpFollowup(workspaceId, composer, originalDraft);
+      }
+      var followupNavigation = navigation;
+      if (current() &&
+          identical(selection, _dependencies.selection.value) &&
           navigation == _dependencies.selectionNavigationGeneration?.call()) {
         select(workspaceId, target.threadId);
+        followupNavigation = _dependencies.selectionNavigationGeneration
+            ?.call();
       }
-      return true;
+      if (!sent && current()) {
+        _observeAcpFollowup(
+          workspaceId,
+          composer,
+          () =>
+              current() &&
+              followupNavigation ==
+                  _dependencies.selectionNavigationGeneration?.call(),
+        );
+      }
+      return sent;
     } catch (error) {
-      if (accepted || (dispatched && error is! AcpBusinessFailureView)) {
+      if (!created && dispatched && error is! AcpBusinessFailureView) {
         _acpUnknown.add(workspaceId);
       }
       if (!_closed) {
         _dependencies.attachments.reportNewThreadFailure(workspaceId, error);
       }
       return false;
+    } finally {
+      if (frozenId != null) {
+        await _dependencies.attachments.completeFrozen(
+          operationId: frozenId,
+          accepted: false,
+          clearCurrent: false,
+          workspaceId: workspaceId,
+          threadId: createdThreadId,
+        );
+      }
+    }
+  }
+
+  void _observeAcpFollowup(
+    String workspaceId,
+    ComposerDraftImpl composer,
+    bool Function() isCurrent,
+  ) {
+    late final Observation observation;
+    observation = composer.source.watch((value) {
+      if (!isCurrent()) {
+        observation.cancel();
+        return;
+      }
+      if (value is! IdleComposerThreadState ||
+          value.draft.isNotEmpty ||
+          value.attachments.isNotEmpty)
+        return;
+      observation.cancel();
+      unawaited(
+        _transferAcpFollowup(
+          workspaceId,
+          composer,
+          isCurrent,
+        ).catchError((Object error) => composer.reportFailure(error)),
+      );
+    });
+    _observations.removeWhere((item) => item.isCancelled);
+    _observations.add(observation);
+  }
+
+  Future<void> _transferAcpFollowup(
+    String workspaceId,
+    ComposerDraftImpl composer,
+    bool Function() isCurrent,
+  ) async {
+    if (!isCurrent()) return;
+    // Edits made in the created conversation take precedence over a late handoff.
+    if (composer.state.draft.isNotEmpty ||
+        composer.state.attachments.isNotEmpty) {
+      return;
+    }
+    StartSessionProjectDraft? transferred;
+    await _dependencies.attachments.transferNewThread(
+      workspaceId: workspaceId,
+      threadId: composer.threadId,
+      destination: composer.binding,
+      text: () {
+        transferred = state.forProject(workspaceId);
+        return transferred!.text;
+      },
+      isCurrent: () =>
+          isCurrent() &&
+          composer.state.draft.isEmpty &&
+          composer.state.attachments.isEmpty,
+    );
+    if (isCurrent() && identical(state.forProject(workspaceId), transferred)) {
+      state = state.copyWith(
+        projects: {...state.projects}..remove(workspaceId),
+        revision: state.revision + 1,
+      );
     }
   }
 

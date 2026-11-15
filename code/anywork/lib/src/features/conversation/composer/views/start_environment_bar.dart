@@ -1,20 +1,48 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_menu_label.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
+import '../view_models/start_backend_view_model.dart';
 import 'start_environment_view.dart';
 
-class StartEnvironmentBar extends StatelessWidget {
+class StartEnvironmentBar extends ConsumerWidget {
   const StartEnvironmentBar({
+    required this.workspaceId,
+    this.onAddProject,
+    super.key,
+  });
+
+  final String workspaceId;
+  final VoidCallback? onAddProject;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final target = ComposerTarget.start(workspaceId: workspaceId);
+    final provider = composerViewModelProvider(target);
+    final state = ref.watch(provider).value;
+    if (state?.start == null) return const SizedBox.shrink();
+    final backend = ref.watch(startBackendViewModelProvider(workspaceId));
+    return StartEnvironmentBarView(
+      state: state!,
+      actions: ref.read(provider.notifier),
+      projectOnly: backend.accountId != null,
+      enabled: backend.enabled,
+      onAddProject: onAddProject,
+    );
+  }
+}
+
+class StartEnvironmentBarView extends StatelessWidget {
+  const StartEnvironmentBarView({
     required this.state,
     required this.actions,
     this.onAddProject,
     this.enabled = true,
     this.projectOnly = false,
-    this.backendSelector,
     super.key,
   });
 
@@ -23,7 +51,6 @@ class StartEnvironmentBar extends StatelessWidget {
   final VoidCallback? onAddProject;
   final bool enabled;
   final bool projectOnly;
-  final Widget? backendSelector;
 
   @override
   Widget build(BuildContext context) {
@@ -39,48 +66,21 @@ class StartEnvironmentBar extends StatelessWidget {
     );
     final defaults = state.delegation;
     if (projectOnly || defaults == null || workspace == null) {
-      return _withBackend(
-        Align(alignment: Alignment.centerLeft, child: selector),
-      );
+      return Align(alignment: Alignment.centerLeft, child: selector);
     }
     final draft = start.sessionDraft.forProject(workspace.id);
-    return _withBackend(
-      StartEnvironmentView(
-        projectSelector: selector,
-        defaultMode: defaults.mode,
-        defaultPreference: defaults.preference,
-        modeOverride: draft.delegationModeOverride,
-        preferenceOverride: draft.delegationPreferenceOverride,
-        workspaceMode: draft.workspaceMode,
-        isStandalone: workspace.isStandalone,
-        enabled: editable,
-        onModeChanged: actions.setDelegationMode,
-        onPreferenceChanged: actions.setDelegationPreference,
-        onWorkspaceModeChanged: actions.setWorkspaceMode,
-      ),
-    );
-  }
-
-  Widget _withBackend(Widget leading) {
-    final backend = backendSelector;
-    if (backend == null) return leading;
-    return LayoutBuilder(
-      builder: (context, constraints) => constraints.maxWidth < 520
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                leading,
-                Align(alignment: Alignment.centerRight, child: backend),
-              ],
-            )
-          : Row(
-              children: [
-                Expanded(child: leading),
-                const SizedBox(width: 8),
-                backend,
-              ],
-            ),
+    return StartEnvironmentView(
+      projectSelector: selector,
+      defaultMode: defaults.mode,
+      defaultPreference: defaults.preference,
+      modeOverride: draft.delegationModeOverride,
+      preferenceOverride: draft.delegationPreferenceOverride,
+      workspaceMode: draft.workspaceMode,
+      isStandalone: workspace.isStandalone,
+      enabled: editable,
+      onModeChanged: actions.setDelegationMode,
+      onPreferenceChanged: actions.setDelegationPreference,
+      onWorkspaceModeChanged: actions.setWorkspaceMode,
     );
   }
 }

@@ -10,7 +10,6 @@ import 'view_models/start_backend_view_model.dart';
 import 'views/composer_content_view.dart';
 import 'views/start_environment_bar.dart';
 import 'views/start_page_composer_view.dart';
-import 'widgets/start_backend_selector.dart';
 
 export 'state/composer_view_state.dart' show ComposerTarget;
 
@@ -39,19 +38,13 @@ class Composer extends ConsumerWidget {
     final backend = target is StartComposerTarget
         ? ref.watch(startBackendViewModelProvider(workspaceId)).accountId
         : null;
-    final backendSelector = target is StartComposerTarget
-        ? StartBackendSelector(workspaceId: workspaceId)
-        : null;
     return state.when(
       loading: () => const SafeArea(child: LinearProgressIndicator()),
       error: (error, _) => Text('$error'),
       data: (view) => backend != null && workspaceId != null
           ? StartPageComposerView(
               environmentBar: StartEnvironmentBar(
-                state: view,
-                actions: ref.read(provider.notifier),
-                projectOnly: true,
-                backendSelector: backendSelector,
+                workspaceId: workspaceId,
                 onAddProject: onAddProject,
               ),
               composer: AcpStartComposerConnector(workspaceId: workspaceId),
@@ -63,7 +56,6 @@ class Composer extends ConsumerWidget {
               actions: ref.read(provider.notifier),
               compact: compact,
               onAddProject: onAddProject,
-              startBackendSelector: backendSelector,
             ),
     );
   }
