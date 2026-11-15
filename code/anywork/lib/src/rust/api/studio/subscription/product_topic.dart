@@ -11,6 +11,8 @@ import '../types/product_topic.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `open_product_topic`
+
 /// 订阅一个 typed 产品 topic。
 ///
 /// 一次订阅只观察一个领域：runtime 先登记该 topic 的接收者，再读取领域基线；本模块

@@ -490,8 +490,7 @@ mod tests {
             }
         };
         let owner = Arc::new(ConversationOwner::new(native, CancellationToken::new()));
-        owner.install_lifecycle(|_| {})?;
-        let facade = BridgeConversationFeed { inner: owner };
+        let facade = BridgeConversationFeed::from_test_owner(owner).await;
         let demand = BridgeReadDemand {
             max_items: 16,
             max_bytes: 64 * 1024,
@@ -780,8 +779,10 @@ mod tests {
             let second = facade
                 .open_content_watch(reference.clone(), range())
                 .await?;
-            let one = error(StudioErrorCode::Storage, "first watch close boundary");
-            let two = error(StudioErrorCode::Unavailable, "second watch close boundary");
+            let mut one = error(StudioErrorCode::Storage, "first watch close boundary");
+            let mut two = error(StudioErrorCode::Unavailable, "second watch close boundary");
+            one.retryable = true;
+            two.retryable = true;
             for (id, failure) in [(&first, &one), (&second, &two)] {
                 let owner = facade
                     .inner
@@ -823,16 +824,11 @@ mod tests {
                 .await
                 .expect_err("watch failure must not skip read close");
             ensure!(BridgeError::from(read_failure).code == BridgeErrorCode::Cancelled);
-            // Retrying close uses the same cancelled native owners and then releases their identities.
-            // The facade may itself have retried them while retaining its original failure diagnostics.
-            facade.close_content_watch(first.clone()).await?;
-            facade.close_content_watch(second.clone()).await?;
+            // 一次显式重试只清理两个原观察对象；瞬时失败恢复后允许真实关闭成功。
+            facade.close().await?;
             ensure!(facade.inner.content()?.watches.lookup(&first)?.is_none());
             ensure!(facade.inner.content()?.watches.lookup(&second)?.is_none());
-            ensure!(
-                facade.close().await.is_err(),
-                "retained facade cleanup diagnostics must not disappear"
-            );
+            facade.close().await?;
             Ok(())
         }
         .await;

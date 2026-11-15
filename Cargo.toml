@@ -168,6 +168,7 @@ pl-lsp = { path = "code/pl-lsp" }
 pl-output = { path = "code/pl-output" }
 pl-patch = { path = "code/pl-patch" }
 pl-skill-core = { path = "code/pl-skill-core" }
+pl-lifecycle = { path = "code/pl-lifecycle" }
 pl-core = { path = "code/pl-core" }
 pl-dev-support = { path = "code/pl-dev-support" }
 pl-tool = { path = "code/pl-tool" }

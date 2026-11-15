@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
-use super::{BridgeConversationFeed, ConversationOwner, closed};
+use super::{BridgeConversationFeed, ConversationOwner, ConversationResource, closed};
 use crate::api::studio::{
     bridge_runtime::active_bridge,
     convert::{chat, presentation},
+    subscription::{error::open_error, factory::BridgeObservationFactory},
     types::*,
 };
 
@@ -20,21 +21,47 @@ pub async fn open_timeline_reader(
     initial_demand: BridgeReadDemand,
 ) -> Result<BridgeTimelineReader, BridgeError> {
     let bridge = active_bridge().await?;
-    let cancel = bridge.shutdown.child_token();
-    let feed = tokio::select! {
-        biased;
-        () = cancel.cancelled() => return Err(closed()),
-        feed = bridge.studio.open_timeline_reader(&thread_id, presentation_version, reader_protocol_version, chat::demand(initial_demand)) => feed?,
-    };
-    let inner = Arc::new(ConversationOwner::timeline(feed, cancel));
-    let opening = inner.cancel.clone().drop_guard();
     bridge
-        .subscriptions
-        .register_conversation(&inner, &bridge.shutdown)?;
-    drop(opening.disarm());
-    Ok(BridgeTimelineReader {
-        conversation: BridgeConversationFeed { inner },
-    })
+        .observation_factory
+        .open_timeline(
+            thread_id,
+            presentation_version,
+            reader_protocol_version,
+            initial_demand,
+        )
+        .await
+}
+
+impl BridgeObservationFactory {
+    pub(crate) async fn open_timeline(
+        &self,
+        thread_id: String,
+        presentation_version: u32,
+        reader_protocol_version: u32,
+        initial_demand: BridgeReadDemand,
+    ) -> Result<BridgeTimelineReader, BridgeError> {
+        let source = self.source.clone();
+        let managed = self
+            .scope
+            .open("conversations", move |cancel| async move {
+                let reader = source
+                    .open_timeline_reader(
+                        &thread_id,
+                        presentation_version,
+                        reader_protocol_version,
+                        chat::demand(initial_demand),
+                    )
+                    .await?;
+                Ok(ConversationResource(Arc::new(ConversationOwner::timeline(
+                    reader, cancel,
+                ))))
+            })
+            .await
+            .map_err(open_error)?;
+        Ok(BridgeTimelineReader {
+            conversation: BridgeConversationFeed::from_managed(managed),
+        })
+    }
 }
 
 impl BridgeTimelineReader {

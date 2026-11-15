@@ -4,7 +4,6 @@ pub mod chatgpt;
 pub mod commands;
 mod convert;
 pub mod feed;
-pub(crate) mod registry;
 pub mod types;
 
 pub use chatgpt::{cancel_chatgpt_login, start_chatgpt_login};

@@ -7,14 +7,9 @@
 //! 订阅自己的令牌承担。shutdown 开始即失效当前尝试后，未读的 `Ready` 终态不会
 //! 迟到交付为新的成功。
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-
-use tokio_util::sync::CancellationToken;
-
 use super::{
-    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, OWNED_PENDING,
-    SubscriptionCompletionFacts, SubscriptionOwner, owned_completion,
+    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, error::open_error,
+    startup_child_scope, task::OwnedTaskSlot,
 };
 use crate::api::studio::handlers::{startup_attempt_active, subscribe_startup_attempt};
 use crate::api::studio::types::{BridgeError, BridgeStartupStage};
@@ -28,20 +23,26 @@ use crate::frb_generated::StreamSink;
 pub async fn subscribe_startup_progress(
     attempt: u64,
 ) -> Result<BridgeEventSubscription, BridgeError> {
-    let events = subscribe_startup_attempt(attempt)?;
+    let scope = startup_child_scope()?;
+    let inner = scope
+        .handle()
+        .open("startupProgress", move |cancel| async move {
+            let events = subscribe_startup_attempt(attempt)?;
+            Ok(BridgeSubscriptionInner {
+                kind: BridgeSubscriptionKind::Startup { attempt },
+                cancel,
+                producer_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
+                sink_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
+                product_topic_receiver: tokio::sync::Mutex::new(None),
+                shutdown_receiver: tokio::sync::Mutex::new(None),
+                startup_receiver: tokio::sync::Mutex::new(Some(events)),
+            })
+        })
+        .await
+        .map_err(open_error)?;
     Ok(BridgeEventSubscription {
-        inner: Arc::new(BridgeSubscriptionInner {
-            // pre-active 订阅没有 installed bridge，也就没有注册表 id；句柄独立取消。
-            id: 0,
-            kind: BridgeSubscriptionKind::Startup { attempt },
-            cancel: CancellationToken::new(),
-            producer_task: tokio::sync::Mutex::new(None),
-            sink_task: tokio::sync::Mutex::new(None),
-            product_topic_receiver: tokio::sync::Mutex::new(None),
-            shutdown_receiver: tokio::sync::Mutex::new(None),
-            startup_receiver: tokio::sync::Mutex::new(Some(events)),
-            facts: Arc::new(SubscriptionCompletionFacts::default()),
-        }),
+        inner,
+        _scope: Some(scope),
     })
 }
 
@@ -56,7 +57,8 @@ impl BridgeEventSubscription {
         &self,
         sink: StreamSink<BridgeStartupStage>,
     ) -> Result<(), BridgeError> {
-        let attempt = match self.inner.kind {
+        let inner = self.inner.get();
+        let attempt = match inner.kind {
             BridgeSubscriptionKind::Startup { attempt } => attempt,
             _ => {
                 return Err(BridgeError::invalid_argument(
@@ -64,69 +66,53 @@ impl BridgeEventSubscription {
                 ));
             }
         };
-        let mut events = self
-            .inner
-            .startup_receiver
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| {
-                BridgeError::invalid_argument("startup stream can only be opened once")
-            })?;
-        let cancel = self.inner.cancel.clone();
-        let id = self.inner.id;
-        let facts = Arc::clone(&self.inner.facts);
-        let mut task = self.inner.sink_task.lock().await;
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
-        facts.sink.store(OWNED_PENDING, Ordering::SeqCst);
-        let sink_task = tokio::spawn(async move {
-            // 首帧总是当前真实阶段：订阅建立与阶段推进之间没有轮询窗口。
-            let (frame_attempt, stage) = {
-                let frame = events.borrow_and_update();
-                (frame.attempt, frame.stage)
-            };
-            if frame_attempt != attempt {
-                return;
-            }
-            if stale_ready(attempt, stage) {
-                return;
-            }
-            if sink.add(stage).is_err() || is_terminal(stage) {
-                return;
-            }
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => break,
-                    changed = events.changed() => if changed.is_err() { break; },
-                }
+        let mut events = inner.startup_receiver.lock().await.take().ok_or_else(|| {
+            BridgeError::invalid_argument("startup stream can only be opened once")
+        })?;
+        let cancel = inner.cancel.clone();
+        inner
+            .attach_sink(async move {
+                // 首帧总是当前真实阶段：订阅建立与阶段推进之间没有轮询窗口。
                 let (frame_attempt, stage) = {
                     let frame = events.borrow_and_update();
                     (frame.attempt, frame.stage)
                 };
-                // 新一代尝试开始：旧观察者终止，不转发新世代阶段。
                 if frame_attempt != attempt {
-                    break;
+                    return Ok(());
                 }
                 if stale_ready(attempt, stage) {
-                    break;
+                    return Ok(());
                 }
-                if sink.add(stage).is_err() {
-                    break;
+                if sink.add(stage).is_err() || is_terminal(stage) {
+                    return Ok(());
                 }
-                if is_terminal(stage) {
-                    break;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        changed = events.changed() => if changed.is_err() { break; },
+                    }
+                    let (frame_attempt, stage) = {
+                        let frame = events.borrow_and_update();
+                        (frame.attempt, frame.stage)
+                    };
+                    // 新一代尝试开始：旧观察者终止，不转发新世代阶段。
+                    if frame_attempt != attempt {
+                        break;
+                    }
+                    if stale_ready(attempt, stage) {
+                        break;
+                    }
+                    if sink.add(stage).is_err() {
+                        break;
+                    }
+                    if is_terminal(stage) {
+                        break;
+                    }
                 }
-            }
-        });
-        *task = Some(owned_completion(
-            sink_task,
-            id,
-            facts,
-            SubscriptionOwner::Sink,
-        ));
+                Ok(())
+            })
+            .await;
         Ok(())
     }
 }

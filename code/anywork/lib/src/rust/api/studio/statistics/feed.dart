@@ -11,9 +11,9 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `close`, `is_settled`, `join_task`, `request_close`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStatisticsFeedInner`, `StatisticsFeedCloseError`, `TaskOwner`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`, `fmt`, `from`, `source`
+// These functions are ignored because they are not marked as `pub`: `open_statistics`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeStatisticsFeedInner`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
 
 /// Opens one independent latest-value statistics feed from the canonical runtime owner.
 Future<BridgeStatisticsFeed> openStatisticsFeed() =>
@@ -24,12 +24,12 @@ abstract class BridgeStatisticsFeed implements RustOpaqueInterface {
   /// Confirms the next contiguous delivery prefix; repeated old ACKs are idempotent.
   Future<void> acknowledge({required BigInt deliverySequence});
 
-  /// Seals admission, cancels waits, joins in-flight calls and scopes, then releases the registry
-  /// owner. A failed/abandoned wait leaves the original feed registered for retry.
+  /// Seals admission, cancels waits, joins in-flight calls and scopes, then releases the managed
+  /// owner. A failed/abandoned wait leaves the original feed available for retry.
   Future<void> close();
 
   /// Opens the ordered typed push stream for this feed. Its producer and sink remain owned by
-  /// the feed registry until close confirms that both tasks have stopped.
+  /// the observation scope until close confirms that both tasks have stopped.
   Stream<BridgeStatisticsFeedEvent> events();
 
   /// Opens a scope fixed to a publication previously returned by this feed.

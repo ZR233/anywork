@@ -4,21 +4,21 @@ use std::collections::BTreeMap;
 use crate::api::studio::types::BridgeError;
 
 #[flutter_rust_bridge::frb(ignore)]
-#[derive(Default)]
-pub(super) struct CloseFailures {
+#[derive(Clone, Default)]
+pub(crate) struct CloseFailures {
     first: Option<BridgeError>,
     resources: BTreeMap<String, BridgeError>,
 }
 
 impl CloseFailures {
-    pub(super) fn record(&mut self, resource: &str, error: BridgeError) {
+    pub(crate) fn record(&mut self, resource: &str, error: BridgeError) {
         // A sealed facade has at most 32 watch owners plus its fixed feed/read/task responsibilities.
         // Repeated retries of a resource keep its first error instead of growing an error log.
         self.first.get_or_insert_with(|| error.clone());
         self.resources.entry(resource.to_owned()).or_insert(error);
     }
 
-    pub(super) fn outcome(&self) -> Option<BridgeError> {
+    pub(crate) fn outcome(&self) -> Option<BridgeError> {
         let mut first = self.first.clone()?;
         if self.resources.len() > 1 {
             first.details_json = Some(
@@ -37,8 +37,11 @@ impl CloseFailures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::studio::handlers::chat::owner::error;
-    use pl_protocol::studio::StudioErrorCode;
+    use pl_protocol::studio::{StudioError, StudioErrorCode};
+
+    fn error(code: StudioErrorCode, message: &str) -> BridgeError {
+        StudioError::new(code, message, false).into()
+    }
 
     #[test]
     fn independent_failures_keep_both_original_correlations_and_details_across_retries() {

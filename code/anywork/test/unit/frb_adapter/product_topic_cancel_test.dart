@@ -52,53 +52,46 @@ final class _NativeTopic extends Fake
 }
 
 void main() {
-  test(
-    'native cancel failure reaches the client and retains the original topic',
-    () async {
-      final native = _NativeTopic();
-      final api = _TopicApi(native);
-      RustLib.initMock(api: api);
-      FrbStudioTransport.debugOverrideInitialization(() async {});
-      final transport = FrbStudioTransport();
-      final client = AnyworkClient(transport: transport, clientId: 'test');
+  test('native cancel failure reaches the client and retains the original topic', () async {
+    final native = _NativeTopic();
+    final api = _TopicApi(native);
+    RustLib.initMock(api: api);
+    FrbStudioTransport.debugOverrideInitialization(() async {});
+    final transport = FrbStudioTransport();
+    final client = AnyworkClient(transport: transport, clientId: 'test');
 
-      final lease = client.channels.acquireTopic(const UpdaterTopic());
-      await native.subscribed.future;
-      await expectLater(
-        lease.release(),
-        throwsA(
-          isA<BridgeTopicCleanupBlocked>().having(
-            (error) => error.cause,
-            'native error',
-            same(native.failure),
-          ),
+    final lease = client.channels.acquireTopic(const UpdaterTopic());
+    await native.subscribed.future;
+    await expectLater(
+      lease.release(),
+      throwsA(
+        isA<BridgeTopicCleanupBlocked>().having(
+          (error) => error.cause,
+          'native error',
+          same(native.failure),
         ),
-      );
-      expect(native.cancels, 1);
-      expect(native.disposals, 0);
+      ),
+    );
+    expect(native.cancels, 1);
+    expect(native.disposals, 0);
 
-      client.channels.acquireTopic(const UpdaterTopic());
-      client.channels.retryTopic(const UpdaterTopic());
-      final report = await client.channels.retryCleanup();
-      expect(report.complete, isFalse);
-      expect(client.channels.unresolvedResources, isNotEmpty);
-      expect(
-        api.opens,
-        1,
-        reason: 'A failed native owner blocks a replacement',
-      );
-      expect(
-        native.cancels,
-        1,
-        reason: 'Stream cancellation is not a native retry',
-      );
-      expect(native.disposals, 0);
+    client.channels.acquireTopic(const UpdaterTopic());
+    client.channels.retryTopic(const UpdaterTopic());
+    final report = await client.channels.retryCleanup();
+    expect(report.complete, isFalse);
+    expect(client.channels.unresolvedResources, isNotEmpty);
+    expect(api.opens, 1, reason: 'A failed native owner blocks a replacement');
+    expect(
+      native.cancels,
+      1,
+      reason: 'Stream cancellation is not a native retry',
+    );
+    expect(native.disposals, 0);
 
-      final issues = await transport.cancelDartSubscriptions(budgetMs: 1000);
-      expect(issues, isNotEmpty);
-      // The fake intentionally remains retained after the failed native ACK.
-      // This test has its own isolate and must not reset the live-owner guard.
-      RustLib.dispose();
-    },
-  );
+    final issues = await transport.cancelDartSubscriptions(budgetMs: 1000);
+    expect(issues, isNotEmpty);
+    // The fake intentionally remains retained after the failed native ACK.
+    // This test has its own isolate and must not reset the live-owner guard or
+    // dispose the mocked library while that owner is still unresolved.
+  });
 }

@@ -60584,7 +60584,7 @@ class BridgeConversationFeedImpl extends RustOpaque
       );
 
   /// Joins retained work and closes native capabilities. Cancelled close waits can be repeated;
-  /// failed closes retain the original owner and diagnostic in the opening registry.
+  /// failed closes retain the original owner and diagnostic in the observation scope.
   Future<void> close() => RustLib.instance.api
       .crateApiStudioHandlersChatBridgeConversationFeedClose(that: this);
 
@@ -60832,12 +60832,7 @@ class BridgeEventSubscriptionImpl extends RustOpaque
         .rust_arc_decrement_strong_count_BridgeEventSubscriptionPtr,
   );
 
-  /// Cancels this subscription and reports the *real* stop result.
-  ///
-  /// A panicked producer/sink task is surfaced as a typed `BridgeError` instead of being hidden
-  /// behind a clean `Future<void>`, so the caller's `onError` path observes the same failure the
-  /// exit report carries. Only a subscription that really stopped is removed from its registry
-  /// strong owner; a failure keeps the owner so a later exit pass still observes it.
+  /// 请求取消并等待原订阅任务真正结束；失败保留原句柄以供显式重试。
   Future<void> cancel() => RustLib.instance.api
       .crateApiStudioSubscriptionBridgeEventSubscriptionCancel(that: this);
 
@@ -60910,13 +60905,13 @@ class BridgeStatisticsFeedImpl extends RustOpaque
         deliverySequence: deliverySequence,
       );
 
-  /// Seals admission, cancels waits, joins in-flight calls and scopes, then releases the registry
-  /// owner. A failed/abandoned wait leaves the original feed registered for retry.
+  /// Seals admission, cancels waits, joins in-flight calls and scopes, then releases the managed
+  /// owner. A failed/abandoned wait leaves the original feed available for retry.
   Future<void> close() => RustLib.instance.api
       .crateApiStudioStatisticsFeedBridgeStatisticsFeedClose(that: this);
 
   /// Opens the ordered typed push stream for this feed. Its producer and sink remain owned by
-  /// the feed registry until close confirms that both tasks have stopped.
+  /// the observation scope until close confirms that both tasks have stopped.
   Stream<BridgeStatisticsFeedEvent> events() => RustLib.instance.api
       .crateApiStudioStatisticsFeedBridgeStatisticsFeedEvents(that: this);
 

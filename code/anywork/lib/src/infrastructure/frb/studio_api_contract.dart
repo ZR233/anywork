@@ -32,7 +32,7 @@ AttachmentDraftView _attachmentDraftFromFrb(
 }
 
 void _observeBackground(Future<void> future) {
-  unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace __) {}));
+  unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
 }
 
 /// Dart 侧一次 FRB 订阅的取消句柄（native 句柄 + 派生 Dart stream 的单一 owner）。

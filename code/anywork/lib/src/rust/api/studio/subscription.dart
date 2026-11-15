@@ -26,19 +26,13 @@ import 'types/thread_lsp.dart';
 import 'types/thread_stream.dart';
 import 'types/updater.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `join_subscription_cancellations`, `new`, `next_id`, `owned_completion`, `register_account_observation`, `register_conversation`, `register_directory_observation`, `register_statistics_feed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_account_observation`, `unregister_directory_observation`, `unregister_statistics_feed`, `unregister`, `wait_stopped`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `BridgeTaskRegistry`, `PendingSubscriptionCancellation`, `SubscriptionCompletionFacts`, `SubscriptionOwner`, `SubscriptionStop`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `drop`, `fmt`, `fmt`
-// These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
+// These functions are ignored because they are not marked as `pub`: `attach_sink`, `close_startup_scope`, `send_or_cancel`, `shutdown_progress_scope`, `startup_child_scope`, `wait_startup_scope`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `close`, `fmt`, `request_close`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>>
 abstract class BridgeEventSubscription implements RustOpaqueInterface {
-  /// Cancels this subscription and reports the *real* stop result.
-  ///
-  /// A panicked producer/sink task is surfaced as a typed `BridgeError` instead of being hidden
-  /// behind a clean `Future<void>`, so the caller's `onError` path observes the same failure the
-  /// exit report carries. Only a subscription that really stopped is removed from its registry
-  /// strong owner; a failure keeps the owner so a later exit pass still observes it.
+  /// 请求取消并等待原订阅任务真正结束；失败保留原句柄以供显式重试。
   Future<void> cancel();
 
   /// 打开该 topic 订阅的产品流；每个订阅只能打开一次。

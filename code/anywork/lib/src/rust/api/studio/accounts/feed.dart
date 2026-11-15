@@ -17,11 +17,11 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `close`, `is_settled`, `request_close`
+// These functions are ignored because they are not marked as `pub`: `open_account`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeAccountObservationInner`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
 
-/// Registration and baseline demand use no spawned task. A late open is either refused by the
-/// sealed registry or remains strongly registered and receives the same shutdown broadcast.
+/// 在作用域登记创建过程；迟到的原始观察仍由同一作用域关闭。
 Future<BridgeAccountObservation> openAccountObservation({
   required BridgeAccountObservationTarget target,
 }) => RustLib.instance.api.crateApiStudioAccountsFeedOpenAccountObservation(

@@ -1,11 +1,13 @@
 use super::{convert, types::*};
-use crate::api::studio::bridge_runtime::{active_bridge, current_bridge};
-use crate::api::studio::types::BridgeError;
-use pl_studio_runtime::{ThreadMetadataObservation, ThreadsObservation};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use crate::api::studio::bridge_runtime::active_bridge;
+use crate::api::studio::subscription::{
+    error::{close_error, open_error},
+    factory::BridgeObservationFactory,
 };
+use crate::api::studio::types::BridgeError;
+use pl_lifecycle::{Managed, ManagedResource};
+use pl_studio_runtime::{ThreadMetadataObservation, ThreadsObservation};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 
 pub async fn open_threads_observation(
@@ -13,62 +15,63 @@ pub async fn open_threads_observation(
     window: BridgeThreadDirectoryWindow,
 ) -> Result<BridgeThreadsObservation, BridgeError> {
     let bridge = active_bridge().await?;
-    let observation = bridge.studio.observe_threads(query.into(), window.into())?;
-    let inner = Arc::new(BridgeDirectoryObservationInner {
-        id: bridge.subscriptions.next_id(),
-        observation: DirectoryObservation::Threads(observation),
-        shutdown: bridge.shutdown.child_token(),
-        settled: AtomicBool::new(false),
-        closing: AtomicBool::new(false),
-        next_gate: tokio::sync::Mutex::new(()),
-    });
-    if let Err(error) = bridge
-        .subscriptions
-        .register_directory_observation(&inner, &bridge.shutdown)
-    {
-        inner.request_close();
-        inner.close().await?;
-        bridge
-            .subscriptions
-            .unregister_directory_observation(inner.id);
-        return Err(error);
-    }
-    Ok(BridgeThreadsObservation { inner })
+    bridge.observation_factory.open_threads(query, window).await
 }
 
 pub async fn open_thread_observation(
     thread_id: String,
 ) -> Result<BridgeThreadObservation, BridgeError> {
     let bridge = active_bridge().await?;
-    let observation = bridge.studio.observe_thread(thread_id)?;
-    let inner = Arc::new(BridgeDirectoryObservationInner {
-        id: bridge.subscriptions.next_id(),
-        observation: DirectoryObservation::Metadata(observation),
-        shutdown: bridge.shutdown.child_token(),
-        settled: AtomicBool::new(false),
-        closing: AtomicBool::new(false),
-        next_gate: tokio::sync::Mutex::new(()),
-    });
-    if let Err(error) = bridge
-        .subscriptions
-        .register_directory_observation(&inner, &bridge.shutdown)
-    {
-        inner.request_close();
-        inner.close().await?;
-        bridge
-            .subscriptions
-            .unregister_directory_observation(inner.id);
-        return Err(error);
+    bridge.observation_factory.open_thread(thread_id).await
+}
+
+impl BridgeObservationFactory {
+    pub(crate) async fn open_threads(
+        &self,
+        query: BridgeThreadDirectoryQuery,
+        window: BridgeThreadDirectoryWindow,
+    ) -> Result<BridgeThreadsObservation, BridgeError> {
+        let source = self.source.clone();
+        let inner = self
+            .scope
+            .open("directoryObservations", move |shutdown| async move {
+                let observation = source.observe_threads(query.into(), window.into())?;
+                Ok(BridgeDirectoryObservationInner::new(
+                    DirectoryObservation::Threads(observation),
+                    shutdown,
+                ))
+            })
+            .await
+            .map_err(open_error)?;
+        Ok(BridgeThreadsObservation { inner })
     }
-    Ok(BridgeThreadObservation { inner })
+
+    pub(crate) async fn open_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<BridgeThreadObservation, BridgeError> {
+        let source = self.source.clone();
+        let inner = self
+            .scope
+            .open("directoryObservations", move |shutdown| async move {
+                let observation = source.observe_thread(thread_id)?;
+                Ok(BridgeDirectoryObservationInner::new(
+                    DirectoryObservation::Metadata(observation),
+                    shutdown,
+                ))
+            })
+            .await
+            .map_err(open_error)?;
+        Ok(BridgeThreadObservation { inner })
+    }
 }
 
 pub struct BridgeThreadsObservation {
-    inner: Arc<BridgeDirectoryObservationInner>,
+    inner: Managed<BridgeDirectoryObservationInner>,
 }
 
 pub struct BridgeThreadObservation {
-    inner: Arc<BridgeDirectoryObservationInner>,
+    inner: Managed<BridgeDirectoryObservationInner>,
 }
 
 enum DirectoryObservation {
@@ -77,25 +80,20 @@ enum DirectoryObservation {
 }
 
 pub(crate) struct BridgeDirectoryObservationInner {
-    pub(crate) id: u64,
     observation: DirectoryObservation,
     shutdown: CancellationToken,
-    settled: AtomicBool,
     closing: AtomicBool,
     next_gate: tokio::sync::Mutex<()>,
 }
 
 impl BridgeDirectoryObservationInner {
-    pub(crate) fn request_close(&self) {
-        self.closing.store(true, Ordering::Release);
-        match &self.observation {
-            DirectoryObservation::Threads(observation) => observation.request_close(),
-            DirectoryObservation::Metadata(observation) => observation.request_close(),
+    fn new(observation: DirectoryObservation, shutdown: CancellationToken) -> Self {
+        Self {
+            observation,
+            shutdown,
+            closing: AtomicBool::new(false),
+            next_gate: tokio::sync::Mutex::new(()),
         }
-    }
-
-    pub(crate) fn is_settled(&self) -> bool {
-        self.settled.load(Ordering::Acquire)
     }
 
     async fn next_threads(&self) -> Result<Option<BridgeThreadDirectoryFrame>, BridgeError> {
@@ -133,15 +131,26 @@ impl BridgeDirectoryObservationInner {
             next = observation.next() => Ok(next?.map(convert::metadata_frame)),
         }
     }
+}
 
-    pub(crate) async fn close(&self) -> Result<(), BridgeError> {
+impl ManagedResource for BridgeDirectoryObservationInner {
+    type Error = BridgeError;
+
+    fn request_close(&self) {
+        self.closing.store(true, Ordering::Release);
+        match &self.observation {
+            DirectoryObservation::Threads(observation) => observation.request_close(),
+            DirectoryObservation::Metadata(observation) => observation.request_close(),
+        }
+    }
+
+    async fn close(&self) -> Result<(), BridgeError> {
         self.request_close();
         match &self.observation {
             DirectoryObservation::Threads(observation) => observation.close().await?,
             DirectoryObservation::Metadata(observation) => observation.close().await?,
         }
         let _next = self.next_gate.lock().await;
-        self.settled.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -156,7 +165,7 @@ fn busy() -> BridgeError {
 
 impl BridgeThreadsObservation {
     pub async fn next(&self) -> Result<Option<BridgeThreadDirectoryFrame>, BridgeError> {
-        self.inner.next_threads().await
+        self.inner.get().next_threads().await
     }
 
     #[flutter_rust_bridge::frb(sync)]
@@ -165,19 +174,13 @@ impl BridgeThreadsObservation {
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.inner.close().await?;
-        if let Some(bridge) = current_bridge() {
-            bridge
-                .subscriptions
-                .unregister_directory_observation(self.inner.id);
-        }
-        Ok(())
+        self.inner.retry_close().await.map_err(close_error)
     }
 }
 
 impl BridgeThreadObservation {
     pub async fn next(&self) -> Result<Option<BridgeThreadMetadataFrame>, BridgeError> {
-        self.inner.next_metadata().await
+        self.inner.get().next_metadata().await
     }
 
     #[flutter_rust_bridge::frb(sync)]
@@ -186,12 +189,6 @@ impl BridgeThreadObservation {
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.inner.close().await?;
-        if let Some(bridge) = current_bridge() {
-            bridge
-                .subscriptions
-                .unregister_directory_observation(self.inner.id);
-        }
-        Ok(())
+        self.inner.retry_close().await.map_err(close_error)
     }
 }
