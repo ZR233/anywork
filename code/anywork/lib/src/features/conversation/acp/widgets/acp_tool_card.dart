@@ -76,13 +76,12 @@ class _AcpToolCardState extends State<AcpToolCard> {
       key: ValueKey(AcpViewKeyValues.toolCard(item.toolCallId)),
       icon: _iconForToolKind(item.kindLabel),
       label: item.tool.name,
-      summary: locationSummary,
       meta: item.kindLabel,
       active: active,
       isIssue: isIssue,
       expanded: expandable && _expanded,
       expandable: expandable,
-      tooltip: item.tool.name,
+      tooltip: [item.tool.name, ?locationSummary].join('\n'),
     );
 
     return Column(

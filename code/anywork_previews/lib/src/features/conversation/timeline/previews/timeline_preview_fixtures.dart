@@ -175,7 +175,14 @@ abstract final class TimelinePreviewFixtures {
   }, bodies: _commandBodies);
   static final _commandBodies = [
     body('tool.arguments', '{"command":"cargo flutter test test/ui"}'),
-    body('tool.result', '00:04 +12: All tests passed!'),
+    body(
+      'tool.result',
+      jsonEncode({
+        'stdout': {'content': '00:04 +12: All tests passed!'},
+        'stderr': {'content': ''},
+        'exitCode': 0,
+      }),
+    ),
   ];
 
   /// 紧凑多文件补丁：新增、带移动的更新（@@ 定位、缩进、空行、EOF）、删除。

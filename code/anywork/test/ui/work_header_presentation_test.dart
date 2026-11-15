@@ -255,7 +255,7 @@ void main() {
   }
 
   testWidgets(
-    'history members follow Timeline without a private vertical viewport',
+    'history members use a bounded viewport and scrolling reaches the final details',
     (tester) async {
       await tester.pumpWidget(
         _host(
@@ -264,18 +264,31 @@ void main() {
             timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
             location: WorkDisplayLocation.history,
             initiallyExpanded: true,
-            childBuilder: (_) => const SizedBox(
-              height: 500,
-              child: Text('member failure and cancellation details'),
+            childBuilder: (_) => const Column(
+              children: [
+                SizedBox(height: 500),
+                Text('member failure and cancellation details'),
+              ],
             ),
           ),
         ),
       );
-      expect(find.byType(Scrollable), findsNothing);
+      final viewport = find.byType(Scrollable);
+      expect(viewport, findsOneWidget);
+      expect(tester.getSize(viewport).height, lessThanOrEqualTo(420));
       expect(
         tester.getSize(find.byType(CompletionRunView)).height,
-        greaterThan(500),
+        lessThan(500),
       );
+      final details = find.text('member failure and cancellation details');
+      expect(details.hitTestable(), findsNothing);
+      await tester.drag(viewport, const Offset(0, -220));
+      await tester.pumpAndSettle();
+      expect(
+        tester.state<ScrollableState>(viewport).position.pixels,
+        greaterThan(0),
+      );
+      expect(details.hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

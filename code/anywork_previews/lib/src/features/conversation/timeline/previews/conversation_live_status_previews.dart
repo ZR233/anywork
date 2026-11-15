@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
@@ -100,7 +102,7 @@ Widget liveStatusGroupPreview({
               presentationContract: 'builtin.exec@2',
               statusString: 'succeeded',
               arguments: '{"command":"cargo flutter analyze"}',
-              output: 'No issues found!',
+              output: r'{"stdout":{"content":"No issues found!"},"stderr":{"content":""},"exitCode":0}',
             ),
           ),
         ],
@@ -149,7 +151,7 @@ Widget liveStatusGroupPreview({
               presentationContract: 'builtin.exec@2',
               statusString: 'running',
               arguments: '{"command":"cargo flutter analyze"}',
-              output: '检查进行中。',
+              output: '',
             ),
           ),
       ],
@@ -349,7 +351,7 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
             presentationContract: 'builtin.exec@2',
             statusString: 'failed',
             arguments: '{"command":"cargo flutter analyze"}',
-            output: '命令退出码 1；调用失败后继续思考，不代表会话执行失败。',
+            output: r'{"stdout":{"content":""},"stderr":{"content":"静态分析检查失败。"},"exitCode":1}',
             error: '命令退出码 1',
             exitCode: 1,
           ),
@@ -574,7 +576,13 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
             presentationContract: 'builtin.exec@2',
             statusString: 'running',
             arguments: '{"command":"cargo flutter analyze"}',
-            output: [for (var i = 1; i <= 60; i++) '检查第 $i 项：通过。'].join('\n'),
+            output: jsonEncode({
+              'stdout': {
+                'content': [for (var i = 1; i <= 60; i++) '检查第 $i 项：通过。']
+                    .join('\n'),
+              },
+              'stderr': {'content': ''},
+            }),
           ),
         ),
       ),
@@ -622,7 +630,7 @@ Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
                 presentationContract: 'builtin.exec@2',
                 statusString: 'running',
                 arguments: '{"command":"cargo flutter test --no-pub test/ui"}',
-                output: '正在执行实时状态栏防抖动测试…',
+                output: '',
               ),
             ),
           ),
@@ -728,7 +736,7 @@ class _SealedToolWorkGroupPreviewState
                   presentationContract: 'builtin.exec@2',
                   statusString: 'succeeded',
                   arguments: '{"command":"cargo flutter test test/ui"}',
-                  output: 'exec 执行完成：测试命令成功退出。',
+                  output: r'{"stdout":{"content":"exec 执行完成：测试命令成功退出。"},"stderr":{"content":""},"exitCode":0}',
                 ),
                 initiallyExpanded: true,
               ),

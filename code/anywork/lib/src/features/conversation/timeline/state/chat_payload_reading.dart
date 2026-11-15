@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
+import 'tool_display_registry.dart';
 import 'tool_presentation.dart';
 
 Map<String, Object?> chatObject(Object? value, String field) {
@@ -87,7 +88,8 @@ enum ToolCardUnavailableKind { unknownContract, malformed, deferred }
 
 ToolCardReading readToolCard(ChatItemPresentation item) {
   final marker = item.presentationContract;
-  if (marker != 'generic@1' && !specializedToolContracts.contains(marker)) {
+  final spec = toolDisplayRegistry[marker];
+  if (spec == null) {
     return UnavailableToolCard(
       marker == null
           ? '未提供 presentationContract'
@@ -122,8 +124,8 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
     if (arguments == null) {
       throw const FormatException('缺少 tool.arguments 内联内容');
     }
-    // generic@1 and the freeform patch tool have no structured argument parser.
-    if (marker != 'generic@1' && marker != 'builtin.apply_patch@1') {
+    if (spec.category != ToolDisplayCategory.generic &&
+        spec.inputBody != ToolInputBody.patch) {
       chatObject(jsonDecode(arguments), '工具参数');
     }
     final output = state['output'] == null
@@ -174,7 +176,7 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
         attachments: chatAttachments(output?['attachments']),
         outputArtifacts: artifacts == null ? const [] : [artifacts],
         wait:
-            (marker == 'builtin.wait@1' || marker == 'builtin.sleep@1') &&
+            spec.category == ToolDisplayCategory.wait &&
                 item.data['wait'] != null
             ? _wait(item.data['wait'])
             : null,

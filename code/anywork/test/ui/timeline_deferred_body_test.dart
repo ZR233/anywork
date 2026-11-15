@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -9,6 +10,7 @@ import 'package:anywork_previews/src/features/conversation/timeline/previews/tim
 import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
@@ -17,6 +19,7 @@ import 'package:anywork/src/features/conversation/timeline/views/timeline_view.d
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_attachments_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -154,6 +157,39 @@ Widget _app(Widget child) => MaterialApp(
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );
+
+Widget _scrollBody({
+  required ChatContentRead read,
+  ContentRef reference = _bodyRef,
+  Widget Function(String)? bodyBuilder,
+  TimelineExpansionIntent? group,
+  bool Function()? isActive,
+  VoidCallback Function(TimelineCurrentWindowDisplay)? register,
+  Widget Function(String, Widget)? witness,
+}) {
+  Widget body = TimelineBodyReadIntent(
+    scrollable: true,
+    bodyBuilder: bodyBuilder,
+    child: TimelineContentRangeConnector(
+      key: const ValueKey('scroll-body'),
+      itemId: 'body-item',
+      contentKey: 'body',
+      label: '不应显示的原始参数标签',
+      reference: reference,
+      witness: witness ?? (_, child) => child,
+      readContent: read,
+      isDisplayActive: isActive,
+      registerDisplay: register,
+    ),
+  );
+  if (group != null) body = TimelineGroupBodyIntent(intent: group, child: body);
+  return _app(
+    Align(
+      alignment: Alignment.topLeft,
+      child: SizedBox(width: 400, child: body),
+    ),
+  );
+}
 
 final class _Controls implements TimelineUiControllers {
   _Controls(ChatAtom? atom, {String? displayId})
@@ -905,6 +941,237 @@ void main() {
       await tester.pumpAndSettle();
     });
   }
+
+  testWidgets('工具滚动正文跨窗返回、三页缓存驱逐且无范围按钮', (tester) async {
+    const budget = 64 * 1024;
+    final reads = <int>[];
+    final witnessed = <String>{};
+    await tester.pumpWidget(
+      _scrollBody(
+        read: (reference, range) async {
+          expect(reference, _bodyRef);
+          expect(range.maxBytes, budget);
+          reads.add(range.offset);
+          final index = range.offset ~/ budget;
+          return _window(
+            String.fromCharCode(65 + index) * budget,
+            offset: range.offset,
+            available: budget * 6,
+          );
+        },
+        bodyBuilder: (text) {
+          expect(text.length, budget);
+          // A semantic renderer is allowed to present each bounded segment.
+          return SizedBox(height: 400, child: Text('业务段 ${text[0]}'));
+        },
+        witness: (text, child) {
+          witnessed.add(text[0]);
+          return child;
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(reads, [0]);
+    final list = find.byType(ListView);
+    expect(tester.getSize(list).height, lessThanOrEqualTo(320));
+    expect(find.text('下一段'), findsNothing);
+    expect(find.text('复制当前段'), findsNothing);
+    expect(find.text('不应显示的原始参数标签'), findsNothing);
+    expect(find.textContaining('字节 '), findsNothing);
+    // Jump through the real Scrollable, not a test-side paging algorithm.
+    final position = tester
+        .state<ScrollableState>(find.byType(Scrollable))
+        .position;
+    for (var page = 1; page < 6; page++) {
+      position.jumpTo(page * 400.0);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('业务段 ${String.fromCharCode(65 + page)}'),
+        findsOneWidget,
+      );
+      if (page == 3) {
+        // Exactly four distinct pages must already evict the first. A cache
+        // of four or more pages would fail this public read-count assertion.
+        position.jumpTo(0);
+        await tester.pumpAndSettle();
+        expect(reads.where((offset) => offset == 0).length, 2);
+        final beforeCachedReturn = reads.length;
+        position.jumpTo(3 * 400.0);
+        await tester.pumpAndSettle();
+        expect(reads.length, beforeCachedReturn);
+      }
+    }
+    expect(reads.toSet(), {for (var i = 0; i < 6; i++) i * budget});
+    expect(witnessed, {'A', 'B', 'C', 'D', 'E', 'F'});
+    final beforeReturn = reads.length;
+    position.jumpTo(4 * 400.0);
+    await tester.pumpAndSettle();
+    expect(
+      reads.length,
+      beforeReturn,
+    ); // An adjacent admitted page is retained.
+    position.jumpTo(0);
+    await tester.pumpAndSettle();
+    expect(find.text('业务段 A'), findsOneWidget);
+    expect(reads.where((offset) => offset == 0).length, 3);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('工具滚动跨 UTF-8 字符边界不损坏中文', (tester) async {
+    const budget = 64 * 1024;
+    final bytes = utf8.encode('${'a' * (budget - 1)}中文末尾');
+    final admitted = <String>{};
+    final offsets = <int>[];
+    await tester.pumpWidget(
+      _scrollBody(
+        read: (_, range) async {
+          offsets.add(range.offset);
+          final end = (range.offset + range.maxBytes).clamp(0, bytes.length);
+          return ContentWindow(
+            offset: range.offset,
+            bytes: bytes.sublist(range.offset, end),
+            generation: 'utf8',
+            availableThrough: bytes.length,
+            sealed: true,
+          );
+        },
+        bodyBuilder: (text) {
+          admitted.add(text);
+          return SizedBox(
+            height: 400,
+            child: Text(text.startsWith('a') ? '首段' : text),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(offsets, [0, budget - 1]);
+    expect(admitted, {'a' * (budget - 1), '中文末尾'});
+    expect(find.text('中文末尾'), findsOneWidget);
+  });
+
+  testWidgets('工具滚动短正文自然高度且读取错误只显式重试', (tester) async {
+    var attempts = 0;
+    await tester.pumpWidget(
+      _scrollBody(
+        read: (_, _) async {
+          attempts++;
+          if (attempts == 1) throw StateError('读取失败示例');
+          return _window('短正文');
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(attempts, 1);
+    expect(find.textContaining('读取失败示例'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(attempts, 1);
+    await tester.tap(find.text('重试读取'));
+    await tester.pumpAndSettle();
+    expect(attempts, 2);
+    expect(find.text('短正文'), findsOneWidget);
+    expect(tester.getSize(find.byType(ListView)).height, lessThan(100));
+    expect(find.text('下一段'), findsNothing);
+  });
+
+  testWidgets('工具滚动拒绝跨窗代次不一致且不自动重试', (tester) async {
+    var reads = 0;
+    TimelineCurrentWindowDisplay? display;
+    await tester.pumpWidget(
+      _scrollBody(
+        register: (value) {
+          display = value;
+          return () {};
+        },
+        bodyBuilder: (text) => SizedBox(height: 400, child: Text(text)),
+        read: (_, range) async {
+          reads++;
+          return ContentWindow(
+            offset: range.offset,
+            bytes: utf8.encode(range.offset == 0 ? '旧代正文' : '不应接纳的新代正文'),
+            generation: range.offset == 0 ? 'old' : 'new',
+            availableThrough: 500,
+            sealed: true,
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('正文范围或代次不一致'), findsOneWidget);
+    expect(find.text('不应接纳的新代正文'), findsNothing);
+    expect(display!.window!.generation, 'old');
+    expect(display!.error, isNotNull);
+    final attempts = reads;
+    await tester.pump(const Duration(seconds: 1));
+    expect(reads, attempts);
+  });
+
+  for (final action in ['fold', 'retire', 'leave']) {
+    testWidgets('工具滚动 $action 撤销资格并拒绝迟到正文', (tester) async {
+      final pending = Completer<ContentWindow>();
+      final group = TimelineExpansionIntent();
+      final token = Object();
+      group.setBodyVisible(token, true);
+      addTearDown(group.dispose);
+      var active = true;
+      var registered = false;
+      TimelineCurrentWindowDisplay? display;
+      await tester.pumpWidget(
+        _scrollBody(
+          group: group,
+          isActive: () => active,
+          register: (value) {
+            display = value;
+            registered = true;
+            return () => registered = false;
+          },
+          read: (_, _) => pending.future,
+        ),
+      );
+      await tester.pump();
+      expect(registered, isTrue);
+      if (action == 'fold') {
+        group.setBodyVisible(token, false);
+      } else if (action == 'retire') {
+        group.retire();
+      } else {
+        active = false;
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+      pending.complete(_window('迟到的旧正文'));
+      await tester.pumpAndSettle();
+      expect(display!.window, isNull);
+      expect(registered, isFalse);
+      expect(find.text('迟到的旧正文'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('工具滚动引用换代后旧读取不得覆盖新正文', (tester) async {
+    final pending = Completer<ContentWindow>();
+    final reads = <ContentRef>[];
+    Future<ContentWindow> read(ContentRef reference, ContentRange range) {
+      reads.add(reference);
+      return reference == _bodyRef
+          ? pending.future
+          : Future.value(_window('新引用正文'));
+    }
+
+    await tester.pumpWidget(_scrollBody(read: read));
+    await tester.pump();
+    await tester.pumpWidget(_scrollBody(read: read, reference: _retainedRef));
+    await tester.pumpAndSettle();
+    expect(find.text('新引用正文'), findsOneWidget);
+    pending.complete(_window('旧引用迟到正文'));
+    await tester.pumpAndSettle();
+    expect(reads, [_bodyRef, _retainedRef]);
+    expect(find.text('新引用正文'), findsOneWidget);
+    expect(find.text('旧引用迟到正文'), findsNothing);
+  });
 
   testWidgets('正文下一段替换当前窗口，保留范围导航而不累计全文', (tester) async {
     final controls = _Controls(_atom('first'));

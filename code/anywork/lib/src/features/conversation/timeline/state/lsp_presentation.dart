@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../../../shared/typed_json.dart';
+import 'tool_display_registry.dart';
 import 'tool_presentation.dart';
 
 /// LSP 系列工具（`builtin.lsp_query@1`、`builtin.lsp_capabilities@1`、
@@ -332,11 +333,15 @@ TimelineLspPresentation? parseTimelineLspPresentation(
   String? outputOverride,
 }) {
   final output = outputOverride ?? tool.output;
-  return switch (tool.presentationContract) {
-    'builtin.lsp_query@1' => _parseQuery(tool.arguments, output),
-    'builtin.lsp_capabilities@1' => _parseCapabilities(output),
-    'builtin.lsp_status@1' => _parseStatus(output),
-    _ => null,
+  return switch (toolDisplayRegistry[tool.presentationContract]?.kind) {
+    ToolDetailKind.lspQuery => _parseQuery(tool.arguments, output),
+    ToolDetailKind.lspCapabilities => _parseCapabilities(output),
+    ToolDetailKind.lspStatus => _parseStatus(output),
+    ToolDetailKind.standard ||
+    ToolDetailKind.patch ||
+    ToolDetailKind.web ||
+    ToolDetailKind.image ||
+    null => null,
   };
 }
 
