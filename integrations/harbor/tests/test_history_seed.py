@@ -65,7 +65,9 @@ def source_home(tmp_path, archive):
     return home, development
 
 
-def test_seed_is_locked_validated_and_each_copy_is_independent(source_home, archive, tmp_path):
+def test_seed_is_locked_validated_and_each_copy_is_independent(
+    source_home, archive, tmp_path, monkeypatch
+):
     home, development = source_home
     output = tmp_path / "seed"
     with (home / "studio/runtime.lock").open("rb") as lock:
@@ -76,6 +78,11 @@ def test_seed_is_locked_validated_and_each_copy_is_independent(source_home, arch
     seed = freeze(home, archive, development, output)
     assert seed["statistics"]["performance_samples"][0]["count"] == 1
     validate_seed(output, config=home / "config.toml", expected_version="1.0.0-test")
+    monkeypatch.chdir(tmp_path)
+    assert (
+        validate_seed(Path("seed"), config=home / "config.toml", expected_version="1.0.0-test")
+        == seed
+    )
     for name in ("trial-one", "trial-two"):
         shutil.copytree(output / "data", tmp_path / name)
     with sqlite3.connect(tmp_path / "trial-one/calls/calls.sqlite") as db:

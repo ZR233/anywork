@@ -94,7 +94,9 @@ def _inspect_data_unchecked(data: Path) -> dict:
         wal = path.with_name(path.name + "-wal")
         if wal.exists() and wal.stat().st_size:
             raise ValueError("种子尚未形成独立 SQLite 快照")
-        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)) as db:
+        with closing(
+            sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro&immutable=1", uri=True)
+        ) as db:
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise ValueError("种子 SQLite 一致性检查失败")
             if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
