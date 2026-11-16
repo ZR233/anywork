@@ -11,6 +11,7 @@ pub struct ThreadHandle {
     pub(in crate::thread) runtime_epoch: current::RuntimeEpoch,
     pub(in crate::thread) final_current:
         watch::Receiver<Option<Result<current::ThreadCurrent, Arc<current::CurrentError>>>>,
+    pub(in crate::thread) current_dirty: watch::Receiver<u64>,
     thread_id: String,
     _lifetime: Arc<HandleLifetime>,
     commands: mpsc::Sender<Command>,

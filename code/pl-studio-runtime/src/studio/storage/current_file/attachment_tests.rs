@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use pl_core::{
     context::{ContextContent, ContextRecord, ContextSource, OpaquePayload, ResourceReference},
-    model::{ModelStepOutput, ToolCallMode},
+    model::ToolCallMode,
     thread::{
         RuntimeFact, ToolDelivery, ToolDeliveryTarget, ToolOutcome,
         current::{
@@ -19,7 +19,7 @@ use pl_core::{
 use pl_model::runtime::{attachment_content, decode_attachment};
 use pl_protocol::AttachmentModality;
 
-use super::{CurrentFile, verify_recovery_resources};
+use super::{CurrentFile, VerifiedResources, verify_recovery_resources};
 use crate::{
     resource_store::{FileResourceStore, RESOURCE_ID_PREFIX},
     studio::paths::CURRENT_FILE_NAME,
@@ -27,24 +27,6 @@ use crate::{
 
 const THREAD: &str = "attachment-current";
 const MATERIAL: &[u8] = b"complete retained attachment";
-
-#[derive(Debug)]
-struct CountingResources {
-    store: FileResourceStore,
-    reads: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl pl_core::context::ResourceReader for CountingResources {
-    async fn read(
-        &self,
-        reference: ResourceReference,
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> std::result::Result<Arc<[u8]>, pl_core::context::ResourceReadError> {
-        self.reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        pl_core::context::ResourceReader::read(&self.store, reference, cancellation).await
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 enum Slot {
@@ -55,7 +37,6 @@ enum Slot {
     OriginalToolContext,
     PendingDelivery,
     Preparing,
-    ReadyToApply,
 }
 
 fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> ThreadCurrent {
@@ -126,25 +107,11 @@ fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> Threa
             }]
             .into();
         }
-        Slot::Preparing | Slot::ReadyToApply => {
-            let phase = if matches!(slot, Slot::Preparing) {
-                SavedModelPhase::Preparing {
-                    pending_step_input: Some(PendingStepInput {
-                        content: vec![content],
-                    }),
-                }
-            } else {
-                SavedModelPhase::ReadyToApply {
-                    output: ModelStepOutput {
-                        turn_action: Default::default(),
-                        attempt_id: "attempt".into(),
-                        base_context_revision: 0,
-                        content: vec![content],
-                        tool_calls: Vec::new(),
-                        private_context: None,
-                        usage: Default::default(),
-                    },
-                }
+        Slot::Preparing => {
+            let phase = SavedModelPhase::Preparing {
+                pending_step_input: Some(PendingStepInput {
+                    content: vec![content],
+                }),
             };
             current.model_call = Some(CurrentModelCall {
                 source_run_id: epoch,
@@ -176,10 +143,7 @@ fn asset_path(directory: &std::path::Path, reference: &ResourceReference) -> std
 }
 
 #[tokio::test]
-async fn repeated_resource_references_read_once_without_hiding_conflicting_metadata() -> Result<()>
-{
-    use pl_core::context::ResourceAccess;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+async fn verified_resources_are_reused_only_for_the_same_reference_and_owner() -> Result<()> {
     use tokio_util::sync::CancellationToken;
 
     let directory = tempfile::tempdir()?;
@@ -207,16 +171,21 @@ async fn repeated_resource_references_read_once_without_hiding_conflicting_metad
         content: vec![projected],
     }]
     .into();
-    let reads = Arc::new(AtomicUsize::new(0));
-    let resources = ResourceAccess::new(CountingResources {
-        store,
-        reads: reads.clone(),
-    });
-    verify_recovery_resources(&current, &resources, CancellationToken::new()).await?;
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        1,
-        "direct and model-projected aliases must share one byte verification per attempt"
+    let mut verified = VerifiedResources::new();
+    verify_recovery_resources(&current, &store, &mut verified, CancellationToken::new()).await?;
+    assert_eq!(verified.len(), 1, "aliases use the same verified identity");
+    std::fs::remove_file(asset_path(directory.path(), &reference))?;
+    verify_recovery_resources(&current, &store, &mut verified, CancellationToken::new()).await?;
+    assert!(
+        verify_recovery_resources(
+            &current,
+            &store,
+            &mut VerifiedResources::new(),
+            CancellationToken::new()
+        )
+        .await
+        .is_err(),
+        "a fresh owner must verify the resource again"
     );
 
     let invalid = ResourceReference::new(
@@ -230,16 +199,18 @@ async fn repeated_resource_references_read_once_without_hiding_conflicting_metad
         content: vec![attachment_content(invalid, AttachmentModality::File)?],
     }]
     .into();
-    reads.store(0, Ordering::Relaxed);
     assert!(
-        verify_recovery_resources(&current, &resources, CancellationToken::new())
+        verify_recovery_resources(&current, &store, &mut verified, CancellationToken::new())
             .await
             .is_err()
     );
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        2,
-        "the same ID with a different length still requires a failing byte validation"
+    current.state.context.records = Arc::from([]);
+    current.state.runtime_facts = Arc::from([]);
+    current.state.deliveries = Arc::from([]);
+    verify_recovery_resources(&current, &store, &mut verified, CancellationToken::new()).await?;
+    assert!(
+        verified.is_empty(),
+        "unreferenced identities must be evicted"
     );
     Ok(())
 }
@@ -257,7 +228,6 @@ async fn opaque_attachments_require_retained_bytes_in_all_recovery_contents() ->
         Slot::OriginalToolContext,
         Slot::PendingDelivery,
         Slot::Preparing,
-        Slot::ReadyToApply,
     ] {
         let reference = resources
             .retain_bytes(Arc::from(MATERIAL), "application/octet-stream")
@@ -403,7 +373,7 @@ async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> R
     let epoch = RuntimeEpoch::new();
     let mut baseline = current_in(
         Slot::Context,
-        attachment_content(good, AttachmentModality::File)?,
+        attachment_content(good.clone(), AttachmentModality::File)?,
         epoch,
     );
     baseline.snapshot_revision = 1;
@@ -432,6 +402,17 @@ async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> R
         .await?;
     let receipt = store.flush_current(epoch).await?;
     let path = directory.path().join(CURRENT_FILE_NAME);
+    // A later save of the same immutable reference must use the owner-local verification cache.
+    // A real cold load still revalidates the resource, even though that save succeeds.
+    std::fs::remove_file(asset_path(directory.path(), &good))?;
+    assert_eq!(store.flush_current(epoch).await?, receipt);
+    assert!(store.load_current().await.is_err());
+    assert_eq!(
+        resources
+            .retain_bytes(Arc::from(MATERIAL), "application/octet-stream")
+            .await?,
+        good
+    );
     let original = std::fs::read(&path)?;
     for (index, slot) in [
         Slot::Input,

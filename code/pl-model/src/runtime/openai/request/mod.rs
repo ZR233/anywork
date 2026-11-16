@@ -5,10 +5,9 @@ use serde_json::{Map, Value};
 use super::OpenAiEndpoint;
 use crate::completion::CompletionRequest;
 use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
-use crate::protocol::{ProtocolKind, WireApi};
+use crate::protocol::InstructionWireRole;
 
 mod body;
-pub(crate) use body::recovery_touches_input;
 mod chat;
 pub(crate) mod chatgpt;
 mod content;
@@ -42,6 +41,16 @@ impl OpenAiRequestBody {
         Ok(())
     }
 
+    pub(crate) fn validate_chatgpt(&self, original: &Self) -> Result<()> {
+        match (self, original) {
+            (Self::Responses(body), Self::Responses(original)) => {
+                chatgpt::validate_body(body, original)
+            }
+            _ => Err(PureError::ConfigError(
+                "ChatGPT requires Responses HTTP".into(),
+            )),
+        }
+    }
     pub(crate) fn sent_model(&self) -> Result<String> {
         let body = match self {
             Self::Responses(body) | Self::Chat(body) => body,
@@ -58,6 +67,12 @@ impl OpenAiRequestBody {
             }
         }
     }
+    pub(crate) fn apply_native_options(&mut self, options: &Map<String, Value>) {
+        match self {
+            Self::Responses(body) | Self::Chat(body) => body::merge_base_body(body, options),
+        }
+    }
+
     /// Rejects any attempt to re-open the removed top-level `instructions` channel.
     ///
     /// The trusted instruction body now travels exclusively through the typed `SystemPrompt`
@@ -88,17 +103,12 @@ pub(crate) fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<Str
 
 pub(crate) fn build_openai_request_body(
     endpoint: OpenAiEndpoint,
-    protocol: ProtocolKind,
+    instruction_role: InstructionWireRole,
     request: &CompletionRequest,
     model: &ModelInfo,
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
-    native_options: &Map<String, Value>,
 ) -> Result<OpenAiRequestBody> {
-    let instruction_role = protocol.instruction_wire_role(match endpoint {
-        OpenAiEndpoint::Responses => WireApi::Responses,
-        OpenAiEndpoint::ChatCompletions => WireApi::ChatCompletions,
-    });
     request.validate_replay_spans()?;
     let messages = messages_after_last_compaction(&request.input);
     validate_tool_history(&messages)?;
@@ -118,18 +128,18 @@ pub(crate) fn build_openai_request_body(
                 instruction_role,
                 chatgpt,
             )?)?;
-            let original = chatgpt.then(|| body.clone());
-            if let Some(original) = &original {
-                chatgpt::validate_model_overrides(model, request, original)?;
+            let original = body.clone();
+            if chatgpt {
+                chatgpt::validate_model_overrides(model, request, &original)?;
             }
             apply_responses_max_tokens_field(
                 &mut body,
                 request.max_tokens,
                 options.max_tokens_field,
             );
-            finalize_body(&mut body, model, request, native_options, protocol, chatgpt)?;
-            if let Some(original) = &original {
-                chatgpt::validate_body(&body, original)?;
+            finalize_body(&mut body, model, &request.reasoning);
+            if chatgpt {
+                chatgpt::validate_body(&body, &original)?;
             }
             Ok(OpenAiRequestBody::Responses(body))
         }
@@ -139,7 +149,7 @@ pub(crate) fn build_openai_request_body(
                 model,
                 instruction_role,
             )?)?;
-            finalize_body(&mut body, model, request, native_options, protocol, chatgpt)?;
+            finalize_body(&mut body, model, &request.reasoning);
             Ok(OpenAiRequestBody::Chat(body))
         }
     }
@@ -165,19 +175,13 @@ fn apply_responses_max_tokens_field(
     let Some(max_tokens) = max_tokens else {
         return;
     };
-    let Some(key) = responses_max_tokens_key(field) else {
-        return;
+    let key = match field {
+        ResponsesMaxTokensField::Omit => return,
+        ResponsesMaxTokensField::MaxOutputTokens => "max_output_tokens",
+        ResponsesMaxTokensField::MaxTokens => "max_tokens",
+        ResponsesMaxTokensField::MaxCompletionTokens => "max_completion_tokens",
     };
     body.insert(key.to_string(), Value::from(max_tokens));
-}
-
-pub(super) fn responses_max_tokens_key(field: ResponsesMaxTokensField) -> Option<&'static str> {
-    match field {
-        ResponsesMaxTokensField::Omit => None,
-        ResponsesMaxTokensField::MaxOutputTokens => Some("max_output_tokens"),
-        ResponsesMaxTokensField::MaxTokens => Some("max_tokens"),
-        ResponsesMaxTokensField::MaxCompletionTokens => Some("max_completion_tokens"),
-    }
 }
 
 fn protocol_error(message: impl Into<String>) -> PureError {

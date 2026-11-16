@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, ensure};
 use futures::future::BoxFuture;
 use pl_core::thread::{
-    ThreadHandle, ThreadSubscription,
+    ThreadHandle,
     current::{RuntimeEpoch, ThreadCurrent},
 };
 use tokio::{
@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::current_file::CurrentFile;
+use super::current_file::{CurrentFile, VerifiedResources};
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(2);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -142,7 +142,7 @@ pub(crate) struct CurrentSaveState {
     pub(crate) lifecycle: CurrentLifecycle,
     pub(crate) dirty: bool,
     pub(crate) in_flight: bool,
-    /// Live observation only, never a saved revision or a history watermark.
+    /// Latest coalesced dirty notification, never a history watermark.
     pub(crate) observed_revision: Option<u64>,
     /// A retained subscription task, including a completed one until its real join.
     pub(crate) observer_registered: bool,
@@ -382,6 +382,7 @@ struct Active {
     epoch: RuntimeEpoch,
     source: CurrentSource,
     observer: Option<CurrentObserver>,
+    verified_resources: VerifiedResources,
 }
 
 struct CurrentObserver {
@@ -401,7 +402,7 @@ impl Drop for ObserverTask {
 
 impl CurrentObserver {
     fn start(
-        mut subscription: ThreadSubscription,
+        mut subscription: watch::Receiver<u64>,
         mut revision: u64,
         epoch: RuntimeEpoch,
         shared: Arc<Shared>,
@@ -422,10 +423,11 @@ impl CurrentObserver {
                 tokio::select! {
                     biased;
                     () = stopped.cancelled() => break,
-                    snapshot = subscription.next() => {
-                        let Some(snapshot) = snapshot else { break; };
-                        if snapshot.observation_revision != revision {
-                            revision = snapshot.observation_revision;
+                    changed = subscription.changed() => {
+                        if changed.is_err() { break; }
+                        let next = *subscription.borrow_and_update();
+                        if next != revision {
+                            revision = next;
                             shared.mark_dirty(epoch, Some(revision));
                         }
                     }
@@ -491,17 +493,9 @@ async fn activate_source(
     }
     let mut observation = match &source.observations {
         Some(handle) => {
-            let mut subscription = handle.subscribe();
-            // The first next is the current watch value, not a wait for a future business event.
-            let initial = subscription
-                .next()
-                .await
-                .context("Core current subscription unavailable")?;
-            Some((
-                subscription,
-                initial.observation_revision,
-                CancellationToken::new(),
-            ))
+            let mut subscription = handle.subscribe_current_dirty();
+            let initial = *subscription.borrow_and_update();
+            Some((subscription, initial, CancellationToken::new()))
         }
         None => None,
     };
@@ -528,6 +522,7 @@ async fn activate_source(
         epoch,
         source,
         observer,
+        verified_resources: VerifiedResources::new(),
     });
     Ok(())
 }
@@ -590,19 +585,19 @@ async fn run(file: CurrentFile, shared: Arc<Shared>, mut commands: mpsc::Receive
                     Command::Flush { epoch, reply } => {
                         let admitted = shared.read(|s| s.view.lifecycle == CurrentLifecycle::Open && s.view.runtime_epoch.as_ref() == Some(&epoch));
                         let result = if admitted {
-                            save(&file, &shared, active.as_ref().expect("open writer source")).await
+                            save(&file, &shared, active.as_mut().expect("open writer source")).await
                         } else { Err(anyhow!("stale current runtime epoch or closing writer")) };
                         let _ = reply.send(result);
                     }
                 }
             }
             _ = retry_ready(retry_at) => {
-                if let Some(owner) = &active { let _ = save(&file, &shared, owner).await; }
+                if let Some(owner) = &mut active { let _ = save(&file, &shared, owner).await; }
             }
             _ = tokio::time::sleep_until(next_tick) => {
                 next_tick += SAVE_INTERVAL;
                 let ready = shared.read(|s| s.view.dirty && s.retry_at.is_none() && s.view.lifecycle == CurrentLifecycle::Open);
-                if ready && let Some(owner) = &active { let _ = save(&file, &shared, owner).await; }
+                if ready && let Some(owner) = &mut active { let _ = save(&file, &shared, owner).await; }
             }
         }
     }
@@ -622,9 +617,13 @@ async fn retry_ready(deadline: Option<Instant>) {
     }
 }
 
-async fn save(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<CurrentSaveReceipt> {
+async fn save(
+    file: &CurrentFile,
+    shared: &Shared,
+    owner: &mut Active,
+) -> Result<CurrentSaveReceipt> {
     let cancellation = CancellationToken::new();
-    shared.update(|state| -> Result<()> {
+    let started_revision = shared.update(|state| -> Result<Option<u64>> {
         ensure!(
             state.view.lifecycle == CurrentLifecycle::Open
                 && state.view.runtime_epoch.as_ref() == Some(&owner.epoch),
@@ -633,7 +632,7 @@ async fn save(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<Cur
         state.view.dirty = false;
         state.view.in_flight = true;
         state.capture = Some(cancellation.clone());
-        Ok(())
+        Ok(state.view.observed_revision)
     })?;
     let _cancel = cancellation.clone().drop_guard();
     let result = async {
@@ -644,18 +643,28 @@ async fn save(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<Cur
                 result.context("current capture exceeded one second")??
             }
         };
+        // A producer can accept a newer delta after returning its captured stream but before the
+        // owner reads the dirty sequence. A successful save only acknowledges the sequence that
+        // was observed before capture began; later notifications still require another save.
+        if let Some(revision) = started_revision {
+            current.snapshot_revision = revision;
+        }
         // This denotes completed capture, not a prediction of successful writing.
         current.saved_at = utc_millis();
         ensure!(!cancellation.is_cancelled(), "current capture cancelled");
         file.validate(&current, Some(&owner.epoch))?;
-        file.verify_resources(&current, cancellation.clone()).await?;
+        file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
         ensure!(!cancellation.is_cancelled(), "current capture cancelled");
         publish(file, shared, current).await
     }.await;
     complete_attempt(shared, result)
 }
 
-async fn finish(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<CurrentSaveReceipt> {
+async fn finish(
+    file: &CurrentFile,
+    shared: &Shared,
+    owner: &mut Active,
+) -> Result<CurrentSaveReceipt> {
     shared.update(|state| {
         state.view.in_flight = true;
         state.view.dirty = false;
@@ -667,8 +676,12 @@ async fn finish(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<C
             .context("final current handoff")?;
         current.saved_at = utc_millis();
         file.validate(&current, Some(&owner.epoch))?;
-        file.verify_resources(&current, CancellationToken::new())
-            .await?;
+        file.verify_resources(
+            &current,
+            &mut owner.verified_resources,
+            CancellationToken::new(),
+        )
+        .await?;
         publish(file, shared, current).await
     }
     .await;
@@ -841,8 +854,8 @@ mod tests {
                                 return ModelCallExit { result: Err(model_cancelled()), current: Some(accepted) };
                             };
                             accepted = OpaquePayload::text(text);
-                            // No UI progress preview or effect commit: this is the producer-only
-                            // dirty channel consumed by Core and the real ThreadSubscription.
+                            // No UI progress preview or effect commit: this producer-only change
+                            // reaches the writer through the owner's small dirty watch.
                             receiver.mark_dirty();
                             let _ = reply.send(());
                         },
@@ -933,7 +946,7 @@ mod tests {
             Some(ModelExecutionPhase::Running)
         );
         assert!(!handle.snapshot().persistence.attached);
-        let baseline = handle.snapshot().observation_revision;
+        let baseline = *handle.subscribe_current_dirty().borrow();
         observed(&writer, |state| {
             state
                 .observed_revision
@@ -1179,6 +1192,77 @@ mod tests {
         assert_eq!(captures.load(Ordering::SeqCst), 2);
         writer.close(epoch).await?;
         assert!(writer.is_joined());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_acknowledges_only_the_dirty_revision_at_capture_start() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let owner = ThreadHandle::restore_current(
+            ThreadCurrent::new("current-test".into(), RuntimeEpoch::new()),
+            None,
+        )?;
+        let epoch = owner.runtime_epoch();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut source = CurrentSource::new(
+            {
+                let started = started.clone();
+                let release = release.clone();
+                move |epoch, _| {
+                    let started = started.clone();
+                    let release = release.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            started.notify_one();
+                            release.notified().await;
+                        }
+                        // The captured owner may already report a later sequence than its stream.
+                        Ok(current(epoch, 100))
+                    })
+                }
+            },
+            |epoch| Box::pin(async move { Ok(current(epoch, 100)) }),
+        );
+        source.observations = Some(owner.clone());
+        let writer = CurrentWriter::new(CurrentFile::new(
+            directory.path().into(),
+            "current-test".into(),
+        ));
+        writer.activate(None, epoch, source).await?;
+        let before = writer.snapshot().observed_revision.unwrap();
+        let flushing = tokio::spawn({
+            let writer = writer.clone();
+            async move { writer.flush(epoch).await }
+        });
+        started.notified().await;
+        owner
+            .patch_runtime_facts(vec![RuntimeFact {
+                source_id: "during-capture".into(),
+                content: vec![ContextContent::Text {
+                    text: "new state".into(),
+                }],
+            }])
+            .await?;
+        let newer = observed(&writer, |state| {
+            state.dirty
+                && state
+                    .observed_revision
+                    .is_some_and(|revision| revision > before)
+        })
+        .await;
+        release.notify_one();
+        assert_eq!(flushing.await??.snapshot_revision, before);
+        assert!(writer.snapshot().dirty);
+        assert_eq!(
+            writer.flush(epoch).await?.snapshot_revision,
+            newer.observed_revision.unwrap()
+        );
+        assert!(!writer.snapshot().dirty);
+        writer.close(epoch).await?;
+        owner.close().await?;
         Ok(())
     }
 

@@ -5,11 +5,9 @@ use super::*;
 pub(in crate::thread) enum Command {
     CurrentResume {
         epoch: current::RuntimeEpoch,
-        execution_id: String,
-        attempt_id: String,
         authorized_stops: u64,
         input: TurnInput,
-        reply: oneshot::Sender<Result<TurnCompletion, ThreadError>>,
+        reply: oneshot::Sender<Result<TurnCompletion, current::CurrentError>>,
     },
     QueuedTurn(
         input::QueuedTurn,
@@ -104,7 +102,9 @@ impl Command {
             let _ = reply.send(Err(ThreadError::Closed));
         }
         match self {
-            Self::CurrentResume { reply, .. } => closed(reply),
+            Self::CurrentResume { reply, .. } => {
+                let _ = reply.send(Err(current::CurrentError::Closed));
+            }
             Self::ReplaceModel(_, _, reply) => closed(reply),
             Self::ContextPreparation(_, reply) => closed(reply),
             Self::Reveal(_, reply) => closed(reply),

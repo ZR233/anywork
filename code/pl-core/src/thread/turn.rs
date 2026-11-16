@@ -4,7 +4,7 @@ use super::*;
 impl Owner {
     pub(super) async fn run_turn(
         &mut self,
-        mut input: TurnInput,
+        input: TurnInput,
     ) -> Result<TurnCompletion, ThreadError> {
         if self.current_saved_lifecycle.is_some() {
             return Err(ThreadError::CurrentPaused);
@@ -22,25 +22,14 @@ impl Owner {
         {
             return Err(ThreadError::InvalidIdentity);
         }
-        let mut first_step = StepInput {
+        let first_step = StepInput {
             turn_id: input.turn_id.clone(),
-            attempt_id: self.first_turn_attempt_identity(&input)?,
+            attempt_id: self.turn_attempt_identity(&input.attempt_prefix, 0),
             content: input.content.clone(),
             cancellation: input.cancellation.clone(),
         };
-        let resumed = self.admit_current_step(&first_step)?;
-        let caller = input.cancellation.clone();
-        if let Some(resumed) = &resumed {
-            input.cancellation = resumed.token.clone();
-            first_step.cancellation = resumed.token.clone();
-        }
         let turn_id = input.turn_id.clone();
-        let result = cancellation::run_with_resume_cancellation(
-            resumed.as_ref(),
-            caller,
-            self.execute_turn(input, first_step, resumed.is_some()),
-        )
-        .await;
+        let result = self.execute_turn(input, first_step).await;
         // A Turn that ended before it ever created its record (a stop during preparation) still has to
         // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
         // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
@@ -55,9 +44,6 @@ impl Owner {
         // failed or cancelled Turn as well as a completed one. A stop that named this generation
         // settles here too; the continuation point it formed is a separate durable fact and stays.
         self.finish_execution(&turn_id);
-        if result.is_err() {
-            self.pause_current_recovery(&turn_id);
-        }
         if result
             .as_ref()
             .is_ok_and(|completion| completion.outcome == TurnOutcome::Completed)
@@ -71,7 +57,6 @@ impl Owner {
         &mut self,
         input: TurnInput,
         first_step: StepInput,
-        pre_admitted: bool,
     ) -> Result<TurnCompletion, ThreadError> {
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
@@ -108,8 +93,7 @@ impl Owner {
             if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
                 return Err(ThreadError::Cancelled);
             }
-            self.execute_turn_loop(input, first_step.attempt_id, pre_admitted)
-                .await
+            self.execute_turn_loop(input, first_step.attempt_id).await
         }
         .await;
         if matches!(result, Err(ThreadError::Closed)) && self.interrupt.is_closing() {
@@ -330,7 +314,6 @@ impl Owner {
         &mut self,
         input: TurnInput,
         first_attempt_id: String,
-        mut pre_admitted: bool,
     ) -> Result<TurnCompletion, ThreadError> {
         if input.attempt_prefix.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -356,7 +339,6 @@ impl Owner {
                     step_input,
                     correction_source.take(),
                     &mut recovered_capacity,
-                    std::mem::take(&mut pre_admitted),
                 )
                 .await;
             let output = match result {

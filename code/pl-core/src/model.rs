@@ -137,9 +137,6 @@ pub struct ModelRequest {
     /// Frozen tool IDs that must be the only tool call in a response.
     pub solo_tool_ids: Arc<[String]>,
     pub committed_private_context: Option<OpaquePayload>,
-    /// Frozen producer-owned request options from a paused current, if this is its first new
-    /// attempt. The model must apply these options or reject preparation; they are not input context.
-    pub recovery_parameters: Option<OpaquePayload>,
     pub resources: Option<crate::context::ResourceAccess>,
     pub cancellation: CancellationToken,
 }
@@ -2533,7 +2530,6 @@ pub struct PreparedModelCall {
     session_health: Option<Arc<SessionHealth>>,
     input_estimate: Option<TokenEstimate>,
     current_capture: Option<CurrentCaptureHandle>,
-    applied_recovery_parameters: Option<OpaquePayload>,
     future: BoxFuture<'static, ModelCallExit>,
 }
 
@@ -2561,15 +2557,7 @@ impl PreparedModelCall {
             tool_projection: None,
             request_metadata: None,
             current_capture: None,
-            applied_recovery_parameters: None,
         }
-    }
-
-    /// Confirms that this exact saved options payload was checked and applied to the new request.
-    /// The producer must reject incompatible bindings rather than attaching an unverified payload.
-    pub fn with_applied_recovery_parameters(mut self, parameters: OpaquePayload) -> Self {
-        self.applied_recovery_parameters = Some(parameters);
-        self
     }
 
     /// Installs the single revocable capture endpoint serviced by this invocation's producer.
@@ -2716,7 +2704,6 @@ impl DynModelSession {
         request: ModelRequest,
     ) -> Result<PreparedModelCall, ModelError> {
         self.health.ensure_available()?;
-        let expected_recovery = request.recovery_parameters.clone();
         match crate::error_record::catch_boundary("model preparation", async {
             self.inner.prepare(request).await
         })
@@ -2724,18 +2711,6 @@ impl DynModelSession {
         {
             Ok(result) => {
                 let mut call = result?;
-                if expected_recovery.is_some()
-                    && call.applied_recovery_parameters.as_ref() != expected_recovery.as_ref()
-                {
-                    return Err(ModelError {
-                        details: None,
-                        kind: ModelFailureKind::IncompatibleContext,
-                        usage: Box::default(),
-                        source: Some(Box::new(std::io::Error::other(
-                            "model did not apply the saved recovery parameters",
-                        ))),
-                    });
-                }
                 call.session_health = Some(self.health.clone());
                 Ok(call)
             }

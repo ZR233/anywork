@@ -9,8 +9,8 @@ use pl_core::model::{
     PreparedModelCall, ToolCallMode, ToolProgress, ToolProgressUpdate,
 };
 use pl_core::thread::current::{
-    CurrentError, CurrentModelCall, ExecutionIdentity, PendingStepInput, RuntimeEpoch,
-    SavedModelPhase, SavedToolProgress, ThreadCurrent, ThreadCurrentState,
+    CurrentError, CurrentModelCall, PendingStepInput, RuntimeEpoch, SavedModelPhase,
+    SavedToolProgress, ThreadCurrent, ThreadCurrentState,
 };
 use pl_core::thread::{
     ModelExecutionPhase, ModelStepLimit, StepInput, ThreadHandle, ThreadSnapshot, ToolDelivery,
@@ -264,46 +264,6 @@ fn full_tool_baseline_preserves_identity_version_text_without_old_lineage() {
 }
 
 #[test]
-fn saved_outcome_applies_atomically_once_and_conflict_keeps_pending() {
-    let epoch = RuntimeEpoch::new();
-    let mut current = ThreadCurrent::new("thread".into(), epoch);
-    current.model_call = Some(saved_call(
-        epoch,
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-    ));
-    current.apply_saved_model_outcome_once().unwrap();
-    assert_eq!(current.state.context.records.len(), 1);
-    assert_eq!(current.state.context.records[0].id, "old-attempt:output");
-    assert_eq!(current.state.usage_summary.totals.inference_count, 1);
-    assert_eq!(current.state.usage_summary.totals.prompt_tokens, 7);
-    assert_eq!(
-        current.state.private_context.as_ref().unwrap().content(),
-        "signed native replay"
-    );
-    current.apply_saved_model_outcome_once().unwrap();
-    // Local stable-ID defense also covers a saved outcome whose identical record is already present.
-    current.model_call.as_mut().unwrap().phase = SavedModelPhase::ReadyToApply {
-        output: output("old-attempt", 0),
-    };
-    current.apply_saved_model_outcome_once().unwrap();
-    assert_eq!(current.state.context.records.len(), 1);
-    assert_eq!(current.state.usage_summary.totals.inference_count, 1);
-    let mut conflicting = output("old-attempt", 0);
-    conflicting.content = vec![text("conflicting")];
-    current.model_call.as_mut().unwrap().phase = SavedModelPhase::ReadyToApply {
-        output: conflicting,
-    };
-    let before = serde_json::to_value(&current).unwrap();
-    assert!(matches!(
-        current.apply_saved_model_outcome_once(),
-        Err(CurrentError::RecordConflict(_))
-    ));
-    assert_eq!(serde_json::to_value(current).unwrap(), before);
-}
-
-#[test]
 fn known_deliveries_win_unknown_pairs_and_nested_results_are_not_redispatched() {
     let epoch = RuntimeEpoch::new();
     let mut current = ThreadCurrent::new("thread".into(), epoch);
@@ -404,166 +364,8 @@ fn background_ack_keeps_original_message_identity_and_never_gets_second_tool_res
     assert_eq!(current.state.inbox[0].message.id, "original-result-message");
     assert_eq!(current.state.inbox[0].sequence, sequence);
     assert_eq!(current.state.context.records.len(), 2);
-    let resumed = current
-        .prepare_after_user_resume(ExecutionIdentity::new(epoch, "new-turn".into()), |_| Ok(()))
-        .unwrap();
-    resumed.request.context.validate_complete().unwrap();
-    assert_eq!(
-        resumed
-            .request
-            .context
-            .records
-            .iter()
-            .filter(|record| matches!(record.source, ContextSource::ToolResult { .. }))
-            .count(),
-        1
-    );
-    assert_eq!(
-        resumed
-            .request
-            .context
-            .records
-            .iter()
-            .filter(|record| record.id == format!("inbox:{sequence}"))
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn new_epoch_retains_old_sources_and_fresh_request_never_uses_old_partial_stream() {
-    let old_epoch = RuntimeEpoch::new();
-    let mut current = ThreadCurrent::new("thread".into(), old_epoch);
-    current.model_call = Some(saved_call(
-        old_epoch,
-        SavedModelPhase::Streaming {
-            stream: OpaquePayload::text("old partial not model input"),
-        },
-    ));
-    let mut current = current.activate_paused("thread").unwrap();
-    assert_ne!(current.saved_runtime_epoch, old_epoch);
-    assert_eq!(
-        current.model_call.as_ref().unwrap().source_run_id,
-        old_epoch
-    );
-    let saved = serde_json::to_value(&current).unwrap();
-    assert_eq!(saved["modelCall"]["sourceRunId"], old_epoch.to_string());
-    let before = serde_json::to_value(&current).unwrap();
-    let identity = ExecutionIdentity::new(current.saved_runtime_epoch, "fresh-turn".into());
-    let attempt = identity.attempt_id.clone();
-    assert_eq!(
-        uuid::Uuid::parse_str(&identity.execution_id)
-            .unwrap()
-            .get_version_num(),
-        4
-    );
-    let error = current
-        .prepare_after_user_resume(identity.clone(), |_| {
-            Err(ModelError {
-                details: None,
-                kind: ModelFailureKind::IncompatibleContext,
-                usage: Box::default(),
-                source: None,
-            })
-        })
-        .unwrap_err();
-    assert!(matches!(error, CurrentError::Model(_)));
-    assert_eq!(serde_json::to_value(&current).unwrap(), before);
-    let result = current
-        .prepare_after_user_resume(identity, |parameters| {
-            assert_eq!(parameters.unwrap().content(), "full options");
-            Ok(())
-        })
-        .unwrap();
-    assert!(result.request.context.records.is_empty());
-    assert_eq!(result.request.attempt_id, attempt);
-    assert!(result.request.progress.is_none());
-    assert!(!result.request.cancellation.is_cancelled());
-    assert_eq!(
-        current.model_call.as_ref().unwrap().source_run_id,
-        current.saved_runtime_epoch
-    );
-}
-
-#[test]
-fn preparing_direct_input_and_queue_have_single_owners_through_resume_admission() {
-    let epoch = RuntimeEpoch::new();
-    let mut current = ThreadCurrent::new("thread".into(), epoch);
-    current.model_call = Some(saved_call(
-        epoch,
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(PendingStepInput {
-                content: vec![text("direct")],
-            }),
-        },
-    ));
-    current.state.inputs = vec![input::InputRecord {
-        accepted_sequence: 91,
-        continuation: None,
-        delivery: input::InputDelivery::NextTurn,
-        input: input::ThreadInput {
-            id: "queued".into(),
-            purpose: input::InputPurpose::Message,
-            payload: OpaquePayload::text("full queued body"),
-            context: vec![text("queued")],
-        },
-        ordinal: 1,
-        revision: 1,
-        state: input::InputState::Pending,
-    }]
-    .into();
-    let saved = serde_json::to_value(&current).unwrap();
-    assert!(
-        saved["state"]["inputs"][0]
-            .get("acceptedSequence")
-            .is_none()
-    );
-    let current_json = serde_json::to_vec(&current).unwrap();
-    let mut restored = ThreadCurrent::from_json(&current_json, "thread")
-        .unwrap()
-        .activate_paused("thread")
-        .unwrap();
-    assert_eq!(
-        restored.state.inputs[0].input.payload.content(),
-        "full queued body"
-    );
-    let identity = ExecutionIdentity::new(restored.saved_runtime_epoch, "new-turn".into());
-    let first = restored
-        .prepare_after_user_resume(identity, |_| Ok(()))
-        .unwrap();
-    assert_eq!(
-        first
-            .request
-            .context
-            .records
-            .iter()
-            .filter(|record| record.content == vec![text("direct")])
-            .count(),
-        1
-    );
-    assert_eq!(
-        first
-            .request
-            .context
-            .records
-            .iter()
-            .filter(|record| record.content == vec![text("queued")])
-            .count(),
-        1
-    );
-    assert!(restored.state.inputs.is_empty());
-    assert_eq!(restored.state.terminal_inputs.len(), 1);
-    assert!(matches!(
-        restored.model_call.as_ref().unwrap().phase,
-        SavedModelPhase::Preparing {
-            pending_step_input: None
-        }
-    ));
-    let identity = ExecutionIdentity::new(restored.saved_runtime_epoch, "another-turn".into());
-    let second = restored
-        .prepare_after_user_resume(identity, |_| Ok(()))
-        .unwrap();
-    assert_eq!(second.request.context, first.request.context);
+    current.state.context.validate_complete().unwrap();
+    assert_eq!(current.state.inbox[0].sequence, sequence);
 }
 
 #[derive(Debug, Clone)]
@@ -598,8 +400,7 @@ impl ModelSession for ProducerSession {
         let finish = self.finish.clone();
         let change = self.change.clone();
         let finish_on_capture = self.finish_on_capture;
-        let recovery_parameters = request.recovery_parameters.clone();
-        let mut prepared = PreparedModelCall::new_with_current(async move {
+        let prepared = PreparedModelCall::new_with_current(async move {
             let final_stream = OpaquePayload::text("last complete accepted stream");
             let mut current_text = OpaquePayload::text("full current while network is pending");
             loop {
@@ -625,9 +426,6 @@ impl ModelSession for ProducerSession {
                 }
             }
         }).with_current_capture(capture).with_request_metadata(OpaquePayload::text("frozen options"));
-        if let Some(parameters) = recovery_parameters {
-            prepared = prepared.with_applied_recovery_parameters(parameters);
-        }
         Ok(prepared)
     }
 
@@ -728,14 +526,18 @@ async fn opaque_only_changes_mark_current_dirty_without_a_display_preview() {
     });
     wait_running(&thread).await;
     let before = thread.snapshot().observation_revision;
-    let mut snapshots = thread.subscribe();
+    let mut dirty = thread.subscribe_current_dirty();
+    dirty.borrow_and_update();
     session.change.notify_one();
-    loop {
-        if thread.snapshot().observation_revision > before {
-            break;
-        }
-        snapshots.next().await.unwrap();
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), dirty.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        thread.snapshot().observation_revision,
+        before,
+        "opaque dirty notification must not publish a UI snapshot"
+    );
     let current = thread
         .capture_current(CancellationToken::new())
         .await
@@ -745,6 +547,195 @@ async fn opaque_only_changes_mark_current_dirty_without_a_display_preview() {
     );
     thread.close().await.unwrap();
     assert!(run.await.unwrap().is_err());
+}
+
+#[derive(Debug, Clone, Default)]
+struct GatedCaptureSession {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    finish: Arc<Notify>,
+    captures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ModelSession for GatedCaptureSession {
+    async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        let (capture, mut receiver) = CurrentCaptureHandle::channel();
+        let session = self.clone();
+        Ok(PreparedModelCall::new_with_current(async move {
+            loop {
+                tokio::select! {
+                    () = session.finish.notified() => return ModelCallExit {
+                        result: Ok(output(&request.attempt_id, request.context.revision)),
+                        current: Some(OpaquePayload::text("final stream")),
+                    },
+                    Some(capture) = receiver.recv() => {
+                        session.captures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        session.entered.notify_one();
+                        session.release.notified().await;
+                        let _ = capture.reply.send(Ok(OpaquePayload::text("complete stream")));
+                    }
+                }
+            }
+        })
+        .with_current_capture(capture))
+    }
+
+    async fn close(&mut self) -> Result<(), ModelError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn current_capture_accepts_inbox_changes_without_recapturing_stream() {
+    let session = GatedCaptureSession::default();
+    let thread = ThreadHandle::start_current(
+        "capture-inbox".into(),
+        DynModelSession::new(session.clone()),
+    )
+    .unwrap();
+    let run = tokio::spawn({
+        let thread = thread.clone();
+        async move {
+            thread
+                .run_turn(TurnInput {
+                    turn_id: "turn".into(),
+                    attempt_prefix: "turn".into(),
+                    content: vec![text("input")],
+                    max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                    cancellation: CancellationToken::new(),
+                })
+                .await
+        }
+    });
+    wait_running(&thread).await;
+    let capture = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.capture_current(CancellationToken::new()).await }
+    });
+    session.entered.notified().await;
+    thread
+        .send_message(pl_core::thread::inbox::ThreadMessage {
+            id: "arrived".into(),
+            source_id: "host".into(),
+            kind: Default::default(),
+            payload: OpaquePayload::text("new message"),
+            context: vec![text("new message")],
+        })
+        .await
+        .unwrap();
+    session.release.notify_one();
+    let current = capture.await.unwrap().unwrap();
+    assert_eq!(current.state.inbox.len(), 1);
+    assert!(
+        matches!(current.model_call.unwrap().phase, SavedModelPhase::Streaming { stream } if stream.content() == "complete stream")
+    );
+    assert_eq!(
+        session.captures.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    session.finish.notify_one();
+    run.await.unwrap().unwrap();
+    thread.close().await.unwrap();
+}
+
+struct SwitchingCaptureSession {
+    first_capture: Option<
+        tokio::sync::oneshot::Sender<(
+            pl_core::model::ModelCurrentCaptureRequest,
+            pl_core::model::CurrentCaptureReceiver,
+        )>,
+    >,
+    transition: Arc<Notify>,
+    second_ready: Arc<Notify>,
+    finish: Arc<Notify>,
+}
+
+impl ModelSession for SwitchingCaptureSession {
+    async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        let first_capture = self.first_capture.take();
+        let transition = self.transition.clone();
+        let second_ready = self.second_ready.clone();
+        let finish = self.finish.clone();
+        let (capture, mut receiver) = CurrentCaptureHandle::channel();
+        Ok(PreparedModelCall::new_with_current(async move {
+            if let Some(first_capture) = first_capture {
+                let captured = receiver.recv().await.unwrap();
+                let _ = first_capture.send((captured, receiver));
+                transition.notified().await;
+                let mut result = output(&request.attempt_id, request.context.revision);
+                result.turn_action = pl_core::model::ModelTurnAction::Continue;
+                return ModelCallExit { result: Ok(result), current: Some(OpaquePayload::text("first final")) };
+            }
+            second_ready.notify_one();
+            loop {
+                tokio::select! {
+                    Some(captured) = receiver.recv() => { let _ = captured.reply.send(Ok(OpaquePayload::text("second stream"))); },
+                    () = finish.notified() => return ModelCallExit {
+                        result: Ok(output(&request.attempt_id, request.context.revision)),
+                        current: Some(OpaquePayload::text("second final")),
+                    },
+                }
+            }
+        }).with_current_capture(capture))
+    }
+    async fn close(&mut self) -> Result<(), ModelError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn stale_capture_is_retried_for_the_new_attempt() {
+    let (first_capture, captured) = tokio::sync::oneshot::channel();
+    let transition = Arc::new(Notify::new());
+    let second_ready = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let thread = ThreadHandle::start_current(
+        "switch-capture".into(),
+        DynModelSession::new(SwitchingCaptureSession {
+            first_capture: Some(first_capture),
+            transition: transition.clone(),
+            second_ready: second_ready.clone(),
+            finish: finish.clone(),
+        }),
+    )
+    .unwrap();
+    let run = tokio::spawn({
+        let thread = thread.clone();
+        async move {
+            thread
+                .run_turn(TurnInput {
+                    turn_id: "turn".into(),
+                    attempt_prefix: "turn".into(),
+                    content: vec![text("input")],
+                    max_model_steps: ModelStepLimit::Limited(2.try_into().unwrap()),
+                    cancellation: CancellationToken::new(),
+                })
+                .await
+        }
+    });
+    wait_running(&thread).await;
+    let capture = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.capture_current(CancellationToken::new()).await }
+    });
+    let (old_capture, old_receiver) = captured.await.unwrap();
+    let old_attempt = old_capture.attempt_id.clone();
+    transition.notify_one();
+    second_ready.notified().await;
+    old_capture
+        .reply
+        .send(Ok(OpaquePayload::text("stale stream")))
+        .unwrap();
+    let current = capture.await.unwrap().unwrap();
+    let call = current.model_call.unwrap();
+    assert_ne!(call.source_attempt_id, old_attempt);
+    assert!(
+        matches!(call.phase, SavedModelPhase::Streaming { stream } if stream.content() == "second stream")
+    );
+    drop(old_receiver);
+    finish.notify_one();
+    run.await.unwrap().unwrap();
+    thread.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -998,116 +989,6 @@ async fn retained_uncommitted_tool_completion_is_known_current_data_not_an_unkno
 }
 
 #[tokio::test]
-async fn current_owner_loads_paused_then_applies_saved_output_and_executes_a_fresh_uuid_request() {
-    let old_epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("restored".into(), old_epoch);
-    saved.model_call = Some(saved_call(
-        old_epoch,
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-    ));
-    saved.state.execution = Some(pl_core::thread::ActiveExecution {
-        id: "old-execution".into(),
-        phase: pl_core::thread::ExecutionPhase::Running,
-        turn_id: Some("turn".into()),
-    });
-    let session = ProducerSession::new();
-    let thread =
-        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
-    let epoch = thread.runtime_epoch();
-    assert_ne!(epoch, old_epoch);
-    assert!(thread.snapshot().execution.is_none());
-    assert!(matches!(
-        thread.snapshot().input_execution,
-        input::InputExecution::Paused
-    ));
-    let before = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(before.state.execution.as_ref().unwrap().id, "old-execution");
-    assert_eq!(before.model_call.as_ref().unwrap().source_run_id, old_epoch);
-    assert!(matches!(
-        thread
-            .step(StepInput {
-                turn_id: "bypass".into(),
-                attempt_id: uuid::Uuid::new_v4().to_string(),
-                content: vec![],
-                cancellation: CancellationToken::new()
-            })
-            .await,
-        Err(pl_core::thread::ThreadError::CurrentPaused)
-    ));
-    let request = thread
-        .prepare_current_resume("new-turn".into(), |parameters| {
-            assert_eq!(parameters.unwrap().content(), "full options");
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert_eq!(request.request.context.records.len(), 1);
-    assert_eq!(request.request.context.records[0].id, "old-attempt:output");
-    assert_eq!(
-        uuid::Uuid::parse_str(&request.request.attempt_id)
-            .unwrap()
-            .get_version_num(),
-        4
-    );
-    assert!(thread.snapshot().attempt_ids.is_empty());
-    assert!(thread.snapshot().turns.is_empty());
-    assert_eq!(
-        thread.snapshot().commit_sequence,
-        0,
-        "pure recovery must not export an old model terminal"
-    );
-    let run = tokio::spawn({
-        let thread = thread.clone();
-        async move {
-            thread
-                .step(StepInput {
-                    turn_id: request.request.turn_id,
-                    attempt_id: request.request.attempt_id,
-                    content: vec![],
-                    cancellation: request.request.cancellation,
-                })
-                .await
-        }
-    });
-    session.prepare_entered.notified().await;
-    session.prepare_release.notify_one();
-    wait_running(&thread).await;
-    session.finish.notify_one();
-    run.await.unwrap().unwrap();
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.saved_runtime_epoch, epoch);
-    assert_eq!(current.state.context.records.len(), 2);
-    assert_eq!(current.state.usage_summary.totals.inference_count, 2);
-    assert!(current.state.execution.is_none());
-    assert!(thread.snapshot().live_calls.is_empty());
-    assert!(thread.snapshot().attempt_ids.is_empty());
-    let revision = current.snapshot_revision;
-    thread
-        .release_history_through(thread.snapshot().commit_sequence)
-        .unwrap();
-    assert_eq!(
-        thread
-            .capture_current(CancellationToken::new())
-            .await
-            .unwrap()
-            .snapshot_revision,
-        revision
-    );
-    thread.close().await.unwrap();
-    thread
-        .release_history_through(thread.snapshot().commit_sequence)
-        .unwrap();
-}
-
-#[tokio::test]
 async fn freshly_created_current_turn_uses_uuid_attempt_not_the_legacy_prefix_allocator() {
     let session = ProducerSession::new();
     session.prepare_release.notify_one();
@@ -1154,57 +1035,6 @@ async fn freshly_created_current_turn_uses_uuid_attempt_not_the_legacy_prefix_al
     thread.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn current_resume_compare_and_swap_keeps_input_that_arrives_during_binding_validation() {
-    let epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("race".into(), epoch);
-    saved.model_call = Some(saved_call(
-        epoch,
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(PendingStepInput {
-                content: vec![text("direct")],
-            }),
-        },
-    ));
-    let thread = ThreadHandle::restore_current(saved, None).unwrap();
-    let runtime = tokio::runtime::Handle::current();
-    let submitter = thread.clone();
-    let result = thread
-        .prepare_current_resume("new-turn".into(), move |_| {
-            std::thread::spawn(move || {
-                runtime.block_on(submitter.submit_input(input::ThreadInput {
-                    id: "arrived".into(),
-                    purpose: input::InputPurpose::Message,
-                    payload: OpaquePayload::text("arrived body"),
-                    context: vec![text("arrived")],
-                }))
-            })
-            .join()
-            .unwrap()
-            .unwrap();
-            Ok(())
-        })
-        .await;
-    assert!(matches!(result, Err(CurrentError::StateConflict)));
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.state.inputs.len(), 1);
-    assert_eq!(current.state.inputs[0].input.id, "arrived");
-    assert!(matches!(
-        current.model_call.unwrap().phase,
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(_)
-        }
-    ));
-    assert!(matches!(
-        thread.snapshot().input_execution,
-        input::InputExecution::Paused
-    ));
-    thread.close().await.unwrap();
-}
-
 #[tokio::test]
 async fn old_permission_answer_is_saved_but_never_recreates_a_task_execution_lease() {
     use pl_core::thread::permissions::{
@@ -1242,7 +1072,11 @@ async fn old_permission_answer_is_saved_but_never_recreates_a_task_execution_lea
     let thread = ThreadHandle::restore_current(saved, None).unwrap();
     assert!(matches!(
         thread
-            .prepare_current_resume("new-turn".into(), |_| Ok(()))
+            .resume_current(
+                "new-turn".into(),
+                ModelStepLimit::Unlimited,
+                CancellationToken::new()
+            )
             .await,
         Err(CurrentError::PendingPermission)
     ));
@@ -1260,11 +1094,16 @@ async fn old_permission_answer_is_saved_but_never_recreates_a_task_execution_lea
         thread.cancel_task("task:old".into()).await.is_err(),
         "an old task has no live token"
     );
-    let request = thread
-        .prepare_current_resume("new-turn".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    assert!(!request.request.cancellation.is_cancelled());
+    assert!(matches!(
+        thread
+            .resume_current(
+                "new-turn".into(),
+                ModelStepLimit::Unlimited,
+                CancellationToken::new()
+            )
+            .await,
+        Err(CurrentError::Owner(_))
+    ));
     assert!(
         thread
             .execute_tool("old".into(), CancellationToken::new())
@@ -1328,198 +1167,6 @@ async fn current_task_start_ordinal_outlives_completed_tasks_and_is_not_an_effec
     restored.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn unavailable_provider_keeps_ready_outcome_locally_applied_while_owner_stays_paused() {
-    let old_epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("unavailable".into(), old_epoch);
-    saved.model_call = Some(saved_call(
-        old_epoch,
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-    ));
-    let thread = ThreadHandle::restore_current(saved, None).unwrap();
-    let result = thread
-        .prepare_current_resume("new-turn".into(), |_| {
-            Err(ModelError {
-                details: None,
-                kind: ModelFailureKind::IncompatibleContext,
-                usage: Box::default(),
-                source: None,
-            })
-        })
-        .await;
-    assert!(matches!(result, Err(CurrentError::Model(_))));
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.state.context.records.len(), 1);
-    assert_eq!(current.state.usage_summary.totals.inference_count, 1);
-    assert!(matches!(
-        current.model_call.as_ref().unwrap().phase,
-        SavedModelPhase::Applied
-    ));
-    assert_eq!(
-        current.model_call.as_ref().unwrap().source_run_id,
-        old_epoch
-    );
-    assert!(thread.snapshot().execution.is_none());
-    assert!(matches!(
-        thread.snapshot().input_execution,
-        input::InputExecution::Paused
-    ));
-    assert_eq!(thread.snapshot().commit_sequence, 0);
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn preparing_resume_executes_pre_admitted_direct_content_once_and_leaves_later_inbox_pending()
-{
-    let old_epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("preparing".into(), old_epoch);
-    saved.model_call = Some(saved_call(
-        old_epoch,
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(PendingStepInput {
-                content: vec![text("saved direct content")],
-            }),
-        },
-    ));
-    let session = ProducerSession::new();
-    let thread =
-        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
-    let request = thread
-        .prepare_current_resume("new-turn".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    assert_eq!(request.request.context.records.len(), 1);
-    let attempt_id = request.request.attempt_id.clone();
-    assert_eq!(
-        request.request.context.records[0].id,
-        format!("{attempt_id}:input")
-    );
-    thread
-        .send_message(pl_core::thread::inbox::ThreadMessage {
-            id: "late".into(),
-            source_id: "host".into(),
-            kind: pl_core::context::AgentMessageKind::Report,
-            payload: OpaquePayload::text("late full message"),
-            context: vec![text("late inbox")],
-        })
-        .await
-        .unwrap();
-    let run = tokio::spawn({
-        let thread = thread.clone();
-        async move {
-            thread
-                .step(StepInput {
-                    turn_id: request.request.turn_id,
-                    attempt_id: request.request.attempt_id,
-                    content: vec![],
-                    cancellation: request.request.cancellation,
-                })
-                .await
-        }
-    });
-    session.prepare_entered.notified().await;
-    session.prepare_release.notify_one();
-    wait_running(&thread).await;
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.state.context.records.len(), 1);
-    assert_eq!(
-        current.state.context.records[0].content,
-        vec![text("saved direct content")]
-    );
-    assert_eq!(current.state.inbox.len(), 1);
-    assert_eq!(current.state.inbox[0].message.id, "late");
-    session.finish.notify_one();
-    run.await.unwrap().unwrap();
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.state.context.records.len(), 2);
-    assert_eq!(
-        current
-            .state
-            .context
-            .records
-            .iter()
-            .filter(|record| record.content == vec![text("saved direct content")])
-            .count(),
-        1
-    );
-    assert_eq!(current.state.inbox.len(), 1);
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn current_resume_execution_is_bound_to_owner_epoch_and_its_single_selected_attempt() {
-    let epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("bound".into(), epoch);
-    saved.model_call = Some(saved_call(
-        epoch,
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(PendingStepInput {
-                content: vec![text("single selected input")],
-            }),
-        },
-    ));
-    let session = ProducerSession::new();
-    session.prepare_release.notify_one();
-    let thread =
-        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
-    let request = thread
-        .prepare_current_resume("selected".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    let replay = request.clone();
-    let mut stale = request.clone();
-    stale.runtime_epoch = RuntimeEpoch::new();
-    assert!(matches!(
-        thread
-            .execute_current_resume(stale, ModelStepLimit::Limited(1.try_into().unwrap()))
-            .await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    let run = tokio::spawn({
-        let thread = thread.clone();
-        async move {
-            thread
-                .execute_current_resume(request, ModelStepLimit::Limited(1.try_into().unwrap()))
-                .await
-        }
-    });
-    wait_running(&thread).await;
-    session.finish.notify_one();
-    run.await.unwrap().unwrap();
-    assert!(matches!(
-        thread
-            .execute_current_resume(replay, ModelStepLimit::Limited(1.try_into().unwrap()))
-            .await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(
-        current
-            .state
-            .context
-            .records
-            .iter()
-            .filter(|record| record.content == vec![text("single selected input")])
-            .count(),
-        1
-    );
-    thread.close().await.unwrap();
-}
-
 #[derive(Debug, Clone, Copy)]
 enum FirstReply {
     Succeed,
@@ -1574,8 +1221,7 @@ impl ModelSession for RecordingSession {
             });
         }
         let executions = self.executions.clone();
-        let recovery_parameters = request.recovery_parameters.clone();
-        let mut prepared = PreparedModelCall::new(async move {
+        let prepared = PreparedModelCall::new(async move {
             executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if matches!(reply, FirstReply::ContextLimit) {
                 return Err(ModelError {
@@ -1591,9 +1237,6 @@ impl ModelSession for RecordingSession {
             }
             Ok(result)
         });
-        if let Some(parameters) = recovery_parameters {
-            prepared = prepared.with_applied_recovery_parameters(parameters);
-        }
         Ok(prepared)
     }
 
@@ -1602,45 +1245,228 @@ impl ModelSession for RecordingSession {
     }
 }
 
-async fn selected_resume(
-    session: impl ModelSession + 'static,
-    pending: bool,
-) -> (ThreadHandle, pl_core::thread::current::CurrentResumeRequest) {
+#[tokio::test]
+async fn restored_current_waits_for_continue_and_uses_current_services() {
     let epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("claim".into(), epoch);
+    let mut saved = ThreadCurrent::new("restored".into(), epoch);
+    saved.model_call = Some(saved_call(
+        epoch,
+        SavedModelPhase::Streaming {
+            stream: OpaquePayload::text("unconfirmed old partial"),
+        },
+    ));
+    saved.state.context.records = vec![ContextRecord {
+        id: "confirmed".into(),
+        turn_id: None,
+        source: ContextSource::User,
+        content: vec![text("confirmed input")],
+        tool_calls: Vec::new(),
+    }]
+    .into();
+    let session = RecordingSession::new(FirstReply::Succeed);
+    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let thread =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
+    assert_ne!(thread.runtime_epoch(), epoch);
+    thread
+        .register_tools(vec![
+            pl_core::tool::opaque::Registration::prepare(
+                "tool".into(),
+                OpaquePayload::text("current catalog"),
+            )
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(
+                KnownBeforeCommitTool(tool_calls.clone()),
+            ))
+            .foreground(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(session.counts(), (0, 0));
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(matches!(
+        thread.snapshot().input_execution,
+        input::InputExecution::Paused
+    ));
+
+    thread
+        .resume_current(
+            "continued".into(),
+            ModelStepLimit::Limited(1.try_into().unwrap()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let requests = session.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].tools.len(),
+        1,
+        "the current catalog replaces the saved empty catalog"
+    );
+    assert_eq!(
+        uuid::Uuid::parse_str(&requests[0].attempt_id)
+            .unwrap()
+            .get_version_num(),
+        4
+    );
+    assert_ne!(requests[0].attempt_id, "old-attempt");
+    assert_eq!(
+        requests[0].context.records[0].content,
+        vec![text("confirmed input")]
+    );
+    assert!(!format!("{:?}", requests[0].context).contains("unconfirmed old partial"));
+    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        thread
+            .capture_current(CancellationToken::new())
+            .await
+            .unwrap()
+            .state
+            .usage_summary
+            .totals
+            .inference_count,
+        1
+    );
+    assert!(matches!(
+        thread
+            .resume_current(
+                "again".into(),
+                ModelStepLimit::Unlimited,
+                CancellationToken::new()
+            )
+            .await,
+        Err(CurrentError::NotPaused)
+    ));
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_preparation_keeps_direct_and_queued_input_for_a_new_attempt() {
+    let epoch = RuntimeEpoch::new();
+    let mut saved = ThreadCurrent::new("pending".into(), epoch);
     saved.model_call = Some(saved_call(
         epoch,
         SavedModelPhase::Preparing {
-            pending_step_input: pending.then(|| PendingStepInput {
-                content: vec![text("saved direct input")],
+            pending_step_input: Some(PendingStepInput {
+                content: vec![text("direct")],
             }),
         },
     ));
-    let thread = ThreadHandle::restore_current(saved, Some(DynModelSession::new(session))).unwrap();
-    let resume = thread
-        .prepare_current_resume("selected".into(), |_| Ok(()))
+    saved.state.inputs = vec![input::InputRecord {
+        accepted_sequence: 0,
+        continuation: None,
+        delivery: input::InputDelivery::NextTurn,
+        input: input::ThreadInput {
+            id: "queued".into(),
+            purpose: input::InputPurpose::Message,
+            payload: OpaquePayload::text("queued body"),
+            context: vec![text("queued")],
+        },
+        ordinal: 1,
+        revision: 1,
+        state: input::InputState::Pending,
+    }]
+    .into();
+    saved.state.input_ordinal = 1;
+    let session = RecordingSession::new(FirstReply::FailPreparation);
+    let thread =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
+    assert!(matches!(
+        thread
+            .resume_current(
+                "first".into(),
+                ModelStepLimit::Unlimited,
+                CancellationToken::new()
+            )
+            .await,
+        Err(CurrentError::Owner(_))
+    ));
+    let current = thread
+        .capture_current(CancellationToken::new())
         .await
         .unwrap();
-    (thread, resume)
+    assert!(current.state.context.records.is_empty());
+    assert_eq!(current.state.inputs.len(), 1);
+    assert!(
+        matches!(&current.model_call.unwrap().phase, SavedModelPhase::Preparing { pending_step_input: Some(input) } if input.content == vec![text("direct")])
+    );
+    assert_eq!(session.counts(), (1, 0));
+
+    thread
+        .resume_current(
+            "second".into(),
+            ModelStepLimit::Limited(1.try_into().unwrap()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let requests = session.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[0].attempt_id, requests[1].attempt_id);
+    let input = requests[1]
+        .context
+        .records
+        .iter()
+        .find(|record| matches!(record.source, ContextSource::User))
+        .unwrap();
+    assert_eq!(input.content, vec![text("direct"), text("queued")]);
+    assert!(
+        thread
+            .capture_current(CancellationToken::new())
+            .await
+            .unwrap()
+            .state
+            .inputs
+            .is_empty()
+    );
+    assert_eq!(session.counts(), (2, 1));
+    thread.close().await.unwrap();
 }
 
-fn resume_step(resume: &pl_core::thread::current::CurrentResumeRequest) -> StepInput {
-    StepInput {
-        turn_id: resume.request.turn_id.clone(),
-        attempt_id: resume.request.attempt_id.clone(),
-        content: vec![],
-        cancellation: CancellationToken::new(),
-    }
-}
-
-fn resume_turn(resume: &pl_core::thread::current::CurrentResumeRequest) -> TurnInput {
-    TurnInput {
-        turn_id: resume.request.turn_id.clone(),
-        attempt_prefix: resume.request.attempt_id.clone(),
-        content: vec![],
-        max_model_steps: ModelStepLimit::Limited(2.try_into().unwrap()),
-        cancellation: CancellationToken::new(),
-    }
+#[tokio::test]
+async fn cancelling_continue_during_preparation_keeps_unadmitted_input_paused() {
+    let epoch = RuntimeEpoch::new();
+    let mut saved = ThreadCurrent::new("cancelled-resume".into(), epoch);
+    saved.model_call = Some(saved_call(
+        epoch,
+        SavedModelPhase::Preparing {
+            pending_step_input: Some(PendingStepInput {
+                content: vec![text("unadmitted input")],
+            }),
+        },
+    ));
+    let session = ProducerSession::new();
+    let thread =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
+    let cancellation = CancellationToken::new();
+    let run = tokio::spawn({
+        let thread = thread.clone();
+        let cancellation = cancellation.clone();
+        async move {
+            thread
+                .resume_current("cancelled".into(), ModelStepLimit::Unlimited, cancellation)
+                .await
+        }
+    });
+    session.prepare_entered.notified().await;
+    cancellation.cancel();
+    assert!(
+        matches!(run.await.unwrap(), Err(CurrentError::Owner(ref error)) if matches!(error.as_ref(), pl_core::thread::ThreadError::Cancelled))
+    );
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(current.state.context.records.is_empty());
+    assert!(
+        matches!(current.model_call.unwrap().phase, SavedModelPhase::Preparing { pending_step_input: Some(input) } if input.content == vec![text("unadmitted input")])
+    );
+    assert!(matches!(
+        thread.snapshot().input_execution,
+        input::InputExecution::Paused
+    ));
+    thread.close().await.unwrap();
 }
 
 async fn current_business_json(thread: &ThreadHandle) -> serde_json::Value {
@@ -1650,120 +1476,6 @@ async fn current_business_json(thread: &ThreadHandle) -> serde_json::Value {
         .unwrap();
     current.validate(&current.thread_id).unwrap();
     serde_json::to_value((&current.state, &current.model_call)).unwrap()
-}
-
-#[tokio::test]
-async fn stopped_current_resume_cannot_enter_through_step_turn_or_the_resume_command() {
-    let session = RecordingSession::new(FirstReply::Succeed);
-    let (thread, resume) = selected_resume(session.clone(), true).await;
-    thread
-        .interrupt_execution(resume.execution_id.clone())
-        .await
-        .unwrap();
-    let before = current_business_json(&thread).await;
-    assert!(matches!(
-        thread.step(resume_step(&resume)).await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    assert!(matches!(
-        thread.run_turn(resume_turn(&resume)).await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    assert!(matches!(
-        thread
-            .execute_current_resume(resume.clone(), ModelStepLimit::Unlimited)
-            .await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    assert_eq!(session.counts(), (0, 0));
-    assert_eq!(current_business_json(&thread).await, before);
-    thread
-        .step(StepInput {
-            turn_id: "fresh-direct".into(),
-            attempt_id: uuid::Uuid::new_v4().to_string(),
-            content: vec![text("new explicit direct work")],
-            cancellation: CancellationToken::new(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(session.counts(), (1, 1));
-    assert!(thread.snapshot().execution.is_none());
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_ne!(
-        current.model_call.unwrap().source_execution_id,
-        resume.execution_id
-    );
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn current_resume_rejects_changed_identity_and_input_without_spending_the_claim() {
-    let session = RecordingSession::new(FirstReply::Succeed);
-    let (thread, resume) = selected_resume(session.clone(), true).await;
-    let before = current_business_json(&thread).await;
-    for change in 0..3 {
-        let mut input = resume_step(&resume);
-        match change {
-            0 => input.turn_id = "different-turn".into(),
-            1 => input.attempt_id = uuid::Uuid::new_v4().to_string(),
-            _ => input.content = vec![text("unselected input")],
-        }
-        assert!(matches!(
-            thread.step(input).await,
-            Err(pl_core::thread::ThreadError::InvalidIdentity)
-        ));
-        assert_eq!(current_business_json(&thread).await, before);
-    }
-    let mut changed_turn = resume_turn(&resume);
-    changed_turn.attempt_prefix = uuid::Uuid::new_v4().to_string();
-    assert!(matches!(
-        thread.run_turn(changed_turn).await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    assert_eq!(session.counts(), (0, 0));
-    thread.step(resume_step(&resume)).await.unwrap();
-    assert_eq!(session.counts(), (1, 1));
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn current_resume_claim_is_spent_even_if_model_preparation_fails_before_admission() {
-    let session = RecordingSession::new(FirstReply::FailPreparation);
-    let (thread, resume) = selected_resume(session.clone(), false).await;
-    assert!(matches!(
-        thread.step(resume_step(&resume)).await,
-        Err(pl_core::thread::ThreadError::Model(_))
-    ));
-    assert_eq!(session.counts(), (1, 0));
-    thread
-        .release_history_through(thread.snapshot().commit_sequence)
-        .unwrap();
-    assert!(matches!(
-        thread.step(resume_step(&resume)).await,
-        Err(pl_core::thread::ThreadError::CurrentPaused)
-    ));
-    assert!(matches!(
-        thread
-            .execute_current_resume(resume.clone(), ModelStepLimit::Unlimited)
-            .await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    assert_eq!(session.counts(), (1, 0));
-    resume.request.cancellation.cancel();
-    let retry = thread
-        .prepare_current_resume("explicit-retry".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    assert!(matches!(
-        thread.step(resume_step(&resume)).await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    thread.step(resume_step(&retry)).await.unwrap();
-    assert_eq!(session.counts(), (2, 1));
-    thread.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -1998,806 +1710,6 @@ async fn current_correction_uses_the_rejected_uuid_and_runtime_feedback_source()
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ResumeEntry {
-    Step,
-    Turn,
-    Resume,
-}
-
-async fn enter_resume(
-    thread: &ThreadHandle,
-    resume: &pl_core::thread::current::CurrentResumeRequest,
-    entry: ResumeEntry,
-    cancellation: CancellationToken,
-) -> Result<(), pl_core::thread::ThreadError> {
-    match entry {
-        ResumeEntry::Step => {
-            let mut input = resume_step(resume);
-            input.cancellation = cancellation;
-            thread.step(input).await.map(|_| ())
-        }
-        ResumeEntry::Turn => {
-            let mut input = resume_turn(resume);
-            input.cancellation = cancellation;
-            thread.run_turn(input).await.map(|_| ())
-        }
-        ResumeEntry::Resume => {
-            let mut resume = resume.clone();
-            resume.request.cancellation = cancellation;
-            thread
-                .execute_current_resume(resume, ModelStepLimit::Unlimited)
-                .await
-                .map(|_| ())
-        }
-    }
-}
-
-#[tokio::test]
-async fn current_resume_original_cancellation_rejects_new_tokens_at_every_entry() {
-    for entry in [ResumeEntry::Step, ResumeEntry::Turn, ResumeEntry::Resume] {
-        let session = RecordingSession::new(FirstReply::Succeed);
-        let (thread, resume) = selected_resume(session.clone(), true).await;
-        let before = current_business_json(&thread).await;
-        resume.request.cancellation.cancel();
-        assert!(
-            matches!(
-                enter_resume(&thread, &resume, entry, CancellationToken::new()).await,
-                Err(pl_core::thread::ThreadError::InvalidIdentity)
-            ),
-            "cancelled original qualification must reject {entry:?}"
-        );
-        assert_eq!(session.counts(), (0, 0));
-        assert_eq!(current_business_json(&thread).await, before);
-        thread
-            .step(StepInput {
-                turn_id: "fresh-direct".into(),
-                attempt_id: uuid::Uuid::new_v4().to_string(),
-                content: vec![text("new direct authorization")],
-                cancellation: CancellationToken::new(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(session.counts(), (1, 1));
-        thread.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn current_resume_cancellation_during_prepare_and_streaming_reaches_the_producer() {
-    use std::time::Duration;
-    for entry in [ResumeEntry::Step, ResumeEntry::Turn, ResumeEntry::Resume] {
-        for streaming in [false, true] {
-            for cancel_original in [true, false] {
-                let session = ProducerSession::new();
-                if streaming {
-                    session.prepare_release.notify_one();
-                }
-                let (thread, resume) = selected_resume(session.clone(), false).await;
-                let original = resume.request.cancellation.clone();
-                let caller = CancellationToken::new();
-                let mut run = tokio::spawn({
-                    let thread = thread.clone();
-                    let caller = caller.clone();
-                    async move { enter_resume(&thread, &resume, entry, caller).await }
-                });
-                tokio::time::timeout(Duration::from_secs(2), session.prepare_entered.notified())
-                    .await
-                    .unwrap();
-                if streaming {
-                    tokio::time::timeout(Duration::from_secs(2), wait_running(&thread))
-                        .await
-                        .unwrap();
-                }
-                if cancel_original {
-                    original.cancel();
-                } else {
-                    caller.cancel();
-                }
-                let completed = tokio::time::timeout(Duration::from_secs(2), &mut run).await;
-                if completed.is_err() {
-                    // Retain and join the actual work even when the regression fails to cancel it.
-                    thread.interrupt();
-                    let _ = run.await;
-                    thread.close().await.unwrap();
-                    panic!(
-                        "cancellation did not reach {entry:?}, streaming={streaming}, original={cancel_original}"
-                    );
-                }
-                let cancelled = match completed.unwrap().unwrap() {
-                    Err(pl_core::thread::ThreadError::Cancelled) => true,
-                    Err(pl_core::thread::ThreadError::Model(error)) => {
-                        error.kind == ModelFailureKind::Cancelled
-                    }
-                    _ => false,
-                };
-                assert!(cancelled);
-                assert_eq!(original.is_cancelled(), cancel_original);
-                assert_eq!(caller.is_cancelled(), !cancel_original);
-                assert_eq!(thread.snapshot().model_execution, None);
-                let current = thread
-                    .capture_current(CancellationToken::new())
-                    .await
-                    .unwrap();
-                current.validate(&current.thread_id).unwrap();
-                if streaming {
-                    assert!(matches!(current.model_call.unwrap().phase,
-                        SavedModelPhase::Streaming { stream } if stream.content() == "last complete accepted stream"));
-                }
-                thread.close().await.unwrap();
-            }
-        }
-    }
-}
-
-#[tokio::test]
-async fn current_resume_cancellation_racing_turn_admission_never_dispatches_the_model() {
-    use std::time::Duration;
-    for entry in [ResumeEntry::Turn, ResumeEntry::Resume] {
-        let session = RecordingSession::new(FirstReply::Succeed);
-        let gate = pl_core::thread::admission::TurnAdmissionGate::new();
-        let hold = gate.close();
-        let thread = ThreadHandle::restore_current_with_turn_admission_gate(
-            ThreadCurrent::new("admission-cancel".into(), RuntimeEpoch::new()),
-            Some(DynModelSession::new(session.clone())),
-            gate,
-        )
-        .unwrap();
-        let resume = thread
-            .prepare_current_resume("selected".into(), |_| Ok(()))
-            .await
-            .unwrap();
-        let original = resume.request.cancellation.clone();
-        let mut run = tokio::spawn({
-            let thread = thread.clone();
-            async move { enter_resume(&thread, &resume, entry, CancellationToken::new()).await }
-        });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            let mut snapshots = thread.subscribe();
-            while thread
-                .snapshot()
-                .execution
-                .as_ref()
-                .is_none_or(|execution| {
-                    execution.phase != pl_core::thread::ExecutionPhase::AwaitingAdmission
-                })
-            {
-                snapshots.next().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-        original.cancel();
-        drop(hold);
-        let completed = tokio::time::timeout(Duration::from_secs(2), &mut run).await;
-        if completed.is_err() {
-            thread.interrupt();
-            let _ = run.await;
-            thread.close().await.unwrap();
-            panic!("cancelled admission did not settle for {entry:?}");
-        }
-        assert!(matches!(
-            completed.unwrap().unwrap(),
-            Err(pl_core::thread::ThreadError::Cancelled)
-        ));
-        assert_eq!(session.counts(), (0, 0));
-        thread.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn empty_current_resume_turn_preserves_ready_outcome_bytes_and_never_calls_validator() {
-    let epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("invalid-resume".into(), epoch);
-    saved.model_call = Some(saved_call(
-        epoch,
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-    ));
-    let thread = ThreadHandle::restore_current(saved, None).unwrap();
-    let before = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(before.state.context.records.is_empty());
-    assert_eq!(before.state.usage_summary.totals.inference_count, 0);
-    let validations = std::sync::atomic::AtomicUsize::new(0);
-    assert!(matches!(
-        thread
-            .prepare_current_resume(String::new(), |_| {
-                validations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
-            .await,
-        Err(CurrentError::InvalidIdentity)
-    ));
-    let mut after = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    // Capture time is the observation's wall clock, not a logical-current mutation.
-    after.saved_at = before.saved_at;
-    assert_eq!(
-        serde_json::to_vec(&after).unwrap(),
-        serde_json::to_vec(&before).unwrap()
-    );
-    assert_eq!(validations.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert!(matches!(
-        after.model_call.unwrap().phase,
-        SavedModelPhase::ReadyToApply { .. }
-    ));
-    thread.close().await.unwrap();
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrozenReply {
-    Confirm,
-    Missing,
-    Wrong,
-    Reject,
-    LocalCapacity,
-    RemoteCapacity,
-}
-
-#[derive(Debug, Clone)]
-struct FrozenSession {
-    mode: Arc<std::sync::Mutex<FrozenReply>>,
-    requests: Arc<std::sync::Mutex<Vec<ModelRequest>>>,
-    executions: Arc<std::sync::atomic::AtomicUsize>,
-    entered: Arc<Notify>,
-    release: Option<Arc<Notify>>,
-}
-
-impl FrozenSession {
-    fn new(mode: FrozenReply) -> Self {
-        Self {
-            mode: Arc::new(std::sync::Mutex::new(mode)),
-            requests: Default::default(),
-            executions: Default::default(),
-            entered: Default::default(),
-            release: None,
-        }
-    }
-    fn counts(&self) -> (usize, usize) {
-        (
-            self.requests.lock().unwrap().len(),
-            self.executions.load(std::sync::atomic::Ordering::SeqCst),
-        )
-    }
-}
-
-impl ModelSession for FrozenSession {
-    async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
-        let first = {
-            let mut requests = self.requests.lock().unwrap();
-            let first = requests.is_empty();
-            requests.push(request.clone());
-            first
-        };
-        let mode = *self.mode.lock().unwrap();
-        self.entered.notify_one();
-        if mode == FrozenReply::Reject
-            && let Some(release) = &self.release
-        {
-            tokio::select! {
-                () = release.notified() => {},
-                () = request.cancellation.cancelled() => return Err(ModelError { kind: ModelFailureKind::Cancelled, details: None, usage: Default::default(), source: None }),
-            }
-        }
-        if mode == FrozenReply::Reject || (first && mode == FrozenReply::LocalCapacity) {
-            return Err(ModelError {
-                kind: if mode == FrozenReply::Reject {
-                    ModelFailureKind::IncompatibleContext
-                } else {
-                    ModelFailureKind::ContextLimit
-                },
-                details: None,
-                usage: Default::default(),
-                source: None,
-            });
-        }
-        let expected = request.recovery_parameters.clone();
-        let executions = self.executions.clone();
-        let mut prepared = PreparedModelCall::new_with_current(async move {
-            executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let result = if first && mode == FrozenReply::RemoteCapacity {
-                Err(ModelError {
-                    kind: ModelFailureKind::ContextLimit,
-                    details: None,
-                    usage: Default::default(),
-                    source: None,
-                })
-            } else {
-                let mut result = output(&request.attempt_id, request.context.revision);
-                if request.recovery_parameters.is_some()
-                    && matches!(mode, FrozenReply::Missing | FrozenReply::Wrong)
-                {
-                    result.tool_calls.push(call("must-not-run"));
-                }
-                Ok(result)
-            };
-            ModelCallExit {
-                result,
-                current: Some(OpaquePayload::text("complete frozen-model stream")),
-            }
-        })
-        .with_request_metadata(OpaquePayload::text(
-            "different currently configured options",
-        ));
-        if let Some(expected) = expected {
-            prepared = match mode {
-                FrozenReply::Missing => prepared,
-                FrozenReply::Wrong => {
-                    prepared.with_applied_recovery_parameters(OpaquePayload::text("wrong options"))
-                }
-                _ => prepared.with_applied_recovery_parameters(expected),
-            };
-        }
-        Ok(prepared)
-    }
-    async fn close(&mut self) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
-
-async fn frozen_owner(
-    session: FrozenSession,
-    phase: SavedModelPhase,
-    parameters: Option<OpaquePayload>,
-) -> (ThreadHandle, Arc<std::sync::atomic::AtomicUsize>) {
-    let epoch = RuntimeEpoch::new();
-    let mut saved = ThreadCurrent::new("frozen-owner".into(), epoch);
-    let mut saved_model = saved_call(epoch, phase);
-    saved_model.prepared_parameters = parameters;
-    let tools = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let registration =
-        pl_core::tool::opaque::Registration::prepare("tool".into(), OpaquePayload::text("tool"))
-            .unwrap()
-            .attach(pl_core::tool::opaque::RuntimeTool::new(
-                KnownBeforeCommitTool(tools.clone()),
-            ));
-    saved_model.tools = vec![registration.declaration().clone()].into();
-    saved.model_call = Some(saved_model);
-    let thread = ThreadHandle::restore_current(saved, Some(DynModelSession::new(session))).unwrap();
-    thread.register_tools(vec![registration]).await.unwrap();
-    (thread, tools)
-}
-
-fn original_parameters() -> OpaquePayload {
-    OpaquePayload::new(
-        "test.saved-model-options",
-        1,
-        "original account / model / hosted tools",
-    )
-    .unwrap()
-}
-
-#[tokio::test]
-async fn frozen_parameters_use_owner_facts_and_ignore_public_proposal_edits() {
-    let session = FrozenSession::new(FrozenReply::Confirm);
-    let parameters = original_parameters();
-    let (thread, _) = frozen_owner(
-        session.clone(),
-        SavedModelPhase::Streaming {
-            stream: OpaquePayload::text("old complete stream"),
-        },
-        Some(parameters.clone()),
-    )
-    .await;
-    let mut resume = thread
-        .prepare_current_resume("bound".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    resume.prepared_parameters = Some(OpaquePayload::text("forged proposal"));
-    resume.request.recovery_parameters = Some(OpaquePayload::text("forged model request"));
-    thread
-        .execute_current_resume(resume, ModelStepLimit::Limited(1.try_into().unwrap()))
-        .await
-        .unwrap();
-    assert_eq!(session.counts(), (1, 1));
-    assert_eq!(
-        session.requests.lock().unwrap()[0]
-            .recovery_parameters
-            .as_ref(),
-        Some(&parameters)
-    );
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn frozen_parameters_refuse_unconfirmed_mismatched_and_incompatible_producers_without_dispatch()
- {
-    for mode in [
-        FrozenReply::Missing,
-        FrozenReply::Wrong,
-        FrozenReply::Reject,
-    ] {
-        for phase in [
-            SavedModelPhase::Preparing {
-                pending_step_input: Some(PendingStepInput {
-                    content: vec![text("saved input once")],
-                }),
-            },
-            SavedModelPhase::Streaming {
-                stream: OpaquePayload::text("original full stream"),
-            },
-            SavedModelPhase::ReadyToApply {
-                output: output("old-attempt", 0),
-            },
-        ] {
-            let session = FrozenSession::new(mode);
-            let parameters = if mode == FrozenReply::Reject {
-                OpaquePayload::new("unknown.provider.options", 99, "unknown source account")
-                    .unwrap()
-            } else {
-                original_parameters()
-            };
-            let (thread, tools) =
-                frozen_owner(session.clone(), phase.clone(), Some(parameters.clone())).await;
-            let resume = thread
-                .prepare_current_resume("refused".into(), |_| Ok(()))
-                .await
-                .unwrap();
-            assert!(
-                matches!(thread.execute_current_resume(resume.clone(), ModelStepLimit::Limited(1.try_into().unwrap())).await,
-                Err(pl_core::thread::ThreadError::Model(ref error)) if error.kind == ModelFailureKind::IncompatibleContext)
-            );
-            assert_eq!(session.counts(), (1, 0));
-            assert_eq!(tools.load(std::sync::atomic::Ordering::SeqCst), 0);
-            let current = thread
-                .capture_current(CancellationToken::new())
-                .await
-                .unwrap();
-            current.validate(&current.thread_id).unwrap();
-            let saved = current.model_call.as_ref().unwrap();
-            assert_eq!(saved.prepared_parameters.as_ref(), Some(&parameters));
-            assert_eq!(saved.source_attempt_id, "old-attempt");
-            match &phase {
-                SavedModelPhase::Preparing { .. } => assert_eq!(
-                    current
-                        .state
-                        .context
-                        .records
-                        .iter()
-                        .filter(|record| record.content == vec![text("saved input once")])
-                        .count(),
-                    1
-                ),
-                SavedModelPhase::Streaming { stream } => assert!(
-                    matches!(&saved.phase, SavedModelPhase::Streaming { stream: actual } if actual == stream)
-                ),
-                SavedModelPhase::ReadyToApply { .. } => {
-                    assert!(matches!(saved.phase, SavedModelPhase::Applied));
-                    assert_eq!(current.state.usage_summary.totals.inference_count, 1);
-                }
-                _ => unreachable!(),
-            }
-            assert!(matches!(
-                thread
-                    .step(StepInput {
-                        turn_id: "bypass".into(),
-                        attempt_id: uuid::Uuid::new_v4().to_string(),
-                        content: vec![],
-                        cancellation: CancellationToken::new()
-                    })
-                    .await,
-                Err(pl_core::thread::ThreadError::CurrentPaused)
-            ));
-            assert!(matches!(
-                thread
-                    .execute_current_resume(resume.clone(), ModelStepLimit::Unlimited)
-                    .await,
-                Err(pl_core::thread::ThreadError::InvalidIdentity)
-            ));
-            resume.request.cancellation.cancel();
-            *session.mode.lock().unwrap() = FrozenReply::Confirm;
-            let retry = thread
-                .prepare_current_resume("compatible-retry".into(), |_| Ok(()))
-                .await
-                .unwrap();
-            assert!(matches!(
-                thread.step(resume_step(&resume)).await,
-                Err(pl_core::thread::ThreadError::InvalidIdentity)
-            ));
-            thread
-                .execute_current_resume(retry, ModelStepLimit::Limited(1.try_into().unwrap()))
-                .await
-                .unwrap();
-            assert_eq!(session.counts(), (2, 1));
-            assert_eq!(tools.load(std::sync::atomic::Ordering::SeqCst), 0);
-            assert_eq!(
-                session.requests.lock().unwrap()[1]
-                    .recovery_parameters
-                    .as_ref(),
-                Some(&parameters)
-            );
-            let after = thread
-                .capture_current(CancellationToken::new())
-                .await
-                .unwrap();
-            if matches!(&phase, SavedModelPhase::Preparing { .. }) {
-                assert_eq!(
-                    after
-                        .state
-                        .context
-                        .records
-                        .iter()
-                        .filter(|record| record.content == vec![text("saved input once")])
-                        .count(),
-                    1
-                );
-            }
-            thread.close().await.unwrap();
-        }
-    }
-}
-
-#[tokio::test]
-async fn frozen_parameters_failure_keeps_late_input_and_retry_does_not_reapply_saved_outcome() {
-    let mut session = FrozenSession::new(FrozenReply::Reject);
-    let release = Arc::new(Notify::new());
-    session.release = Some(release.clone());
-    let (thread, tools) = frozen_owner(
-        session.clone(),
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-        Some(original_parameters()),
-    )
-    .await;
-    let resume = thread
-        .prepare_current_resume("first".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    let stale = resume.clone();
-    let run = tokio::spawn({
-        let thread = thread.clone();
-        async move {
-            thread
-                .execute_current_resume(resume, ModelStepLimit::Unlimited)
-                .await
-        }
-    });
-    session.entered.notified().await;
-    thread
-        .submit_input(input::ThreadInput {
-            id: "late-input".into(),
-            purpose: input::InputPurpose::Message,
-            payload: OpaquePayload::text("late complete input"),
-            context: vec![text("late input")],
-        })
-        .await
-        .unwrap();
-    thread
-        .send_message(pl_core::thread::inbox::ThreadMessage {
-            id: "late-message".into(),
-            source_id: "host".into(),
-            kind: pl_core::context::AgentMessageKind::Report,
-            payload: OpaquePayload::text("late complete inbox"),
-            context: vec![text("late inbox")],
-        })
-        .await
-        .unwrap();
-    release.notify_one();
-    assert!(run.await.unwrap().is_err());
-    let paused = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(paused.state.inputs.len(), 1);
-    assert_eq!(paused.state.inbox.len(), 1);
-    assert_eq!(paused.state.usage_summary.totals.inference_count, 1);
-    stale.request.cancellation.cancel();
-    *session.mode.lock().unwrap() = FrozenReply::Confirm;
-    let retry = thread
-        .prepare_current_resume("retry".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    assert!(!retry.request.cancellation.is_cancelled());
-    assert!(matches!(
-        thread.step(resume_step(&stale)).await,
-        Err(pl_core::thread::ThreadError::InvalidIdentity)
-    ));
-    thread
-        .execute_current_resume(retry, ModelStepLimit::Limited(1.try_into().unwrap()))
-        .await
-        .unwrap();
-    assert_eq!(session.counts(), (2, 1));
-    assert_eq!(tools.load(std::sync::atomic::Ordering::SeqCst), 0);
-    let current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(current.state.usage_summary.totals.inference_count, 2);
-    for body in ["late input", "late inbox"] {
-        assert_eq!(
-            current
-                .state
-                .context
-                .records
-                .iter()
-                .filter(|record| record.content == vec![text(body)])
-                .count(),
-            1
-        );
-    }
-    thread.close().await.unwrap();
-}
-
-#[derive(Debug, Clone, Default)]
-struct FrozenPreparations {
-    requests: Arc<std::sync::Mutex<Vec<ModelRequest>>>,
-    recovery: RecoveryAttempts,
-}
-impl pl_core::thread::context_preparation::ContextPreparationHook for FrozenPreparations {
-    async fn before_step(
-        &self,
-        request: pl_core::thread::context_preparation::ContextPreparationRequest,
-    ) -> pl_core::thread::context_preparation::ContextPreparation {
-        self.requests.lock().unwrap().push(request.model.clone());
-        pl_core::thread::context_preparation::ContextPreparationHook::before_step(
-            &self.recovery,
-            request,
-        )
-        .await
-    }
-}
-
-#[tokio::test]
-async fn frozen_parameters_survive_local_and_service_capacity_preparation() {
-    for mode in [FrozenReply::LocalCapacity, FrozenReply::RemoteCapacity] {
-        let session = FrozenSession::new(mode);
-        let parameters = original_parameters();
-        let (thread, _) = frozen_owner(
-            session.clone(),
-            SavedModelPhase::Preparing {
-                pending_step_input: Some(PendingStepInput {
-                    content: vec![text("capacity input once")],
-                }),
-            },
-            Some(parameters.clone()),
-        )
-        .await;
-        let preparation = FrozenPreparations::default();
-        thread
-            .set_context_preparation(Some(
-                pl_core::thread::context_preparation::ContextPreparer::new(preparation.clone()),
-            ))
-            .await
-            .unwrap();
-        let resume = thread
-            .prepare_current_resume("capacity".into(), |_| Ok(()))
-            .await
-            .unwrap();
-        thread
-            .execute_current_resume(resume, ModelStepLimit::Limited(2.try_into().unwrap()))
-            .await
-            .unwrap();
-        assert_eq!(
-            session.counts(),
-            (
-                2,
-                if mode == FrozenReply::LocalCapacity {
-                    1
-                } else {
-                    2
-                }
-            )
-        );
-        for request in session
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .chain(preparation.requests.lock().unwrap().iter())
-        {
-            assert_eq!(request.recovery_parameters.as_ref(), Some(&parameters));
-        }
-        assert!(
-            preparation
-                .recovery
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(forced, _)| *forced)
-        );
-        let current = thread
-            .capture_current(CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(
-            current
-                .state
-                .context
-                .records
-                .iter()
-                .filter(|record| record.content == vec![text("capacity input once")])
-                .count(),
-            1
-        );
-        thread.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn frozen_parameters_are_absent_for_ordinary_requests_and_unfrozen_preparing_resume() {
-    for current in [false, true] {
-        let session = FrozenSession::new(FrozenReply::Missing);
-        let model = DynModelSession::new(session.clone());
-        let thread = if current {
-            ThreadHandle::start_current("ordinary".into(), model).unwrap()
-        } else {
-            ThreadHandle::start("ordinary".into(), model).unwrap()
-        };
-        thread
-            .run_turn(TurnInput {
-                turn_id: "ordinary".into(),
-                attempt_prefix: "prefix".into(),
-                content: vec![text("ordinary input")],
-                max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
-                cancellation: CancellationToken::new(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(session.counts(), (1, 1));
-        assert!(
-            session.requests.lock().unwrap()[0]
-                .recovery_parameters
-                .is_none()
-        );
-        thread.close().await.unwrap();
-    }
-    let session = FrozenSession::new(FrozenReply::Missing);
-    let (thread, _) = frozen_owner(
-        session.clone(),
-        SavedModelPhase::Preparing {
-            pending_step_input: Some(PendingStepInput {
-                content: vec![text("not frozen yet")],
-            }),
-        },
-        None,
-    )
-    .await;
-    let resume = thread
-        .prepare_current_resume("unfrozen".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    thread
-        .execute_current_resume(resume, ModelStepLimit::Limited(1.try_into().unwrap()))
-        .await
-        .unwrap();
-    assert_eq!(session.counts(), (1, 1));
-    assert!(
-        session.requests.lock().unwrap()[0]
-            .recovery_parameters
-            .is_none()
-    );
-    thread.close().await.unwrap();
-    let session = FrozenSession::new(FrozenReply::Missing);
-    let idle = ThreadHandle::restore_current(
-        ThreadCurrent::new("truly-idle".into(), RuntimeEpoch::new()),
-        Some(DynModelSession::new(session.clone())),
-    )
-    .unwrap();
-    let resume = idle
-        .prepare_current_resume("new-idle-work".into(), |_| Ok(()))
-        .await
-        .unwrap();
-    assert!(resume.request.recovery_parameters.is_none());
-    idle.execute_current_resume(resume, ModelStepLimit::Limited(1.try_into().unwrap()))
-        .await
-        .unwrap();
-    assert_eq!(session.counts(), (1, 1));
-    assert!(
-        session.requests.lock().unwrap()[0]
-            .recovery_parameters
-            .is_none()
-    );
-    idle.close().await.unwrap();
-}
-
 #[derive(Debug, Clone, Default)]
 struct DirectResources(Arc<std::sync::Mutex<Vec<String>>>);
 impl pl_core::context::ResourceReader for DirectResources {
@@ -2830,7 +1742,7 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
             },
         ]
     }
-    for pending in [true, false] {
+    {
         let epoch = RuntimeEpoch::new();
         let mut current = ThreadCurrent::new("resources".into(), epoch);
         current.state.context = ContextSnapshot {
@@ -2882,16 +1794,10 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
         .into();
         current.model_call = Some(saved_call(
             epoch,
-            if pending {
-                SavedModelPhase::Preparing {
-                    pending_step_input: Some(PendingStepInput {
-                        content: contents("pending"),
-                    }),
-                }
-            } else {
-                let mut result = output("old-attempt", 1);
-                result.content = contents("outcome");
-                SavedModelPhase::ReadyToApply { output: result }
+            SavedModelPhase::Preparing {
+                pending_step_input: Some(PendingStepInput {
+                    content: contents("pending"),
+                }),
             },
         ));
         let all = current.recovery_contents();
@@ -2919,208 +1825,9 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
             "output",
             "delivered",
             "facts",
-            if pending { "pending" } else { "outcome" },
+            "pending",
         ];
         expected.sort();
         assert_eq!(actual, expected);
-    }
-}
-
-#[tokio::test]
-async fn started_calls_without_frozen_parameters_remain_readable_but_cannot_resume() {
-    for phase in [
-        SavedModelPhase::Streaming {
-            stream: OpaquePayload::text("saved source unknown"),
-        },
-        SavedModelPhase::ReadyToApply {
-            output: output("old-attempt", 0),
-        },
-        SavedModelPhase::Applied,
-    ] {
-        let session = FrozenSession::new(FrozenReply::Confirm);
-        let (thread, tools) = frozen_owner(session.clone(), phase.clone(), None).await;
-        let before = thread
-            .capture_current(CancellationToken::new())
-            .await
-            .unwrap();
-        let mut readonly =
-            ThreadCurrent::from_json(&serde_json::to_vec(&before).unwrap(), "frozen-owner")
-                .unwrap();
-        let validations = std::sync::atomic::AtomicUsize::new(0);
-        let result = thread
-            .prepare_current_resume("unknown-source".into(), |_| {
-                validations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
-            .await;
-        let blocked = match result {
-            Err(CurrentError::Model(error)) => error.kind == ModelFailureKind::IncompatibleContext,
-            Ok(resume) => {
-                // Demonstrate the wrong-model consequence on the unfixed implementation.
-                thread
-                    .execute_current_resume(resume, ModelStepLimit::Limited(1.try_into().unwrap()))
-                    .await
-                    .unwrap();
-                false
-            }
-            Err(error) => panic!("unexpected resume error: {error}"),
-        };
-        let counts = session.counts();
-        if !blocked {
-            thread.close().await.unwrap();
-            panic!(
-                "started call without source parameters dispatched current configuration: {counts:?}"
-            );
-        }
-        assert_eq!(counts, (0, 0));
-        assert_eq!(validations.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(tools.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let after = thread
-            .capture_current(CancellationToken::new())
-            .await
-            .unwrap();
-        assert!(
-            after
-                .model_call
-                .as_ref()
-                .unwrap()
-                .prepared_parameters
-                .is_none()
-        );
-        ThreadCurrent::from_json(&serde_json::to_vec(&after).unwrap(), "frozen-owner").unwrap();
-        if matches!(phase, SavedModelPhase::ReadyToApply { .. }) {
-            assert!(matches!(
-                after.model_call.as_ref().unwrap().phase,
-                SavedModelPhase::Applied
-            ));
-            assert_eq!(after.state.usage_summary.totals.inference_count, 1);
-            assert!(
-                thread
-                    .prepare_current_resume("still-unknown".into(), |_| Ok(()))
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                thread
-                    .capture_current(CancellationToken::new())
-                    .await
-                    .unwrap()
-                    .state
-                    .usage_summary
-                    .totals
-                    .inference_count,
-                1
-            );
-        }
-        assert!(matches!(
-            thread
-                .step(StepInput {
-                    turn_id: "fresh-bypass".into(),
-                    attempt_id: uuid::Uuid::new_v4().to_string(),
-                    content: vec![],
-                    cancellation: CancellationToken::new()
-                })
-                .await,
-            Err(pl_core::thread::ThreadError::CurrentPaused)
-        ));
-        let identity = ExecutionIdentity::new(readonly.saved_runtime_epoch, "pure-api".into());
-        assert!(
-            matches!(readonly.prepare_after_user_resume(identity, |_| Ok(())), Err(CurrentError::Model(error)) if error.kind == ModelFailureKind::IncompatibleContext)
-        );
-        thread.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn replaced_claim_cannot_lend_parameters_to_fresh_same_turn_work() {
-    for stop in [false, true] {
-        for preparation_failure in [false, true] {
-            let session = FrozenSession::new(if preparation_failure {
-                FrozenReply::LocalCapacity
-            } else {
-                FrozenReply::Confirm
-            });
-            let (thread, _) = frozen_owner(
-                session.clone(),
-                SavedModelPhase::Streaming {
-                    stream: OpaquePayload::text("old stream"),
-                },
-                Some(original_parameters()),
-            )
-            .await;
-            let resume = thread
-                .prepare_current_resume("same-turn".into(), |_| Ok(()))
-                .await
-                .unwrap();
-            if stop {
-                thread
-                    .interrupt_execution(resume.execution_id.clone())
-                    .await
-                    .unwrap();
-            } else {
-                resume.request.cancellation.cancel();
-            }
-            let fresh_attempt = uuid::Uuid::new_v4().to_string();
-            let result = thread
-                .step(StepInput {
-                    turn_id: resume.request.turn_id.clone(),
-                    attempt_id: fresh_attempt.clone(),
-                    content: vec![text("fresh same-turn input")],
-                    cancellation: CancellationToken::new(),
-                })
-                .await;
-            if preparation_failure {
-                assert!(
-                    matches!(result, Err(pl_core::thread::ThreadError::Model(error)) if error.kind == ModelFailureKind::ContextLimit)
-                );
-            } else {
-                result.unwrap();
-            }
-            assert!(
-                session.requests.lock().unwrap()[0]
-                    .recovery_parameters
-                    .is_none(),
-                "fresh work inherited the revoked claim's model configuration"
-            );
-            if preparation_failure {
-                let current = thread
-                    .capture_current(CancellationToken::new())
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    current.model_call.as_ref().unwrap().source_attempt_id,
-                    fresh_attempt
-                );
-                assert!(
-                    current
-                        .model_call
-                        .as_ref()
-                        .unwrap()
-                        .prepared_parameters
-                        .is_none()
-                );
-                thread
-                    .step(StepInput {
-                        turn_id: resume.request.turn_id.clone(),
-                        attempt_id: uuid::Uuid::new_v4().to_string(),
-                        content: vec![text("fresh same-turn input")],
-                        cancellation: CancellationToken::new(),
-                    })
-                    .await
-                    .unwrap();
-                assert!(
-                    session.requests.lock().unwrap()[1]
-                        .recovery_parameters
-                        .is_none()
-                );
-            }
-            assert!(matches!(
-                thread
-                    .execute_current_resume(resume, ModelStepLimit::Unlimited)
-                    .await,
-                Err(pl_core::thread::ThreadError::InvalidIdentity)
-            ));
-            thread.close().await.unwrap();
-        }
     }
 }

@@ -1375,7 +1375,7 @@ impl ContextCapacity {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadError {
-    #[error("current owner is paused; prepare a user-authorized current resume first")]
+    #[error("current owner is paused; user-authorized continuation is required")]
     CurrentPaused,
     #[error("current owners do not attach the legacy checkpoint store")]
     CurrentCheckpointStore,

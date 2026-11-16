@@ -24,40 +24,35 @@ impl ThreadHandle {
         Ok(())
     }
 
-    /// Executes the selected current continuation through the existing Turn driver. The owner
-    /// rechecks epoch, execution and the one live pre-admission claim before starting any work.
-    /// Context and frozen options in the returned proposal never overwrite RAM on this path;
-    /// bind compatible services before preparing the continuation.
-    pub async fn execute_current_resume(
+    /// Continues a restored, paused current using the owner's currently configured services.
+    /// Saved model parameters remain diagnostic observations; they do not bind the new request.
+    pub async fn resume_current(
         &self,
-        resume: current::CurrentResumeRequest,
+        turn_id: String,
         max_model_steps: ModelStepLimit,
-    ) -> Result<TurnCompletion, ThreadError> {
-        if resume.runtime_epoch != self.runtime_epoch || resume.request.thread_id != self.thread_id
-        {
-            return Err(ThreadError::InvalidIdentity);
+        cancellation: CancellationToken,
+    ) -> Result<TurnCompletion, current::CurrentError> {
+        if turn_id.is_empty() {
+            return Err(current::CurrentError::InvalidIdentity);
         }
-        let attempt_id = resume.request.attempt_id;
         let input = TurnInput {
-            turn_id: resume.request.turn_id,
-            attempt_prefix: attempt_id.clone(),
+            attempt_prefix: turn_id.clone(),
+            turn_id,
             content: Vec::new(),
             max_model_steps,
-            cancellation: resume.request.cancellation,
+            cancellation,
         };
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::CurrentResume {
-                epoch: resume.runtime_epoch,
-                execution_id: resume.execution_id,
-                attempt_id,
-                authorized_stops: resume.authorized_stops,
+                epoch: self.runtime_epoch,
+                authorized_stops: self.interrupt.stops(),
                 input,
                 reply,
             })
             .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
+            .map_err(|_| current::CurrentError::Closed)?;
+        response.await.map_err(|_| current::CurrentError::Closed)?
     }
 
     /// Queues the latest configuration for the next Turn without waiting for current execution.
@@ -312,13 +307,13 @@ impl ThreadHandle {
                 current.saved_runtime_epoch
             });
         let (final_current, final_current_rx) = watch::channel(None);
+        let (current_dirty, current_dirty_rx) = watch::channel(0);
         let mut owner = Owner {
             runtime_epoch,
             current_call: None,
             current_capture: None,
-            current_updates: None,
+            current_dirty,
             current_model_running: false,
-            current_resume_claim: None,
             current_snapshot_missing: false,
             current_saved_execution: restored_current
                 .as_ref()
@@ -411,6 +406,7 @@ impl ThreadHandle {
         Ok(Self {
             runtime_epoch,
             final_current: final_current_rx,
+            current_dirty: current_dirty_rx,
             thread_id,
             _lifetime: Arc::new(HandleLifetime(interrupt.clone())),
             commands,

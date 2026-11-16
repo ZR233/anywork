@@ -1,13 +1,18 @@
 //! Complete current JSON and retained session resources. No history dependency or migration.
 
-use std::{borrow::Cow, collections::HashSet, io, path::PathBuf};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    io,
+    path::PathBuf,
+};
 
 #[cfg(test)]
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use pl_core::{
-    context::{ContextContent, ResourceAccess},
+    context::{ContextContent, ResourceReader},
     thread::current::{RuntimeEpoch, ThreadCurrent},
 };
 use tokio::io::AsyncWriteExt;
@@ -19,6 +24,9 @@ use crate::studio::paths::CURRENT_FILE_NAME;
 /// The single physical write boundary, replaceable only for fault-injection tests.
 #[cfg(test)]
 pub(super) type CurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result<()> + Send + Sync>;
+
+// Owned by one writer incarnation and one session directory, never shared between owners.
+pub(super) type VerifiedResources = HashSet<(String, String, u64, String)>;
 
 #[derive(Clone)]
 pub(super) struct CurrentFile {
@@ -73,8 +81,12 @@ impl CurrentFile {
         })
         .await
         .context("join current decoder")??;
-        self.verify_resources(&current, CancellationToken::new())
-            .await?;
+        self.verify_resources(
+            &current,
+            &mut VerifiedResources::new(),
+            CancellationToken::new(),
+        )
+        .await?;
         Ok(Some(current))
     }
 
@@ -96,11 +108,11 @@ impl CurrentFile {
     pub(super) async fn verify_resources(
         &self,
         current: &ThreadCurrent,
+        verified: &mut VerifiedResources,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let resources =
-            ResourceAccess::new(FileResourceStore::new(self.directory.join("resources")));
-        verify_recovery_resources(current, &resources, cancellation).await
+        let resources = FileResourceStore::new(self.directory.join("resources"));
+        verify_recovery_resources(current, &resources, verified, cancellation).await
     }
 
     /// Encoding and the complete write are owned by the writer until they finish.
@@ -144,10 +156,11 @@ impl CurrentFile {
 
 async fn verify_recovery_resources(
     current: &ThreadCurrent,
-    resources: &ResourceAccess,
+    resources: &FileResourceStore,
+    verified: &mut VerifiedResources,
     cancellation: CancellationToken,
 ) -> Result<()> {
-    let mut verified = HashSet::new();
+    let mut referenced = HashMap::new();
     for content in current.recovery_contents() {
         let reference = match content {
             ContextContent::Resource { reference } => Cow::Borrowed(reference),
@@ -163,18 +176,28 @@ async fn verify_recovery_resources(
         };
         // One attempt can refer to the same immutable material through confirmed context and
         // pending delivery. Read it once, but never hide a different identity or metadata claim.
-        if verified.insert((
+        let key = (
             reference.id().to_owned(),
             reference.content_digest().to_owned(),
             reference.byte_len(),
             reference.media_type().to_owned(),
-        )) {
+        );
+        referenced
+            .entry(key)
+            .or_insert_with(|| reference.into_owned());
+    }
+    verified.retain(|key| referenced.contains_key(key));
+    for (key, reference) in referenced {
+        if !verified.contains(&key) {
+            // FileResourceStore validates length and digest in its ResourceReader implementation;
+            // calling ResourceAccess here would hash the same bytes a second time.
             resources
-                .read(&reference, cancellation.clone())
+                .read(reference.clone(), cancellation.clone())
                 .await
                 .with_context(|| {
                     format!("current requires retained resource {}", reference.id())
                 })?;
+            verified.insert(key);
         }
     }
     Ok(())

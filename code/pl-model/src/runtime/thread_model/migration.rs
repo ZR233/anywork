@@ -611,7 +611,6 @@ impl LegacyModelRequestReceipt {
             .map(|prompt| prompt.migrate(binding.account_id.as_str()));
         ModelRequestReceipt {
             binding,
-            sent_model: None,
             tools: self.tools,
             tool_choice: self.tool_choice,
             parallel_tool_calls: self.parallel_tool_calls,

@@ -40,9 +40,8 @@ pub(super) struct Owner {
     pub(super) runtime_epoch: current::RuntimeEpoch,
     pub(super) current_call: Option<current::CurrentModelCall>,
     pub(super) current_capture: Option<crate::model::CurrentCaptureHandle>,
-    pub(super) current_updates: Option<watch::Receiver<u64>>,
+    pub(super) current_dirty: watch::Sender<u64>,
     pub(super) current_model_running: bool,
-    pub(super) current_resume_claim: Option<current::CurrentResumeClaim>,
     pub(super) current_snapshot_missing: bool,
     pub(super) current_saved_execution: Option<ActiveExecution>,
     pub(super) current_saved_lifecycle: Option<ThreadLifecycle>,
@@ -477,28 +476,11 @@ impl Owner {
             match command {
                 Command::CurrentResume {
                     epoch,
-                    execution_id,
-                    attempt_id,
                     authorized_stops,
-                    mut input,
+                    input,
                     reply,
                 } => {
-                    let valid = self.accepts_current_resume(
-                        epoch,
-                        &execution_id,
-                        &input.turn_id,
-                        &attempt_id,
-                        authorized_stops,
-                    );
-                    let result = if valid {
-                        let active = self
-                            .interrupt
-                            .activate(&input.cancellation, Some(authorized_stops));
-                        input.cancellation = active.token.clone();
-                        self.run_turn(input).await
-                    } else {
-                        Err(ThreadError::InvalidIdentity)
-                    };
+                    let result = self.resume_current(epoch, authorized_stops, input).await;
                     let _ = reply.send(result);
                 }
                 Command::ReplaceModel(factory, preparation, reply) => {
@@ -565,9 +547,7 @@ impl Owner {
                     cancellation,
                     reply,
                 } => {
-                    let active = self
-                        .interrupt
-                        .activate(&cancellation, self.current_resume_stops());
+                    let active = self.interrupt.activate(&cancellation, None);
                     let result = self
                         .retry_attempt(source, attempt, active.token.clone())
                         .await;
@@ -601,9 +581,7 @@ impl Owner {
                     let _ = reply.send(result);
                 }
                 Command::Turn(mut input, reply) => {
-                    let active = self
-                        .interrupt
-                        .activate(&input.cancellation, self.current_resume_stops());
+                    let active = self.interrupt.activate(&input.cancellation, None);
                     input.cancellation = active.token.clone();
                     let result = self.run_turn(input).await;
                     let _ = reply.send(result);
@@ -641,9 +619,7 @@ impl Owner {
                 }
 
                 Command::Step(mut input, reply) => {
-                    let active = self
-                        .interrupt
-                        .activate(&input.cancellation, self.current_resume_stops());
+                    let active = self.interrupt.activate(&input.cancellation, None);
                     input.cancellation = active.token.clone();
                     let result = self.step(input).await;
                     let _ = reply.send(result);
@@ -871,6 +847,13 @@ impl Owner {
             .checked_add(1)
             .expect("Thread observation revision exhausted");
         self.publish.send_replace(snapshot);
+        if self.current_task_start_ordinal.is_some() {
+            self.current_dirty.send_modify(|revision| {
+                *revision = revision
+                    .checked_add(1)
+                    .expect("current dirty revision exhausted");
+            });
+        }
     }
 
     pub(super) fn publish(&mut self) -> Result<(), ThreadError> {

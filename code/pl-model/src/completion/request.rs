@@ -50,9 +50,6 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u64>,
     pub reasoning: Option<ReasoningConfig>,
-    // RestartOnly recovery freezes options, never the input or a physical continuation.
-    pub(crate) frozen_options: bool,
-    pub(crate) options_projection: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,25 +147,6 @@ impl CompletionRequestBuilder {
 }
 
 impl CompletionRequest {
-    /// Runs model/option wire projection without cloning context, replay or attachment bytes.
-    pub(crate) fn options_only(&self) -> Self {
-        Self {
-            system_prompt: None,
-            input: Vec::new(),
-            attachments: Vec::new(),
-            prepared_content: Vec::new(),
-            replay_spans: Vec::new(),
-            tools: self.tools.clone(),
-            tool_choice: self.tool_choice.clone(),
-            parallel_tool_calls: self.parallel_tool_calls,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
-            reasoning: self.reasoning.clone(),
-            frozen_options: self.frozen_options,
-            options_projection: true,
-        }
-    }
-
     /// Appends a completed assistant response without reducing its history to final text.
     ///
     /// # Errors
@@ -239,8 +217,6 @@ impl CompletionRequest {
                 temperature: None,
                 max_tokens: None,
                 reasoning: None,
-                frozen_options: false,
-                options_projection: false,
             },
         }
     }

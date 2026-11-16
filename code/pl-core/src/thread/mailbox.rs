@@ -11,17 +11,9 @@ pub(super) enum OutputRetryReply {
 
 #[derive(Debug)]
 pub(super) enum MailboxCommand {
-    ReconcileCurrent {
-        reply: oneshot::Sender<Result<current::ThreadCurrent, current::CurrentError>>,
-    },
     ReadCurrent {
         captured: Option<current::CapturedStream>,
         reply: oneshot::Sender<Result<current::CurrentRead, current::CurrentError>>,
-    },
-    ResumeCurrent {
-        expected_revision: u64,
-        identity: current::ExecutionIdentity,
-        reply: oneshot::Sender<Result<current::CurrentResumeRequest, current::CurrentError>>,
     },
     InvokeNested {
         caller: String,
@@ -203,18 +195,8 @@ pub(super) enum MailboxCommand {
 impl Owner {
     pub(super) fn process_mailbox(&mut self, command: MailboxCommand) {
         match command {
-            MailboxCommand::ReconcileCurrent { reply } => {
-                let _ = reply.send(self.reconcile_current_for_resume());
-            }
             MailboxCommand::ReadCurrent { captured, reply } => {
                 let _ = reply.send(self.read_current(captured));
-            }
-            MailboxCommand::ResumeCurrent {
-                expected_revision,
-                identity,
-                reply,
-            } => {
-                let _ = reply.send(self.resume_current_transition(expected_revision, identity));
             }
             MailboxCommand::InvokeNested { reply, .. } => {
                 let _ = reply.send(Err(ThreadError::Closed));
@@ -717,15 +699,6 @@ impl Owner {
         loop {
             tokio::select! {
                 result = &mut operation => return result,
-                changed = async {
-                    match self.current_updates.as_mut() {
-                        Some(updates) => updates.changed().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    if changed.is_ok() { self.publish_snapshot(); }
-                    else { self.current_updates = None; }
-                },
                 Some(admission) = async {
                     match self.model_members.as_mut() {
                         Some(call) => call.receiver.recv().await,

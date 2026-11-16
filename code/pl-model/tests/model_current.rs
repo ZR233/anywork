@@ -1,23 +1,16 @@
 //! Current factory integration: the real provider accumulator, not a DTO-only capture stub.
 use pl_core::{
-    context::{ContextContent, ContextRecord, ContextSnapshot, OpaquePayload},
-    model::{ModelFactory, ModelFailureKind, ModelRequest, ModelToolDeclaration, ToolCallMode},
+    context::{ContextContent, ContextRecord, ContextSnapshot},
+    model::{ModelFactory, ModelRequest, ToolCallMode},
     thread::current::RuntimeEpoch,
 };
 use pl_model::{
-    completion::{
-        ModelStreamCurrent, ModelStreamCurrentState, ReasoningConfig, ReasoningSummary, ToolSpec,
-    },
+    completion::{ModelStreamCurrent, ModelStreamCurrentState, ReasoningConfig},
     model::{ModelInfo, ModelProtocolOptions, ModelTransportProfile, ResponsesMaxTokensField},
-    protocol::{ProtocolEndpoint, ProtocolKind, WireApi},
-    runtime::{
-        CancellationToken, HostedTool, HostedWebSearchOptions, ModelRuntime, ThreadModel,
-        model_request_receipt, thread_tool_declaration,
-    },
+    protocol::ProtocolEndpoint,
+    runtime::{CancellationToken, HostedTool, ModelRuntime, ThreadModel},
 };
-use pl_provider_fixture::{
-    FixtureServer, Protocol, RealtimeToolCall, Reply, Step, responses_text, responses_tool_calls,
-};
+use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 
@@ -42,7 +35,6 @@ fn request(attempt_id: &str, cancellation: CancellationToken) -> ModelRequest {
         tools: Arc::from([]),
         tool_call_mode: ToolCallMode::Parallel,
         solo_tool_ids: Arc::from([]),
-        recovery_parameters: None,
         committed_private_context: None,
         resources: None,
         cancellation,
@@ -110,17 +102,6 @@ fn recovery_info(transport: ModelTransportProfile) -> ModelInfo {
     info
 }
 
-fn search(external_web_access: bool) -> HostedTool {
-    HostedTool::WebSearch(HostedWebSearchOptions::OpenAi {
-        external_web_access,
-        indexed_web_access: None,
-        filters: None,
-        user_location: None,
-        search_context_size: None,
-        search_content_types: None,
-    })
-}
-
 fn recovery_factory(
     fixture: &FixtureServer,
     info: ModelInfo,
@@ -155,24 +136,6 @@ fn recovery_factory_with_endpoint(
     )
 }
 
-fn local_tool(name: &str) -> ModelToolDeclaration {
-    ModelToolDeclaration {
-        tool_id: format!("core-{name}"),
-        declaration: thread_tool_declaration(&ToolSpec::Custom {
-            name: name.into(),
-            description: "registered text tool".into(),
-            format: pl_protocol::ToolFormat::Text,
-            allowed_callers: vec![
-                pl_protocol::ToolCallerMode::Direct,
-                pl_protocol::ToolCallerMode::Programmatic,
-            ],
-            output_schema: Some(json!({"type":"string"})),
-        })
-        .unwrap(),
-        presentation_contract: None,
-    }
-}
-
 fn confirmed_request(attempt: &str, text: &str) -> ModelRequest {
     let mut request = request(attempt, CancellationToken::new());
     Arc::make_mut(&mut request.context.records)[0].content =
@@ -180,1194 +143,8 @@ fn confirmed_request(attempt: &str, text: &str) -> ModelRequest {
     request
 }
 
-async fn saved_parameters(
-    factory: &ModelFactory,
-    tools: Vec<ModelToolDeclaration>,
-) -> OpaquePayload {
-    let mut session = factory.open_session().await.unwrap();
-    let mut source = request("saved-source", CancellationToken::new());
-    source.tools = tools.into();
-    let prepared = session.prepare(source).await.unwrap();
-    let parameters = prepared.request_metadata().unwrap().clone();
-    drop(prepared);
-    session.close().await.unwrap();
-    parameters
-}
-
-fn edit_parameters(
-    parameters: &OpaquePayload,
-    edit: impl FnOnce(&mut serde_json::Value),
-) -> OpaquePayload {
-    let mut value = serde_json::from_str(parameters.content()).unwrap();
-    edit(&mut value);
-    OpaquePayload::new(parameters.format(), parameters.version(), value.to_string()).unwrap()
-}
-
 #[tokio::test]
-async fn recovery_keeps_compatible_chat_storage_unspecified_without_guessing_parallel_default() {
-    let reply = || {
-        Reply::Sse(vec![json!({"id":"resumed","model":"current-model",
-        "choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
-        "usage":{"prompt_tokens":3,"completion_tokens":1}})])
-    };
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(Protocol::Chat, "unknown store", 0, reply()),
-        Step::prompt(Protocol::Chat, "null store", 1, reply()),
-    ])
-    .await
-    .unwrap();
-    let mut info = recovery_info(ModelTransportProfile::chat_completions_http());
-    info.binding.request.body.remove("store");
-    let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
-    let parameters = saved_parameters(&source, vec![local_tool("saved_tool")]).await;
-    let mut unknown_parallel = info.clone();
-    if let ModelProtocolOptions::ChatCompletions(options) =
-        &mut unknown_parallel.binding.request.protocol
-    {
-        options.parallel_tool_calls = false;
-    }
-    let mut null_store = info.clone();
-    null_store
-        .binding
-        .request
-        .body
-        .insert("store".into(), json!(null));
-    let mut session = recovery_factory(&fixture, unknown_parallel, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("unknown parallel", "unknown parallel");
-    resumed.tools = vec![local_tool("saved_tool")].into();
-    resumed.recovery_parameters = Some(parameters.clone());
-    let error = match session.prepare(resumed).await {
-        Err(error) => error,
-        Ok(_) => panic!("unproved parallel default admitted"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-    assert!(error.to_string().contains("parallel"), "{error}");
-    session.close().await.unwrap();
-
-    for (case, current) in [("unknown store", info), ("null store", null_store)] {
-        let mut session = recovery_factory(&fixture, current, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request(case, case);
-        resumed.tools = vec![local_tool("saved_tool")].into();
-        resumed.recovery_parameters = Some(parameters.clone());
-        session
-            .prepare(resumed)
-            .await
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-        session.close().await.unwrap();
-    }
-    let recorded = fixture.finish().await.unwrap();
-    assert!(recorded[0].body.get("store").is_none());
-    assert!(recorded[1].body["store"].is_null());
-}
-
-#[tokio::test]
-async fn recovery_omit_limit_checks_final_output_tokens_not_an_intermediate_body() {
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "fixed cap",
-            0,
-            Reply::Sse(responses_text("done", "fixed", "current-model")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "parameter cap",
-            1,
-            Reply::Sse(responses_text("done", "parameter", "current-model")),
-        ),
-    ])
-    .await
-    .unwrap();
-    let mut info = recovery_info(ModelTransportProfile::responses_http());
-    info.max_output_tokens = Some(500);
-    let reasoning = Some(ReasoningConfig {
-        effort: Some("high".into()),
-        summary: None,
-    });
-    let source = recovery_factory(&fixture, info.clone(), reasoning.clone(), Vec::new());
-    let parameters = saved_parameters(&source, Vec::new()).await;
-    assert_eq!(
-        model_request_receipt(&parameters).unwrap().max_tokens,
-        Some(500)
-    );
-    if let ModelProtocolOptions::Responses(options) = &mut info.binding.request.protocol {
-        options.max_tokens_field = ResponsesMaxTokensField::Omit;
-    }
-    for overlay in [
-        json!({}),
-        json!({"max_output_tokens":499}),
-        json!({"max_tokens":500}),
-        json!({"max_completion_tokens":500}),
-        json!({"max_tool_calls":500}),
-        json!({"max_output_tokens":500,"max_tokens":500}),
-    ] {
-        let mut current = info.clone();
-        current.binding.request.body = serde_json::from_value(overlay.clone()).unwrap();
-        let mut session = recovery_factory(&fixture, current, reasoning.clone(), Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request("invalid cap", "invalid cap");
-        resumed.recovery_parameters = Some(parameters.clone());
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("unconfirmed output-token cap admitted: {overlay}"),
-        };
-        assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-        session.close().await.unwrap();
-    }
-    assert!(fixture.recorded().is_empty());
-    for (text, from_parameter) in [("fixed cap", false), ("parameter cap", true)] {
-        let mut current = info.clone();
-        if from_parameter {
-            current.parameters[0]
-                .wire
-                .get_mut("high")
-                .unwrap()
-                .set
-                .push(pl_model::model::WireAssignment {
-                    path: "max_output_tokens".into(),
-                    value: json!(500),
-                });
-        } else {
-            current
-                .binding
-                .request
-                .body
-                .insert("max_output_tokens".into(), json!(500));
-        }
-        let mut session = recovery_factory(&fixture, current, reasoning.clone(), Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request(text, text);
-        resumed.recovery_parameters = Some(parameters.clone());
-        session
-            .prepare(resumed)
-            .await
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-        session.close().await.unwrap();
-    }
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 2);
-    for request in recorded {
-        assert_eq!(request.body["max_output_tokens"], 500);
-        assert!(request.body.get("max_tokens").is_none());
-        assert!(request.body.get("max_completion_tokens").is_none());
-    }
-}
-
-#[tokio::test]
-async fn recovery_rejects_remote_history_and_storage_but_allows_neutral_responses_overlays() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "neutral overlay",
-        0,
-        Reply::Sse(responses_text("done", "neutral", "current-model")),
-    )])
-    .await
-    .unwrap();
-    let info = recovery_info(ModelTransportProfile::responses_http());
-    let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
-    let parameters = saved_parameters(&source, Vec::new()).await;
-    for overlay in [
-        json!({"conversation":"server-history"}),
-        json!({"conversation":{"id":"server-history"}}),
-        json!({"previous_response_id":"old-response"}),
-        json!({"prompt":{"id":"old-template"}}),
-        json!({"store":true}),
-        json!({"store":null}),
-        json!({"background":true}),
-    ] {
-        let mut current = info.clone();
-        current.binding.request.body = serde_json::from_value(overlay.clone()).unwrap();
-        let mut session = recovery_factory(&fixture, current, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request("unsafe-response-overlay", "unsafe overlay");
-        resumed.recovery_parameters = Some(parameters.clone());
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("admitted {overlay}"),
-        };
-        assert_eq!(
-            error.kind,
-            ModelFailureKind::IncompatibleContext,
-            "{overlay}: {error}"
-        );
-        session.close().await.unwrap();
-    }
-    assert!(fixture.recorded().is_empty());
-    let mut current = info;
-    current.binding.request.body = serde_json::from_value(json!({
-        "conversation":null,"previous_response_id":null,"prompt":null,
-        "store":false,"background":false,"metadata":{"conversation":"annotation only"}
-    }))
-    .unwrap();
-    let mut session = recovery_factory(&fixture, current, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("neutral-response-overlay", "neutral overlay");
-    resumed.recovery_parameters = Some(parameters);
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].body["store"], false);
-    assert!(recorded[0].body["conversation"].is_null());
-    assert_eq!(
-        recorded[0].body["metadata"]["conversation"],
-        "annotation only"
-    );
-}
-
-#[tokio::test]
-async fn recovery_chat_preserves_false_parallel_only_when_tools_can_run() {
-    let reply = || {
-        Reply::Sse(vec![json!({"id":"serial","model":"current-model",
-        "choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
-        "usage":{"prompt_tokens":3,"completion_tokens":1}})])
-    };
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(Protocol::Chat, "serial restored", 0, reply()),
-        Step::prompt(Protocol::Chat, "no tools", 1, reply()),
-        Step::prompt(Protocol::Chat, "disabled tools", 2, reply()),
-    ])
-    .await
-    .unwrap();
-    let info = recovery_info(ModelTransportProfile::chat_completions_http());
-    let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
-    let mut session = source.open_session().await.unwrap();
-    let mut original = request("serial-source", CancellationToken::new());
-    original.tool_call_mode = ToolCallMode::Sequential;
-    original.tools = vec![local_tool("saved_tool")].into();
-    let prepared = session.prepare(original).await.unwrap();
-    let parameters = prepared.request_metadata().unwrap().clone();
-    assert!(
-        !model_request_receipt(&parameters)
-            .unwrap()
-            .parallel_tool_calls
-    );
-    drop(prepared);
-    session.close().await.unwrap();
-    let mut no_field = info.clone();
-    if let ModelProtocolOptions::ChatCompletions(options) = &mut no_field.binding.request.protocol {
-        options.parallel_tool_calls = false;
-    }
-    let mut stored = info.clone();
-    stored
-        .binding
-        .request
-        .body
-        .insert("store".into(), json!(true));
-    for current in [no_field.clone(), stored] {
-        let mut session = recovery_factory(&fixture, current, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request("invalid-serial", "invalid serial");
-        resumed.tools = vec![local_tool("saved_tool")].into();
-        resumed.recovery_parameters = Some(parameters.clone());
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("unsafe Chat request admitted"),
-        };
-        assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-        session.close().await.unwrap();
-    }
-    assert!(fixture.recorded().is_empty());
-    for (text, mut current, parameters, tools) in [
-        (
-            "serial restored",
-            info,
-            parameters.clone(),
-            vec![local_tool("saved_tool")],
-        ),
-        (
-            "no tools",
-            no_field.clone(),
-            edit_parameters(&parameters, |value| value["tools"] = json!([])),
-            Vec::new(),
-        ),
-        (
-            "disabled tools",
-            no_field,
-            edit_parameters(&parameters, |value| value["toolChoice"] = json!("none")),
-            vec![local_tool("saved_tool")],
-        ),
-    ] {
-        // This compatible fixture explicitly requests no storage; it proves wire intent,
-        // not an account-independent storage default for arbitrary compatible services.
-        current
-            .binding
-            .request
-            .body
-            .insert("store".into(), json!(false));
-        let mut session = recovery_factory(&fixture, current, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request(text, text);
-        resumed.tools = tools.into();
-        resumed.recovery_parameters = Some(parameters);
-        session
-            .prepare(resumed)
-            .await
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-        session.close().await.unwrap();
-    }
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 3);
-    assert_eq!(recorded[0].body["parallel_tool_calls"], false);
-    assert!(recorded[1].body.get("parallel_tool_calls").is_none());
-    assert!(recorded[2].body.get("parallel_tool_calls").is_none());
-    assert_eq!(recorded[2].body["tool_choice"], "none");
-}
-
-#[tokio::test]
-async fn recovery_effort_wire_accepts_equal_values_and_rejects_actual_changes() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "equal wire",
-        0,
-        Reply::Sse(responses_text("done", "equal", "current-model")),
-    )])
-    .await
-    .unwrap();
-    let info = recovery_info(ModelTransportProfile::responses_http());
-    let reasoning = Some(ReasoningConfig {
-        effort: Some("high".into()),
-        summary: None,
-    });
-    let source = recovery_factory(&fixture, info.clone(), reasoning.clone(), Vec::new());
-    let parameters = edit_parameters(&saved_parameters(&source, Vec::new()).await, |value| {
-        value["temperature"] = json!(0.25)
-    });
-    for (field, value) in [("stream", json!(false)), ("temperature", json!(0.9))] {
-        let mut current = info.clone();
-        current.parameters[0]
-            .wire
-            .get_mut("high")
-            .unwrap()
-            .set
-            .push(pl_model::model::WireAssignment {
-                path: field.into(),
-                value,
-            });
-        let mut session = recovery_factory(&fixture, current, reasoning.clone(), Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request(field, "changed wire");
-        resumed.recovery_parameters = Some(parameters.clone());
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("changed {field} admitted"),
-        };
-        assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-        session.close().await.unwrap();
-    }
-    assert!(fixture.recorded().is_empty());
-    let mut current = info;
-    // Temporary writes are not side effects: only the final actual request can change behavior.
-    current
-        .binding
-        .request
-        .body
-        .insert("store".into(), json!(true));
-    let wire = current.parameters[0].wire.get_mut("high").unwrap();
-    for (field, value) in [
-        ("stream", json!(false)),
-        ("stream", json!(true)),
-        ("temperature", json!(0.25)),
-        ("store", json!(false)),
-    ] {
-        wire.set.push(pl_model::model::WireAssignment {
-            path: field.into(),
-            value,
-        });
-    }
-    let mut session = recovery_factory(&fixture, current, reasoning, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("equal-wire", "equal wire");
-    resumed.recovery_parameters = Some(parameters);
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].body["stream"], true);
-    assert_eq!(recorded[0].body["temperature"], 0.25);
-    assert_eq!(recorded[0].body["store"], false);
-}
-
-#[tokio::test]
-async fn recovery_requires_the_saved_final_sent_model_not_the_current_alias() {
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "same physical",
-            0,
-            Reply::Sse(responses_text("done", "same", "physical-a")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "effective same",
-            1,
-            Reply::Sse(responses_text("done", "effective", "physical-a")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "native config same",
-            2,
-            Reply::Sse(responses_text("done", "native", "physical-c")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "new preparing",
-            3,
-            Reply::Sse(responses_text("done", "new", "physical-b")),
-        ),
-    ])
-    .await
-    .unwrap();
-    let mut info = recovery_info(ModelTransportProfile::responses_http());
-    info.binding.request.api_model = Some("physical-a".into());
-    let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
-    let parameters = saved_parameters(&source, Vec::new()).await;
-    assert_eq!(
-        model_request_receipt(&parameters)
-            .unwrap()
-            .sent_model
-            .as_deref(),
-        Some("physical-a")
-    );
-    let unknown = edit_parameters(&parameters, |value| {
-        value.as_object_mut().unwrap().remove("sentModel");
-    });
-    assert!(
-        model_request_receipt(&unknown)
-            .unwrap()
-            .sent_model
-            .is_none(),
-        "old receipts remain readable as unknown"
-    );
-    let mut remapped = info.clone();
-    remapped.binding.request.api_model = Some("physical-b".into());
-    let mut changed_native = info.clone();
-    changed_native
-        .binding
-        .request
-        .body
-        .insert("model".into(), json!("physical-c"));
-    for (case, current, parameters) in [
-        ("api alias changed", remapped.clone(), parameters.clone()),
-        (
-            "effective native model changed",
-            changed_native.clone(),
-            parameters.clone(),
-        ),
-        ("missing sentModel", info.clone(), unknown),
-        (
-            "unproved sentModel",
-            info.clone(),
-            edit_parameters(&parameters, |value| value["sentModel"] = json!("unproved")),
-        ),
-    ] {
-        let mut session = recovery_factory(&fixture, current, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = confirmed_request(case, case);
-        resumed.recovery_parameters = Some(parameters);
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("admitted {case}"),
-        };
-        assert_eq!(
-            error.kind,
-            ModelFailureKind::IncompatibleContext,
-            "{case}: {error}"
-        );
-        if case == "missing sentModel" {
-            assert!(
-                error.to_string().contains("sentModel"),
-                "unknown origin must be explained"
-            );
-        }
-        session.close().await.unwrap();
-    }
-    assert!(
-        fixture.recorded().is_empty(),
-        "all incompatible preparations must precede network IO"
-    );
-    let mut session = source.open_session().await.unwrap();
-    let mut resumed = confirmed_request("same-physical", "same physical");
-    resumed.recovery_parameters = Some(parameters.clone());
-    let prepared = session.prepare(resumed).await.unwrap();
-    assert_eq!(
-        model_request_receipt(prepared.request_metadata().unwrap())
-            .unwrap()
-            .sent_model
-            .as_deref(),
-        Some("physical-a")
-    );
-    prepared.execute().await.unwrap();
-    session.close().await.unwrap();
-    // Compare final wire models, not raw aliases: the overlay keeps A despite an alias change.
-    let mut effective_same = remapped.clone();
-    effective_same
-        .binding
-        .request
-        .body
-        .insert("model".into(), json!("physical-a"));
-    let mut session = recovery_factory(&fixture, effective_same, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("effective-same", "effective same");
-    resumed.recovery_parameters = Some(parameters);
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    // A current producer captures the overlay model C, not the intermediate api_model alias A.
-    let native_source = recovery_factory(&fixture, changed_native.clone(), None, Vec::new());
-    let native_parameters = saved_parameters(&native_source, Vec::new()).await;
-    assert_eq!(
-        model_request_receipt(&native_parameters)
-            .unwrap()
-            .sent_model
-            .as_deref(),
-        Some("physical-c")
-    );
-    changed_native.binding.request.api_model = Some("physical-b".into());
-    let mut session = recovery_factory(&fixture, changed_native, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("native-same", "native config same");
-    resumed.recovery_parameters = Some(native_parameters);
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    // Preparing without a frozen receipt is a fresh call, even after the alias changes.
-    let mut session = recovery_factory(&fixture, remapped.clone(), None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let fresh = session
-        .prepare(confirmed_request("new-preparing", "new preparing"))
-        .await
-        .unwrap();
-    assert_eq!(
-        model_request_receipt(fresh.request_metadata().unwrap())
-            .unwrap()
-            .sent_model
-            .as_deref(),
-        Some("physical-b")
-    );
-    fresh.execute().await.unwrap();
-    session.close().await.unwrap();
-    // An invalid effective model fails preparation instead of writing a guessed model_id.
-    remapped
-        .binding
-        .request
-        .body
-        .insert("model".into(), serde_json::Value::Null);
-    let mut session = recovery_factory(&fixture, remapped, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    assert!(
-        session
-            .prepare(request("invalid-sent-model", CancellationToken::new()))
-            .await
-            .is_err()
-    );
-    session.close().await.unwrap();
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 4);
-    for (request, expected) in
-        recorded
-            .iter()
-            .zip(["physical-a", "physical-a", "physical-c", "physical-b"])
-    {
-        assert_eq!(request.body["model"], expected);
-    }
-}
-
-#[tokio::test]
-async fn recovery_applies_saved_options_and_hosted_plan_to_new_input_without_granting_extra_tools()
-{
-    let calls = |name| {
-        responses_tool_calls(
-            "resumed",
-            "current-model",
-            &[RealtimeToolCall {
-                name,
-                call_id: "call_0",
-                item_id: "item_0",
-                arguments: json!({"input":"payload"}).to_string(),
-            }],
-        )
-    };
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "confirmed replacement",
-            0,
-            Reply::Sse(calls("saved_tool")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "fresh replacement",
-            1,
-            Reply::Sse(responses_text("done", "fresh", "current-model")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "unadvertised call",
-            2,
-            Reply::Sse(calls("added_tool")),
-        ),
-    ])
-    .await
-    .unwrap();
-    let mut info = recovery_info(ModelTransportProfile::responses_http());
-    info.capabilities.tools.programmatic_tool_calling = true;
-    if let ModelProtocolOptions::Responses(options) = &mut info.binding.request.protocol {
-        options.programmatic_tool_calling = true;
-    }
-    let source = recovery_factory(
-        &fixture,
-        info.clone(),
-        Some(ReasoningConfig {
-            effort: Some("high".into()),
-            summary: Some(ReasoningSummary::Auto),
-        }),
-        vec![search(false), HostedTool::ProgrammaticToolCalling],
-    );
-    let parameters = saved_parameters(&source, vec![local_tool("saved_tool")]).await;
-    // Include explicit non-default scalar options in the saved fixture. Fresh ThreadModel has
-    // no public temperature/tool_choice setters; the recovery API must nevertheless honor them.
-    let parameters = edit_parameters(&parameters, |value| {
-        value["temperature"] = json!(0.25);
-        value["toolChoice"] = json!("required");
-    });
-    let mut current = info;
-    current.max_output_tokens = Some(33);
-    current.default_temperature = Some(0.9);
-    current.binding.request.body = serde_json::from_value(json!({
-        "temperature":0.9, "max_output_tokens":33, "reasoning":{"effort":"low"},
-        "parallel_tool_calls":false, "tool_choice":"none", "vendor_extra":{"opaque":"retained"}
-    }))
-    .unwrap();
-    let current = recovery_factory(
-        &fixture,
-        current,
-        Some(ReasoningConfig {
-            effort: Some("low".into()),
-            summary: Some(ReasoningSummary::Disabled),
-        }),
-        vec![search(true)],
-    );
-    let mut session = current.open_session().await.unwrap();
-    let catalog: Arc<[ModelToolDeclaration]> =
-        vec![local_tool("saved_tool"), local_tool("added_tool")].into();
-    let mut resumed = confirmed_request("new-attempt", "confirmed replacement");
-    resumed.tools = catalog.clone();
-    resumed.recovery_parameters = Some(parameters.clone());
-    let prepared = session.prepare(resumed).await.unwrap();
-    let receipt = model_request_receipt(prepared.request_metadata().unwrap()).unwrap();
-    assert_eq!(receipt.max_tokens, Some(700));
-    assert_eq!(receipt.temperature, Some(0.25));
-    let output = prepared.execute().await.unwrap();
-    assert_eq!(output.tool_calls[0].tool_id, "core-saved_tool");
-    assert_eq!(output.tool_calls[0].arguments.format(), "text/plain");
-    assert_eq!(output.tool_calls[0].arguments.content(), "payload");
-    let mut fresh = confirmed_request("fresh-attempt", "fresh replacement");
-    fresh.tools = catalog.clone();
-    let fresh_output = session
-        .prepare(fresh)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "{error}; fixture rejection: {:?}",
-                fixture
-                    .recorded()
-                    .last()
-                    .and_then(|request| request.diagnostic.as_ref())
-            )
-        });
-
-    let mut unadvertised = confirmed_request("unadvertised-attempt", "unadvertised call");
-    unadvertised.tools = catalog;
-    unadvertised.recovery_parameters = Some(parameters);
-    let output = session
-        .prepare(unadvertised)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    assert!(output.tool_calls[0].tool_id.is_empty());
-    assert!(matches!(&output.tool_calls[0].rejection,
-        Some(pl_core::model::ModelToolCallRejection::UnknownTool { name }) if name == "added_tool"));
-
-    // A foreign source embedded in the new confirmed context must be rejected, not have its
-    // native replay silently stripped. No fourth network operation is permitted by this fixture.
-    let mut foreign = confirmed_request("foreign-context", "foreign context");
-    let content = fresh_output
-        .content
-        .into_iter()
-        .map(|content| match content {
-            ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
-                let payload = edit_parameters(&payload, |value| {
-                    value["receipt"]["binding"]["accountId"] = json!("foreign");
-                });
-                ContextContent::Opaque { payload }
-            }
-            other => other,
-        })
-        .collect();
-    let mut record = foreign.context.records[0].clone();
-    record.id = "fresh-attempt:output".into();
-    record.source = pl_core::context::ContextSource::Assistant;
-    record.content = content;
-    foreign.context.records = vec![record].into();
-    foreign.recovery_parameters =
-        Some(saved_parameters(&source, vec![local_tool("saved_tool")]).await);
-    let error = match session.prepare(foreign).await {
-        Err(error) => error,
-        Ok(_) => panic!("foreign native context admitted"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-    session.close().await.unwrap();
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 3);
-    let resumed = &recorded[0].body;
-    assert_eq!(resumed["temperature"], 0.25);
-    assert_eq!(resumed["max_output_tokens"], 700);
-    assert_eq!(resumed["parallel_tool_calls"], true);
-    assert_eq!(resumed["tool_choice"], "required");
-    assert_eq!(
-        resumed["reasoning"],
-        json!({"effort":"high","summary":"auto"})
-    );
-    assert_eq!(resumed["tools"].as_array().unwrap().len(), 3);
-    assert!(!resumed.to_string().contains("added_tool"));
-    assert!(!resumed.to_string().contains("current capture"));
-    assert_eq!(resumed["vendor_extra"], json!({"opaque":"retained"}));
-    let saved_search = resumed["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["type"] == "web_search")
-        .unwrap();
-    assert_eq!(saved_search["external_web_access"], false);
-    assert!(
-        resumed["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["type"] == "programmatic_tool_calling")
-    );
-    let saved_tool = resumed["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["name"] == "saved_tool")
-        .unwrap();
-    assert!(saved_tool.get("output_schema").is_some());
-    let fresh = &recorded[1].body;
-    assert_eq!(fresh["temperature"], 0.9);
-    assert_eq!(fresh["max_output_tokens"], 33);
-    assert_eq!(fresh["reasoning"]["effort"], "low");
-    assert_eq!(fresh["parallel_tool_calls"], false);
-    assert_eq!(fresh["tool_choice"], "none");
-    assert!(
-        fresh["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["name"] == "added_tool")
-    );
-    let fresh_search = fresh["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["type"] == "web_search")
-        .unwrap();
-    assert_eq!(fresh_search["external_web_access"], true);
-    assert!(
-        !fresh["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["type"] == "programmatic_tool_calling")
-    );
-}
-
-#[tokio::test]
-async fn recovery_rejects_unbound_or_unrepresentable_saved_material_before_io() {
-    let fixture = FixtureServer::start(Vec::new()).await.unwrap();
-    let info = recovery_info(ModelTransportProfile::responses_http());
-    let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
-    let parameters = saved_parameters(&source, vec![local_tool("saved_tool")]).await;
-    let mut variants = Vec::new();
-    for (field, value) in [
-        ("accountId", json!("another-account")),
-        ("modelId", json!("another-model")),
-        (
-            "protocol",
-            serde_json::to_value(ProtocolKind::DeepSeek).unwrap(),
-        ),
-        (
-            "wireApi",
-            serde_json::to_value(WireApi::ChatCompletions).unwrap(),
-        ),
-        ("isolation", json!("another-deployment")),
-    ] {
-        variants.push((
-            field,
-            edit_parameters(&parameters, |saved| saved["binding"][field] = value),
-        ));
-    }
-    variants.push((
-        "unregistered tool",
-        edit_parameters(&parameters, |saved| {
-            saved["tools"][0]["name"] = json!("unregistered")
-        }),
-    ));
-    variants.push((
-        "changed declaration",
-        edit_parameters(&parameters, |saved| {
-            saved["tools"][0]["description"] = json!("not registered")
-        }),
-    ));
-    variants.push((
-        "duplicate tool",
-        edit_parameters(&parameters, |saved| {
-            let tool = saved["tools"][0].clone();
-            saved["tools"].as_array_mut().unwrap().push(tool);
-        }),
-    ));
-    variants.push((
-        "unsupported effort",
-        edit_parameters(&parameters, |saved| {
-            saved["reasoning"] = json!({"effort":"not-supported","summary":null})
-        }),
-    ));
-    variants.push((
-        "wrong hosted dialect",
-        edit_parameters(&parameters, |saved| {
-            saved["tools"].as_array_mut().unwrap().push(
-                serde_json::to_value(ToolSpec::WebSearch {
-                    options: HostedWebSearchOptions::DeepSeek,
-                })
-                .unwrap(),
-            )
-        }),
-    ));
-    variants.push((
-        "wrong format",
-        OpaquePayload::new(
-            "not-a-prepared-request",
-            parameters.version(),
-            parameters.content(),
-        )
-        .unwrap(),
-    ));
-    variants.push((
-        "unknown version",
-        OpaquePayload::new(parameters.format(), 99, parameters.content()).unwrap(),
-    ));
-    variants.push((
-        "unconfirmed parameters",
-        OpaquePayload::new(parameters.format(), parameters.version(), "{}").unwrap(),
-    ));
-    let mut session = source.open_session().await.unwrap();
-    for (case, parameters) in variants {
-        let mut resumed = request(case, CancellationToken::new());
-        resumed.tools = vec![local_tool("saved_tool")].into();
-        resumed.recovery_parameters = Some(parameters);
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("admitted {case}"),
-        };
-        assert_eq!(
-            error.kind,
-            ModelFailureKind::IncompatibleContext,
-            "{case}: {error}"
-        );
-    }
-    session.close().await.unwrap();
-    let mut configurations = Vec::new();
-    let mut omit = info.clone();
-    if let ModelProtocolOptions::Responses(options) = &mut omit.binding.request.protocol {
-        options.max_tokens_field = ResponsesMaxTokensField::Omit;
-    }
-    configurations.push(("omitted token limit", omit, parameters.clone()));
-    let mut exhausted = info.clone();
-    exhausted.context_window = Some(500);
-    exhausted.max_output_tokens = Some(33);
-    configurations.push(("exhausted output budget", exhausted, parameters.clone()));
-    let mut no_temperature = info.clone();
-    no_temperature.capabilities.temperature = false;
-    configurations.push((
-        "unsupported temperature",
-        no_temperature,
-        edit_parameters(&parameters, |saved| saved["temperature"] = json!(0.25)),
-    ));
-    for (key, value) in [
-        ("input", json!([{"role":"user","content":"unconfirmed"}])),
-        ("model", json!("silent-model-replacement")),
-        ("previous_response_id", json!("old-stream")),
-    ] {
-        let mut injected = info.clone();
-        injected.binding.request.body.insert(key.into(), value);
-        configurations.push((key, injected, parameters.clone()));
-    }
-    let mut unsafe_wire = info.clone();
-    unsafe_wire.parameters[0].wire.get_mut("high").unwrap().set[0].path = "input".into();
-    configurations.push((
-        "wire changes input",
-        unsafe_wire,
-        edit_parameters(&parameters, |saved| {
-            saved["reasoning"] = json!({"effort":"high","summary":null})
-        }),
-    ));
-    for (case, info, parameters) in configurations {
-        let mut session = recovery_factory(&fixture, info, None, Vec::new())
-            .open_session()
-            .await
-            .unwrap();
-        let mut resumed = request(case, CancellationToken::new());
-        resumed.tools = vec![local_tool("saved_tool")].into();
-        resumed.recovery_parameters = Some(parameters);
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("admitted {case}"),
-        };
-        assert_eq!(
-            error.kind,
-            ModelFailureKind::IncompatibleContext,
-            "{case}: {error}"
-        );
-        session.close().await.unwrap();
-    }
-    let endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
-    let missing_hosted = ModelFactory::new(ThreadModel::new_current(
-        ModelRuntime::new_with_account_id("fixture", endpoint, info.clone()).unwrap(),
-        None,
-    ));
-    let mut session = missing_hosted.open_session().await.unwrap();
-    let mut resumed = request("missing hosted service", CancellationToken::new());
-    resumed.tools = vec![local_tool("saved_tool")].into();
-    let source_hosted = recovery_factory(&fixture, info.clone(), None, vec![search(false)]);
-    resumed.recovery_parameters =
-        Some(saved_parameters(&source_hosted, vec![local_tool("saved_tool")]).await);
-    let error = match session.prepare(resumed).await {
-        Err(error) => error,
-        Ok(_) => panic!("unavailable hosted service admitted"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-    session.close().await.unwrap();
-
-    // Reserve the saved output budget, not the current smaller default, against new input.
-    let mut narrow = info;
-    narrow.context_window = Some(800);
-    narrow.max_output_tokens = Some(33);
-    let mut session = recovery_factory(&fixture, narrow, None, Vec::new())
-        .open_session()
-        .await
-        .unwrap();
-    let mut resumed = confirmed_request("saved output reserve", &"x".repeat(1000));
-    resumed.tools = vec![local_tool("saved_tool")].into();
-    resumed.recovery_parameters = Some(parameters);
-    let error = match session.prepare(resumed).await {
-        Err(error) => error,
-        Ok(_) => panic!("new input ignored the saved output reserve"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::ContextLimit);
-    session.close().await.unwrap();
-    assert!(fixture.finish().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn recovery_chat_uses_saved_effort_and_limit_and_keeps_absent_options_absent() {
-    let fixture = FixtureServer::start(vec![Step::prompt(Protocol::Chat, "confirmed chat", 0,
-        Reply::Sse(vec![
-            json!({"id":"chat-result","model":"current-model","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}),
-            json!({"id":"chat-result","model":"current-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}),
-        ])), Step::prompt(Protocol::Chat, "official default parallel", 1, Reply::Sse(vec![
-            json!({"id":"default-result","model":"current-model","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}})
-        ]))]).await.unwrap();
-    let info = recovery_info(ModelTransportProfile::chat_completions_http());
-    let official = |info, reasoning| {
-        recovery_factory_with_endpoint(
-            ProtocolEndpoint::openai(Some(fixture.base_url())),
-            info,
-            reasoning,
-            Vec::new(),
-        )
-    };
-    let source = official(
-        info.clone(),
-        Some(ReasoningConfig {
-            effort: Some("high".into()),
-            summary: None,
-        }),
-    );
-    let parameters = saved_parameters(&source, vec![local_tool("saved_tool")]).await;
-    let mut current = info.clone();
-    current.max_output_tokens = Some(33);
-    current.binding.request.body = serde_json::from_value(json!({
-        "temperature":0.9,"max_tokens":33,"max_completion_tokens":33,"reasoning_effort":"low",
-        "vendor_reasoning":{"effort":"low"}
-    }))
-    .unwrap();
-    current.parameters[0]
-        .wire
-        .get_mut("low")
-        .unwrap()
-        .set
-        .push(pl_model::model::WireAssignment {
-            path: "vendor_reasoning.effort".into(),
-            value: json!("low"),
-        });
-    if let ModelProtocolOptions::ChatCompletions(options) = &mut current.binding.request.protocol {
-        options.max_tokens_field = pl_model::model::MaxTokensField::MaxCompletionTokens;
-    }
-    let mut session = official(
-        current,
-        Some(ReasoningConfig {
-            effort: Some("low".into()),
-            summary: None,
-        }),
-    )
-    .open_session()
-    .await
-    .unwrap();
-    let mut resumed = confirmed_request("chat-recovery", "confirmed chat");
-    resumed.tools = vec![local_tool("saved_tool")].into();
-    resumed.recovery_parameters = Some(parameters.clone());
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    let mut current = info.clone();
-    if let ModelProtocolOptions::ChatCompletions(options) = &mut current.binding.request.protocol {
-        options.parallel_tool_calls = false;
-    }
-    let mut session = official(current, None).open_session().await.unwrap();
-    let mut false_request = confirmed_request("official false omitted", "must not send");
-    false_request.tools = vec![local_tool("saved_tool")].into();
-    false_request.recovery_parameters = Some(edit_parameters(&parameters, |value| {
-        value["parallelToolCalls"] = json!(false)
-    }));
-    let error = match session.prepare(false_request).await {
-        Err(error) => error,
-        Ok(_) => panic!("official true default cannot represent saved false"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-    let mut resumed = confirmed_request("official-default", "official default parallel");
-    resumed.tools = vec![local_tool("saved_tool")].into();
-    resumed.recovery_parameters = Some(parameters.clone());
-    session
-        .prepare(resumed)
-        .await
-        .unwrap()
-        .execute()
-        .await
-        .unwrap();
-    session.close().await.unwrap();
-    let mut session = official(info, None).open_session().await.unwrap();
-    let mut unsupported = request("summary", CancellationToken::new());
-    unsupported.tools = vec![local_tool("saved_tool")].into();
-    unsupported.recovery_parameters = Some(edit_parameters(&parameters, |value| {
-        value["reasoning"]["summary"] = json!("auto")
-    }));
-    let error = match session.prepare(unsupported).await {
-        Err(error) => error,
-        Ok(_) => panic!("Chat summary admitted"),
-    };
-    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-    session.close().await.unwrap();
-    let recorded = fixture.finish().await.unwrap();
-    assert_eq!(recorded.len(), 2);
-    assert!(
-        recorded[1].body.get("parallel_tool_calls").is_none(),
-        "official omission must be accepted as its true default"
-    );
-    assert!(
-        recorded
-            .iter()
-            .all(|request| request.body["store"] == false),
-        "the wire requests no storage rather than claiming an account default"
-    );
-    let body = &recorded[0].body;
-    assert_eq!(body["reasoning_effort"], "high");
-    assert_eq!(body["parallel_tool_calls"], true);
-    assert_eq!(body["max_completion_tokens"], 700);
-    assert!(body.get("max_tokens").is_none());
-    assert!(body.get("temperature").is_none());
-    assert!(
-        body.get("vendor_reasoning").is_none(),
-        "a current default's unused effort wire must not leak an empty native object"
-    );
-    assert!(!body.to_string().contains("current capture"));
-}
-
-#[tokio::test]
-async fn recovery_on_reused_websocket_session_starts_without_continuation() {
+async fn restart_on_new_websocket_session_starts_without_continuation() {
     let fixture = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesWebSocket,
@@ -1408,7 +185,6 @@ async fn recovery_on_reused_websocket_session_starts_without_continuation() {
     let initial = request("ws-first", CancellationToken::new());
     let history = initial.context.records.to_vec();
     let prepared = session.prepare(initial).await.unwrap();
-    let parameters = prepared.request_metadata().unwrap().clone();
     let first = prepared.execute().await.unwrap();
     let next = |mut history: Vec<ContextRecord>,
                 output: pl_core::model::ModelStepOutput,
@@ -1438,8 +214,9 @@ async fn recovery_on_reused_websocket_session_starts_without_continuation() {
         .execute()
         .await
         .unwrap();
-    let mut resumed = next(history, second, "ws-recovery", "restart confirmed");
-    resumed.recovery_parameters = Some(parameters);
+    session.close().await.unwrap();
+    let mut session = factory.open_session().await.unwrap();
+    let resumed = next(history, second, "ws-recovery", "restart confirmed");
     session
         .prepare(resumed)
         .await
@@ -1499,13 +276,12 @@ async fn current_capture_during_first_byte_and_next_frame_keeps_one_request_and_
             .unwrap();
         let capture = prepared.current_capture().unwrap().clone();
         let epoch = RuntimeEpoch::new();
-        let changes = capture.subscribe_changes();
         let execution = tokio::spawn(prepared.execute_with_current());
         reached.cancelled().await;
         // The fixture handshake says the prefix is written, not yet that the client merged it.
-        // Observe dirty revisions rather than sleeping or issuing another network request.
+        // Capture the producer view until the written prefix has been accepted.
         if !empty {
-            let mut changes = changes.clone();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
             loop {
                 let view = ModelStreamCurrent::decode(
                     &capture
@@ -1517,10 +293,11 @@ async fn current_capture_during_first_byte_and_next_frame_keeps_one_request_and_
                 if !view.tool_inputs.is_empty() {
                     break;
                 }
-                tokio::time::timeout(Duration::from_secs(1), changes.changed())
-                    .await
-                    .unwrap()
-                    .unwrap();
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "producer did not accept prefix"
+                );
+                tokio::task::yield_now().await;
             }
         }
         assert!(
@@ -1545,7 +322,6 @@ async fn current_capture_during_first_byte_and_next_frame_keeps_one_request_and_
                     .iter()
                     .any(|part| part.text == "complete accepted commentary")
             );
-            assert!(*changes.borrow() > 0);
         }
         cancellation.cancel();
         let exit = tokio::time::timeout(Duration::from_secs(2), execution)
@@ -1742,7 +518,7 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
         .await
         .unwrap();
     let capture = prepared.current_capture().unwrap().clone();
-    let mut changes = capture.subscribe_changes();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let execution = tokio::spawn(prepared.execute_with_current());
     let epoch = RuntimeEpoch::new();
     first.cancelled().await;
@@ -1761,7 +537,11 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
         {
             break;
         }
-        changes.changed().await.unwrap();
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "producer did not reach expected state"
+        );
+        tokio::task::yield_now().await;
     }
     release_first.cancel();
     loop {
@@ -1779,7 +559,11 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
             );
             break;
         }
-        changes.changed().await.unwrap();
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "producer did not reach expected state"
+        );
+        tokio::task::yield_now().await;
     }
     tokio::time::timeout(Duration::from_secs(3), second.cancelled())
         .await
@@ -1817,7 +601,11 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
             );
             break;
         }
-        changes.changed().await.unwrap();
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "producer did not reach expected state"
+        );
+        tokio::task::yield_now().await;
     }
     release_second.cancel();
     let exit = execution.await.unwrap();

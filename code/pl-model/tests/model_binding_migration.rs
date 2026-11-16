@@ -178,10 +178,6 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
     assert!(model_request_receipt(&legacy_request_with_prompt(1)).is_err());
     let receipt = model_request_receipt(&current(&legacy_request_with_prompt(1)))
         .expect("legacy record with its real non-empty prompt migrates");
-    assert!(
-        receipt.sent_model.is_none(),
-        "migration cannot invent a physical source model"
-    );
     assert_eq!(receipt.binding.account_id, "deepseek");
     assert_eq!(receipt.binding.model_id, "deepseek-v4-pro");
     assert_eq!(receipt.binding.protocol, ProtocolKind::DeepSeek);
@@ -690,7 +686,6 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
         tools: Default::default(),
         tool_call_mode: ToolCallMode::Parallel,
         solo_tool_ids: Default::default(),
-        recovery_parameters: None,
         committed_private_context: None,
         resources: None,
         cancellation: Default::default(),

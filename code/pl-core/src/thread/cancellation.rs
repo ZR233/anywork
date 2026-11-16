@@ -180,27 +180,6 @@ pub(super) struct ActiveExecution {
     pub(super) token: CancellationToken,
 }
 
-/// A resumed execution is a child of its original qualification. Also honor the caller's token
-/// for the entire operation, without spawning a watcher or dropping the in-flight model future.
-pub(super) async fn run_with_resume_cancellation<T>(
-    resumed: Option<&ActiveExecution>,
-    caller: CancellationToken,
-    work: impl std::future::Future<Output = T>,
-) -> T {
-    let Some(resumed) = resumed else {
-        return work.await;
-    };
-    tokio::pin!(work);
-    tokio::select! {
-        biased;
-        () = caller.cancelled() => {
-            resumed.token.cancel();
-            work.await
-        }
-        result = &mut work => result,
-    }
-}
-
 impl Drop for ActiveExecution {
     fn drop(&mut self) {
         self.handle

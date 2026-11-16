@@ -1,7 +1,7 @@
 use crate::completion::stream::{CompletionEventStream, OpenAiRawEventStream};
 use crate::completion::{CompletionRequest, CompletionTraceContext};
 use crate::model::info::ModelInfo;
-use crate::protocol::WireApi;
+use crate::protocol::{InstructionWireRole, WireApi};
 use pl_protocol::Result;
 
 mod identity;
@@ -11,7 +11,7 @@ pub(crate) mod usage;
 
 use request::build_openai_request_body;
 pub(crate) use request::chatgpt::validate_request as validate_chatgpt_request;
-pub(crate) use request::{OpenAiRequestBody, recovery_touches_input, sent_model_from_wire_body};
+pub(crate) use request::{OpenAiRequestBody, sent_model_from_wire_body};
 
 /// OpenAI 协议族的两种 wire API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,22 +53,21 @@ impl VisibleOutputProtocol {
 
 impl OpenAiBase {
     pub(crate) fn build_request(
+        &self,
         api: WireApi,
-        protocol: crate::protocol::ProtocolKind,
+        instruction_role: InstructionWireRole,
         request: &CompletionRequest,
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
         chatgpt: bool,
-        native_options: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<OpenAiRequestBody> {
         build_openai_request_body(
             OpenAiEndpoint::of(api),
-            protocol,
+            instruction_role,
             request,
             model,
             prompt_cache_key,
             chatgpt,
-            native_options,
         )
     }
 

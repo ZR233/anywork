@@ -27,7 +27,6 @@ pub use member::{ModelMemberReceipt, ModelMemberState, model_member_receipt};
 pub mod migration;
 pub(crate) mod progress;
 mod receipt;
-mod recovery;
 pub(super) use codec::{FRAME_VERSION, LEGACY_FRAME_VERSION};
 pub use media::{
     ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
@@ -51,7 +50,6 @@ pub struct ThreadModel {
 struct EncodedRequest {
     completion: crate::completion::CompletionRequest,
     tool_bindings: BTreeMap<String, codec::ToolBinding>,
-    sent_model: Option<String>,
 }
 
 impl ThreadModel {
@@ -92,16 +90,8 @@ impl ThreadModel {
     }
     /// One encoding path for execution, previews and reduction, including every tool and media.
     async fn encode_request(&self, request: &ModelRequest) -> Result<EncodedRequest, ModelError> {
-        let context_error = |mut error: ModelError| {
-            if request.recovery_parameters.is_some() {
-                error.kind = ModelFailureKind::IncompatibleContext;
-            }
-            error
-        };
-        self.validate_context_origin(&request.context)
-            .map_err(context_error)?;
-        let mut encoded =
-            codec::request(request, &self.runtime, self.contract).map_err(context_error)?;
+        self.validate_context_origin(&request.context)?;
+        let mut encoded = codec::request(request, &self.runtime, self.contract)?;
         encoded.reasoning = self.reasoning.clone();
         if self.runtime.endpoint().chatgpt_session.is_none() {
             encoded.max_tokens = self.runtime.model().max_output_tokens;
@@ -112,7 +102,7 @@ impl ThreadModel {
         self.runtime
             .validate_context(&encoded.input)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-        let mut declarations = codec::declarations(&request.tools).map_err(context_error)?;
+        let mut declarations = codec::declarations(&request.tools)?;
         for (tool, declaration) in &mut declarations {
             if request.solo_tool_ids.contains(&tool.tool_id) {
                 match declaration {
@@ -124,65 +114,30 @@ impl ThreadModel {
                 }
             }
         }
-        let mut sent_model = None;
-        if let Some(parameters) = &request.recovery_parameters {
-            sent_model = Some(recovery::apply(
-                self,
-                request,
-                parameters,
-                &declarations,
-                &mut encoded,
-            )?);
-        } else {
-            encoded.tools = declarations.iter().map(|(_, spec)| spec.clone()).collect();
-            for tool in self.hosted_tools.iter() {
-                let declaration = tool.declaration();
-                if encoded
-                    .tools
-                    .iter()
-                    .any(|existing| existing.name() == declaration.name())
-                {
-                    return Err(failure(
-                        ModelFailureKind::UnsupportedContent,
-                        AdapterError::Content(
-                            "hosted and local tool declarations have conflicting identities",
-                        ),
-                    ));
-                }
-                encoded.tools.push(declaration);
+        encoded.tools = declarations.iter().map(|(_, spec)| spec.clone()).collect();
+        for tool in self.hosted_tools.iter() {
+            let declaration = tool.declaration();
+            if encoded
+                .tools
+                .iter()
+                .any(|existing| existing.name() == declaration.name())
+            {
+                return Err(failure(
+                    ModelFailureKind::UnsupportedContent,
+                    AdapterError::Content(
+                        "hosted and local tool declarations have conflicting identities",
+                    ),
+                ));
             }
+            encoded.tools.push(declaration);
         }
         media::prepare(request, &mut encoded, self.runtime.model()).await?;
-        encoded = self.runtime.prepare_request(encoded).map_err(|error| {
-            failure(
-                if request.recovery_parameters.is_some() {
-                    ModelFailureKind::IncompatibleContext
-                } else {
-                    ModelFailureKind::UnsupportedContent
-                },
-                error,
-            )
-        })?;
-        if self.contract == codec::FrameContract::Current && sent_model.is_none() {
-            sent_model = Some(
-                self.runtime
-                    .project_request_options(&encoded, &request.thread_id)
-                    .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?,
-            );
-        }
-        if encoded.frozen_options {
-            self.runtime
-                .validate_recovery_input(&encoded, &request.thread_id)
-                .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-        }
+        encoded = self
+            .runtime
+            .prepare_request(encoded)
+            .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
         let tool_bindings = declarations
             .iter()
-            .filter(|(_, spec)| {
-                request.recovery_parameters.is_none()
-                    || encoded.tools.iter().any(|advertised| {
-                        !advertised.is_hosted() && advertised.name() == spec.name()
-                    })
-            })
             .map(|(tool, spec)| {
                 (
                     spec.name().to_owned(),
@@ -197,7 +152,6 @@ impl ThreadModel {
         Ok(EncodedRequest {
             completion: encoded,
             tool_bindings,
-            sent_model,
         })
     }
 }
@@ -245,14 +199,13 @@ impl CoreModelSession for ThreadModelSession {
         let EncodedRequest {
             completion: encoded,
             tool_bindings: names,
-            sent_model,
         } = configuration.encode_request(&request).await?;
         let observed = self
             .observed
             .lock()
             .map_err(|_| failure(ModelFailureKind::Unavailable, AdapterError::Poisoned))?
             .clone();
-        if request.recovery_parameters.is_some() || observed != request.committed_private_context {
+        if observed != request.committed_private_context {
             self.physical
                 .reset_transport()
                 .await
@@ -264,15 +217,8 @@ impl CoreModelSession for ThreadModelSession {
                 None;
         }
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
-        let input_limit = if encoded.frozen_options && encoded.max_tokens.is_some() {
-            self.runtime.context().context_window.map(|window| {
-                window.saturating_sub(encoded.max_tokens.expect("saved output budget"))
-            })
-        } else {
-            self.runtime.context().input_token_limit
-        };
         if estimate
-            .zip(input_limit)
+            .zip(self.runtime.context().input_token_limit)
             .is_some_and(|(tokens, window)| tokens >= window)
         {
             return Err(failure(
@@ -338,8 +284,7 @@ impl CoreModelSession for ThreadModelSession {
         )
         .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?
         .or_else(|| self.prompt.slots.get(&self.purpose).cloned());
-        let request_metadata =
-            receipt::request_metadata(&binding, &encoded, prompt.as_ref(), sent_model.as_deref())?;
+        let request_metadata = receipt::request_metadata(&binding, &encoded, prompt.as_ref())?;
         if let Some(prompt) = &prompt {
             self.prompt.active_scope = self.purpose.clone();
             self.prompt
@@ -380,7 +325,6 @@ impl CoreModelSession for ThreadModelSession {
         } else {
             invocation
         };
-        let applied_recovery_parameters = request.recovery_parameters.clone();
         let work = async move {
             *observed
                 .lock()
@@ -427,10 +371,6 @@ impl CoreModelSession for ThreadModelSession {
             .with_tool_projection(tool_projection)
             .with_request_metadata(request_metadata)
             .with_usage_binding(usage_binding);
-        let call = match applied_recovery_parameters {
-            Some(parameters) => call.with_applied_recovery_parameters(parameters),
-            None => call,
-        };
         Ok(match estimate {
             Some(tokens) => call.with_input_estimate(pl_core::model::TokenEstimate {
                 tokens,

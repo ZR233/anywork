@@ -222,7 +222,6 @@ impl Owner {
                 context: preview,
                 tools: plan.declarations(),
                 committed_private_context: self.state.private_context.clone(),
-                recovery_parameters: self.current_recovery_parameters(input),
                 resources: self.resources.clone(),
                 cancellation: input.cancellation.clone(),
                 progress: None,

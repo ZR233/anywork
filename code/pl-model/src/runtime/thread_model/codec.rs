@@ -470,7 +470,7 @@ pub(super) fn request(
                         "assistant contract requires explicit migration with actual source-attempt context",
                     ));
                 }
-                let mut frame = decode_frame(payload)
+                let frame = decode_frame(payload)
                     .map_err(|_| invalid("unknown assistant frame version"))?;
                 let text = record
                     .content
@@ -516,34 +516,32 @@ pub(super) fn request(
                 let mut encoded = CompletionRequest::builder().input(input).build();
                 encoded.replay_spans = replay_spans;
                 let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
-                if !frame.receipt.binding.native_context_compatible(
-                    &target,
-                    frame.compatibility_family.as_deref(),
-                    runtime
-                        .model()
-                        .capabilities
-                        .native_context_family
-                        .as_deref(),
-                ) {
-                    if request.recovery_parameters.is_some() {
-                        return Err(super::failure(
-                            pl_core::model::ModelFailureKind::IncompatibleContext,
-                            super::AdapterError::Content(
-                                "recovery cannot rewrite native context from an incompatible source binding",
-                            ),
-                        ));
-                    }
-                    // 只投影当前请求；持久化回执、可见文本和工具身份仍保留原始事实。
-                    if let Some(crate::completion::AssistantReplay::Responses { output }) =
-                        &mut frame.receipt.response.replay
-                    {
-                        output.retain(|item| item["type"] != "reasoning");
-                    }
-                    frame
-                        .receipt
-                        .response
-                        .responses_context_items
-                        .retain(|item| item.value["type"] != "reasoning");
+                let native_reasoning = frame
+                    .receipt
+                    .response
+                    .responses_context_items
+                    .iter()
+                    .any(|item| item.value["type"] == "reasoning")
+                    || matches!(&frame.receipt.response.replay,
+                        Some(crate::completion::AssistantReplay::Responses { output })
+                        if output.iter().any(|item| item["type"] == "reasoning"));
+                if native_reasoning
+                    && !frame.receipt.binding.native_context_compatible(
+                        &target,
+                        frame.compatibility_family.as_deref(),
+                        runtime
+                            .model()
+                            .capabilities
+                            .native_context_family
+                            .as_deref(),
+                    )
+                {
+                    return Err(super::failure(
+                        pl_core::model::ModelFailureKind::IncompatibleContext,
+                        super::AdapterError::Content(
+                            "native reasoning belongs to an incompatible provider, account, or model family",
+                        ),
+                    ));
                 }
                 encoded
                     .append_response_from(

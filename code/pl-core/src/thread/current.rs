@@ -17,11 +17,11 @@ use super::{
 use crate::context::{
     ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
 };
-use crate::model::{ModelError, ModelRequest, ModelStepOutput, ModelToolDeclaration, ToolCallMode};
+use crate::model::{ModelError, ModelToolDeclaration, ToolCallMode};
 
 mod capture;
 mod serde_views;
-pub(crate) use capture::{CapturedStream, CurrentRead, CurrentResumeClaim};
+pub(crate) use capture::{CapturedStream, CurrentRead};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
@@ -76,26 +76,6 @@ impl<'de> Deserialize<'de> for RuntimeEpoch {
     }
 }
 
-/// Fresh local identities; provider call IDs are independently namespaced by the producer.
-#[derive(Debug, Clone)]
-pub struct ExecutionIdentity {
-    pub runtime_epoch: RuntimeEpoch,
-    pub execution_id: String,
-    pub turn_id: String,
-    pub attempt_id: String,
-}
-
-impl ExecutionIdentity {
-    pub fn new(runtime_epoch: RuntimeEpoch, turn_id: String) -> Self {
-        Self {
-            runtime_epoch,
-            execution_id: Uuid::new_v4().to_string(),
-            turn_id,
-            attempt_id: Uuid::new_v4().to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThreadCurrent {
@@ -135,9 +115,6 @@ pub enum SavedModelPhase {
     },
     Streaming {
         stream: OpaquePayload,
-    },
-    ReadyToApply {
-        output: ModelStepOutput,
     },
     Applied,
 }
@@ -265,14 +242,8 @@ pub enum CurrentError {
     InvalidEpoch,
     #[error("current identity is invalid or belongs to an old owner")]
     InvalidIdentity,
-    #[error("current changed before the prepared local transition could be installed")]
-    StateConflict,
     #[error("current is not paused for user-authorized resume")]
     NotPaused,
-    #[error("saved tools are incompatible with the newly registered executor catalog")]
-    IncompatibleTools,
-    #[error("a fresh request needs a bound current tool catalog")]
-    MissingModelBinding,
     #[error("current owner operation failed: {0}")]
     Owner(#[source] Arc<super::ThreadError>),
     #[error("current context conflicts with saved record {0}")]
@@ -293,6 +264,8 @@ pub enum CurrentError {
     Final(#[source] Arc<CurrentError>),
     #[error("current operation cancelled")]
     Cancelled,
+    #[error("current capture exceeded its one-second deadline")]
+    CaptureTimedOut,
     #[error("current is paused waiting for an interaction response")]
     PendingInteraction,
     #[error("current is paused waiting for a permission response")]
@@ -449,50 +422,7 @@ impl ThreadCurrentState {
         };
         Ok(true)
     }
-
-    fn admit_inbox(&mut self, turn_id: &str) -> Result<(), CurrentError> {
-        let inbox = self.inbox.clone();
-        let mut consumed = self.consumed_message_identities.to_vec();
-        for message in inbox.iter() {
-            if message.sequence <= self.consumed_messages {
-                continue;
-            }
-            self.append_record(ContextRecord {
-                id: format!("inbox:{}", message.sequence),
-                turn_id: Some(turn_id.into()),
-                source: ContextSource::AgentMessage {
-                    source_id: message.message.source_id.clone(),
-                    purpose: message.message.kind,
-                },
-                content: message.message.context.clone(),
-                tool_calls: Vec::new(),
-            })?;
-            self.consumed_messages = message.sequence;
-            consumed.push(inbox::MessageIdentity::from_record(message));
-        }
-        consumed.drain(
-            ..consumed
-                .len()
-                .saturating_sub(super::types::CONSUMED_MESSAGE_LEDGER_CAPACITY),
-        );
-        self.consumed_message_identities = consumed.into();
-        self.inbox = Arc::from([]);
-        Ok(())
-    }
 }
-
-/// The host binds these frozen options to the same compatible provider before preparing `request`.
-/// Keeping the pair explicit prevents treating a request receipt as another copy of input context.
-#[derive(Debug, Clone)]
-pub struct CurrentResumeRequest {
-    pub runtime_epoch: RuntimeEpoch,
-    pub request: ModelRequest,
-    pub prepared_parameters: Option<OpaquePayload>,
-    pub execution_id: String,
-    pub(crate) authorized_stops: u64,
-}
-
-pub(crate) type CurrentToolCatalog = (Arc<[ModelToolDeclaration]>, ToolCallMode, Arc<[String]>);
 
 impl ThreadCurrent {
     pub fn from_json(bytes: &[u8], thread_id: &str) -> Result<Self, CurrentError> {
@@ -524,18 +454,12 @@ impl ThreadCurrent {
         for preview in self.state.tool_previews.values() {
             preview.validate()?;
         }
-        if let Some(call) = &self.model_call {
-            if call.source_execution_id.is_empty()
+        if let Some(call) = &self.model_call
+            && (call.source_execution_id.is_empty()
                 || call.source_attempt_id.is_empty()
-                || call.source_turn_id.is_empty()
-            {
-                return Err(CurrentError::InvalidIdentity);
-            }
-            if let SavedModelPhase::ReadyToApply { output } = &call.phase
-                && output.attempt_id != call.source_attempt_id
-            {
-                return Err(CurrentError::InvalidIdentity);
-            }
+                || call.source_turn_id.is_empty())
+        {
+            return Err(CurrentError::InvalidIdentity);
         }
         Ok(())
     }
@@ -587,14 +511,15 @@ impl ThreadCurrent {
                 .iter()
                 .flat_map(|fact| &fact.content),
         );
-        if let Some(call) = &self.model_call {
-            match &call.phase {
+        if let Some(CurrentModelCall {
+            phase:
                 SavedModelPhase::Preparing {
                     pending_step_input: Some(input),
-                } => content.extend(&input.content),
-                SavedModelPhase::ReadyToApply { output } => content.extend(&output.content),
-                _ => {}
-            }
+                },
+            ..
+        }) = &self.model_call
+        {
+            content.extend(&input.content);
         }
         content
     }
@@ -611,75 +536,6 @@ impl ThreadCurrent {
                 resources.read(reference, cancellation.clone()).await?;
             }
         }
-        Ok(())
-    }
-
-    /// Atomic, synchronous ReadyToApply → Applied. No old terminal event is exported.
-    pub fn apply_saved_model_outcome_once(&mut self) -> Result<(), CurrentError> {
-        let Some(call) = &self.model_call else {
-            return Ok(());
-        };
-        let SavedModelPhase::ReadyToApply { output } = &call.phase else {
-            return Ok(());
-        };
-        let record = ContextRecord {
-            id: format!("{}:output", call.source_attempt_id),
-            turn_id: Some(call.source_turn_id.clone()),
-            source: ContextSource::Assistant,
-            content: output.content.clone(),
-            tool_calls: output.tool_calls.clone(),
-        };
-        if output.attempt_id != call.source_attempt_id {
-            return Err(CurrentError::InvalidIdentity);
-        }
-        let exists = self
-            .state
-            .context
-            .records
-            .iter()
-            .find(|existing| existing.id == record.id);
-        if let Some(existing) = exists {
-            if existing != &record {
-                return Err(CurrentError::RecordConflict(record.id));
-            }
-        } else if self.state.context.revision != output.base_context_revision {
-            return Err(CurrentError::RecordConflict(record.id));
-        }
-        let mut next = self.state.clone();
-        if next.append_record(record)? {
-            next.private_context = output.private_context.clone();
-            if output.usage.input_tokens.is_some() {
-                next.last_attempt_usage = Some(output.usage.clone());
-                next.last_attempt_usage_origin =
-                    next.usage_summary
-                        .binding
-                        .clone()
-                        .map(|binding| ModelUsageOrigin {
-                            binding,
-                            input_revision: output.base_context_revision,
-                            context_revision: next.context.revision,
-                            input_record_count: self.state.context.records.len(),
-                            input_hash: None,
-                        });
-            }
-            next.usage_summary.add_usage(
-                &output.usage,
-                crate::usage::UsageSource {
-                    thread_id: self.thread_id.clone(),
-                    call_id: call.source_attempt_id.clone(),
-                    turn_id: Some(call.source_turn_id.clone()),
-                    effect_sequence: 0,
-                    observed_at: self.saved_at / 1000,
-                    purpose: None,
-                    outcome: crate::usage::UsageOutcome::Succeeded,
-                },
-                true,
-                None,
-            );
-            next.usage_summary.pricing.incomplete = true;
-        }
-        self.state = next;
-        self.model_call.as_mut().expect("call checked above").phase = SavedModelPhase::Applied;
         Ok(())
     }
 
@@ -812,154 +668,9 @@ impl ThreadCurrent {
         Ok(())
     }
 
-    /// User-authorized restart, using only confirmed current plus known results and queued input.
-    /// `validate_parameters` must bind the saved provider/options or return incompatibility; it is
-    /// invoked after local reconciliation. Binding failure keeps paused with those local facts
-    /// confirmed; queued input is not consumed until a new request can be constructed.
-    pub fn prepare_after_user_resume(
-        &mut self,
-        identity: ExecutionIdentity,
-        validate_parameters: impl FnOnce(Option<&OpaquePayload>) -> Result<(), ModelError>,
-    ) -> Result<CurrentResumeRequest, CurrentError> {
-        self.prepare_after_user_resume_with_catalog(identity, validate_parameters, None)
-    }
-
-    pub(crate) fn prepare_after_user_resume_with_catalog(
-        &mut self,
-        identity: ExecutionIdentity,
-        validate_parameters: impl FnOnce(Option<&OpaquePayload>) -> Result<(), ModelError>,
-        catalog: Option<CurrentToolCatalog>,
-    ) -> Result<CurrentResumeRequest, CurrentError> {
-        if identity.runtime_epoch != self.saved_runtime_epoch
-            || identity.turn_id.is_empty()
-            || !is_uuid_v4(&identity.execution_id)
-            || !is_uuid_v4(&identity.attempt_id)
-            || self.model_call.as_ref().is_some_and(|call| {
-                call.source_attempt_id == identity.attempt_id
-                    || call.source_execution_id == identity.execution_id
-            })
-        {
-            return Err(CurrentError::InvalidIdentity);
-        }
-        self.reconcile_saved_local_state()?;
-        self.check_model_waits()?;
-        let parameters = self
-            .model_call
-            .as_ref()
-            .and_then(|call| call.prepared_parameters.clone());
-        validate_parameters(parameters.as_ref())
-            .map_err(|error| CurrentError::Model(Arc::new(error)))?;
-        let mut next = self.clone();
-        next.state.admit_inbox(&identity.turn_id)?;
-        let pending = next.model_call.as_ref().and_then(|call| match &call.phase {
-            SavedModelPhase::Preparing { pending_step_input } => pending_step_input.clone(),
-            _ => None,
-        });
-        if let Some(pending) = pending {
-            next.state.append_record(ContextRecord {
-                id: format!("{}:input", identity.attempt_id),
-                turn_id: Some(identity.turn_id.clone()),
-                source: ContextSource::User,
-                content: pending.content,
-                tool_calls: Vec::new(),
-            })?;
-        }
-        let mut inputs = next.state.inputs.to_vec();
-        let mut terminal = next.state.terminal_inputs.to_vec();
-        for record in &mut inputs {
-            if record.state != input::InputState::Pending {
-                continue;
-            }
-            if !record.input.context.is_empty() {
-                next.state.append_record(ContextRecord {
-                    id: format!("current:input:{}", record.input.id),
-                    turn_id: Some(identity.turn_id.clone()),
-                    source: ContextSource::User,
-                    content: record.input.context.clone(),
-                    tool_calls: Vec::new(),
-                })?;
-            }
-            record.revision = record
-                .revision
-                .checked_add(1)
-                .ok_or(CurrentError::RevisionExhausted)?;
-            record.state = input::InputState::Consumed {
-                turn_id: identity.turn_id.clone(),
-                attempt_id: identity.attempt_id.clone(),
-            };
-            terminal.push(input::InputIdentity::from_record(record));
-        }
-        terminal.drain(
-            ..terminal
-                .len()
-                .saturating_sub(super::types::TERMINAL_INPUT_LEDGER_CAPACITY),
-        );
-        next.state.inputs = Arc::from([]);
-        next.state.terminal_inputs = terminal.into();
-        next.state
-            .tasks
-            .retain(|_, task| task.status == task::TaskStatus::Running);
-        next.state.context.validate_complete()?;
-        let (tools, tool_call_mode, solo_tool_ids) = next
-            .model_call
-            .as_ref()
-            .map(|call| {
-                (
-                    call.tools.clone(),
-                    call.tool_call_mode,
-                    call.solo_tool_ids.clone(),
-                )
-            })
-            .or(catalog)
-            .ok_or(CurrentError::MissingModelBinding)?;
-        let request = ModelRequest {
-            progress: None,
-            members: None,
-            thread_id: next.thread_id.clone(),
-            turn_id: identity.turn_id.clone(),
-            attempt_id: identity.attempt_id.clone(),
-            context: next.state.context.clone(),
-            tools: tools.clone(),
-            tool_call_mode,
-            solo_tool_ids: solo_tool_ids.clone(),
-            committed_private_context: next.state.private_context.clone(),
-            recovery_parameters: parameters.clone(),
-            resources: None,
-            cancellation: CancellationToken::new(),
-        };
-        next.model_call = Some(CurrentModelCall {
-            source_run_id: identity.runtime_epoch,
-            source_execution_id: identity.execution_id.clone(),
-            source_turn_id: identity.turn_id,
-            source_attempt_id: identity.attempt_id,
-            tools,
-            tool_call_mode,
-            solo_tool_ids,
-            prepared_parameters: parameters.clone(),
-            phase: SavedModelPhase::Preparing {
-                pending_step_input: None,
-            },
-        });
-        next.state.execution = Some(ActiveExecution {
-            id: identity.execution_id.clone(),
-            phase: super::ExecutionPhase::Preparing,
-            turn_id: Some(request.turn_id.clone()),
-        });
-        next.state.continuation = None;
-        *self = next;
-        Ok(CurrentResumeRequest {
-            runtime_epoch: identity.runtime_epoch,
-            request,
-            prepared_parameters: parameters,
-            execution_id: identity.execution_id,
-            authorized_stops: 0,
-        })
-    }
-
     /// Local recovery precedes model compatibility and request creation. No external work or
     /// historical terminal publication occurs; an unavailable provider cannot undo these facts.
     pub fn reconcile_saved_local_state(&mut self) -> Result<(), CurrentError> {
-        self.apply_saved_model_outcome_once()?;
         self.apply_saved_local_deliveries_once()?;
         self.normalize_unpaired_old_calls_as_unknown()
     }
@@ -980,19 +691,6 @@ impl ThreadCurrent {
             .any(|record| record.state == permissions::PermissionState::Pending)
         {
             return Err(CurrentError::PendingPermission);
-        }
-        if self.model_call.as_ref().is_some_and(|call| {
-            call.prepared_parameters.is_none()
-                && !matches!(call.phase, SavedModelPhase::Preparing { .. })
-        }) {
-            return Err(CurrentError::Model(Arc::new(ModelError {
-                kind: crate::model::ModelFailureKind::IncompatibleContext,
-                details: None,
-                usage: Box::default(),
-                source: Some(Box::new(std::io::Error::other(
-                    "saved model parameters are missing; the original model source is unknown",
-                ))),
-            })));
         }
         Ok(())
     }

@@ -66,7 +66,7 @@ struct Shared {
     slot: Mutex<Slot>,
     ready: Notify,
     closed: CancellationToken,
-    changes: watch::Sender<u64>,
+    dirty: Mutex<Option<watch::Sender<u64>>>,
 }
 
 impl Shared {
@@ -108,9 +108,17 @@ impl CurrentCaptureHandle {
         (Self(shared.clone()), CurrentCaptureReceiver(shared))
     }
 
-    /// Coalescing dirty notifications, including changes not represented by a UI preview.
-    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
-        self.0.changes.subscribe()
+    /// Binds this producer to the physical owner's coalescing dirty signal before dispatch.
+    pub(crate) fn bind_dirty(&self, dirty: watch::Sender<u64>) {
+        *self
+            .0
+            .dirty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dirty);
+    }
+
+    pub(crate) fn same_endpoint(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Captures within one second from this request, including producer wait time.
@@ -163,9 +171,19 @@ impl CurrentCaptureHandle {
 impl CurrentCaptureReceiver {
     /// Marks a normalized accumulator change without serializing or copying its contents.
     pub fn mark_dirty(&self) {
-        self.0
-            .changes
-            .send_modify(|revision| *revision = revision.saturating_add(1));
+        let dirty = self
+            .0
+            .dirty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(dirty) = dirty {
+            dirty.send_modify(|revision| {
+                *revision = revision
+                    .checked_add(1)
+                    .expect("current dirty revision exhausted")
+            });
+        }
     }
 
     /// Waits independently of network readiness. The caller must select this with its pinned
