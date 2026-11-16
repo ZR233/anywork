@@ -38,7 +38,9 @@ pub(crate) use ids::{new_id, unix_seconds};
 pub use instance::{StudioInstance, StudioInstanceLease};
 pub(crate) use paths::StudioPaths;
 pub use persistence::*;
-pub use product_event_bus::ProductEventBus;
+pub use product_event_bus::{
+    ProductEventBus, ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError,
+};
 pub use records::{AttachmentRecord, ThreadKind, ThreadRecord, ThreadVisibility, WorkspaceRecord};
 pub use recovery_registry::StudioRecoveryRegistry;
 pub use runtime::StudioProductTopicSubscription;

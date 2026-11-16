@@ -22,6 +22,9 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::super::observation_lifecycle::{
+    ObservationCloseError, RuntimeObservationOwner, RuntimeObserver,
+};
 use crate::studio::{
     StudioRuntime, StudioRuntimeCommand, StudioRuntimeSnapshot, StudioRuntimeStateKind,
     unix_seconds,
@@ -668,6 +671,26 @@ pub(crate) struct ServiceStopSlots {
     pub(crate) lsp: ServiceStopSlot,
     pub(crate) ssh: ServiceStopSlot,
     pub(crate) executor: ServiceStopSlot,
+    #[cfg(test)]
+    stop_calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    #[cfg(test)]
+    sessions_acked: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl ServiceStopSlots {
+    pub(super) fn note_stop(
+        &self,
+        service: &'static str,
+        probe: &super::super::observation_lifecycle::LspProjectionProbe,
+    ) {
+        probe.service_stop_started(service);
+        self.stop_calls.lock().unwrap().push(service);
+    }
+
+    pub(super) fn note_sessions_acked(&self) {
+        self.sessions_acked.notify_one();
+    }
 }
 
 /// 一个并发阶段的真实结果。
@@ -774,6 +797,36 @@ where
     StageOutcome {
         order,
         stage,
+        status,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// 直接观测已受 scope 监督的 observer，不再 spawn 第二套清理任务。
+/// observer 严格路径真实无界，退出路径直接消费同一首次绝对期限。
+async fn run_observer_stage(
+    observations: Arc<RuntimeObservationOwner>,
+    observer: RuntimeObserver,
+    budget: ShutdownBudget,
+    order: usize,
+) -> StageOutcome {
+    let started = Instant::now();
+    let report = observations
+        .close(
+            observer,
+            budget.deadline().map(tokio::time::Instant::from_std),
+        )
+        .await;
+    let status = if report.is_clean() {
+        StageStatus::Done
+    } else if !report.failures.is_empty() {
+        StageStatus::Failed(ObservationCloseError(report).into())
+    } else {
+        StageStatus::TimedOut
+    };
+    StageOutcome {
+        order,
+        stage: observer.label(),
         status,
         elapsed: started.elapsed(),
     }
@@ -1207,9 +1260,10 @@ impl StudioRuntime {
 
     /// 在阶段 join 之前，向所有独立 owner 广播取消 / abort。
     ///
-    /// 背景 watcher 用 abort 即刻停摆；title 任务用一次性取消信号。此步不做任何可能无界阻塞的
+    /// 纯观察 scope 协作取消；其余后台任务保留原取消方式。此步不做任何可能无界阻塞的
     /// 服务 join，保证所有独立资源先收到取消。
-    async fn broadcast_cancel(&self) {
+    pub(super) async fn broadcast_cancel(&self) {
+        self.observations.request_close();
         self.thread_observations.close_deliveries();
         self.account_usage.request_close();
         self.model_performance.request_close();
@@ -1220,9 +1274,6 @@ impl StudioRuntime {
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
-        background_task::signal(&self.external_runtimes.lsp_state_watcher).await;
-        background_task::signal(&self.persistence_observer).await;
-        background_task::signal(&self.profiles_forwarder).await;
         self.title_tasks.signal_cancel().await;
         // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
         // supervisor 完成，随后在独立阶段有界 join，避免提前释放仍存活的进程。
@@ -1272,6 +1323,7 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::oneshot::channel::<bool>();
+        let (lsp_projection_tx, lsp_projection_rx) = tokio::sync::oneshot::channel::<bool>();
         let (transport_ready_tx, transport_ready_rx) = tokio::sync::oneshot::channel::<bool>();
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         producers.push(self.stage_branch(
@@ -1363,16 +1415,26 @@ impl StudioRuntime {
             |runtime| async move { runtime.acp_detection.close().await },
         ));
 
-        // Shared LSP and SSH remain available until the actual Session close ACK.
+        // Session 与本次 lspState 都必须真实 ACK，才允许启动 retained stop job。
         let lsp_runtime = self.clone();
         remote_dependents.push(
             async move {
-                if !matches!(sessions_ready_rx.await, Ok(true)) {
-                    return vec![StageOutcome { order: stage_order::LSP_STOP, stage: "lspStop", status: StageStatus::Failed(anyhow::anyhow!("Session resources have not closed; shared LSP retained")), elapsed: Duration::ZERO }];
+                let dependency_started = Instant::now();
+                let (sessions, projection) = futures::join!(sessions_ready_rx, lsp_projection_rx);
+                if !matches!(sessions, Ok(true)) || !matches!(projection, Ok(true)) {
+                    return vec![StageOutcome { order: stage_order::LSP_STOP, stage: "lspStop", status: StageStatus::Failed(anyhow::anyhow!("Session or LSP projection resources have not closed; shared LSP retained")), elapsed: dependency_started.elapsed() }];
                 }
                 let lsp_job = ensure_service_stop(&lsp_runtime.service_stops.lsp, {
                     let lsp = lsp_runtime.external_runtimes.lsp.clone();
-                    move || ServiceStopJob::spawn(async move { lsp.shutdown().await.map_err(anyhow::Error::from) })
+                    #[cfg(test)]
+                    let stops = lsp_runtime.service_stops.clone();
+                    #[cfg(test)]
+                    let probe = lsp_runtime.observations.lsp_projection_probe();
+                    move || ServiceStopJob::spawn(async move {
+                        #[cfg(test)]
+                        stops.note_stop("lsp", &probe);
+                        lsp.shutdown().await.map_err(anyhow::Error::from)
+                    })
                 }).await;
                 let stop = join_service_outcome(
                     budget,
@@ -1402,38 +1464,36 @@ impl StudioRuntime {
             .boxed(),
         );
 
-        // 与 SSH transport 无依赖的本地资源：本地 LSP 状态 watcher、持久化 observer 与 Agent
-        // Profiles 转发。它们不被 SSH 依赖闸门等待，只与写入链、远端依赖组并发收束（各自有界），
-        // 不拖后 SSH 回收。
+        // 三类 observer 并发收束；lspState 只发送本次结果的 ACK，结果仍仅由原阶段收集一次。
         let mut independent: FuturesUnordered<StageBranch> = FuturesUnordered::new();
-        independent.push(self.stage_branch(
-            budget,
-            stage_order::LSP_STATE,
-            "lspState",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_lsp_state_watcher().await },
-        ));
-        independent.push(self.stage_branch(
-            budget,
-            stage_order::PERSISTENCE_OBSERVER,
-            "persistenceObserver",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move {
-                super::super::background_task::stop(&runtime.persistence_observer)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))
-            },
-        ));
-        // Agent Profiles 配置 watch 转发同样由 runtime 拥有：正常退出与失败路径都必须在同一首次
-        // 期限内有界地 signal + join，失败 / 超时经 collector 记为该次退出的 issue，令 `Clean`
-        // 不可达并保留 owner（常驻槽位超时不丢句柄），不得只靠 `dispose_startup` 或 slot Drop 收束。
-        independent.push(self.stage_branch(
-            budget,
-            stage_order::AGENT_PROFILES,
-            "agentProfiles",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_agent_profiles_forwarder().await },
-        ));
+        let observations = self.observations.clone();
+        independent.push(
+            async move {
+                let outcome = run_observer_stage(
+                    observations,
+                    RuntimeObserver::Lsp,
+                    budget,
+                    stage_order::LSP_STATE,
+                )
+                .await;
+                let _ = lsp_projection_tx.send(outcome.is_done());
+                vec![outcome]
+            }
+            .boxed(),
+        );
+        for (observer, order) in [
+            (
+                RuntimeObserver::Persistence,
+                stage_order::PERSISTENCE_OBSERVER,
+            ),
+            (RuntimeObserver::Profiles, stage_order::AGENT_PROFILES),
+        ] {
+            independent.push(
+                run_observer_stage(self.observations.clone(), observer, budget, order)
+                    .map(|outcome| vec![outcome])
+                    .boxed(),
+            );
+        }
 
         independent.push(self.stage_branch(
             budget,
@@ -1523,8 +1583,14 @@ impl StudioRuntime {
             );
             let ssh_job = ensure_service_stop(&ssh_runtime.service_stops.ssh, {
                 let ssh = ssh_runtime.ssh_manager.clone();
+                #[cfg(test)]
+                let stops = ssh_runtime.service_stops.clone();
+                #[cfg(test)]
+                let probe = ssh_runtime.observations.lsp_projection_probe();
                 move || {
                     ServiceStopJob::spawn(async move {
+                        #[cfg(test)]
+                        stops.note_stop("ssh", &probe);
                         ssh.shutdown().await.map_err(anyhow::Error::from)
                     })
                 }
@@ -1566,6 +1632,10 @@ impl StudioRuntime {
                 }
                 let _ = sessions_ready_tx.send(agent_ok);
                 let _ = transport_ready_tx.send(agent_ok);
+                #[cfg(test)]
+                if agent_ok {
+                    runtime.service_stops.note_sessions_acked();
+                }
                 // 只在真实已知时发布 pending count；未知不伪造 0。
                 if let Some(pending_before) = pending_before {
                     progress.emit(crate::StudioShutdownProgress::FlushingPersistence(
@@ -1853,5 +1923,474 @@ mod member_mcp_exit_fence_tests {
     async fn member_mcp_exit_fence_retains_real_failure_for_final_join_and_retry()
     -> anyhow::Result<()> {
         exercise(true).await
+    }
+}
+
+#[cfg(test)]
+mod observer_shutdown_tests {
+    use std::sync::Arc;
+
+    use anyhow::{Context, Result};
+    use pl_lifecycle::CloseError;
+    use tokio::sync::{oneshot, watch};
+
+    use super::*;
+    use crate::studio::runtime::bot_archive_test_host::BotArchiveTestHost;
+    use crate::studio::runtime::observation_lifecycle::{LspObservationEvent, ObserverTask};
+
+    struct PausedProjection {
+        _temp: tempfile::TempDir,
+        runtime: StudioRuntime,
+        thread_id: String,
+        initial: crate::StudioThreadLspStateSnapshot,
+        incarnation: Arc<()>,
+        observer: Arc<pl_lifecycle::Managed<ObserverTask>>,
+        events_before_pause: usize,
+        resume: watch::Sender<bool>,
+    }
+
+    impl PausedProjection {
+        async fn new() -> Result<Self> {
+            let temp = tempfile::tempdir()?;
+            let host = BotArchiveTestHost::new(&temp.path().join("home")).await?;
+            let runtime = host.runtime.as_ref().clone();
+            let root = temp.path().join("workspace");
+            let configuration = root.join(".anywork/lsp/observer-lifecycle.toml");
+            tokio::fs::create_dir_all(configuration.parent().unwrap()).await?;
+            let peer = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .context("crate parent")?
+                .join("pl-tool/tests/support/lsp_fixture.py");
+            anyhow::ensure!(peer.is_file(), "real LSP fixture missing");
+            tokio::fs::write(&configuration, format!(
+                "schema_version = 1\nid = 'observer-lifecycle'\ncommand = 'python3'\nargs = {}\nlanguage_ids = ['fixture']\nextensions = ['fixture']\noperations = ['hover']\n",
+                serde_json::to_string(&["-u".to_owned(), peer.display().to_string(), root.join("lsp-requests.jsonl").display().to_string()])?,
+            )).await?;
+            let project = runtime.open_project(&root).await?;
+            let thread = runtime
+                .create_thread(&project.id, "observer lifetime")
+                .await?;
+            let mut events = runtime
+                .subscribe_product_topic(crate::StudioProductTopic::ThreadLsp {
+                    thread_id: thread.id.clone(),
+                })
+                .await?;
+            let _handle = Box::pin(runtime.ensure_thread_owner(&thread.id)).await?;
+            let binding = runtime
+                .thread_factory
+                .binding_snapshot(&thread.id)
+                .context("real Thread binding")?;
+            let binding_id = binding
+                .lsp_binding_id
+                .context("real LSP binding identity")?;
+            let incarnation = binding.incarnation;
+            let initial = loop {
+                let frame = events
+                    .recv()
+                    .await?
+                    .context("Thread LSP observation closed")?;
+                let state = match frame {
+                    crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                        crate::StudioProductBaselineState::ThreadLsp(state) => Some(*state),
+                        _ => anyhow::bail!("unexpected baseline"),
+                    },
+                    crate::StudioProductFrame::Event(event) => match event.kind {
+                        crate::StudioProductEventKind::ThreadLspStateChanged(state) => Some(state),
+                        _ => None,
+                    },
+                    crate::StudioProductFrame::Lagged { .. } => {
+                        anyhow::bail!("fixture lost projection frames")
+                    }
+                };
+                if let Some(state) = state
+                    && state.binding_id.as_deref() == Some(binding_id.as_str())
+                    && state
+                        .servers
+                        .iter()
+                        .any(|server| server.id == "observer-lifecycle")
+                {
+                    break state;
+                }
+            };
+            drop(events);
+            let observer = runtime
+                .observations
+                .start(RuntimeObserver::Lsp, |_| async {
+                    panic!("the fixture must retain the originally started watcher")
+                })
+                .await
+                .unwrap();
+            let (mut entered, resume) = runtime
+                .external_runtimes
+                .lsp_state
+                .pause_thread_snapshot_for_test("observer-lifecycle");
+            runtime.thread_factory.notify_lsp_binding_changed();
+            entered.wait_for(|paused| *paused).await?;
+            let published_at_pause = runtime
+                .external_runtimes
+                .lsp_state
+                .read_thread(&thread.id)
+                .await;
+            assert_eq!(published_at_pause.binding_id, initial.binding_id);
+            assert!(published_at_pause.revision >= initial.revision);
+            let events_before_pause = runtime.observations.lsp_projection_probe().events().len();
+            Ok(Self {
+                _temp: temp,
+                runtime,
+                thread_id: thread.id,
+                initial: published_at_pause,
+                incarnation,
+                observer,
+                events_before_pause,
+                resume,
+            })
+        }
+
+        async fn assert_original_refresh_finished(&self) {
+            let cached = self
+                .runtime
+                .observations
+                .start(RuntimeObserver::Lsp, |_| async {
+                    panic!("shutdown must not replace the original watcher")
+                })
+                .await
+                .unwrap();
+            assert!(Arc::ptr_eq(&self.observer, &cached));
+            let events = self.runtime.observations.lsp_projection_probe().events();
+            let [
+                LspObservationEvent::ProjectionCompleted {
+                    task_id,
+                    thread_id,
+                    incarnation,
+                    binding_id,
+                    result,
+                },
+                LspObservationEvent::ServiceStopStarted("lsp"),
+                LspObservationEvent::ServiceStopStarted("ssh"),
+            ] = &events[self.events_before_pause..]
+            else {
+                panic!(
+                    "expected exactly one original projection completion before the real LSP/SSH stops: {events:?}"
+                )
+            };
+            assert_eq!(*task_id, Some(self.observer.get().task_id_for_test()));
+            assert_eq!(thread_id, &self.thread_id);
+            assert!(Arc::ptr_eq(incarnation, &self.incarnation));
+            assert_eq!(binding_id, &self.initial.binding_id);
+            assert!(
+                self.runtime
+                    .thread_factory
+                    .resource_scope(&self.thread_id)
+                    .is_none()
+            );
+            assert!(
+                self.runtime
+                    .thread_factory
+                    .binding_snapshot(&self.thread_id)
+                    .is_none()
+            );
+            // Session 已移除原 scope；guard 必须拒绝迟到提交而不是发布空快照。
+            // 上面的真实调用回执和任务身份才证明本轮刷新已完成，revision 不能充当 join ACK。
+            assert!(
+                result.is_none(),
+                "retired binding must not run the commit callback"
+            );
+            let current = self
+                .runtime
+                .external_runtimes
+                .lsp_state
+                .read_thread(&self.thread_id)
+                .await;
+            assert_eq!(current.thread_id, self.initial.thread_id);
+            assert_eq!(current.revision, self.initial.revision);
+            assert_eq!(current.binding_id, self.initial.binding_id);
+            assert_eq!(current.servers, self.initial.servers);
+        }
+
+        async fn assert_no_service_started(&self) {
+            assert_eq!(
+                self.runtime
+                    .observations
+                    .lsp_projection_probe()
+                    .events()
+                    .len(),
+                self.events_before_pause,
+                "paused original refresh has not completed or allowed service stop"
+            );
+            assert!(self.runtime.service_stops.lsp.lock().await.is_none());
+            assert!(self.runtime.service_stops.ssh.lock().await.is_none());
+            assert!(
+                self.runtime
+                    .service_stops
+                    .stop_calls
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    fn stage<'a>(report: &'a StageReport, name: &str) -> &'a StageOutcome {
+        report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.stage == name)
+            .expect("original stage ID")
+    }
+
+    #[tokio::test]
+    async fn paused_refresh_blocks_lsp_and_ssh_until_same_projection_ack() -> Result<()> {
+        let fixture = PausedProjection::new().await?;
+        fixture.runtime.broadcast_cancel().await;
+        fixture.runtime.shutdown_agent_framework().await?;
+        let mut shutdown = Box::pin(fixture.runtime.shutdown_runtime());
+        tokio::select! {
+            result = &mut shutdown => { let _ = result; anyhow::bail!("shutdown completed before projection ACK"); },
+            _ = fixture.runtime.service_stops.sessions_acked.notified() => {},
+        }
+        assert!(futures::poll!(&mut shutdown).is_pending());
+        fixture.assert_no_service_started().await;
+        fixture.resume.send_replace(true);
+        let stopped = shutdown.await?;
+        assert!(stopped.state.is_stopped());
+        fixture.assert_original_refresh_finished().await;
+        assert_eq!(
+            *fixture.runtime.service_stops.stop_calls.lock().unwrap(),
+            ["lsp", "ssh"]
+        );
+        // 整体关闭已经完成；重复 join 原 retained job，不从 Ready 的夹具重复执行 Stop 命令。
+        for slot in [
+            &fixture.runtime.service_stops.lsp,
+            &fixture.runtime.service_stops.ssh,
+        ] {
+            let job = slot
+                .lock()
+                .await
+                .clone()
+                .context("original retained stop job")?;
+            assert!(job.join().await.is_ok());
+            assert!(job.join().await.is_ok());
+        }
+        assert_eq!(
+            *fixture.runtime.service_stops.stop_calls.lock().unwrap(),
+            ["lsp", "ssh"],
+            "retained stop jobs are not replaced on retry"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projection_timeout_keeps_services_and_original_resource_for_strict_retry() -> Result<()>
+    {
+        let fixture = PausedProjection::new().await?;
+        fixture.runtime.broadcast_cancel().await;
+        fixture.runtime.shutdown_agent_framework().await?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let budget = ShutdownBudget::at_deadline(deadline);
+        let report = fixture.runtime.run_shutdown_stages(budget, None).await;
+        assert_eq!(budget.deadline(), Some(deadline));
+        assert!(stage(&report, "agentFramework").is_done());
+        assert!(matches!(
+            stage(&report, "lspState").status,
+            StageStatus::TimedOut
+        ));
+        assert!(!stage(&report, "lspStop").is_done());
+        assert!(!stage(&report, "ssh").is_done());
+        fixture.assert_no_service_started().await;
+        let pending = fixture
+            .runtime
+            .observations
+            .close(
+                RuntimeObserver::Lsp,
+                Some(tokio::time::Instant::from_std(deadline)),
+            )
+            .await;
+        assert_eq!(pending.pending.len(), 1);
+        assert_eq!(pending.pending[0].resource.label, "lspState");
+        fixture.resume.send_replace(true);
+        let retry = fixture.runtime.shutdown_runtime().await?;
+        assert!(retry.state.is_stopped());
+        fixture.assert_original_refresh_finished().await;
+        assert_eq!(
+            *fixture.runtime.service_stops.stop_calls.lock().unwrap(),
+            ["lsp", "ssh"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_dispose_also_waits_for_projection_and_session_ack() -> Result<()> {
+        let fixture = PausedProjection::new().await?;
+        let mut dispose = Box::pin(fixture.runtime.dispose_startup());
+        tokio::select! {
+            result = &mut dispose => { let _ = result; anyhow::bail!("startup dispose bypassed projection ACK"); },
+            _ = fixture.runtime.service_stops.sessions_acked.notified() => {},
+        }
+        fixture.assert_no_service_started().await;
+        fixture.resume.send_replace(true);
+        dispose.await?;
+        fixture.assert_original_refresh_finished().await;
+        assert_eq!(
+            *fixture.runtime.service_stops.stop_calls.lock().unwrap(),
+            ["lsp", "ssh"]
+        );
+        assert!(
+            fixture
+                .runtime
+                .agent_facility
+                .persistence
+                .lock()
+                .await
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_projection_is_reported_once_and_never_acks_service_stop_or_startup_dispose()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let host = BotArchiveTestHost::new(temp.path()).await?;
+        let mut runtime = host.runtime.as_ref().clone();
+        // Replace only the test's observer owner after the original three observers really closed.
+        runtime.observations.request_close();
+        for observer in [
+            RuntimeObserver::Profiles,
+            RuntimeObserver::Persistence,
+            RuntimeObserver::Lsp,
+        ] {
+            assert!(runtime.observations.close(observer, None).await.is_clean());
+        }
+        runtime.observations = Arc::new(RuntimeObservationOwner::new());
+        let original = runtime
+            .observations
+            .start(RuntimeObserver::Lsp, |cancel| async move {
+                Ok(ObserverTask::new(
+                    cancel,
+                    tokio::spawn(async { panic!("retained LSP projection panic") }),
+                ))
+            })
+            .await
+            .unwrap();
+        runtime.broadcast_cancel().await;
+        let report = runtime
+            .run_shutdown_stages(ShutdownBudget::unbounded(), None)
+            .await;
+        let StageStatus::Failed(error) = &stage(&report, "lspState").status else {
+            anyhow::bail!("panic was hidden")
+        };
+        let failure = error
+            .downcast_ref::<ObservationCloseError>()
+            .context("typed observer report")?;
+        assert_eq!(failure.0.failures.len(), 1);
+        assert!(
+            failure
+                .to_string()
+                .contains("retained LSP projection panic")
+        );
+        assert_eq!(
+            report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.stage == "lspState")
+                .count(),
+            1
+        );
+        assert!(stage(&report, "agentProfiles").is_done());
+        assert!(stage(&report, "persistenceObserver").is_done());
+        assert!(!stage(&report, "lspStop").is_done());
+        assert!(!stage(&report, "ssh").is_done());
+        assert!(runtime.service_stops.stop_calls.lock().unwrap().is_empty());
+        let cleanup = runtime.dispose_startup().await.unwrap_err();
+        assert_eq!(cleanup.step, "stop_services");
+        assert_eq!(cleanup.kind, crate::StudioStartupErrorKind::Internal);
+        let source =
+            std::error::Error::source(&cleanup).context("startup retains cleanup report")?;
+        let same = source
+            .downcast_ref::<ObservationCloseError>()
+            .context("original typed source")?;
+        assert_eq!(same.0.scope_id, failure.0.scope_id);
+        assert_eq!(same.0.failures[0].resource, failure.0.failures[0].resource);
+        let (CloseError::Resource(a), CloseError::Resource(b)) =
+            (&same.0.failures[0].error, &failure.0.failures[0].error)
+        else {
+            anyhow::bail!("lost original task error")
+        };
+        assert!(Arc::ptr_eq(a, b));
+        let cached = runtime
+            .observations
+            .start(RuntimeObserver::Lsp, |_| async {
+                panic!("must not restart")
+            })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&original, &cached));
+        assert!(runtime.service_stops.stop_calls.lock().unwrap().is_empty());
+        // Explicit test teardown is not a successful production dependency ACK.
+        runtime.external_runtimes.lsp.shutdown().await?;
+        runtime.ssh_manager.shutdown().await?;
+        runtime.thread_factory.local_executor().close().await?;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn strict_observer_wait_has_no_service_cap_and_bounded_wait_uses_first_deadline() {
+        let observations = Arc::new(RuntimeObservationOwner::new());
+        let (release, released) = oneshot::channel();
+        let original = observations
+            .start(RuntimeObserver::Lsp, |cancel| async move {
+                let task_cancel = cancel.clone();
+                let task = tokio::spawn(async move {
+                    task_cancel.cancelled().await;
+                    released.await.unwrap();
+                });
+                Ok(ObserverTask::new(cancel, task))
+            })
+            .await
+            .unwrap();
+        let mut strict = Box::pin(run_observer_stage(
+            observations.clone(),
+            RuntimeObserver::Lsp,
+            ShutdownBudget::unbounded(),
+            stage_order::LSP_STATE,
+        ));
+        assert!(futures::poll!(&mut strict).is_pending());
+        tokio::time::advance(SERVICE_STAGE_LIMIT + Duration::from_secs(1)).await;
+        assert!(
+            futures::poll!(&mut strict).is_pending(),
+            "observer is not an external service with a five-second cap"
+        );
+        // 虚拟时钟已推进：用 remaining duration 重新起算会错误地延长这一共同绝对期限。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let bounded = ShutdownBudget::at_deadline(deadline.into_std());
+        let mut first = Box::pin(run_observer_stage(
+            observations.clone(),
+            RuntimeObserver::Lsp,
+            bounded,
+            stage_order::LSP_STATE,
+        ));
+        assert!(futures::poll!(&mut first).is_pending());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let std::task::Poll::Ready(first) = futures::poll!(&mut first) else {
+            panic!("observer extended the first absolute deadline")
+        };
+        assert!(matches!(first.status, StageStatus::TimedOut));
+        let again = run_observer_stage(
+            observations.clone(),
+            RuntimeObserver::Lsp,
+            bounded,
+            stage_order::LSP_STATE,
+        )
+        .await;
+        assert!(matches!(again.status, StageStatus::TimedOut));
+        let cached = observations
+            .start(RuntimeObserver::Lsp, |_| async {
+                panic!("no replacement on timeout")
+            })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&original, &cached));
+        release.send(()).unwrap();
+        assert!(strict.await.is_done());
     }
 }

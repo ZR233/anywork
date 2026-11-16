@@ -154,11 +154,13 @@ impl StudioRuntime {
         let rejected_tools =
             super::super::rejected_tools::RejectedToolOwners::new(sessions.downgrade());
         thread_observations.install()?;
-        // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
+        let observations = std::sync::Arc::new(
+            super::super::observation_lifecycle::RuntimeObservationOwner::new(),
+        );
         let mut runtime = Self {
             owner_epoch,
             startup_recovery: None,
-            persistence_observer: Default::default(),
+            observations,
             thread_observations,
             settings_updates,
             settings_refresh: Default::default(),
@@ -176,11 +178,7 @@ impl StudioRuntime {
             residency: ThreadResidency::new(),
             shutdown_progress: ShutdownProgressBus::new(),
             config_runtime,
-            external_runtimes: StudioExternalRuntimes {
-                lsp,
-                lsp_state,
-                lsp_state_watcher: Default::default(),
-            },
+            external_runtimes: StudioExternalRuntimes { lsp, lsp_state },
             agent_facility: StudioAgentFacility {
                 worktrees,
                 persistence: std::sync::Arc::new(tokio::sync::Mutex::new(Some(persistence))),
@@ -209,7 +207,6 @@ impl StudioRuntime {
             shutdown_run: Default::default(),
             early_exit_issues: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             title_tasks: Default::default(),
-            profiles_forwarder: Default::default(),
             bot_host: None,
         };
         let keep = std::sync::Arc::new(runtime.clone());

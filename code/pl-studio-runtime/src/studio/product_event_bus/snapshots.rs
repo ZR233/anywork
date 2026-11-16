@@ -230,16 +230,20 @@ impl ProductEventBus {
     pub(in crate::studio) fn observe_persistence(
         &self,
         mut state: watch::Receiver<PersistenceStateSnapshot>,
+        mut threads: watch::Receiver<
+            crate::studio::storage::coordinator::ThreadPersistenceSnapshot,
+        >,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let bus = self.clone();
-        let mut threads = bus.store.thread_persistence().subscribe();
         bus.update_persistence(state.borrow().clone(), threads.borrow().clone());
         bus.update_persistence_queue();
-        // 任务由 runtime 持有并在 shutdown 收束；它自身持有 bus（含 writer），不能依赖
-        // sender 关闭退出。
+        // 仅在 scope 已登记的 factory 内调用；正常关闭只取消通知等待，不打断投影。
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => break,
                     result = state.changed() => if result.is_err() { break; },
                     result = threads.changed() => if result.is_err() { break; },
                 }
