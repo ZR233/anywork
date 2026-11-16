@@ -292,8 +292,14 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert_eq!(fs::read(&path).unwrap(), executable);
+        let image = Arc::downgrade(&retained.image._file);
         drop(retained);
-        assert!(!path.exists(), "last lease must close the anonymous image");
+        // Other tests can reuse the fd number immediately after close. Observe
+        // this exact File's lifetime rather than the current occupant of /proc.
+        assert!(
+            image.upgrade().is_none(),
+            "last lease must close the original image"
+        );
     }
 
     #[tokio::test]
