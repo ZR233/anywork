@@ -13,7 +13,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
-const COMMAND_EXAMPLE: &str = "local r = tools.exec_command({command=[=[pwd]=]}); print({exitCode=r.exitCode, stdout=r.stdout.content, stderr=r.stderr.content})";
+const COMMAND_EXAMPLE: &str =
+    r#"{"code":"return tools.exec_command(args)","args":{"command":"pwd"}}"#;
 
 struct AdmissionPause(Arc<AtomicUsize>);
 impl AdmissionPause {
@@ -36,9 +37,16 @@ async fn invoke_function(index: usize, function: Function) -> (usize, mlua::Resu
 #[derive(Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecInput {
-    /// Lua 5.4 program. Complete shell example: local r = tools.exec_command({command=[=[pwd]=]}); print({exitCode=r.exitCode, stdout=r.stdout.content, stderr=r.stderr.content})
-    /// Use Lua tables with key=value. Put shell text inside command; only print/return enter context.
+    /// Lua 5.4 orchestration. Shell: return tools.exec_command(args). Patch: return tools.apply_patch(args.patch).
+    /// Put command parameters or patch text in the separate JSON args field, not inside this code.
+    /// Only print/return enter context; a returned command record includes exitCode and both streams.
     pub code: String,
+    /// JSON object available as global args (default {}). Pass a real object, not JSON-encoded text.
+    /// Shell example: {"command":"your shell command"}. Patch example: {"patch":"*** Begin Patch..."}.
+    /// Strings need only JSON escaping, never additional Lua escaping. Nested objects, arrays and null
+    /// retain their JSON types; Lua arrays are 1-based and null is json.null.
+    #[serde(default)]
+    pub args: serde_json::Map<String, serde_json::Value>,
     /// Positive total execution deadline in milliseconds, including child waits (default 120000).
     /// Expiry cancels the program and its children. Background delivery is automatic;
     /// this is not a foreground wait or yield setting.
@@ -103,7 +111,26 @@ pub enum ExecError {
 
 pub fn definition(sdk: &str) -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("exec", format!(
-        "Run a Lua 5.4 program in code. Complete shell-call example (replace the command string):\n{COMMAND_EXAMPLE}\n\nLua calls use parentheses and tables with key=value; close the table before the call: tools.name({{key=value}}). Long strings [=[...]=] preserve quotes and newlines: local text = [=[content]=]; return tools.name(text). A string assignment has no closing call parenthesis. tools.exec_command returns a terminal record: exitCode 0 means command success; nonzero exits are returned as data with stdout.content and stderr.content. Include stderr and exitCode when printing command output so command errors stay visible. Check exitCode before dependent actions; use assert(r.exitCode == 0) to stop the program on a failed command.\nOnly print(...) and return enter context; print tables as JSON and select the fields you need. Selected output defaults to 8192 UTF-8 bytes: filter before printing, or set a larger maxOutputBytes for a complete relevant excerpt. Truncated results identify the original task for get_tool_task paging; do not rerun commands to recover output. timeoutMs is the total execution deadline, not a yield delay: expiry cancels children. Background delivery is automatic; leave this deadline long enough for commands and any later stdin input. maxOutputBytes controls selected output only. Child calls suspend automatically until terminal. If the outer exec returns a running taskId, the program and its child remain owned by Thread: call top-level wait on that taskId for completion. A message can wake wait early; check the selected task status before dependent actions. Start commands requiring stdin with interactive=true. To feed one, use another exec to list_tool_tasks, select the running exec_command taskId, and call tools.write_stdin; then wait for the original program. No busy polling is needed. Each invocation has fresh state; keep dependent reads, calculations and writes in one program. Use parallel({{function() ... end, ...}}) for independent calls; the host serializes mutations within that program. Keep dependent actions in one program or wait for the previous program before starting another. Tool failures raise errors: pcall catches an error with message and optional output for inspection; completed side effects are retained and never replayed automatically. Lua syntax errors start no tools. MCP calls return structuredContent when provided, otherwise their full content record. json.decode(text) parses JSON, json.encode(value) serializes it; arrays use 1-based Lua indexing and ipairs. json.null and json.array preserve JSON null and empty arrays. json.null is truthy in Lua: compare optional cursors with nil or json.null. OS/file/network operations go through tools.\n\nFrozen Lua SDK (only these names exist inside code; discover_tools, Plan, wait, interaction and turn-ending tools are separate top-level calls, without tools. or exec; newly discovered bindings appear in the next exec):\n{sdk}"
+        r#"Run Lua 5.4 orchestration. Put command parameters, patch text and other input data in the JSON object args, available as global args. Pass an object, never a JSON-encoded string. Prefer these complete exec inputs:
+Shell command:
+{COMMAND_EXAMPLE}
+Patch (put the string in args.patch):
+{{"code":"return tools.apply_patch(args.patch)","args":{{"patch":"*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch"}}}}
+
+Only code is parsed as Lua. args is data, not executable text: escape its strings once for JSON, without another layer of Lua quoting. Do not paste shell commands or JSON objects into code. For multiple calls, put their inputs in args fields and reference them, e.g. tools.exec_command(args.build). If constructing a Lua table is necessary, fields use key=value, never JSON key:value. Lua long strings must have matching delimiters, e.g. [=[text]=]; choose a higher level if the content includes the closing delimiter.
+
+tools.exec_command returns a terminal record with taskId, exitCode, stdout.content and stderr.content. Returning this record preserves errors and both streams. For larger results, print selected fields; include exitCode and stderr. Check exitCode == 0 before dependent actions. Nonzero command exits are data; permission, transport, timeout and other tool failures raise errors. pcall catches a failure with message and optional output. Completed effects are retained and never replayed automatically; Lua syntax errors start no tools.
+Only print(...) and return enter context; tables print as JSON. maxOutputBytes defaults to 8192 UTF-8 bytes; filter before printing or raise it for a relevant excerpt. Truncation identifies the original task for get_tool_task paging; do not rerun commands to recover output.
+timeoutMs defaults to 120000 and covers the whole program including child waits; expiry cancels children. It is not a yield delay. Background delivery is automatic. If exec returns a running taskId, use top-level wait until that program is terminal; a message can wake wait early. Child calls suspend until terminal. For stdin, start with interactive=true, use another exec to list_tool_tasks and tools.write_stdin on the running exec_command taskId, then wait for the original program. Leave enough deadline for both calls.
+Each invocation has fresh state, including args (default empty object). Keep dependent reads, calculations and writes in one program or wait for the previous program.
+parallel takes ONE array of zero-argument functions, not separate function arguments or already-executed calls. For two independent commands with JSON args {{"first":{{"command":"first"}},"second":{{"command":"second"}}}}, use:
+return parallel({{function() return tools.exec_command(args.first) end, function() return tools.exec_command(args.second) end}})
+Results keep input order; up to four calls overlap, and the host serializes mutations within that program.
+MCP calls return structuredContent when provided, otherwise their full content record.
+json.decode(text) and json.encode(value) convert JSON; arrays use 1-based indexing and ipairs. json.null and json.array preserve null and empty arrays. json.null is truthy: compare optional cursors with nil or json.null. OS/file/network operations go through tools.
+
+Frozen Lua SDK (only these names exist inside code; discover_tools, Plan, wait, interaction and turn-ending tools are separate top-level calls, without tools. or exec; newly discovered bindings appear in the next exec):
+{sdk}"#
     ), pl_agent_tool::typed::input_schema_for::<ExecInput>()).expect("static Lua declaration")
 }
 
@@ -130,7 +157,13 @@ pub async fn execute<H: ToolHost>(
             .enable_all()
             .build()
             .map_err(|e| ExecError::Worker(e.to_string()))?;
-        runtime.block_on(run(input.code, Arc::new(host), cancellation, deadline))
+        runtime.block_on(run(
+            input.code,
+            input.args,
+            Arc::new(host),
+            cancellation,
+            deadline,
+        ))
     })
     .await
     .map_err(|e| ExecError::Worker(e.to_string()))?;
@@ -143,6 +176,7 @@ pub async fn execute<H: ToolHost>(
 
 async fn run<H: ToolHost>(
     code: String,
+    args: serde_json::Map<String, serde_json::Value>,
     host: Arc<H>,
     cancellation: CancellationToken,
     deadline: Instant,
@@ -162,6 +196,7 @@ async fn run<H: ToolHost>(
     .map_err(|e| ExecError::Worker(e.to_string()))?;
     let result: mlua::Result<()> = async {
         let globals = lua.globals();
+        globals.set("args", lua.to_value(&args)?)?;
         for name in ["dofile", "loadfile", "load"] { globals.set(name, Value::Nil)?; }
         let tools = lua.create_table()?;
         let gate = Arc::new(tokio::sync::RwLock::new(()));
@@ -290,7 +325,7 @@ async fn run<H: ToolHost>(
         model_output_bytes: 8192,
         error: result.err().map(|error| {
             if matches!(&error, mlua::Error::SyntaxError { .. }) {
-                format!("{error}\nLua parsing failed before any tool started. Complete shell-call example:\n{COMMAND_EXAMPLE}")
+                format!("{error}\nLua parsing failed before any tool started. Complete exec input (JSON; keep shell text in args.command):\n{COMMAND_EXAMPLE}")
             } else { error.to_string() }
         }),
     })
