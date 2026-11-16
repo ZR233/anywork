@@ -1,8 +1,6 @@
-import '../support/test_app_lifecycle.dart';
-
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +11,9 @@ import '../../../anywork_client/test/support/acp_business_port.dart';
 import '../../../anywork_client/test/support/timeline_transport.dart'
     show TestConversationTransport;
 import '../support/pump_client_future.dart';
+import '../support/test_app_lifecycle.dart';
+import '../support/test_statistics_feed.dart';
+import '../support/unused_account_ports.dart';
 
 const acpRemoteFixture = AcpRemoteSessionId('remote');
 const acpBooleanFixture = AcpSessionConfigOptionView(
@@ -36,8 +37,9 @@ Widget acpTestApp(Widget child) => MaterialApp(
 
 /// Only controls source frames and records calls. All reduction is production.
 final class AcpComponentHarness {
-  AcpComponentHarness(this.client, this.port, this.source, this.owner);
-  final AnyworkClient client;
+  AcpComponentHarness(this.graph, this.port, this.source, this.owner);
+  final AppGraph graph;
+  AnyworkClient get client => graph.client;
   final ControlledAcpBusinessPort port;
   final ControlledAcpObservation source;
   final AcpConversationSession owner;
@@ -103,11 +105,19 @@ final class AcpComponentHarness {
           updatedAt: DateTime.utc(2025),
         ),
       );
-    final client = testAnyworkClient(
+    final accounts = _AcpComponentAccountPorts();
+    final graph = testAppGraph(
       transport: transport,
+      statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'acp-components',
+      accountFeed: accounts,
+      accountConfiguration: accounts,
+      accountModels: accounts,
+      accountUsage: accounts,
+      acpPort: accounts,
       acpBusinessPort: port,
     );
+    final client = graph.client;
     client.project.applyProjectDirectory(
       ProjectDirectoryState(
         revision: 1,
@@ -127,11 +137,11 @@ final class AcpComponentHarness {
             : const AcpLoadIntentView(acpRemoteFixture),
       ),
     );
-    return AcpComponentHarness(client, port, source, owner);
+    return AcpComponentHarness(graph, port, source, owner);
   }
 
   Widget scope(Widget child) => ProviderScope(
-    overrides: [anyworkClientProvider.overrideWithValue(client)],
+    overrides: [appGraphProvider.overrideWithValue(graph)],
     child: acpTestApp(child),
   );
 
@@ -152,11 +162,14 @@ final class AcpComponentHarness {
   );
 
   Future<void> close(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
     final report = await pumpClientFuture(
       tester,
-      client.close(budget: testCloseBudget()),
-      'close ACP component Client',
+      graph.close(budget: testCloseBudget()),
+      'close ACP component AppGraph',
     );
     expect(report.complete, isTrue, reason: '${report.unresolved}');
   }
 }
+
+final class _AcpComponentAccountPorts extends UnusedAccountPorts {}
