@@ -8,7 +8,9 @@ use crate::studio::startup::{StartupBackup, input_error};
 use crate::{StudioStartupError, StudioStartupErrorKind, StudioStartupStage, StudioStore};
 
 use super::super::StudioRuntime;
-use super::super::observation_lifecycle::{ObservationCloseError, ObserverTask, RuntimeObserver};
+use super::super::observation_lifecycle::{
+    ObservationCloseError, ObserverOpenResult, ObserverTask, RuntimeObserver,
+};
 
 type Observer = Arc<dyn Fn(StudioStartupStage) + Send + Sync>;
 
@@ -380,17 +382,7 @@ impl StudioRuntime {
                     anyhow::anyhow!("missing persistence owner"),
                 )
             })?;
-        let bus = self.agent_facility.product_events.clone();
-        let state = writer.subscribe_state();
-        let threads = self.store.thread_persistence().subscribe();
-        self.observations
-            .start(
-                RuntimeObserver::Persistence,
-                move |cancellation| async move {
-                    let task = bus.observe_persistence(state, threads, cancellation.clone());
-                    Ok(ObserverTask::new(cancellation, task))
-                },
-            )
+        self.start_persistence_observer(writer)
             .await
             .map_err(|error| {
                 observer_start_error(
@@ -419,6 +411,26 @@ impl StudioRuntime {
             .map_err(|error| internal("prepare_bots", anyhow::Error::from(error.studio_error())))?;
         self.start_recovery_scan().await;
         Ok(())
+    }
+
+    fn start_persistence_observer(
+        &self,
+        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    ) -> impl std::future::Future<Output = ObserverOpenResult> + Send + 'static {
+        let bus = self.agent_facility.product_events.clone();
+        let threads = self.store.thread_persistence().clone();
+        self.observations.start(
+            RuntimeObserver::Persistence,
+            move |cancellation| async move {
+                // 两个通知接收者都在作用域登记后创建；未启动的 future 不持观察需求。
+                let task = bus.observe_persistence(
+                    writer.subscribe_state(),
+                    threads.subscribe(),
+                    cancellation.clone(),
+                );
+                Ok(ObserverTask::new(cancellation, task))
+            },
+        )
     }
 
     pub(super) async fn dispose_startup(&self) -> Result<(), StudioStartupError> {
@@ -591,7 +603,71 @@ async fn timed_step<F: std::future::Future>(name: &'static str, future: F) -> F:
 #[cfg(test)]
 mod observer_start_tests {
     use super::*;
-    use crate::studio::runtime::observation_lifecycle::ObservationStartError;
+    use crate::studio::runtime::observation_lifecycle::{
+        ObservationStartError, RuntimeObservationOwner,
+    };
+
+    #[tokio::test]
+    async fn persistence_receivers_are_created_only_after_scope_admission() -> anyhow::Result<()> {
+        use crate::studio::runtime::bot_archive_test_host::BotArchiveTestHost;
+
+        let temp = tempfile::tempdir()?;
+        let host = BotArchiveTestHost::new(temp.path()).await?;
+        let writer = host
+            .runtime
+            .agent_facility
+            .persistence
+            .lock()
+            .await
+            .clone()
+            .expect("initialized persistence owner");
+        let threads = host.runtime.store.thread_persistence().clone();
+        let counts = || {
+            (
+                writer.state_subscriber_count_for_test(),
+                threads.state_subscriber_count_for_test(),
+            )
+        };
+        let baseline = counts();
+        let mut runtime = host.runtime.as_ref().clone();
+        runtime.observations = Arc::new(RuntimeObservationOwner::new());
+
+        let unpolled = runtime.start_persistence_observer(writer.clone());
+        assert_eq!(counts(), baseline);
+        runtime.observations.request_close();
+        assert!(
+            runtime
+                .observations
+                .close(RuntimeObserver::Persistence, None)
+                .await
+                .is_clean()
+        );
+        assert!(matches!(
+            unpolled.await,
+            Err(error) if matches!(error.as_ref(), pl_lifecycle::OpenError::ScopeClosed)
+        ));
+        assert_eq!(counts(), baseline);
+
+        runtime.observations = Arc::new(RuntimeObservationOwner::new());
+        let started = runtime
+            .start_persistence_observer(writer.clone())
+            .await
+            .map_err(ObservationStartError)?;
+        assert_eq!(counts(), (baseline.0 + 1, baseline.1 + 1));
+        runtime.observations.request_close();
+        assert!(
+            runtime
+                .observations
+                .close(RuntimeObserver::Persistence, None)
+                .await
+                .is_clean()
+        );
+        assert_eq!(counts(), baseline);
+        drop(started);
+        drop(runtime);
+        host.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
 
     #[test]
     fn startup_observer_errors_keep_original_source_and_cancel_classification() {
